@@ -4,7 +4,10 @@
 use rutent_contracts::core_internal::calls::{AppendFailure, Log};
 use rutent_contracts::core_internal::{Actor, OrderRefusalClass, Outcome, Receipt, ShownAs, What};
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{Fee, Reporting, to_canonical};
+use rutent_contracts::provider_role::{
+    ConversionOutcome, Fee, Reporting, ReserveMovementOutcome, ResultBody, TransferOutcome,
+    to_canonical,
+};
 use rutent_contracts::router_api::{
     Amount, Candidate, DecisionRecord, Endpoint, FeeFormula, FigureValue, Id, NonEmpty, Operation,
     OperationKind, Part,
@@ -204,18 +207,23 @@ pub fn show(
     candidate: &Candidate,
     floor: Option<&Amount>,
 ) -> Result<Shown, NotShown> {
-    let legs: Vec<Leg<'_>> = indexed(candidate)
-        .map(|(part, operation, evaluated)| Leg {
-            part,
-            operation,
-            evaluated,
-            amounts: Executed {
-                amount_in: evaluated.amount_in.amount().clone(),
-                fee: evaluated.fee.clone(),
-                amount_out: evaluated.amount_out.clone(),
-            },
+    let legs = indexed(candidate)
+        .map(|(part, operation, evaluated)| {
+            let answered = rests_on_an_answer(record, evaluated);
+            Ok(Leg {
+                part,
+                operation,
+                evaluated,
+                answered,
+                amounts: Executed {
+                    amount_in: evaluated.amount_in.amount().clone(),
+                    fee: evaluated.fee.clone(),
+                    amount_out: gives_out(record, evaluated, answered)
+                        .ok_or(NotShown::Unexplained)?,
+                },
+            })
         })
-        .collect();
+        .collect::<Result<Vec<Leg<'_>>, NotShown>>()?;
     let mut shown = compose(record, candidate, &legs, false, floor)?;
     // A segment over three days leaves the route no firm rate, and names it (`REQ-QTE-10`).
     if let Firmness::NoFirmRate { slow } = firmness(record, candidate) {
@@ -269,6 +277,7 @@ pub fn executed(
             part,
             operation,
             evaluated,
+            answered: true,
             amounts: segment.executed.clone(),
         });
     }
@@ -278,11 +287,91 @@ pub fn executed(
     compose(record, candidate, &legs, true, None)
 }
 
+/// The accepted answer a figure carries, as its amount in, its fee and its amount out: a dry run's or a fresh quote's.
+fn answer_of(figure: &FigureValue) -> Option<(&str, &Fee, &str)> {
+    let body = match figure {
+        FigureValue::DryRun { result, .. } => &result.statement,
+        FigureValue::FreshQuote { quote, .. } => &quote.statement,
+        _ => return None,
+    };
+    match body {
+        ResultBody::Withdrawal(r) | ResultBody::Deposit(r) => match &r.outcome {
+            ReserveMovementOutcome::DryRunAccepted(a) => {
+                Some((&a.amount_in, &a.fee, &a.amount_out))
+            }
+            _ => None,
+        },
+        ResultBody::Transfer(r) => match &r.outcome {
+            TransferOutcome::DryRunAccepted(a) => Some((&a.amount_in, &a.fee, &a.amount_out)),
+            _ => None,
+        },
+        ResultBody::Conversion(r) => match &r.outcome {
+            ConversionOutcome::DryRunAccepted(a) => Some((&a.amount_in, &a.fee, &a.amount_out)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a provider's accepted answer set an operation's amount, and not its tuple's advertised price: a cited dry
+/// run or fresh quote that reproduces it, at the amount it takes in, with the same fee, and what arrives by that
+/// answer (the router's `Operation::stated_out`) the amount the operation states. The router cites every usable
+/// answer, so one cited is no proof that it set the amount.
+fn rests_on_an_answer(record: &DecisionRecord, operation: &Operation) -> bool {
+    let cited = |id: &Id| record.snapshot.figures.iter().find(|f| &f.figure_id == id);
+    let Some(tuple) = operation
+        .figures
+        .iter()
+        .filter_map(cited)
+        .find(|f| reporting_of_figure(&f.value).is_some())
+    else {
+        return false;
+    };
+    operation.figures.iter().filter_map(cited).any(|f| {
+        answer_of(&f.value).is_some_and(|(amount_in, fee, amount_out)| {
+            amount_in == operation.amount_in.amount().as_str()
+                && fee.asset == operation.fee.asset
+                && fee.amount == operation.fee.amount
+                && operation.stated_out(tuple, amount_out, fee).as_deref()
+                    == Some(operation.amount_out.as_str())
+        })
+    })
+}
+
+/// What a quoted segment gives out. A record's operation states what arrives (router-api 4.0.0). Where an accepted
+/// answer set it under a tuple that reports `gross`, a segment that keeps its asset gave out its stated amount and the
+/// charge within it, restated in the out unit: the round trip with the router's `Operation::stated_out`, so the lines
+/// shown and the hand-on rule read what a result would state, as they do once the segment has run. Any other
+/// operation, an exchange or one priced from its advertised price, gives out what it states. `None` where the charge
+/// can't be restated: nothing is shown on a figure that isn't one.
+fn gives_out(record: &DecisionRecord, operation: &Operation, answered: bool) -> Option<Amount> {
+    let stated = operation.amount_out.clone();
+    let gross = reporting_of(record, operation) == Some(Reporting::Gross)
+        && operation.kind != OperationKind::Exchange;
+    if !(answered && gross) {
+        return Some(stated);
+    }
+    let charge = rutent_contracts::provider_role::charge_in_out_unit(
+        &operation.fee.amount,
+        operation.from.asset.decimals,
+        operation.to.asset.decimals,
+    )?;
+    let sum = stated
+        .as_str()
+        .parse::<u128>()
+        .ok()?
+        .checked_add(charge.parse().ok()?)?;
+    Amount::new(sum.to_string())
+}
+
 /// One segment, where it sits, as the router evaluated it, and its amounts: quoted or executed.
 struct Leg<'a> {
     part: u32,
     operation: u32,
     evaluated: &'a Operation,
+    /// Whether a provider's accepted answer set its amounts, as an executed segment's result does, and not its
+    /// tuple's advertised price, which states what arrives as it stands.
+    answered: bool,
     amounts: Executed,
 }
 
@@ -312,6 +401,16 @@ fn provider_at(legs: &[Leg<'_>], part: u32, operation: u32) -> Option<Id> {
         .map(|l| l.evaluated.provider.clone())
 }
 
+/// How a tuple figure reports its charge; `None` for any other figure.
+fn reporting_of_figure(value: &FigureValue) -> Option<Reporting> {
+    match value {
+        FigureValue::ReserveTuple { tuple } => Some(tuple.terms.reporting),
+        FigureValue::RampTuple { tuple } => Some(tuple.terms.reporting),
+        FigureValue::ExchangeTuple { tuple } => Some(tuple.terms.reporting),
+        _ => None,
+    }
+}
+
 /// How the tuple an operation runs through reports its charge: the terms of the tuple figure it cites, from its own
 /// provider, in the record's snapshot.
 fn reporting_of(record: &DecisionRecord, operation: &Operation) -> Option<Reporting> {
@@ -339,8 +438,8 @@ fn reporting_of(record: &DecisionRecord, operation: &Operation) -> Option<Report
 /// what it gives out, which with its charge is at most what it takes in; under `gross` what it gives out, at most
 /// what it takes in, less its charge. `None` where the amounts break that: a segment claiming more out than it takes
 /// in can't deliver it.
-fn handed_on(kind: OperationKind, reporting: Reporting, amounts: &Executed) -> Option<Amount> {
-    if kind == OperationKind::Exchange {
+fn handed_on(operation: &Operation, reporting: Reporting, amounts: &Executed) -> Option<Amount> {
+    if operation.kind == OperationKind::Exchange {
         return Some(amounts.amount_out.clone());
     }
     let handed = crate::segments::handed_on(
@@ -348,6 +447,10 @@ fn handed_on(kind: OperationKind, reporting: Reporting, amounts: &Executed) -> O
         amounts.amount_in.as_str(),
         amounts.amount_out.as_str(),
         &amounts.fee.amount,
+        crate::segments::Units {
+            origin_decimals: operation.from.asset.decimals,
+            out_decimals: operation.to.asset.decimals,
+        },
     )?;
     Amount::new(handed)
 }
@@ -372,7 +475,13 @@ fn compose(
         let (part, operation) = (leg.part, leg.operation);
         let reporting =
             reporting_of(record, leg.evaluated).ok_or(NotShown::NoTerms { part, operation })?;
-        let hands_on = handed_on(leg.evaluated.kind, reporting, &leg.amounts)
+        // Priced, not answered: what the operation states arrives, and no charge is taken from it again.
+        let counted = if leg.answered {
+            reporting
+        } else {
+            Reporting::Net
+        };
+        let hands_on = handed_on(leg.evaluated, counted, &leg.amounts)
             .ok_or(NotShown::Undeliverable { part, operation })?;
         if operation == 0 {
             amount_in = amount_in

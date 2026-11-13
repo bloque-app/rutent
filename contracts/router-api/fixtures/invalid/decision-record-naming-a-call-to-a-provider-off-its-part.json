@@ -149,7 +149,7 @@
         "node": "hub-c"
       }
     },
-    "router_version": "rutent-router-0.5.0",
+    "router_version": "rutent-router-0.6.0",
     "snapshot": {
       "figures": [
         {

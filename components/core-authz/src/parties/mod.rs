@@ -100,6 +100,8 @@ pub enum Scope {
     EraseStatement,
     /// Asking a failed segment's provider to reverse it (`decide`, `ask_reversal`).
     AskReversal,
+    /// The customer accepting a showing of its fault (`decide`, `accept_fault`).
+    AcceptFault,
     /// Giving an authorisation to move funds, a new destination included (`authorise`).
     Authorise,
     /// A stuck order's decide step (`decide_stuck`).
@@ -134,6 +136,7 @@ impl Scope {
                 Action::ChangeCatalogue { change, .. } => Scope::ChangeCatalogue(*change),
                 Action::EraseStatement { .. } => Scope::EraseStatement,
                 Action::AskReversal { .. } => Scope::AskReversal,
+                Action::AcceptFault { .. } => Scope::AcceptFault,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,
             },
             Asked::Authorise(_) => Scope::Authorise,

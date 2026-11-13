@@ -122,7 +122,7 @@ pub use drain::Uncarried;
 pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
-pub use judge::{Counted, NotCounted, Quoted, judge};
+pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
 pub use sign::Unwritten;
 
@@ -1761,6 +1761,10 @@ impl Segments {
                     &self.flight(at)?.statement.statement,
                     cited.terms,
                     cited.quoted.as_ref(),
+                    Units {
+                        origin_decimals: operation.from.asset.decimals,
+                        out_decimals: operation.to.asset.decimals,
+                    },
                     &bytes,
                 );
                 self.flight_mut(at)?.verdict = Some(verdict.clone());
@@ -1800,6 +1804,7 @@ impl Segments {
                 amount_out: stated_out,
                 ..
             } => {
+                let arrives = handed_on.clone();
                 let amount_out = handed_on;
                 let amount_out = Amount::new(amount_out)
                     .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
@@ -1828,6 +1833,7 @@ impl Segments {
                     segments: live.segments,
                     end: live.route,
                     amount_out: &stated_out,
+                    arrives: &arrives,
                     core: live.core,
                     operator: live.operator,
                     at: &graded_at,

@@ -314,23 +314,34 @@ fn formula_changed_after_segment_start_does_not_apply_to_it() {
     );
 }
 
-// verifies: REQ-QTE-15
+// verifies: REQ-QTE-15, REQ-QTE-4
 #[test]
 fn held_quote_past_its_validity_is_refused() {
     let record = confirmed();
-    let held = hold(record.clone(), at("2026-11-06T15:30:00Z")).unwrap();
+    // The quote was 20 seconds old when the snapshot was taken at 15:02:00 and is valid for 120: usable until
+    // 15:03:40, and a hold never outlives it.
+    let held = hold(record.clone(), at("2026-11-06T15:03:40Z")).unwrap();
     assert_eq!(held_label(&held), Label::Quote);
-    assert_eq!(held.valid_until, at("2026-11-06T15:30:00Z"));
+    assert_eq!(held.valid_until, at("2026-11-06T15:03:40Z"));
     assert_eq!(
-        redeem(&held, &at("2026-11-06T15:30:00Z")).map(tuples),
+        redeem(&held, &at("2026-11-06T15:03:40Z")).map(tuples),
         Ok(vec!["r0".to_owned()])
     );
     assert_eq!(
-        redeem(&held, &at("2026-11-06T15:30:00.001Z")),
+        redeem(&held, &at("2026-11-06T15:03:40.001Z")),
         Err(HeldQuoteRefused::PastValidity {
-            valid_until: at("2026-11-06T15:30:00Z")
+            valid_until: at("2026-11-06T15:03:40Z")
         })
     );
+    // A hold stated past the figures it rests on can't be made.
+    assert!(matches!(
+        hold(record.clone(), at("2026-11-06T15:03:40.001Z")),
+        Err(HoldRefused::InvalidRecord(_))
+    ));
+    assert!(matches!(
+        hold(record.clone(), at("2026-11-06T15:30:00Z")),
+        Err(HoldRefused::InvalidRecord(_))
+    ));
     // A validity before the quote was made can't be stated, and a record that chose nothing holds no quote.
     assert_eq!(
         hold(record, at("2026-11-06T15:01:59Z")),
@@ -900,14 +911,21 @@ fn what_is_shown_differs_from_the_providers_terms_by_the_operators_fee_alone() {
     }
 }
 
-// verifies: REQ-QTE-15
+// verifies: REQ-QTE-15, REQ-QTE-4
 #[test]
 fn a_held_quote_is_refused_exactly_past_its_validity() {
     let record = confirmed();
     let made = 15 * 3600 + 2 * 60;
+    // The figures it rests on are usable for 100 seconds from the snapshot: no hold is stated past them.
+    let expiry = made + 100;
     for (seed, mut draw) in seeds(500) {
-        let until = made + draw.below(86_400 - made);
-        let now = draw.below(86_400);
+        let until = made + draw.below(expiry - made + 1);
+        // Anywhere in the day, and, half the time, within 50 seconds of the validity, where the edge is.
+        let now = if draw.below(2) == 0 {
+            draw.below(86_400)
+        } else {
+            (until + draw.below(101)).saturating_sub(50)
+        };
         let held = hold(record.clone(), on_the_day(until)).unwrap();
         let redeemed = redeem(&held, &on_the_day(now));
         if now <= until {
@@ -922,6 +940,15 @@ fn a_held_quote_is_refused_exactly_past_its_validity() {
             );
         }
         assert_eq!(held_label(&held), Label::Quote, "seed {seed}");
+        // And one second past the figures' expiry, however far past, can't be held.
+        let past = expiry + 1 + draw.below(86_400 - expiry - 1);
+        assert!(
+            matches!(
+                hold(record.clone(), on_the_day(past)),
+                Err(HoldRefused::InvalidRecord(_))
+            ),
+            "seed {seed}"
+        );
     }
 }
 

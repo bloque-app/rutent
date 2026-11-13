@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Log, Operator};
 use rutent_contracts::core_internal::{Actor, Difference, Outcome, Raise, Receipt, What};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Timestamp, TupleKey};
-use rutent_router::quote::{Binding, check_charge};
+use rutent_router::quote::check_charge;
 
 use super::journal::{self, Step};
-use super::terms::Terms;
+use super::terms::{InForce, Terms};
 use crate::rounds::Fresh;
 use crate::snapshot::Clock;
 
@@ -34,7 +34,7 @@ pub struct Charged {
     /// stated no terms before the segment started. Every operation of a route cites a price, so there is always one,
     /// and no charge goes unchecked for want of a formula.
     pub advertised: FeeFormula,
-    /// The receipt of its result's stated entry, which a raise rests on.
+    /// The receipt of its result's stated entry, which a raise rests on (`charge-raise-rests-on-its-result`).
     pub result: Receipt,
 }
 
@@ -125,8 +125,9 @@ impl Charges {
 
     /// Checks `charged` against the formula that bound its segment at its start: the terms its provider stated last
     /// at or before then, or else the formula advertised (`REQ-QTE-5`, `REQ-QTE-6`). Above it, the charge is raised
-    /// to the operator as a `charge` difference resting on the result's stated entry, and the raise recorded, `done`
-    /// where it reached the operator and `failed` where it didn't (`AC-14`).
+    /// to the operator as a `charge` difference resting on the result's stated entry and, where the provider's terms
+    /// bound it, on their stated entry (`terms`: absent where the advertised price bound it), and the raise recorded,
+    /// `done` where it reached the operator and `failed` where it didn't (`AC-14`).
     pub fn check(
         &mut self,
         desk: ChargeDesk<'_>,
@@ -152,12 +153,12 @@ impl Charges {
         if !self.checked.contains_key(&key) {
             // The formula that bound the segment: the terms stated last at or before its start, or else the one its
             // route was priced on; a later statement never applies to it (`REQ-QTE-6`).
-            let formula = match desk
+            let (formula, terms) = match desk
                 .terms
-                .binding(&charged.tuple, Some(&charged.started_at))
+                .in_force(&charged.tuple, Some(&charged.started_at))
             {
-                Binding::Binds(terms) => &terms.fee,
-                Binding::Unstated | Binding::Quote => &charged.advertised,
+                InForce::Binds { terms, receipt } => (&terms.fee, Some(receipt)),
+                InForce::Unstated | InForce::Quote => (&charged.advertised, None),
             };
             let kept = match check_charge(formula, &charged.amount_in, &charged.charged) {
                 Ok(()) => Kept::Within,
@@ -171,8 +172,12 @@ impl Charges {
                             charged: flag.charged,
                             maximum: flag.bound,
                             asset: charged.tuple.from.asset.clone(),
+                            result: charged.result.clone(),
+                            terms: terms.cloned(),
                         },
-                        cites: vec![charged.result.clone()],
+                        cites: std::iter::once(charged.result.clone())
+                            .chain(terms.cloned())
+                            .collect(),
                         at: journal::now(desk.clock)?,
                     };
                     raise

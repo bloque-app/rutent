@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-choosing-a-gross-deposit-stated-as-what-arrives",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/0/parts/0/operations/3/amount_out",
+      "value": "243508252"
+    }
+  ]
+}

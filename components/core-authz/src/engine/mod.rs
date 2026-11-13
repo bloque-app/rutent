@@ -174,6 +174,20 @@ pub enum Source {
     /// The record of an order: whether the party the input names is its requester, whose agents act in its party
     /// (`REQ-AUZ-9`, `REQ-ORD-13`).
     Requester(Id),
+    /// The log's record of a provider's showing of fault: whether it holds, as a stated entry about `order`, `segment`
+    /// and the showing's transaction, a provider's failed result under the showing's commitment, received no later
+    /// than `decided_at`, the time the acceptance of it is decided at (`reversal-carrier-rests-on-its-acceptance`,
+    /// `REQ-ORD-11`). The input is `order`. It answers no, not nothing, for a showing the log holds none of.
+    Showing {
+        /// The order.
+        order: Id,
+        /// The failed segment.
+        segment: Id,
+        /// The showing accepted, by its transaction and commitment.
+        showing: rutent_contracts::core_internal::ShowingNamed,
+        /// When the acceptance is decided, as the request states it and the decision's entry records it.
+        decided_at: Timestamp,
+    },
     /// The record of an order: whether the reserve the input names is its origin reserve, the provider of its first
     /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
     OrderOrigin(Id),
@@ -593,6 +607,7 @@ fn missing(from: &Source) -> RefusalClass {
         | Source::OrderOrigin(_)
         | Source::OrderParties(_)
         | Source::SegmentOrder(_)
+        | Source::Showing { .. }
         | Source::SegmentProvider { .. } => RefusalClass::NotPermitted,
         _ => RefusalClass::MissingInput,
     }
@@ -726,6 +741,9 @@ impl<L: PolicyLog + crate::funds::Recorded + crate::stuck::Receipted, P: Policy,
             consulted,
             self.authorised.refuses_move(&mut self.log, &request.action),
         );
+        // A customer's acceptance of fault is asked in a session still open, which only the register holds
+        // (`reversal-carrier-rests-on-its-acceptance`).
+        let answer = crate::funds::held(answer, self.register.refuses_acceptance(request));
         let what = |decision| What::Decide {
             request: request.clone(),
             decision,
@@ -1197,6 +1215,9 @@ mod tests {
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
                 Action::AskReversal { .. } => {}
+                // Decided and never carried out, so no effect follows to test here: its own tests are `roles`' and
+                // `parties`' (`reversal-carrier-rests-on-its-acceptance`).
+                Action::AcceptFault { .. } => unreachable!("tested apart: it has no effect"),
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }

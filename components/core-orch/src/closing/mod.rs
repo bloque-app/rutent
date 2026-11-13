@@ -410,7 +410,7 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
         ));
     }
     if is_final_deposit(settled)
-        && let Some(arrived) = Amount::new(settled.amount_out.to_owned())
+        && let Some(arrived) = Amount::new(settled.arrives.to_owned())
         && let Some(amount) = rutent_router::quote::operator_fee(settled.operator_fee, &arrived)
     {
         fees.push(entry(
@@ -444,6 +444,8 @@ impl Grading for Evidenced<'_> {
 
 /// A settled segment's settlement, as its result states it.
 struct Settlement {
+    /// What the segment took in, its charge included: what entered a reserve from a public network.
+    amount_in: String,
     fee: String,
     fee_asset: String,
     billed_separately: Option<bool>,
@@ -452,22 +454,23 @@ struct Settlement {
 
 fn settlement_of(bytes: &[u8]) -> Option<Settlement> {
     let result: Statement<ResultBody> = serde_json::from_slice(bytes).ok()?;
-    let (fee, pieces) = match result.statement {
+    let (amount_in, fee, pieces) = match result.statement {
         ResultBody::Withdrawal(r) | ResultBody::Deposit(r) => match r.outcome {
-            ReserveMovementOutcome::Succeeded(s) => (s.fee, s.evidence),
+            ReserveMovementOutcome::Succeeded(s) => (s.amount_in, s.fee, s.evidence),
             _ => return None,
         },
         ResultBody::Transfer(r) => match r.outcome {
-            TransferOutcome::Succeeded(s) => (s.fee, s.evidence),
+            TransferOutcome::Succeeded(s) => (s.amount_in, s.fee, s.evidence),
             _ => return None,
         },
         ResultBody::Conversion(r) => match r.outcome {
-            ConversionOutcome::Succeeded(s) => (s.fee, s.evidence),
+            ConversionOutcome::Succeeded(s) => (s.amount_in, s.fee, s.evidence),
             _ => return None,
         },
         _ => return None,
     };
     Some(Settlement {
+        amount_in,
         fee: fee.amount,
         fee_asset: fee.asset,
         billed_separately: fee.billed_separately,
@@ -561,7 +564,8 @@ impl Evidenced<'_> {
         // The segment's own public movement: at its public end, where it has one, its destination's first. Only a
         // final deposit out to its destination is held to the route's one destination (`DEC-13`); elsewhere the
         // destination the network's matching gives is the segment's (`F-031`).
-        let side = if self.public(&operation.to.node) {
+        let leaves = self.public(&operation.to.node);
+        let side = if leaves {
             Some(&operation.to)
         } else if self.public(&operation.from.node) {
             Some(&operation.from)
@@ -588,7 +592,13 @@ impl Evidenced<'_> {
                         } else {
                             side.asset.id.clone()
                         },
-                        amount: settled.amount_out.to_owned(),
+                        // What the network moved at this end: onto a public node, what arrives by the segment, its
+                        // charge staying with the reserve; from one, what entered, the charge included.
+                        amount: if leaves {
+                            settled.arrives.to_owned()
+                        } else {
+                            settlement.amount_in.clone()
+                        },
                     };
                     why = verify_movement(&net, &moved.id, &expected).err();
                     let check = public_record_check(&net, &moved.id, &expected);
@@ -981,7 +991,8 @@ impl Evidenced<'_> {
                         },
                         stated: Stated {
                             asset: operation.to.asset.id.clone(),
-                            amount: settled.amount_out.to_owned(),
+                            // Value leaving onto a public node: what arrives, the charge staying with the reserve.
+                            amount: settled.arrives.to_owned(),
                         },
                     };
                     found_of(

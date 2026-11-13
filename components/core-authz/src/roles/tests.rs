@@ -245,6 +245,14 @@ struct Register {
     origins: Vec<(Id, Id)>,
     acts_for: Vec<(Id, Id)>,
     others: Vec<(Need, Reply<Said>)>,
+    /// The showings of fault the log holds: the order and segment each is about, how it is named, and when it was
+    /// received.
+    showings: Vec<(
+        Id,
+        Id,
+        rutent_contracts::core_internal::ShowingNamed,
+        Timestamp,
+    )>,
     asked: Vec<Need>,
 }
 
@@ -291,6 +299,23 @@ impl Register {
     /// The register, with `acts` acting for `party` and for no party it isn't listed for.
     fn acting(mut self, acts: &str, party: &str) -> Self {
         self.acts_for.push((id(acts), id(party)));
+        self
+    }
+
+    /// The register, with the log holding `showing` of `segment` of `order`, received at `received`.
+    fn showing(
+        mut self,
+        order: &str,
+        segment: &str,
+        showing: rutent_contracts::core_internal::ShowingNamed,
+        received: &str,
+    ) -> Self {
+        self.showings.push((
+            id(order),
+            id(segment),
+            showing,
+            Timestamp::new(received).unwrap(),
+        ));
         self
     }
 
@@ -359,6 +384,24 @@ impl Sources for Register {
                 .map_or(Reply::Missing, |(_, _, said)| said.clone()),
             Source::Requester(order) => record_of(&self.requesters, order, &need.input),
             Source::OrderOrigin(order) => record_of(&self.origins, order, &need.input),
+            // The assembly's: the log holds the showing, and received it no later than the acceptance is decided.
+            Source::Showing {
+                order,
+                segment,
+                showing,
+                decided_at,
+            } => Reply::Given(
+                if self.showings.iter().any(|(o, s, n, received)| {
+                    o == order
+                        && s == segment
+                        && n == showing
+                        && received.unix_nanos() <= decided_at.unix_nanos()
+                }) {
+                    Said::Yes
+                } else {
+                    Said::No
+                },
+            ),
             _ => Reply::Missing,
         }
     }
@@ -1260,4 +1303,198 @@ fn reversal_is_asked_only_by_the_operator_or_cores_carrier() {
         policy.policy.1.ruled, 0,
         "none reached the deployment's policy"
     );
+}
+
+/// The showing of fault the accepting tests' log holds: fx-desk's failed result of `p1-s2`, under `tx-f2`.
+fn the_showing() -> rutent_contracts::core_internal::ShowingNamed {
+    serde_json::from_value(json!({
+        "transaction": "tx-f2",
+        "commitment": {"algorithm": "sha-256", "value": "aa".repeat(32)},
+    }))
+    .unwrap()
+}
+
+/// When the log received that showing.
+const SHOWING_RECEIVED: &str = "2026-11-06T15:04:08Z";
+
+/// The customer's acceptance of the showing, asked by `caller` in `session` at `at`.
+fn acceptance(caller: &Actor, session: &str, at: &str) -> DecisionRequest {
+    let mut request: DecisionRequest =
+        valid!("decision-request-to-accept-a-fault-in-the-customers-session");
+    request.request = id(&format!("req-accept-{}-{session}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request.at = Timestamp::new(at).unwrap();
+    request.action = Action::AcceptFault {
+        order: id("ord-1"),
+        segment: id("p1-s2"),
+        showing: the_showing(),
+        session: id(session),
+    };
+    request
+}
+
+/// An engine over the world, whose order `ord-1` is `cust-1`'s and holds fx-desk's showing of `p1-s2`, by Core's clock
+/// at `now`, with a session open for each of `cust-1` (`sess-1`), `cust-2` (`sess-2`) and the operator (`sess-op`),
+/// each until 09:10.
+fn accepting(now: &str) -> Engine<Kept, Permits, Register> {
+    let register = Register::default()
+        .with_order("ord-1", "cust-1", "us-bank")
+        .showing("ord-1", "p1-s2", the_showing(), SHOWING_RECEIVED);
+    let mut policy = engine(Kept::world(), register);
+    policy.set_clock(crate::session::Stopped::at(&Timestamp::new(now).unwrap()));
+    for (session, holder) in [
+        ("sess-1", "cust-1"),
+        ("sess-2", "cust-2"),
+        ("sess-op", "operator"),
+    ] {
+        policy.register.sessions.push(crate::session::OpenSession {
+            session: id(session),
+            account: id("acct-1"),
+            holder: id(holder),
+            expires_at: Timestamp::new("2026-11-10T09:10:00Z").unwrap(),
+        });
+    }
+    policy
+}
+
+fn customer(party: &str) -> Actor {
+    actor(party, party, Role::Customer, ActorKind::Person)
+}
+
+/// The order's requester accepts a showing of its fault in its open session, and policy permits it: the decision is
+/// recorded with who accepted, and the log admits it. An effect of it is refused, since the acceptance is decided and
+/// never carried out (`reversal-carrier-rests-on-its-acceptance`).
+// verifies: REQ-ORD-11, REQ-AUZ-1
+#[test]
+fn the_requester_accepts_a_fault_in_its_open_session() {
+    let mut policy = accepting("2026-11-10T09:00:00Z");
+    let request = acceptance(&customer("cust-1"), "sess-1", "2026-11-10T09:00:00Z");
+    let decision = policy.decide(&request).unwrap();
+    assert_eq!(decision.outcome, Answer::Permit {});
+    assert_eq!(policy.log().entry_of(&decision).who, request.caller);
+    assert_eq!(policy.policy.1.ruled, 1, "the deployment's policy decided");
+    let permit = decision.permit().expect("a permit");
+    assert!(
+        matches!(
+            policy.log.effect(&request, permit),
+            Err(AppendFailure::Refused(_))
+        ),
+        "the acceptance has no effect"
+    );
+}
+
+/// Nobody but the order's requester, in the customer's role, in its own open session, naming a showing the log holds
+/// from before the acceptance, accepts a fault: each of another party, the operator's login, every role but the
+/// customer's, a session that ended (by Core's clock, or before the acceptance was decided), another party's session,
+/// one never opened and a decision made before the showing was received is refused and recorded so.
+// verifies: REQ-ORD-11, REQ-AUZ-1
+#[test]
+fn only_the_requester_in_its_open_session_after_the_showing_accepts_a_fault() {
+    let by = |actor: Actor, session: &str, at: &str| (actor, session.to_owned(), at.to_owned());
+    let own = customer("cust-1");
+    let cases: Vec<(&str, &str, (Actor, String, String))> = vec![
+        (
+            "another party",
+            "2026-11-10T09:00:00Z",
+            by(customer("cust-2"), "sess-2", "2026-11-10T09:00:00Z"),
+        ),
+        (
+            "the operator's login",
+            "2026-11-10T09:00:00Z",
+            by(operator(), "sess-op", "2026-11-10T09:00:00Z"),
+        ),
+        (
+            "a provider in the requester's party",
+            "2026-11-10T09:00:00Z",
+            by(
+                actor("cust-1", "cust-1", Role::Provider, ActorKind::Component),
+                "sess-1",
+                "2026-11-10T09:00:00Z",
+            ),
+        ),
+        (
+            "Core in the requester's party",
+            "2026-11-10T09:00:00Z",
+            by(
+                actor("cust-1", "cust-1", Role::Core, ActorKind::Component),
+                "sess-1",
+                "2026-11-10T09:00:00Z",
+            ),
+        ),
+        (
+            "a verifier in the requester's party",
+            "2026-11-10T09:00:00Z",
+            by(
+                actor("cust-1", "cust-1", Role::Verifier, ActorKind::Component),
+                "sess-1",
+                "2026-11-10T09:00:00Z",
+            ),
+        ),
+        (
+            "a regulator in the requester's party",
+            "2026-11-10T09:00:00Z",
+            by(
+                actor("cust-1", "cust-1", Role::Regulator, ActorKind::Person),
+                "sess-1",
+                "2026-11-10T09:00:00Z",
+            ),
+        ),
+        (
+            "a checker in the requester's party",
+            "2026-11-10T09:00:00Z",
+            by(
+                actor("cust-1", "cust-1", Role::Checker, ActorKind::Person),
+                "sess-1",
+                "2026-11-10T09:00:00Z",
+            ),
+        ),
+        (
+            "a session that ended by Core's clock",
+            "2026-11-10T09:20:00Z",
+            by(own.clone(), "sess-1", "2026-11-10T09:00:00Z"),
+        ),
+        (
+            "an acceptance decided after its session ended",
+            "2026-11-10T09:05:00Z",
+            by(own.clone(), "sess-1", "2026-11-10T09:11:00Z"),
+        ),
+        (
+            "another party's session",
+            "2026-11-10T09:00:00Z",
+            by(own.clone(), "sess-2", "2026-11-10T09:00:00Z"),
+        ),
+        (
+            "a session never opened",
+            "2026-11-10T09:00:00Z",
+            by(own.clone(), "sess-9", "2026-11-10T09:00:00Z"),
+        ),
+        (
+            "a decision made before the showing was received",
+            "2026-11-10T09:00:00Z",
+            by(own.clone(), "sess-1", "2026-11-06T15:00:00Z"),
+        ),
+    ];
+    for (name, now, (caller, session, at)) in cases {
+        let mut policy = accepting(now);
+        let request = acceptance(&caller, &session, &at);
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{name}");
+        assert!(decision.permit().is_none(), "{name}");
+        assert_eq!(policy.log().entry_of(&decision).who, caller, "{name}");
+    }
+
+    // A showing the log holds none of, or of another transaction, is no showing: the acceptance names what the log
+    // holds exactly.
+    for other in [
+        json!({"transaction": "tx-f9", "commitment": {"algorithm": "sha-256", "value": "aa".repeat(32)}}),
+        json!({"transaction": "tx-f2", "commitment": {"algorithm": "sha-256", "value": "bb".repeat(32)}}),
+    ] {
+        let mut policy = accepting("2026-11-10T09:00:00Z");
+        let mut request = acceptance(&own, "sess-1", "2026-11-10T09:00:00Z");
+        if let Action::AcceptFault { showing, .. } = &mut request.action {
+            *showing = serde_json::from_value(other).unwrap();
+        }
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{request:?}");
+    }
 }

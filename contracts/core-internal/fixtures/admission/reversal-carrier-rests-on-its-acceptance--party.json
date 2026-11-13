@@ -2124,6 +2124,59 @@
           "segment": "p1-s2"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 81,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "operator",
+          "acts": "op-login-2",
+          "role": "operator",
+          "kind": "person"
+        },
+        "what": {
+          "call": "decide",
+          "decision": "dec-accept-fault-1",
+          "request": {
+            "request": "req-accept-fault-1",
+            "caller": {
+              "party": "operator",
+              "acts": "op-login-2",
+              "role": "operator",
+              "kind": "person"
+            },
+            "action": {
+              "kind": "accept_fault",
+              "order": "ord-1",
+              "segment": "p1-s2",
+              "showing": {
+                "transaction": "tx-f2",
+                "commitment": {
+                  "algorithm": "sha-256",
+                  "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+                }
+              },
+              "session": "sess-1"
+            },
+            "at": "2026-11-10T09:00:10Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:10Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
     }
   ],
   "entry": {
@@ -2155,13 +2208,12 @@
       },
       "accepted_with": {
         "log": "log-main",
-        "index": 80,
+        "index": 81,
         "entry": {
           "algorithm": "sha-256",
-          "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
         }
-      },
-      "session": "sess-1"
+      }
     },
     "when": {
       "at": "2026-11-10T09:00:00Z",

@@ -414,9 +414,9 @@ fn question_about_a_person_with_no_authority_is_refused() {
         Ok(PersonOutcome::NotKnown { .. })
     ));
 
-    // A shortlisted route the log holds no shortlist of for the order is no authority. The deployment's log refuses
-    // to record even the refusal (its rows cite every question, a contract item), so the call answers nothing and
-    // no one is asked; a log that takes what policy answers records the refusal.
+    // A shortlisted route the log holds no shortlist of for the order is no authority. The question is refused, and
+    // the refusal is recorded: the log's rows hold only a permitted question to its shortlist (contract round 3,
+    // item t), so no one is asked and the log takes the refusal as it takes any.
     let none = question(
         "req-7",
         &agent(),
@@ -425,12 +425,8 @@ fn question_about_a_person_with_no_authority_is_refused() {
         &[],
     );
     let mut e = engine(Log::admitting(vec![charged_to_the_agent(1)]));
-    let answer = e.ask_about_person(&none);
-    assert!(
-        matches!(answer, Err(AppendFailure::Refused(ref v)) if v.0.contains("shortlist")),
-        "{answer:?}"
-    );
-    assert_eq!(e.log.entries.len(), 1, "nothing recorded");
+    assert_eq!(e.ask_about_person(&none).map(|a| a.outcome), not_permitted);
+    assert_eq!(e.log.entries.len(), 2, "the refusal is recorded");
     let mut e = engine(Log::taking(vec![
         charged_to_the_agent(1),
         shortlist("ord-other", "52", &["bank-co"], &[]),
@@ -685,8 +681,8 @@ fn provider_off_the_shortlist_is_never_asked_about_eligibility() {
         Ok(PersonOutcome::Allowed {})
     );
 
-    // A provider, or a verifier, the latest shortlist doesn't name, and another order's shortlist: the log refuses
-    // the question outright, and a log that takes what policy answers records it refused.
+    // A provider, or a verifier, the latest shortlist doesn't name, and another order's shortlist: the question is
+    // refused, and the log records the refusal.
     // An authority naming a provider or a verifier off the shortlist is none, even where it asks only one on it.
     let off = [
         route("53", &["bank-co", "aml-screen"], &[]),
@@ -704,13 +700,13 @@ fn provider_off_the_shortlist_is_never_asked_about_eligibility() {
     ];
     for (authority, asks) in off.iter().zip(asks) {
         let mut e = engine(Log::admitting(history()));
-        assert!(
-            matches!(
-                ask(&mut e, "req-4", authority.clone(), asks),
-                Err(AppendFailure::Refused(_))
-            ),
+        let before = e.log.entries.len();
+        assert_eq!(
+            ask(&mut e, "req-4", authority.clone(), asks),
+            not_permitted,
             "{authority:?}"
         );
+        assert_eq!(e.log.entries.len(), before + 1, "the refusal is recorded");
         let mut e = engine(Log::taking(history()));
         assert_eq!(
             ask(&mut e, "req-4", authority.clone(), asks),

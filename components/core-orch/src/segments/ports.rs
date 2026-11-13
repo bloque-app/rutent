@@ -202,8 +202,13 @@ pub struct ToGrade<'a> {
     pub segments: &'a [Id],
     /// What the route ends at: its one destination (`DEC-13`).
     pub end: &'a RouteEnd,
-    /// What the result says the segment gave out at its destination.
+    /// What the result says the segment gave out at its destination, its charge within it where its tuple reports
+    /// gross.
     pub amount_out: &'a str,
+    /// What arrives by the segment, net of its charge: what the network moves out of a final deposit, and what the
+    /// operator's fee is figured on, as the quote figures it. The `amount_out` under `net`; under `gross`, that less the
+    /// charge, as `judge` counts it.
+    pub arrives: &'a str,
     /// Core, which writes the entry.
     pub core: &'a Actor,
     /// The operator, to whom the operator's fee is attributed.

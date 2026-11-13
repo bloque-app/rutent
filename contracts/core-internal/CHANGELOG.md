@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 549 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-six schemas, 133 valid fixtures and 126 invalid ones, each
+  breaking one rule, and 580 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 103 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -642,3 +642,72 @@
   (`final-deposit-closes-on-a-public-record--conflict-naming-another-node`). One invalid fixture is valid now
   (`verified-entry-of-signed-evidence-naming-the-movement-core-checked`). (DEC-4, DEC-20, REQ-ORD-33, REQ-ORD-38,
   T-020-09)
+- Folded into 1.0.0 before its release: a refused question about a person is recorded (round 3 of the contract,
+  item t). `shortlisted-authority-cites-its-shortlist`, `provider-asked-before-was-asked` and
+  `asked-before-is-complete` cited every `ask_about_person`, whatever its outcome, so a question policy refused
+  could not be recorded even as a refusal, and the error told the caller whether a digest it named was a record of
+  that order. Each now applies only to a permitted question, as `revocation-revokes-a-grant` does. Admitted: a
+  refused question naming a digest no record has, one naming a provider never asked, one leaving out a provider asked
+  before (`<row>--refused`). 552 admission cases. (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-AUD-1, T-020-01,
+  T-021-07)
+- Folded into 1.0.0 before its release: a fault acceptance accepts the customer's fault alone (round 3 of the
+  contract, item u). Only the customer signs the `fault-acceptance` shape, since the operator accepts by its
+  `accept_fault` command, so its `fault` is narrowed to `customer`: in the schema (`enum: ["customer"]`) and in Rust,
+  where `FaultAcceptance.fault` is now `AcceptedFault`, a one-variant enum, in place of provider-role's `Fault`.
+  `reversal-carrier-rests-on-its-acceptance` says who checks the body against the showing, since the log holds only
+  salted commitments: Core on intake and a checker through `Evidence::fetch`, each holding the body's `fault` to
+  `customer`, its `showing` to the commitment of the carrier's showing, and its `order`, `segment` and `transaction`
+  to the showing's `about`. One invalid fixture, `fault-acceptance-of-the-operators-fault`: 125 invalid. (DEC-4,
+  DEC-20, REQ-ORD-11, REQ-AUD-2, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: the world holds a reversal carrier (round 3 of the contract, item w).
+  `core-audit`'s `every_record_kind_core_writes_is_in_the_log` replays the world through `world--in_dest` and found
+  no `reversal_carrier` in it. Between p1-s2's `segment_failed` and its `reversal_completed`, while its reversal is
+  owed, the world now holds fx-desk's showing of fault for p1-s2 under `tx-f2`, the operator's `accept_fault`
+  command after it, and the `reversal_carrier` naming the operator, resting on both (`world--showing12`,
+  `world--accept_fault12`, `world--carrier12`); every later world case holds the three. The operator's path, not
+  the customer's: the log `core-audit` builds knows the keys of the operator and of the providers it admitted, and
+  no customer's, so a customer's fault acceptance there would be recorded unverified and its carrier refused. 555
+  admission cases. (DEC-4, DEC-20, REQ-ORD-11, REQ-AUD-1, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a provider's terms and a reserve's hold rest on signed statements (round 3
+  of the contract, item q, with provider-role 3.1.0's `terms` and `hold` shapes). Core kept fee terms and a held
+  quote only in memory, so a charge raised against a formula and a hold redeemed rested on nothing signed. Type
+  changes: `Difference::Charge` gains `result: Receipt`, the stated entry of the result whose charge it is, and
+  `terms: Option<Receipt>`, the provider's signed terms it is above, absent where the price its route was priced on
+  bound it; `What::Acceptance` gains `held: Option<Receipt>`, the reserve's hold it redeems; `StatedEntry::binds_from`
+  is the later of a statement's `made_at` and Core's `received_at`, never `made_at` alone. Four rows:
+  `charge-raise-rests-on-its-result` (verified, a result, its provider's, about its order and segment, the provider the segment's `move_value` named),
+  `charge-raise-rests-on-terms-in-force` (verified, the terms shape, its provider's, binding no later than the
+  segment's first `move_value` effect, so terms dated before a segment started but received after it bind nothing),
+  `held-quote-rests-on-the-reserves-hold` (verified, the hold shape, made by the reserve each part starts at) and
+  `hold-is-redeemed-by-one-order` (no acceptance of another order redeems the same hold). Which tuple terms are for,
+  what a hold's body names, and its validity, are for whoever holds the kept bytes, the log holding only salted
+  commitments. One invalid fixture, `raise-of-a-charge-without-its-result`; the charge raise fixtures name their
+  result; 575 admission cases, 103 relations. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6, REQ-QTE-15, REQ-AUD-2,
+  T-020-01, T-020-07)
+- Folded into 1.0.0 before its release: a hold is keyed on its own transaction (the review of round 3, item 2).
+  `hold-is-redeemed-by-one-order` was keyed on the hold's receipt, so a hold kept again under a new commitment and
+  appended as a new entry could be redeemed by a second order at the held price (`THR-127`), and the log depended on
+  the evidence store to see it (`REQ-AUD-9`). provider-role's `Hold` now names its `transaction`, its id; Core
+  appends its stated entry about that transaction and no order, which attribution binds to the body's; the row is
+  keyed on that transaction, as `one-order-per-deposit` keys a deposit on its notice's, and
+  `held-quote-rests-on-the-reserves-hold` holds the entry to it (field `transaction`). Refused: the same hold kept
+  again under a new commitment and redeemed by ord-2 after ord-9 (`--the-same-hold-kept-again`), a hold appended
+  about nothing (`--transaction`). Admitted: the hold kept again, redeemed again by its own order. 578 admission
+  cases. (DEC-4, DEC-20, REQ-QTE-15, REQ-AUD-9, T-020-01)
+- Folded into 1.0.0 before its release: a customer's acceptance of fault is a policy decision (the review of round 3,
+  item 3, the coordinator's ruling). No customer signs a statement the log can attribute (`StatementKeys::publisher`
+  answers nothing for a customer), so the stated `FaultAcceptance` could never verify, and its admitted case passed
+  only by making `cust-1` a provider component. Type changes: `Action` gains `AcceptFault {order, segment, showing:
+  ShowingNamed, session}`, with a new struct `ShowingNamed {transaction: Id, commitment: Digest}` (schemas
+  `common#/$defs/action_accept_fault` and `#/$defs/showing_named`), decided through `Decisions::decide` on the policy
+  handle and never an effect (`Effect::check`, `What::check`); `What::ReversalCarrier` loses `session`;
+  `FaultAcceptance`, `AcceptedFault`, `FAULT_ACCEPTANCE_SHAPE` and the `fault-acceptance` schema are gone.
+  `reversal-carrier-rests-on-its-acceptance` reads the customer's act as a permitted `decide` of `accept_fault` by the
+  order's requester in the customer's role, its own caller, about the order and segment, naming the showing's
+  transaction and commitment, decided no earlier than the showing was received and appended after it, in a session
+  still open when it was decided (fields `party`, `action`, `yes`, `session`, `showing`; `shape` is now `action`).
+  The operator's path is unchanged. Admitted: cust-1, a person in the customer's role, in `sess-1`. Refused, new: a
+  refused decision, another action, another showing's commitment, one decided before the showing was received. One
+  valid fixture (`decision-request-to-accept-a-fault-in-the-customers-session`), one invalid
+  (`verified-entry-of-an-effect-accepting-a-fault`); the fault-acceptance fixtures are gone. 580 admission cases.
+  (DEC-4, DEC-20, REQ-ORD-11, REQ-ORD-32, REQ-AUZ-1, T-020-01, T-020-12)

@@ -3183,3 +3183,35 @@ the code under review or on the rule stubbed off, before the fix.
   - `3f528a4`: 10;
   - `c94bb09`: the nits;
   - the commit that adds these notes.
+
+### T-020-01, contract round 3 integration: notes for whoever wires the quote module
+
+The quote module's `Terms`, `Holds` and `Charges` are libraries no part of Core calls yet, and intake's acceptance
+sets `What::Acceptance.held` to `None`. Whoever wires them (T-020-07's quote owner) must close these, which the
+integration left open:
+
+- **The statement must match the entry's commitment.** `Terms::state` and `Holds::hold` take a stated entry, its
+  receipt and the signed statement, and check the entry's shape, attribution, maker and times against the statement,
+  never the entry's commitment against the statement's bytes: the log holds only a salted commitment, so the caller
+  must have the evidence store's kept bytes behind that commitment be the statement it hands in. Wired to a real
+  intake, the call fetches the kept statement and compares before it keeps terms or a hold.
+- **`redeem` does not verify the caller's session.** `Holds::redeem` takes the session an order was accepted in as the
+  caller states it, and `check_redemption` compares it with a session hold's. The caller must pass the session
+  intake's acceptance actually names, which intake verifies; `redeem` holds the hold to that and nothing more.
+- **`redeemed_by` lives in memory.** The first order to redeem a hold binds it for this process only. Across a
+  restart the log's `hold-is-redeemed-by-one-order` is the guard; the deployment's store (`F-030`) must keep it, or a
+  restarted Core relies on the log refusing a second order's acceptance after the fact.
+- **No caller redeems a hold during acceptance yet.** `Redeemed::hold` is the receipt to put in `held`.
+- **No module hands a provider's signed terms to `Terms::state` yet.** A charge raised on `Charges::check` names the
+  terms in force only from what was kept.
+
+Other things this integration settled, for the record:
+
+- A record's operation states what arrives (router-api 4.0.0). `show` adds a gross charge back only where an accepted
+  answer set the amount, so `handed_on` and the lines shown read what a result would state; a priced operation is
+  checked as it states.
+- The close figures the operator's fee on what arrives by the segment (`ToGrade::arrives`), as the quote figures it.
+  A public movement is checked against what the network actually moved at that end: onto a public node (a final
+  deposit, and the exit replay's `PublicExit`), what arrives, the charge staying with the reserve; from a public node
+  (a withdrawal into a reserve), what entered, the charge included (the result's `amount_in`). The simulated network
+  (`conformance/src/sim`, `movements_made`) records the same.

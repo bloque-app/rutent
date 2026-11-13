@@ -23,6 +23,17 @@
 //! records that request whole, the operator as who acted (`THR-90`). A refused post gives no permit, so no effect
 //! rests on it.
 //!
+//! # The customer's acceptance of a fault
+//!
+//! A customer accepts a provider's showing that a failure was its fault by a decision, `accept_fault`
+//! ([`Action::AcceptFault`]): no customer signs a statement the log can attribute, so the log holds the decision whole
+//! and the `reversal_carrier` rests on it (`reversal-carrier-rests-on-its-acceptance`, `REQ-ORD-11`). It is decided
+//! and never carried out, so any effect of it is refused. Only the order's requester, or its agent within the scope its
+//! party set (`REQ-AUZ-8`), in the customer's role, accepts it (`Source::Requester`); the operator accepts by its own
+//! command instead. The showing it names must be one the log holds, received no later than the acceptance is decided
+//! (`Source::Showing`). The session it names must be the requester's own and still open, by Core's clock and when the
+//! acceptance is decided, which only the engine's register holds (`Register::refuses_acceptance`).
+//!
 //! # The operator's permissions
 //!
 //! Granting, accepting a module, revoking, marking stale, declaring a version exploited, setting a tuple's slippage,
@@ -166,6 +177,40 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds
                 // (`reversal-is-asked-of-its-failed-provider`).
+                // The customer's acceptance of a showing that a failure was its fault (`REQ-ORD-11`): the order's
+                // requester, or its agent, the party the order's record says, and nobody else, not even the
+                // operator, which accepts by its own `accept_fault` command. The showing must be one the log holds,
+                // received no later than the acceptance is decided. That its session is open the register holds
+                // (`Register::refuses_acceptance`). It is decided and never an effect
+                // (`reversal-carrier-rests-on-its-acceptance`).
+                Action::AcceptFault {
+                    order,
+                    segment,
+                    showing,
+                    ..
+                } => match caller.role {
+                    Role::Customer => Some(
+                        vec![
+                            requester(caller, order),
+                            Need {
+                                input: order.clone(),
+                                from: Source::Showing {
+                                    order: order.clone(),
+                                    segment: segment.clone(),
+                                    showing: showing.clone(),
+                                    decided_at: request.at.clone(),
+                                },
+                            },
+                        ]
+                        .into(),
+                    ),
+                    Role::Operator
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker
+                    | Role::Core => None,
+                },
                 Action::AskReversal { .. } => match caller.role {
                     Role::Operator => {
                         operator_holds(caller, Permission::AskReversal).map(Needs::from)

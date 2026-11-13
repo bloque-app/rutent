@@ -527,7 +527,11 @@ impl Simulated {
         let movements = if behaviour.unrecorded || !changed {
             Vec::new()
         } else {
-            movements_of(&operation.statement, &body)
+            movements_made(
+                &operation.statement,
+                &body,
+                Some(&self.provider.advertisement().into_statement().statement),
+            )
         };
         let leaked = armed && !consumed;
         let entry = changed.then(|| Entry {
@@ -647,17 +651,43 @@ fn deliver(body: &mut Value, delivery: Delivery) {
 }
 
 /// The movements on public networks an operation made, from its result: none unless it succeeded. A result with
-/// several evidence pieces made as many movements, `{transaction}.{n}` each, which split what it gave out.
+/// several evidence pieces made as many movements, `{transaction}.{n}` each, which split what it moved. What the
+/// network moved is what a public node saw: value entering a reserve from a public network is what entered, its
+/// charge included (`amount_in`); value leaving onto one is what arrives, a gross segment's `amount_out` less its
+/// charge. Without the advertisement's terms a tuple counts as net.
 pub fn movements_of(operation: &Operation, result: &Value) -> Vec<Movement> {
+    movements_made(operation, result, None)
+}
+
+/// [`movements_of`], knowing from `advertisement` whether the tuple the operation ran through reports gross.
+pub fn movements_made(
+    operation: &Operation,
+    result: &Value,
+    advertisement: Option<&rutent_contracts::provider_role::Advertisement>,
+) -> Vec<Movement> {
     let outcome = &result["outcome"];
     if outcome["status"] != "succeeded" {
         return Vec::new();
     }
-    let Some(out) = outcome["amount_out"]
-        .as_str()
-        .and_then(|a| a.parse::<u128>().ok())
-    else {
+    let number = |name: &str| outcome[name].as_str().and_then(|a| a.parse::<u128>().ok());
+    let Some(given_out) = number("amount_out") else {
         return Vec::new();
+    };
+    // What the network moved: what entered a reserve from a public network, or what arrives onto one.
+    let out = match operation {
+        // What entered with its charge, always: the network moved it before the reserve credited anything, so a result
+        // rewritten to deliver short is the reserve crediting less inside its own ledger.
+        Operation::Withdrawal(_) => match number("amount_in") {
+            Some(entered) => entered,
+            None => return Vec::new(),
+        },
+        Operation::Deposit(_) | Operation::Transfer(_) => {
+            match arriving(operation, outcome, given_out, advertisement) {
+                Some(arrives) => arrives,
+                None => return Vec::new(),
+            }
+        }
+        _ => given_out,
     };
     let operation_json = serde_json::to_value(operation).expect("an operation serialises");
     let text = |name: &str| operation_json[name].as_str().unwrap_or_default().to_owned();
@@ -770,4 +800,44 @@ pub fn transaction_of(operation: &Operation) -> Option<String> {
     serde_json::to_value(operation).ok()?["transaction"]
         .as_str()
         .map(str::to_owned)
+}
+
+/// What arrives by a deposit or a transfer that gave out `given_out`: that less its charge, restated in the out unit,
+/// where its tuple reports gross; as it stands otherwise.
+fn arriving(
+    operation: &Operation,
+    outcome: &Value,
+    given_out: u128,
+    advertisement: Option<&rutent_contracts::provider_role::Advertisement>,
+) -> Option<u128> {
+    use rutent_contracts::provider_role::{NodeRef, Reporting, less_the_charge};
+    let Some(ad) = advertisement else {
+        return Some(given_out);
+    };
+    let (reporting, units) = match operation {
+        Operation::Deposit(d) => ad.offers.reserve.as_ref()?.tuples.iter().find_map(|t| {
+            (matches!(t.origin, NodeRef::Inner(_))
+                && matches!(t.destination, NodeRef::Outer(_))
+                && t.asset == d.asset)
+                .then_some((
+                    t.terms.reporting,
+                    (t.decimals.origin, t.decimals.destination),
+                ))
+        })?,
+        Operation::Transfer(x) => ad.offers.ramp.as_ref()?.tuples.iter().find_map(|t| {
+            (t.origin == x.origin && t.destination == x.destination && t.asset == x.asset)
+                .then_some((
+                    t.terms.reporting,
+                    (t.decimals.origin, t.decimals.destination),
+                ))
+        })?,
+        _ => return Some(given_out),
+    };
+    if reporting != Reporting::Gross {
+        return Some(given_out);
+    }
+    let fee = outcome["fee"]["amount"].as_str()?;
+    less_the_charge(&given_out.to_string(), fee, units.0, units.1)?
+        .parse()
+        .ok()
 }

@@ -209,6 +209,7 @@ impl Registers {
 fn every_scope() -> Vec<Scope> {
     vec![
         Scope::MoveValue,
+        Scope::AcceptFault,
         Scope::Authorise,
         Scope::DecideStuck,
         Scope::MoveStuck,
@@ -1012,6 +1013,7 @@ fn each_scope_permits_its_own_call_alone() {
     let stale = decide("decision-request-to-mark-a-release-stale");
     let promoted = decide("decision-request-to-promote-a-staged-release");
     let erased = decide("decision-request-to-erase-a-kept-statement");
+    let accepted = decide("decision-request-to-accept-a-fault-in-the-customers-session");
     let Action::ChangeCatalogue { change: marks, .. } = stale.action else {
         panic!("a catalogue change");
     };
@@ -1056,6 +1058,7 @@ fn each_scope_permits_its_own_call_alone() {
             Scope::ChangeCatalogue(promotes),
         ),
         ("erase", Asked::Decide(&erased), Scope::EraseStatement),
+        ("accept_fault", Asked::Decide(&accepted), Scope::AcceptFault),
         (
             "authorise",
             Asked::Authorise(&calls.authorise),
@@ -1573,4 +1576,37 @@ fn a_counted_charge_says_when_core_counted_it() {
         charged_in(&policy.log.entries)[0].at,
         std::time::Duration::from_secs(1_794_304_805)
     );
+}
+
+/// An agent of the order's requester accepts a showing of its fault only within the scope its party set, as it moves
+/// value or authorises only within it: one scoped for the acceptance is permitted, and another agent of the party,
+/// scoped for other calls, is refused and recorded so.
+// verifies: REQ-AUZ-8, REQ-ORD-11
+#[test]
+fn an_agent_accepts_a_fault_only_within_its_partys_scope() {
+    let inside = agent("cust-1", "agent-7");
+    let outside = agent("cust-1", "agent-8");
+    let mut policy = engine(
+        Registers::of_the_fixtures()
+            .with(&inside, Some(vec![Scope::AcceptFault]))
+            .with(&outside, Some(vec![Scope::MoveValue])),
+        Uniform::default(),
+    );
+    policy.register.sessions.push(crate::session::OpenSession {
+        session: id("sess-1"),
+        account: id("acct-1"),
+        holder: id("cust-1"),
+        expires_at: at("2026-11-10T09:10:00Z"),
+    });
+    let accept = |caller: &Actor| {
+        let mut request: DecisionRequest =
+            valid!("decision-request-to-accept-a-fault-in-the-customers-session");
+        request.caller = caller.clone();
+        request
+    };
+    let decision = policy.decide(&accept(&inside)).unwrap();
+    assert_eq!(decision.outcome, Answer::Permit {});
+    let decision = policy.decide(&accept(&outside)).unwrap();
+    assert_eq!(decision.outcome, refused(RefusalClass::NotPermitted));
+    assert!(decision.permit().is_none());
 }

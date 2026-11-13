@@ -13,22 +13,25 @@ use std::rc::Rc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, Fetched, GeneralEntry, Kept, KeptStatements, Log, Reads,
-    Signatures, StatementKeys, is_decision,
+    AppendFailure, Decisions, Delivery, Evidence, Fetched, GeneralEntry, Kept, KeptStatements, Log,
+    Operator, Reads, Signatures, StatementKeys, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
-    Destination, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
-    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, SignedWith, Through, What, admit_entry,
-    attribute,
+    Action, Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
+    Destination, Difference, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
+    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, ShowingNamed, SignedWith, Through, What,
+    admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
     Denomination, EvidenceGrade, Operation, OuterNode, PublicKey, RESULT_SHAPE,
     REVERSAL_CONFIRMATION_SHAPE, Statement, signing_input, to_canonical,
 };
-use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds, Timestamp};
+use rutent_contracts::router_api::{
+    DecisionRecord, Id, PolicyBounds, Timestamp, TupleKey as RouterTupleKey,
+};
 use rutent_contracts::state_machine::{self as stm, OrderState, RecordedInput, SegmentState};
+use rutent_core_orch::quote::{ChargeDesk, ChargeError, Charged, Charges, Checked, Terms};
 use rutent_core_orch::recalc::evidenced;
 use rutent_core_orch::reversal::{
     Accepting, Asked, Asking, At, Carrier, Confirmation, Moving, NotCounted,
@@ -90,11 +93,6 @@ fn operator() -> Actor {
         role: Role::Operator,
         kind: ActorKind::Person,
     }
-}
-
-/// A customer's statements key.
-fn customer_key(customer: &Actor) -> SigningKey {
-    snapshot_support::signing_key(&format!("{}-statements", customer.acts.as_str()), 1)
 }
 
 fn customer() -> Actor {
@@ -1017,18 +1015,26 @@ impl World {
         self.reversals.confirm(&mut parts, &mut asking, at)
     }
 
-    /// `by` accepting the last showing of the exchange's fault for `p1-s2`, as the customer: its fault acceptance of
-    /// that showing, signed by `by` and received a second after it, in the customer's open session.
+    /// `by` accepting the last showing of the exchange's fault for `p1-s2`, as the customer: policy's decision of its
+    /// `accept_fault`, asked a second after the showing arrived, in the customer's open session, and Core citing it.
     fn accept_as_customer(&mut self, by: &Actor) -> Result<Carrier, ReversalError> {
-        self.accept_as_customer_with(by, "customer")
+        self.accept_as_customer_naming(by, None)
     }
 
-    /// [`World::accept_as_customer`], its acceptance naming `fault`.
-    fn accept_as_customer_with(
+    /// [`World::accept_as_customer`], its decision naming `commitment` in place of the showing's, where given.
+    fn accept_as_customer_naming(
         &mut self,
         by: &Actor,
-        fault: &str,
+        commitment: Option<Digest>,
     ) -> Result<Carrier, ReversalError> {
+        let request = self.acceptance_request(by, commitment);
+        let decision = self.policy.decide(&request).expect("policy decides");
+        self.accept_decided(by, &request, &decision)
+    }
+
+    /// `by` asking policy to accept the last showing of the exchange's fault for `p1-s2`, a second after the Core
+    /// clock last read, in the customer's session: naming `commitment` in place of the showing's, where given.
+    fn acceptance_request(&mut self, by: &Actor, commitment: Option<Digest>) -> DecisionRequest {
         let showing = self
             .log
             .entries()
@@ -1053,28 +1059,41 @@ impl World {
             .as_ref()
             .and_then(|a| a.transaction.clone())
             .unwrap();
-        let mut statement = snapshot_support::envelope(
-            &snapshot_support::deployment(),
-            rutent_contracts::core_internal::FAULT_ACCEPTANCE_SHAPE,
-            by.acts.as_str(),
-            2_000,
-            json!({ "order": ORDER, "segment": "p1-s2", "transaction": transaction,
-                "showing": showing.commitment, "fault": fault }),
-        );
-        snapshot_support::sign_value(&mut statement, &customer_key(by));
-        let statement = serde_json::to_vec(&statement).unwrap();
         self.clock
             .0
             .set(Reading::at(self.clock.0.get().floor().0 + 1));
-        let (order, part, s2, session) = (id(ORDER), id(PART), id("p1-s2"), id(SESSION));
+        DecisionRequest {
+            request: id(&format!("req-accept-{}", self.policy.decided + 1)),
+            caller: by.clone(),
+            action: Action::AcceptFault {
+                order: id(ORDER),
+                segment: id("p1-s2"),
+                showing: ShowingNamed {
+                    transaction,
+                    commitment: commitment.unwrap_or(showing.commitment),
+                },
+                session: id(SESSION),
+            },
+            at: Timestamp::new(Instant(self.clock.0.get().floor().0).rfc3339().unwrap()).unwrap(),
+        }
+    }
+
+    /// Core accepting the fault for `by` on `decision`, policy's answer to `request`.
+    fn accept_decided(
+        &mut self,
+        by: &Actor,
+        request: &DecisionRequest,
+        decision: &Decision,
+    ) -> Result<Carrier, ReversalError> {
+        let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
         self.with(|r, p, _| {
             r.accept_fault(
                 p,
                 at(&order, &part, &s2),
                 Accepting::Customer {
                     by,
-                    statement: &statement,
-                    session: &session,
+                    request,
+                    decision,
                 },
             )
         })
@@ -1215,9 +1234,6 @@ impl StatementKeys for Sources<'_> {
         if *maker == operator().acts {
             return Ok(Some(operator().party));
         }
-        if maker.as_str().starts_with("customer-") {
-            return Ok(Some(maker.clone()));
-        }
         Ok(
             match self.0.catalogue.publishers().publisher(maker.as_str()) {
                 Some(Publisher::Operator) => Some(operator().party),
@@ -1237,19 +1253,9 @@ impl Signatures for Sources<'_> {
         let Ok(value) = serde_json::from_slice::<Value>(received) else {
             return false;
         };
-        // Ed25519 signs deterministically: the operator's statement, or a customer's, verifies where signing it again
-        // gives it.
+        // Ed25519 signs deterministically: the operator's statement verifies where signing it again gives it.
         let maker = value["maker"].as_str().unwrap_or_default().to_owned();
-        let key = if maker == operator().acts.as_str() {
-            Some(snapshot_support::operator_key())
-        } else if maker.starts_with("customer-") {
-            Some(customer_key(&Actor {
-                acts: id(&maker),
-                ..customer()
-            }))
-        } else {
-            None
-        };
+        let key = (maker == operator().acts.as_str()).then(snapshot_support::operator_key);
         if let Some(key) = key {
             let mut again = value.clone();
             snapshot_support::sign_value(&mut again, &key);
@@ -1880,10 +1886,13 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         world.reversals.carrier(&order, &s2),
         Some(&Carrier::Provider(id(EXCHANGE)))
     );
+    let other: Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "ab".repeat(32) }))
+            .unwrap();
     assert_eq!(
-        world.accept_as_customer_with(&customer(), "operator"),
+        world.accept_as_customer_naming(&customer(), Some(other)),
         Err(ReversalError::NotAnAcceptance),
-        "an acceptance of another fault than the showing's"
+        "an acceptance naming another showing than the provider's"
     );
     let mark_customer = world.log.len();
     assert_eq!(world.accept_as_customer(&customer()), Ok(Carrier::Customer));
@@ -2461,4 +2470,435 @@ fn late_delivery_is_recorded_and_moves_nothing() {
         Err(ReversalError::NotAnswered)
     );
     assert_eq!(world.log.len(), appended);
+}
+
+/// The customer's acceptance is policy's permitted decision of its own `accept_fault` for this showing, and the
+/// carrier cites that decision: a refused decision, one of another caller's request, one answering another request,
+/// another action, another segment's and another showing's are each no acceptance, and change no carrier.
+// verifies: REQ-ORD-11
+#[test]
+fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it() {
+    let (order, s2) = (id(ORDER), id("p1-s2"));
+    let mut world = exchange_failed();
+    let part = id(PART);
+    let tx = world
+        .segments
+        .sent(&order, &s2)
+        .unwrap()
+        .0
+        .as_str()
+        .to_owned();
+    let shown = result(
+        EXCHANGE,
+        "conversion",
+        &tx,
+        json!({ "status": "failed", "fault": "customer", "evidence": piece(EXCHANGE) }),
+    );
+    world
+        .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &shown))
+        .unwrap();
+    let still_the_providers = |world: &World| {
+        assert_eq!(
+            world.reversals.carrier(&id(ORDER), &id("p1-s2")),
+            Some(&Carrier::Provider(id(EXCHANGE)))
+        );
+    };
+
+    // Policy refused it.
+    world.policy.refusing = true;
+    assert!(matches!(
+        world.accept_as_customer(&customer()),
+        Err(ReversalError::NotPermitted(_))
+    ));
+    world.policy.refusing = false;
+    still_the_providers(&world);
+
+    // A decision of a request another asked, answered to the customer, or of another request.
+    let stranger = Actor {
+        party: id("customer-2"),
+        acts: id("customer-2"),
+        ..customer()
+    };
+    let theirs = world.acceptance_request(&stranger, None);
+    let theirs_decided = world.policy.decide(&theirs).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &theirs, &theirs_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "a request of another caller's"
+    );
+    let ours = world.acceptance_request(&customer(), None);
+    assert_eq!(
+        world.accept_decided(&customer(), &ours, &theirs_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "a decision answering another request"
+    );
+    // Another action, or another segment's acceptance.
+    let mut elsewhere = world.acceptance_request(&customer(), None);
+    if let Action::AcceptFault { segment, .. } = &mut elsewhere.action {
+        *segment = id("p1-s3");
+    }
+    let elsewhere_decided = world.policy.decide(&elsewhere).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &elsewhere, &elsewhere_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "another segment's"
+    );
+    for (what, change) in [
+        (
+            "another order's",
+            Box::new(|a: &mut Action| {
+                if let Action::AcceptFault { order, .. } = a {
+                    *order = id("ord-2");
+                }
+            }) as Box<dyn Fn(&mut Action)>,
+        ),
+        (
+            "another transaction's",
+            Box::new(|a: &mut Action| {
+                if let Action::AcceptFault { showing, .. } = a {
+                    showing.transaction = id("tx-elsewhere");
+                }
+            }),
+        ),
+    ] {
+        let mut request = world.acceptance_request(&customer(), None);
+        change(&mut request.action);
+        let decided = world.policy.decide(&request).unwrap();
+        assert_eq!(
+            world.accept_decided(&customer(), &request, &decided),
+            Err(ReversalError::NotAnAcceptance),
+            "{what}"
+        );
+    }
+    let mut another = world.acceptance_request(&customer(), None);
+    another.action = Action::AskReversal {
+        order: id(ORDER),
+        segment: id("p1-s2"),
+        provider: id(EXCHANGE),
+    };
+    let another_decided = world.policy.decide(&another).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &another, &another_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "another action"
+    );
+    still_the_providers(&world);
+
+    // The decision of the customer's own request: the carrier cites its receipt.
+    let mark = world.log.len();
+    let request = world.acceptance_request(&customer(), None);
+    let decision = world.policy.decide(&request).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &request, &decision),
+        Ok(Carrier::Customer)
+    );
+    assert!(world.whats_from(mark).iter().any(|w| matches!(
+        w,
+        What::ReversalCarrier { carrier: rutent_contracts::core_internal::Carrier::Customer,
+            accepted_by: Some(by), accepted_with: Some(act), .. }
+            if *by == customer() && *act == decision.receipt
+    )));
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Customer)
+    );
+}
+
+// A segment's charge ------------------------------------------------------------------------------------------------
+//
+// Over a world that ran, since a raise rests on a log that holds the segment's move and its provider's verified result
+// (`charge-raise-rests-on-its-result`) and the terms in force at its start (`charge-raise-rests-on-terms-in-force`).
+
+/// The operator's channel: every raise it is handed, delivered or not as set.
+struct Channel {
+    raised: Vec<rutent_contracts::core_internal::Raise>,
+    deliver: bool,
+}
+
+impl Operator for Channel {
+    fn raise(&mut self, raise: &rutent_contracts::core_internal::Raise) -> Delivery {
+        self.raised.push(raise.clone());
+        if self.deliver {
+            Delivery::Delivered
+        } else {
+            Delivery::Undelivered
+        }
+    }
+}
+
+impl World {
+    /// The receipt of the stated entry of the last result about `segment`.
+    fn result_of(&self, segment: &str) -> Receipt {
+        let entries = self.log.entries();
+        let at = entries
+            .iter()
+            .rposition(|e| {
+                matches!(e, Entry::Stated(s)
+                    if s.what.statement.as_str() == RESULT_SHAPE
+                        && s.about.as_ref().and_then(|a| a.segment.as_ref()).map(|x| x.as_str())
+                            == Some(segment))
+            })
+            .expect("a result about the segment");
+        receipt_of(at, &entries[at])
+    }
+
+    /// When the first move of value on `segment` took effect: when it started.
+    fn started_at(&self, segment: &str) -> Timestamp {
+        self.log
+            .entries()
+            .iter()
+            .find_map(|e| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action: Action::MoveValue { segment: s, .. },
+                        ..
+                    } if s.as_str() == segment => Some(v.when.at.clone()),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+            .expect("a move on the segment")
+    }
+
+    /// `tuple`'s provider's terms, with a fee of at most `maximum`, made at `made_at` and kept in `terms` as they
+    /// arrive now, by the clock: signed, kept, appended as a stated entry, attributed by the log, and the receipt of
+    /// that entry.
+    fn state_terms(
+        &mut self,
+        terms: &mut Terms,
+        tuple: &RouterTupleKey,
+        made_at: u64,
+        maximum: &str,
+    ) -> Receipt {
+        let provider = tuple.provider.as_str();
+        let mut statement = snapshot_support::envelope(
+            &snapshot_support::deployment(),
+            rutent_contracts::provider_role::TERMS_SHAPE,
+            provider,
+            made_at,
+            json!({ "tuple": tuple, "fee": { "flat": "0",
+                "proportional": { "numerator": "1", "denominator": "1000" }, "maximum": maximum } }),
+        );
+        snapshot_support::sign_value(
+            &mut statement,
+            &snapshot_support::statements_key(provider, 1),
+        );
+        let bytes = serde_json::to_vec(&statement).unwrap();
+        let kept = self.store.keep(&bytes).expect("kept");
+        let claim: rutent_contracts::core_internal::StatedEntry = serde_json::from_value(json!({
+            "kind": "stated",
+            "attribution": { "signature": "unverified", "claimed_by": {
+                "party": "wallet-co", "acts": provider, "role": "provider", "kind": "component" } },
+            "what": { "statement": rutent_contracts::provider_role::TERMS_SHAPE },
+            "when": { "at": statement["made_at"], "source": "party_stated" },
+            "received_at": Instant(self.clock.0.get().floor().0).rfc3339().unwrap(),
+            "outcome": { "status": "stated" },
+            "signed_with": { "scheme": "ed25519", "key": statement["signature"]["key"] },
+            "commitment": kept.commitment,
+        }))
+        .expect("a stated entry");
+        let entry = Entry::Stated(claim);
+        let at = self.log.len();
+        self.log
+            .append(&GeneralEntry::try_from(entry.clone()).unwrap())
+            .expect("the log takes the terms");
+        let history = self.history();
+        let Entry::Stated(attributed) = &history[at].1 else {
+            panic!("a stated entry");
+        };
+        let receipt = receipt_of(at, &entry);
+        terms
+            .state(
+                attributed,
+                &receipt,
+                &serde_json::from_slice(&bytes).expect("a terms statement"),
+            )
+            .expect("kept as terms");
+        receipt
+    }
+}
+
+/// A deposit segment's tuple at the wallet.
+fn wallet_tuple() -> RouterTupleKey {
+    snapshot_support::deposit_tuple(WALLET)
+}
+
+fn formula(maximum: &str) -> rutent_contracts::router_api::FeeFormula {
+    serde_json::from_value(json!({
+        "flat": "0", "proportional": { "numerator": "1", "denominator": "1000" }, "maximum": maximum,
+    }))
+    .unwrap()
+}
+
+/// `p1-s3`'s charge of `charge`, on its last result.
+fn charged_on(world: &World, charge: &str, advertised: &str) -> Charged {
+    Charged {
+        order: id(ORDER),
+        segment: id("p1-s3"),
+        provider: id(WALLET),
+        tuple: wallet_tuple(),
+        started_at: world.started_at("p1-s3"),
+        amount_in: rutent_contracts::router_api::Amount::new("1000000").unwrap(),
+        charged: rutent_contracts::router_api::Amount::new(charge).unwrap(),
+        advertised: formula(advertised),
+        result: world.result_of("p1-s3"),
+    }
+}
+
+impl World {
+    /// Checks `charged` against `terms`, `channel` the operator's.
+    fn charge(
+        &mut self,
+        charges: &mut Charges,
+        terms: &Terms,
+        channel: &mut Channel,
+        charged: &Charged,
+    ) -> Result<Checked, ChargeError> {
+        charges.check(
+            ChargeDesk {
+                terms,
+                log: &mut self.log,
+                clock: &self.clock,
+                fresh: &mut self.ids,
+                operator: channel,
+                core: &self.core,
+            },
+            charged,
+        )
+    }
+}
+
+/// A charge above the formula that bound its segment is raised to the operator resting on its provider's verified
+/// result and on the stated entry of the terms in force at the segment's start, as the log admits it. Terms made
+/// before the start and received after it bind nothing; terms stated after it neither: the charge is checked against
+/// the terms that bound it, and where none did, against the price its route was priced on, naming no terms.
+// verifies: REQ-QTE-5, REQ-QTE-6, AC-14
+#[test]
+fn a_charge_is_raised_on_its_result_and_the_terms_that_bound_its_segment() {
+    let mut world = World::over(Platform::settling());
+    let mut terms = Terms::new();
+    // Stated before the segment starts, one second before the clock the order runs at: binds from then.
+    world.clock.0.set(Reading::at(NOW - 100));
+    let first = world.state_terms(&mut terms, &wallet_tuple(), NOW - 101, "1000");
+    // Made before the start, but received at the start's second: also binds from no later than it.
+    world.clock.0.set(Reading::at(NOW));
+    world.ran();
+    let base = world.log.len();
+    // Dated before the start and received after it: binds nothing of this segment, and neither does a looser one.
+    world.clock.0.set(Reading::at(NOW + 50));
+    let late = world.state_terms(&mut terms, &wallet_tuple(), NOW - 50, "9000");
+    let looser = world.state_terms(&mut terms, &wallet_tuple(), NOW + 60, "90000");
+    assert_ne!(late, first);
+    assert_ne!(looser, first);
+
+    let mut charges = Charges::new();
+    let mut channel = Channel {
+        raised: Vec::new(),
+        deliver: true,
+    };
+    let over = charged_on(&world, "2001", "5000");
+    let mark = world.log.len();
+    let Ok(Checked::Flagged(flagged)) = world.charge(&mut charges, &terms, &mut channel, &over)
+    else {
+        panic!("a charge above the terms that bound the segment isn't flagged");
+    };
+    let Difference::Charge {
+        result,
+        terms: named,
+        maximum,
+        ..
+    } = &flagged.raise.difference
+    else {
+        panic!("a charge difference");
+    };
+    assert_eq!(result, &over.result, "the result's stated entry");
+    assert_eq!(
+        named.as_ref(),
+        Some(&first),
+        "the terms in force at its start"
+    );
+    assert_eq!(
+        maximum,
+        &rutent_contracts::router_api::Amount::new("1000").unwrap()
+    );
+    assert_eq!(
+        flagged.raise.cites,
+        vec![over.result.clone(), first.clone()]
+    );
+    assert!(flagged.delivered);
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    // Checked again: the same answer, raised once.
+    assert_eq!(
+        world.charge(&mut charges, &terms, &mut channel, &over),
+        Ok(Checked::Flagged(Box::new((*flagged).clone())))
+    );
+    assert_eq!(channel.raised.len(), 1);
+
+    // Another segment of a provider that stated no terms by its start is held to the price its route was priced on,
+    // and names no terms.
+    let bare = Terms::new();
+    let mut charged = charged_on(&world, "6000", "5000");
+    charged.segment = id("p1-s1");
+    charged.provider = id(RESERVE);
+    charged.tuple = snapshot_support::deposit_tuple(RESERVE);
+    charged.started_at = world.started_at("p1-s1");
+    charged.result = world.result_of("p1-s1");
+    let mark = world.log.len();
+    let Ok(Checked::Flagged(on_the_price)) =
+        world.charge(&mut charges, &bare, &mut channel, &charged)
+    else {
+        panic!("a charge above the price isn't flagged");
+    };
+    assert!(matches!(
+        &on_the_price.raise.difference,
+        Difference::Charge { terms: None, maximum, .. }
+            if maximum == &rutent_contracts::router_api::Amount::new("5000").unwrap()
+    ));
+    assert_eq!(on_the_price.raise.cites, vec![charged.result.clone()]);
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    // Within the terms, between the fee and the maximum: nothing raised. Another provider than the tuple's: refused.
+    let mut within = charged_on(&world, "1000", "5000");
+    within.segment = id("p1-s2");
+    within.result = world.result_of("p1-s2");
+    within.started_at = world.started_at("p1-s2");
+    assert_eq!(
+        world.charge(&mut charges, &terms, &mut channel, &within),
+        Ok(Checked::Within)
+    );
+    let mut foreign = charged_on(&world, "9000", "5000");
+    foreign.provider = id("p-other");
+    assert_eq!(
+        world.charge(&mut charges, &terms, &mut channel, &foreign),
+        Err(ChargeError::NotTheTuplesProvider)
+    );
+    // The segment checked on one result refuses another.
+    let mut again = charged_on(&world, "9000", "5000");
+    again.result = world.result_of("p1-s2");
+    assert_eq!(
+        world.charge(&mut charges, &terms, &mut channel, &again),
+        Err(ChargeError::AnotherCharge)
+    );
+    assert_eq!(channel.raised.len(), 2, "no other was raised");
+
+    // A raise that doesn't reach the operator is recorded failed.
+    let mut lost = Channel {
+        raised: Vec::new(),
+        deliver: false,
+    };
+    let mut other = charged_on(&world, "9000", "5000");
+    other.segment = id("p1-s1");
+    other.provider = id(RESERVE);
+    other.tuple = snapshot_support::deposit_tuple(RESERVE);
+    other.started_at = world.started_at("p1-s1");
+    other.result = world.result_of("p1-s1");
+    let mut fresh = Charges::new();
+    let Ok(Checked::Flagged(undelivered)) = world.charge(&mut fresh, &bare, &mut lost, &other)
+    else {
+        panic!("a charge above the price isn't flagged");
+    };
+    assert!(!undelivered.delivered);
+    assert_eq!(world.admitted_from(base), Ok(world.log.len() - base));
 }

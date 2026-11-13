@@ -2948,16 +2948,25 @@ fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
     assert_admitted(&env);
 }
 
-/// A deposit filed automatically whose route can't be delivered as composed is never shown: the reserve reports
-/// gross and charges 4 on each segment, so its withdrawal hands on less than its deposit was quoted to take in. The
-/// filing ends its order with the class the quote module gives it, `no_route_right_now`, records no `shown`, and
-/// accepts and starts nothing.
+/// A deposit filed automatically whose route the router offers but can't be delivered as composed is never shown: the
+/// reserve reports net, its withdrawal says it gives out 500 more than it takes in, which the router confirms as
+/// stated, and its deposit takes that in at a fee of 500, so the route is no rate cycle the router drops. `show`
+/// counts the withdrawal as `segments::judge` would and refuses it. The filing ends its order with the class the quote
+/// module gives it, `no_route_right_now`, records no `shown`, and accepts and starts nothing.
 // verifies: REQ-QTE-2, REQ-ORD-18
 #[test]
 fn automatic_deposit_whose_route_cant_be_delivered_ends_unshown() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
-    providers.sim.fees.insert(RESERVE.into(), 4);
+    providers.sim.overclaim.insert(RESERVE.into(), 500);
+    providers.sim.deposit_fees.insert(RESERVE.into(), 500);
+    // The deposit is priced at that fee too, so the route as first planned comes back to the origin with no more than
+    // it left with, and the router asks the deposit again at what the withdrawal claims.
+    for price in env.prices.iter_mut() {
+        if price.tuple == snapshot_support::deposit_tuple(RESERVE) {
+            price.fee.flat = rutent_contracts::router_api::Amount::new("500").unwrap();
+        }
+    }
     let mut arrivals = Arrivals::new();
     let deposited = match arrive(
         &mut env,
@@ -2985,6 +2994,17 @@ fn automatic_deposit_whose_route_cant_be_delivered_ends_unshown() {
     else {
         panic!("{filed:?}");
     };
+    // The router offered the route: the deposit was asked at what the withdrawal claimed.
+    let asked: Vec<String> = providers
+        .sim
+        .received
+        .iter()
+        .filter_map(|(_, op)| op["amount"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        asked.iter().any(|a| a == "1500"),
+        "the deposit was asked at what the withdrawal claimed: {asked:?}"
+    );
     let shown = env
         .book
         .borrow()
