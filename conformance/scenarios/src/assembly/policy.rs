@@ -1,6 +1,6 @@
 //! Policy in the assembly (`T-024-02`): `CMP-CORE-AUTHZ`'s engine, its fixed rules first, over the deployment's
-//! policy, with each input a decision needs answered from a real record ([`Records`]), and the policy calls the
-//! engine doesn't build yet answered beside it, on policy's side of the log ([`PolicySide`]).
+//! policy, with each input a decision needs answered from a real record ([`Records`]), every policy call reaching it
+//! through [`PolicySide`].
 //!
 //! **Where each source is answered from** (`F-021`'s notes):
 //!
@@ -15,24 +15,23 @@
 //! | `Statement` | the stated entry naming the commitment: its maker's party, as the log attributed it |
 //! | `Declarations` | the reserve's advertisement, as the assembly listed it in the log: its reserve declaration |
 //! | `Verifier`, `Provider` | nothing yet: a missing input, so a decision that needs a judgement is refused |
+//! | `Consent` | nothing yet: no register of a person's consents, so a question on the person's own authority is refused as missing its input (`T-021-07`) |
 //!
-//! **Policy's one handle.** The engine holds the log's policy handle; [`PolicySide`] reaches it only through the
-//! engine (`Engine::log`), so the calls it answers beside the engine append on the same, one, policy handle, and
-//! orchestration holds the general handle alone.
+//! **Policy's one handle.** The engine holds the log's policy handle and appends every decision there; [`PolicySide`]
+//! only forwards to the engine, and orchestration holds the general handle alone.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, Charges, DecisionEntry, Decisions, PersonQuestions, PolicyLog,
-    Reads, Sessions, StuckOrders,
+    AppendFailure, Authorisations, Charges, Decisions, PersonQuestions, Reads, Sessions,
+    StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Answer, Authorisation, Charge, ChargeAnswer, Decision,
-    DecisionRequest, Entry, NotKnownCause, Outcome, PermissionChange, PersonAnswer, PersonOutcome,
-    PersonQuestion, ReadAnswer, ReadCheck, Receipt, RefusalClass, SessionAnswer, SessionRequest,
-    TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    Action, Actor, ActorKind, Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest,
+    Entry, PermissionChange, PersonAnswer, PersonQuestion, ReadAnswer, ReadCheck, RefusalClass,
+    SessionAnswer, SessionRequest, What,
 };
 use rutent_contracts::provider_role::ReserveDeclaration;
 use rutent_contracts::router_api::Id;
@@ -341,8 +340,9 @@ impl authz::Sources for Records {
             }
             // The deployment's operator is the kit's: Core signs in its name.
             Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
-            // No verifier's judgement or provider's answer is a source in M3's assembly yet.
-            Source::Verifier(_) | Source::Provider(_) => Reply::Missing,
+            // No verifier's judgement or provider's answer is a source in M3's assembly yet, and no register of a
+            // person's consents (`T-021-07`): a question on the person's own authority is refused.
+            Source::Verifier(_) | Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
         }
     }
 }
@@ -371,116 +371,32 @@ impl authz::Policy for Deployment {
 /// The policy engine as the assembly builds it.
 pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
 
-/// Policy, as the other parts reach it: the engine for the calls it builds (decisions, authorisations, sessions,
-/// reads, charges, and a stuck order's steps and a move's outcome, `T-021-06`'s), and, beside it, on policy's
-/// handle, the calls whose rows haven't built them on the engine yet. Each of those is decided as the engine decides
-/// a call: the engine's own fixed rules first (`Fixed`), over the same records, then the
-/// deployment's policy, which a scenario may set to refuse (`PolicySide::consult`). Only the answer is the stand-in's:
-///
-/// - **Questions about people (`T-021-07`).** Refused where the consultation refuses; otherwise not known, since no
-///   verifier is a source yet.
-///
-/// Each is replaced, through the same trait, when its row builds it on the engine: drop its `impl` here and forward
-/// to the engine, as [`Decisions`] does.
+/// Policy, as the other parts reach it: the engine, for every policy call (decisions, authorisations, sessions, reads,
+/// charges, a stuck order's steps and a move's outcome, and questions about people, `T-021-07`'s, the last). Each call
+/// forwards to the engine, which decides it through its one consultation, its fixed rules first and then the
+/// deployment's policy ([`Deployment`], which a scenario may set to refuse), over the records ([`Records`]), and
+/// records it on policy's handle before it answers. Nothing is answered beside the engine any more.
 #[derive(Clone)]
 pub struct PolicySide {
     engine: Rc<RefCell<PolicyEngine>>,
-    records: Records,
-    deployment: Deployment,
-}
-
-/// One policy's verdict on a call, as the engine reaches its own (`core-authz`'s `verdict`): its needs, each asked of
-/// its source in order, the first that fails deciding, then its ruling.
-fn verdict(
-    policy: &mut impl authz::Policy,
-    sources: &mut Records,
-    asked: authz::Asked<'_>,
-) -> Answer {
-    let refused = |class| Answer::Refuse { class };
-    let not_known = |cause| Answer::NotKnown { cause };
-    let needs = match policy.needs(asked) {
-        Reply::Given(needs) => needs,
-        Reply::Missing => return refused(RefusalClass::MissingInput),
-        Reply::Unreachable => return not_known(NotKnownCause::PolicyUnreachable),
-    };
-    let mut inputs = Vec::with_capacity(needs.len());
-    for need in needs {
-        match authz::Sources::supply(sources, &need) {
-            Reply::Given(said) => inputs.push(Input { need, said }),
-            Reply::Missing => return refused(RefusalClass::MissingInput),
-            Reply::Unreachable => return not_known(NotKnownCause::VerifierUnreachable),
-        }
-    }
-    match policy.rule(asked, &inputs) {
-        Reply::Given(Ruling::Permit) => Answer::Permit {},
-        Reply::Given(Ruling::Refuse(class)) => refused(class),
-        Reply::Missing => refused(RefusalClass::MissingInput),
-        Reply::Unreachable => not_known(NotKnownCause::PolicyUnreachable),
-    }
 }
 
 impl PolicySide {
-    /// Policy over `engine`, answering beside it from `records` under `deployment`, the engine's own deployment
-    /// policy.
+    /// Policy over `engine`. The engine holds the records it reads and the deployment's policy itself; `records` and
+    /// `deployment` are the ones it was built with, taken so the assembly's wiring names them, and nothing else
+    /// answers from them.
     pub fn new(
         engine: Rc<RefCell<PolicyEngine>>,
         records: Records,
         deployment: Deployment,
     ) -> Self {
-        Self {
-            engine,
-            records,
-            deployment,
-        }
-    }
-
-    /// The consultation of a call answered beside the engine, as the engine's own runs it: its fixed rules first
-    /// (`Fixed`, every rule `FIXED` lists, the register of actors and the roles' rules among them), each input
-    /// asked of the same records, then the deployment's policy, unless a fixed rule refused. A refusal beats not
-    /// known.
-    fn consult(&self, asked: authz::Asked<'_>) -> Answer {
-        let mut sources = self.records.clone();
-        let fixed = verdict(&mut authz::Fixed::default(), &mut sources, asked);
-        if matches!(fixed, Answer::Refuse { .. }) {
-            return fixed;
-        }
-        match verdict(&mut self.deployment.clone(), &mut sources, asked) {
-            Answer::Permit {} => fixed,
-            refused @ Answer::Refuse { .. } => refused,
-            not_known @ Answer::NotKnown { .. } => match fixed {
-                Answer::NotKnown { .. } => fixed,
-                _ => not_known,
-            },
-        }
+        let _ = (records, deployment);
+        Self { engine }
     }
 
     /// The engine.
     pub(crate) fn engine(&self) -> &Rc<RefCell<PolicyEngine>> {
         &self.engine
-    }
-
-    /// Appends one answer's verified entry on policy's handle, the engine's.
-    fn record(
-        &self,
-        who: &Actor,
-        what: What,
-        at: &rutent_contracts::router_api::Timestamp,
-        outcome: Outcome,
-    ) -> Result<Receipt, AppendFailure> {
-        let entry = VerifiedEntry {
-            kind: VerifiedKind::Verified,
-            who: who.clone(),
-            what,
-            when: When {
-                at: at.clone(),
-                source: TimeSource::CoreClock,
-            },
-            outcome,
-        };
-        entry.check().map_err(AppendFailure::Refused)?;
-        let entry = DecisionEntry::try_from(entry).map_err(AppendFailure::Refused)?;
-        let engine = self.engine.borrow();
-        engine.log().append_beside(&entry)
     }
 }
 
@@ -558,28 +474,15 @@ impl StuckOrders for PolicySide {
     }
 }
 
+/// The engine's own, since `T-021-07` built it: decided through its one consultation, held to the shortlist, the
+/// party's charges and the set asked that it reads from the log on its policy handle, and recorded there before it
+/// answers.
 impl PersonQuestions for PolicySide {
     fn ask_about_person(
         &mut self,
         question: &PersonQuestion,
     ) -> Result<PersonAnswer, AppendFailure> {
-        question.check().map_err(AppendFailure::Refused)?;
-        // No verifier is a source yet, so a question the consultation lets through is not known.
-        let outcome = match self.consult(authz::Asked::AskAboutPerson(question)) {
-            Answer::Refuse { class } => PersonOutcome::Refused { class },
-            _ => PersonOutcome::NotKnown {
-                cause: NotKnownCause::PolicyUnreachable,
-            },
-        };
-        let what = What::AskAboutPerson {
-            question: question.clone(),
-        };
-        let receipt = self.record(&question.asker, what, &question.at, outcome.outcome())?;
-        Ok(PersonAnswer {
-            request: question.request.clone(),
-            outcome,
-            receipt,
-        })
+        self.engine.borrow_mut().ask_about_person(question)
     }
 }
 
@@ -590,12 +493,4 @@ pub fn decisions_in(log: &CoreLog) -> usize {
         .iter()
         .filter(|(_, e)| matches!(e, Entry::Verified(v) if rutent_contracts::core_internal::calls::is_decision(&v.what)))
         .count()
-}
-
-impl<L: PolicyLog> PolicyHandle<L> {
-    /// Appends `entry` through this handle from a shared borrow: for the policy calls answered beside the engine,
-    /// which reach the handle only through the engine that holds it.
-    pub(crate) fn append_beside(&self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
-        self.0.borrow_mut().append_decision(entry)
-    }
 }
