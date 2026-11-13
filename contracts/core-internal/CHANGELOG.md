@@ -30,8 +30,8 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 532 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 97 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  breaking one rule, and 538 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -577,6 +577,13 @@
   as the outcome-evidence rows do. That the result's `fault` names the carrier stays with whoever holds the kept
   bytes, the log holding only their salted commitment. Refused: an operation as the showing. 532 admission cases.
   (DEC-4, DEC-20, REQ-ORD-11, REQ-AUD-2, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a reversal's carrier is of a reversal owed, and stands once the party at fault
+  carries it (round 2 of the contract review). `reversal-carrier-is-of-a-reversal-owed` refuses a carrier for a
+  segment not owing its reversal; `reversal-carrier-stands-once-the-party-at-fault-carries-it` refuses another
+  carrier once the customer or the operator carries it, the provider then the party at fault staying the rule
+  (`REQ-ORD-11`). Refused: a carrier for a settled segment, one after the reversal completed, the operator after the
+  customer, the provider after the customer. Admitted: the provider then the customer, and the same carrier again.
+  538 admission cases, 99 relations. (DEC-4, DEC-20, REQ-ORD-11, REQ-ORD-3, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

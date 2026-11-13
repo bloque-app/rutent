@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 91] = [
+pub static RELATIONS: [Relation; 93] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2076,6 +2076,56 @@ pub static RELATIONS: [Relation; 91] = [
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "reversal-carrier-is-of-a-reversal-owed",
+        spec: &["REQ-ORD-11", "REQ-ORD-3"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reversal's carrier is recorded only for a segment owing its reversal",
+        fields: &[],
+        // None to point to: the segment failed, the state machine took it, and its reversal isn't complete.
+        cites: |e, h| match &e.what {
+            What::ReversalCarrier { order, segment, .. }
+                if !part_of_segment(order.as_str(), segment.as_str(), h)
+                    .and_then(|part| standing(order.as_str(), part, h))
+                    .is_some_and(|s| s.reversal_owed(segment.as_str())) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "reversal-carrier-stands-once-the-party-at-fault-carries-it",
+        spec: &["REQ-ORD-11"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "once the party at fault carries a reversal, no other carrier is recorded for it",
+        fields: &[],
+        // The provider carries a reversal until a showing of another's fault is accepted, so the provider followed by
+        // the customer or the operator is the rule; once either stands, nothing replaces it. The same entry again is
+        // a retry.
+        cites: |e, _| match &e.what {
+            What::ReversalCarrier { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::ReversalCarrier { order, segment, .. },
+                Some(
+                    other @ What::ReversalCarrier {
+                        order: o,
+                        segment: s,
+                        carrier,
+                        ..
+                    },
+                ),
+            ) => judge(
+                o == order && s == segment && *carrier != Carrier::Provider && other != &e.what,
+                &[],
+            ),
+            _ => Match::NotTarget,
+        },
     },
     Relation {
         name: "reversal-carrier-rests-on-its-showing",
