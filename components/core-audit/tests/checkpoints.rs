@@ -19,8 +19,8 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::checkpoint::{
     CHECKPOINT_SHAPE, Checker, Checkpoint, Checkpointer, Finding, HISTORY_FAILS_ITS_CHECKPOINTS,
-    KEY_OF_THE_OPERATOR, Kept, NOT_ITS_CHECKPOINTS, OPENING_SHAPE, Opening, Schedule, commitment,
-    read_lines, split_kept, tick_text,
+    KEY_OF_THE_OPERATOR, Kept, NOT_ITS_CHECKPOINTS, OPENING_SHAPE, Opening, Ran, Schedule,
+    commitment, read_lines, split_kept, tick_text,
 };
 use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::log::merkle::{self, Hash};
@@ -236,6 +236,7 @@ impl Rig {
         self.set(tick, 5);
         let ran = self.checkpointer.run_due();
         assert_eq!(ran.stopped, None);
+        self.checkpointer.acknowledge(&ran).unwrap();
         self.published.extend(ran.published.clone());
         ran.published
     }
@@ -421,6 +422,7 @@ fn checkpoints_of_busy_and_idle_periods_cant_be_told_apart() {
     roots.extend([busy.root(); 4]);
     busy.set(8, 5);
     let late = busy.checkpointer.run_due();
+    busy.checkpointer.acknowledge(&late).unwrap();
     assert_eq!(late.published.len(), 4);
     busy.published.extend(late.published);
     idle.tick(8);
@@ -629,6 +631,7 @@ fn rewrite_with_full_operator_access_is_detected_by_the_checker() {
     dial.0
         .set(first_nanos() + 3 * i128::from(EVERY) * 1_000_000_000 + 5_000_000_000);
     let forged_set = replayed.run_due();
+    replayed.acknowledge(&forged_set).unwrap();
     assert_eq!(forged_set.published.len(), 4);
     let forged_openings: Vec<Vec<u8>> = replayed
         .kept()
@@ -745,7 +748,8 @@ fn removed_record_is_noticed_by_the_operators_own_review() {
         }
         rig.close()
     };
-    remove_line(&dir.checkpoints(), 1);
+    // The store's lines are each checkpoint followed by the acknowledgement of it: line 2 is tick 1's.
+    remove_line(&dir.checkpoints(), 2);
     let report = review(&dir, 2);
     assert_eq!(report.findings, [Finding::Missing { from: 1, to: 1 }]);
     let log = AuditLog::open(
@@ -844,6 +848,7 @@ fn a_checkpoint_is_issued_for_every_due_tick_in_order_at_the_schedules_time() {
     assert!(rig.checkpointer.run_due().published.is_empty());
     rig.set(3, 9);
     let ran = rig.checkpointer.run_due();
+    rig.checkpointer.acknowledge(&ran).unwrap();
     assert_eq!(ran.published.len(), 3);
     for (i, bytes) in ran.published.iter().enumerate() {
         let v: Value = serde_json::from_slice(bytes).unwrap();
@@ -893,10 +898,72 @@ fn a_failed_write_issues_nothing_and_never_a_tick_twice() {
         .set(first_nanos() + EVERY as i128 * 1_000_000_000 + 5_000_000_000);
     let ran = cp.run_due();
     assert_eq!(ran.stopped, None);
-    // Tick 0 reached the store and was adopted when read back; only tick 1 is published now.
-    assert_eq!(ran.published.len(), 1);
-    assert_eq!(flaky.inner.borrow_mut().records().unwrap().len(), 2);
+    // Tick 0 reached the store and was adopted when read back, but no caller was ever handed it: it is published
+    // now, with tick 1, so a checker is never left holding a tick the store has and nobody published.
+    assert_eq!(ran.published.len(), 2);
+    for (tick, bytes) in ran.published.iter().enumerate() {
+        let v: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(v["tick"], tick_text(tick as u64));
+    }
+    cp.acknowledge(&ran).unwrap();
+    assert!(cp.run_due().published.is_empty());
+    // Two checkpoints and the acknowledgement of them.
+    assert_eq!(flaky.inner.borrow_mut().records().unwrap().len(), 3);
     assert_eq!(cp.kept().len(), 2);
+}
+
+/// A checkpoint stored and not yet acknowledged as published is handed out again by the next run, and by a
+/// checkpointer opened afresh on the same store, until the caller acknowledges it; an acknowledgement is durable.
+/// So a process that dies between the store and the answer loses no tick.
+// verifies: REQ-AUD-14
+#[test]
+fn a_stored_checkpoint_is_published_at_least_once_across_a_restart() {
+    let dir = TempDir::new("restart");
+    let dial = Dial(Rc::new(Cell::new(
+        first_nanos() + EVERY as i128 * 1_000_000_000 + 5_000_000_000,
+    )));
+    let log = Rc::new(RefCell::new(
+        AuditLog::open(
+            settings(&dial),
+            FileStore::open(dir.history()).unwrap(),
+            KeptInMemory::new(),
+        )
+        .unwrap(),
+    ));
+    let shared = Flaky::default();
+    let open =
+        || Checkpointer::new(Rc::clone(&log), shared.clone(), log_key(), schedule()).unwrap();
+    let mut cp = open();
+    let ran = cp.run_due();
+    assert_eq!(ran.published.len(), 2);
+    // The process dies before the caller published them: nothing was acknowledged.
+    drop(cp);
+    let mut cp = open();
+    let again = cp.run_due();
+    assert_eq!(again.published, ran.published);
+    assert_eq!(shared.inner.borrow_mut().records().unwrap().len(), 2);
+    // The first is acknowledged and the process dies: only the second is handed out again.
+    let first = Ran {
+        published: vec![again.published[0].clone()],
+        stopped: None,
+        through: Some(0),
+    };
+    cp.acknowledge(&first).unwrap();
+    drop(cp);
+    let mut cp = open();
+    let rest = cp.run_due();
+    assert_eq!(rest.published, again.published[1..]);
+    cp.acknowledge(&rest).unwrap();
+    drop(cp);
+    assert!(open().run_due().published.is_empty());
+    // An acknowledgement of a tick the store doesn't hold is refused.
+    let mut cp = open();
+    let bogus = Ran {
+        published: Vec::new(),
+        stopped: None,
+        through: Some(9),
+    };
+    assert!(cp.acknowledge(&bogus).is_err());
 }
 
 /// The checkpointer takes the log's key and never the deployment's `operator_key`.

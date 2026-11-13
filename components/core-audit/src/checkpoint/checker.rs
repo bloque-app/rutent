@@ -315,6 +315,10 @@ pub fn read_lines(bytes: &[u8]) -> Vec<Vec<u8>> {
 pub fn split_kept(records: &[Vec<u8>]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let (mut published, mut openings) = (Vec::new(), Vec::new());
     for bytes in records {
+        // An acknowledgement of publication is the checkpointer's, no checkpoint of the checker's.
+        if serde_json::from_slice::<super::Cursor>(bytes).is_ok() {
+            continue;
+        }
         match serde_json::from_slice::<Kept>(bytes) {
             Ok(kept) => {
                 published.push(serde_json::to_vec(&kept.checkpoint).expect("a checkpoint is JSON"));

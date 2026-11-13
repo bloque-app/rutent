@@ -152,6 +152,19 @@ pub struct Kept {
     pub opening: Opening,
 }
 
+/// A record of the checkpoint store that says the caller has published every checkpoint through a tick
+/// ([`Checkpointer::acknowledge`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cursor {
+    /// The last tick published, as a checkpoint has it.
+    pub published_through: String,
+}
+
+/// The refusal of an acknowledgement of a tick the store holds no checkpoint for.
+pub const NO_SUCH_CHECKPOINT: &str =
+    "only a checkpoint the store holds is acknowledged as published";
+
 /// A tick as 16 lower-case hexadecimal digits.
 pub fn tick_text(tick: u64) -> String {
     format!("{tick:016x}")
@@ -185,6 +198,8 @@ pub struct Ran {
     pub published: Vec<Vec<u8>>,
     /// Why it stopped before the last due tick.
     pub stopped: Option<AppendFailure>,
+    /// The tick of the last checkpoint in `published`, which [`Checkpointer::acknowledge`] takes.
+    pub through: Option<u64>,
 }
 
 /// The issuer of checkpoints: the log's key, bound to the log it commits to and to its own store, apart from the
@@ -202,6 +217,8 @@ pub struct Checkpointer<S: Store, K: KeptStatements, C: Store> {
     store: C,
     schedule: Schedule,
     kept: Vec<Kept>,
+    /// The last tick the caller acknowledged as published, durably.
+    acked: Option<u64>,
     /// A write failed, so the store may hold a record `kept` doesn't: read it back before the next issue.
     stale: bool,
 }
@@ -229,9 +246,10 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
             store,
             schedule,
             kept: Vec::new(),
+            acked: None,
             stale: true,
         };
-        checkpointer.kept = checkpointer.read_back()?;
+        (checkpointer.kept, checkpointer.acked) = checkpointer.read_back()?;
         checkpointer.stale = false;
         let held: Vec<Vec<u8>> = checkpointer
             .kept
@@ -276,7 +294,7 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
     }
 
     /// The checkpoint store's records, read back and held to what a checkpoint store holds.
-    fn read_back(&mut self) -> Result<Vec<Kept>, AppendFailure> {
+    fn read_back(&mut self) -> Result<(Vec<Kept>, Option<u64>), AppendFailure> {
         let refused = || AppendFailure::Refused(Violation(NOT_ITS_CHECKPOINTS));
         let records = self.store.records().map_err(|e| match e {
             StoreError::Unavailable(_) => AppendFailure::Unavailable,
@@ -285,7 +303,17 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         let log = self.log.borrow().settings().log.clone();
         let checker = Checker::new(self.public.clone(), log.clone(), self.schedule);
         let mut kept: Vec<Kept> = Vec::new();
+        let mut acked: Option<u64> = None;
         for bytes in records {
+            if let Ok(cursor) = serde_json::from_slice::<Cursor>(&bytes) {
+                // An acknowledgement names a checkpoint already in the store, and never goes back.
+                let through = tick_of(&cursor.published_through).ok_or_else(refused)?;
+                if through >= kept.len() as u64 || acked.is_some_and(|a| through < a) {
+                    return Err(refused());
+                }
+                acked = Some(through);
+                continue;
+            }
             let record: Kept = serde_json::from_slice(&bytes).map_err(|_| refused())?;
             let published = serde_json::to_vec(&record.checkpoint).map_err(|_| refused())?;
             let tick = checker.read_checkpoint(&published).ok_or_else(refused)?.0;
@@ -301,30 +329,48 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
             }
             kept.push(record);
         }
-        Ok(kept)
+        Ok((kept, acked))
     }
 
-    /// Publishes a checkpoint for every tick due by the log's clock that hasn't one, in order.
+    /// Publishes a checkpoint for every tick due by the log's clock that hasn't one, in order, and hands out every
+    /// checkpoint stored that the caller hasn't [acknowledged](Checkpointer::acknowledge) as published: those of
+    /// this run, and any an earlier run or a process before it stored and never handed over (a write that reached
+    /// the store and was reported failed, a restart between the store and the answer). So every checkpoint stored
+    /// is published at least once, and a checker is never missing a tick the store holds.
     pub fn run_due(&mut self) -> Ran {
         let mut ran = Ran {
             published: Vec::new(),
             stopped: None,
+            through: None,
         };
+        self.issue_due(&mut ran);
+        let from = self.acked.map_or(0, |a| a as usize + 1);
+        for kept in self.kept.iter().skip(from) {
+            ran.published
+                .push(serde_json::to_vec(&kept.checkpoint).expect("a checkpoint is JSON"));
+            ran.through = tick_of(&kept.opening.tick);
+        }
+        ran
+    }
+
+    /// Stores a checkpoint for every tick due that has none, stopping at the first that fails.
+    fn issue_due(&mut self, ran: &mut Ran) {
         let now = self.log.borrow().settings().clock.unix_nanos();
         let Some(due) = self.schedule.tick_at(now) else {
-            return ran;
+            return;
         };
         if self.stale {
             // A write failed: the store may hold a checkpoint that `kept` doesn't, and issuing its tick again
             // would be two words for one tick. What was answered before must still be there.
             match self.read_back() {
-                Ok(read) if read.starts_with(&self.kept) => {
+                Ok((read, acked)) if read.starts_with(&self.kept) => {
                     self.kept = read;
+                    self.acked = acked.max(self.acked);
                     self.stale = false;
                 }
                 _ => {
                     ran.stopped = Some(AppendFailure::Unavailable);
-                    return ran;
+                    return;
                 }
             }
         }
@@ -333,15 +379,36 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
             .last()
             .map_or(0, |k| tick_of(&k.opening.tick).map_or(0, |t| t + 1));
         for tick in next..=due {
-            match self.issue(tick) {
-                Ok(published) => ran.published.push(published),
-                Err(failure) => {
-                    ran.stopped = Some(failure);
-                    break;
-                }
+            if let Err(failure) = self.issue(tick) {
+                ran.stopped = Some(failure);
+                break;
             }
         }
-        ran
+    }
+
+    /// Records, durably, that the caller has published everything in `ran`, so no later run, nor a checkpointer
+    /// opened on this store after a restart, hands them out again. An acknowledgement the store doesn't write is
+    /// `Unavailable` and changes nothing: they are handed out again, which is safe.
+    pub fn acknowledge(&mut self, ran: &Ran) -> Result<(), AppendFailure> {
+        let Some(through) = ran.through else {
+            return Ok(());
+        };
+        if through >= self.kept.len() as u64 {
+            return Err(AppendFailure::Refused(Violation(NO_SUCH_CHECKPOINT)));
+        }
+        if self.acked.is_some_and(|a| a >= through) {
+            return Ok(());
+        }
+        let record = serde_json::to_vec(&Cursor {
+            published_through: tick_text(through),
+        })
+        .map_err(|_| AppendFailure::Unavailable)?;
+        if self.store.append(&record).is_err() {
+            self.stale = true;
+            return Err(AppendFailure::Unavailable);
+        }
+        self.acked = Some(through);
+        Ok(())
     }
 
     fn issue(&mut self, tick: u64) -> Result<Vec<u8>, AppendFailure> {
