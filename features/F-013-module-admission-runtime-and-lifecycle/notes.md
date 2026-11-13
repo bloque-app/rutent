@@ -777,3 +777,10 @@ operation's declared destinations. So a request that is both malformed and aimed
 `request_not_allowed`, not `undeclared_destination`, and its hop looks the same as one to a declared host. It is still
 recorded and still refused; only the reason differs. Left as it is, and stated here, so an audit reads
 `request_not_allowed` as "refused before any destination was judged".
+
+## T-013-08: the flaky deadline test (`plan/m3-owed-rows`)
+
+`callee_past_its_deadline_is_unanswered_to_its_caller_never_refused` (`components/prov/tests/production_world.rs`,
+`T-014-05`'s) failed once in CI and passed on the same commit. Its margins are a 2 s deadline and a 1 s call budget.
+`T-013-08` makes it deterministic by removing the race, not by widening the margins. It sits in an `M3` wave, as
+`T-011-07` does.

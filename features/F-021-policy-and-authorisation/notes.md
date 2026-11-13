@@ -1382,3 +1382,9 @@ probe.
   | a consent question is the order's own (the shared needs on the consent path) | `question on a consent names an order its asker acts for` |
   | the route keeps the shared needs (the moved code) | `question on a shortlisted route is the orders own about one of its parties` |
 
+
+## Rows added after review (`plan/m3-owed-rows`)
+
+- The agent's `REQ-CPL-9` scenario is `T-024-11`. The writer of `reliance` entries is `T-020-23` for a reserve's
+  judgement and `T-024-12` for the verifier stand-in at the assembly; the production verifier half stays `F-053`'s
+  (`M5`, `DEC-16`). Policy's answer to an unreachable order-record source (`funds`) is `T-021-08`.

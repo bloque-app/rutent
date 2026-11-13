@@ -3215,3 +3215,28 @@ Other things this integration settled, for the record:
   deposit, and the exit replay's `PublicExit`), what arrives, the charge staying with the reserve; from a public node
   (a withdrawal into a reserve), what entered, the charge included (the result's `amount_in`). The simulated network
   (`conformance/src/sim`, `movements_made`) records the same.
+
+## Rows added for the gaps the reviews found (`plan/m3-owed-rows`)
+
+Each gap below named "a new `F-020` row" or "no row owns it" now has one. Where a gap sits in another feature's
+module, the row is that feature's.
+
+| Gap, and the note it is in | Row |
+|---|---|
+| Core's segments don't call `Charges::check`; no operator channel; `Terms` not fed from signed terms (`T-020-07`, round 3 integration; `F-024`'s `T-024-03`) | `T-020-14` |
+| Signed holds not redeemed in intake; statement vs commitment; the session; `redeemed_by` (`T-020-01`, round 3 integration) | `T-020-15` |
+| Production `Resolutions` for a `deliver` (`T-020-11`'s gap) | `T-020-16` |
+| Production `Resolutions` for a hand-on (`T-020-13`) | `T-020-17`, after `T-020-16` |
+| Provider-role statement of what arrived, a question of what arrived (`T-020-04`) | `T-020-18` |
+| The arrival linked to that notice, and to the earlier arrival it holds against an order (`T-020-04`) | `T-020-19` |
+| A wrong stuck report can't be corrected; a decline then a re-report (`T-020-11`, `stuck/mod.rs` Gaps) | `T-020-20` |
+| A mismatch at a non-final public end isn't recorded (`T-020-09`) | `T-020-22` |
+| Next `core-internal` round: notice summary entry, `Operation::stated_out` doc, the mismatch record, checkpoint and opening shapes, a decline, an earlier-arrival field, an empty shortlist (`T-020-06`), a `HandedOver` item for an operation with no answer (`T-020-08`), possibly the evidence floor as a logged change | `T-020-21` |
+| No writer of `reliance` entries, reserve half (`F-021`'s `T-021-07` notes) | `T-020-23`; the verifier half at the assembly is `T-024-12`; the production verifier stays `F-053`'s |
+| Carry-on refused as `OutsideAuthorisation`; `StatusError::Refused`; `AcceptFault` read from the log | `T-020-24` |
+
+Not given a row by this change: a log kind for the holding account's withdrawal record
+(`REQ-ORD-40`, `T-020-13`'s gap) and a relation holding a final deposit's settlement to a public record and the
+reserve's statement (`T-020-09`'s gap) are named in the notes above; the owner can have either added to
+`T-020-21`'s list. The stuck rows (`T-020-16`, `T-020-17`, `T-020-20`) edit `stuck/`
+one after the other; `T-020-14` and `T-020-24` both edit `segments/`, so the lead runs them in turn.

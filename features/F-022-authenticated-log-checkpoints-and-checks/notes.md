@@ -348,3 +348,8 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   signature is verified under the log's key), its shape (only the issuer signs, and it signs that shape), its entry
   digest and its inclusion proof (each implies the other for a receipt the log signed; off together, they fail), and
   `holds_against` comparing the entry at its index (implied by the root).
+
+## Rows added after review (`plan/m3-owed-rows`)
+
+- `T-022-04`'s hand-off, a contract shape for a checkpoint and its opening, is added by `T-020-21` (`core-internal`'s
+  next round) and adopted here by `T-022-07`, which waits for it.
