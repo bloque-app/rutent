@@ -1204,8 +1204,8 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
   over_bound }`; rounds read it as `NotOffered::PersonQuestionsPastBound`, and recalculation as no route left
   (`recalc`, any routing that offered no route). Default, reversible: `ASKED_BOUND` is 8, the same for every order; a
   deployment's lower bound is its policy service's to add. Taking the union means a stale read can't undercount below
-  what the request itself claims. Intake maps `PersonQuestionsPastBound` to `refused_by_policy`, not to no route:
-  that is intake's own reading (`T-020-03`), left as it is.
+  what the request itself claims. Intake maps `PersonQuestionsPastBound` to `refused_by_policy`, not to no route: a
+  gap, below.
 - **Order of the rules.** A refusal of the consultation stands; then the shortlist, then the party's charges, each
   refusing; then the bound, only where the verdict permits. A log that can't be read refuses `missing_input`. The rules
   read from the log never permit, and a refusal of theirs beats not known.
@@ -1242,14 +1242,23 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
   - `REQ-CPL-8`, a reserve's proof: its signed answer is attributed to it; the same bytes with the maker swapped for
     another's name count for nothing (`NoResult(Unattributable)`) and nothing settles.
   - `REQ-CPL-9`, presence: the reserve's `waits_on_person` is reported as its own statement, attributed to it, with no
-    input of Core's after the segment's start and no decision after the move's. Reading: Core passes the reserve
-    nothing of the actor's kind on this path, so the test runs with the kit's caller; an order whose customer acts
-    through an agent end to end is `F-024`'s scenario to add.
-  - `REQ-CPL-11`, a third-party payer: an order paid by `payer-ref-9`, run through the assembly; the payer appears
-    only in the acceptance's `parties.payer`, by reference, and no entry carries a person-detail key. The evidence store
-    keeps the operations Core signed, inputs included; v0 carries the payer's account reference (`payer.bank_account`)
-    there and in the authorisation's `origin_account`, a reference at the reserve, not a personal detail. No flow
-    hands Core a payer's personal details.
+    input of Core's after the segment's start and no decision after the move's. **No agent acts in this test**: the
+    segments kit's caller is Core and its customer a person. Core passes the reserve nothing of the actor's kind on
+    this path, so the outcome is the same function of the reserve's answer whoever acts, but the plan's test names an
+    agent. A bounded attempt through the assembly stopped on its harness: it can script a reserve's silence
+    (`Fault::Silence`) but not its `waits_on_person`, and `Core::fleet()` lends the fleet only shared. Gap, owner
+    `F-024`: a `Fault` that scripts a reserve's act, and an order requested, quoted and accepted by the customer's
+    agent, listed and scoped in `Registers`, run to the reserve's demand.
+  - `REQ-CPL-11`, a third-party payer: an order paid by `payer-ref-9` and carrying a personal detail of the payer
+    (`payer.name`), run through the assembly: the payer appears only in the acceptance's `parties.payer`, by
+    reference, and the detail in no entry. Over the segments kit, whose evidence store can be read, the same detail
+    reaches neither the log nor the store, while the account reference the reserve's tuple requires
+    (`payer.bank_account`) is in the operation Core signed and kept: Core hands a provider only the inputs its tuple
+    requires (`segments/mod.rs`, `required_inputs`), the rule switched off below. Residual, for the owner's review
+    (`T-025-05`): a tuple that **requires** a payer's personal detail gets it through Core, and the evidence store then
+    keeps a copy in the signed operation, where `REQ-CPL-11` wants it with the provider alone; v0's tuples require only
+    account references, and the erasure path (`REQ-AUD-13`, `T-022-03`) reaches a kept statement. Owner: `F-020`
+    (what Core may carry) with `F-022` (what the store keeps), raised with the coordinator.
   - `REQ-CPL-12`, reliance: the contract's world admits the `reliance` record naming its judge and the provider that
     relied on it, and refuses one naming another judge. Gap: nothing in Core writes a `reliance` entry; it is a general
     entry, so core-authz can't. No v0 flow has a provider rely on a reserve's judgement. Owner: `F-053` for verifiers;
@@ -1257,7 +1266,14 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
     coordinator.
 - **Tests first.** The four core-authz tests were written against a skeleton of the call that answered as the stub
   did, and all four failed; the rules were built after. The assembly's test and the record-level tests passed when
-  written (the assembly's is seen red with the stand-in's answer put back, the rest under the rule behind each).
+  written. The assembly's is seen red with `PolicySide` answering `Err` in place of the engine (not the old stand-in's
+  not-known answer), the rest under the rule behind each. Correction to `82cd17d`'s body, which says each
+  record-level test was seen red under its rule-off: `REQ-CPL-11`'s first version wasn't, and its scan for detail keys
+  could not fail, since no order carried one; it was made real in the next commit (above) and its rule-off added.
+- **`REQ-CPL-5`'s "no route left", through intake.** The core-authz test shows `PastBound`; rounds give
+  `NotOffered::PersonQuestionsPastBound` and recalculation no route left. Intake maps it to `refused_by_policy`
+  (`intake/class.rs`), while `REQ-CPL-5` reads "past the bound, the order counts as having no route left
+  (`REQ-ORD-28`)". Gap, owner `T-020-03`: map it to the no-route class intake gives an order with no route.
 - **Rule-offs.** Each rule switched off once by `t-021-07-ruleoffs.py`, the file restored and touched; core-authz's lib
   tests, `rutent-scenarios`' `assembly_policy` or `person_records`, or core-orch's `eligibility`. Four first turned
   nothing red: the shortlist being the record cited, its providers, and its verifiers, each masked by the clause on
@@ -1294,6 +1310,7 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
   | an answer counted only as its maker's (segments) | `reserves proof in anothers name is refused` |
   | a demand of presence reported as the reserve's (segments) | `presence demanded of an agent is reported as the reserves outcome` |
   | a reliance's judgement is its judge's (the contract's row, switched off locally and restored) | `record names whose judgement was relied on and by whom` |
+  | a provider handed only the inputs its tuple requires (segments) | `records after a third party payment hold a reference at most` |
 - **Hand-offs, in files this row doesn't own.** `F-024`'s notes ("Policy calls answered beside the engine") still say
   questions about people are answered beside the engine: they no longer are, and `PolicySide` answers nothing beside
   it. `T-025-05` no longer needs to review a stand-in.

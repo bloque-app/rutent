@@ -86,8 +86,11 @@ fn reserves_proof_in_anothers_name_is_refused() {
 
 /// Where the reserve demands the person be present, its demand is the reserve's: Core reports it as the reserve's own
 /// statement, attributed to it, and decides nothing in its place, neither failing the segment nor moving it on, so
-/// what the order's actor, an agent or its person, may do there is the reserve's to say (`REQ-CPL-9`). Core passes the
-/// reserve nothing of the actor's kind on this path, so the outcome is the same whoever acts for the customer.
+/// what the order's actor may do there is the reserve's to say (`REQ-CPL-9`). Over the segments kit, whose caller is
+/// Core and whose customer is a person: no agent acts in this test. Core passes the reserve nothing of the actor's
+/// kind on this path, so the outcome is the same function of the reserve's answer whoever acts for the customer; the
+/// order run end to end by the customer's agent is `F-024`'s scenario to add (its harness can't script a reserve's
+/// `waits_on_person` yet).
 // verifies: REQ-CPL-9
 #[test]
 fn presence_demanded_of_an_agent_is_reported_as_the_reserves_outcome() {
@@ -142,9 +145,15 @@ fn decisions(core: &Core) -> usize {
         .count()
 }
 
+/// A third party's personal detail, as an order might carry it for a tuple, which no simulated tuple requires.
+const PAYERS_NAME: &str = "Jane Q Payer";
+
 /// After an order paid by a third party, not its customer, every record Core keeps names the payer by reference and
-/// nothing else of it: the acceptance holds its reference apart from the requester's and the beneficiary's, and no
-/// other entry names it (`REQ-CPL-11`). Its details are the provider's, which received them.
+/// nothing else of it (`REQ-CPL-11`). Through the assembly: the acceptance holds the payer's reference apart from the
+/// requester's and the beneficiary's, no other entry names it, and a personal detail the order carried reaches no
+/// entry. Over the segments kit, whose evidence store can be read: a detail the reserve's tuple doesn't require
+/// reaches neither the log nor the evidence store, while the payer's account reference it does require reaches the
+/// operation Core signed and kept. Core hands a provider only the inputs its tuple requires.
 // verifies: REQ-CPL-11
 #[test]
 fn records_after_a_third_party_payment_hold_a_reference_at_most() {
@@ -161,6 +170,9 @@ fn records_after_a_third_party_payment_hold_a_reference_at_most() {
         .expect("the customer's session");
     let mut request = base_request("req-third-party", AMOUNT, &session);
     request.parties.payer = kit::id(PAYER);
+    request
+        .inputs
+        .insert("payer.name".to_owned(), PAYERS_NAME.to_owned());
     let told = core.request(request).expect("the order is asked for");
     let order = rutent_scenarios::assembly::Core::order_of(&told).expect("the order opens");
     let Told::Exists {
@@ -199,18 +211,44 @@ fn records_after_a_third_party_payment_hold_a_reference_at_most() {
             "nowhere else in it: {entry}"
         );
     }
-    // Nothing keyed as a person's detail reaches the log: only references.
     for entry in &entries {
-        let text = entry.to_string();
-        for detail in [
-            "payer.name",
-            "payer.address",
-            "payer.document",
-            "payer.email",
-        ] {
-            assert!(!text.contains(detail), "{detail} in {entry}");
-        }
+        assert!(!entry.to_string().contains(PAYERS_NAME), "{entry}");
     }
+
+    // The evidence store too, over the segments kit: the detail the tuple doesn't require is kept nowhere, the account
+    // reference it requires is in the operation Core signed.
+    let mut world = World::of(&[RESERVE]);
+    let mut segments = Core::over(&mut world);
+    segments
+        .inputs
+        .insert("payer.name".to_owned(), PAYERS_NAME.to_owned());
+    let ran = segments.run(&mut world);
+    assert!(
+        matches!(outcomes(&ran)[0], SegmentOutcome::Settled { .. }),
+        "{:?}",
+        outcomes(&ran)
+    );
+    let holds =
+        |bytes: &[u8], needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(
+        segments.store.kept.iter().any(|k| holds(k, "acct-1")),
+        "the scan reaches what Core signed and kept"
+    );
+    assert!(
+        !segments.store.kept.iter().any(|k| holds(k, PAYERS_NAME)),
+        "a payer's detail in the evidence store"
+    );
+    let log = serde_json::to_string(
+        &segments
+            .log
+            .borrow()
+            .entries
+            .iter()
+            .map(|(e, _)| serde_json::to_value(e).unwrap())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert!(!log.contains(PAYERS_NAME), "a payer's detail in the log");
 }
 
 /// The record of a judgement relied on names whose judgement it was and the provider that relied on it, which carries
