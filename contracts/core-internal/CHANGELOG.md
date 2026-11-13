@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 524 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 531 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 97 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -563,6 +563,15 @@
   transaction (field `transaction`). The world's record is us-bank's result about ord-2 under tx-hold2. Refused: the
   review's dodge, an operation, a record about ord-1, one naming no transaction. 524 admission cases. (DEC-4, DEC-20,
   REQ-ORD-40, INV-5, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a reversal carrier's acceptance rests on an act (round 2 of the contract
+  review). `accepted_by` was only a writer's label. `reversal_carrier` gains `accepted_with`, the act by receipt, and
+  `session`; `OperatorCommand` gains `accept_fault`. The customer's acceptance rests on its own verified yes about
+  the order and segment, given in its open session, as an acceptance rests on its yes and session; the operator's on
+  its `accept_fault` command, by the deployment operator's party (`reversal-carrier-rests-on-its-acceptance`, in
+  place of `reversal-carrier-is-accepted-by-the-party-at-fault`). Admitted: the customer's yes in sess-1, the
+  operator's command. Refused: no act, the provider's showing as the act, a label naming the operator, a yes about
+  another segment, a session never opened, one expired, an impostor's command. 531 admission cases. (DEC-4, DEC-20,
+  REQ-ORD-11, REQ-ORD-32, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

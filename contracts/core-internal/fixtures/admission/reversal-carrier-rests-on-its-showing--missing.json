@@ -2106,7 +2106,16 @@
         "acts": "cust-1",
         "role": "customer",
         "kind": "person"
-      }
+      },
+      "accepted_with": {
+        "log": "log-main",
+        "index": 138,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "2727272727272727272727272727272727272727272727272727272727272727"
+        }
+      },
+      "session": "sess-1"
     },
     "when": {
       "at": "2026-11-10T09:00:00Z",

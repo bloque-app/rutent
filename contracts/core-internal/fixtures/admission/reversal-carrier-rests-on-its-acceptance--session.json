@@ -1,6 +1,6 @@
 {
-  "row": "reversal-carrier-is-accepted-by-the-party-at-fault",
-  "breaks": "missing",
+  "row": "reversal-carrier-rests-on-its-acceptance",
+  "breaks": "session",
   "history": [
     {
       "receipt": {
@@ -2124,6 +2124,98 @@
           "segment": "p1-s2"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 81,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "cust-1",
+            "acts": "cust-1",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-10T09:00:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-10T09:00:05Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "3636363636363636363636363636363636363636363636363636363636363636"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-f2",
+          "segment": "p1-s2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 82,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "cust-1",
+          "acts": "cust-1",
+          "role": "customer",
+          "kind": "person"
+        },
+        "what": {
+          "call": "open_session",
+          "request": {
+            "request": "req-s1",
+            "account": "acct-ref-1",
+            "holder": "cust-1",
+            "requester": {
+              "party": "cust-1",
+              "acts": "cust-1",
+              "role": "customer",
+              "kind": "person"
+            },
+            "until": "2026-11-10T08:00:00Z",
+            "at": "2026-11-10T07:00:00Z"
+          },
+          "opened": {
+            "session": "sess-old",
+            "expires_at": "2026-11-10T08:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
     }
   ],
   "entry": {
@@ -2148,11 +2240,20 @@
         }
       },
       "accepted_by": {
-        "party": "operator",
-        "acts": "op-login-2",
-        "role": "operator",
+        "party": "cust-1",
+        "acts": "cust-1",
+        "role": "customer",
         "kind": "person"
-      }
+      },
+      "accepted_with": {
+        "log": "log-main",
+        "index": 81,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+        }
+      },
+      "session": "sess-old"
     },
     "when": {
       "at": "2026-11-10T09:00:00Z",

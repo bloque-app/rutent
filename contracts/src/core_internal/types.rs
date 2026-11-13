@@ -1812,6 +1812,9 @@ pub enum MismatchKind {
 pub enum OperatorCommand {
     /// Appoint the checker outside the operator (`REQ-AUD-10`).
     AppointChecker,
+    /// Accept a provider's showing that a failed segment's failure was the operator's, so the operator carries its
+    /// reversal (`REQ-ORD-11`): about the order, its subject the segment.
+    AcceptFault,
 }
 
 /// Something that came after an order ended (`REQ-ORD-25`, `REQ-ORD-31`).
@@ -2287,6 +2290,22 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         accepted_by: Option<Actor>,
+        /// The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and
+        /// segment, or the operator's `accept_fault` command. Present exactly where the carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        accepted_with: Option<Receipt>,
+        /// The customer's session its yes was given in, as an acceptance is (`REQ-ORD-32`): present exactly where the
+        /// customer carries it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        session: Option<Id>,
     },
     /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
     /// start proof, which settles the linked order's first segment. The linked order's first move rests on it

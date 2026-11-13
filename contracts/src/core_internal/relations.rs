@@ -2118,32 +2118,102 @@ pub static RELATIONS: [Relation; 91] = [
         },
     },
     Relation {
-        name: "reversal-carrier-is-accepted-by-the-party-at-fault",
-        spec: &["REQ-ORD-11", "REQ-AUZ-1"],
+        name: "reversal-carrier-rests-on-its-acceptance",
+        spec: &["REQ-ORD-11", "REQ-ORD-32", "REQ-AUZ-1"],
         quantifier: Quantifier::Exists,
-        refusal: "a reversal carried by the party at fault is accepted by that party: the customer, or the operator",
-        fields: &[],
-        // None to point to: the customer's acceptance is one of the order's requester's party in the customer's
-        // role, the operator's one of the deployment operator's party in the operator's role.
-        cites: |e, h| match &e.what {
+        refusal: "a reversal carried by the party at fault rests on that party's act of acceptance in this log",
+        fields: &[
+            (
+                "party",
+                "an acceptance of fault is the party at fault's own: the requester's party in the customer's role, or the deployment operator's",
+            ),
+            (
+                "yes",
+                "a customer's acceptance of fault is its verified yes about the order and segment",
+            ),
+            (
+                "session",
+                "a customer's acceptance of fault is given in its session, still open",
+            ),
+        ],
+        // The act, not a writer's label: the customer's own signed yes, given in its session, as an acceptance
+        // rests on its yes and session; the operator's `accept_fault` command, by the deployment operator's party.
+        cites: |e, _| match &e.what {
             What::ReversalCarrier {
-                order,
-                carrier,
-                accepted_by: Some(by),
+                accepted_with: Some(act),
+                session,
                 ..
-            } if !match carrier {
-                Carrier::Customer => {
-                    by.role == Role::Customer && requester_of(order.as_str(), h) == Some(&by.party)
+            } => {
+                let mut cites = alloc::vec![by_receipt(act, 0)];
+                if session.is_some() {
+                    cites.extend(by_fields(1));
                 }
-                Carrier::Operator => by.role == Role::Operator && by.party == e.operator.party,
-                Carrier::Provider => false,
-            } =>
-            {
-                by_fields(0)
+                cites
             }
             _ => none(),
         },
-        answers: |_, _, _, _| Match::NotTarget,
+        answers: |e, c, t, h| {
+            let What::ReversalCarrier {
+                order,
+                segment,
+                carrier,
+                accepted_by: Some(by),
+                session,
+                ..
+            } = &e.what
+            else {
+                return Match::NotTarget;
+            };
+            let requester = requester_of(order.as_str(), h);
+            match (c.index, carrier, t) {
+                (0, Carrier::Customer, Entry::Stated(s)) => judge(
+                    true,
+                    &[
+                        by.role == Role::Customer
+                            && requester == Some(&by.party)
+                            && requester == Some(&s.attribution.maker().party),
+                        matches!(s.attribution, Attribution::Verified { .. })
+                            && s.about.as_ref().is_some_and(|a| {
+                                a.order.as_ref() == Some(order)
+                                    && a.segment.as_ref() == Some(segment)
+                            }),
+                        true,
+                    ],
+                ),
+                (0, Carrier::Operator, Entry::Verified(v)) => match &v.what {
+                    What::Command {
+                        command: OperatorCommand::AcceptFault,
+                        order: o,
+                        subject,
+                    } => judge(
+                        o.as_ref() == Some(order) && subject.as_ref() == Some(segment),
+                        &[
+                            v.who.role == Role::Operator
+                                && v.who.party == e.operator.party
+                                && &v.who == by,
+                            true,
+                            true,
+                        ],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                (1, Carrier::Customer, _) => match permitted(t).map(|v| &v.what) {
+                    Some(What::OpenSession {
+                        request,
+                        opened: Some(opened),
+                    }) => judge(
+                        Some(&opened.session) == session.as_ref(),
+                        &[
+                            requester == Some(&request.holder),
+                            true,
+                            opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
+                        ],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                _ => Match::NotTarget,
+            }
+        },
     },
     Relation {
         name: "decision-record-chains-to-its-orders-previous",
