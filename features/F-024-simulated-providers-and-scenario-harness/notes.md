@@ -291,6 +291,78 @@ the twin's lint step before any scenario ran; `28b6353` fixed it.
 scenario advances the network. No scenario routes a final deposit to either network yet; one that does needs a step
 that adds blocks (for `T-024-04`'s and `T-024-05`'s scenarios).
 
+## T-024-03: routing, quoting and acceptance scenarios
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/`): `routing.rs` (`AC-2`, `AC-3`, `AC-33`, `GUA-2`/`REQ-QTE-13`), `quoting.rs`
+(`AC-13`, `AC-14`), `acceptance.rs` (`AC-15`, `AC-23`, `AC-24`, `AC-43`), with `routing_support/` for the shared world.
+Each runs on the assembled Core through `Scenario::core` and drives Core's own `request`, `quote`, `accept` and `run`.
+
+**The world.** Every route starts with a withdrawal and ends with a deposit (`REQ-ORD-16`), only the origin reserve is
+asked for a withdrawal, and a private node is its publisher's alone (`LeftOutReason::NodeNotListed`), so the stand-in
+exchange and ramp, which sit on public nodes no reserve reaches, can't be on a route here, and a ramp between two
+reserves' ledgers is left out of the snapshot. Alternatives for one tuple therefore come from a second reserve
+*beside* the first: `sim-reserve-a-quick` shares `sim-reserve-a`'s publisher, bank and ledger, so its deposit is a
+second provider of the same tuple. A route across a reserve, an exchange and a ramp (`AC-2`'s wording, `AC-1`'s) needs
+simulated providers that join the reserves, which is `T-024-04`'s to add; `AC-2` is shown on the one step that has two
+providers.
+
+**Added to the simulator** (`conformance/` only): `Shape` (`role/stand_in.rs`) and `sim::shape_of`, which a reserve takes
+from its name, since the Wasm guests build a provider from its name alone: a fee quoted and charged, a charge beyond the
+quote, the seconds it declares, the evidence it declares, and `beside`, the provider whose publisher and nodes it shares.
+Names: `sim-reserve-a-quick`, `sim-reserve-slow` (four days), `sim-reserve-charging` (7 beyond the quote, the gap the
+brief names) and `sim-reserve-dear` (6 000 000). A name with no shape is the stand-in as before. The ramp and the
+exchange are unchanged.
+
+**Added to the assembly** (`conformance/scenarios/src/`): `kit::prices_of`, Core's prices from a reserve's shape;
+`Core::world` (script a provider), `Core::set_evidence_floor` (a deployment setting; `core-internal` has no catalogue
+change for it, so it isn't in the log), `Core::check_balance` and `Core::check_by_dry_run` (a check outside an order,
+through Core's catalogue and the platform), and `Core::check_charges` with `Core::channel` (`assembly/charges.rs`),
+which feeds each settled segment's charge, read from its fee record, result and effect in the log, to
+`quote::Charges::check` and records the operator's raises.
+
+**Defaults taken.** A scenario's default `Objective` is the request's; `AC-2` reads "no provider being called" as the
+router's decision being a function of the record alone: the router over the record's own snapshot gives the record
+again, and under the other objective the other route, with no provider's books or rails touched. The holder's own
+order's check is logged and never counted (`REQ-CAT-3`), so the counted check of `AC-15` is one outside an order. A
+quote without a firm rate must be accepted like any other (Core starts no order before acceptance); the scenario holds
+that nothing starts, and nothing reaches the reserve, before it.
+
+**Gaps, with owners.**
+- *Charges are checked by the assembly, not by Core.* Nothing in `core-orch`'s segments calls `quote::Charges::check`,
+  and no operator channel exists in Core's wiring; `T-023-02` (the channel) and the segments' owner should call it where
+  a segment settles. `check_charges` stands in until they do.
+- *Signed terms and holds aren't wired into intake* (`T-021-02`'s hand-off): nothing calls `Terms::state` or redeems a
+  hold, so `AC-13` and `AC-14` rest on the advertised price and no terms in force, and no scenario here shows a charge
+  held to terms stated after the price (`quote.rs` tests do). `AC-15`'s hold-redeeming half and `REQ-QTE-15` stay
+  untested at the assembly.
+- *An evidence floor isn't a logged change*, so `AC-33` sets it on the catalogue directly.
+- *`AC-24`'s verifier half* (a provider's rules naming a judgement about a party) isn't run: no simulated provider
+  advertises a need; the reserve's rules name the payer's and the beneficiary's accounts, which is what is tested.
+
+**Rule-off table** (each rule switched off alone, or with others in one run whose reds name their own causes, and
+restored; the tests were green first and watched go red):
+
+| Switched off | Red |
+|---|---|
+| intake keeping a request identifier's order | `repeated_order_request_leaves_one_order` |
+| the stand-in reserve refusing a missing input | `requester_beneficiary_and_payer_are_recorded_apart_and_checked_by_their_providers_rules` |
+| the catalogue counting a check | `balance_check_answers_yes_or_no_and_is_logged_and_counted` |
+| the router's three-day line | `segment_over_three_days_has_no_firm_rate_and_waits_for_acceptance` |
+| the charge check's comparison | `charge_above_the_formulas_maximum_is_flagged` |
+| the stand-in's extra charge | `charge_above_the_formulas_maximum_is_flagged` |
+| the snapshot's evidence floor | `provider_below_the_floor_is_not_routed_through` |
+| `Core::set_evidence_floor` setting it | `provider_below_the_floor_is_not_routed_through` |
+| the router dropping a refused dry run | `rejected_dry_run_falls_to_another_provider_of_the_tuple` |
+| the router ranking by settlement | `changed_objective_can_change_the_route_and_the_record_explains_it_with_no_provider_call` |
+| Core's prices from the shapes | `route_with_no_positive_arrival_is_not_offered`, the `AC-2` test |
+| a dry run changing the reserve's books | `dry_run_changes_nothing_and_refuses_an_undepositable_destination` |
+
+The router's `FeeAboveAmount` cut alone leaves `route_with_no_positive_arrival_is_not_offered` green: the zero-arrival
+route is also dropped by the route's own arithmetic, so the test holds the outcome (nothing offered, nothing asked) and
+the price rule above holds its cause.
+
 ## The toolchain is pinned (`T-020-11d`)
 
 The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.98.0 with clippy, rustfmt and the
