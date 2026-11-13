@@ -247,6 +247,12 @@ struct Register {
     consents_unreachable: bool,
     /// What the rules asked of the record of consents.
     asked: Vec<Need>,
+    /// Each order's requester.
+    requesters: Vec<(Id, Id)>,
+    /// Each order's parties: its requester, beneficiary and payer.
+    order_parties: Vec<(Id, Id)>,
+    /// Each login's permissions, by its party.
+    permissions: Vec<(Id, Id, crate::roles::Permission)>,
 }
 
 impl Register {
@@ -263,6 +269,16 @@ impl Register {
         register
             .consents
             .push((id("person-ref-8"), digest("51"), agent().party));
+        // The order is the agent's party's, and the person asked about is one of its parties.
+        register.requesters.push((id(ORDER), agent().party));
+        register.order_parties.push((id(ORDER), agent().party));
+        register.order_parties.push((id(ORDER), id("person-ref-8")));
+        // Core carries the order's authority onward.
+        register.permissions.push((
+            core().party,
+            core().acts,
+            crate::roles::Permission::CarryOnward,
+        ));
         register
     }
 }
@@ -301,6 +317,19 @@ impl Sources for Register {
                     )))
                 }
             }
+            Source::Requester(order) => said(
+                self.requesters
+                    .contains(&(order.clone(), need.input.clone())),
+            ),
+            Source::OrderParties(order) => said(
+                self.order_parties
+                    .contains(&(order.clone(), need.input.clone())),
+            ),
+            Source::Permissions { party, permission } => said(self.permissions.contains(&(
+                party.clone(),
+                need.input.clone(),
+                *permission,
+            ))),
             _ => Reply::Missing,
         }
     }
@@ -682,4 +711,68 @@ fn provider_off_the_shortlist_is_never_asked_about_eligibility() {
             "{authority:?}"
         );
     }
+}
+
+/// On a shortlisted route the question is the order's own: its asker acts for the order's requester, or is Core's
+/// actor the register lists as carrying the order's authority onward, and the person asked about is one of the
+/// order's parties. An unrelated party citing the order's latest shortlist, charged and listed, is refused, and so is
+/// a question about a person outside the order (`REQ-CPL-2`, `THR-45`).
+// verifies: REQ-CPL-2, THR-45
+#[test]
+fn question_on_a_shortlisted_route_is_the_orders_own_about_one_of_its_parties() {
+    let stranger = Actor {
+        party: id("other-co"),
+        acts: id("other-co-desk"),
+        role: Role::Provider,
+        kind: ActorKind::Person,
+    };
+    let history = || {
+        vec![
+            charged_to_the_agent(3),
+            charged("chg-stranger", &stranger, ORDER, Work::PersonQuestion, 3),
+            charged("chg-core", &core(), ORDER, Work::PersonQuestion, 3),
+            shortlist(ORDER, "53", &["bank-co"], &[]),
+        ]
+    };
+    let on_route = || route("53", &["bank-co"], &[]);
+    let ask = |e: &mut Tested, request: &str, asker: &Actor, person: &str| {
+        let mut q = question(request, asker, on_route(), &["bank-co"], &[]);
+        q.person = id(person);
+        e.ask_about_person(&q).map(|a| a.outcome)
+    };
+    let not_permitted = Ok(refused(RefusalClass::NotPermitted));
+    let fresh = |history: Vec<Entry>| {
+        let mut e = engine(Log::taking(history));
+        e.sources
+            .acts_for
+            .push((stranger.acts.clone(), stranger.party.clone(), stranger.kind));
+        e
+    };
+
+    // An unrelated party, listed and charged for the order, citing its latest shortlist: refused.
+    let mut e = fresh(history());
+    assert_eq!(
+        ask(&mut e, "req-1", &stranger, "person-ref-8"),
+        not_permitted
+    );
+    // A person outside the order, asked about by the order's own requester: refused.
+    assert_eq!(
+        ask(&mut e, "req-2", &agent(), "person-ref-77"),
+        not_permitted
+    );
+    // Core's actor the register doesn't list as carrying the order's authority onward: refused.
+    e.sources.permissions.clear();
+    assert_eq!(ask(&mut e, "req-3", &core(), "person-ref-8"), not_permitted);
+
+    // The order's requester's agent, and Core's listed actor, about one of the order's parties: allowed.
+    let mut e = fresh(history());
+    assert_eq!(
+        ask(&mut e, "req-4", &agent(), "person-ref-8"),
+        Ok(PersonOutcome::Allowed {})
+    );
+    let mut e = fresh(history());
+    assert_eq!(
+        ask(&mut e, "req-5", &core(), "person-ref-8"),
+        Ok(PersonOutcome::Allowed {})
+    );
 }

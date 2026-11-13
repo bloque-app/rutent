@@ -393,8 +393,8 @@ pub(crate) const FIXED: &[Rule] = &[
         rule: crate::stuck::rule,
     },
     Rule {
-        name: "T-021-07: a question about a person on the person's own authority rests on a consent that person gave \
-               the asker's party",
+        name: "T-021-07: a question about a person rests on a consent that person gave the asker's party, or, on a \
+               shortlisted route, is the order's own requester's or Core's, about one of the order's parties",
         needs: crate::cpl::needs,
         rule: crate::cpl::rule,
     },

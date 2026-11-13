@@ -238,7 +238,8 @@ fn question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_lo
         PersonQuestion {
             request: id(request),
             asker: caller.clone(),
-            person: id("person-ref-1"),
+            // One of the order's parties, as the route requires: here its customer, its requester and payer.
+            person: caller.party.clone(),
             order: order.clone(),
             authority: Authority::ShortlistedRoute {
                 shortlist: shortlist.clone(),

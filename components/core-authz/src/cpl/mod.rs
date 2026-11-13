@@ -16,6 +16,11 @@
 //!   (`Source::Consent`, the input the asker's party): a no refuses `not_permitted`, nothing is a missing input. Who
 //!   is asked under the person's own consent is that consent's to bound, and the set asked is bounded below; it isn't
 //!   held to a shortlist, since a person may consent before any route is built.
+//! - **The order's own question, about one of its parties.** On a shortlisted route the same fixed rule holds the
+//!   asker to the order's requester (`Source::Requester`, the input the asker's party), or, stating Core's role, to an
+//!   actor the register lists as carrying the order's authority onward (`Permission::CarryOnward`), and the person
+//!   asked about to the order's parties (`Source::OrderParties`, the input the person): a no refuses `not_permitted`
+//!   (`REQ-CPL-2`, `THR-45`; round 1 of the review).
 //! - **On a shortlisted route** (read from the log on policy's handle). The shortlist the question cites must be the
 //!   order's latest shortlist round's record, so a recalculation's new shortlist puts the providers the old one named
 //!   off the route; the providers and verifiers the authority names must be among that record's shortlisted
@@ -44,13 +49,14 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, PersonQuestions, PolicyLog};
 use rutent_contracts::core_internal::{
-    Answer, Authority, Entry, Outcome, PersonAnswer, PersonQuestion, Receipt, RefusalClass,
+    Answer, Authority, Entry, Outcome, PersonAnswer, PersonQuestion, Receipt, RefusalClass, Role,
     RoutingRound, VerifiedEntry, What, Work,
 };
 use rutent_contracts::provider_role::SafeInteger;
 use rutent_contracts::router_api::Id;
 
 use crate::engine::{Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources};
+use crate::roles::Permission;
 use crate::stuck::Receipted;
 
 /// How many providers and verifiers may be asked about one order's people, across its recalculations (`REQ-CPL-5`).
@@ -69,40 +75,79 @@ pub enum SetAsked {
     },
 }
 
-/// The record of consents' word that the consent a question on the person's own authority names is that person's
-/// and lets the asker's party ask.
-fn consent_need(asked: Asked<'_>) -> Option<Need> {
+/// One input the fixed rule needs, the word it must give, and the refusal where it gives the other.
+struct Held {
+    need: Need,
+    must: Said,
+    or: RefusalClass,
+}
+
+/// What the fixed rule holds a question about a person to.
+///
+/// - On the person's own authority: the record of consents' word that the consent it names is that person's and lets
+///   the asker's party ask.
+/// - On a shortlisted route: the question is the order's own (`REQ-CPL-2`, `THR-45`). Its asker acts for the order's
+///   requester (`Source::Requester`, the input the asker's party), or, stating Core's role, is an actor the register
+///   lists as carrying the order's authority onward (`Permission::CarryOnward`, by its login, as Core's moves are);
+///   and the person asked about is one of the order's parties (`Source::OrderParties`, the input the person), the
+///   parties a provider's rules name (`REQ-ORD-17`).
+fn held(asked: Asked<'_>) -> Vec<Held> {
     let Asked::AskAboutPerson(question) = asked else {
-        return None;
+        return Vec::new();
     };
-    let Authority::Person { consent } = &question.authority else {
-        return None;
-    };
-    Some(Need {
-        input: question.asker.party.clone(),
-        from: Source::Consent {
-            person: question.person.clone(),
-            consent: consent.clone(),
+    let yes = |input: &Id, from: Source| Held {
+        need: Need {
+            input: input.clone(),
+            from,
         },
-    })
-}
-
-/// What the fixed rule needs: the consent's word, for a question on the person's own authority.
-pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
-    Reply::Given(consent_need(asked).into_iter().collect())
-}
-
-/// Its ruling: a question on the person's own authority rests on the consent's yes; a no refuses it, and nothing is
-/// a missing input. Every other call passes.
-pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
-    let Some(need) = consent_need(asked) else {
-        return Reply::Given(Ruling::Permit);
+        must: Said::Yes,
+        or: RefusalClass::NotPermitted,
     };
-    match inputs.iter().find(|i| i.need == need).map(|i| i.said) {
-        Some(Said::Yes) => Reply::Given(Ruling::Permit),
-        Some(Said::No) => Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)),
-        None => Reply::Missing,
+    let asker = &question.asker;
+    match &question.authority {
+        Authority::Person { consent } => vec![yes(
+            &asker.party,
+            Source::Consent {
+                person: question.person.clone(),
+                consent: consent.clone(),
+            },
+        )],
+        Authority::ShortlistedRoute { .. } => vec![
+            if asker.role == Role::Core {
+                yes(
+                    &asker.acts,
+                    Source::Permissions {
+                        party: asker.party.clone(),
+                        permission: Permission::CarryOnward,
+                    },
+                )
+            } else {
+                yes(&asker.party, Source::Requester(question.order.clone()))
+            },
+            yes(
+                &question.person,
+                Source::OrderParties(question.order.clone()),
+            ),
+        ],
     }
+}
+
+/// What the fixed rule needs.
+pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
+    Reply::Given(held(asked).into_iter().map(|h| h.need).collect())
+}
+
+/// Its ruling: each input must give the word the rule holds it to, the first that doesn't refusing for its class; an
+/// input not given is missing. Every other call passes.
+pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
+    for h in held(asked) {
+        match inputs.iter().find(|i| i.need == h.need).map(|i| i.said) {
+            Some(word) if word == h.must => {}
+            Some(_) => return Reply::Given(Ruling::Refuse(h.or)),
+            None => return Reply::Missing,
+        }
+    }
+    Reply::Given(Ruling::Permit)
 }
 
 /// The verified entries `entries` hold as permitted.
