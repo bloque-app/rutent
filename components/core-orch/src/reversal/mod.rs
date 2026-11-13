@@ -69,7 +69,7 @@ use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
 use rutent_contracts::core_internal::{
     About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
     FAULT_ACCEPTANCE_SHAPE, FaultAcceptance, OperatorCommand, Outcome, Permit, ReadCheck,
-    ReadOutcome, Receipt, Role, VerifiedKind, What,
+    ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
