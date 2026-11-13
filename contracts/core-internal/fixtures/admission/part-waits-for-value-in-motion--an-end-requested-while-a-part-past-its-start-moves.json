@@ -1,6 +1,6 @@
 {
   "row": "part-waits-for-value-in-motion",
-  "breaks": "conflict",
+  "breaks": null,
   "history": [
     {
       "receipt": {

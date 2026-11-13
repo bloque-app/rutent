@@ -3468,13 +3468,19 @@ pub static RELATIONS: [Relation; 93] = [
             _ => none(),
         },
         answers: |e, _, t, h| {
-            // An end requested ends every part of the order: none may have value in motion.
+            // An end requested ends the parts that haven't passed their first segment, as the state machine does:
+            // none of those may have value in motion. A part past it goes on, and its moves with it.
             if let Some(order) = ended_on_request(e) {
                 if verified(t).is_some_and(|v| v.what == e.what) {
                     return Match::NotTarget;
                 }
                 return if order_parts(order, h)
                     .into_iter()
+                    .filter(|part| {
+                        standing(order, part, h).is_some_and(|s| {
+                            s.part.state == crate::state_machine::OrderState::NotPastFirstSegment
+                        })
+                    })
                     .any(|part| in_motion(order, part, t, h) == Match::Holds)
                 {
                     Match::Holds
