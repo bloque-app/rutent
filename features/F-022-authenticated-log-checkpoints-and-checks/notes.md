@@ -498,3 +498,42 @@ signature is verified under that same key).
 
 - `T-022-04`'s hand-off, a contract shape for a checkpoint and its opening, is added by `T-020-21` (`core-internal`'s
   next round) and adopted here by `T-022-07`, which waits for it.
+
+## T-022-02
+
+- **What is built.** `components/core-audit/src/statements/mod.rs` and `tests/statements.rs`; nothing in `log/`,
+  `receipts/` or `contracts/`. Most of the row was already true of the log (`attribute`), the evidence store (bytes
+  as received, restatement index) and the contract's operator-command relation; those tests were green on first
+  run and are witnessed by rule-offs below. New code is only where something was missing.
+- **`Statements<E: Evidence, L: Log>`**, the way a party's statement enters: refuses non-envelopes before keeping
+  anything (`NOT_A_STATEMENT`), keeps the bytes, appends the stated entry unverified naming the claimed maker, and
+  sets `relayed_by` to whoever presented it where that is not the claimed maker. Answers `Received` with the
+  store's `restates`. The log, never this, attributes. Named default: the claimed maker is the caller's input
+  (the catalogue's actor for the envelope's maker); the log refuses to verify a mismatch.
+- **`restatements(entries, kept)`**, a read over the log and the store's own read that finds every stated entry
+  repeating the signed content (`signing_input`) of an earlier one, so a copy appended with no relay named is found
+  after the fact; `Restatement::is_passed_off` marks another maker with no relay named. A garbled-signature copy has
+  the same signed content and is found. The content key is recomputed from `signing_input`, duplicating the
+  store's private `content_of`. An entry whose bytes the store answers none for (erased or lost) goes to `unread`.
+- **`unproven(entries, kept)`**, holds each entry marked `verified` against the kept statement: commitment, maker,
+  shape, time, key and strict signature. It cannot check that the key is the maker's (the log's register).
+- **Reading, reversible:** "names its operator" is the actor reference (`acts`) of the entry's `who`, not a signing key.
+- **Findings (not fixed; outside this row's files).**
+  1. `AuditLog::open` re-attributes nothing: a store holding entries marked `verified` that no kept statement
+     bears out opens fine (tested), so on the reopen path `G-09` rests on `unproven` being run by a checker with
+     evidence access; `T-022-04`'s checker holds no kept bytes. Owner: `T-022-04` / `T-024-02` to run it, or
+     `T-022-01` to re-attribute on opening.
+  2. `core-orch` always writes `relayed_by: None` (`snapshot/statements.rs`), whatever `Kept::restates` says; the
+     assembly should use `Statements`, or orch set it. Owner: `F-020` / `T-024-02`.
+  3. A `decide` entry whose `who` is not the request's `caller` is admitted (probed); nothing holds them equal.
+     Owner: `F-021`.
+  4. A stated entry's `role` is the writer's label and no relation reads it: a verified provider statement claimed
+     in the customer's role is recorded verified with that role (probed). Owner: `F-020` (`REQ-AUD-8`).
+  5. A maker's resend of its own statement and a relay's copy passed off as the maker's with the same presenter
+     identity read alike; only the presenter's authenticated identity (`Presented::presented_by`) tells them apart.
+- **Rule-off table** (each switched off once, tests run, tree restored): intake's `relayed_by` -> `restated_quote_is_detected`;
+  intake keeping stripped bytes -> all four others that attribute, incl. `signature_is_kept_with_the_bytes_it_signed`;
+  scan filing by raw bytes -> `restated_quote_is_detected`; scan dropping the relay -> same; `unproven` without
+  the signature check, and without the maker check -> `statement_whose_signature_doesnt_verify...`; log's strict
+  verifier always true -> signature, restated, kept tests; log's `admit_entry` off ->
+  `operator_commands_entry_names_its_operator` and `one_party_with_several_roles_is_recorded_per_role`. None hung.
