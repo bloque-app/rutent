@@ -36,6 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::role::stand_in::{Exchange, Identity, Ramp, Reserve, Verifier, refusal_to};
+
+pub use crate::role::stand_in::Shape;
 use crate::role::{Received, RoleHarness, RoleProvider, SuiteContext};
 use rutent_contracts::provider_role::{Advertisement, Operation, Statement};
 
@@ -149,17 +151,25 @@ impl Spec {
 
     /// Its publisher: one per provider, so two reserves on two private nodes have two (`DEC-24`).
     pub fn publisher(&self) -> String {
-        format!("{}-publisher", self.provider)
+        format!("{}-publisher", self.beside())
+    }
+
+    /// The provider whose books and nodes this one sits beside: itself, unless its shape says another
+    /// ([`Shape::beside`]).
+    fn beside(&self) -> String {
+        shape_of(&self.provider)
+            .beside
+            .unwrap_or_else(|| self.provider.clone())
     }
 
     /// The bank network of a reserve.
     pub fn bank(&self) -> String {
-        format!("{}-bank", self.provider)
+        format!("{}-bank", self.beside())
     }
 
     /// The private node of a reserve, which its publisher declares.
     pub fn ledger(&self) -> String {
-        format!("{}-ledger", self.provider)
+        format!("{}-ledger", self.beside())
     }
 
     /// The seed of its placeholder keys: 40 to 59, from its name. A kit that lists several providers checks that
@@ -183,17 +193,59 @@ impl Spec {
     pub fn make(&self, context: &SuiteContext) -> Box<dyn Standin> {
         let identity = self.identity();
         match self.role {
-            Role::Reserve => Box::new(Reserve::declaring(
-                context,
-                &identity,
-                &self.bank(),
-                &self.ledger(),
-                self.automatic_deposits,
-            )),
+            Role::Reserve => Box::new(
+                Reserve::declaring(
+                    context,
+                    &identity,
+                    &self.bank(),
+                    &self.ledger(),
+                    self.automatic_deposits,
+                )
+                .shaped(&shape_of(&self.provider)),
+            ),
             Role::Exchange => Box::new(Exchange::named(context, &identity)),
             Role::Ramp => Box::new(Ramp::named(context, &identity)),
             Role::Verifier => Box::new(Verifier::named(context, &identity)),
         }
+    }
+}
+
+/// How long a reserve declares, in seconds, when it is slow: more than the three days past which a quote has no firm
+/// rate (`REQ-QTE-10`).
+pub const SLOW_SECONDS: u64 = 4 * 86_400;
+
+/// The shape the simulated reserve named `provider` takes (`T-024-03`): the default for any name but these, which a
+/// scenario that needs reserves alike in what they serve and unlike in what they charge, how fast they settle and
+/// how well they evidence it, installs by name. The guests build a provider from its name alone, as they seed its keys
+/// from it, so the name is where a shape is kept.
+///
+/// - `sim-reserve-a-quick` sits beside `sim-reserve-a`, serving its two tuples: it charges 5 000 on each movement,
+///   declares thirty seconds to settle (Core prices a plain reserve at sixty) and declares a public record.
+/// - `sim-reserve-slow` declares four days to settle ([`SLOW_SECONDS`]).
+/// - `sim-reserve-charging` charges 7 on each movement beyond what it quoted.
+/// - `sim-reserve-dear` charges 6 000 000 on each movement, quoted.
+pub fn shape_of(provider: &str) -> Shape {
+    match provider {
+        "sim-reserve-a-quick" => Shape {
+            fee: 5_000,
+            settles_in: Some(30),
+            grade: Some(rutent_contracts::provider_role::EvidenceGrade::PublicRecord),
+            beside: Some("sim-reserve-a".to_owned()),
+            ..Shape::default()
+        },
+        "sim-reserve-slow" => Shape {
+            settles_in: Some(SLOW_SECONDS),
+            ..Shape::default()
+        },
+        "sim-reserve-charging" => Shape {
+            extra_charge: 7,
+            ..Shape::default()
+        },
+        "sim-reserve-dear" => Shape {
+            fee: 6_000_000,
+            ..Shape::default()
+        },
+        _ => Shape::default(),
     }
 }
 

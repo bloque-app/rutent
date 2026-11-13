@@ -281,6 +281,26 @@ fn terms(min: &str, max: &str, reporting: Reporting, inputs: &[&str]) -> Terms {
     }
 }
 
+/// How a simulated reserve departs from the stand-in's defaults, which `rutent_conformance::sim` picks by the
+/// provider's name (`T-024-03`): what it charges and when it settles, the evidence it declares, and whose books and
+/// nodes it sits beside. The defaults are the stand-in's own, so a stand-in under no shape is the one the role suite
+/// runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shape {
+    /// The seconds it declares to settle, where it isn't the role's own.
+    pub settles_in: Option<u64>,
+    /// What it takes from each movement, quoted and charged, in the asset moved: reported net, so the amount it gives
+    /// out is the amount it took in less this.
+    pub fee: u128,
+    /// What it charges on execution above what it quoted: a charge known only after the movement (`REQ-QTE-5`).
+    pub extra_charge: u128,
+    /// The evidence it declares and gives, where it isn't the role's own.
+    pub grade: Option<EvidenceGrade>,
+    /// The provider whose publisher, bank network and private node it shares, so two providers serve the same
+    /// tuples. Its own are used where it names none.
+    pub beside: Option<String>,
+}
+
 /// A real value-moving operation's transaction: the one a repeat would name.
 fn real_transaction(operation: &Operation) -> Option<&str> {
     match operation {
@@ -380,6 +400,7 @@ pub struct Reserve {
     results: BTreeMap<String, Statement<ResultBody>>,
     pending: BTreeMap<String, ReserveMovementOutcome>,
     unknown_next: bool,
+    shape: Shape,
     faults: BTreeSet<Fault>,
 }
 
@@ -503,8 +524,24 @@ impl Reserve {
             results: BTreeMap::new(),
             pending: BTreeMap::new(),
             unknown_next: false,
+            shape: Shape::default(),
             faults: BTreeSet::new(),
         }
+    }
+
+    /// This reserve under `shape`: what it takes from a movement, what it charges beyond the quote, when it declares
+    /// it settles and the evidence it declares. Its advertisement is signed again.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.shape = shape.clone();
+        self
     }
 
     /// Breaks `REQ-CAT-9`: the reserve executes transfers, moving value outside its role.
@@ -600,21 +637,26 @@ impl Reserve {
         if lacks_inputs(&terms.required_inputs, inputs) {
             return ReserveMovementOutcome::Refused(waiting_on_the_person());
         }
-        let fee = Fee {
+        // Reported net: what it gives out is what it took in less its charge, which a dry run quotes at `fee` and a
+        // movement charges at `fee` and the charge beyond it (`REQ-QTE-5`).
+        let charged = |fee: u128| Fee {
             asset: asset.to_owned(),
-            amount: "0".to_owned(),
+            amount: fee.to_string(),
             billed_separately: None,
         };
+        let out_of = |fee: u128| value.saturating_sub(fee).to_string();
         if dry_run {
             return ReserveMovementOutcome::DryRunAccepted(ReserveDryRunAnswer {
                 amount_in: stated.to_owned(),
-                amount_out: stated.to_owned(),
-                fee,
+                amount_out: out_of(self.shape.fee),
+                fee: charged(self.shape.fee),
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::AmountChanges],
-                settlement_seconds: seconds(86_400),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(86_400)),
             });
         }
+        let taken = self.shape.fee + self.shape.extra_charge;
+        let fee = charged(taken);
         // A withdrawal takes the value out of the holder's account; a deposit puts it in.
         let balance = self.balances.entry(self.account.clone()).or_insert(0);
         match origin {
@@ -627,9 +669,13 @@ impl Reserve {
         self.movements.push(transaction.to_owned());
         let settled = ReserveMovementOutcome::Succeeded(MovementSettlement {
             amount_in: stated.to_owned(),
-            amount_out: stated.to_owned(),
+            amount_out: out_of(taken),
             fee,
-            evidence: evidence(EvidenceGrade::SignedByProvider, &self.name, transaction),
+            evidence: evidence(
+                self.shape.grade.unwrap_or(EvidenceGrade::SignedByProvider),
+                &self.name,
+                transaction,
+            ),
         });
         if std::mem::take(&mut self.unknown_next) {
             // The movement happened, but the reserve can't tell yet; its status query tells later.
