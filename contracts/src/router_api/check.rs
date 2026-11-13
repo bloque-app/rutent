@@ -1919,17 +1919,55 @@ impl SettlementTimes {
     }
 }
 
+impl Figure {
+    /// When the figure stops being usable, in nanoseconds since the Unix epoch, counted from a snapshot taken at
+    /// `taken_at`: `taken_at + (valid_for_seconds − age_seconds)`. Age is rounded up and validity down, so this is
+    /// never later than the figure's own `valid_until`. `None` for a figure that states no validity, which holds
+    /// until replaced (an advertisement, a price); a figure already past its validity expires at `taken_at`.
+    pub fn expires_at(&self, taken_at: &Timestamp) -> Option<i128> {
+        let valid = self.valid_for_seconds?.get();
+        let left = valid.saturating_sub(self.age_seconds.get());
+        Some(taken_at.unix_nanos() + i128::from(left) * 1_000_000_000)
+    }
+}
+
+impl DecisionRecord {
+    /// The earliest expiry ([`Figure::expires_at`]) of the figures `candidate`'s operations cite, from this record's
+    /// snapshot; `None` where none of them states a validity.
+    pub fn earliest_expiry(&self, candidate: &Candidate) -> Option<i128> {
+        candidate
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .flat_map(|o| o.figures.iter())
+            .filter_map(|id| self.figure(id))
+            .filter_map(|f| f.expires_at(&self.snapshot.taken_at))
+            .min()
+    }
+}
+
 impl HeldQuote {
-    /// Checks the record whole, that it chose a candidate, and that the hold's validity is at or after the
-    /// record's snapshot was taken (`REQ-QTE-15`).
+    /// Checks the record whole, that it chose a candidate, that the hold's validity is at or after the record's
+    /// snapshot was taken, and that it is no later than the earliest expiry of the figures the chosen candidate cites
+    /// ([`DecisionRecord::earliest_expiry`]), so a hold never outlives what its quote rests on (`REQ-QTE-15`,
+    /// `REQ-QTE-4`).
     pub fn check(&self) -> Result<(), Violation> {
         self.record.check()?;
-        if self.record.chosen().is_none() {
+        let Some(chosen) = self.record.chosen() else {
             return Err(Violation("a held quote's record chose a candidate"));
-        }
+        };
         if self.valid_until.unix_nanos() < self.record.snapshot.taken_at.unix_nanos() {
             return Err(Violation(
                 "a held quote's validity is at or after its record's snapshot",
+            ));
+        }
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| self.valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
             ));
         }
         Ok(())

@@ -29,7 +29,7 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 129] = [
+const RUST_RULES: [(&str, &str); 130] = [
     (
         "policy-bounds-two-slippage-limits-for-one-tuple",
         "there is at most one slippage limit per tuple",
@@ -53,6 +53,10 @@ const RUST_RULES: [(&str, &str); 129] = [
     (
         "held-quote-of-a-record-choosing-nothing",
         "a held quote's record chose a candidate",
+    ),
+    (
+        "held-quote-valid-until-past-its-quotes-figures",
+        "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
     ),
     (
         "decision-record-naming-an-undeclared-call",

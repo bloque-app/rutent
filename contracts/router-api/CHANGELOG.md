@@ -1,6 +1,13 @@
 # router-api changelog
 
 ## 4.0.0
+- A held quote never outlives what its quote rests on: `HeldQuote::check` refuses a `valid_until` later than the
+  earliest expiry of the figures the chosen candidate cites, each at the snapshot's `taken_at` plus its validity
+  less its age (`Figure::expires_at`, `DecisionRecord::earliest_expiry`, both new and public; a figure that states no
+  validity caps nothing). Before it, a hold could run past the quotes it was priced on (round 3 of the contract,
+  item v). Folded into this unreleased major. The valid fixture's hold now ends at its quotes' earliest expiry,
+  15:01:55; a new invalid fixture, `held-quote-valid-until-past-its-quotes-figures`, a second later. (DEC-4, DEC-20,
+  REQ-QTE-15, REQ-QTE-4, T-020-01)
 - An operation's `fee` is provider-role's fee by reference, so with provider-role 3.1.0 it may carry the optional
   `billed_separately`, what the provider stated of billing it separately. The router never sets it. Folded into this
   unreleased major. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)

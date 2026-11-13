@@ -79,7 +79,10 @@ the checks stay public functions of the router:
 - **The actual settlement times** (`REQ-QTE-3`): `SettlementTimes`, a segment's declared seconds with when it
   started and settled, never backwards.
 - **The held quote** (`REQ-QTE-15`): `HeldQuote`, a choice round's record that chose a candidate, with a validity at
-  or after its snapshot.
+  or after its snapshot and no later than the earliest expiry of the figures its chosen candidate cites
+  (`DecisionRecord::earliest_expiry`): a figure expires at the snapshot's `taken_at` plus its validity less its age,
+  never later than its own `valid_until` since age rounds up and validity down; a figure that states no validity
+  caps nothing. A hold never outlives what its quote rests on (`REQ-QTE-4`).
 
 The first two sit in the policy bounds, so a decision record names the bounds it ran under (`REQ-AUD-4`); the rest
 are Core's records over these types.
@@ -187,7 +190,7 @@ only records that pass theirs, so a stored record recomputes.
 | At most one slippage limit per tuple; the operator's fee's proportion is at most one (4.0.0) | can't be stated | `PolicyBounds::check` |
 | Every exchange tuple of the snapshot settling within three days, by its price or a fresh quote, has a slippage limit in the bounds (4.0.0, `REQ-QTE-9`) | can't be stated | `PolicyBounds::check_against`, `DecisionRecord::check` |
 | A record's `ranking` is `before_operator_fee` (4.0.0) | `enum` | `Ranking` |
-| Stated terms say when they were stated; settlement times hold the declared seconds, and settle at or after they start; a held quote has a validity, at or after its record's snapshot, and its record chose a candidate (4.0.0) | `required` for the first, the second and the third | `StatedTerms`, `SettlementTimes::check`, `HeldQuote::check` |
+| Stated terms say when they were stated; settlement times hold the declared seconds, and settle at or after they start; a held quote has a validity, at or after its record's snapshot and no later than the earliest expiry of the figures its chosen candidate cites, and its record chose a candidate (4.0.0) | `required` for the first, the second and the third | `StatedTerms`, `SettlementTimes::check`, `HeldQuote::check` |
 | A statement's envelope names its shape and its maker is its figure's provider | `const` | `check_shape`, `CatalogueSnapshot::check` |
 | A fresh quote is a transfer quote for a ramp's tuple or a conversion quote for an exchange's; a dry run answers for its tuple's kind of operation | `enum`, `const` on kind and status | `CatalogueSnapshot::check` |
 | A fresh quote's fee is in its tuple's input asset and at most its amount in; it names each void condition once | `uniqueItems` for the last | `CatalogueSnapshot::check` |
