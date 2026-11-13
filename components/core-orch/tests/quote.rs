@@ -351,12 +351,59 @@ fn a_priced_gross_operation_with_a_coarser_out_unit_is_shown_as_it_states_what_a
         .iter()
         .find(|c| c.dropped.is_none())
         .expect("the router lists the route");
+    assert_priced_deposit_is_shown_as_it_states(&record, candidate);
+
+    // The same route with a provider's answer cited that didn't set the amount: a dry run of the deposit, past its
+    // validity, which the router cites and doesn't bind. It reproduces nothing, so the deposit is still the price's.
+    let mut net = Net::new(100_000_050);
+    net.dry_run(
+        "d0",
+        RESERVE,
+        "deposit",
+        &Leg {
+            answer_fee: 50,
+            gross: true,
+            ..Leg::free("USDC")
+        },
+        100_000_050,
+    );
+    // Made at 15:01:40, valid for 120 seconds, and the snapshot taken at 15:04:00: 140 seconds old, past its validity.
+    let mut stale = net.figures.pop().expect("the dry run's figure");
+    stale["age_seconds"] = json!(140);
+    let mut figures = serde_json::to_value(&snapshot).unwrap();
+    figures["taken_at"] = json!("2026-11-06T15:04:00Z");
+    figures["figures"].as_array_mut().unwrap().push(stale);
+    let snapshot: rutent_contracts::router_api::CatalogueSnapshot =
+        serde_json::from_value(figures).unwrap();
+    let record = routed(&request, &snapshot, &bounds(fee("0", "0", "1"), &[]));
+    let candidate = record
+        .candidates()
+        .first()
+        .expect("the router lists the route");
+    assert!(
+        candidate
+            .parts
+            .first()
+            .operations
+            .last()
+            .figures
+            .iter()
+            .any(|f| f.as_str() == "d0-dry-100000050"),
+        "the deposit cites the answer that didn't set its amount"
+    );
+    assert_priced_deposit_is_shown_as_it_states(&record, candidate);
+}
+
+fn assert_priced_deposit_is_shown_as_it_states(
+    record: &DecisionRecord,
+    candidate: &rutent_contracts::router_api::Candidate,
+) {
     assert_eq!(
         candidate.parts.first().operations.last().amount_out,
         amount("1000000"),
         "the router states what arrives by the priced deposit"
     );
-    let shown = show(&record, candidate, None).expect("what the priced operation states arrives");
+    let shown = show(record, candidate, None).expect("what the priced operation states arrives");
     assert_eq!(shown.arrives, amount("1000000"));
     assert!(shown.within.is_empty(), "no charge is taken off twice");
 }
