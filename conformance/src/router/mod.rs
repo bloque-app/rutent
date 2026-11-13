@@ -538,11 +538,14 @@ impl<'a> Reader<'a> {
                 }
                 if !answers.is_empty() {
                     for (id, answer) in answers {
-                        // What arrives by the answer: under a gross tuple, a same-asset answer less its charge.
-                        let arrives =
-                            operation.stated_out(cited.tuple, answer.amount_out, answer.fee);
-                        if answer.fee != &operation.fee
-                            || arrives.as_deref() != Some(operation.amount_out.as_str())
+                        // What arrives by the answer: under a gross tuple, a same-asset answer less its charge,
+                        // and nothing where its charge is above what it gives out. Such an operation states `0`
+                        // out, so its candidate is dropped as arriving with nothing, or as delivering nothing
+                        // short of the destination: a kept candidate can't state `0` out (`T-011-07`).
+                        let arrives = operation
+                            .stated_out(cited.tuple, answer.amount_out, answer.fee)
+                            .unwrap_or_else(|| "0".to_owned());
+                        if answer.fee != &operation.fee || arrives != operation.amount_out.as_str()
                         {
                             fail(format!(
                                 "states a fee of {} and {} out, but answer {id} gives {} and {} out, {} arriving",
@@ -550,7 +553,7 @@ impl<'a> Reader<'a> {
                                 operation.amount_out,
                                 answer.fee.amount,
                                 answer.amount_out,
-                                arrives.as_deref().unwrap_or("nothing")
+                                arrives
                             ));
                         }
                     }
