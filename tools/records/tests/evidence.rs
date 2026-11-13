@@ -606,3 +606,12 @@ fn the_ci_run_fails_a_switch_turned_off_against_a_base_that_has_it_on() {
     std::fs::remove_dir_all(&base).unwrap();
     std::fs::remove_dir_all(&head).unwrap();
 }
+
+// verifies: DEC-21
+#[test]
+fn an_ignored_test_with_a_reason_is_read_as_ignored() {
+    let results = Results::parse("test a::skipped ... ignored, needs a network\ntest a::plain ... ignored");
+    assert_eq!(results.state("skipped"), "ignored");
+    assert_eq!(results.state("plain"), "ignored");
+    assert!(!results.passed("skipped", 1));
+}

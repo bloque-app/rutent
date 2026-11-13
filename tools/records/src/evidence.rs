@@ -224,7 +224,11 @@ impl Results {
             let Some((path, outcome)) = rest.rsplit_once(" ... ") else {
                 continue;
             };
-            let outcome = match outcome.split_whitespace().next() {
+            let outcome = match outcome
+                .split_whitespace()
+                .next()
+                .map(|w| w.trim_end_matches(','))
+            {
                 Some("ok") => Outcome::Passed,
                 Some("FAILED") => Outcome::Failed,
                 Some("ignored") => Outcome::Ignored,
