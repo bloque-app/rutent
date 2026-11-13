@@ -312,3 +312,113 @@ two `toolchain:` inputs in `ci.yml` together (a `DEC-20` path), reformats with t
 chain on the new version, so a toolchain release never turns a branch red by itself. The sub-workspaces under
 `components/stm/vos-program/` and `experiments/` pin their own toolchains and move separately.
 
+
+## T-024-09: the requirement-to-evidence table
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+### What was built
+
+- **`evidence-table`**, a binary of `rutent-records` (`tools/records/src/bin/evidence-table.rs`, over
+  `tools/records/src/evidence.rs`), `std` only. It reads `conformance/evidence/v0-scope`, the `// verifies:` tags
+  (the tag check's own reader, over every `.rs` file under the root) and a results file, and prints one line per
+  row with its class, status and the tests, check or owner behind it, then the findings.
+- **Three modes.** Report (the default) prints and exits 0. `--strict` fails on any finding, whatever the file's
+  switch says. `--ci` is the one CI step that reads the switch: with `strict: on` it is `--strict`; with
+  `strict: off` it reports the table's own findings and still fails on the comparison with `develop` (below).
+  Exit 2 is "could not read the records", never a pass.
+- **The scope file's format** (the header of the file says it too): `ID | class | citations | note`, one
+  `strict: on|off` line, `#` comments. Classes: `m3` (a passing tagged test), `partly` (`form:<item>`), `inspect`
+  (`check:documentation|boundary|licence`, or `review:F-0NN` whose `features/F-0NN-*/notes.md` exists), `m4` (`F-0NN`
+  and `7.1:<family>`), `deferred` (`DEC-n`, or `ASM-n`, or `F-0NN` with `7.1:<family>`). An `m3` row may cite
+  `later-part:F-0NN`, the owner of a half that comes later.
+- **The 232 rows** are the identifiers `SPEC.md` defines in `REQ-`, `INV-`, `AC-`, `NFR-` and `GUA-`, less the
+  withdrawn ones (the tag check's reading of withdrawal). Placed as the row says: `REQ-OPS-4`, `REQ-PRT-2`,
+  `REQ-PRT-4` `m4` under `F-030`; `REQ-QTE-16`, `REQ-ORD-42`, `AC-38` deferred by `DEC-8`; `REQ-CPL-1`, `-4`, `-7`,
+  `-10` and `AC-16` by `DEC-16`; `REQ-PRT-3` and `GUA-6` by `DEC-17`; `REQ-EXT-1` by `F-052` and §7.1; `NFR-1` by
+  `ASM-1` and §6.2 risk 9; `REQ-CAT-5` partly met on `cat5-timing-residual`; `REQ-MOD-2` and `NFR-7` by the
+  documentation check, `REQ-MOD-3` by the boundary check, `REQ-MOD-5` by the licence check, `REQ-EXT-2` by `F-011`'s
+  notes. `REQ-AUD-10`, `REQ-AUD-12` and `AC-25` are `m3` with their `M4` owners (`F-033`, `F-033`, `F-030`) and
+  `REQ-CPL-12` is `m3` with its verifier half's owner, `F-053`. Every other row is `m3`.
+
+### How CI hands the table its results (the reading the plan leaves to the form)
+
+- The Test step now runs `cargo test --workspace --no-fail-fast 2>&1 | tee $RUNNER_TEMP/test-results.txt`, with
+  `shell: bash` so that the pipe keeps `-o pipefail` and a red test still fails the step (the default shell has no
+  pipefail). `--no-fail-fast` makes every crate's tests run, so a verifier in a later crate is not left unrun by an
+  earlier failure.
+- **Results are read from libtest's lines** (`test <path> ... ok|FAILED|ignored`; stable has no JSON output). A test
+  is matched **by the last `::` segment of its name**, and passes only if every run of that name passed. A name that
+  failed once, was ignored once or never ran does not pass, so a duplicate name fails closed. Doc tests and tests in
+  the separate workspaces (the module guests, the VOS twin) print no line the root run reads, so a verifier there is
+  not counted until a later row adds its own results.
+- The two new steps are in the `ci` job after Test: report mode (`--results ... --base .evidence-base`, appended to
+  the step summary) and the `--ci` run. Both read `develop`, checked out into `.evidence-base`, a hidden directory so
+  that the walk over the tests skips it (its tests must never count as the head's verifiers).
+
+### The ratchet against `develop` (the `evidence-scope-gate` item)
+
+- **The default of the form item is applied: ratchet only.** The file is not added to `CODEOWNERS` as a path of its
+  own (`.github/` is already guarded, and `PLAN.md` §4.4 gives `T-025-05` the review of the file), so no edit of
+  the file needs the owner's click at the release into `main`. What guards it is the comparison below.
+- **The comparison fails whatever the switch says.** A head that reads `strict: off` against a `develop` that reads
+  `on` fails; so does an identifier `develop` classes as `m3`, `partly` or `inspect` and the head classes as `m4` or
+  `deferred`, unless its new entry cites a row of the plan that this change made to place it there. Were the
+  comparison to wait on the switch, it could never fire, since it only matters while the head reads off.
+- **"Changed to place it"** is read as: a clause (split at `;` and `|`) of the cited row names the identifier and,
+  for `M4`, says `M4`, and no such clause was in `develop`'s row. For a deferral the cited decision is a `DEC-n` row;
+  for `M4` both the §7.1 family row (`7.1:REQ-OPS`) and the feature's row (which must say `M4`) must be cited and
+  must each do it. An edit elsewhere in a row that already placed the identifier excuses nothing; a row that names
+  it only under `M3` places it nowhere new.
+- **When `develop` has no scope file yet, the comparison is skipped and says so.** `--base` pointing at a checkout
+  whose `SPEC.md` or `PLAN.md` can't be read is an error (exit 2), not a skip, so a failed checkout of `develop`
+  fails the step.
+- **A row removed from the file** is not a reclassification; the table reports it as `missing-id`.
+
+### Defaults, each failing closed
+
+- A scope file with no `strict:` line reads off, and the table reports it.
+- With no results file nothing counts as passed, and the table says `no-results`.
+- A review (`review:F-0NN`) counts only if the feature's notes exist; a check counts only if it is one of the three
+  named. **The tool does not run those checks**; the documentation, boundary and licence checks are CI steps of their
+  own, and an inspection row is "verified" by naming them, as the row says.
+- A `deferred` row needs one `DEC-`, `ASM-` or `F-` identifier the plan or the specification defines. It does not
+  check that the cited decision's text names the identifier (the ratchet checks that only on a move).
+- `partly` rows are counted apart from verified ones, and need a `form:<item>`; the item's existence on the form is
+  not checked (the form is outside this repository).
+
+### Gaps (with owners)
+
+- **`T-024-10`** sets `strict: on` and gets the first passing run: the real table, with no results, has every `m3`
+  row unverified, since the scenarios that tag most `AC-*` and `INV-*` land in `T-024-03` to `T-024-08`. This row's
+  test of the real file checks its structure only (every identifier placed, citations well formed).
+- **`REQ-CAT-*` and `F-031`.** §7.1 puts `M4: F-031` in the `REQ-CAT` family and `F-031` serves `REQ-CAT-2`,
+  `REQ-CAT-22`, `REQ-MDL-1`, but the row names only `REQ-OPS-4`, `REQ-PRT-2` and `REQ-PRT-4` as `M4`, and `M2`
+  places `REQ-CAT-22` in `F-012`. They are `m3` here, so the table asks for a verifier of each. **Owner: the
+  orchestrating session**, to say if any is `M4`'s.
+- **`NFR-8`** is `m3` (§7.1: `F-012`), though `F-033` also serves it. Same owner.
+- **The `M4` halves** (`REQ-AUD-10`, `REQ-AUD-12`, `AC-25`) are carried as `later-part:` citations, as the note for
+  `F-032` the plan asks for; nothing reads them back. Owner: `F-032`.
+- **A deferral excused by §7.1 alone** (`REQ-EXT-1`'s shape) isn't an excuse for a move: the ratchet takes only a
+  `DEC-n` for a deferral, so moving an `m3` row to `deferred` by a §7.1 or `ASM-n` change fails until a decision
+  carries it. Fail-closed; the owner of the plan can add the decision.
+- **The comparison starts once the scope file is on `develop`**, as the row says: until then `T-024-10`'s
+  restriction to the `strict:` line and `T-025-05`'s review cover it.
+
+### Rule-off table (each rule switched off once; the test that went red)
+
+| Rule switched off | Red |
+|---|---|
+| identifier of `SPEC.md` in no row | `scope file missing a spec identifier is reported` |
+| `m3` row with no passing verifier | `m3 row whose only tests failed is reported` |
+| `m3` row with no tagged test | `m3 row with no tagged test is reported` |
+| deferred row without its decision | `deferred row without its plan decision is reported` |
+| partly met row without its form item | `partly met row without its form item is reported` |
+| inspection row without a check or review | `inspection row naming no check or review is reported` |
+| strict switch turned off against `develop` | `strict switch turned off after develop has it on fails`; the binary's test against a base |
+| reclassification reported | `m3 row reclassified against develop is reported`, and the two excuse tests |
+| the excuse needs a placement `develop`'s row lacked | `unrelated edit to a row naming the id does not excuse a reclassification` |
+| an `M4` move needs both cited rows | `reclassification is excused only by a changed placement that it cites` |
+| results fail closed on a name seen twice | `results are joined by the last segment of a test name and fail closed` |
+| only `M3`'s classes are held to the ratchet | `m3 row reclassified against develop is reported` |
+| `--ci` with the switch off fails on the table's findings | `the strict flag always runs strictly and the ci run follows the switch` |
