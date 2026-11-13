@@ -1,7 +1,9 @@
 //! Tests of the requirement-to-evidence table (`T-024-09`), on fixtures and on the real scope file.
 
 use rutent_records::Finding;
-use rutent_records::evidence::{Inputs, Report, Results, build, compare, parse_scope, universe};
+use rutent_records::evidence::{
+    Inputs, Place, Report, Results, build, compare, parse_scope, universe,
+};
 use rutent_records::ids::Defined;
 use rutent_records::tags::scan_tests;
 use std::collections::BTreeSet;
@@ -115,12 +117,7 @@ fn sources(without: &[&str]) -> String {
 fn all_pass() -> String {
     let lines = IDS
         .iter()
-        .map(|id| {
-            format!(
-                "test checks::checks_{} ... ok",
-                id.to_lowercase().replace('-', "_")
-            )
-        })
+        .map(|id| format!("test checks_{} ... ok", id.to_lowercase().replace('-', "_")))
         .collect::<Vec<_>>()
         .join("\n");
     format!("     Running tests/fixture.rs (/t/deps/fixture-0a1b)\n{lines}")
@@ -150,6 +147,7 @@ fn report_full(
         tests: &tests,
         results: &results,
         review_exists: &exists,
+        binaries: &|_| Vec::new(),
         plan: &plain_plan(),
         form_items,
     };
@@ -209,10 +207,7 @@ fn scope_file_missing_a_spec_identifier_is_reported() {
 // verifies: DEC-21
 #[test]
 fn m3_row_whose_only_tests_failed_is_reported() {
-    let results = all_pass().replace(
-        "test checks::checks_ac_1 ... ok",
-        "test checks::checks_ac_1 ... FAILED",
-    );
+    let results = all_pass().replace("test checks_ac_1 ... ok", "test checks_ac_1 ... FAILED");
     let found = table_findings(&scope_text("off", &[]), &sources(&[]), &results);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(
@@ -220,11 +215,8 @@ fn m3_row_whose_only_tests_failed_is_reported() {
         "{found:?}"
     );
     assert!(found[0].contains("failed"), "{found:?}");
-    for (label, line) in [
-        ("ignored", "test checks::checks_ac_1 ... ignored"),
-        ("not run", ""),
-    ] {
-        let results = all_pass().replace("test checks::checks_ac_1 ... ok", line);
+    for (label, line) in [("ignored", "test checks_ac_1 ... ignored"), ("not run", "")] {
+        let results = all_pass().replace("test checks_ac_1 ... ok", line);
         let found = table_findings(&scope_text("off", &[]), &sources(&[]), &results);
         assert!(
             some_with(&found, "no-passing-verifier", "AC-1") && found[0].contains(label),
@@ -236,11 +228,8 @@ fn m3_row_whose_only_tests_failed_is_reported() {
         sources(&[])
     );
     let results = format!(
-        "{}\ntest checks::also_checks_ac_one ... ok",
-        all_pass().replace(
-            "test checks::checks_ac_1 ... ok",
-            "test checks::checks_ac_1 ... FAILED",
-        )
+        "{}\ntest also_checks_ac_one ... ok",
+        all_pass().replace("test checks_ac_1 ... ok", "test checks_ac_1 ... FAILED",)
     );
     let found = table_findings(&scope_text("off", &[]), &two, &results);
     assert!(
@@ -467,6 +456,20 @@ fn test_in(file: &str, name: &str) -> rutent_records::tags::TestCase {
     scan_tests(file, &source).remove(0)
 }
 
+/// The place of the test `name` in `file`; a unit test of `crates/c/src/..` or `c/src/..` runs in binary `c`.
+fn place(file: &str, name: &str) -> Place {
+    let stem = file.split('/').find(|p| *p != "crates").unwrap_or_default();
+    Place::of(&test_in(file, name), vec![stem.to_string()])
+}
+
+fn passed(results: &Results, file: &str, name: &str, expected: usize) -> bool {
+    results.passed(&place(file, name), name, expected)
+}
+
+fn state(results: &Results, file: &str, name: &str) -> &'static str {
+    results.state(&place(file, name), name)
+}
+
 // verifies: DEC-21
 #[test]
 fn results_are_joined_by_target_and_full_path_and_fail_closed() {
@@ -474,30 +477,29 @@ fn results_are_joined_by_target_and_full_path_and_fail_closed() {
         "   Compiling x",
         "     Running tests/a.rs (/t/deps/a-1)",
         "running 5 tests",
-        "test m::one ... ok",
-        "test m::two ... ok",
-        "test m::two ... ok",
+        "test one ... ok",
+        "test two ... ok",
+        "test two ... ok",
         "test slow ... ignored",
         "test skipped ... ignored, with a reason",
         "test result: FAILED. 3 passed; 1 failed",
         "     Running tests/b.rs (/t/deps/b-2)",
-        "test m::one ... FAILED",
+        "test one ... FAILED",
         "   Doc-tests x",
         "test src/lib.rs - doc (line 3) ... ok",
     ]));
-    let a = |name| test_in("crates/x/tests/a.rs", name);
-    let b = |name| test_in("crates/y/tests/b.rs", name);
+    let (a, b) = ("crates/x/tests/a.rs", "crates/y/tests/b.rs");
     // The failure in b's `one` is b's alone; a's `one` passed in its own target.
-    assert!(results.passed(&a("one"), 1));
-    assert!(!results.passed(&b("one"), 1));
-    assert_eq!(results.state(&b("one")), "failed");
+    assert!(passed(&results, a, "one", 1));
+    assert!(!passed(&results, b, "one", 1));
+    assert_eq!(state(&results, b, "one"), "failed");
     // Two lines for a two-test place pass; one line for it doesn't.
-    assert!(results.passed(&a("two"), 2));
-    assert!(!results.passed(&a("two"), 3));
-    assert!(!results.passed(&a("slow"), 1) && !results.passed(&a("skipped"), 1));
-    assert_eq!(results.state(&a("skipped")), "ignored");
-    assert!(!results.passed(&a("absent"), 1));
-    assert_eq!(results.state(&a("absent")), "not run");
+    assert!(passed(&results, a, "two", 2));
+    assert!(!passed(&results, a, "two", 3));
+    assert!(!passed(&results, a, "slow", 1) && !passed(&results, a, "skipped", 1));
+    assert_eq!(state(&results, a, "skipped"), "ignored");
+    assert!(!passed(&results, a, "absent", 1));
+    assert_eq!(state(&results, a, "absent"), "not run");
     assert!(Results::parse("nothing here").is_empty());
 }
 
@@ -509,16 +511,8 @@ fn two_tests_of_one_name_in_different_targets_cannot_vouch_for_each_other() {
         "     Running tests/b.rs (/t/deps/b-2)",
         "test same ... ok",
     ]));
-    assert!(results.passed(&test_in("crates/y/tests/b.rs", "same"), 1));
-    assert!(!results.passed(&test_in("crates/x/tests/a.rs", "same"), 1));
-    // A unit test is joined by its module as well: `shape::tests::same` is not `other::tests::same`.
-    let units = Results::parse(&doc(&[
-        "     Running unittests src/lib.rs (/t/deps/x-3)",
-        "test shape::tests::same ... ok",
-    ]));
-    assert!(units.passed(&test_in("crates/x/src/shape.rs", "same"), 1));
-    assert!(!units.passed(&test_in("crates/x/src/other.rs", "same"), 1));
-    assert!(!units.passed(&test_in("crates/x/tests/b.rs", "same"), 1));
+    assert!(passed(&results, "crates/y/tests/b.rs", "same", 1));
+    assert!(!passed(&results, "crates/x/tests/a.rs", "same", 1));
     // And through the table: a tagged test whose twin ran elsewhere is not verified.
     let found = table_findings(
         &scope_text("off", &[]),
@@ -529,6 +523,100 @@ fn two_tests_of_one_name_in_different_targets_cannot_vouch_for_each_other() {
         some_with(&found, "no-passing-verifier", "AC-1"),
         "{found:?}"
     );
+}
+
+// verifies: DEC-21
+#[test]
+fn a_unit_test_of_a_crate_that_never_compiled_is_vouched_for_by_no_test_elsewhere() {
+    // A ghost crate (never built) tags `ghost_test` at the top of its lib.rs; a real crate's module `x` has an
+    // untagged test of the same name, and the run says `x::ghost_test ... ok` in the real crate's binary.
+    let results = Results::parse(&doc(&[
+        "     Running unittests src/lib.rs (/t/deps/real-1a2b)",
+        "test x::ghost_test ... ok",
+        "test other_test ... ok",
+    ]));
+    assert!(!passed(&results, "ghost/src/lib.rs", "ghost_test", 1));
+    assert!(!passed(&results, "ghost/src/x.rs", "ghost_test", 1));
+    // The real crate's own top-level test is a bare name in its own binary, and a module's test is its path.
+    assert!(passed(&results, "real/src/lib.rs", "other_test", 1));
+    assert!(passed(&results, "real/src/x.rs", "ghost_test", 1));
+    assert!(
+        !passed(&results, "real/src/lib.rs", "ghost_test", 1),
+        "x::ghost_test is not a bare ghost_test"
+    );
+    assert!(!passed(&results, "real/src/y.rs", "ghost_test", 1));
+    assert!(!passed(&results, "real/src/x.rs", "other_test", 1));
+}
+
+// verifies: DEC-21
+#[test]
+fn inline_modules_are_part_of_a_unit_tests_path() {
+    let source = doc(&[
+        "pub fn f() {}",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    // verifies: DEC-21",
+        "    #[test]",
+        "    fn inside() { let _ = \"}\"; }",
+        "    mod deeper {",
+        "        // verifies: DEC-21",
+        "        #[test]",
+        "        fn further() {}",
+        "    }",
+        "    // verifies: DEC-21",
+        "    #[test]",
+        "    fn after() {}",
+        "}",
+        "// verifies: DEC-21",
+        "#[test]",
+        "fn outside() {}",
+    ]);
+    let tests = scan_tests("real/src/x.rs", &source);
+    let modules: Vec<(String, String)> = tests
+        .iter()
+        .map(|t| (t.name.clone(), t.module.join("::")))
+        .collect();
+    assert_eq!(
+        modules,
+        [
+            ("inside", "tests"),
+            ("further", "tests::deeper"),
+            ("after", "tests"),
+            ("outside", "")
+        ]
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+    );
+    let results = Results::parse(&doc(&[
+        "     Running unittests src/lib.rs (/t/deps/real-1a2b)",
+        "test x::tests::inside ... ok",
+        "test x::tests::deeper::further ... ok",
+        "test x::tests::after ... ok",
+        "test x::outside ... ok",
+    ]));
+    for test in &tests {
+        let place = Place::of(test, vec!["real".to_string()]);
+        assert!(results.passed(&place, &test.name, 1), "{}", test.name);
+    }
+}
+
+// verifies: DEC-21
+#[test]
+fn a_crates_test_binaries_are_named_from_its_manifest() {
+    let dir = std::env::temp_dir().join(format!("rutent-evidence-stems-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("c/src/bin")).unwrap();
+    std::fs::write(
+        dir.join("c/Cargo.toml"),
+        "[package]\nname = \"my-crate\"\n\n[lib]\nname = \"libname\"\n",
+    )
+    .unwrap();
+    let stems = |file: &str| rutent_records::evidence::unit_binaries(&dir, file);
+    assert_eq!(stems("c/src/lib.rs"), ["libname"]);
+    assert_eq!(stems("c/src/main.rs"), ["my_crate"]);
+    assert_eq!(stems("c/src/foo.rs"), ["libname", "my_crate"]);
+    assert_eq!(stems("c/src/bin/tool.rs"), ["tool"]);
+    assert!(stems("nowhere/src/lib.rs").is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 // verifies: DEC-21
@@ -592,6 +680,7 @@ fn the_real_scope_file_is_well_formed_and_places_every_spec_identifier() {
         tests: &none,
         results: &results,
         review_exists: &exists,
+        binaries: &|file| rutent_records::evidence::unit_binaries(&root, file),
         plan: &plan_text,
         form_items: None,
     };
@@ -705,10 +794,9 @@ fn an_ignored_test_with_a_reason_is_read_as_ignored() {
     let results = Results::parse(
         "Running tests/x.rs (/t)\ntest skipped ... ignored, needs a network\ntest plain ... ignored",
     );
-    let skipped = test_in("tests/x.rs", "skipped");
-    assert_eq!(results.state(&skipped), "ignored");
-    assert_eq!(results.state(&test_in("tests/x.rs", "plain")), "ignored");
-    assert!(!results.passed(&skipped, 1));
+    assert_eq!(state(&results, "tests/x.rs", "skipped"), "ignored");
+    assert_eq!(state(&results, "tests/x.rs", "plain"), "ignored");
+    assert!(!passed(&results, "tests/x.rs", "skipped", 1));
 }
 
 // verifies: DEC-21

@@ -142,6 +142,7 @@ fn run(
             tests: &tests,
             results: &results,
             review_exists: &review_exists,
+            binaries: &|file| rutent_records::evidence::unit_binaries(root, file),
             plan: &plan,
             form_items: form_items.as_ref(),
         },

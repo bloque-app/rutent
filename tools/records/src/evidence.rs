@@ -212,60 +212,145 @@ pub enum Outcome {
 struct Run {
     /// The text after `Running ` up to the binary's path: `tests/boundary.rs`, `unittests src/lib.rs`.
     target: String,
+    /// The stem of the test binary, from the path in the header: `rutent_records` for `.../deps/rutent_records-1a2b`.
+    binary: String,
     path: String,
     outcome: Outcome,
 }
 
-/// Where a scanned test lives, as `cargo test` names it: an integration test's target (`tests/x.rs`), or a unit
-/// test (`unittests`) with the module its file stands for. A file that is neither has no target and never matches.
+/// Where a scanned test lives, as `cargo test` names it, exactly: an integration test's target (`tests/x.rs`), or
+/// a unit test's binary (the stems it may have: the crate's lib or bin name) with the module path its file and its
+/// inline `mod` blocks give. A test that is neither has no target and never matches. A test is run only as
+/// `module::name`, so a top-level test of `src/lib.rs` is a bare `name` in its own crate's binary and nowhere else.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Place {
+pub struct Place {
     target: String,
+    binaries: Vec<String>,
     module: String,
 }
 
 impl Place {
-    fn of(file: &str) -> Place {
-        let parts: Vec<&str> = file.split('/').collect();
+    /// The place of a scanned test. `binaries` are the `Running unittests` binary stems a unit test of its file
+    /// may run in ([`unit_binaries`]); they are not used for an integration test.
+    pub fn of(test: &TestCase, binaries: Vec<String>) -> Place {
+        let parts: Vec<&str> = test.file.split('/').collect();
         let dir = &parts[..parts.len().saturating_sub(1)];
+        let mut module: Vec<String> = Vec::new();
+        let place = |target: String, binaries: Vec<String>, mut module: Vec<String>| {
+            module.extend(test.module.iter().cloned());
+            Place {
+                target,
+                binaries,
+                module: module.join("::"),
+            }
+        };
         if let Some(at) = dir.iter().rposition(|p| *p == "tests") {
-            return Place {
-                target: format!("tests/{}", parts[at + 1..].join("/")),
-                module: String::new(),
-            };
+            return place(
+                format!("tests/{}", parts[at + 1..].join("/")),
+                Vec::new(),
+                module,
+            );
         }
         if let Some(at) = dir.iter().rposition(|p| *p == "src") {
             let rest = &parts[at + 1..];
             if rest.first() == Some(&"bin") {
-                return Place {
-                    target: format!("unittests src/{}", rest.join("/")),
-                    module: String::new(),
-                };
+                return place(
+                    "unittests".into(),
+                    binaries,
+                    rest[2.min(rest.len())..]
+                        .iter()
+                        .map(|p| p.trim_end_matches(".rs").to_string())
+                        .filter(|p| p != "main" && p != "mod")
+                        .collect(),
+                );
             }
-            let mut module: Vec<&str> = rest.iter().map(|p| p.trim_end_matches(".rs")).collect();
-            if matches!(module.last(), Some(&"lib" | &"main" | &"mod")) {
+            module = rest
+                .iter()
+                .map(|p| p.trim_end_matches(".rs").to_string())
+                .collect();
+            if matches!(
+                module.last().map(String::as_str),
+                Some("lib" | "main" | "mod")
+            ) {
                 module.pop();
             }
-            return Place {
-                target: "unittests".into(),
-                module: module.join("::"),
-            };
+            return place("unittests".into(), binaries, module);
         }
         Place {
             target: String::new(),
+            binaries: Vec::new(),
             module: String::new(),
         }
     }
 
     fn matches(&self, run: &Run, name: &str) -> bool {
         let target = if self.target == "unittests" {
-            run.target.starts_with("unittests")
+            run.target.starts_with("unittests") && self.binaries.contains(&run.binary)
         } else {
             !self.target.is_empty() && run.target == self.target
         };
-        let path = run.path == name || run.path.ends_with(&format!("::{name}"));
-        let module = self.module.is_empty() || run.path.starts_with(&format!("{}::", self.module));
-        target && path && module
+        let path = if self.module.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}::{name}", self.module)
+        };
+        target && run.path == path
+    }
+}
+
+/// The `Running unittests` binary stems a unit test in `file` (relative to `root`) may run in: the lib name for
+/// `src/lib.rs`, the bin name for `src/main.rs` and `src/bin/*`, both for a module file that either may declare,
+/// from the nearest `Cargo.toml` above it (`[package] name`, `[lib] name`; dashes are underscores in a binary's name).
+pub fn unit_binaries(root: &std::path::Path, file: &str) -> Vec<String> {
+    let path = std::path::Path::new(file);
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        let manifest = root.join(d).join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            return stems(&text, path.strip_prefix(d).unwrap_or(path));
+        }
+        dir = d.parent().filter(|p| !p.as_os_str().is_empty());
+    }
+    Vec::new()
+}
+
+fn stems(manifest: &str, within: &std::path::Path) -> Vec<String> {
+    let mut section = String::new();
+    let (mut package, mut lib) = (None, None);
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[') {
+            section = name.trim_end_matches(']').to_string();
+        } else if let Some(rest) = line.strip_prefix("name") {
+            let value = rest
+                .trim_start()
+                .strip_prefix('=')
+                .map(|v| v.trim().trim_matches('"'));
+            match (section.as_str(), value) {
+                ("package", Some(v)) => package = Some(v.replace('-', "_")),
+                ("lib", Some(v)) => lib = Some(v.replace('-', "_")),
+                _ => {}
+            }
+        }
+    }
+    let Some(package) = package else {
+        return Vec::new();
+    };
+    let lib = lib.unwrap_or_else(|| package.clone());
+    let parts: Vec<String> = within
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    match parts
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["src", "lib.rs"] => vec![lib],
+        ["src", "main.rs"] => vec![package],
+        ["src", "bin", name, ..] => vec![name.trim_end_matches(".rs").replace('-', "_")],
+        _ => vec![lib, package],
     }
 }
 
@@ -281,15 +366,22 @@ impl Results {
     /// them; every other line is ignored.
     pub fn parse(text: &str) -> Results {
         let mut runs = Vec::new();
-        let mut target = String::new();
+        let (mut target, mut binary) = (String::new(), String::new());
         for line in text.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("Running ") {
                 target = rest.split(" (").next().unwrap_or(rest).trim().to_string();
+                binary = rest
+                    .rsplit_once(" (")
+                    .map(|(_, path)| path.trim_end_matches(')'))
+                    .and_then(|path| path.rsplit('/').next())
+                    .and_then(|file| file.rsplit_once('-').map(|(stem, _)| stem))
+                    .unwrap_or_default()
+                    .to_string();
                 continue;
             }
             if line.starts_with("Doc-tests ") {
-                target = "doctests".into();
+                (target, binary) = ("doctests".into(), String::new());
                 continue;
             }
             let Some(rest) = line.strip_prefix("test ") else {
@@ -310,6 +402,7 @@ impl Results {
             };
             runs.push(Run {
                 target: target.clone(),
+                binary: binary.clone(),
                 path: path.trim().to_string(),
                 outcome,
             });
@@ -317,11 +410,10 @@ impl Results {
         Results { runs }
     }
 
-    fn outcomes(&self, test: &TestCase) -> Vec<Outcome> {
-        let place = Place::of(&test.file);
+    fn outcomes(&self, place: &Place, name: &str) -> Vec<Outcome> {
         self.runs
             .iter()
-            .filter(|run| place.matches(run, &test.name))
+            .filter(|run| place.matches(run, name))
             .map(|run| run.outcome)
             .collect()
     }
@@ -330,14 +422,14 @@ impl Results {
     /// of that place and name (`expected`), and every one passed. Fails closed: a test that failed, was ignored,
     /// never ran, or has a namesake in its own target that never ran does not pass, and a namesake in another
     /// target (a twin under `experiments/`, a test of another crate) vouches for nothing.
-    pub fn passed(&self, test: &TestCase, expected: usize) -> bool {
-        let outcomes = self.outcomes(test);
+    pub fn passed(&self, place: &Place, name: &str, expected: usize) -> bool {
+        let outcomes = self.outcomes(place, name);
         outcomes.len() >= expected.max(1) && outcomes.iter().all(|o| *o == Outcome::Passed)
     }
 
     /// The word for a test's state in the report: `passed`, `failed`, `ignored` or `not run`.
-    pub fn state(&self, test: &TestCase) -> &'static str {
-        let outcomes = self.outcomes(test);
+    pub fn state(&self, place: &Place, name: &str) -> &'static str {
+        let outcomes = self.outcomes(place, name);
         if outcomes.is_empty() {
             "not run"
         } else if outcomes.contains(&Outcome::Failed) {
@@ -423,6 +515,8 @@ pub struct Inputs<'a> {
     pub results: &'a Results,
     /// True when a feature's notes exist and are not empty, so that a recorded review can be cited.
     pub review_exists: &'a dyn Fn(&str) -> bool,
+    /// The binary stems a unit test in a file may run in ([`unit_binaries`]).
+    pub binaries: &'a dyn Fn(&str) -> Vec<String>,
     /// `PLAN.md`, whose `T-024-09` row says which identifiers may be inspected or partly met ([`allowed_sets`]).
     pub plan: &'a str,
     /// The ids of the decisions form's items, when the repository holds the form; `None` skips the check.
@@ -461,7 +555,10 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
     let mut counts: BTreeMap<(Place, &str), usize> = BTreeMap::new();
     for test in inputs.tests {
         *counts
-            .entry((Place::of(&test.file), test.name.as_str()))
+            .entry((
+                Place::of(test, (inputs.binaries)(&test.file)),
+                test.name.as_str(),
+            ))
             .or_default() += 1;
     }
     let at = |row: &Row| format!("scope:{}", row.line);
@@ -605,15 +702,18 @@ fn m3_line(
     let passing: Vec<&&TestCase> = tagged
         .iter()
         .filter(|t| {
-            inputs
-                .results
-                .passed(t, counts[&(Place::of(&t.file), t.name.as_str())])
+            let place = Place::of(t, (inputs.binaries)(&t.file));
+            let expected = counts[&(place.clone(), t.name.as_str())];
+            inputs.results.passed(&place, &t.name, expected)
         })
         .collect();
     if passing.is_empty() {
         let states: Vec<String> = tagged
             .iter()
-            .map(|t| format!("{} ({})", t.name, inputs.results.state(t)))
+            .map(|t| {
+                let place = Place::of(t, (inputs.binaries)(&t.file));
+                format!("{} ({})", t.name, inputs.results.state(&place, &t.name))
+            })
             .collect();
         out.push(finding(
             "no-passing-verifier",
