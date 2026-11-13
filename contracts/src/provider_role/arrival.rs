@@ -12,11 +12,20 @@
 //! - **One credit, one arrival.** Every notice of one credit names its one transaction, whenever signed, and a reader
 //!   knows two such notices as one credit ([`check_one_credit`]): the same reserve, the same transaction, the same
 //!   figures. The same transaction with other figures is refused, never taken as a second credit.
+//! - **The question** (`urn:rutent:provider-role:arrival-question`) is the operator's, asking a reserve what arrived
+//!   at an account for an order, under a transaction fresh for that order, in the holder's session.
+//! - **The answer** (`urn:rutent:provider-role:arrival-answer`) is the reserve's, naming the question's transaction,
+//!   so it counts only as that question's (`REQ-ORD-1`). It carries the reserve's notice of each credit whole, the
+//!   same notice it sends of its own accord, so the answer is that notice under the question's transaction; or says
+//!   nothing arrived; or refuses. [`check_answer`] holds it to the question.
 
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
-use super::envelope::{Statement, StatementShape};
+use super::envelope::{
+    ContextMismatch, Deployment, NotSignedByOperator, ShapeMismatch, Statement, StatementShape,
+};
+use super::outcome::{BalanceRefused, NoDetail};
 use super::types::{Denomination, OuterNode};
 
 /// The `shape` of a reserve's arrival notice.
@@ -92,5 +101,178 @@ pub fn check_one_credit(
         Ok(Credits::One)
     } else {
         Err(CreditRestated::OtherFigures)
+    }
+}
+
+/// The `shape` of the operator's question to a reserve of what arrived.
+pub const ARRIVAL_QUESTION_SHAPE: &str = "urn:rutent:provider-role:arrival-question";
+
+/// The `shape` of a reserve's answer to the question of what arrived.
+pub const ARRIVAL_ANSWER_SHAPE: &str = "urn:rutent:provider-role:arrival-answer";
+
+/// The operator's question to a reserve of what arrived at one of its accounts for an order (`REQ-ORD-23`): the body
+/// of a statement of shape [`ARRIVAL_QUESTION_SHAPE`], signed with the deployment's operator key. It names no order:
+/// Core's log binds it to the order it is asked for, as it binds every operation. The reserve answers with an
+/// [`ArrivalAnswer`] naming this question's transaction ([`check_answer`]). Schema:
+/// `urn:rutent:provider-role:arrival-question#/$defs/question`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrivalQuestion {
+    /// The question's own transaction, fresh for the order it is asked for: its answer names it (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The reserve asked.
+    pub provider: String,
+    /// The session of the account's holder or their delegate (`REQ-CAT-3`). What arrived at an account tells
+    /// whether its funds suffice for that much, so the question counts as a balance check (`REQ-CAT-4`), outside the
+    /// bound only for the holder's own order.
+    pub session: String,
+    /// The account at the reserve.
+    pub account: String,
+    /// The reserve's outer node.
+    pub node: OuterNode,
+    /// The asset.
+    pub asset: String,
+}
+
+impl StatementShape for ArrivalQuestion {
+    const SHAPE: &'static str = ARRIVAL_QUESTION_SHAPE;
+}
+
+impl Statement<ArrivalQuestion> {
+    /// Checks that the question names the deployment's operator key as its signing key, since it is the operator's
+    /// statement, as an operation is.
+    pub fn check_signed_by_operator(&self) -> Result<(), NotSignedByOperator> {
+        if self.signature.key == self.deployment.operator_key {
+            Ok(())
+        } else {
+            Err(NotSignedByOperator {
+                operator_key: self.deployment.operator_key.clone(),
+                key: self.signature.key.clone(),
+            })
+        }
+    }
+}
+
+/// A reserve's answer to the question of what arrived (`REQ-ORD-1`, `REQ-ORD-23`): the body of a statement of shape
+/// [`ARRIVAL_ANSWER_SHAPE`], made by the reserve asked. It names the question's transaction, so its stated entry is
+/// about it, and carries the reserve's notice of each credit whole: the same notice it sends of its own accord,
+/// under the question's transaction. Schema: `urn:rutent:provider-role:arrival-answer#/$defs/answer`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrivalAnswer {
+    /// The question's own transaction, which this answers.
+    pub transaction: String,
+    /// What arrived, nothing, or a refusal.
+    pub outcome: ArrivalOutcome,
+}
+
+/// What a reserve answers of what arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ArrivalOutcome {
+    /// Credits arrived: the reserve's notice of each.
+    Arrived(ArrivedCredits),
+    /// Nothing arrived at the account, node and asset asked about. It says nothing else.
+    NothingArrived(NoDetail),
+    /// The reserve refused, without saying when it lifts: the question counts as a balance check (`INV-9`).
+    Refused(BalanceRefused),
+}
+
+/// The credits that arrived, each by the reserve's own enveloped notice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrivedCredits {
+    /// The notices, whole: at least one.
+    pub notices: Vec<Statement<ArrivalNotice>>,
+}
+
+impl StatementShape for ArrivalAnswer {
+    const SHAPE: &'static str = ARRIVAL_ANSWER_SHAPE;
+
+    fn check_nested_shapes(&self) -> Result<(), ShapeMismatch> {
+        match &self.outcome {
+            ArrivalOutcome::Arrived(arrived) => arrived
+                .notices
+                .iter()
+                .try_for_each(|notice| notice.check_shape()),
+            _ => Ok(()),
+        }
+    }
+
+    fn check_nested_context(
+        &self,
+        maker: &str,
+        deployment: &Deployment,
+        protocol_version: &str,
+    ) -> Result<(), ContextMismatch> {
+        match &self.outcome {
+            ArrivalOutcome::Arrived(arrived) => arrived
+                .notices
+                .iter()
+                .try_for_each(|notice| notice.check_as_nested(maker, deployment, protocol_version)),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A way an arrival answer doesn't answer an arrival question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerMismatch {
+    /// It names another transaction: it answers another question (`REQ-ORD-1`).
+    AnswersAnotherQuestion,
+    /// Its maker isn't the reserve asked.
+    OfAnotherReserve,
+    /// A notice it carries, by its position, is of another outer node.
+    AtAnotherNode {
+        /// The notice's position in the answer.
+        notice: usize,
+    },
+    /// A notice it carries is of another asset.
+    InAnotherAsset {
+        /// The notice's position in the answer.
+        notice: usize,
+    },
+    /// A notice it carries is of another account.
+    ToAnotherAccount {
+        /// The notice's position in the answer.
+        notice: usize,
+    },
+}
+
+/// Checks that `answer` answers `question` (`REQ-ORD-1`, `REQ-ORD-23`): it names the question's transaction, is made
+/// by the reserve asked, and each notice it carries is of the outer node, asset and account asked about. Every rule
+/// broken is returned. That each notice it carries is its own maker's and of the reader's deployment and protocol
+/// version is the answer's `check_context`; that the question was signed by the operator is its
+/// [`check_signed_by_operator`](Statement::check_signed_by_operator).
+pub fn check_answer(
+    question: &Statement<ArrivalQuestion>,
+    answer: &Statement<ArrivalAnswer>,
+) -> Result<(), Vec<AnswerMismatch>> {
+    let asked = &question.statement;
+    let mut broken = Vec::new();
+    if answer.statement.transaction != asked.transaction {
+        broken.push(AnswerMismatch::AnswersAnotherQuestion);
+    }
+    if answer.maker != asked.provider {
+        broken.push(AnswerMismatch::OfAnotherReserve);
+    }
+    if let ArrivalOutcome::Arrived(arrived) = &answer.statement.outcome {
+        for (at, notice) in arrived.notices.iter().enumerate() {
+            let notice = &notice.statement;
+            if notice.node != asked.node {
+                broken.push(AnswerMismatch::AtAnotherNode { notice: at });
+            }
+            if notice.asset.id != asked.asset {
+                broken.push(AnswerMismatch::InAnotherAsset { notice: at });
+            }
+            if notice.account != asked.account {
+                broken.push(AnswerMismatch::ToAnotherAccount { notice: at });
+            }
+        }
+    }
+    if broken.is_empty() {
+        Ok(())
+    } else {
+        Err(broken)
     }
 }

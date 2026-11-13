@@ -1,6 +1,28 @@
 # provider-role changelog
 
 ## 3.1.0
+- The operator's question to a reserve of what arrived for an order, and the reserve's answer, are signed statements
+  of their own (`T-020-04`'s gap). Core bound an arrival to its order on a balance verification, which says only that
+  funds suffice. Two schemas:
+  - `arrival-question` (`urn:rutent:provider-role:arrival-question`, `ARRIVAL_QUESTION_SHAPE`, `ArrivalQuestion
+    {transaction, provider, session, account, node: OuterNode, asset}`), signed with the deployment's operator key
+    (`Statement<ArrivalQuestion>::check_signed_by_operator`, the operation's `NotSignedByOperator`). It names its own
+    transaction, fresh for the order it is asked for, and no order, as no operation does; and the holder's session,
+    since what arrived at an account tells whether its funds suffice for that much (`REQ-CAT-3`, `REQ-CAT-4`).
+  - `arrival-answer` (`urn:rutent:provider-role:arrival-answer`, `ARRIVAL_ANSWER_SHAPE`, `ArrivalAnswer {transaction,
+    outcome: ArrivalOutcome {Arrived(ArrivedCredits {notices: Vec<Statement<ArrivalNotice>>}), NothingArrived,
+    Refused(BalanceRefused)}}`), made by the reserve asked. It names the question's transaction, so its stated entry
+    is about it (`REQ-ORD-1`), and carries the reserve's notice of each credit whole: the same notice it sends of its
+    own accord, under the question's transaction. Its notices are checked as nested statements (`check_shape`,
+    `check_context`: `NestedMaker`), and a refusal never says when it lifts (`INV-9`).
+  - `check_answer(question, answer) -> Result<(), Vec<AnswerMismatch {AnswersAnotherQuestion, OfAnotherReserve,
+    AtAnotherNode {notice}, InAnotherAsset {notice}, ToAnotherAccount {notice}}>>` holds the answer to the question.
+
+  Shapes of their own, not an operation kind and a result kind, so `Operation` and `ResultBody` keep their variants:
+  a kind would be a major (3.0.0's ruling), carrying module-interface, released at 4.0.0, to a major with it. Minor,
+  folded into 3.1.0 before its release: two shapes and two checks added, nothing changed. Six valid fixtures, seventeen
+  invalid (`answered-arrival-question-` is a bundle of a question and its answer). (DEC-4, DEC-20, REQ-ORD-1,
+  REQ-ORD-23, REQ-CAT-3, REQ-CAT-4, INV-9, T-020-18)
 - A reserve's notice of value arriving is a signed statement of its own (`T-020-04`'s gap). Before it, provider-role
   had no statement a reserve makes of value arriving, so Core took the outer node, asset, amount, account and holder
   from the assembly's port and kept the reserve's notice as bytes it read only for the transaction its body names.

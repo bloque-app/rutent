@@ -1,0 +1,23 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:arrival-question",
+  "maker": "rutent-operator",
+  "made_at": "2026-11-06T15:12:00Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "transaction": "tx-arrival-1",
+    "provider": "bank-co",
+    "session": "sess-ana-1",
+    "account": "acct-77",
+    "node": "bank-ledger",
+    "asset": "COP"
+  }
+}

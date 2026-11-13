@@ -6,17 +6,17 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::provider_role::{
-    self, Advertisement, AmountMismatch, ArrivalNotice, Category, ContextMismatch, CreditRestated,
-    Credits, Deployment, Hold, NodeRef, Operation, OuterNode, RedemptionRefused, Remainder,
-    ResultBody, RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome,
-    TupleTerms,
+    self, Advertisement, AmountMismatch, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
+    ArrivalOutcome, ArrivalQuestion, Category, ContextMismatch, CreditRestated, Credits,
+    Deployment, Hold, NodeRef, Operation, OuterNode, RedemptionRefused, Remainder, ResultBody,
+    RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 12] = [
+const SCHEMAS: [&str; 14] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -29,12 +29,15 @@ const SCHEMAS: [&str; 12] = [
     "terms",
     "hold",
     "arrival-notice",
+    "arrival-question",
+    "arrival-answer",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
-/// followed by `-`. `successive-advertisements`, `answered-operation` and `arrival-notices` are bundles of values,
-/// not schemas of their own: see [`SuccessiveAdvertisements`], [`AnsweredOperation`] and [`ArrivalNotices`].
-const SHAPES: [&str; 10] = [
+/// followed by `-`. `successive-advertisements`, `answered-operation`, `arrival-notices` and
+/// `answered-arrival-question` are bundles of values, not schemas of their own: see [`SuccessiveAdvertisements`],
+/// [`AnsweredOperation`], [`ArrivalNotices`] and [`AnsweredArrivalQuestion`].
+const SHAPES: [&str; 13] = [
     "advertisement",
     "statement-envelope",
     "operation",
@@ -42,9 +45,12 @@ const SHAPES: [&str; 10] = [
     "terms",
     "hold",
     "arrival-notice",
+    "arrival-question",
+    "arrival-answer",
     "successive-advertisements",
     "answered-operation",
     "arrival-notices",
+    "answered-arrival-question",
 ];
 
 /// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
@@ -78,6 +84,21 @@ const ARRIVAL_NOTICES_MEMBERS: [(&str, &str); 2] = [
 struct ArrivalNotices {
     earlier: Statement<ArrivalNotice>,
     later: Statement<ArrivalNotice>,
+}
+
+/// The members of an `answered-arrival-question` bundle: the operator's enveloped question of what arrived and the
+/// reserve's enveloped answer to it, for the rules that relate them (`check_answer`).
+const ANSWERED_ARRIVAL_QUESTION_MEMBERS: [(&str, &str); 2] = [
+    ("question", "urn:rutent:provider-role:arrival-question"),
+    ("answer", "urn:rutent:provider-role:arrival-answer"),
+];
+
+/// An `answered-arrival-question` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnsweredArrivalQuestion {
+    question: Statement<ArrivalQuestion>,
+    answer: Statement<ArrivalAnswer>,
 }
 
 /// A `successive-advertisements` fixture.
@@ -149,6 +170,46 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
         ),
         (
             "arrival-notice-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "arrival-question-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-question-without-a-session",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-question-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "arrival-question-at-an-inner-node",
+            vec![("/statement/node", "type")],
+        ),
+        (
+            "arrival-answer-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-answer-arrived-with-no-notices",
+            vec![("/statement/outcome/notices", "minItems")],
+        ),
+        (
+            "arrival-answer-that-nothing-arrived-carrying-a-notice",
+            vec![("/statement/outcome", "additionalProperties")],
+        ),
+        (
+            "arrival-answer-refusal-saying-when-it-lifts",
+            vec![("/statement/outcome/refusal/class", "enum")],
+        ),
+        (
+            "arrival-answer-carrying-another-shape-as-its-notice",
+            vec![("/statement/outcome/notices/0/shape", "const")],
+        ),
+        (
+            "arrival-answer-under-another-shape",
             vec![("/shape", "const")],
         ),
         (
@@ -634,10 +695,39 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let advertisement = |v: RuleViolation| format!("{:?}", vec![v]);
     let amounts = |v: AmountMismatch| format!("{:?}", vec![v]);
     let terms = |v: TermsViolation| format!("{:?}", vec![v]);
+    let answer = |v: AnswerMismatch| format!("{:?}", vec![v]);
     vec![
         (
             "arrival-notices-of-one-credit-with-another-amount",
             format!("{:?}", CreditRestated::OtherFigures),
+        ),
+        (
+            "arrival-question-signed-with-another-key",
+            "NotSignedByOperator".to_owned(),
+        ),
+        (
+            "arrival-answer-carrying-another-reserves-notice",
+            "NestedMaker".to_owned(),
+        ),
+        (
+            "answered-arrival-question-under-another-transaction",
+            answer(AnswerMismatch::AnswersAnotherQuestion),
+        ),
+        (
+            "answered-arrival-question-by-another-reserve",
+            answer(AnswerMismatch::OfAnotherReserve),
+        ),
+        (
+            "answered-arrival-question-at-another-node",
+            answer(AnswerMismatch::AtAnotherNode { notice: 0 }),
+        ),
+        (
+            "answered-arrival-question-in-another-asset",
+            answer(AnswerMismatch::InAnotherAsset { notice: 0 }),
+        ),
+        (
+            "answered-arrival-question-about-another-account",
+            answer(AnswerMismatch::ToAnotherAccount { notice: 0 }),
         ),
         (
             "terms-made-by-another-party",
@@ -845,6 +935,38 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 .map(|_| ())
                 .map_err(|v| format!("{v:?}"))
         }
+        "arrival-question" => {
+            let statement: Statement<ArrivalQuestion> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            statement
+                .check_signed_by_operator()
+                .map_err(|_| "NotSignedByOperator".to_owned())
+        }
+        "arrival-answer" => {
+            let statement: Statement<ArrivalAnswer> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            statement
+                .check_context(&statement.deployment, &statement.protocol_version)
+                .map_err(|e| match e {
+                    ContextMismatch::Deployment { .. } => "Deployment".to_owned(),
+                    ContextMismatch::ProtocolVersion { .. } => "ProtocolVersion".to_owned(),
+                    ContextMismatch::NestedMaker { .. } => "NestedMaker".to_owned(),
+                })
+        }
+        "answered-arrival-question" => {
+            let bundle: AnsweredArrivalQuestion =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_signed_by_operator()
+                .map_err(|_| "NotSignedByOperator".to_owned())?;
+            bundle
+                .answer
+                .check_context(&bundle.answer.deployment, &bundle.answer.protocol_version)
+                .map_err(|e| format!("{e:?}"))?;
+            provider_role::check_answer(&bundle.question, &bundle.answer)
+                .map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -856,6 +978,10 @@ fn rust_accepts() -> Vec<(&'static str, &'static str)> {
         (
             "arrival-notice-of-a-zero-amount",
             "pattern: amounts are strings in Rust",
+        ),
+        (
+            "arrival-answer-arrived-with-no-notices",
+            "minItems: notices are a Vec",
         ),
         (
             "terms-with-a-zero-denominator",
@@ -1035,6 +1161,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "successive-advertisements" => &SUCCESSIVE_ADVERTISEMENTS_MEMBERS,
         "answered-operation" => &ANSWERED_OPERATION_MEMBERS,
         "arrival-notices" => &ARRIVAL_NOTICES_MEMBERS,
+        "answered-arrival-question" => &ANSWERED_ARRIVAL_QUESTION_MEMBERS,
         _ => return schema_errors(&validator(shape), instance),
     };
     let members = instance.as_object().cloned().unwrap_or_default();
@@ -1089,6 +1216,18 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "terms" => checked_round_trip::<TupleTerms>(value),
         "hold" => checked_round_trip::<Hold>(value),
         "arrival-notice" => checked_round_trip::<ArrivalNotice>(value),
+        "arrival-question" => checked_round_trip::<ArrivalQuestion>(value),
+        "arrival-answer" => checked_round_trip::<ArrivalAnswer>(value),
+        "answered-arrival-question" => {
+            let bundle: AnsweredArrivalQuestion =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.answer.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
         "arrival-notices" => {
             let bundle: ArrivalNotices =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1713,6 +1852,78 @@ fn two_notices_of_one_credit_signed_at_different_times_are_one_credit() {
             Err(CreditRestated::OtherFigures)
         );
     }
+}
+
+/// The operator's question of what arrived names its own transaction, fresh for the order it is asked for, so the
+/// reserve's answer names it and counts only as that transaction's (`T-020-18`).
+// verifies: REQ-ORD-1
+#[test]
+fn question_of_what_arrived_without_the_orders_transaction_is_invalid() {
+    assert_schema_rejects("arrival-question-without-its-transaction");
+    assert_schema_rejects("arrival-answer-without-its-transaction");
+    let question: Statement<ArrivalQuestion> = serde_json::from_value(fixture(
+        "valid",
+        "arrival-question-of-what-arrived-at-an-account",
+    ))
+    .unwrap();
+    assert_eq!(question.check_shape(), Ok(()));
+    assert_eq!(question.check_signed_by_operator(), Ok(()));
+    assert_eq!(question.statement.transaction, "tx-arrival-1");
+}
+
+/// The reserve answers the question of what arrived under the question's transaction, carrying its notice of the
+/// credit whole, the same notice it sends of its own accord; an answer under another transaction, another
+/// reserve's, or carrying a notice of another node, asset or account doesn't answer it, and a notice another
+/// reserve made isn't the answering reserve's to carry (`T-020-18`).
+// verifies: REQ-ORD-1, REQ-ORD-23
+#[test]
+fn what_arrived_is_answered_by_the_notice_under_the_questions_transaction() {
+    let answered: AnsweredArrivalQuestion = serde_json::from_value(fixture(
+        "valid",
+        "answered-arrival-question-by-the-notice-of-its-credit",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &answered.answer),
+        Ok(())
+    );
+    let unsolicited: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    let ArrivalOutcome::Arrived(arrived) = &answered.answer.statement.outcome else {
+        panic!("the answer carries what arrived");
+    };
+    assert_eq!(arrived.notices, vec![unsolicited.clone()]);
+    assert_eq!(
+        provider_role::check_one_credit(&unsolicited, &arrived.notices[0]),
+        Ok(Credits::One)
+    );
+    let mut stray = answered.answer.clone();
+    stray.maker = "eu-bank".to_owned();
+    stray.statement.transaction = "tx-arrival-2".to_owned();
+    if let ArrivalOutcome::Arrived(arrived) = &mut stray.statement.outcome {
+        arrived.notices[0].statement.account = "acct-78".to_owned();
+    }
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &stray),
+        Err(vec![
+            AnswerMismatch::AnswersAnotherQuestion,
+            AnswerMismatch::OfAnotherReserve,
+            AnswerMismatch::ToAnotherAccount { notice: 0 },
+        ])
+    );
+    assert!(matches!(
+        stray.check_context(&stray.deployment, &stray.protocol_version),
+        Err(ContextMismatch::NestedMaker { .. })
+    ));
+    let nothing: AnsweredArrivalQuestion = serde_json::from_value(fixture(
+        "valid",
+        "answered-arrival-question-that-nothing-arrived",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_answer(&nothing.question, &nothing.answer),
+        Ok(())
+    );
 }
 
 // verifies: DEC-4

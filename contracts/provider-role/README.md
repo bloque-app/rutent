@@ -6,7 +6,8 @@ This contract holds six things:
 - the operations each role is asked, and the results it gives (`T-002-02`);
 - the verifier's standalone judgement, and the reserve's reversal confirmation;
 - a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0);
-- a reserve's signed notice of value arriving (3.1.0);
+- a reserve's signed notice of value arriving, the operator's question of what arrived and the reserve's answer
+  (3.1.0);
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -26,13 +27,17 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:terms` | `schemas/terms.schema.json` | A provider's terms for one of its tuples, in the envelope: the tuple by provider and both ends, its fee formula, and its slippage regime where the tuple sets a rate (3.1.0, `REQ-QTE-5`, `REQ-QTE-6`) |
 | `urn:rutent:provider-role:hold` | `schemas/hold.schema.json` | A reserve's hold of a quote, in the envelope: the choice record by id and digest, the candidate, the order or session it is for, its validity (3.1.0, `REQ-QTE-15`) |
 | `urn:rutent:provider-role:arrival-notice` | `schemas/arrival-notice.schema.json` | A reserve's notice of value arriving, in the envelope: the transaction it gives the credit, its per-credit reference, the outer node, the asset with its unit, the amount, the account and its holder (3.1.0, `REQ-ORD-14`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:arrival-question` | `schemas/arrival-question.schema.json` | The operator's question to a reserve of what arrived at an account, in the envelope: its own transaction, the reserve asked, the holder's session, the account, the outer node and the asset (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
+| `urn:rutent:provider-role:arrival-answer` | `schemas/arrival-answer.schema.json` | A reserve's answer to that question, in the envelope: the question's transaction, and the reserve's arrival notice of each credit whole, or that nothing arrived, or a refusal that never says when it lifts (3.1.0, `REQ-ORD-1`, `REQ-ORD-23`) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all twelve and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all fourteen and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
-`terms-`, `hold-`, `arrival-notice-`, `successive-advertisements-`, `answered-operation-` or `arrival-notices-`. The
-last three are bundles, not schemas: `arrival-notices` is an `earlier` and a `later` enveloped arrival notice, for
-the rule that relates them (`check_one_credit`). Of the other two,
+`terms-`, `hold-`, `arrival-notice-`, `arrival-question-`, `arrival-answer-`, `successive-advertisements-`,
+`answered-operation-`, `arrival-notices-` or `answered-arrival-question-`. The last four are bundles, not schemas:
+`arrival-notices` is an `earlier` and a `later` enveloped arrival notice, for the rule that relates them
+(`check_one_credit`), and `answered-arrival-question` an enveloped `question` and the enveloped `answer` to it
+(`check_answer`). Of the other two,
 `successive-advertisements` is a `previous` and a `next` enveloped advertisement, each checked against the
 advertisement schema, for the rules that relate them (`validate_successor`); `answered-operation` is an enveloped
 `operation`, the enveloped `result` that answers it, and the `terms` of the tuple it runs through (the
@@ -321,15 +326,41 @@ keeps and appends as a stated entry.
   are one credit where they state the same figures (`Credits::One`), refuses the same transaction with another node,
   asset, unit, amount, account or holder (`CreditRestated::OtherFigures`), and takes another maker's or another
   transaction's notice as another credit (`Credits::Two`). Times and signatures are left aside.
+- **The question of what arrived** (`ArrivalQuestion`, shape `urn:rutent:provider-role:arrival-question`). The
+  operator's statement, signed with the deployment's `operator_key` (`check_signed_by_operator`), as an operation
+  is. It names its own `transaction`, fresh for the order it is asked for, so its answer counts only as that
+  transaction's (`REQ-ORD-1`); the reserve asked (`provider`); the holder's `session`; the `account`, the outer
+  `node` and the `asset`. It names no order, as no operation does: Core's log binds it to the order it is asked for.
+  What arrived at an account tells whether its funds suffice for that much, so the question counts as a balance check
+  (`REQ-CAT-4`) and is asked in the holder's session (`REQ-CAT-3`), outside the bound for the holder's own order.
+- **The answer** (`ArrivalAnswer`, shape `urn:rutent:provider-role:arrival-answer`). The reserve's statement. It
+  names the question's `transaction`, so its stated entry is about it, and its `outcome` by `status`: `arrived`, with
+  the reserve's enveloped notice of each credit, whole and unchanged, at least one; `nothing_arrived`, carrying
+  nothing; or `refused`, with a balance refusal's class, which never says when it lifts (`INV-9`). So the answer is
+  the same notice the reserve sends of its own accord, by its transaction, under the question's transaction.
+  `check_shape` and `check_context` reach each notice it carries, which must be the answering reserve's own
+  (`NestedMaker`). `check_answer(question, answer)` holds it to the question: the question's transaction
+  (`AnswersAnotherQuestion`), made by the reserve asked (`OfAnotherReserve`), each notice of the outer node, asset
+  and account asked about (`AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
+- **Shapes of their own.** Not an operation kind and a result kind: those would add variants to `Operation` and
+  `ResultBody`, a major (3.0.0's ruling), which module-interface, released at 4.0.0, would have to follow.
 
 | Rule | Where | Invalid fixture |
 |---|---|---|
 | A notice names its shape, its transaction, its outer node, its asset with its unit, a positive amount, its account and the account's holder | schema | `arrival-notice-under-another-shape`, `arrival-notice-without-its-transaction`, `arrival-notice-without-its-outer-node`, `arrival-notice-at-an-inner-node`, `arrival-notice-without-its-asset`, `arrival-notice-asset-without-its-unit`, `arrival-notice-without-its-amount`, `arrival-notice-of-a-zero-amount`, `arrival-notice-without-its-account`, `arrival-notice-without-its-holder` |
 | Two notices of one credit state the same figures | Rust, `check_one_credit`: `OtherFigures` | `arrival-notices-of-one-credit-with-another-amount` |
+| A question names its shape, its own transaction, the holder's session, and an outer node | schema | `arrival-question-under-another-shape`, `arrival-question-without-its-transaction`, `arrival-question-without-a-session`, `arrival-question-at-an-inner-node` |
+| A question is signed with its deployment's operator key | Rust, `check_signed_by_operator` | `arrival-question-signed-with-another-key` |
+| An answer names its shape and the question's transaction; what arrived carries at least one notice, nothing arrived carries none, and a refusal never says when it lifts | schema | `arrival-answer-under-another-shape`, `arrival-answer-without-its-transaction`, `arrival-answer-arrived-with-no-notices`, `arrival-answer-that-nothing-arrived-carrying-a-notice`, `arrival-answer-refusal-saying-when-it-lifts` |
+| Each notice an answer carries is an arrival notice, made by the answering reserve | schema (`const`), and Rust `check_shape`; Rust, `check_context`: `NestedMaker` | `arrival-answer-carrying-another-shape-as-its-notice`, `arrival-answer-carrying-another-reserves-notice` |
+| An answer names the question's transaction, is made by the reserve asked, and each notice is of its node, asset and account | Rust, `check_answer`: `AnswersAnotherQuestion`, `OfAnotherReserve`, `AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount` | `answered-arrival-question-under-another-transaction`, `answered-arrival-question-by-another-reserve`, `answered-arrival-question-at-another-node`, `answered-arrival-question-in-another-asset`, `answered-arrival-question-about-another-account` |
 
 What the contract leaves to its reader: that the notice's maker is a reserve whose advertisement lists that outer
-node and asset (the catalogue's, `F-012`), and that a credit taken once is taken once (Core's, `T-020-19`, holding
-each notice it took against the next by `check_one_credit`).
+node and asset (the catalogue's, `F-012`); that a credit taken once is taken once (Core's, `T-020-19`, holding each
+notice it took against the next by `check_one_credit`, a notice carried in an answer included); that a question's
+session is the account holder's, open, and counted against the bound unless for the holder's own order (`F-021`'s
+session register); and that a question is asked for the order its log names, under a transaction fresh for it, and
+its answer follows it (`T-020-19`, and core-internal's next round, `T-020-21`, for the log's row).
 
 ## Which rule lives where
 
