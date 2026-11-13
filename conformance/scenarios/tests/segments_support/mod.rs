@@ -161,6 +161,8 @@ pub enum On {
     Chosen,
     /// A part's `handed_on` (`T-020-13`).
     Handed,
+    /// A route handed on's `holding_withdrawal`, its start (`T-020-13`).
+    Start,
 }
 
 impl On {
@@ -203,6 +205,7 @@ impl On {
             (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             (On::Handed, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
+            (On::Start, Entry::Verified(v)) => matches!(v.what, What::HoldingWithdrawal { .. }),
             (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })),
             _ => false,

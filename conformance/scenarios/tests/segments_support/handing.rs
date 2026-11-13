@@ -301,6 +301,17 @@ pub fn prove(
     record: &rutent_prov::holding::wallet::WithdrawalRecord,
 ) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
     let statement = holding_statement(core, linked.as_str());
+    prove_citing(core, hand_on, linked, record, &statement)
+}
+
+/// [`prove`], citing `statement`, the holding account's statement already made: a retry cites the same one.
+pub fn prove_citing(
+    core: &mut Core,
+    hand_on: &mut rutent_core_orch::hand_on::HandOn,
+    linked: &Id,
+    record: &rutent_prov::holding::wallet::WithdrawalRecord,
+    statement: &Receipt,
+) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
     let actor = super::core();
     hand_parts(core, &mut rutent_core_orch::stuck::Stuck::new(), |parts| {
         hand_on.prove_start(
@@ -308,7 +319,7 @@ pub fn prove(
             rutent_core_orch::hand_on::Start {
                 linked,
                 record,
-                statement: &statement,
+                statement,
                 core: &actor,
             },
         )

@@ -372,6 +372,15 @@ pub struct HandedOn {
     pub at: Endpoint,
 }
 
+/// A start built and not yet taken, with what it was built from: a retry passes the same record and statement, or is
+/// refused.
+#[derive(Debug, Clone)]
+struct KeptStart {
+    step: Step,
+    record: WithdrawalRecord,
+    statement: Receipt,
+}
+
 /// An entry built once, and its receipt once the log took it.
 #[derive(Debug, Clone)]
 struct Step {
@@ -449,7 +458,7 @@ pub struct HandOn {
     /// The parts handed on whose linked order the log refused, with that refusal's receipt.
     stranded: BTreeMap<(String, String), Stranded>,
     /// The starts of routes handed on built and not yet taken by the log, by linked order.
-    starts: BTreeMap<String, Step>,
+    starts: BTreeMap<String, KeptStart>,
     /// The holding accounts' records spent, by provider and reference, with the linked order each proved.
     spent: BTreeMap<(String, String), String>,
     linked: BTreeMap<String, Linked>,
@@ -1034,8 +1043,11 @@ impl HandOn {
     ) -> Result<Receipt, HandOnError> {
         let (linked, record) = (start.linked, start.record);
         // A start built and not yet taken is appended as built.
-        if let Some(step) = self.starts.get_mut(linked.as_str()) {
-            return Self::record_start(parts, step, linked);
+        if let Some(kept) = self.starts.get_mut(linked.as_str()) {
+            if &kept.record != record || &kept.statement != start.statement {
+                return Err(HandOnError::Unproven(Unproven::AnotherStart));
+            }
+            return Self::record_start(parts, &mut kept.step, linked);
         }
         let held = self
             .linked
@@ -1070,7 +1082,14 @@ impl HandOn {
             }
             Err(HandOnError::Append(AppendFailure::Unavailable)) => {
                 self.spent.insert(spent, linked.as_str().to_owned());
-                self.starts.insert(linked.as_str().to_owned(), step);
+                self.starts.insert(
+                    linked.as_str().to_owned(),
+                    KeptStart {
+                        step,
+                        record: record.clone(),
+                        statement: start.statement.clone(),
+                    },
+                );
             }
             Err(_) => {}
         }

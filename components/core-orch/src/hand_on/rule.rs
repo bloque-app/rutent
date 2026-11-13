@@ -63,6 +63,9 @@ pub enum Unproven {
     NoReference,
     /// The record proved another linked order's start already: one record proves one start.
     ReferenceSpent,
+    /// A start built from another record, or another statement of it, is kept for this linked order: a retry passes
+    /// what the start was built from, or is refused.
+    AnotherStart,
 }
 
 /// Whether `part`'s value sits where a failed final deposit left it: the part's last segment is a deposit that

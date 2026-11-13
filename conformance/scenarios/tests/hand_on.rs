@@ -1366,6 +1366,62 @@ fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
     );
 }
 
+/// A start built and not yet taken is appended as built, and only for the record it was built from: a retry that
+/// passes another record is refused, as a second check on a different result is (`AnotherCharge`), while the identical
+/// retry is answered with the kept start.
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn a_kept_start_is_replayed_only_for_the_record_it_was_built_from() {
+    let (_world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on");
+    let linked = id("ord-2");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Start, Fault::Unavailable));
+    }
+    let record = withdrawal_record();
+    let statement = segments_support::handing::holding_statement(&mut core, "ord-2");
+    let prove = |core: &mut Core, hand_on: &mut HandOn, record: &WithdrawalRecord, cited: &_| {
+        segments_support::handing::prove_citing(core, hand_on, &linked, record, cited)
+    };
+    assert!(matches!(
+        prove(&mut core, &mut hand_on, &record, &statement),
+        Err(HandOnError::Append(_))
+    ));
+    // Another reference is another record: the start kept is not replayed for it, and nothing is recorded.
+    let mut other = withdrawal_record();
+    other.reference = format!("{RESERVE}-withdrawal-tx-another");
+    assert_eq!(
+        prove(&mut core, &mut hand_on, &other, &statement),
+        Err(HandOnError::Unproven(Unproven::AnotherStart))
+    );
+    // Nor is it for another statement of the same record.
+    let another = segments_support::handing::holding_statement(&mut core, "ord-2");
+    let before = entries(&core);
+    assert_eq!(
+        prove(&mut core, &mut hand_on, &record, &another),
+        Err(HandOnError::Unproven(Unproven::AnotherStart))
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    // The identical record and statement are answered with the start kept.
+    prove(&mut core, &mut hand_on, &record, &statement).expect("the kept start is taken");
+    assert_eq!(
+        count(&core, |w| matches!(w, What::HoldingWithdrawal { .. })),
+        1,
+        "the start, once"
+    );
+}
+
 /// The operator's hand-on rests on a done resolution that moved the part's whole value, in its asset: a done
 /// resolution of less hands nothing on.
 // verifies: REQ-ORD-43, REQ-AUZ-4
