@@ -278,3 +278,73 @@ fn decision_record_with_a_gross_answer_recomputes_the_choice_with_no_provider_ca
     assert_eq!(again, read);
     passes(&read);
 }
+
+/// A gross ramp advertised with no fee, whose quote for 1,000 in charges 10 and gives out 5: the charge is above
+/// what it gives out, so nothing arrives by it. The operation cites the quote, as the contract asks of every usable
+/// answer at its amount in, states its fee and 0 out, and its candidate is dropped: as arriving with nothing where
+/// it ends at the destination, and as delivering nothing where a segment would follow. Either record recomputes.
+// verifies: REQ-QTE-13, REQ-CAT-11
+#[test]
+fn gross_answer_charging_more_than_it_gives_out_delivers_nothing() {
+    let charging_more = |net: &mut Net| {
+        net.ramp(
+            "r-a",
+            ("hub", "hub-b"),
+            "USDC",
+            (6, 6),
+            ("1", WIDE),
+            json!({ "fee": fee("0", "0", "1"), "settlement_seconds": 60 }),
+        );
+        report_gross(net, "r-a");
+        net.transfer_quote(
+            "q-a",
+            "r-a",
+            ("1000", "USDC", "10", "5"),
+            60,
+            QUOTED,
+            QUOTE_AGE,
+        );
+    };
+    let mut net = Net::new("snap-net-ranking-more", CHOICE_AT, 10);
+    charging_more(&mut net);
+    let record = routed(
+        &choice("r-more", to_hub_b(), None),
+        &net.build(),
+        &bounds(1),
+    );
+    let a = on(&record, &["r-a"]);
+    let operation = &a.parts[0].operations[0];
+    assert_eq!(
+        (operation.fee.amount.as_str(), operation.amount_out.as_str()),
+        ("10", "0")
+    );
+    assert!(operation.figures.iter().any(|f| f.as_str() == "q-a"));
+    assert_eq!(a.dropped, Some(DropReason::NoPositiveOutcome {}));
+    assert_eq!(record.chosen, None);
+    passes(&record);
+
+    // Mid-route, short of `hub-c`: the path ends at the ramp, which delivers nothing.
+    let mut net = Net::new("snap-net-ranking-more-chain", CHOICE_AT, 10);
+    charging_more(&mut net);
+    net.ramp(
+        "r-c",
+        ("hub-b", "hub-c"),
+        "USDC",
+        (6, 6),
+        ("1", WIDE),
+        json!({ "fee": fee("0", "0", "1"), "settlement_seconds": 60 }),
+    );
+    let chained = routed(
+        &choice("r-more-chain", endpoint(json!("hub-c"), "USDC", 6), None),
+        &net.build(),
+        &bounds(2),
+    );
+    assert_eq!(
+        on(&chained, &["r-a"]).dropped,
+        Some(DropReason::NothingDelivered {
+            part: 0,
+            operation: 0
+        })
+    );
+    passes(&chained);
+}

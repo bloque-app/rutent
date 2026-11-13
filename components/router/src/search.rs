@@ -289,23 +289,29 @@ impl<'a> Search<'a> {
         // arrives, as router-api's `Operation::stated_out` reads the answer: under a tuple that reports `gross`, a
         // withdrawal's, deposit's or transfer's `amount_out` less the charge it includes, in its out unit; else the
         // answer's `amount_out` as it stands (`REQ-CAT-11`). So the next segment, the ranking, the floor, the
-        // ceilings and the rate-cycle check all read what arrives.
-        let confirmed = statements
+        // ceilings and the rate-cycle check all read what arrives. A gross answer whose charge is above what it
+        // gives out still binds, since the contract has every usable answer cited, but nothing arrives by it and it
+        // confirms nothing: the operation states its fee and `0` out, so its path is dropped as arriving with
+        // nothing, or as delivering nothing short of the destination.
+        let bound = statements
             .iter()
             .filter(|f| self.is_usable(f))
             .find_map(|f| {
                 let answer = answer_of(f)?;
                 let fee = whole(&answer.fee.amount)?;
                 (answer.fee.asset == segment.from.asset.id && &fee <= amount).then_some(())?;
-                let out = Self::stated_out(segment, &amount_in, &answer)?;
-                Some((answer.fee.clone(), Amount::new(out)?))
+                Some(match Self::stated_out(segment, &amount_in, &answer) {
+                    Some(out) => (answer.fee.clone(), Amount::new(out)?, true),
+                    None => (answer.fee.clone(), Amount::zero(), false),
+                })
             });
         let fee_of = |amount: String| Fee {
             asset: segment.from.asset.id.clone(),
             amount,
             billed_separately: None,
         };
-        let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, segment.price) {
+        let is_bound = bound.is_some() && segment.price.is_some();
+        let (fee, amount_out, is_confirmed, unstatable) = match (bound, segment.price) {
             // An operation cites one price: with none, it can't be stated, whatever answers there are.
             (_, None) => (
                 fee_of("0".to_owned()),
@@ -313,7 +319,7 @@ impl<'a> Search<'a> {
                 false,
                 Some(Cut::NoPrice),
             ),
-            (Some((fee, out)), Some(_)) => (fee, out, true, None),
+            (Some((fee, out, confirms)), Some(_)) => (fee, out, confirms, None),
             (None, Some((_, formula))) => match evaluate(
                 formula,
                 segment.rate,
@@ -336,14 +342,14 @@ impl<'a> Search<'a> {
             },
         };
         // Cite every usable statement, as the contract asks. One that is past its validity or void is cited only
-        // where no usable answer covers the operation: there the operation stands on it and is dropped for it. An
+        // where no usable answer binds the operation: there the operation stands on it and is dropped for it. An
         // operation that can't be stated is dropped for that, so it cites the usable ones only.
         let mut figures = vec![segment.tuple.figure_id.clone()];
         figures.extend(segment.price.map(|(price, _)| price.figure_id.clone()));
         figures.extend(
             statements
                 .iter()
-                .filter(|f| (!is_confirmed && unstatable.is_none()) || self.is_usable(f))
+                .filter(|f| (!is_bound && unstatable.is_none()) || self.is_usable(f))
                 .map(|f| f.figure_id.clone()),
         );
         Some(Step {
