@@ -14,9 +14,16 @@
 //! signed holds the change's recorded time, unconverted, never the clock's. A read must extend the one before: the
 //! receipt of the last entry read must be where it was ([`NoticeError::NotThisLog`]).
 //!
-//! **At least once.** Built afresh, as after a restart, the notices read the log from its first entry and send every
-//! change again; a receiver drops each copy by its sequence. Keeping what was delivered durably, so a rebuild
-//! catches up without sending, is `T-023-02`'s.
+//! **What a read compares.** Only the receipt of the last entry read (the log's name, its index and the entry's
+//! digest). That rests on the log being append-only, as core-internal's is: an entry already read is never changed,
+//! so a log that still holds the last entry read at its place holds every one before it. A log that rewrote an
+//! earlier entry and kept the last would pass unseen; no such log exists, and comparing every entry would cost more
+//! the longer the log.
+//!
+//! **At least once, and caught up on a restart.** The notices read the log from its first entry when built afresh,
+//! as after a restart, and rebuild every change; what the [`Ledger`] holds as delivered is not sent again
+//! ([`Notices::resuming`]), so a restart sends only what the transport hadn't taken. A mark that couldn't be kept
+//! leaves its notice to be sent again, and a receiver drops each copy by its sequence.
 //!
 //! **Its receivers come from Core's records.** The user is the requester the order's `acceptance` names, receiving
 //! as `customer`; the operator is the deployment's operator party, set when the notices are built, receiving as
@@ -47,9 +54,16 @@
 //! Core's clock (`Charged::ahead()`, `T-021-05`), each once by its party and request while policy sets it apart.
 //!
 //! **Delivery.** Each notice goes through the [`Transport`] the assembly gives. One the transport didn't take is kept
-//! ([`Notices::undelivered`]); retrying it within a bound and recording it are `T-023-02`'s.
+//! ([`Notices::undelivered`]) and tried again by [`Notices::retry`], at most [`BOUND`] tries in all (counted from the
+//! ledger, so a restart gives no fresh bound); every try is recorded in the [`Ledger`], and a notice that used them is
+//! set apart ([`Notices::abandoned`]). See the `delivery` module's notes.
+//!
+//! **The watch** ([`Watch`], `REQ-ORD-7`). The path that warns the operator has a heartbeat of its own; a path that
+//! answers nothing for [`SILENCE`] seconds is noticed on a second path.
 
+mod delivery;
 mod inbox;
+mod watch;
 pub mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,7 +79,9 @@ use rutent_stm::Stm;
 use crate::rounds::Fresh;
 use crate::snapshot::Clock;
 
+pub use delivery::{Attempt, BOUND, Key, Ledger, Retried, Volatile};
 pub use inbox::{Inbox, NotTaken, Taken, Verifier};
+pub use watch::{INTERVAL, Path, SILENCE, Tick, Watch};
 pub use wire::{
     About, AheadSeen, At, Change, DOMAIN, Notice, NoticeKey, PartState, Receiver, View,
     signing_input,
@@ -82,19 +98,24 @@ impl Operator for Unbuilt {
     }
 }
 
-/// How a sealed notice reaches its receiver. The assembly gives it; `T-023-02` watches it.
+/// How a sealed notice reaches its receiver. The assembly gives it; [`Notices::retry`] retries what it refused, and
+/// [`Watch`] watches the one that warns the operator.
 pub trait Transport {
     /// Hands `notice`, sealed, to `to`: true only where it was taken for delivery.
     fn send(&mut self, to: &Receiver, notice: &[u8]) -> bool;
 }
 
-/// A notice the transport didn't take, kept for `T-023-02`'s retry.
+/// A notice the transport didn't take, kept for [`Notices::retry`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Undelivered {
     /// Its receiver.
     pub to: Receiver,
     /// The sealed notice.
     pub notice: Vec<u8>,
+    /// What names it in the ledger, where it has a place in the log to be rebuilt from.
+    pub key: Option<Key>,
+    /// How many times it was tried.
+    pub attempts: u32,
 }
 
 /// Why the log's entries weren't all notified. What was notified before the error stays notified, and the next call
@@ -147,18 +168,22 @@ struct Followed {
 }
 
 /// Core's notices: where the reading of the log stopped, the orders followed from it, and what wasn't delivered.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Notices {
     deployment: Id,
     operator: Receiver,
     /// How many entries were read.
     read: usize,
-    /// The receipt of the last entry read: a later read must hold it where it was.
+    /// The receipt of the last entry read: a later read must hold it where it was. This compares that entry alone,
+    /// which holds for an append-only log (see the module's notes on what a read compares).
     last: Option<Receipt>,
     requesters: BTreeMap<String, Id>,
     orders: BTreeMap<String, Followed>,
     ahead: BTreeSet<(String, String)>,
     undelivered: Vec<Undelivered>,
+    abandoned: Vec<Undelivered>,
+    ledger: Box<dyn Ledger>,
+    bound: u32,
 }
 
 impl Notices {
@@ -176,7 +201,46 @@ impl Notices {
             orders: BTreeMap::new(),
             ahead: BTreeSet::new(),
             undelivered: Vec::new(),
+            abandoned: Vec::new(),
+            ledger: Box::new(Volatile::default()),
+            bound: BOUND,
         }
+    }
+
+    /// The notices of `deployment`, whose operator is the party `operator`, resuming from `ledger`, the durable record
+    /// of what was delivered.
+    pub fn resuming(deployment: Id, operator: Id, ledger: Box<dyn Ledger>) -> Self {
+        Self {
+            ledger,
+            ..Self::new(deployment, operator)
+        }
+    }
+
+    /// The same notices with every notice tried at most `bound` times, the first send included (at least once).
+    pub fn bounded(mut self, bound: u32) -> Self {
+        self.bound = bound.max(1);
+        self
+    }
+
+    /// Tries once more each notice the transport didn't take, in the order they were sent, and records each try. A
+    /// notice that uses its last try now is abandoned. The assembly calls this on a schedule of its own.
+    pub fn retry(&mut self, transport: &mut dyn Transport) -> Retried {
+        let pending = std::mem::take(&mut self.undelivered);
+        let abandoned = self.abandoned.len();
+        let mut retried = Retried::default();
+        for held in pending {
+            if self.attempt(transport, held) {
+                retried.delivered += 1;
+            }
+        }
+        retried.abandoned = self.abandoned.len() - abandoned;
+        retried.failed = self.undelivered.len();
+        retried
+    }
+
+    /// The notices that used all their attempts, in the order they were given up.
+    pub fn abandoned(&self) -> &[Undelivered] {
+        &self.abandoned
     }
 
     /// The operator, as it receives.
@@ -230,7 +294,7 @@ impl Notices {
     pub fn notify(
         &mut self,
         recorded: &[(Receipt, Entry)],
-        key: &mut dyn NoticeKey,
+        notice_key: &mut dyn NoticeKey,
         transport: &mut dyn Transport,
     ) -> Result<usize, NoticeError> {
         let unread = self.unread(recorded)?;
@@ -241,18 +305,28 @@ impl Notices {
             {
                 let mut sealed = Vec::new();
                 for to in self.receivers_of(order) {
+                    let key = Key {
+                        to: to.clone(),
+                        order: order.to_owned(),
+                        sequence: followed.sequence,
+                    };
+                    if self.ledger.delivered(&key) {
+                        continue;
+                    }
                     let notice = Notice {
                         deployment: self.deployment.clone(),
                         to: to.clone(),
                         about: followed.latest.clone(),
                         current: false,
                     };
-                    sealed.push((to, wire::seal(key, notice).ok_or(NoticeError::Unsigned)?));
+                    let notice = wire::seal(notice_key, notice).ok_or(NoticeError::Unsigned)?;
+                    sealed.push((to, key, notice));
                 }
                 self.orders.insert(order.to_owned(), followed);
-                for (to, notice) in sealed {
-                    sent += 1;
-                    self.send(transport, to, notice);
+                for (to, key, notice) in sealed {
+                    if self.send(transport, to, Some(key), notice).is_some() {
+                        sent += 1;
+                    }
                 }
             }
             if let Entry::Verified(v) = entry
@@ -268,10 +342,51 @@ impl Notices {
         Ok(sent)
     }
 
-    fn send(&mut self, transport: &mut dyn Transport, to: Receiver, notice: Vec<u8>) -> bool {
-        let taken = transport.send(&to, &notice);
+    /// Sends `notice` to `to`: `Some(taken)` for a try made, `None` where none was: the ledger holds it delivered, or
+    /// it used the bound before (it is set apart as abandoned).
+    fn send(
+        &mut self,
+        transport: &mut dyn Transport,
+        to: Receiver,
+        key: Option<Key>,
+        notice: Vec<u8>,
+    ) -> Option<bool> {
+        let tried = match &key {
+            Some(key) if self.ledger.delivered(key) => return None,
+            Some(key) => self.ledger.attempts(key),
+            None => 0,
+        };
+        let held = Undelivered {
+            to,
+            notice,
+            key,
+            attempts: tried,
+        };
+        if tried >= self.bound {
+            self.abandoned.push(held);
+            return None;
+        }
+        Some(self.attempt(transport, held))
+    }
+
+    /// One more try of `held`, recorded; one the transport didn't take is kept, or abandoned on its last try.
+    fn attempt(&mut self, transport: &mut dyn Transport, mut held: Undelivered) -> bool {
+        held.attempts += 1;
+        let taken = transport.send(&held.to, &held.notice);
+        if let Some(key) = &held.key {
+            // A mark that couldn't be kept leaves the notice sendable after a restart: at least once.
+            let _ = self.ledger.record(&Attempt {
+                key: key.clone(),
+                number: held.attempts,
+                taken,
+            });
+        }
         if !taken {
-            self.undelivered.push(Undelivered { to, notice });
+            if held.attempts >= self.bound {
+                self.abandoned.push(held);
+            } else {
+                self.undelivered.push(held);
+            }
         }
         taken
     }
@@ -321,7 +436,7 @@ impl Notices {
             }
         }
         let followed = followed.ok_or(CurrentError::Unknown)?;
-        let to = if reader.role == Role::Operator {
+        let to = if reader.role == Role::Operator && reader.party == self.operator.party {
             self.operator.clone()
         } else {
             Receiver {
@@ -387,7 +502,7 @@ impl Notices {
             let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
             self.ahead.insert(seen);
             let to = self.operator.clone();
-            self.send(transport, to, sealed);
+            self.send(transport, to, None, sealed);
             sent += 1;
         }
         Ok(sent)
@@ -521,7 +636,7 @@ impl Operator for Channel<'_> {
         let Some(sealed) = wire::seal(self.key, notice) else {
             return Delivery::Undelivered;
         };
-        if self.notices.send(self.transport, to, sealed) {
+        if self.notices.send(self.transport, to, None, sealed) == Some(true) {
             Delivery::Delivered
         } else {
             Delivery::Undelivered
