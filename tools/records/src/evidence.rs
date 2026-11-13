@@ -855,6 +855,20 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
             "develop's scope file reads `strict: on` and this one reads `strict: off`: the switch only turns on".into(),
         ));
     }
+    let (head_inspect, head_partly) = allowed_sets(head_plan);
+    let (base_inspect, base_partly) = allowed_sets(base_plan);
+    for (what, now, before) in [
+        ("inspection", &head_inspect, &base_inspect),
+        ("partly met", &head_partly, &base_partly),
+    ] {
+        for id in now.difference(before) {
+            out.push(finding(
+                "allowance-widened",
+                "PLAN.md".into(),
+                format!("{id} may be {what} in this PLAN.md's T-024-09 row and may not on develop's: the allowed sets only narrow here"),
+            ));
+        }
+    }
     for row in &head.rows {
         let Some(before) = base.row(&row.id) else {
             continue;
@@ -908,7 +922,8 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
                 };
                 row.cites
                     .iter()
-                    .filter(|c| ["DEC-", "F-", "T-"].iter().any(|p| c.starts_with(p)))
+                    // The T-024-09 row, which sets the allowed sets, never excuses a move into them.
+                    .filter(|c| ["DEC-", "F-"].iter().any(|p| c.starts_with(p)))
                     .any(|cited| {
                         newly_places(
                             plan_row(base_plan, cited).as_deref(),

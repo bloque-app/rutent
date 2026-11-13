@@ -868,31 +868,60 @@ fn m3_row_moved_to_inspected_or_partly_met_is_reported_unless_a_changed_row_plac
     let plan = plain_plan();
     let moves = [
         (
-            "REQ-MOD-2 | inspect | check:documentation T-024-09",
+            "REQ-MOD-2 | inspect | check:documentation",
             "REQ-MOD-2",
-            "`REQ-MOD-2`, `REQ-MOD-3`",
-            "`REQ-MOD-3`",
+            "Inspection of `REQ-MOD-2`.",
         ),
         (
-            "REQ-MOD-1 | partly | form:item T-024-09",
+            "REQ-MOD-1 | partly | form:item",
             "REQ-MOD-1",
-            "`REQ-MOD-1`",
-            "`REQ-MOD-9`",
+            "Partly met: `REQ-MOD-1`.",
         ),
     ];
-    for (line, id, here, before) in moves {
-        let head = scope_text("off", &[line]);
-        // Cited, but the row is the same on develop: nothing placed it.
-        let found = ratchet(&head, &base, &plan, &plan);
+    for (line, id, clause) in moves {
+        let bare = scope_text("off", &[line]);
+        let cited = scope_text("off", &[&format!("{line} DEC-17")]);
+        let placed = plan.replace("Always in v0.", &format!("Always in v0. {clause}"));
+        // Not cited at all, and cited but unchanged: nothing placed it.
+        let found = ratchet(&bare, &base, &placed, &plan);
         assert!(some_with(&found, "reclassified", id), "{line}: {found:?}");
-        // Not cited at all.
-        let bare = scope_text("off", &[&line.replace(" T-024-09", "")]);
-        let found = ratchet(&bare, &base, &plan, &plan.replace(here, before));
+        let found = ratchet(&cited, &base, &plan, &plan);
         assert!(some_with(&found, "reclassified", id), "{line}: {found:?}");
         // Cited, and develop's row did not place it.
-        let found = ratchet(&head, &base, &plan, &plan.replace(here, before));
+        let found = ratchet(&cited, &base, &placed, &plan);
         assert!(found.is_empty(), "{line}: {found:?}");
+        // The T-024-09 row, which sets the allowed sets, excuses nothing.
+        let by_plan = scope_text("off", &[&format!("{line} T-024-09")]);
+        let narrower = plan.replace("`REQ-MOD-3`)", "`REQ-MOD-3`, `REQ-OPS-5`)");
+        let found = ratchet(&by_plan, &base, &narrower, &plan);
+        assert!(some_with(&found, "reclassified", id), "{line}: {found:?}");
     }
+}
+
+// verifies: DEC-17
+#[test]
+fn a_plan_edit_that_widens_the_allowed_sets_is_reported_and_excuses_its_own_move() {
+    let base = format!("{}\nAC-4 | m3", scope_text("off", &[]));
+    let head = format!(
+        "{}\nAC-4 | inspect | check:documentation T-024-09",
+        scope_text("off", &[])
+    );
+    let plan = plain_plan();
+    let widened = plan.replace(
+        "(`REQ-MOD-2`, `REQ-MOD-3`)",
+        "(`REQ-MOD-2`, `REQ-MOD-3`, `AC-4`)",
+    );
+    assert_ne!(plan, widened);
+    let found = ratchet(&head, &base, &widened, &plan);
+    assert!(some_with(&found, "allowance-widened", "AC-4"), "{found:?}");
+    assert!(some_with(&found, "reclassified", "AC-4"), "{found:?}");
+    // Partly met widens the same way.
+    let widened = plan.replace("(`REQ-MOD-1`)", "(`REQ-MOD-1`, `AC-4`)");
+    let found = ratchet(&base, &base, &widened, &plan);
+    assert!(some_with(&found, "allowance-widened", "AC-4"), "{found:?}");
+    // Narrowing, or no change, is fine.
+    assert!(ratchet(&base, &base, &plan, &widened).is_empty());
+    assert!(ratchet(&base, &base, &plan, &plan).is_empty());
 }
 
 // verifies: DEC-17
