@@ -103,8 +103,8 @@ fn run(
         .map_err(|e| format!("cannot read the records under {}: {e}", root.display()))?;
     let universe = universe(&spec);
     let mut tests = Vec::new();
-    for path in
-        tags::find_rust_files(root).map_err(|e| format!("cannot walk {}: {e}", root.display()))?
+    for path in rutent_records::evidence::find_member_rust_files(root)
+        .map_err(|e| format!("cannot walk {}: {e}", root.display()))?
     {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;

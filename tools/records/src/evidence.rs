@@ -207,18 +207,92 @@ pub enum Outcome {
     Ignored,
 }
 
-/// The lines `cargo test` printed, read: each test's outcomes by the last `::` segment of its name.
+/// One test line `cargo test` printed: the target that ran it, the test's full path and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Run {
+    /// The text after `Running ` up to the binary's path: `tests/boundary.rs`, `unittests src/lib.rs`.
+    target: String,
+    path: String,
+    outcome: Outcome,
+}
+
+/// Where a scanned test lives, as `cargo test` names it: an integration test's target (`tests/x.rs`), or a unit
+/// test (`unittests`) with the module its file stands for. A file that is neither has no target and never matches.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Place {
+    target: String,
+    module: String,
+}
+
+impl Place {
+    fn of(file: &str) -> Place {
+        let parts: Vec<&str> = file.split('/').collect();
+        let dir = &parts[..parts.len().saturating_sub(1)];
+        if let Some(at) = dir.iter().rposition(|p| *p == "tests") {
+            return Place {
+                target: format!("tests/{}", parts[at + 1..].join("/")),
+                module: String::new(),
+            };
+        }
+        if let Some(at) = dir.iter().rposition(|p| *p == "src") {
+            let rest = &parts[at + 1..];
+            if rest.first() == Some(&"bin") {
+                return Place {
+                    target: format!("unittests src/{}", rest.join("/")),
+                    module: String::new(),
+                };
+            }
+            let mut module: Vec<&str> = rest.iter().map(|p| p.trim_end_matches(".rs")).collect();
+            if matches!(module.last(), Some(&"lib" | &"main" | &"mod")) {
+                module.pop();
+            }
+            return Place {
+                target: "unittests".into(),
+                module: module.join("::"),
+            };
+        }
+        Place {
+            target: String::new(),
+            module: String::new(),
+        }
+    }
+
+    fn matches(&self, run: &Run, name: &str) -> bool {
+        let target = if self.target == "unittests" {
+            run.target.starts_with("unittests")
+        } else {
+            !self.target.is_empty() && run.target == self.target
+        };
+        let path = run.path == name || run.path.ends_with(&format!("::{name}"));
+        let module = self.module.is_empty() || run.path.starts_with(&format!("{}::", self.module));
+        target && path && module
+    }
+}
+
+/// The lines `cargo test` printed, read with the `Running ...` header each sits under, so that a test is joined to
+/// its target and its full path and not to its bare name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Results {
-    by_name: BTreeMap<String, Vec<Outcome>>,
+    runs: Vec<Run>,
 }
 
 impl Results {
-    /// Reads libtest's `test <path> ... ok|FAILED|ignored` lines; every other line is ignored.
+    /// Reads libtest's `test <path> ... ok|FAILED|ignored` lines and the `Running <target> (...)` lines above
+    /// them; every other line is ignored.
     pub fn parse(text: &str) -> Results {
-        let mut by_name: BTreeMap<String, Vec<Outcome>> = BTreeMap::new();
+        let mut runs = Vec::new();
+        let mut target = String::new();
         for line in text.lines() {
-            let Some(rest) = line.trim().strip_prefix("test ") else {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("Running ") {
+                target = rest.split(" (").next().unwrap_or(rest).trim().to_string();
+                continue;
+            }
+            if line.starts_with("Doc-tests ") {
+                target = "doctests".into();
+                continue;
+            }
+            let Some(rest) = line.strip_prefix("test ") else {
                 continue;
             };
             let Some((path, outcome)) = rest.rsplit_once(" ... ") else {
@@ -234,35 +308,83 @@ impl Results {
                 Some("ignored") => Outcome::Ignored,
                 _ => continue,
             };
-            let name = path.rsplit("::").next().unwrap_or(path).trim();
-            by_name.entry(name.to_string()).or_default().push(outcome);
+            runs.push(Run {
+                target: target.clone(),
+                path: path.trim().to_string(),
+                outcome,
+            });
         }
-        Results { by_name }
+        Results { runs }
     }
 
-    /// A test passed when it ran at least as many times as the sources hold a test of that name (`expected`), and
-    /// every run passed. The join is by name, so it fails closed: a name that failed once, was ignored once, or
-    /// has a twin that never ran (in a workspace the root run doesn't reach, or behind a `cfg`) does not pass.
-    pub fn passed(&self, name: &str, expected: usize) -> bool {
-        self.by_name.get(name).is_some_and(|runs| {
-            runs.len() >= expected.max(1) && runs.iter().all(|o| *o == Outcome::Passed)
-        })
+    fn outcomes(&self, test: &TestCase) -> Vec<Outcome> {
+        let place = Place::of(&test.file);
+        self.runs
+            .iter()
+            .filter(|run| place.matches(run, &test.name))
+            .map(|run| run.outcome)
+            .collect()
+    }
+
+    /// A test passed when the run read at least as many lines for its target and path as the sources hold tests
+    /// of that place and name (`expected`), and every one passed. Fails closed: a test that failed, was ignored,
+    /// never ran, or has a namesake in its own target that never ran does not pass, and a namesake in another
+    /// target (a twin under `experiments/`, a test of another crate) vouches for nothing.
+    pub fn passed(&self, test: &TestCase, expected: usize) -> bool {
+        let outcomes = self.outcomes(test);
+        outcomes.len() >= expected.max(1) && outcomes.iter().all(|o| *o == Outcome::Passed)
     }
 
     /// The word for a test's state in the report: `passed`, `failed`, `ignored` or `not run`.
-    pub fn state(&self, name: &str) -> &'static str {
-        match self.by_name.get(name) {
-            None => "not run",
-            Some(runs) if runs.contains(&Outcome::Failed) => "failed",
-            Some(runs) if runs.contains(&Outcome::Ignored) => "ignored",
-            Some(_) => "passed",
+    pub fn state(&self, test: &TestCase) -> &'static str {
+        let outcomes = self.outcomes(test);
+        if outcomes.is_empty() {
+            "not run"
+        } else if outcomes.contains(&Outcome::Failed) {
+            "failed"
+        } else if outcomes.contains(&Outcome::Ignored) {
+            "ignored"
+        } else {
+            "passed"
         }
     }
 
     /// True when no test line was read.
     pub fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
+        self.runs.is_empty()
     }
+}
+
+/// Every `.rs` file under `root` that the root workspace's `cargo test` can run: the walk of the tag check, less
+/// `experiments/` and every directory that is a workspace of its own (a `Cargo.toml` with `[workspace]`: the module
+/// guests, the VOS twin, the wallet guest), whose tests the root run never reaches and so cannot vouch for.
+pub fn find_member_rust_files(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if path.is_dir() {
+                let own_workspace = std::fs::read_to_string(path.join("Cargo.toml"))
+                    .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"));
+                let skipped = name == "target"
+                    || name == "experiments"
+                    || name.starts_with('.')
+                    || own_workspace;
+                if !skipped {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// What the table says of one row.
@@ -336,9 +458,11 @@ fn cited_ids(cites: &[String]) -> impl Iterator<Item = &String> {
 /// Joins the scope file to the specification's identifiers, the tags and the results.
 pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
     let mut report = Report::default();
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut counts: BTreeMap<(Place, &str), usize> = BTreeMap::new();
     for test in inputs.tests {
-        *counts.entry(test.name.as_str()).or_default() += 1;
+        *counts
+            .entry((Place::of(&test.file), test.name.as_str()))
+            .or_default() += 1;
     }
     let at = |row: &Row| format!("scope:{}", row.line);
 
@@ -446,7 +570,7 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
 fn m3_line(
     row: &Row,
     inputs: &Inputs<'_>,
-    counts: &BTreeMap<&str, usize>,
+    counts: &BTreeMap<(Place, &str), usize>,
     out: &mut Vec<Finding>,
     location: &str,
 ) -> (String, String) {
@@ -480,12 +604,16 @@ fn m3_line(
     }
     let passing: Vec<&&TestCase> = tagged
         .iter()
-        .filter(|t| inputs.results.passed(&t.name, counts[t.name.as_str()]))
+        .filter(|t| {
+            inputs
+                .results
+                .passed(t, counts[&(Place::of(&t.file), t.name.as_str())])
+        })
         .collect();
     if passing.is_empty() {
         let states: Vec<String> = tagged
             .iter()
-            .map(|t| format!("{} ({})", t.name, inputs.results.state(&t.name)))
+            .map(|t| format!("{} ({})", t.name, inputs.results.state(t)))
             .collect();
         out.push(finding(
             "no-passing-verifier",
