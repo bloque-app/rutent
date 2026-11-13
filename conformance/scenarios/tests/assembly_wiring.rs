@@ -253,6 +253,69 @@ fn policys_sources_answer_from_the_records() {
     let publisher = format!("{RESERVE}-publisher");
     assert_eq!(sources.supply(&need(&publisher, statement.clone())), yes());
     assert_eq!(sources.supply(&need(party, statement)), no());
+    // A provider's showing of fault (`reversal-carrier-rests-on-its-acceptance`): a result the log holds under its
+    // commitment, about its order, segment and transaction, received no later than the acceptance is decided.
+    let held = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about.as_ref().is_some_and(|a| {
+                        a.order.is_some() && a.segment.is_some() && a.transaction.is_some()
+                    }) =>
+            {
+                Some(s.clone())
+            }
+            _ => None,
+        })
+        .expect("a result about a segment under its transaction");
+    let about = held.about.clone().unwrap();
+    let showing_of = |transaction: &Id, commitment: Digest, at: &str| Source::Showing {
+        order: about.order.clone().unwrap(),
+        segment: about.segment.clone().unwrap(),
+        showing: rutent_contracts::core_internal::ShowingNamed {
+            transaction: transaction.clone(),
+            commitment,
+        },
+        decided_at: rutent_contracts::router_api::Timestamp::new(at).unwrap(),
+    };
+    let tx = about.transaction.clone().unwrap();
+    let after = held.received_at.as_str().to_owned();
+    let before = "2000-01-01T00:00:00Z".to_owned();
+    assert_eq!(
+        sources.supply(&need(
+            order.as_str(),
+            showing_of(&tx, held.commitment.clone(), &after)
+        )),
+        yes()
+    );
+    assert_eq!(
+        sources.supply(&need(
+            order.as_str(),
+            showing_of(&tx, held.commitment.clone(), &before)
+        )),
+        no(),
+        "decided before it was received"
+    );
+    assert_eq!(
+        sources.supply(&need(
+            order.as_str(),
+            showing_of(&id("tx-elsewhere"), held.commitment.clone(), &after)
+        )),
+        no(),
+        "another transaction"
+    );
+    let another: Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    assert_eq!(
+        sources.supply(&need(order.as_str(), showing_of(&tx, another, &after))),
+        no(),
+        "another commitment"
+    );
     // The evidence store's statements, by the commitment the log names each by, about their order (`T-021-06`).
     let kept = Source::Kept(commitment_at(&core, result));
     assert_eq!(sources.supply(&need(order.as_str(), kept.clone())), yes());

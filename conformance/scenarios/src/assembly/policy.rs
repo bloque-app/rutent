@@ -12,6 +12,7 @@
 //! | `OrderParties` | the order's acceptance, as the log holds it |
 //! | `SegmentOrder` | the plan that lists the segment: the order's `route_chosen` input, as the log holds it |
 //! | `SegmentProvider` | the effect that moved value on the segment, as the log holds it |
+//! | `Showing` | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, received no later than the acceptance is decided |
 //! | `Statement` | the stated entry naming the commitment: its maker's party, as the log attributed it |
 //! | `Declarations` | the reserve's advertisement, as the assembly listed it in the log: its reserve declaration |
 //! | `Verifier`, `Provider` | nothing yet: a missing input, so a decision that needs a judgement is refused |
@@ -278,6 +279,33 @@ impl Records {
         }))
     }
 
+    /// Whether the log holds `showing` of `segment` of `order`: a provider's result, verified, stated under the
+    /// showing's commitment about that order, segment and transaction, and received no later than `decided_at`.
+    fn showing(
+        &self,
+        order: &Id,
+        segment: &Id,
+        showing: &rutent_contracts::core_internal::ShowingNamed,
+        decided_at: &rutent_contracts::router_api::Timestamp,
+    ) -> Reply<Said> {
+        said(self.log.borrow().entries().iter().any(|(_, e)| match e {
+            Entry::Stated(s) => {
+                let about = s.about.as_ref();
+                s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && matches!(
+                        s.attribution,
+                        rutent_contracts::core_internal::Attribution::Verified { .. }
+                    )
+                    && s.commitment == showing.commitment
+                    && about.and_then(|a| a.order.as_ref()) == Some(order)
+                    && about.and_then(|a| a.segment.as_ref()) == Some(segment)
+                    && about.and_then(|a| a.transaction.as_ref()) == Some(&showing.transaction)
+                    && s.received_at.unix_nanos() <= decided_at.unix_nanos()
+            }
+            Entry::Verified(_) => false,
+        }))
+    }
+
     fn declared(&self, reserve: &Id, declaration: &Id) -> Reply<Said> {
         let declarations = self.declarations.borrow();
         let Some(d) = declarations.get(reserve.as_str()) else {
@@ -331,6 +359,12 @@ impl authz::Sources for Records {
                 self.segment_provider(order, segment, input)
             }
             Source::Statement(commitment) => self.statement(commitment, input),
+            Source::Showing {
+                order,
+                segment,
+                showing,
+                decided_at,
+            } => self.showing(order, segment, showing, decided_at),
             Source::Declarations(reserve) => self.declared(reserve, input),
             Source::Kept(commitment) => self.kept(commitment, input, false),
             Source::KeptAbout(commitment) => self.kept(commitment, input, true),

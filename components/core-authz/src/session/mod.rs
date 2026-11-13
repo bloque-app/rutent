@@ -55,8 +55,8 @@
 
 use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, Reads, Sessions};
 use rutent_contracts::core_internal::{
-    Answer, Decision, Opened, PermissionChange, ReadAnswer, ReadCheck, Reads as Read, RefusalClass,
-    Role, SessionAnswer, SessionOutcome, SessionRequest, What, covers,
+    Action, Answer, Decision, DecisionRequest, Opened, PermissionChange, ReadAnswer, ReadCheck,
+    Reads as Read, RefusalClass, Role, SessionAnswer, SessionOutcome, SessionRequest, What, covers,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_prov::catalogue::{Catalogue, Instant};
@@ -199,6 +199,25 @@ impl Register {
         let until = request.until.unix_nanos();
         let longest = i128::from(LONGEST_SESSION_SECS) * 1_000_000_000;
         until > now && until - now <= longest
+    }
+
+    /// Why a customer's acceptance of fault is refused, where it is: it names a session this engine didn't open, one
+    /// of another party's, or one no longer open, by Core's clock and at the moment the acceptance is decided
+    /// (`reversal-carrier-rests-on-its-acceptance`: a session still open when it was decided, the order's requester's).
+    /// The time the request states is read only against the session's end, as the log reads it; whether the session is
+    /// open now is Core's clock's. Any other action passes.
+    pub(crate) fn refuses_acceptance(&self, request: &DecisionRequest) -> Option<RefusalClass> {
+        let Action::AcceptFault { session, .. } = &request.action else {
+            return None;
+        };
+        let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
+        let open = self.sessions.iter().any(|s| {
+            &s.session == session
+                && s.holder == request.caller.party
+                && s.expires_at.unix_nanos() >= request.at.unix_nanos()
+                && s.expires_at.unix_nanos() > now
+        });
+        (!open).then_some(RefusalClass::NotPermitted)
     }
 
     /// Whether `permission` was granted.
