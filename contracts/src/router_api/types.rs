@@ -800,13 +800,16 @@ pub enum Ranking {
 ///
 /// Core keeps each tuple's history of these, keyed by [`StatedTerms::tuple`], each with the time it was stated; the
 /// terms that bind a segment are the last stated at or before it started, and before that the route's total is a
-/// quote.
+/// quote. Each comes from the provider's signed terms (provider-role's `TupleTerms`) through
+/// [`StatedTerms::from_statement`], which states it at the later of the statement's `made_at` and Core's
+/// `received_at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatedTerms {
     /// The tuple they are for, by its provider and its two ends, so a history is keyed across snapshots.
     pub tuple: TupleKey,
-    /// When the provider stated them.
+    /// When they bind from: the later of the provider's `made_at` and Core's `received_at` of its signed terms, never
+    /// `made_at` alone, so terms dated before a segment started but received after it never bind it (`REQ-QTE-6`).
     pub stated_at: Timestamp,
     /// The fee formula.
     pub fee: FeeFormula,

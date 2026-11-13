@@ -2,18 +2,19 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
-use alloc::{borrow::ToOwned, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::atoms::{compare_products, seconds_down, seconds_up};
 use super::types::{
     CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
     Endpoint, FeeFormula, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part,
-    PolicyBounds, Pricing, Round, SettlementTimes, THREE_DAYS_SECONDS,
+    PolicyBounds, Pricing, Ratio, Round, SettlementTimes, StatedTerms, THREE_DAYS_SECONDS,
+    TupleKey,
 };
-use super::{Amount, Id, Timestamp, Violation};
+use super::{Amount, Id, PositiveAmount, Timestamp, Violation};
 use crate::provider_role::{
-    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, ReserveDirection,
+    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, Reporting, ReserveDirection,
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
 };
 
@@ -150,6 +151,36 @@ impl Operation {
             _ => return Err(Violation("an operation's fee is at most its amount in")),
         }
         Ok(())
+    }
+}
+
+impl Operation {
+    /// What this operation states as its `amount_out` for an accepted answer of its tuple's provider (a dry run or
+    /// a fresh quote) stating `answer_out` and `answer_fee`: what arrives (`REQ-CAT-11`, `REQ-QTE-11`). Under a tuple
+    /// that reports `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the answer's
+    /// `amount_out` less its charge, the fee restated in this operation's out unit (provider-role's
+    /// [`less_the_charge`](crate::provider_role::less_the_charge)); under `net`, and for an exchange, whose fee is in
+    /// its from asset, the answer's `amount_out` as it stands. `tuple` is the tuple figure the operation cites;
+    /// `None` where it isn't one, or the charge is above the answer's `amount_out`.
+    pub fn stated_out(&self, tuple: &Figure, answer_out: &str, answer_fee: &Fee) -> Option<String> {
+        let terms = match &tuple.value {
+            FigureValue::ReserveTuple { tuple } => &tuple.terms,
+            FigureValue::RampTuple { tuple } => &tuple.terms,
+            FigureValue::ExchangeTuple { tuple } => &tuple.terms,
+            _ => return None,
+        };
+        match (terms.reporting, self.kind) {
+            (
+                Reporting::Gross,
+                OperationKind::Withdrawal | OperationKind::Route | OperationKind::Deposit,
+            ) => crate::provider_role::less_the_charge(
+                answer_out,
+                &answer_fee.amount,
+                self.from.asset.decimals,
+                self.to.asset.decimals,
+            ),
+            _ => Some(answer_out.to_owned()),
+        }
     }
 }
 
@@ -1243,7 +1274,9 @@ impl DecisionRecord {
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
-    /// provider for its tuple, at its amount in, with its fee and its amount out, within its validity and not void.
+    /// provider for its tuple, at its amount in, with its fee and stating what arrives by it
+    /// ([`Operation::stated_out`]: under a gross tuple, a same-asset answer's amount out less its charge), within its
+    /// validity and not void.
     /// For a route or exchange that is the provider's fresh quote (`transfer_quote`, `conversion_quote`); for a
     /// withdrawal or deposit, the reserve's accepted dry run.
     fn is_confirmed(&self, operation: &Operation, tuple: &Id) -> bool {
@@ -1264,11 +1297,13 @@ impl DecisionRecord {
                     } if t == tuple => result,
                     _ => return false,
                 };
+                // The operation states what arrives: under a gross tuple, a same-asset answer less its charge.
                 let same_terms = matches!(
                     dry_run_view(&result.statement),
                     Some((_, DryRun::Accepted { amount_in, amount_out, fee, .. }))
                         if amount_in == operation.amount_in.amount().as_str()
-                            && amount_out == operation.amount_out.as_str()
+                            && self.figure(tuple).and_then(|t| operation.stated_out(t, amount_out, fee)).as_deref()
+                                == Some(operation.amount_out.as_str())
                             && fee == &operation.fee
                 );
                 same_terms
@@ -1919,17 +1954,172 @@ impl SettlementTimes {
     }
 }
 
+impl Figure {
+    /// When the figure stops being usable, in nanoseconds since the Unix epoch, counted from a snapshot taken at
+    /// `taken_at`: `taken_at + (valid_for_seconds − age_seconds)`. Age is rounded up and validity down, so this is
+    /// never later than the figure's own `valid_until`. `None` for a figure that states no validity, which holds
+    /// until replaced (an advertisement, a price); a figure already past its validity expires at `taken_at`.
+    pub fn expires_at(&self, taken_at: &Timestamp) -> Option<i128> {
+        let valid = self.valid_for_seconds?.get();
+        let left = valid.saturating_sub(self.age_seconds.get());
+        Some(taken_at.unix_nanos() + i128::from(left) * 1_000_000_000)
+    }
+}
+
+impl DecisionRecord {
+    /// The earliest expiry ([`Figure::expires_at`]) of the figures `candidate`'s operations cite, from this record's
+    /// snapshot; `None` where none of them states a validity.
+    pub fn earliest_expiry(&self, candidate: &Candidate) -> Option<i128> {
+        candidate
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .flat_map(|o| o.figures.iter())
+            .filter_map(|id| self.figure(id))
+            .filter_map(|f| f.expires_at(&self.snapshot.taken_at))
+            .min()
+    }
+}
+
 impl HeldQuote {
-    /// Checks the record whole, that it chose a candidate, and that the hold's validity is at or after the
-    /// record's snapshot was taken (`REQ-QTE-15`).
+    /// Checks the record whole, that it chose a candidate, that the hold's validity is at or after the record's
+    /// snapshot was taken, and that it is no later than the earliest expiry of the figures the chosen candidate cites
+    /// ([`DecisionRecord::earliest_expiry`]), so a hold never outlives what its quote rests on (`REQ-QTE-15`,
+    /// `REQ-QTE-4`).
     pub fn check(&self) -> Result<(), Violation> {
         self.record.check()?;
-        if self.record.chosen().is_none() {
+        let Some(chosen) = self.record.chosen() else {
             return Err(Violation("a held quote's record chose a candidate"));
-        }
+        };
         if self.valid_until.unix_nanos() < self.record.snapshot.taken_at.unix_nanos() {
             return Err(Violation(
                 "a held quote's validity is at or after its record's snapshot",
+            ));
+        }
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| self.valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StatedTerms {
+    /// The history entry of a provider's signed terms (provider-role's `TupleTerms`, `REQ-QTE-6`), received by Core at
+    /// `received_at`: its tuple, fee formula and slippage regime, stated at the later of the statement's `made_at`
+    /// and `received_at`, never `made_at` alone, so terms dated before a segment started but received after it never
+    /// bind it ([`StatedTerms::stated_at`]). Refused where the statement isn't of the terms shape, breaks
+    /// provider-role's `check_terms` (made by another than its tuple's provider, or a slippage regime where its tuple
+    /// sets no rate or none where it does), or a figure isn't one of this contract's atoms.
+    pub fn from_statement(
+        statement: &Statement<crate::provider_role::TupleTerms>,
+        received_at: &Timestamp,
+    ) -> Result<StatedTerms, Violation> {
+        statement
+            .check_shape()
+            .map_err(|_| Violation("stated terms are a terms statement"))?;
+        crate::provider_role::check_terms(statement).map_err(|_| {
+            Violation(
+                "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate",
+            )
+        })?;
+        let terms = &statement.statement;
+        let atom = || Violation("stated terms' figures are this contract's atoms");
+        let end = |e: &crate::provider_role::TupleEnd| Endpoint {
+            node: e.node.clone(),
+            asset: e.asset.clone(),
+        };
+        let made_at = Timestamp::new(statement.made_at.as_str()).ok_or_else(atom)?;
+        let stated_at = if made_at.unix_nanos() >= received_at.unix_nanos() {
+            made_at
+        } else {
+            received_at.clone()
+        };
+        Ok(StatedTerms {
+            tuple: TupleKey {
+                provider: Id::new(terms.tuple.provider.as_str()).ok_or_else(atom)?,
+                from: end(&terms.tuple.from),
+                to: end(&terms.tuple.to),
+            },
+            stated_at,
+            fee: FeeFormula {
+                flat: Amount::new(terms.fee.flat.as_str()).ok_or_else(atom)?,
+                proportional: Ratio {
+                    numerator: Amount::new(terms.fee.proportional.numerator.as_str())
+                        .ok_or_else(atom)?,
+                    denominator: PositiveAmount::new(terms.fee.proportional.denominator.as_str())
+                        .ok_or_else(atom)?,
+                },
+                maximum: match &terms.fee.maximum {
+                    Some(m) => Some(Amount::new(m.as_str()).ok_or_else(atom)?),
+                    None => None,
+                },
+            },
+            slippage: terms.slippage.clone(),
+        })
+    }
+}
+
+impl HeldQuote {
+    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote, whose record
+    /// Core's log names by `record_id` and `record_digest` (core-internal's `decision_record` entry: its
+    /// `decision_record` and its `record`): of the hold shape, naming that record by that id and digest, so a hold
+    /// of another record's candidate of the same id never passes, holding this record's chosen candidate, made by the
+    /// reserve that starts each of its parts, with a validity no later than the earliest expiry of the figures that
+    /// candidate cites ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. That
+    /// `record_digest` is this record's digest is Core's, which computes it; this contract computes no digest.
+    pub fn check_hold(
+        &self,
+        hold: &Statement<crate::provider_role::Hold>,
+        record_id: &Id,
+        record_digest: &crate::module_interface::Digest,
+    ) -> Result<(), Violation> {
+        hold.check_shape()
+            .map_err(|_| Violation("a hold is a hold statement"))?;
+        let named = &hold.statement.record;
+        if named.id != record_id.as_str()
+            || named.digest.value != record_digest.value.as_str()
+            || named.digest.algorithm != crate::provider_role::DigestAlgorithm::Sha256
+            || record_digest.algorithm != crate::module_interface::DigestAlgorithm::Sha256
+        {
+            return Err(Violation(
+                "a hold names its held quote's decision record, by the id and digest the log names it by",
+            ));
+        }
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if hold.statement.candidate != chosen.candidate_id.as_str() {
+            return Err(Violation("a hold holds its record's chosen candidate"));
+        }
+        if chosen
+            .parts
+            .iter()
+            .any(|part| part.operations.first().provider.as_str() != hold.maker)
+        {
+            return Err(Violation(
+                "a hold is made by the reserve that starts each part of its candidate",
+            ));
+        }
+        let valid_until = Timestamp::new(hold.statement.valid_until.as_str())
+            .ok_or(Violation("a hold's validity is a timestamp"))?;
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a hold's validity is no later than the earliest expiry of the figures its candidate cites",
+            ));
+        }
+        if self.valid_until.unix_nanos() > valid_until.unix_nanos() {
+            return Err(Violation(
+                "a held quote is held no longer than its hold's validity",
             ));
         }
         Ok(())

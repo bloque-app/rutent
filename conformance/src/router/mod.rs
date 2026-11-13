@@ -478,8 +478,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Every operation's fee and amount out, recomputed. An operation that cites usable accepted answers for its
-    /// amount in states each one's fee and amount out: a provider's confirmed terms bind over its advertised price,
-    /// as the contract's confirmation rule already requires of the choice. Any other operation states what its
+    /// amount in states each one's fee and what arrives by it (router-api's `Operation::stated_out`: under a gross
+    /// tuple, a same-asset answer's amount out less its charge): a provider's confirmed terms bind over its
+    /// advertised price, as the contract's confirmation rule already requires of the choice. Any other operation states what its
     /// price gives on its amount in, between its two units.
     fn amounts_follow_their_figures(&self, findings: &mut Vec<Finding>) {
         for candidate in &self.record.candidates {
@@ -537,15 +538,19 @@ impl<'a> Reader<'a> {
                 }
                 if !answers.is_empty() {
                     for (id, answer) in answers {
+                        // What arrives by the answer: under a gross tuple, a same-asset answer less its charge.
+                        let arrives =
+                            operation.stated_out(cited.tuple, answer.amount_out, answer.fee);
                         if answer.fee != &operation.fee
-                            || answer.amount_out != operation.amount_out.as_str()
+                            || arrives.as_deref() != Some(operation.amount_out.as_str())
                         {
                             fail(format!(
-                                "states a fee of {} and {} out, but answer {id} gives {} and {}",
+                                "states a fee of {} and {} out, but answer {id} gives {} and {} out, {} arriving",
                                 operation.fee.amount,
                                 operation.amount_out,
                                 answer.fee.amount,
-                                answer.amount_out
+                                answer.amount_out,
+                                arrives.as_deref().unwrap_or("nothing")
                             ));
                         }
                     }

@@ -8,6 +8,8 @@
 //! ([`KeyPurpose`]): an advertisement is signed with an `advertising` key, and a later one only with a key the
 //! accepted one lists for `advertising`. Every key is a [`PublicKey`], compared by its decoded bytes.
 //! [`check_amounts`] ties a result's amounts to the operation it answers and names the segment's [`Remainder`].
+//! A provider's signed terms ([`TupleTerms`], [`check_terms`]) and a reserve's signed hold ([`Hold`],
+//! [`check_redemption`]) are statements of their own (3.1.0).
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
 pub mod canonical;
@@ -15,6 +17,7 @@ mod envelope;
 mod operation;
 mod outcome;
 mod settlement;
+mod stated;
 mod types;
 mod validate;
 
@@ -26,7 +29,14 @@ pub use envelope::{
 };
 pub use operation::*;
 pub use outcome::*;
-pub use settlement::{AmountMismatch, Remainder, check_amounts};
+pub use settlement::{
+    AmountMismatch, Remainder, charge_in_out_unit, check_amounts, less_the_charge,
+};
+pub use stated::{
+    DigestAlgorithm, FeeFormula, HOLD_SHAPE, HeldFor, HeldRecord, Hold, Proportion, RecordDigest,
+    RedemptionRefused, TERMS_SHAPE, TermsTuple, TermsViolation, TupleEnd, TupleTerms,
+    check_redemption, check_terms,
+};
 pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 

@@ -216,6 +216,7 @@
             "post_route",
             "change_catalogue",
             "ask_reversal",
+            "accept_fault",
             "erase_statement",
             "resolve_stuck"
           ]
@@ -280,6 +281,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_ask_reversal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "accept_fault"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_accept_fault"
           }
         },
         {
@@ -522,6 +538,54 @@
         "policy_unreachable",
         "verifier_unreachable"
       ]
+    },
+    "action_accept_fault": {
+      "description": "The customer accepting a provider's showing that a failed segment's failure was its fault (REQ-ORD-11): a decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its open session and naming the showing it accepts. It takes no effect; the reversal_carrier that rests on it records who carries the reversal. The operator accepts a showing by its accept_fault command instead.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "showing",
+        "session"
+      ],
+      "properties": {
+        "kind": {
+          "const": "accept_fault"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The failed segment.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "showing": {
+          "$ref": "#/$defs/showing_named"
+        },
+        "session": {
+          "description": "The customer's session it is asked in (REQ-ORD-32).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "showing_named": {
+      "description": "A provider's showing of fault as an acceptance names it: the transaction its result is about, and the commitment its stated entry names its bytes by.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction",
+        "commitment"
+      ],
+      "properties": {
+        "transaction": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "commitment": {
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
     }
   }
 }

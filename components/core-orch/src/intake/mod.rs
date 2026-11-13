@@ -770,6 +770,7 @@ impl Intake {
                 origin_reserve: request.origin_reserve.clone(),
                 yeses,
                 session: Some(offered.session.clone()),
+                held: None,
             },
         )?;
         let start = record::build(

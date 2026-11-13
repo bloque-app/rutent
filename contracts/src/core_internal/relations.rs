@@ -290,6 +290,61 @@ fn maker_provider(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().acts
 }
 
+/// The transaction of the hold whose stated entry is at `held`: the one its entry is about, the hold's own id.
+fn hold_transaction<'a>(held: &Receipt, history: &'a History) -> Option<&'a Id> {
+    history.iter().find_map(|(r, e)| {
+        let s = stated(e).filter(|_| r == held)?;
+        (s.what.statement.as_str() == crate::provider_role::HOLD_SHAPE)
+            .then(|| s.about.as_ref()?.transaction.as_ref())
+            .flatten()
+    })
+}
+
+/// The session a customer's acceptance of fault at `act` was asked in, and when it was decided: where the entry at
+/// that receipt is a `decide` of `accept_fault`.
+fn fault_session<'a>(
+    act: &Receipt,
+    history: &'a History,
+) -> Option<(&'a Id, &'a crate::router_api::Timestamp)> {
+    history.iter().find_map(|(r, e)| {
+        let v = verified(e).filter(|_| r == act)?;
+        match &v.what {
+            What::Decide {
+                request:
+                    DecisionRequest {
+                        action: Action::AcceptFault { session, .. },
+                        ..
+                    },
+                ..
+            } => Some((session, &v.when.at)),
+            _ => None,
+        }
+    })
+}
+
+/// When `segment` of `order` started, by this log: the time of the first `move_value` effect on it (`REQ-QTE-6`).
+fn segment_started<'a>(
+    order: &Id,
+    segment: &Id,
+    history: &'a History,
+) -> Option<&'a crate::router_api::Timestamp> {
+    history.iter().find_map(|(_, e)| {
+        let v = verified(e)?;
+        match &v.what {
+            What::Effect {
+                action:
+                    Action::MoveValue {
+                        order: o,
+                        segment: s,
+                        ..
+                    },
+                ..
+            } if o == order && s == segment => Some(&v.when.at),
+            _ => None,
+        }
+    })
+}
+
 /// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
 /// under an order names (see `transaction-belongs-to-one-order`).
 fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
@@ -369,7 +424,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 93] = [
+pub static RELATIONS: [Relation; 97] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2195,34 +2250,37 @@ pub static RELATIONS: [Relation; 93] = [
                 "an acceptance of fault is the party at fault's own: the requester's party in the customer's role, or the deployment operator's",
             ),
             (
+                "action",
+                "a customer's acceptance of fault is policy's decision of its accept_fault, not another action",
+            ),
+            (
                 "yes",
-                "a customer's acceptance of fault is its verified yes about the order and segment",
+                "a customer's acceptance of fault is permitted, about the order and segment",
             ),
             (
                 "session",
-                "a customer's acceptance of fault is given in its session, still open",
-            ),
-            (
-                "shape",
-                "a customer's acceptance of fault is its fault-acceptance statement, not a dispute or another shape",
+                "a customer's acceptance of fault is decided in its session, still open",
             ),
             (
                 "showing",
-                "an acceptance of fault names the showing it accepts, by its transaction, and comes after it",
+                "an acceptance of fault names the showing it accepts, by its transaction and commitment, and comes after it",
             ),
         ],
-        // The act, not a writer's label: the customer's own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in
-        // its session, as an acceptance rests on its yes and session; the operator's `accept_fault` command, by the
-        // deployment operator's party. Either comes after the showing it accepts: the customer's statement is about
-        // the showing's transaction and received after it, the command appended after it.
-        cites: |e, _| match &e.what {
+        // The act, not a writer's label. The customer's is a decision of policy's on the policy handle, as an order's
+        // authorisation is: a `decide` of `accept_fault` (`Action::AcceptFault`), permitted, asked by the order's
+        // requester in its open session, about the order and segment, naming the showing by the transaction its
+        // result is about and the commitment its stated entry names, decided no earlier than the showing was
+        // received and appended after it. No customer signs a statement Core can attribute: the log knows no
+        // customer's key (`StatementKeys`), so the decision, which the log holds whole, is what it reads. The
+        // operator's is its `accept_fault` command, by the deployment operator's party, appended after the showing.
+        cites: |e, h| match &e.what {
             What::ReversalCarrier {
                 accepted_with: Some(act),
-                session,
+                carrier,
                 ..
             } => {
                 let mut cites = alloc::vec![by_receipt(act, 0)];
-                if session.is_some() {
+                if *carrier == Carrier::Customer && fault_session(act, h).is_some() {
                     cites.extend(by_fields(1));
                 }
                 cites
@@ -2236,8 +2294,7 @@ pub static RELATIONS: [Relation; 93] = [
                 carrier,
                 showing,
                 accepted_by: Some(by),
-                session,
-                ..
+                accepted_with: Some(act),
             } = &e.what
             else {
                 return Match::NotTarget;
@@ -2252,33 +2309,44 @@ pub static RELATIONS: [Relation; 93] = [
                 _ => false,
             };
             match (c.index, carrier, t) {
-                (0, Carrier::Customer, Entry::Stated(s)) => judge(
-                    true,
-                    &[
-                        by.role == Role::Customer
-                            && requester == Some(&by.party)
-                            && requester == Some(&s.attribution.maker().party),
-                        matches!(s.attribution, Attribution::Verified { .. })
-                            && s.about.as_ref().is_some_and(|a| {
-                                a.order.as_ref() == Some(order)
-                                    && a.segment.as_ref() == Some(segment)
-                            }),
+                (0, Carrier::Customer, Entry::Verified(v)) => {
+                    let What::Decide { request, .. } = &v.what else {
+                        return Match::NotTarget;
+                    };
+                    let accepted = match &request.action {
+                        Action::AcceptFault {
+                            order: o,
+                            segment: s,
+                            showing: named,
+                            ..
+                        } => Some((o, s, named)),
+                        _ => None,
+                    };
+                    judge(
                         true,
-                        s.what.statement.as_str() == super::types::FAULT_ACCEPTANCE_SHAPE,
-                        after_showing(t)
-                            && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
-                                s.received_at.unix_nanos() > showing.received_at.unix_nanos()
-                                    && showing
-                                        .about
-                                        .as_ref()
-                                        .and_then(|a| a.transaction.as_ref())
-                                        .is_some_and(|tx| {
-                                            s.about.as_ref().and_then(|a| a.transaction.as_ref())
-                                                == Some(tx)
+                        &[
+                            by.role == Role::Customer
+                                && requester == Some(&by.party)
+                                && &request.caller == by,
+                            accepted.is_some(),
+                            v.outcome == (Outcome::Permitted {})
+                                && accepted.is_some_and(|(o, s, _)| o == order && s == segment),
+                            true,
+                            after_showing(t)
+                                && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
+                                    v.when.at.unix_nanos() >= showing.received_at.unix_nanos()
+                                        && accepted.is_some_and(|(_, _, named)| {
+                                            named.commitment == showing.commitment
+                                                && showing
+                                                    .about
+                                                    .as_ref()
+                                                    .and_then(|a| a.transaction.as_ref())
+                                                    == Some(&named.transaction)
                                         })
-                            }),
-                    ],
-                ),
+                                }),
+                        ],
+                    )
+                }
                 (0, Carrier::Operator, Entry::Verified(v)) => match &v.what {
                     What::Command {
                         command: OperatorCommand::AcceptFault,
@@ -2298,22 +2366,27 @@ pub static RELATIONS: [Relation; 93] = [
                     ),
                     _ => Match::NotTarget,
                 },
-                (1, Carrier::Customer, _) => match permitted(t).map(|v| &v.what) {
-                    Some(What::OpenSession {
-                        request,
-                        opened: Some(opened),
-                    }) => judge(
-                        Some(&opened.session) == session.as_ref(),
-                        &[
-                            requester == Some(&request.holder),
-                            true,
-                            opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
-                            true,
-                            true,
-                        ],
-                    ),
-                    _ => Match::NotTarget,
-                },
+                (1, Carrier::Customer, _) => {
+                    let Some((session, decided_at)) = fault_session(act, h) else {
+                        return Match::NotTarget;
+                    };
+                    match permitted(t).map(|v| &v.what) {
+                        Some(What::OpenSession {
+                            request,
+                            opened: Some(opened),
+                        }) => judge(
+                            &opened.session == session,
+                            &[
+                                requester == Some(&request.holder),
+                                true,
+                                true,
+                                opened.expires_at.unix_nanos() >= decided_at.unix_nanos(),
+                                true,
+                            ],
+                        ),
+                        _ => Match::NotTarget,
+                    }
+                }
                 _ => Match::NotTarget,
             }
         },
@@ -2714,6 +2787,124 @@ pub static RELATIONS: [Relation; 93] = [
         answers: |_, _, _, _| Match::Holds,
     },
     Relation {
+        name: "charge-raise-rests-on-its-result",
+        spec: &["REQ-QTE-5", "REQ-AUD-2", "AC-14"],
+        quantifier: Quantifier::Exists,
+        refusal: "a charge raised against its formula rests on its result's stated entry in this log",
+        fields: &[
+            ("verified", "a charge's result is a verified statement"),
+            (
+                "result",
+                "a charge's result is its provider's result, not a question or another shape",
+            ),
+            ("maker", "a charge's result is its provider's own statement"),
+            ("about", "a charge's result is about its order and segment"),
+            (
+                "provider",
+                "a charge's provider is its segment's, the one this log's move named",
+            ),
+        ],
+        // A charge above its formula is raised on the provider's own word of what it charged: its verified result
+        // about the order and segment, by the provider the segment's `move_value` effect named, not one the raise
+        // names alone. That the result's fee is the `charged` the raise names is for whoever holds the kept bytes,
+        // the log holding only their salted commitment.
+        cites: |e, _| match &e.what {
+            What::Raise { raise } => match &raise.difference {
+                Difference::Charge { result, .. } => alloc::vec![by_receipt(result, 0)],
+                _ => none(),
+            },
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (What::Raise { raise }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::Charge {
+                order,
+                segment,
+                provider,
+                ..
+            } = &raise.difference
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                    maker_provider(s) == provider,
+                    s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
+                    }),
+                    segment_provider(order, segment, h) == Some(provider),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "charge-raise-rests-on-terms-in-force",
+        spec: &["REQ-QTE-5", "REQ-QTE-6", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a charge raised against stated terms rests on their stated entry in this log",
+        fields: &[
+            ("verified", "a charge's terms are a verified statement"),
+            (
+                "terms",
+                "a charge's terms are its provider's signed terms, not a result or another shape",
+            ),
+            (
+                "maker",
+                "a charge's terms are its segment's provider's own statement",
+            ),
+            (
+                "in_force",
+                "a charge's terms bind from the later of their making and their receipt, no later than its segment's start",
+            ),
+        ],
+        // Terms bind a segment from its start (`REQ-QTE-6`): the first `move_value` effect on it in this log. They
+        // bind from the later of their `made_at` and Core's `received_at` (`StatedEntry::binds_from`), so terms dated
+        // before the start but received after it never bind it. Terms are about no order and the log holds only a
+        // salted commitment to their bytes, so which tuple they are for, that no later terms of that tuple bound
+        // before the start, and that the charge is above their formula, are for whoever holds the kept bytes: Core
+        // on raising it, and a checker through `Evidence::fetch`. A charge raised against the price its route was
+        // priced on, where the provider stated no terms by then, names none.
+        cites: |e, _| match &e.what {
+            What::Raise { raise } => match &raise.difference {
+                Difference::Charge {
+                    terms: Some(terms), ..
+                } => alloc::vec![by_receipt(terms, 0)],
+                _ => none(),
+            },
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (What::Raise { raise }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::Charge {
+                order,
+                segment,
+                provider,
+                ..
+            } = &raise.difference
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::TERMS_SHAPE,
+                    maker_provider(s) == provider
+                        && segment_provider(order, segment, h) == Some(provider),
+                    segment_started(order, segment, h)
+                        .is_some_and(|start| s.binds_from().unix_nanos() <= start.unix_nanos()),
+                ],
+            )
+        },
+    },
+    Relation {
         name: "erasure-is-carried-out-on-its-decision",
         spec: &["REQ-AUD-13", "REQ-AUZ-1"],
         quantifier: Quantifier::Exists,
@@ -2876,9 +3067,11 @@ pub static RELATIONS: [Relation; 93] = [
                 "a shortlisted route's authority names only verifiers its shortlist's tuples need",
             ),
         ],
+        // Only a permitted question cites its shortlist; a refused one asked nothing, and is recorded as refused.
         cites: |e, _| match &e.what {
             What::AskAboutPerson { question }
-                if matches!(question.authority, Authority::ShortlistedRoute { .. }) =>
+                if e.outcome == (Outcome::Permitted {})
+                    && matches!(question.authority, Authority::ShortlistedRoute { .. }) =>
             {
                 by_fields(0)
             }
@@ -2928,8 +3121,10 @@ pub static RELATIONS: [Relation; 93] = [
             "order",
             "a provider asked before was asked about the same order",
         )],
+        // Only a permitted question names the providers asked before; a refused one is recorded as refused.
         cites: |e, _| match &e.what {
-            What::AskAboutPerson { question } => (0..question.asked_before.len())
+            What::AskAboutPerson { question } if e.outcome == (Outcome::Permitted {}) => (0
+                ..question.asked_before.len())
                 .flat_map(by_fields)
                 .collect(),
             _ => none(),
@@ -2953,8 +3148,9 @@ pub static RELATIONS: [Relation; 93] = [
         quantifier: Quantifier::NoneOther,
         refusal: "a question names every provider already asked about its order",
         fields: &[],
+        // Only a permitted question is held to the set asked before; a refused one is recorded as refused.
         cites: |e, _| match &e.what {
-            What::AskAboutPerson { .. } => by_fields(0),
+            What::AskAboutPerson { .. } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| {
@@ -3384,6 +3580,104 @@ pub static RELATIONS: [Relation; 93] = [
                 ),
                 _ => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "held-quote-rests-on-the-reserves-hold",
+        spec: &["REQ-QTE-15", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance redeeming a held quote rests on the reserve's hold in this log",
+        fields: &[
+            ("verified", "a hold is a verified statement"),
+            (
+                "hold",
+                "a hold is its reserve's signed hold, not a result or another shape",
+            ),
+            (
+                "maker",
+                "a hold is made by the reserve that starts each part of the order",
+            ),
+            (
+                "transaction",
+                "a hold's entry is about its own transaction, the hold's id, and no order",
+            ),
+        ],
+        // A held quote is redeemed on the reserve's own signed hold, made by the reserve each part starts at, as its
+        // order's yes is. Its body names its own transaction, the hold's id, so it is appended about that
+        // transaction and no order (attribution binds `about.transaction` to the body's), and the acceptance redeeming
+        // it binds it to one order (`hold-is-redeemed-by-one-order`, keyed on that transaction). The log holds only a salted commitment to
+        // its bytes, so that its body names this order, or the session this acceptance was given in
+        // (provider-role's `check_redemption`), holds the record's chosen candidate and is still valid
+        // (router-api's `HeldQuote::check_hold` and `redeem`) are for whoever holds the kept bytes: Core on intake,
+        // before it appends the acceptance, and a checker through `Evidence::fetch`.
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                held: Some(held), ..
+            } => alloc::vec![by_receipt(held, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::Acceptance {
+                    origin_reserve,
+                    yeses,
+                    ..
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            let maker = maker_provider(s);
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::HOLD_SHAPE,
+                    origin_reserve == maker && yeses.iter().all(|y| &y.origin_reserve == maker),
+                    s.about
+                        .as_ref()
+                        .is_some_and(|a| a.transaction.is_some() && a.order.is_none()),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "hold-is-redeemed-by-one-order",
+        spec: &["REQ-QTE-15", "THR-127", "REQ-AUD-9"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a hold is redeemed for one order: no acceptance of another order redeems it",
+        fields: &[],
+        // The first acceptance that redeems a hold binds it to its order, as a judgement is bound by its reliance.
+        // The same acceptance again is a retry. The row is keyed on the hold's own transaction, the one its stated
+        // entry is about, not on its receipt or commitment, as `one-order-per-deposit` keys a deposit on its
+        // notice's: a hold kept again under a new commitment and appended as a new entry is the same hold, so the
+        // log refuses its redemption by a second order without the evidence store (`REQ-AUD-9`, `THR-127`).
+        cites: |e, h| match &e.what {
+            What::Acceptance {
+                held: Some(held), ..
+            } if hold_transaction(held, h).is_some() => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|v| &v.what)) {
+            (
+                What::Acceptance {
+                    order,
+                    held: Some(held),
+                    ..
+                },
+                Some(What::Acceptance {
+                    order: other,
+                    held: Some(theirs),
+                    ..
+                }),
+            ) => judge(
+                other != order
+                    && hold_transaction(theirs, h).is_some()
+                    && hold_transaction(theirs, h) == hold_transaction(held, h),
+                &[],
+            ),
+            _ => Match::NotTarget,
         },
     },
     Relation {

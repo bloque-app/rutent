@@ -78,10 +78,21 @@ impl DecisionRequest {
 }
 
 impl Effect {
-    /// Checks the action it takes.
+    /// Checks the action it takes, which is never a customer's acceptance of fault: that is a decision alone, and
+    /// takes no effect.
     pub fn check(&self) -> Result<(), Violation> {
-        self.action.check()
+        effect_action(&self.action)
     }
+}
+
+/// An effect's action: one that takes effect, never a customer's acceptance of fault.
+fn effect_action(action: &Action) -> Result<(), Violation> {
+    if matches!(action, Action::AcceptFault { .. }) {
+        return Err(Violation(
+            "a customer's acceptance of fault is a decision, and takes no effect",
+        ));
+    }
+    action.check()
 }
 
 impl StuckDecide {
@@ -345,7 +356,7 @@ impl What {
     pub fn check(&self) -> Result<(), Violation> {
         match self {
             What::Decide { request, .. } => request.check(),
-            What::Effect { action, .. } => action.check(),
+            What::Effect { action, .. } => effect_action(action),
             What::StuckDecide { request, .. } => request.check(),
             What::OpenSession { request, .. } => request.check(),
             What::Charge { charge, .. } => charge.check(),
@@ -487,24 +498,19 @@ impl What {
                 showing,
                 accepted_by,
                 accepted_with,
-                session,
                 ..
             } => {
                 let accepted =
                     showing.is_some() && accepted_by.is_some() && accepted_with.is_some();
                 let shaped = match carrier {
                     Carrier::Provider => {
-                        showing.is_none()
-                            && accepted_by.is_none()
-                            && accepted_with.is_none()
-                            && session.is_none()
+                        showing.is_none() && accepted_by.is_none() && accepted_with.is_none()
                     }
-                    Carrier::Customer => accepted && session.is_some(),
-                    Carrier::Operator => accepted && session.is_none(),
+                    Carrier::Customer | Carrier::Operator => accepted,
                 };
                 if !shaped {
                     return Err(Violation(
-                        "a reversal's carrier other than its provider rests on a showing and an act of acceptance, the customer's in its session, and the provider on neither",
+                        "a reversal's carrier other than its provider rests on a showing and an act of acceptance, and the provider on neither",
                     ));
                 }
                 Ok(())
@@ -600,6 +606,17 @@ impl About {
 }
 
 impl StatedEntry {
+    /// When the statement binds its maker from: the later of its `made_at` (`when.at`) and Core's `received_at`, never
+    /// `made_at` alone, so a statement dated before an instant but received after it doesn't bind from before it. A
+    /// provider's signed terms bind a segment only where they bind from no later than its start (`REQ-QTE-6`).
+    pub fn binds_from(&self) -> &crate::router_api::Timestamp {
+        if self.when.at.unix_nanos() >= self.received_at.unix_nanos() {
+            &self.when.at
+        } else {
+            &self.received_at
+        }
+    }
+
     /// Checks that whoever relayed the statement is not its maker (`REQ-AUD-2`), and what it is about.
     pub fn check(&self) -> Result<(), Violation> {
         if let Some(about) = &self.about {

@@ -29,7 +29,7 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 129] = [
+const RUST_RULES: [(&str, &str); 131] = [
     (
         "policy-bounds-two-slippage-limits-for-one-tuple",
         "there is at most one slippage limit per tuple",
@@ -53,6 +53,10 @@ const RUST_RULES: [(&str, &str); 129] = [
     (
         "held-quote-of-a-record-choosing-nothing",
         "a held quote's record chose a candidate",
+    ),
+    (
+        "held-quote-valid-until-past-its-quotes-figures",
+        "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
     ),
     (
         "decision-record-naming-an-undeclared-call",
@@ -384,6 +388,10 @@ const RUST_RULES: [(&str, &str); 129] = [
     ),
     (
         "decision-record-chosen-operation-claiming-more-than-its-quote-delivers",
+        "the choice round chooses only a candidate whose every operation is confirmed",
+    ),
+    (
+        "decision-record-choosing-a-gross-deposit-stated-as-its-answer",
         "the choice round chooses only a candidate whose every operation is confirmed",
     ),
     (
@@ -1093,6 +1101,116 @@ fn the_floor_is_judged_on_what_the_operators_fee_leaves_the_customer() {
 #[test]
 fn held_quote_without_a_validity_is_invalid() {
     assert_rejected_by_both("held-quote-without-validity");
+}
+
+/// A provider-role statement fixture, for the rules that read one into this contract's types.
+fn provider_statement<T: DeserializeOwned>(kind: &str, name: &str) -> T {
+    let path = contracts_dir()
+        .join("provider-role/fixtures")
+        .join(kind)
+        .join(format!("{name}.json"));
+    serde_json::from_value(read_json(&path)).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// A provider's signed terms bind from the later of their `made_at` and Core's `received_at`, never `made_at` alone,
+/// and only a tuple's own provider's, with a slippage regime exactly where it sets a rate, are taken (round 3 of
+/// `T-020-01`, item q).
+// verifies: REQ-QTE-6, REQ-QTE-5
+#[test]
+fn stated_terms_bind_from_the_later_of_their_making_and_their_receipt() {
+    use rutent_contracts::provider_role::{Statement, TupleTerms};
+    use rutent_contracts::router_api::Timestamp;
+    let signed: Statement<TupleTerms> =
+        provider_statement("valid", "terms-of-an-exchange-with-its-slippage-regime");
+    let at = |t: &str| Timestamp::new(t).unwrap();
+    // Received after it was made: it binds from its receipt.
+    let late = StatedTerms::from_statement(&signed, &at("2026-11-06T16:00:00Z")).unwrap();
+    assert_eq!(late.stated_at, at("2026-11-06T16:00:00Z"));
+    assert_eq!(late.tuple.provider.as_str(), "fx-desk");
+    assert_eq!(
+        late.fee.maximum.as_ref().map(|m| m.as_str()),
+        Some("500000")
+    );
+    assert!(late.slippage.is_some());
+    // Received before the time it names: it binds from its making.
+    let early = StatedTerms::from_statement(&signed, &at("2026-11-06T15:00:00Z")).unwrap();
+    assert_eq!(early.stated_at, at("2026-11-06T15:04:05Z"));
+    let theirs: Statement<TupleTerms> =
+        provider_statement("invalid", "terms-made-by-another-party");
+    assert_eq!(
+        StatedTerms::from_statement(&theirs, &at("2026-11-06T16:00:00Z")).map(|_| ()),
+        Err(rutent_contracts::router_api::Violation(
+            "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate"
+        ))
+    );
+}
+
+/// A reserve's hold names its held quote's record by the id and digest the log names it by, holds its chosen
+/// candidate, is made by the reserve each part starts at, and is valid no
+/// later than the figures its candidate cites; Core holds the quote no longer than the hold (round 3 of `T-020-01`,
+/// item q).
+// verifies: REQ-QTE-15, REQ-QTE-4
+#[test]
+fn a_hold_is_its_reserves_for_the_chosen_candidate_within_its_figures() {
+    use rutent_contracts::provider_role::{Hold, Statement};
+    use rutent_contracts::router_api::{Timestamp, Violation};
+    let held: HeldQuote =
+        serde_json::from_value(fixture("valid", "held-quote-of-a-choice-round")).unwrap();
+    // The log names the held quote's record dr-0004, by its digest.
+    let record = Id::new("dr-0004").unwrap();
+    let digest: rutent_contracts::module_interface::Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    let check = |held: &HeldQuote, hold: &Statement<Hold>| held.check_hold(hold, &record, &digest);
+    let hold: Statement<Hold> = provider_statement("valid", "hold-for-an-order");
+    assert_eq!(check(&held, &hold), Ok(()));
+    // Another record's `c1`, at the same reserve and within its validity, isn't this quote's hold.
+    let elsewhere: Statement<Hold> =
+        provider_statement("valid", "hold-of-another-records-candidate-of-the-same-id");
+    assert_eq!(elsewhere.statement.candidate, hold.statement.candidate);
+    assert_eq!(
+        check(&held, &elsewhere),
+        Err(Violation(
+            "a hold names its held quote's decision record, by the id and digest the log names it by"
+        ))
+    );
+    let mut other_digest = hold.clone();
+    other_digest.statement.record.digest.value = "cd".repeat(32);
+    assert!(check(&held, &other_digest).is_err());
+    let mut another = hold.clone();
+    another.statement.candidate = "c2".to_owned();
+    assert_eq!(
+        check(&held, &another),
+        Err(Violation("a hold holds its record's chosen candidate"))
+    );
+    let mut by_another = hold.clone();
+    by_another.maker = "reserve-wallet".to_owned();
+    assert_eq!(
+        check(&held, &by_another),
+        Err(Violation(
+            "a hold is made by the reserve that starts each part of its candidate"
+        ))
+    );
+    let mut too_long = hold.clone();
+    too_long.statement.valid_until = "2026-11-06T15:01:56Z".to_owned();
+    assert_eq!(
+        check(&held, &too_long),
+        Err(Violation(
+            "a hold's validity is no later than the earliest expiry of the figures its candidate cites"
+        ))
+    );
+    let mut shorter = hold.clone();
+    shorter.statement.valid_until = "2026-11-06T15:01:00Z".to_owned();
+    assert_eq!(
+        check(&held, &shorter),
+        Err(Violation(
+            "a held quote is held no longer than its hold's validity"
+        ))
+    );
+    let mut core_shorter = held.clone();
+    core_shorter.valid_until = Timestamp::new("2026-11-06T15:01:00Z").unwrap();
+    assert_eq!(check(&core_shorter, &shorter), Ok(()));
 }
 
 // verifies: REQ-QTE-6
