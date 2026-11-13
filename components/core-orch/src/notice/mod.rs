@@ -22,8 +22,8 @@
 //! as `customer`; the operator is the deployment's operator party, set when the notices are built, receiving as
 //! `operator`. An order the log holds no acceptance for is notified to the operator alone. A notice carries the
 //! order's state as `Reads::OrderState` reads it (`REQ-ORD-5`): its state, each part's state and when it reached
-//! them; and what changed: the change's kind, the part, a stuck part's reason, the linked order of a hand-on, a
-//! refusal's class, an `afterwards` event; all of the customer's own order. Never a provider, segment, amount,
+//! them; and what changed: the change's kind, the part, a stuck part's reason, the linked order of a hand-on (or of one
+//! taken back), a refusal's class, an `afterwards` event; all of the customer's own order. Never a provider, segment, amount,
 //! account or a provider's text (`REQ-AUZ-7`, `REQ-ORD-18`). A raise and a charge counted far ahead are the
 //! operator's alone. A push asks policy nothing; asking for the current state does.
 //!
@@ -448,7 +448,9 @@ fn applied(held: Option<&Followed>, input: &RecordedInput) -> Option<Followed> {
     };
     let (reason, linked_order) = match &input.observed {
         Observed::StuckDeclared { reason } => (Some(*reason), None),
-        Observed::HandedOn { linked_order, .. } => (None, Some(linked_order.clone())),
+        Observed::HandedOn { linked_order, .. } | Observed::HandOnTakenBack { linked_order } => {
+            (None, Some(linked_order.clone()))
+        }
         _ => (None, None),
     };
     let change = Change::Input {
@@ -561,5 +563,6 @@ fn kind(observed: &Observed) -> &'static str {
         Observed::StuckDeclared { .. } => "stuck_declared",
         Observed::StuckResolved { .. } => "stuck_resolved",
         Observed::HandedOn { .. } => "handed_on",
+        Observed::HandOnTakenBack { .. } => "hand_on_taken_back",
     }
 }
