@@ -1739,6 +1739,19 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
     world
         .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &showing(EXCHANGE, "operator")))
         .unwrap();
+    // An operator of another party isn't the deployment's operator.
+    let impostor = Actor {
+        party: id("other-operator"),
+        ..operator()
+    };
+    assert_eq!(
+        world.with(|r, p, _| r.accept_fault(
+            p,
+            at(&order, &part, &s2),
+            Accepting::Operator { by: &impostor }
+        )),
+        Err(ReversalError::NotTheParty)
+    );
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
