@@ -675,16 +675,10 @@ pub fn movements_made(
     };
     // What the network moved: what entered a reserve from a public network, or what arrives onto one.
     let out = match operation {
-        // What entered with its charge, but never more than the segment gave out and charged: a withdrawal scripted to
-        // deliver short moved only what it gave.
+        // What entered with its charge, always: the network moved it before the reserve credited anything, so a result
+        // rewritten to deliver short is the reserve crediting less inside its own ledger.
         Operation::Withdrawal(_) => match number("amount_in") {
-            Some(entered) => {
-                let charge = outcome["fee"]["amount"]
-                    .as_str()
-                    .and_then(|a| a.parse::<u128>().ok())
-                    .unwrap_or(0);
-                entered.min(given_out.saturating_add(charge))
-            }
+            Some(entered) => entered,
             None => return Vec::new(),
         },
         Operation::Deposit(_) | Operation::Transfer(_) => {

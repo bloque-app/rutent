@@ -473,7 +473,8 @@ fn a_provider_scripted_to_deliver_short_gives_less_than_it_took_in_and_the_netwo
         "sim-reserve",
         Behaviour::delivering(Delivery::Short { bps: 500 }),
     );
-    let asked = withdrawal("sim-reserve", "tx-short", "10000");
+    // A deposit puts value onto its public network: short, it moves only what it gave.
+    let asked = deposit("sim-reserve", "tx-short", "10000");
     let result = answered(fleet.handle("sim-reserve", &asked));
     assert_eq!(result["outcome"]["amount_in"], "10000");
     assert_eq!(result["outcome"]["amount_out"], "9500");
@@ -488,6 +489,31 @@ fn a_provider_scripted_to_deliver_short_gives_less_than_it_took_in_and_the_netwo
     assert_eq!(movement.amount, "9500");
     // What the module sent is what a twin says it should have.
     assert_eq!(movements_of(&asked.statement, &result).len(), 1);
+}
+
+// verifies: REQ-MOD-4, REQ-ORD-21
+#[test]
+fn a_withdrawal_scripted_to_deliver_short_still_moved_all_that_entered_on_its_network() {
+    let mut fleet = fleet_of(&[reserve_of("sim-reserve")]);
+    fleet.world().script(
+        "sim-reserve",
+        Behaviour::delivering(Delivery::Short { bps: 500 }),
+    );
+    // A withdrawal's public end is where value enters: the network moved all of it, and the short delivery is the
+    // reserve crediting less inside its own ledger.
+    let asked = withdrawal("sim-reserve", "tx-short", "10000");
+    let result = answered(fleet.handle("sim-reserve", &asked));
+    assert_eq!(result["outcome"]["amount_in"], "10000");
+    assert_eq!(result["outcome"]["amount_out"], "9500");
+    let network = fleet
+        .world()
+        .network("sim-reserve-bank")
+        .expect("its network");
+    let Status::Final(movement) = network.status(&MovementId::new("tx-short").expect("an id"))
+    else {
+        panic!("the network holds the movement");
+    };
+    assert_eq!(movement.amount, "10000");
 }
 
 // verifies: REQ-MOD-4, REQ-ORD-30
