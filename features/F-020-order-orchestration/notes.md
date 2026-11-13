@@ -3314,8 +3314,12 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
   2. **A raise delivered but not recorded before a stop is raised again** (`F-030`): `Charges::recorded` reads the
      log, and a raise the transport took but whose entry the log never took is not in it. The operator's inbox holds
      a raise once by its id, so it shows once; the log may then hold a second `raise` for the segment's charge.
-  3. **A fee in another asset** is held to no formula (`F-011` for pricing it): the result states its fee in the asset
-     the segment takes in, as the closing's fee records read it, or the charge isn't noted.
+  3. ~~A fee in another asset is skipped.~~ Closed after review: a charge in another asset is noted with the asset it
+     is stated in (`Charged::charged_in`) and raised by `Charges::check` as a `charge` difference with a maximum of
+     nothing, in that asset, resting on the result alone; nothing charged raises nothing; an asset the operation names
+     at neither end stops the part (`Plan`). The existing raise and difference shapes carry it, so no contract change.
+     `check_amounts` already refuses such a result before it counts, so only the tests reach it
+     (`a_charge_in_another_asset_is_raised_and_never_passed`).
   4. **`billed_separately`** has no scenario: no simulated provider states it. The rule is that nothing reads it, and
      nothing does.
   5. **`amount_in` for a gross charge** is the result's, not summed (`T-024-13`): the row has no gross scenario until
@@ -3341,7 +3345,18 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
   | the raise goes through the notices' own channel (`Unbuilt` instead) | all five behavioural tests of `charge_check`: nothing reaches the operator's inbox |
   | the assembly holds no check of its own (a stand-in name put back) | `the_assembly_no_longer_checks_charges_itself` |
 
-  Not reached by any test, and so kept as defence in depth: every run re-checking the settled segments (it matters
-  only when the log refused a check's append before, and no test makes the log refuse a raise); the commitment
-  equality in `Terms::take` (the store answers the commitment asked for) and the refusal of a store that keeps
-  nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off isolates from the compare).
+  After review, three more tests (`charge_check.rs`) hold what was defence in depth, each red with its rule off:
+
+  | Rule switched off | Red |
+  |---|---|
+  | every run re-checks the settled segments | `a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_segment`, `a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment` |
+  | the settling's own check, before the next segment | the same two, and `charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segments` |
+  | the commitment equality in `Terms::take` | `terms_whose_kept_statement_names_another_commitment_are_not_kept` |
+  | a charge in another asset held to no formula | `a_charge_in_another_asset_is_raised_and_never_passed` (`reversal.rs`) |
+
+  The retry order was right already: the settling's check comes before `account` returns the segment as settled, so
+  a retried run records a refused raise before it hands the next segment over, and `Charges` keeps the raise made so
+  the operator is warned once. The log's refusals are planted on the assembly's store (`Disk::refuse`), since
+  `segments_support`'s test log routes one reserve that can't charge above its price. Still without a test of its own:
+  the refusal of a store that keeps nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off
+  isolates from the compare).
