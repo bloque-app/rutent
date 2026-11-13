@@ -248,8 +248,15 @@ in `components/core-orch/tests/notice.rs`. No contract change was made.
 - **A restart catches up.** The notices still rebuild from the log's first entry, so the same log gives the same
   notices; a notice whose `Key` (receiver, order, sequence) the ledger holds as delivered is neither sealed nor sent,
   and one that used the bound before the restart is set apart again, not tried. Raises and charges counted far ahead
-  have no place in the log to be rebuilt from, so they are retried and bounded from memory and not marked: a charge
-  policy still sets apart is sent again after a restart, and the operator's inbox holds it once. Reading, reversible.
+  have no place in the log to be rebuilt from. A raise's tries are recorded under its id (`Key::Raise`), counted from
+  none each time it is raised, and a raise undelivered at a restart is not retried (its entry recorded it so). A charge
+  counted far ahead is retried and bounded from memory, unmarked: one policy still sets apart is sent again after a
+  restart, and the operator's inbox holds it once. Reading, reversible.
+- **Departure from the brief, as a decision.** Delivery needed a notice-delivered record and none exists. Instead of
+  stopping, the record is the module's own `Ledger` trait. Were it to live in the log, the shape needed is an entry
+  naming the notice (receiver party and role, order, sequence, or a raise's id) and the try (number, taken or not).
+  Until `F-024` builds `Notices::resuming` over a durable store, `Notices::new` holds `Volatile`, which keeps nothing
+  across a restart: the re-send on restart is closed in the API, not yet in a deployment.
 - **The warning path's heartbeat** (`Watch`, `REQ-ORD-7`, `THR-59`). `Watch::tick` sends a sealed `heartbeat` notice
   to the operator on the path watched every `INTERVAL` = 30 s; the operator's side answers each one it takes
   (`Inbox::take` gives `Taken::Beat(n)`; the assembly passes it to `Watch::answered`). A path with no answer for
@@ -276,7 +283,9 @@ Each rule switched off alone, `core-orch`'s notice tests run, the rule restored:
 | a failed last try abandons the notice | `undelivered_notice_is_retried_and_recorded`, `rebuild_after_restart_sends_only_what_was_not_delivered` |
 | every try is recorded | `undelivered_notice_is_retried_and_recorded`, `rebuild_after_restart_sends_only_what_was_not_delivered` |
 | tries are counted from the ledger | `rebuild_after_restart_sends_only_what_was_not_delivered` |
-| a delivered notice is not sent again (both checks; either alone is covered by the other) | `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| a delivered notice is not sent again on a rebuild | `rebuild_after_restart_sends_only_what_was_not_delivered` |
+| each try of a raise is recorded under the raise's id | `undelivered_raise_is_retried_and_recorded` |
+| an accepted send counts as an answer (the THR-59 case, a path that takes and loses) | `cut_warning_path_is_noticed`, `cut_is_told_again_until_the_second_path_takes_it` |
 | an operator login is sealed for the operator only for the operator's party | `operator_login_of_another_party_is_not_answered_as_the_operator` |
 | a heartbeat is sent | `cut_warning_path_is_noticed` |
 | a path silent for `SILENCE` is cut | `cut_warning_path_is_noticed`, `cut_is_told_again_until_the_second_path_takes_it` |

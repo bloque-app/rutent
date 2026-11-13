@@ -2047,3 +2047,63 @@ fn cut_is_told_again_until_the_second_path_takes_it() {
     assert!(!rig.tick(450).told);
     assert_eq!(rig.second.sent.len(), 1);
 }
+
+/// A raise the path refused is kept and retried like a notice: each try recorded in the ledger under the raise's
+/// id, the operator's inbox taking it once it is delivered, and a raise that used the bound is abandoned.
+// verifies: REQ-ORD-20
+#[test]
+fn undelivered_raise_is_retried_and_recorded() {
+    let raise: Raise = serde_json::from_str(include_str!(
+        "../../../contracts/core-internal/fixtures/valid/raise-of-a-change-in-a-providers-p99.json"
+    ))
+    .expect("a raise");
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let ledger = Kept::default();
+    let mut n = resuming(&ledger);
+    wire.down = true;
+    assert_eq!(
+        Channel {
+            notices: &mut n,
+            key: &mut key,
+            transport: &mut wire
+        }
+        .raise(&raise),
+        Delivery::Undelivered
+    );
+    let named = Key::Raise {
+        raise: raise.raise.as_str().to_owned(),
+    };
+    assert_eq!(ledger.attempts(&named), 1);
+    assert!(!ledger.delivered(&named));
+    assert_eq!(n.retry(&mut wire).failed, 1);
+    assert_eq!(ledger.attempts(&named), 2);
+
+    wire.down = false;
+    assert_eq!(n.retry(&mut wire).delivered, 1);
+    assert!(ledger.delivered(&named));
+    assert_eq!(ledger.attempts(&named), 3);
+    let mut op = inbox(operator(), &key);
+    assert_eq!(op.take(&Ed25519, &wire.sent[0].1), Ok(Taken::Event));
+
+    // Raised afresh and refused for good: the bound ends it.
+    wire.down = true;
+    let mut other = raise.clone();
+    other.raise = id("raise-2");
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut wire,
+    }
+    .raise(&other);
+    for _ in 1..BOUND {
+        n.retry(&mut wire);
+    }
+    assert!(n.undelivered().is_empty());
+    assert_eq!(n.abandoned().len(), 1);
+    assert_eq!(
+        ledger.attempts(&Key::Raise {
+            raise: "raise-2".to_owned()
+        }),
+        BOUND
+    );
+}

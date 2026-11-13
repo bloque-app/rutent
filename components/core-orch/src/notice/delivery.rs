@@ -5,10 +5,13 @@
 //! module's own trait, [`Ledger`], which the assembly backs with a store that outlives the process. Core keeps no
 //! delivery state of its own beyond it.
 //!
-//! **What a mark names.** A notice of an order is named by its receiver, the order and its sequence ([`Key`]), which
-//! the log rebuilds the same after a restart. A raise and a charge counted far ahead have no such place in the log,
-//! so they are retried from memory, bounded alike, and have no key: after a restart a charge policy still sets
-//! apart is sent again, which the operator's inbox holds once.
+//! **What a mark names.** A notice of an order is named by its receiver, the order and its sequence ([`Key::Order`]),
+//! which the log rebuilds the same after a restart: its tries are counted from the ledger, and what was delivered is
+//! not sent again. A raise is named by its id ([`Key::Raise`]); each try of it is recorded, but a raise is no part of
+//! what the log rebuilds, so each time it is raised its tries count from none, and a raise still undelivered at a
+//! restart is not retried: its entry recorded it undelivered. A charge counted far ahead has no key: it is retried
+//! from memory, bounded alike, and after a restart a charge policy still sets apart is sent again, which the
+//! operator's inbox holds once.
 //!
 //! **The bound** ([`BOUND`]). A notice is tried at most [`BOUND`] times in all, the first send included. The bound is
 //! counted from the ledger, so a restart doesn't give it a fresh one. A notice that used its attempts is set apart
@@ -25,15 +28,23 @@ use super::wire::Receiver;
 /// The most times one notice is tried, the first send included. Reversible default.
 pub const BOUND: u32 = 5;
 
-/// What a delivery mark names: an order's notice to one receiver, at its sequence.
+/// What a delivery mark names.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Key {
-    /// The receiver.
-    pub to: Receiver,
-    /// The order.
-    pub order: String,
-    /// The change's sequence.
-    pub sequence: u64,
+pub enum Key {
+    /// An order's notice to one receiver, at its sequence.
+    Order {
+        /// The receiver.
+        to: Receiver,
+        /// The order.
+        order: String,
+        /// The change's sequence.
+        sequence: u64,
+    },
+    /// A raise to the operator, by its id.
+    Raise {
+        /// The raise's id.
+        raise: String,
+    },
 }
 
 /// One try at sending a notice, as it is recorded.

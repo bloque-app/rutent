@@ -305,7 +305,7 @@ impl Notices {
             {
                 let mut sealed = Vec::new();
                 for to in self.receivers_of(order) {
-                    let key = Key {
+                    let key = Key::Order {
                         to: to.clone(),
                         order: order.to_owned(),
                         sequence: followed.sequence,
@@ -342,8 +342,8 @@ impl Notices {
         Ok(sent)
     }
 
-    /// Sends `notice` to `to`: `Some(taken)` for a try made, `None` where none was: the ledger holds it delivered, or
-    /// it used the bound before (it is set apart as abandoned).
+    /// Sends `notice` to `to`: `Some(taken)` for a try made, `None` where none was: it used the bound before (it is set
+    /// apart as abandoned).
     fn send(
         &mut self,
         transport: &mut dyn Transport,
@@ -352,9 +352,8 @@ impl Notices {
         notice: Vec<u8>,
     ) -> Option<bool> {
         let tried = match &key {
-            Some(key) if self.ledger.delivered(key) => return None,
-            Some(key) => self.ledger.attempts(key),
-            None => 0,
+            Some(key @ Key::Order { .. }) => self.ledger.attempts(key),
+            Some(Key::Raise { .. }) | None => 0,
         };
         let held = Undelivered {
             to,
@@ -625,6 +624,9 @@ impl Operator for Channel<'_> {
             return Delivery::Undelivered;
         }
         let to = self.notices.operator.clone();
+        let key = Key::Raise {
+            raise: raise.raise.as_str().to_owned(),
+        };
         let notice = Notice {
             deployment: self.notices.deployment.clone(),
             to: to.clone(),
@@ -636,7 +638,7 @@ impl Operator for Channel<'_> {
         let Some(sealed) = wire::seal(self.key, notice) else {
             return Delivery::Undelivered;
         };
-        if self.notices.send(self.transport, to, None, sealed) == Some(true) {
+        if self.notices.send(self.transport, to, Some(key), sealed) == Some(true) {
             Delivery::Delivered
         } else {
             Delivery::Undelivered
