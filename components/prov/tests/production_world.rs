@@ -947,6 +947,19 @@ fn key_store_outage_refuses_the_operation_before_anything_of_it_runs() {
     );
 }
 
+/// Whether `condition` came true within 30 s of real time: a stepper that is never given what it waits for steps
+/// the clock all the same, so the operation ends, and the test fails with its message and does not hang.
+fn came_true_within_30_s(mut condition: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while !condition() {
+        if started.elapsed() > Duration::from_secs(30) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    true
+}
+
 /// Names the call `RESERVE`'s operation `n` makes to `RAMP`, as a route does.
 fn name_ramp_call(running: &mut Running, n: usize) {
     running.platform.routes.name(
@@ -990,12 +1003,11 @@ fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused_however_sl
     let stepper = std::thread::spawn({
         let clock = clock.clone();
         move || {
-            while names.asked(&host) == 0 {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            let asked = came_true_within_30_s(|| names.asked(&host) != 0);
             std::thread::sleep(Duration::from_millis(700));
             clock.step(Duration::from_millis(1500));
             names.release();
+            assert!(asked, "the callee's lookup wasn't asked within 30 s");
         }
     });
     running.install_probing(
@@ -1372,10 +1384,9 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     // deadline passed.
     let (handled, events) = std::thread::scope(|scope| {
         scope.spawn(|| {
-            while slow.requests().is_empty() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            let reached = came_true_within_30_s(|| !slow.requests().is_empty());
             clock.step(Duration::from_secs(2));
+            assert!(reached, "the call didn't reach the peer within 30 s");
         });
         running.run(RESERVE, 1)
     });
@@ -1436,10 +1447,9 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     // wait left, and the platform finds the deadline passed.
     let (names, host) = (running.names.clone(), api(RESERVE));
     let stepper = std::thread::spawn(move || {
-        while names.asked(&host) == 0 {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        let asked = came_true_within_30_s(|| names.asked(&host) != 0);
         clock.step(Duration::from_secs(2));
+        assert!(asked, "the lookup wasn't asked within 30 s");
     });
     let (handled, events) = running.run(RESERVE, 1);
     stepper.join().expect("the stepper");

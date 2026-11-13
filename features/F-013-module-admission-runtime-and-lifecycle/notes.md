@@ -844,7 +844,7 @@ In `components/prov/tests/module_limits.rs`:
 - `proxy_https.rs` (`store_that_never_answers_times_out` and the one after it): they call the HTTPS transport with
   a real `Instant` deadline and a read timeout, without a platform, so no platform clock reaches them; their bounds
   (700 ms for a 200 ms timeout over an 800 ms silence, 1.5 s for 800 ms) are a machine's speed. Owner: `F-014`
-  (the proxy's transport), a row if they are seen failing.
+  (the proxy's transport). An `F-014` row is owed now, since they are the same wall-clock class this row fixes.
 - `module_lifecycle.rs` polls up to 5 s for a killed process to be seen gone: a wait for the operating system, not
   a deadline or budget of the platform.
 - The 10 s `OPERATION_DEADLINE` and `START_DEADLINE` the other platform tests run under are read on the
