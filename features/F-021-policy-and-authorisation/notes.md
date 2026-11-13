@@ -1184,9 +1184,9 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
   holds an agent to its party's `Scope::AskAboutPerson`. This row's tests drive both.
 - **On the person's own authority.** The fixed rule asks the person's record of consents (`Source::Consent { person,
   consent }`, the input the asker's party): yes lets it through, no refuses `not_permitted`, nothing is a missing
-  input, out of reach not known. Default, reversible: a consent is held to the party asking, not to whom it asks, and
-  it isn't held to a shortlist, since a person may consent before a route is built; the set asked is bounded either
-  way. The assembly has no register of consents, so it answers a missing input and every such question is refused
+  input, out of reach not known. Default, reversible: a consent is held to the party asking, not to whom it asks;
+  where the order has a shortlist, everyone asked must be on it (round 1, finding 3, below); the set asked is bounded
+  either way. The assembly has no register of consents, so it answers a missing input and every such question is refused
   there; no flow of Core's asks on a consent yet (rounds asks on the shortlisted route only).
 - **On a shortlisted route** (read from the log). The shortlist cited must be the order's **latest** shortlist round's
   `decision_record`, so a recalculation's shortlist puts the providers the old one named off the route (`REQ-CPL-6`);
@@ -1241,7 +1241,8 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
     another route.
   - `REQ-CPL-8`, a reserve's proof: its signed answer is attributed to it; the same bytes with the maker swapped for
     another's name count for nothing (`NoResult(Unattributable)`) and nothing settles.
-  - `REQ-CPL-9`, presence: the reserve's `waits_on_person` is reported as its own statement, attributed to it, with no
+  - `REQ-CPL-9`, presence (a partial; `REQ-CPL-9` is not closed on it): the reserve's `waits_on_person` is reported
+    as its own statement, attributed to it, with no
     input of Core's after the segment's start and no decision after the move's. **No agent acts in this test**: the
     segments kit's caller is Core and its customer a person. Core passes the reserve nothing of the actor's kind on
     this path, so the outcome is the same function of the reserve's answer whoever acts, but the plan's test names an
@@ -1259,7 +1260,7 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
     keeps a copy in the signed operation, where `REQ-CPL-11` wants it with the provider alone; v0's tuples require only
     account references, and the erasure path (`REQ-AUD-13`, `T-022-03`) reaches a kept statement. Owner: `F-020`
     (what Core may carry) with `F-022` (what the store keeps), raised with the coordinator.
-  - `REQ-CPL-12`, reliance: the contract's world admits the `reliance` record naming its judge and the provider that
+  - `REQ-CPL-12`, reliance (a partial; `REQ-CPL-12` is not closed on it): the contract's world admits the `reliance` record naming its judge and the provider that
     relied on it, and refuses one naming another judge. Gap: nothing in Core writes a `reliance` entry; it is a general
     entry, so core-authz can't. No v0 flow has a provider rely on a reserve's judgement. Owner: `F-053` for verifiers;
     for the reserve half, the row that first has a provider rely on a reserve's statement (`F-020`), raised with the
@@ -1314,3 +1315,50 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
 - **Hand-offs, in files this row doesn't own.** `F-024`'s notes ("Policy calls answered beside the engine") still say
   questions about people are answered beside the engine: they no longer are, and `PolicySide` answers nothing beside
   it. `T-025-05` no longer needs to review a stand-in.
+
+### T-021-07, round 1 of the review
+
+Not approved; three gaps reproduced, one low. Fixed one commit per finding, each with a test seen red first on the
+fact the reviewer found (an assertion, not a compile failure). The rules and the tests above describe the code after
+this round.
+
+| # | Finding | Commit | Answer | Test |
+|---|---|---|---|---|
+| 1 | High: a question on a shortlisted route wasn't tied to the order's requester or the person (`THR-45`, `REQ-CPL-2`); an unrelated provider party, charged for `ord-17`, citing the latest shortlist about anyone, was allowed | `1cfe921` | The sixth fixed rule holds a question on the route to the order's own: its asker acts for the order's requester (`Source::Requester`, the input the asker's party), or, stating Core's role, the register lists its login as carrying the order's authority onward (`Permission::CarryOnward`, as Core's moves are held); and the person is one of the order's parties (`Source::OrderParties`, the input the person). A no refuses `not_permitted`, nothing is a missing input | `question on a shortlisted route is the orders own about one of its parties` |
+| 2 | Medium: the charge bound left out every question under the same request id, so one charge of 1 let five questions through under `req-same` | `ce9304c` | An id the log holds as permitted for another question refuses this one `not_permitted`; the same question again still counts once | `request id reused for another question is refused` |
+| 3 | Medium: a question on the person's own consent wasn't held to the shortlist | `8940f9b` | The coordinator's ruling, reversible: `REQ-CPL-6`'s letter. Where the order has a shortlist, everyone a consent question asks must be among its latest shortlist's providers and the verifiers its tuples need; before any shortlist, the consent and the set asked bound it | `question on a consent asks no provider off the orders shortlist` |
+| 6 | Low: the latest-shortlist lookup ignored the entry's outcome, leaning on the contract's `check` | `82d1a6c` | Only a `decision_record` whose outcome is `observed` is a shortlist | `shortlist record not observed is no shortlist` |
+
+- **Findings 4 and 5, no code.** The presence and reliance tests stay as honest partials (marked so above); the
+  coordinator adds `F-024` rows for the agent's scenario and for a writer of `reliance` entries. The three
+  `ask_about_person` rows are queued for contract round 3 and on `T-025-05`'s list.
+- **Scope.** The edit to `conformance/scenarios/src/assembly/policy.rs` (`F-024`'s file) was the lead's exception, as
+  `T-021-04`'s and `T-021-05`'s switches were: forwarding a built call to the engine. `PolicySide::new` keeps its
+  `records` and `deployment` arguments, unused, because its one caller is `assembly/mod.rs`, outside the exception;
+  dropping them is a two-line edit there for `F-024`'s owner, with no change of behaviour.
+- **`REQ-CPL-5` at intake** (for `T-020-03`). Ruled a matter of wording: intake's `refused_by_policy` for
+  `PersonQuestionsPastBound` stands; `T-020-03` may reword its comment so it says that past the bound the order has no
+  route left (`REQ-CPL-5`, `REQ-ORD-28`), as rounds and recalculation read it.
+- **Defaults of this round**, reversible: Core asks on the route only through a login listed with `CarryOnward`,
+  the permission Core's moves already need, rather than a permission of its own; the person must be one of the
+  order's parties on the route always, not only where a tuple names the parties its rules check.
+- **Rule-offs of this round** (core-authz's lib tests; each switched off once by `t-021-07-ruleoffs-r1.py`, the file
+  restored and touched; the earlier shortlist rule-offs run again on the moved code):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the route's asker acts for the order's requester | `question on a shortlisted route is the orders own about one of its parties` |
+  | Core asks on the route only through a login listed as carrying onward | `question on a shortlisted route is the orders own ...` |
+  | the person is one of the order's parties | `question on a shortlisted route is the orders own ...` |
+  | a fixed rule's no refuses (consent, requester, person) | `question about a person with no authority is refused`; `question on a shortlisted route is the orders own ...` |
+  | a request id names one question | `request id reused for another question is refused` |
+  | a consent question held to the order's shortlist | `question on a consent asks no provider off the orders shortlist` |
+  | only an observed shortlist record is a shortlist | `shortlist record not observed is no shortlist` |
+  | again: a shortlisted route needs a shortlist of the order | `question about a person with no authority is refused` |
+  | again: the latest shortlist | `provider off the shortlist is never asked about eligibility` |
+  | again: the shortlist cited is that record | `provider off the shortlist is never asked about eligibility` |
+  | again: the authority's providers among the shortlisted | `provider off the shortlist is never asked about eligibility` |
+  | again: the authority's verifiers among those needed | `provider off the shortlist is never asked about eligibility` |
+  | again: a consent held to the asker's party | `question about a person ...`; `question on a consent asks no provider ...`; `unread log asks no one ...`; the built and unbuilt table |
+  | again: bounded at the party (the charge rule) | `question about a person ...`; `the unbuilt engine permits nothing on any call and records first` |
+
