@@ -127,9 +127,17 @@ So that anyone can recompute a fee and a choice (`REQ-QTE-5`, `THR-10`):
   `floor(n × 10^destination.decimals / 10^origin.decimals)`.
 - **Validity.** Ages round up and validities round down, so a figure whose age is at most its validity is never
   past its `valid_until`.
+- **What arrives.** An operation's `amount_out` is what arrives by it, in its `to` unit: the next operation's
+  `amount_in` (each part's chain), what the floor is judged on and what the objective sums. Under a tuple whose
+  terms report `gross`, a provider's answer states an `amount_out` that includes its charge, so a same-asset
+  operation (a withdrawal, a route or a deposit) states the answer's `amount_out` less its charge, the fee restated
+  in the operation's out unit, rounded up where that unit is coarser (`Operation::stated_out`, provider-role's
+  `less_the_charge`). An exchange's output is as its answer states it: its fee is in its from asset. Under `net`,
+  the answer's `amount_out` is what arrives.
 - **Confirmation.** The choice round chooses only a candidate whose every operation cites an accepted dry-run
-  answer of its provider for its tuple, at its amount, within its validity and not void: the fresh quote for a
-  route or exchange, the reserve's accepted dry run for a withdrawal or deposit. Any other is `unconfirmed`.
+  answer of its provider for its tuple, at its amount, with its fee and stating what arrives by it, within its
+  validity and not void: the fresh quote for a route or exchange, the reserve's accepted dry run for a withdrawal
+  or deposit. Any other is `unconfirmed`.
 - **Citations.** Every operation cites every usable statement (within its validity, not void) about its tuple
   that bears on it: each fresh quote and dry run for its amount in, and each eligibility judgement. So no
   confirming answer, refusal or judgement of no can be left out. A fresh quote it cites is for its amount in,
@@ -197,7 +205,7 @@ only records that pass theirs, so a stored record recomputes.
 | Every operation cites one tuple, of its own provider with its two ends, and every other figure it cites (price, fresh quote, dry run, judgement) names that tuple | can't be stated | `DecisionRecord::check` |
 | A kept candidate (chosen, or on the shortlist) cites no void statement (by `check_context`), no figure past its validity, no refused dry run and no judgement of no | can't be stated | `DecisionRecord::check` |
 | A kept candidate leaves the customer at least the floor after the operator's fee (4.0.0) and arrives with something in every part, passes no ceiling (counting what its operations produce as well as what they take in), uses no excluded provider or tuple, keeps within the part and hop limits, and has every operation within its tuple's bands and its price's levels | can't be stated | `DecisionRecord::check` |
-| The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in, fee and amount out; an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
+| The choice round chooses only a candidate whose every operation is confirmed: an accepted dry-run answer of its provider for its tuple with its amount in and fee, the operation stating what arrives by it (under a gross tuple, a same-asset answer's amount out less its charge); an `unconfirmed` reason names an unconfirmed operation | can't be stated | `DecisionRecord::check` |
 | A drop reason that names a figure names one its candidate cites, and the figure supports the drop: stale past its validity, void by `check_context`, a refused dry run, a judgement of no; `quote_voided` names a quote that lists the condition, past its validity for `validity_passes` and at another amount for `amount_changes`, and is accepted on the listed condition alone for the others, which rest on facts outside the record | can't be stated | `DecisionRecord::check` |
 | `below_floor` (what is left after the operator's fee below the floor, computed exactly, 4.0.0), `no_positive_outcome` (any one part arriving with nothing), `over_ceiling` (with the exposures), `excluded_by_policy` and `outside_band` hold of the candidate they drop, and fail of a kept one. These recompute from the operations' stated amounts and fees, so they show the record's stated amounts consistent with its drops, not with the prices it cites | can't be stated | `DecisionRecord::check` |
 | Every operation but the one a `no_price` reason names cites one price, for its own tuple, and any dry run it cites is for its amount in | can't be stated | `DecisionRecord::check` |
@@ -224,7 +232,8 @@ orchestrator, 2026-11-06). The router suite, `rutent-conformance`'s `router` (`T
 the rest from the record alone; see `conformance/README.md`:
 
 - That operation amounts match their figures: here each operation's fee and `amount_out` are taken as stated. The
-  suite recomputes them from every usable accepted answer the operation cites for its amount in, or else from its price.
+  suite recomputes them from every usable accepted answer the operation cites for its amount in, as the
+  confirmation rule reads it (what arrives by the answer), or else from its price.
   For the operation a `fee_above_amount` reason names, it checks that the price's fee on the amount in is above
   it; the operation a `no_price` reason names has no price to recompute from.
 - That the objective is served: here `outranked` is checked only for naming a candidate of the record, and

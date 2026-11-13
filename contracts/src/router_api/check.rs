@@ -2,7 +2,7 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
-use alloc::{borrow::ToOwned, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::atoms::{compare_products, seconds_down, seconds_up};
@@ -13,7 +13,7 @@ use super::types::{
 };
 use super::{Amount, Id, Timestamp, Violation};
 use crate::provider_role::{
-    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, ReserveDirection,
+    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, Reporting, ReserveDirection,
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
 };
 
@@ -150,6 +150,36 @@ impl Operation {
             _ => return Err(Violation("an operation's fee is at most its amount in")),
         }
         Ok(())
+    }
+}
+
+impl Operation {
+    /// What this operation states as its `amount_out` for an accepted answer of its tuple's provider (a dry run or
+    /// a fresh quote) stating `answer_out` and `answer_fee`: what arrives (`REQ-CAT-11`, `REQ-QTE-11`). Under a tuple
+    /// that reports `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the answer's
+    /// `amount_out` less its charge, the fee restated in this operation's out unit (provider-role's
+    /// [`less_the_charge`](crate::provider_role::less_the_charge)); under `net`, and for an exchange, whose fee is in
+    /// its from asset, the answer's `amount_out` as it stands. `tuple` is the tuple figure the operation cites;
+    /// `None` where it isn't one, or the charge is above the answer's `amount_out`.
+    pub fn stated_out(&self, tuple: &Figure, answer_out: &str, answer_fee: &Fee) -> Option<String> {
+        let terms = match &tuple.value {
+            FigureValue::ReserveTuple { tuple } => &tuple.terms,
+            FigureValue::RampTuple { tuple } => &tuple.terms,
+            FigureValue::ExchangeTuple { tuple } => &tuple.terms,
+            _ => return None,
+        };
+        match (terms.reporting, self.kind) {
+            (
+                Reporting::Gross,
+                OperationKind::Withdrawal | OperationKind::Route | OperationKind::Deposit,
+            ) => crate::provider_role::less_the_charge(
+                answer_out,
+                &answer_fee.amount,
+                self.from.asset.decimals,
+                self.to.asset.decimals,
+            ),
+            _ => Some(answer_out.to_owned()),
+        }
     }
 }
 
@@ -1243,7 +1273,9 @@ impl DecisionRecord {
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
-    /// provider for its tuple, at its amount in, with its fee and its amount out, within its validity and not void.
+    /// provider for its tuple, at its amount in, with its fee and stating what arrives by it
+    /// ([`Operation::stated_out`]: under a gross tuple, a same-asset answer's amount out less its charge), within its
+    /// validity and not void.
     /// For a route or exchange that is the provider's fresh quote (`transfer_quote`, `conversion_quote`); for a
     /// withdrawal or deposit, the reserve's accepted dry run.
     fn is_confirmed(&self, operation: &Operation, tuple: &Id) -> bool {
@@ -1264,11 +1296,13 @@ impl DecisionRecord {
                     } if t == tuple => result,
                     _ => return false,
                 };
+                // The operation states what arrives: under a gross tuple, a same-asset answer less its charge.
                 let same_terms = matches!(
                     dry_run_view(&result.statement),
                     Some((_, DryRun::Accepted { amount_in, amount_out, fee, .. }))
                         if amount_in == operation.amount_in.amount().as_str()
-                            && amount_out == operation.amount_out.as_str()
+                            && self.figure(tuple).and_then(|t| operation.stated_out(t, amount_out, fee)).as_deref()
+                                == Some(operation.amount_out.as_str())
                             && fee == &operation.fee
                 );
                 same_terms

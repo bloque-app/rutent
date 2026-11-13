@@ -1,6 +1,19 @@
 # router-api changelog
 
 ## 4.0.0
+- Breaking: an operation's `amount_out` is what arrives by it, and confirmation reads its tuple's terms (round 3 of
+  the contract, item r). The confirmation rule required an operation's `amount_out` to equal its provider's answer
+  exactly, while the floor, each part's chain (the next `amount_in` is the previous `amount_out`) and the
+  `lowest_total_cost` objective read it as what arrives; under a tuple whose terms report `gross` the two differ by
+  the charge, so no valid record could rank, or judge the floor, on what arrives. Confirmation now reads the tuple
+  figure's `terms.reporting`: under `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the
+  answer's `amount_out` less its charge, the fee restated in its out unit (provider-role 3.1.0's
+  `less_the_charge`); an exchange's output stays as its answer states it; under `net` nothing changes. A new public
+  method, `Operation::stated_out(tuple, answer_out, answer_fee)`, which the router suite's
+  `amounts_follow_their_figures` reads too. The router's search is unchanged here (`T-011-07`). Folded into this
+  unreleased major. A valid fixture, `decision-record-choosing-a-gross-deposit-stated-as-what-arrives`, and an
+  invalid one made from a patch, `decision-record-choosing-a-gross-deposit-stated-as-its-answer`. (DEC-4, DEC-5,
+  DEC-20, REQ-CAT-11, REQ-QTE-11, REQ-ORD-27, T-020-01)
 - A held quote never outlives what its quote rests on: `HeldQuote::check` refuses a `valid_until` later than the
   earliest expiry of the figures the chosen candidate cites, each at the snapshot's `taken_at` plus its validity
   less its age (`Figure::expires_at`, `DecisionRecord::earliest_expiry`, both new and public; a figure that states no
