@@ -1001,7 +1001,7 @@ platform is the longest chain, so `F-020` takes the first build slot in each wav
 two contract edits in turn: provider-role's arrival notice (`T-020-18`, wave 24) and then `core-internal`'s round
 (`T-020-21`, wave 25), run in turn so one review and one click cover both; no schema of the second depends on the first. The rows
 that write, adopt or use those shapes (`T-020-19`, `T-020-20`, `T-020-22`, `T-020-25` to `T-020-27`,
-`T-022-07`, `T-023-03`, `T-024-14`) follow in wave 26. The security review
+`T-022-07`, `T-023-03`, `T-024-14`) follow in wave 26. Of these, `T-020-20`, `T-020-25` and `T-020-27` share `stuck/`, `segments/` and `reversal/`, so their order is fixed: `T-020-20`, then `T-020-25`, then `T-020-27`, each merged into the milestone branch before the next starts. The security review
 (`T-025-05`) and the exit run in wave 27, after the last row that edits a workflow or a `DEC-20` path, so the review's
 diff holds every `M3` edit of `.github/workflows/` and of the contracts; `T-024-10` only turns on a strict step that
 `T-024-09` added.
