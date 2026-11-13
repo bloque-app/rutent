@@ -344,6 +344,10 @@ keeps and appends as a stated entry.
   (`NestedMaker`). `check_answer(question, answer)` holds it to the question: the question's transaction
   (`AnswersAnotherQuestion`), made by the reserve asked (`OfAnotherReserve`), each notice of the outer node, asset
   and account asked about (`AtAnotherNode`, `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
+- **Kept one notice at a time.** A reader keeps each notice an answer carries as its own stated entry, about its
+  credit's transaction, and it is that entry an arrival cites. A deposit is keyed on a notice, never on the answer
+  that carried it: core-internal's `arrival-names-its-notice` takes only this contract's arrival notice as a
+  deposit's notice.
 - **Shapes of their own.** Not an operation kind and a result kind: those would add variants to `Operation` and
   `ResultBody`, a major (3.0.0's ruling), which module-interface, released at 4.0.0, would have to follow.
 

@@ -27,7 +27,9 @@
     Refused(BalanceRefused)}}`), made by the reserve asked. It names the question's transaction, so its stated entry
     is about it (`REQ-ORD-1`), and carries the reserve's notice of each credit whole: the same notice it sends of its
     own accord, under the question's transaction. Its notices are checked as nested statements (`check_shape`,
-    `check_context`: `NestedMaker`), and a refusal never says when it lifts (`INV-9`).
+    `check_context`: `NestedMaker`), and a refusal never says when it lifts (`INV-9`). A reader keeps each notice
+    it carries as its own stated entry, about its credit's transaction, which an arrival cites: a deposit is keyed
+    on a notice, never on an answer (core-internal's `arrival-names-its-notice`, `T-020-18`'s review, item 1).
   - `check_answer(question, answer) -> Result<(), Vec<AnswerMismatch {AnswersAnotherQuestion, OfAnotherReserve,
     AtAnotherNode {notice}, InAnotherAsset {notice}, ToAnotherAccount {notice}}>>` holds the answer to the question.
 

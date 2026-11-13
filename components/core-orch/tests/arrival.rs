@@ -114,8 +114,9 @@ impl Providers for Reserve {
     }
 }
 
-/// The shape the tests' reserve gives its notices: provider-role names none for a notice of value arriving.
-const NOTICE_SHAPE: &str = "urn:rutent:test:arrival-notice";
+/// The shape the tests' reserve gives its notices: provider-role's arrival notice, the only shape the log takes as a
+/// deposit's notice (`arrival-names-its-notice`). The body is still the test's own; `T-020-19` reads it as the contract's.
+const NOTICE_SHAPE: &str = rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE;
 
 /// The transaction the reserve gives the `n`th credit.
 fn credit(n: u32) -> String {

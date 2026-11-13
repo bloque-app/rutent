@@ -15,9 +15,10 @@ use rutent_scenarios::harness::{Given, Scenario, base_request};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
 use serde_json::json;
 
-/// The shape the scenario gives the reserve's notice: provider-role names none for a notice of value arriving
-/// (`T-020-04`'s gap), so it is one no contract names.
-const NOTICE_SHAPE: &str = "urn:rutent:scenario:arrival-notice";
+/// The shape the scenario gives the reserve's notice: provider-role's arrival notice, the only shape the log takes as a
+/// deposit's notice (`arrival-names-its-notice`). The body is still the scenario's own; `T-020-19` reads it as the
+/// contract's.
+const NOTICE_SHAPE: &str = rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE;
 
 /// The simulated reserve's statements key, the real one its placeholder stands for.
 fn statements_key() -> ed25519_dalek::SigningKey {

@@ -1127,20 +1127,42 @@ fn seed_arrival(
         let report = stated_seed(
             store,
             serde_json::to_vec(&report).unwrap(),
-            reserve,
+            reserve.clone(),
             &order,
             &transaction,
         );
-        // The deposit's notice is this report: it met the order at once.
-        let notice = match &report {
-            Entry::Stated(stated) => stated.commitment.clone(),
-            Entry::Verified(_) => unreachable!("a stated report"),
-        };
         let report = log.take(&report, Through::General).unwrap();
         let chosen = record.chosen().unwrap();
         let first = chosen.parts.first().operations.first();
         let NodeRef::Outer(node) = &first.from.node else {
             panic!("the route starts at an outer node");
+        };
+        // The deposit's notice: the reserve's own arrival notice, the only shape the log takes as one
+        // (`arrival-names-its-notice`), naming the deposit's transaction, signed with its statements key.
+        let mut notice = seed_envelope(
+            rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE,
+            RESERVE,
+            json!({
+                "transaction": transaction,
+                "node": node,
+                "asset": first.from.asset,
+                "amount": first.amount_in.amount(),
+                "account": "acct-1",
+                "holder": rutent_scenarios::kit::customer().party,
+            }),
+        );
+        rutent_conformance::signing::sign_value(&mut notice, &statements_key_of(RESERVE));
+        let notice = stated_seed(
+            store,
+            serde_json::to_vec(&notice).unwrap(),
+            reserve,
+            &order,
+            &transaction,
+        );
+        log.take(&notice, Through::General).unwrap();
+        let notice = match &notice {
+            Entry::Stated(stated) => stated.commitment.clone(),
+            Entry::Verified(_) => unreachable!("a stated notice"),
         };
         log.take(
             &entry(
