@@ -176,8 +176,9 @@ fn asked_of<'a>(
     })
 }
 
-/// The order's latest shortlist round's record: its digest, the providers it shortlisted and the verifiers its tuples
-/// need.
+/// The order's latest shortlist round's record, as observed: its digest, the providers it shortlisted and the
+/// verifiers its tuples need. A record with any other outcome is none, so the lookup doesn't rest on the contract's
+/// check of an entry's outcome having run on every entry the read returns (round 1 of the review).
 fn latest_shortlist<'a>(
     order: &Id,
     entries: &'a [(Receipt, Entry)],
@@ -197,6 +198,7 @@ fn latest_shortlist<'a>(
                     verifiers,
                     ..
                 },
+            outcome: Outcome::Observed {},
             ..
         }) if of == order => Some((
             record,

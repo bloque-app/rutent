@@ -837,3 +837,42 @@ fn question_on_a_consent_asks_no_provider_off_the_orders_shortlist() {
         Ok(PersonOutcome::Allowed {})
     );
 }
+
+/// The order's latest shortlist is its latest shortlist record as observed: a later record whose outcome isn't
+/// `observed`, which the contract's own check refuses but a read of the log isn't held to, is no shortlist, neither
+/// replacing the one before nor naming a route of its own.
+// verifies: REQ-CPL-6
+#[test]
+fn shortlist_record_not_observed_is_no_shortlist() {
+    let mut not_observed = shortlist(ORDER, "53", &["aml-screen"], &[]);
+    if let Entry::Verified(v) = &mut not_observed {
+        v.outcome = Outcome::Refused {
+            class: RefusalClass::NotPermitted,
+        };
+    }
+    let history = || {
+        vec![
+            charged_to_the_agent(5),
+            shortlist(ORDER, "52", &["bank-co"], &[]),
+            not_observed.clone(),
+        ]
+    };
+    let ask = |e: &mut Tested, request: &str, authority: Authority, asks: &str| {
+        e.ask_about_person(&question(request, &agent(), authority, &[asks], &[]))
+            .map(|a| a.outcome)
+    };
+    let mut e = engine(Log::taking(history()));
+    assert_eq!(
+        ask(&mut e, "req-1", route("52", &["bank-co"], &[]), "bank-co"),
+        Ok(PersonOutcome::Allowed {})
+    );
+    assert_eq!(
+        ask(
+            &mut e,
+            "req-2",
+            route("53", &["aml-screen"], &[]),
+            "aml-screen"
+        ),
+        Ok(refused(RefusalClass::NotPermitted))
+    );
+}
