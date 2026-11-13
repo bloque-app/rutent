@@ -2118,18 +2118,35 @@ mod tests {
                 }),
             ),
             (
-                // The world's move of that decision, by another desk's login holding the permission to move, the
-                // operator's, neither reaching the decider's party nor reached by it, nor reaching the holder.
+                // The world's move of that decision, by a sibling desk's login holding the permission to move, the
+                // operator's, neither reaching the decider's party nor reached by it, nor meeting it below the
+                // operator, nor reaching the holder. The decider is the one the log's decision names.
                 "move_stuck",
                 Call::Built(|e| {
                     let request: StuckMove = serde_json::from_value(world_before(e, "sm")).unwrap();
                     let mover = &request.mover;
-                    let decider =
-                        actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
+                    let decider = e
+                        .log
+                        .log
+                        .0
+                        .iter()
+                        .find_map(|(_, entry)| match entry {
+                            Entry::Verified(VerifiedEntry {
+                                what:
+                                    What::StuckDecide {
+                                        request: decide, ..
+                                    },
+                                ..
+                            }) if decide.request == request.carries_out.request => {
+                                Some(decide.decider.clone())
+                            }
+                            _ => None,
+                        })
+                        .expect("the world's decision the move carries out");
                     let yes = vec![holds(mover, Permission::MoveStuck), of_operator(mover)];
                     let no = [
-                        reaching(mover, "operator"),
-                        reaching(&decider, "operator-desk-b"),
+                        reaching(mover, decider.party.as_str()),
+                        reaching(&decider, mover.party.as_str()),
                         meeting(&decider, mover),
                         reaching(mover, "bank-co"),
                     ];
