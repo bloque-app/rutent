@@ -110,6 +110,12 @@ impl Core {
         self.segments.recorded_charges(&entries);
     }
 
+    /// From now on, the log's store turns away the next `times` appends of a record whose `call` is `call`: a log that
+    /// can't take them now, which a caller tries again.
+    pub fn refuse_log_appends(&self, call: &'static str, times: usize) {
+        self.disk.refuse(call, times);
+    }
+
     /// The segments of `order` whose settled charge Core noted for its check, in the plan's order.
     pub fn charged_segments(&self, order: &Id) -> Vec<Id> {
         let Some(started) = self.started.get(order.as_str()) else {

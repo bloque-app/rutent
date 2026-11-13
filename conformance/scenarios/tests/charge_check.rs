@@ -397,3 +397,92 @@ fn the_assembly_no_longer_checks_charges_itself() {
         }
     }
 }
+
+/// The places in the log of the verified entries `wanted` picks.
+fn places(core: &Core, wanted: &dyn Fn(&What) -> bool) -> Vec<usize> {
+    core.log()
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, e))| matches!(e, Entry::Verified(v) if wanted(&v.what)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn moves(w: &What) -> bool {
+    matches!(
+        w,
+        What::Effect {
+            action: Action::MoveValue { .. },
+            ..
+        }
+    )
+}
+
+fn raises(w: &What) -> bool {
+    matches!(w, What::Raise { .. })
+}
+
+/// An order of `provider`, quoted and accepted, not yet run.
+fn accepted(core: &mut Core, session: &Id, provider: &str, name: &str) -> Id {
+    let (order, told) = quoted(
+        core,
+        request_at(provider, name, AMOUNT, session, "lowest_total_cost"),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    order
+}
+
+// verifies: REQ-QTE-5
+#[test]
+fn a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_segment() {
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    let order = accepted(&mut core, &session, CHARGING, "req-charged");
+    // The first segment's raise is turned away on each of the three tries its settling makes.
+    core.refuse_log_appends("raise", rutent_core_orch::segments::APPEND_TRIES);
+    assert!(core.run(&order).is_err(), "the log couldn't take the raise");
+
+    // The run still held the part's settled segment to its check, which recorded the raise the operator was told of
+    // once: before the second segment was handed over, which the failed run never did.
+    assert_eq!(places(&core, &raises).len(), 1, "the raise was recorded");
+    assert_eq!(places(&core, &moves).len(), 1, "no second segment moved");
+    assert_eq!(core.raised().len(), 1, "and the operator was warned once");
+
+    // Run again: the part goes on, each charge raised once, the first before the second segment moved.
+    core.run(&order).expect("the part goes on");
+    assert_eq!(core.raised().len(), 2, "one warning for each segment");
+    let (raised, moved) = (places(&core, &raises), places(&core, &moves));
+    assert_eq!((raised.len(), moved.len()), (2, 2));
+    assert!(raised[0] < moved[1], "warned before the next segment moved");
+}
+
+// verifies: REQ-QTE-5
+#[test]
+fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    let order = accepted(&mut core, &session, CHARGING, "req-charged");
+    // Turned away on every try the settling and the run's own re-check make: nothing of it is recorded.
+    core.refuse_log_appends("raise", 2 * rutent_core_orch::segments::APPEND_TRIES);
+    assert!(core.run(&order).is_err());
+    assert!(places(&core, &raises).is_empty(), "nothing recorded yet");
+    assert_eq!(places(&core, &moves).len(), 1, "no second segment moved");
+    assert_eq!(core.raised().len(), 1, "the operator was warned, once");
+
+    // The next run records it before it hands the second segment over, and warns no one again.
+    core.run(&order).expect("the part goes on");
+    let (raised, moved) = (places(&core, &raises), places(&core, &moves));
+    assert_eq!((raised.len(), moved.len()), (2, 2));
+    assert!(
+        raised[0] < moved[1],
+        "recorded before the next segment moved"
+    );
+    assert_eq!(core.raised().len(), 2, "one warning for each segment");
+}
