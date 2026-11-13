@@ -2035,6 +2035,10 @@ pub static RELATIONS: [Relation; 91] = [
                 "publisher",
                 "a publisher's word inside its private node is labelled with the publisher its statement states for, graded a statement",
             ),
+            (
+                "private",
+                "a publisher's word is labelled only where the log binds the segment's from-node as that publisher's private node",
+            ),
         ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::ReversalCompleted { .. }) => by_fields(0),
@@ -4540,17 +4544,89 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
                 })
             })
     });
+    // And only where the log binds the segment's from-node as private, and the publisher as that node's: a replay of
+    // the order naming the node, or evidence of the order whose public movement names it, resting on a verified
+    // statement stating for the publisher. A label alone binds nothing.
+    let bound = publisher.as_ref().is_some_and(|p| {
+        i.subject.segment.as_ref().is_some_and(|segment| {
+            from_node_of(i.subject.order.as_str(), segment.as_str(), history)
+                .is_some_and(|node| private_node_of(i.subject.order.as_str(), node, p, history))
+        })
+    });
+    let labelled = labelled && bound;
     let another = moved.is_some_and(|(provider, origin)| {
         whose != provider || (whose == origin && *grade == EvidenceGrade::Statement) || labelled
     });
     match found {
         Match::Mismatch(i) => Match::Mismatch(i),
+        _ if publisher.is_some() && !bound => Match::Mismatch(6),
         _ if publisher.is_some() && !labelled => Match::Mismatch(5),
         _ if !another => Match::Mismatch(2),
         _ if !made => Match::Mismatch(3),
         _ if !reserve && !labelled => Match::Mismatch(4),
         _ => Match::Holds,
     }
+}
+
+/// The inner node `segment` of `order` starts from, by its plans in `history`, where it starts from one.
+fn from_node_of<'a>(order: &str, segment: &str, history: &'a History) -> Option<&'a str> {
+    history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+        .filter(|i| i.subject.order.as_str() == order)
+        .find_map(|i| {
+            let plan: Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+                Observed::RouteChosen { parts, .. } => {
+                    parts.iter().flat_map(|p| p.segments.iter()).collect()
+                }
+                Observed::RouteRecalculated { segments, .. }
+                | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+                _ => Vec::new(),
+            };
+            plan.into_iter()
+                .find(|s| s.segment_id.as_str() == segment)
+                .and_then(|s| match &s.from.node {
+                    crate::provider_role::NodeRef::Inner(node) => Some(node.as_str()),
+                    crate::provider_role::NodeRef::Outer(_) => None,
+                })
+        })
+}
+
+/// Whether the log binds `node` as a private node of `order` published by `publisher`: a `replay` of the order
+/// naming the node, resting on a verified statement stating for the publisher, or evidence of the order whose
+/// public movement names the node, resting on one.
+fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -> bool {
+    let for_publisher = |r: &Receipt| {
+        entry_at(r, history).and_then(stated).is_some_and(|s| {
+            matches!(s.attribution, Attribution::Verified { .. })
+                && &s.attribution.maker().party == publisher
+        })
+    };
+    history
+        .iter()
+        .any(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::Replay {
+                order: o,
+                nodes,
+                rests_on,
+                ..
+            }) => {
+                o.as_str() == order
+                    && nodes.iter().any(|n| n.as_str() == node)
+                    && for_publisher(rests_on)
+            }
+            Some(What::Evidence {
+                order: o,
+                movement: Some(movement),
+                rests_on,
+                ..
+            }) => {
+                o.as_str() == order
+                    && movement.node.as_ref().is_some_and(|n| n.as_str() == node)
+                    && rests_on.iter().any(for_publisher)
+            }
+            _ => false,
+        })
 }
 
 /// The reserve at the from-node of `segment` of `order`: the provider of the segment of its plans that delivered
