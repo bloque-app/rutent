@@ -31,7 +31,8 @@
 //!   people binds. The engine holds each question to that: the questions of the order the log holds as permitted for
 //!   the asker's party, with this one, must not outnumber the permitted `person_question` units charged to that party
 //!   for the order, or it is refused `over_bound`. It counts nothing itself, so nothing is counted twice; the same
-//!   question asked again, under its own request id, counts once.
+//!   question asked again, under its own request id, counts once, and the id reused for another question is refused
+//!   `not_permitted`, so no party asks past its charges under one id (round 1 of the review).
 //! - **The set asked, recorded and bounded** (`REQ-CPL-5`). The set asked about an order across its recalculations
 //!   is the log's: everyone the permitted questions of the order asked, with those the question says were asked before
 //!   and those it asks. Past [`ASKED_BOUND`] the answer is past the bound, which rounds read as no route offered and
@@ -214,6 +215,20 @@ fn on_the_route(question: &PersonQuestion, entries: &[(Receipt, Entry)]) -> Opti
     (!on).then_some(RefusalClass::NotPermitted)
 }
 
+/// A request id names one question: one the log holds as permitted under this id must be this very question, or this
+/// one is refused, so a party can't ask past its charges under an id already counted (round 1 of the review).
+fn one_question_per_id(
+    question: &PersonQuestion,
+    entries: &[(Receipt, Entry)],
+) -> Option<RefusalClass> {
+    permitted(entries)
+        .any(|what| {
+            matches!(what, What::AskAboutPerson { question: earlier }
+                if earlier.request == question.request && earlier != question)
+        })
+        .then_some(RefusalClass::NotPermitted)
+}
+
 /// Bounded at the party: the asker's party's permitted questions of the order, this one among them, don't outnumber
 /// the questions about people its permitted charges for the order cover.
 fn charged_for(question: &PersonQuestion, entries: &[(Receipt, Entry)]) -> Option<RefusalClass> {
@@ -275,6 +290,7 @@ impl<L: PolicyLog + Receipted, P: Policy, S: Sources> PersonQuestions for Engine
                 ),
                 Ok(entries) => {
                     let refused = on_the_route(question, &entries)
+                        .or_else(|| one_question_per_id(question, &entries))
                         .or_else(|| charged_for(question, &entries));
                     let answer = match refused {
                         Some(class) => Answer::Refuse { class },

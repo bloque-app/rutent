@@ -776,3 +776,30 @@ fn question_on_a_shortlisted_route_is_the_orders_own_about_one_of_its_parties() 
         Ok(PersonOutcome::Allowed {})
     );
 }
+
+/// A request id names one question: the same question asked again counts once, but the id reused for another, with
+/// another `ask` or `asked_before`, is refused, so no party asks past what it was charged for under one id
+/// (`REQ-CPL-2`, `REQ-AUZ-8`).
+// verifies: REQ-CPL-2, REQ-AUZ-8
+#[test]
+fn request_id_reused_for_another_question_is_refused() {
+    let mut e = engine(Log::taking(vec![
+        charged_to_the_agent(1),
+        shortlist(ORDER, "52", &["bank-co"], &["kyc-1", "kyc-2", "kyc-3"]),
+    ]));
+    let on_route = || route("52", &["bank-co"], &["kyc-1", "kyc-2", "kyc-3"]);
+    let ask = |e: &mut Tested, asks: &[&str], before: &[&str]| {
+        e.ask_about_person(&question("req-same", &agent(), on_route(), asks, before))
+            .map(|a| a.outcome)
+    };
+    assert_eq!(ask(&mut e, &["kyc-1"], &[]), Ok(PersonOutcome::Allowed {}));
+    assert_eq!(
+        ask(&mut e, &["kyc-1"], &[]),
+        Ok(PersonOutcome::Allowed {}),
+        "the same question again"
+    );
+    let not_permitted = Ok(refused(RefusalClass::NotPermitted));
+    assert_eq!(ask(&mut e, &["kyc-2"], &["kyc-1"]), not_permitted);
+    assert_eq!(ask(&mut e, &["kyc-3"], &["kyc-1"]), not_permitted);
+    assert_eq!(ask(&mut e, &["kyc-1"], &["kyc-1"]), not_permitted);
+}
