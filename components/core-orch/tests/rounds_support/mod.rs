@@ -216,8 +216,11 @@ pub struct Sim {
     pub received: Vec<(String, Value)>,
     /// Each provider's fee, flat, in the asset it takes in; none is 0.
     pub fees: BTreeMap<String, u64>,
-    /// Providers whose deposits claim to give out this much more than they take in (an answer that breaks `INV-1`).
+    /// Providers whose withdrawals claim to give out this much more than they take in (an answer that breaks
+    /// `INV-1`, which the router confirms as stated and `show` refuses).
     pub overclaim: BTreeMap<String, u64>,
+    /// Each provider's flat fee on its deposits, in place of `fees`, where set.
+    pub deposit_fees: BTreeMap<String, u64>,
     /// Providers whose tuple reports gross: their answers give out all they took in, the fee within it.
     pub gross: BTreeSet<String>,
     /// Providers that refuse, finally.
@@ -239,6 +242,7 @@ impl Sim {
             received: Vec::new(),
             fees: BTreeMap::new(),
             overclaim: BTreeMap::new(),
+            deposit_fees: BTreeMap::new(),
             gross: BTreeSet::new(),
             refuse: BTreeSet::new(),
             silent: BTreeSet::new(),
@@ -324,7 +328,10 @@ impl Providers for Sim {
             let value = envelope(&deployment(), JUDGEMENT_SHAPE, &provider, now, body);
             return Some(sign(value, &statements_key(&provider, 1)));
         }
-        let fee = self.fees.get(&provider).copied().unwrap_or(0);
+        let fee = match self.deposit_fees.get(&provider) {
+            Some(fee) if operation["kind"] == "deposit" => *fee,
+            _ => self.fees.get(&provider).copied().unwrap_or(0),
+        };
         let value = answer(
             &provider,
             &operation,
@@ -335,7 +342,7 @@ impl Providers for Sim {
         );
         let mut value = value;
         if let Some(more) = self.overclaim.get(&provider)
-            && operation["kind"] == "deposit"
+            && operation["kind"] == "withdrawal"
             && let Some(out) = value["statement"]["outcome"]["amount_out"].as_str()
         {
             let out: u64 = out.parse().unwrap();

@@ -333,19 +333,43 @@ fn segment_claiming_more_out_than_it_takes_in_is_never_shown() {
     );
 }
 
-/// Through intake: a route the router chose but can't deliver as composed (the reserve reports net, and its deposit
-/// says it gives out 50 000 more than it takes in, which the router confirms as stated and `show` refuses, as
-/// `segments::judge` would count it) is never shown. The
+/// Through intake: a route the router offers but can't be delivered as composed is never shown. The reserve reports
+/// net: its withdrawal says it gives out 500 more than it takes in, which the router confirms as stated, and its
+/// deposit takes that in at a fee of 500, so the route comes back to the origin with no more than it left with and
+/// is no rate cycle the router drops. `show` counts the withdrawal as `segments::judge` would and refuses it. The
 /// customer is told the order can't proceed now, one `order_refusal` of that class is recorded, and no `shown`.
 // verifies: REQ-QTE-2, REQ-ORD-18
 #[test]
 fn route_intake_cant_deliver_is_refused_and_never_shown() {
     let mut env = Env::new();
     let mut sim = env.sim();
-    sim.overclaim.insert(RESERVE.into(), 50_000);
+    sim.overclaim.insert(RESERVE.into(), 500);
+    sim.deposit_fees.insert(RESERVE.into(), 500);
+    // The deposit is priced at that fee too, so the route as first planned comes back to the origin with no more than
+    // it left with, and the router asks the deposit again at what the withdrawal claims.
+    for price in env.prices.iter_mut() {
+        if price.tuple == deposit_tuple(RESERVE) {
+            price.fee.flat = amount("500");
+        }
+    }
     let request = order_request("client-req-undeliverable", customer());
     let order = order_of(&env.open(&mut sim, &request).expect("the request opens"));
     let told = env.quote(&mut sim, &order).expect("the routing runs");
+    // The router offered the route: both its segments were asked, the deposit at what the withdrawal claimed.
+    let asked: Vec<(String, String)> = sim
+        .received
+        .iter()
+        .map(|(p, op)| {
+            (
+                p.clone(),
+                op["amount"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        asked.contains(&(RESERVE.to_owned(), "1500".to_owned())),
+        "the deposit was asked at what the withdrawal claimed: {asked:?}"
+    );
     assert!(
         matches!(
             told,
