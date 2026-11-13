@@ -29,8 +29,11 @@
 //!    session, naming the authorisation policy permitted, then the `route_chosen` input, the filer's statement. Both
 //!    are built once and appended as built.
 //!
-//! An order that ends after policy permitted it is refused of its class, naming it, and the deposit is free to be
-//! filed on again. Arrivals takes no exposures, so ending holds nothing more to release.
+//! An order that ends at routing is refused of its class, naming it. Once the deposit was held against its order
+//! (and `one-order-per-deposit` lets one deposit open only one order), or the reserve said no, it is `NotFileable`,
+//! and only a new arrival notice is a new arrival; an end before that leaves it free to be filed on again. Nothing has
+//! moved, either way, so the customer's funds stay in the holder's own account at the reserve.
+//! Arrivals takes no exposures, so ending holds nothing more to release.
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{

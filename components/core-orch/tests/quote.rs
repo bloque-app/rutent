@@ -817,7 +817,8 @@ fn held_quote_past_its_validity_starts_nothing() {
         .expect("the reserve holds its quote");
     assert_eq!(held.shown.shown_as, ShownAs::Quote, "held, it is a quote");
     assert_eq!(
-        held.quote.valid_until, until,
+        *held.valid_until(),
+        until,
         "within its figures' validity, as stated"
     );
 
@@ -895,7 +896,7 @@ fn long_hold_is_capped_at_its_figures_validity() {
             at("2026-11-06T15:30:00Z"),
         )
         .expect("held, capped");
-    assert_eq!(held.quote.valid_until, at("2026-11-06T15:03:40Z"));
+    assert_eq!(*held.valid_until(), at("2026-11-06T15:03:40Z"));
     assert!(
         holds
             .redeem(

@@ -10,6 +10,18 @@ use rutent_router::quote::{self, HeldQuoteRefused, HoldRefused, Label};
 use super::shown::{NotShown, Shown, show};
 
 /// One quote a reserve holds, for one order.
+///
+/// The quote itself is private: a hold is redeemed only through [`Holds::redeem`], which checks that only the
+/// holding reserve, for its order, redeems it. Nothing else hands out the [`HeldQuote`], so it can't be passed to the
+/// router's `quote::redeem` around that check.
+///
+/// ```compile_fail,E0616
+/// use rutent_core_orch::quote::Held;
+///
+/// fn around_the_check(held: &Held) {
+///     let _ = &held.quote;
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// The reserve that holds it: the provider of each part's first segment.
@@ -18,9 +30,16 @@ pub struct Held {
     pub order: Id,
     /// The quote held, with its validity: the one stated, capped at the earliest expiry of the figures its route
     /// cites (router-api's type).
-    pub quote: HeldQuote,
+    quote: HeldQuote,
     /// What it shows: always a quote, never the price (`REQ-QTE-7`).
     pub shown: Shown,
+}
+
+impl Held {
+    /// Until when the quote is valid: the one stated, capped at the earliest expiry of the figures its route cites.
+    pub fn valid_until(&self) -> &Timestamp {
+        &self.quote.valid_until
+    }
 }
 
 /// Why a quote isn't held, or a held quote starts nothing.

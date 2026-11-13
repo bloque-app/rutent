@@ -197,7 +197,9 @@ pub enum Filed {
         /// Why.
         wait: FiledWait,
     },
-    /// It can't proceed, of this class. The deposit is free to be filed on again.
+    /// It can't proceed, of this class. Once the deposit was held against its order, or the reserve said no, it is
+    /// `NotFileable`, and only a new arrival notice is a new arrival; an end before that leaves it free to be filed on
+    /// again. Nothing has moved, either way: the customer's funds stay in the holder's own account at the reserve.
     CantProceed {
         /// The order, where one exists.
         order: Option<Id>,
