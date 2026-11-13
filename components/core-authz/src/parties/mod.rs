@@ -98,6 +98,8 @@ pub enum Scope {
     ChangeCatalogue(CatalogueChange),
     /// Erasing a kept statement (`decide`, `erase_statement`).
     EraseStatement,
+    /// Asking a failed segment's provider to reverse it (`decide`, `ask_reversal`).
+    AskReversal,
     /// Giving an authorisation to move funds, a new destination included (`authorise`).
     Authorise,
     /// A stuck order's decide step (`decide_stuck`).
@@ -131,6 +133,7 @@ impl Scope {
                 Action::PostRoute { .. } => Scope::PostRoute,
                 Action::ChangeCatalogue { change, .. } => Scope::ChangeCatalogue(*change),
                 Action::EraseStatement { .. } => Scope::EraseStatement,
+                Action::AskReversal { .. } => Scope::AskReversal,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,
             },
             Asked::Authorise(_) => Scope::Authorise,
