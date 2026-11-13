@@ -295,6 +295,7 @@ names a transaction.
 | Terms state a slippage regime exactly where their tuple sets a rate | Rust, `check_terms`: `NoSlippageWhereARate`, `SlippageWhereNoRate` | `terms-of-an-exchange-without-a-slippage-regime`, `terms-of-a-reserve-with-a-slippage-regime` |
 | A hold names its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
 | A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
+| A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
 
 ## Which rule lives where
 

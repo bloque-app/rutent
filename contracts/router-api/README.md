@@ -87,10 +87,11 @@ the checks stay public functions of the router:
   (`DecisionRecord::earliest_expiry`): a figure expires at the snapshot's `taken_at` plus its validity less its age,
   never later than its own `valid_until` since age rounds up and validity down; a figure that states no validity
   caps nothing. A hold never outlives what its quote rests on (`REQ-QTE-4`). The reserve's signed hold (provider-role
-  3.1.0's `hold`) is held to it by `HeldQuote::check_hold`: it holds the record's chosen candidate, is made by the
-  reserve each part starts at, is valid no later than the same earliest expiry, and Core holds the quote no longer
-  than the hold says. The hold's record id and digest name Core's log entry of the record, which this contract
-  can't compute.
+  3.1.0's `hold`) is held to it by `HeldQuote::check_hold(hold, record_id, record_digest)`: it names the held
+  quote's record by the id and digest Core's log names it by (core-internal's `decision_record` entry), so a hold of
+  another record's candidate of the same id, `c1` say, never passes; it holds the record's chosen candidate, is
+  made by the reserve each part starts at, is valid no later than the same earliest expiry, and Core holds the
+  quote no longer than the hold says. That the digest is this record's is Core's, which computes it.
 
 The first two sit in the policy bounds, so a decision record names the bounds it ran under (`REQ-AUD-4`); the rest
 are Core's records over these types.

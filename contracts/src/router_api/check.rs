@@ -2066,17 +2066,31 @@ impl StatedTerms {
 }
 
 impl HeldQuote {
-    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote: of the hold
-    /// shape, holding this record's chosen candidate, made by the reserve that starts each of its parts, with a
-    /// validity no later than the earliest expiry of the figures that candidate cites
-    /// ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. The hold's record id
-    /// and digest name Core's log entry of the record, which this contract can't compute; Core's intake holds them.
+    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote, whose record
+    /// Core's log names by `record_id` and `record_digest` (core-internal's `decision_record` entry: its
+    /// `decision_record` and its `record`): of the hold shape, naming that record by that id and digest, so a hold
+    /// of another record's candidate of the same id never passes, holding this record's chosen candidate, made by the
+    /// reserve that starts each of its parts, with a validity no later than the earliest expiry of the figures that
+    /// candidate cites ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. That
+    /// `record_digest` is this record's digest is Core's, which computes it; this contract computes no digest.
     pub fn check_hold(
         &self,
         hold: &Statement<crate::provider_role::Hold>,
+        record_id: &Id,
+        record_digest: &crate::module_interface::Digest,
     ) -> Result<(), Violation> {
         hold.check_shape()
             .map_err(|_| Violation("a hold is a hold statement"))?;
+        let named = &hold.statement.record;
+        if named.id != record_id.as_str()
+            || named.digest.value != record_digest.value.as_str()
+            || named.digest.algorithm != crate::provider_role::DigestAlgorithm::Sha256
+            || record_digest.algorithm != crate::module_interface::DigestAlgorithm::Sha256
+        {
+            return Err(Violation(
+                "a hold names its held quote's decision record, by the id and digest the log names it by",
+            ));
+        }
         let Some(chosen) = self.record.chosen() else {
             return Err(Violation("a held quote's record chose a candidate"));
         };

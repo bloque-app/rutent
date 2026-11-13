@@ -1145,7 +1145,8 @@ fn stated_terms_bind_from_the_later_of_their_making_and_their_receipt() {
     );
 }
 
-/// A reserve's hold holds its record's chosen candidate, is made by the reserve each part starts at, and is valid no
+/// A reserve's hold names its held quote's record by the id and digest the log names it by, holds its chosen
+/// candidate, is made by the reserve each part starts at, and is valid no
 /// later than the figures its candidate cites; Core holds the quote no longer than the hold (round 3 of `T-020-01`,
 /// item q).
 // verifies: REQ-QTE-15, REQ-QTE-4
@@ -1155,18 +1156,38 @@ fn a_hold_is_its_reserves_for_the_chosen_candidate_within_its_figures() {
     use rutent_contracts::router_api::{Timestamp, Violation};
     let held: HeldQuote =
         serde_json::from_value(fixture("valid", "held-quote-of-a-choice-round")).unwrap();
+    // The log names the held quote's record dr-0004, by its digest.
+    let record = Id::new("dr-0004").unwrap();
+    let digest: rutent_contracts::module_interface::Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    let check = |held: &HeldQuote, hold: &Statement<Hold>| held.check_hold(hold, &record, &digest);
     let hold: Statement<Hold> = provider_statement("valid", "hold-for-an-order");
-    assert_eq!(held.check_hold(&hold), Ok(()));
+    assert_eq!(check(&held, &hold), Ok(()));
+    // Another record's `c1`, at the same reserve and within its validity, isn't this quote's hold.
+    let elsewhere: Statement<Hold> =
+        provider_statement("valid", "hold-of-another-records-candidate-of-the-same-id");
+    assert_eq!(elsewhere.statement.candidate, hold.statement.candidate);
+    assert_eq!(
+        check(&held, &elsewhere),
+        Err(Violation(
+            "a hold names its held quote's decision record, by the id and digest the log names it by"
+        ))
+    );
+    let mut other_digest = hold.clone();
+    other_digest.statement.record.digest.value = "cd".repeat(32);
+    assert!(check(&held, &other_digest).is_err());
     let mut another = hold.clone();
     another.statement.candidate = "c2".to_owned();
     assert_eq!(
-        held.check_hold(&another),
+        check(&held, &another),
         Err(Violation("a hold holds its record's chosen candidate"))
     );
     let mut by_another = hold.clone();
     by_another.maker = "reserve-wallet".to_owned();
     assert_eq!(
-        held.check_hold(&by_another),
+        check(&held, &by_another),
         Err(Violation(
             "a hold is made by the reserve that starts each part of its candidate"
         ))
@@ -1174,7 +1195,7 @@ fn a_hold_is_its_reserves_for_the_chosen_candidate_within_its_figures() {
     let mut too_long = hold.clone();
     too_long.statement.valid_until = "2026-11-06T15:01:56Z".to_owned();
     assert_eq!(
-        held.check_hold(&too_long),
+        check(&held, &too_long),
         Err(Violation(
             "a hold's validity is no later than the earliest expiry of the figures its candidate cites"
         ))
@@ -1182,14 +1203,14 @@ fn a_hold_is_its_reserves_for_the_chosen_candidate_within_its_figures() {
     let mut shorter = hold.clone();
     shorter.statement.valid_until = "2026-11-06T15:01:00Z".to_owned();
     assert_eq!(
-        held.check_hold(&shorter),
+        check(&held, &shorter),
         Err(Violation(
             "a held quote is held no longer than its hold's validity"
         ))
     );
     let mut core_shorter = held.clone();
     core_shorter.valid_until = Timestamp::new("2026-11-06T15:01:00Z").unwrap();
-    assert_eq!(core_shorter.check_hold(&shorter), Ok(()));
+    assert_eq!(check(&core_shorter, &shorter), Ok(()));
 }
 
 // verifies: REQ-QTE-6

@@ -1,6 +1,13 @@
 # router-api changelog
 
 ## 4.0.0
+- A hold is bound to its decision record (the review of round 3, item 1). `HeldQuote::check_hold` compared only
+  the candidate's id, and ids such as `c1` recur across records, so a hold of one record's `c1` passed for another's
+  at the same reserve within its validity. It now takes the record's id and digest, as core-internal's
+  `decision_record` entry names them (`check_hold(hold, record_id: &Id, record_digest: &module_interface::Digest)`),
+  and refuses a hold whose `record` names another. Folded into this unreleased major. A provider-role fixture,
+  `hold-of-another-records-candidate-of-the-same-id`, refused against the choice round's held quote; `hold-for-an-order`
+  admitted. (DEC-4, DEC-20, REQ-QTE-15, THR-127, T-020-01)
 - Stated terms and held quotes from signed statements (round 3 of the contract, item q, with provider-role 3.1.0's
   `terms` and `hold`). `StatedTerms::from_statement(statement, received_at)` builds a history entry from a
   provider's signed terms, taking only its tuple's provider's, with a slippage regime exactly where the tuple sets a

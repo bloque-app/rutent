@@ -1,6 +1,9 @@
 # provider-role changelog
 
 ## 3.1.0
+- A valid fixture, `hold-of-another-records-candidate-of-the-same-id`: a hold of `c1` of record `dr-0099`, which
+  router-api's `HeldQuote::check_hold` refuses for the choice round's `c1` of `dr-0004` (the review of round 3,
+  item 1). No shape or rule changed here. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
 - A provider's terms and a reserve's hold are signed statements of their own (round 3 of the contract, item q).
   Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them. Two schemas:
   `terms` (`urn:rutent:provider-role:terms`, `TupleTerms {tuple: TermsTuple {provider, from, to: TupleEnd {node,
