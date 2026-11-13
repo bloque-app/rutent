@@ -1,6 +1,6 @@
 {
   "row": "part-waits-for-value-in-motion",
-  "breaks": "conflict",
+  "breaks": null,
   "history": [
     {
       "receipt": {
@@ -4483,7 +4483,7 @@
           "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
@@ -4528,7 +4528,7 @@
           "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
@@ -4810,55 +4810,39 @@
         }
       },
       "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "decide",
-          "decision": "dec-116",
-          "request": {
-            "request": "req-116",
-            "caller": {
-              "party": "rutent",
-              "acts": "core-orch",
-              "role": "core",
-              "kind": "component"
-            },
-            "action": {
-              "kind": "move_value",
-              "order": "ord-1",
-              "segment": "p1-s6",
-              "provider": "exchange-c",
-              "origin_reserve": "us-bank",
-              "authorisation": "auth-1",
-              "route": {
-                "destination": {
-                  "reserve": "bank-co",
-                  "node": {
-                    "network": "co-ach"
-                  },
-                  "account": "acct-ref-9"
-                },
-                "to_asset": {
-                  "id": "COP",
-                  "decimals": 2
-                },
-                "delivers": "2500000"
-              }
-            },
-            "at": "2026-11-10T09:00:00Z"
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
           }
         },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
         },
+        "when": {
+          "at": "2026-11-10T09:00:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-10T09:00:05Z",
         "outcome": {
-          "status": "permitted"
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "3535353535353535353535353535353535353535353535353535353535353535"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-u11",
+          "segment": "p1-s1"
         }
       }
     },
@@ -4880,34 +4864,14 @@
           "kind": "component"
         },
         "what": {
-          "call": "effect",
-          "action": {
-            "kind": "move_value",
-            "order": "ord-1",
-            "segment": "p1-s6",
-            "provider": "exchange-c",
-            "origin_reserve": "us-bank",
-            "authorisation": "auth-1",
-            "route": {
-              "destination": {
-                "reserve": "bank-co",
-                "node": {
-                  "network": "co-ach"
-                },
-                "account": "acct-ref-9"
-              },
-              "to_asset": {
-                "id": "COP",
-                "decimals": 2
-              },
-              "delivers": "2500000"
-            }
-          },
-          "decision": {
-            "request": "req-116",
-            "decision": "dec-116",
-            "answer": "permit",
-            "receipt": {
+          "call": "evidence",
+          "evidence": "ev-u11",
+          "order": "ord-1",
+          "segment": "p1-s1",
+          "grade": 4,
+          "whose": "us-bank",
+          "rests_on": [
+            {
               "log": "log-main",
               "index": 80,
               "entry": {
@@ -4915,14 +4879,14 @@
                 "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
               }
             }
-          }
+          ]
         },
         "when": {
           "at": "2026-11-10T09:00:00Z",
           "source": "core_clock"
         },
         "outcome": {
-          "status": "to_take_effect"
+          "status": "observed"
         }
       }
     }
@@ -4942,15 +4906,18 @@
         "recorded_at": "2026-11-06T10:00:00Z",
         "time_source": "core-orch clock",
         "source": {
-          "kind": "orchestrator",
-          "id": "core-orch"
+          "kind": "evidence_checker",
+          "id": "evidence"
         },
         "standing": "verified",
         "subject": {
-          "order": "ord-1"
+          "order": "ord-1",
+          "part": "p1",
+          "segment": "p1-s1"
         },
         "observed": {
-          "kind": "end_requested"
+          "kind": "reversal_completed",
+          "evidence": "ev-u11"
         }
       }
     },
