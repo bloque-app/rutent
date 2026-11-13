@@ -1,0 +1,25 @@
+{
+  "raise": "raise-2",
+  "difference": {
+    "kind": "holding",
+    "account": "hold-7",
+    "direction": "short",
+    "by": "5000000",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "word": "publisher"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 70,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "7171717171717171717171717171717171717171717171717171717171717171"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

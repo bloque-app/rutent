@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:kept-statement",
+  "title": "Kept statement",
+  "description": "A statement as the evidence store keeps it, for a party to keep its own evidence (REQ-AUD-5) and for a checker outside the operator to check the log against (REQ-AUD-9, REQ-AUD-10). To check it against the stated entry that names it: recompute SHA-256 of the decoded salt followed by the decoded bytes and compare it with the entry's commitment; then read the bytes as the statement's envelope, check that its signature's scheme and key equal the entry's signed_with, and verify the signature over provider-role's signing input of the bytes, the RFC 8785 canonical JSON of the envelope as received, without signature.value.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commitment",
+    "salt",
+    "bytes"
+  ],
+  "properties": {
+    "commitment": {
+      "description": "The commitment the stated entry names it by.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+    },
+    "salt": {
+      "description": "The 32-byte salt it was committed with, base64url without padding.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "bytes": {
+      "description": "The statement's bytes exactly as received, base64url without padding.",
+      "type": "string",
+      "minLength": 2,
+      "pattern": "^([A-Za-z0-9_-]{4})*([A-Za-z0-9_-]{2}[AEIMQUYcgkosw048]|[A-Za-z0-9_-][AQgw])?$"
+    }
+  }
+}

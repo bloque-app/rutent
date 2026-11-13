@@ -1,0 +1,20 @@
+{
+  "provider": "fx-desk",
+  "order": "ord-17",
+  "segment": "seg-3",
+  "measure": {
+    "kind": "failure",
+    "market": "with_the_provider"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 62,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6363636363636363636363636363636363636363636363636363636363636363"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

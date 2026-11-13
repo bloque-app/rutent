@@ -1,0 +1,17 @@
+{
+  "request": "req-107",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "erase_statement",
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "8585858585858585858585858585858585858585858585858585858585858585"
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

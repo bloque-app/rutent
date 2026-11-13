@@ -1,0 +1,28 @@
+{
+  "action": {
+    "kind": "change_catalogue",
+    "change": "grant",
+    "provider": "fx-desk"
+  },
+  "decision": {
+    "request": "req-100",
+    "decision": "dec-100",
+    "answer": "permit",
+    "receipt": {
+      "log": "log-main",
+      "index": 42,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b"
+      }
+    }
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 45,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+    }
+  }
+}

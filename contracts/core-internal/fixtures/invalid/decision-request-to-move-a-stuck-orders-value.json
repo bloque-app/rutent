@@ -1,0 +1,35 @@
+{
+  "request": "req-100",
+  "caller": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "action": {
+    "kind": "resolve_stuck",
+    "order": "ord-21",
+    "carries_out": {
+      "request": "req-200",
+      "decision": "dec-200"
+    },
+    "resolution": {
+      "kind": "deliver",
+      "by": "bank-co",
+      "to": {
+        "reserve": "bank-co",
+        "node": {
+          "network": "co-ach"
+        },
+        "account": "acct-ref-9"
+      },
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "amount": "2500000"
+    },
+    "transaction": "tx-e21"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

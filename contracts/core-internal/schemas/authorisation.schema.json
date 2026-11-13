@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:authorisation",
+  "title": "Authorisation",
+  "description": "The authorisation to move funds: one order, its destination, its to asset and any floor the customer set. A recalculated route acts only within it, and anything else needs a new one (REQ-AUZ-3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorisation",
+    "order",
+    "origin_reserve",
+    "destination",
+    "to_asset",
+    "given_by",
+    "at"
+  ],
+  "properties": {
+    "authorisation": {
+      "description": "The authorisation's id.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "order": {
+      "description": "The one order it is for.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "origin_reserve": {
+      "description": "The order's origin reserve: where the user authorised, or the holding account's provider on a route handed on (REQ-AUZ-9).",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "origin_account": {
+      "description": "The account at the origin reserve the value comes from, by reference: where a stuck resolution returns it. Intake fills it (T-020-03); absent, no delivery back to the origin is admitted.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "destination": {
+      "$ref": "urn:rutent:core-internal:common#/$defs/destination"
+    },
+    "to_asset": {
+      "description": "The asset delivered there.",
+      "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+    },
+    "floor": {
+      "description": "The least the customer will take at the destination, in the to asset's unit, if it set one.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+    },
+    "parts": {
+      "description": "The parts of the order it covers, at least one, each once; absent, it covers every part. A replacement for one part's new destination names that part and replaces the earlier authorisation for it alone (T-021-04).",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+      }
+    },
+    "given_by": {
+      "description": "Who gave it: a user at the origin, its agent, or the operator acting for it where a reserve declared it can't require the user's own withdrawal (REQ-AUZ-9).",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

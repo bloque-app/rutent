@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:session-answer",
+  "title": "Session answer",
+  "description": "Policy's answer to a session request, appended to the log before it is given.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "outcome",
+    "receipt"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request it answers.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "receipt": {
+      "description": "The receipt of its entry in the log.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "description": "The answer.",
+      "type": "object",
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "enum": [
+            "opened",
+            "refused",
+            "not_known"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "opened"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_opened"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_not_known"
+          }
+        }
+      ]
+    },
+    "outcome_opened": {
+      "description": "A session is open.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "session",
+        "expires_at"
+      ],
+      "properties": {
+        "answer": {
+          "const": "opened"
+        },
+        "session": {
+          "description": "The session's id.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "expires_at": {
+          "description": "When it ends, by Core's clock.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "outcome_refused": {
+      "description": "No session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "class"
+      ],
+      "properties": {
+        "answer": {
+          "const": "refused"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    },
+    "outcome_not_known": {
+      "description": "Policy couldn't decide, so no session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "cause"
+      ],
+      "properties": {
+        "answer": {
+          "const": "not_known"
+        },
+        "cause": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/not_known_cause"
+        }
+      }
+    }
+  }
+}

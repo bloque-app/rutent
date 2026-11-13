@@ -74,6 +74,9 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
 - **What it drives.** A binding implements `ModuleBinding`, which names no format and never hands out a secret's
   value:
   - `format` and `languages`, and `set_output_limit`, which the suite sets, so no binding passes by having no limit;
+  - `set_step_limit`, which the suite sets too, to probe a module at the limit and one past it, and lifts after
+    with `usize::MAX`. Its default says the binding can't be given one, which leaves the probe uncovered
+    (`T-024-01`);
   - `admit` and `accept`, which take the provider's signed release assertion and give the T-003-02 admission
     artefact;
   - `active_version`, `process` and `restart`, so one OS process per provider is expressible;
@@ -82,8 +85,14 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
     as the contract shapes them. A call to a widened callee that received it counts as reached, answered or not.
   - A refusal at admission (`AdmissionRefusal`) or of an answer (`PlatformRefusal`) is the module-interface
     contract's own type since its 2.3.0, re-exported here, with a reason each for a limit hit, a disallowed import
-    and a re-admitted version. The reference double refuses a re-admitted version, and, given a step limit
-    (`with_step_limit`), a module that passes it, with those reasons.
+    and a re-admitted version. The suite probes both (`T-024-01`):
+    - a version a provider already has admitted, running or waiting for its acceptance, admitted again must be
+      refused as `version_already_admitted`, and what runs is unchanged (`ReadmittedVersionRefused`,
+      `ReadmittedWaitingVersionRefused`);
+    - a module that takes more steps than the limit the suite set must be refused as `limit_reached` and stay
+      admitted, and one that takes the limit's own number must answer (`StepLimitRefused`,
+      `StepsWithinTheLimitAnswered`). The steps are the sandboxed part's reads of its state, so the module passes
+      nothing out, and the refusal is the limit's and never an unknown outcome.
 - **Signed releases (`T-010-10`).** The suite signs for real, with Ed25519 keys it derives itself (`signing`, behind
   the `signing` feature, which `test-support` implies). Each provider's declaration names its statements key, its
   release assertions are signed with its advertising key over the contract's signing input, and the binding is
@@ -153,7 +162,7 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
 - **The reference double** (`boundary::reference::ReferenceDouble`, built only with the `test-support` feature, which
   the crate's own tests enable) is an in-process binding with no format: a "binary" names a spec it built, and
   running it interprets the steps. Its two languages are nominal; they show the coverage accounting, not `AC-20`
-  itself. It has 40 breakers: 38 each break one enforcement, flagged by its own check only, and two leave fixtures
+  itself. It has 44 breakers: 42 each break one enforcement, flagged by its own check only, and two leave fixtures
   uncovered. A broken egress check still writes the refusal into its record but lets the request through, so only
   what the endpoint received gives it away; a reach probe of acceptance leaves such a call to the egress probes.
 - **Not covered.**
@@ -163,6 +172,69 @@ format and language with it (`DEC-5`, `DEC-7`). `run_boundary_suite(binding, con
   - **`REQ-MDL-11`'s limits other than output:** CPU, memory, outbound calls, state and pending work.
   - **DNS rebinding:** `BoundaryHarness::serve` gives an endpoint one address, so a name that resolves to one
     address when checked and another when connected isn't expressible yet. Nor is TLS.
+
+## Simulated providers (`sim`)
+
+`T-024-01`'s simulated providers (`REQ-MOD-4`, `DEC-23`): the stand-ins of `role::stand_in`, made scriptable and given
+books that outlive their processes. They are Wasm components (`components/prov/module-guests/sim/`), admitted through
+the platform like any module; `sim` is what they are made of, in a form that runs in process too, so a module can be
+held against a twin. `conformance/scenarios/src/sim/` is the platform side: the world, the simulated public networks
+and a `Fleet` that admits them.
+
+- **Identity.** A `Spec` is a role and a name; the publisher, the keys, and for a reserve its bank and its private
+  node follow from the name. A reserve is on a private node of its own, and its publisher is its own, so two of them
+  are two private nodes (`DEC-24`). The stand-ins' own identities are unchanged (`Identity`, `named`).
+- **Behaviours.** A `Behaviour` says how one operation is answered, and a script is a queue of them kept by the
+  platform's world: the module asks for the next one as its first step. Answer, refuse (finally, with a lifting time,
+  or waiting on the person), stay silent, answer late, crash before or after its entry is written, report outcome
+  unknown, fail, deliver short (`Delivery::Short`) or in pieces (`Delivery::Pieces`), send no movement to the
+  network, and, for a reserve, confirm a reversal or not. The module does the effects only a module can, spinning and
+  trapping; `Simulated::answer` decides the answer and the entry.
+- **Books.** The WIT world has no state write (`F-013`'s notes), so a provider's books are a journal of `Entry`
+  kept by the platform's world under the shared key `book`. The module writes each entry to its own rail, an
+  outbound call the platform records (`REQ-MDL-8`), and reads the journal back through the state read. A process that
+  finds the journal longer or shorter than its own books replays it into a fresh stand-in (`Simulated::restore`),
+  which is deterministic, so a restarted process holds the books the one before it did, and a crash after the
+  entry leaves the effect and the record of it.
+- **The journal's size.** The platform passes an outside message of 64 KiB at most, and the journal is read back in
+  one, escaped once as a string in the response. An entry of a withdrawal is about 850 bytes, 950 once escaped, so a
+  restart reads a journal of about sixty-eight real operations of one provider; sixty is tested. A scenario that
+  runs more splits its providers.
+- **Test settings.** `Fleet::new` sets what a test platform needs and a deployment's settings own: upgrades take
+  effect at once (`set_staging(None)`), the operation deadline is the caller's, and the output limit is 1 MiB
+  (`set_output_limit(1 << 20)`). They are not defaults.
+- **What a twin is.** `Simulated` run in process answers as the module does; the role suite through the platform
+  compares each answer with a twin's and the journal's replay with the twin's books.
+- **The deployment a provider serves** (`T-024-02`). The platform's world names it under the state key `deployment`,
+  which `Fleet` seeds from its context, and the module holds every operation to it; where the world names none, it
+  serves the suite's default context. `Fleet::with_context` takes the assembly's, whose operator key is a real one.
+
+## The assembly and the scenario harness (`rutent-scenarios`)
+
+`T-024-02`'s package, `conformance/scenarios/`, puts Core together from its three crates over `core-internal` and
+runs `M3`'s scenarios on it. Nothing in the workspace imports it (`DEC-2`).
+
+- **The assembly** (`assembly`). One `Core`: the evidence store and the log, each opened once on a `Disk` that
+  survives a crash, the store's read handed to the log and the store bound to that log; the policy engine, holding
+  the log's policy handle and nothing else holding one, its sources answered from the records (the table in
+  `assembly/policy.rs`); orchestration's intake, rounds and segments on the general handle; the platform with the
+  simulated providers, each granted by a decided catalogue change and its advertisement recorded before any order;
+  one clock; and the state machine on a host of the host contract, fed every input the log takes. Staging is set by
+  every scenario (`Staged`), with no default.
+- **The harness** (`harness`). A `Scenario` is given (`Given`), takes steps (`Step`) and checks (`then`), and accepts
+  one `AC-*`, which `Scenario::new` holds it to. Faults (`Fault`): a crash after the log's store took a record and
+  before it answered, or at the platform's seam before an effect is carried out; a repeated and a reordered delivery
+  to the state machine; a provider's silence; the state machine swapped to another environment mid-order. A run's
+  seed draws every identifier Core draws and every choice a seeded scenario makes; CI sets seeds through
+  `RUTENT_SCENARIO_SEEDS`, and a failure names its seed. A `Run` is compared by its projection, every digest and
+  signature replaced by the order it first appeared in, since the evidence store's salts come from the operating
+  system.
+- **The checks** (`checks`). `T-024-02`'s four, each a scenario over an environment it is handed, so the reference
+  host's run (`tests/assembly.rs`) and the run on three VOS replicas (`rutent-scenarios-vos`, in the VOS client's
+  workspace at `components/stm/vos-program/scenarios/`) are one code. The later scenario rows (`T-024-03` to
+  `T-024-08`) write their own test files over the same harness.
+- **The kit** (`kit`). What every scenario kit shares: who acts, the route, the bounds and prices, fresh identifiers
+  from a seed, the operator's key and the catalogue's listing. `T-020-08`'s segments kit is built on it.
 
 ## Host-contract suite (`host`)
 
@@ -232,7 +304,7 @@ alone, the same inputs give the same output, and a changed objective can change 
 |---|---|
 | `contract` | It passes `DecisionRecord::check`; when it doesn't, nothing else runs |
 | `shortlist-reads-advertised-figures` | A shortlist round's snapshot holds no fresh quote, dry run or judgement (`REQ-CAT-5`) |
-| `amounts-follow-their-figures` | Every operation states the fee and `amount_out` of every usable accepted answer it cites for its amount in; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`). The operation a `no_price` reason names has no price and is skipped; the one a `fee_above_amount` reason names cites no usable answer, and its price's fee on its amount in is above that amount |
+| `amounts-follow-their-figures` | Every operation states the fee of every usable accepted answer it cites for its amount in, and what arrives by it: the answer's `amount_out`, or under a tuple that reports `gross`, for a same-asset operation, that less its charge in the out unit (router-api's `Operation::stated_out`), and `0` where that charge is above the answer's `amount_out`; with none, what its price gives: fee `flat + ceil(a × n / d)`, or the maximum where one is given, then the levels filled in order, scaled by `10^to / 10^from` and rounded down once; a net above the last level gives nothing (`REQ-QTE-5`, `REQ-QTE-12`). The operation a `no_price` reason names has no price and is skipped; the one a `fee_above_amount` reason names cites no usable answer, and its price's fee on its amount in is above that amount |
 | `rate-cycles-are-not-followed` | No kept or outranked candidate has a part that comes back to a node and asset with more than it held there, compared in whole numbers across the asset's units, and `suspect_rate_cycle` names only one that does (ADR-0006) |
 | `outranked-candidates-are-eligible` | Each `outranked` candidate passes the contract when made the choice (or kept, in a shortlist round) in its place |
 | `calls-follow-the-declarations` | Every operation names exactly the calls its provider's module declares, in the snapshot's calls figure of the release its tuple comes from, to the provider of another operation of its part, every kind declared, and cites that figure exactly when it names one (router-api 3.0.0, `T-011-06`, `REQ-MDL-21`); the contract refuses a call outside those, and this check finds one left out |
@@ -251,7 +323,8 @@ alone, the same inputs give the same output, and a changed objective can change 
 
 The cases (`src/router/cases.rs`, with the amounts worked by hand in its header) are an AC-2 network of a reserve,
 exchanges and ramps from COP in a Colombian bank to USDC on Polygon, in a shortlist round and in three choice
-rounds (each objective, and a floor no route meets); a policy network with an excluded exchange, a ceiling passed
+rounds (each objective, and a floor no route meets), and a fourth with a floor of 250 USDC and a flat operator's fee
+of 10 USDC, which the slow route meets before the fee and not after it, so no route; a policy network with an excluded exchange, a ceiling passed
 by what an exchange produces, a band, a deposit that keeps everything, a floor, an exchange with no price, a
 ramp whose fee is above what reaches it and one that keeps all that enters; and a tie, whose exchanges' modules
 declare calls to the reserve on their route and to each other, on none.
@@ -271,5 +344,7 @@ The suite's own tests (`tests/router_suite.rs`) run it against a test-only refer
 (`tests/router_double/`), correct and with one flaw at a time, and against records changed by hand: each flawed
 record passes the contract and fails exactly one check. The double that leaves out the paths it can't state, as
 router-api 2.x had routers do, fails `names-the-expected-drops` alone, and the one that names no call
-(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. They also recompute every valid decision record among the
+(`LEAVES_OUT_CALLS`) fails `calls-follow-the-declarations` alone, on the tie case. The one that judges the floor
+before the operator's fee (`FLOOR_BEFORE_THE_FEE`) chooses the slow route on the fee case, which the contract
+refuses: since router-api 4.0.0 it judges the floor after the operator's fee itself. They also recompute every valid decision record among the
 contract's fixtures.

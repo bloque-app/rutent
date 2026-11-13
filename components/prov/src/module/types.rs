@@ -86,6 +86,8 @@ pub struct StateEvent {
     pub provider: String,
     /// The part that read.
     pub part: PartName,
+    /// The transaction of the operation it was handling, so the read is recorded for it (`REQ-MDL-8`).
+    pub transaction: String,
     /// The entry asked for.
     pub key: String,
     /// Whether the read found a value.

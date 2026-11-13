@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rutent_contracts::module_interface::{
@@ -72,6 +73,113 @@ pub const START_DEADLINE: Duration = Duration::from_secs(10);
 /// and is refused as `deadline_too_near` otherwise: a callee started with less would be stopped before it could
 /// answer, or take its caller's answer with it.
 pub const MIN_CALL_BUDGET: Duration = Duration::from_secs(1);
+
+/// The time the platform's operation deadlines and a callee's remaining budget run on (`T-013-08`). Whether a
+/// callee is started, and when an operation's process is given up on, are judged on this clock and not on how
+/// long a caller took to come up.
+///
+/// In production it is [`Monotonic`], `Instant`, as it always was. A test hands the platform a [`SteppedClock`],
+/// which moves only when the test steps it.
+pub trait OperationClock: Send + Sync {
+    /// The time now, on this clock.
+    fn now(&self) -> Instant;
+
+    /// Whether this clock runs with the operating system's, so that waiting until `due` is waiting that long. A
+    /// clock that does not is polled by the platform while it waits, so that a step is seen.
+    fn follows_wall_time(&self) -> bool;
+
+    /// The operating system's time a wait that ends at `due`, a time on this clock, and that the platform hands
+    /// outward (a name lookup, a connection) is to end at: `due` itself on a clock that follows it.
+    fn wall_due(&self, due: Instant) -> Instant {
+        due
+    }
+}
+
+/// The operating system's monotonic clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Monotonic;
+
+impl OperationClock for Monotonic {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn follows_wall_time(&self) -> bool {
+        true
+    }
+}
+
+/// A clock that stands still until [`SteppedClock::step`] moves it: for tests of the deadlines, which then never
+/// depend on how long a process took to start.
+#[derive(Debug, Clone)]
+pub struct SteppedClock {
+    start: Instant,
+    stepped: Arc<Mutex<Duration>>,
+    /// Whether what the platform hands outward waits on the operating system's time for what is left on this
+    /// clock, or is not tied to it.
+    outward_on_wall_time: bool,
+}
+
+impl SteppedClock {
+    /// A clock that reads the current time and stays there.
+    pub fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            stepped: Arc::new(Mutex::new(Duration::ZERO)),
+            outward_on_wall_time: false,
+        }
+    }
+
+    /// A clock that stands still, whose deadlines the platform hands outward as the operating system's time left on
+    /// them when it does (a name lookup given up, a peer cut off): for a test of those, which ends by itself at
+    /// the deadline and takes as long as the deadline says, whatever else the machine is doing.
+    pub fn with_outward_waits_on_wall_time() -> Self {
+        Self {
+            outward_on_wall_time: true,
+            ..Self::new()
+        }
+    }
+
+    /// Moves the clock on by `by`; every clone of it moves.
+    pub fn step(&self, by: Duration) {
+        if let Ok(mut stepped) = self.stepped.lock() {
+            *stepped += by;
+        }
+    }
+}
+
+impl Default for SteppedClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OperationClock for SteppedClock {
+    fn now(&self) -> Instant {
+        self.start + self.stepped.lock().map_or(Duration::ZERO, |s| *s)
+    }
+
+    fn follows_wall_time(&self) -> bool {
+        false
+    }
+
+    fn wall_due(&self, due: Instant) -> Instant {
+        let wait = if self.outward_on_wall_time {
+            due.saturating_duration_since(self.now())
+        } else {
+            STEPPED_WAIT_CAP
+        };
+        Instant::now() + wait
+    }
+}
+
+/// How often the platform looks at a clock that doesn't follow wall time while it waits for a process.
+const STEPPED_POLL: Duration = Duration::from_millis(2);
+
+/// The longest an outbound call waits on the operating system's time under a clock that doesn't follow it: the
+/// deadline there ends the operation by a step of the clock, and this only stops a test that never steps from
+/// waiting for ever.
+const STEPPED_WAIT_CAP: Duration = Duration::from_secs(60);
 
 /// One provider's releases and its running processes.
 #[derive(Default)]
@@ -356,6 +464,7 @@ pub struct Platform<W: World> {
     stack: Vec<Context>,
     events: Events,
     deadline: Duration,
+    clock: Arc<dyn OperationClock>,
     stderrs: Stderrs,
     bounds: Bounds,
     /// What each provider has used inside the top-level operation in flight, which ends with it.
@@ -401,6 +510,7 @@ impl<W: World> Platform<W> {
             stack: Vec::new(),
             events: Events::default(),
             deadline: OPERATION_DEADLINE,
+            clock: Arc::new(Monotonic),
             stderrs: Stderrs::default(),
             bounds: Bounds::DEFAULT,
             tree: BTreeMap::new(),
@@ -446,6 +556,34 @@ impl<W: World> Platform<W> {
     pub fn set_stderr_capacity(&mut self, capacity: usize) {
         if let Ok(mut log) = self.stderrs.lock() {
             log.set_capacity(capacity);
+        }
+    }
+
+    /// Sets the clock the deadlines and a callee's remaining budget run on, [`Monotonic`] by default
+    /// (`T-013-08`).
+    pub fn set_operation_clock(&mut self, clock: Arc<dyn OperationClock>) {
+        self.clock = clock;
+    }
+
+    /// The operating system's time a wait for `due` on the clock ends at: `due` itself on a clock that follows it.
+    fn wall(&self, due: Instant) -> Instant {
+        self.clock.wall_due(due)
+    }
+
+    /// The process's next message, waiting at most until `due` on the clock.
+    fn receive(&self, process: &mut ProviderProcess, due: Instant) -> Received {
+        if self.clock.follows_wall_time() {
+            return process.receive_until(due);
+        }
+        // The clock moves only when stepped: a deadline it has reached has passed, whatever is waiting.
+        loop {
+            if self.clock.now() >= due {
+                return Received::Overdue;
+            }
+            match process.receive_until(Instant::now() + STEPPED_POLL) {
+                Received::Overdue => {}
+                received => return received,
+            }
         }
     }
 
@@ -766,10 +904,13 @@ impl<W: World> Platform<W> {
                 ) {
                     return reply;
                 }
-                let provider = self.stack.last().expect("a context").provider.clone();
+                let context = self.stack.last().expect("a context");
+                let (provider, transaction) =
+                    (context.provider.clone(), context.transaction.clone());
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Sandboxed,
+                    transaction,
                     key,
                     found: false,
                 });
@@ -799,7 +940,11 @@ impl<W: World> Platform<W> {
                 // Only the shared entries and the handled transaction's own: another transaction's entry is never
                 // asked of the world (`REQ-MDL-10`).
                 let context = self.stack.last().expect("a context");
-                let (provider, serving) = (context.provider.clone(), context.serving.is_some());
+                let (provider, transaction, serving) = (
+                    context.provider.clone(),
+                    context.transaction.clone(),
+                    context.serving.is_some(),
+                );
                 let readable = lifecycle::state_readable(&key, &context.transaction);
                 let value = if serving && readable {
                     self.world.state(&provider, &key)
@@ -816,6 +961,7 @@ impl<W: World> Platform<W> {
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Outside,
+                    transaction,
                     key,
                     found: value.is_some(),
                 });
@@ -1082,7 +1228,7 @@ impl<W: World> Platform<W> {
             return refused();
         };
         let declaration = context.declaration.clone();
-        let due = context.due;
+        let due = self.wall(context.due);
         let secrets = context
             .resolved
             .get(in_flight.as_str())
@@ -1299,7 +1445,7 @@ impl<W: World> Platform<W> {
             // The callee runs inside the caller's deadline: with less than it needs left, it is not started
             // (`REQ-MDL-11`). It is refused as `deadline_too_near`, and the caller's operation goes on.
             let left = self.stack.last().map_or(Duration::ZERO, |c| {
-                c.due.saturating_duration_since(Instant::now())
+                c.due.saturating_duration_since(self.clock.now())
             });
             let handling = self.stack.iter().map(|context| context.provider.as_str());
             if reenters(handling, callee) || !running {
@@ -1394,7 +1540,7 @@ impl<W: World> Platform<W> {
             .unwrap_or_default();
         // A cross-module call's operation ends no later than the caller's reserve before the one that made it, so
         // the caller outlives a callee stopped at its deadline and hears that its call went unanswered.
-        let own = Instant::now() + self.deadline;
+        let own = self.clock.now() + self.deadline;
         let reserve = self.call_reserve();
         let due = self.stack.last().map_or(own, |caller| {
             caller
@@ -1414,7 +1560,8 @@ impl<W: World> Platform<W> {
         // The world judges against the release that handles it, which the last one told may not be (`T-013-06`).
         self.tell_running(provider, &version);
         if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
-            self.world.begin_operation(caller, handled_as, due);
+            self.world
+                .begin_operation(caller, handled_as, self.wall(due));
         }
         // The statement key, resolved while the module handles the operation, the proxy's condition for it, and
         // before the module is handed it: a store that can't answer, or a key that isn't the declared one's, ends
@@ -1466,7 +1613,7 @@ impl<W: World> Platform<W> {
             .send(&ToProvider::Handle { operation: json })
             .is_ok();
         while alive {
-            let received = process.receive_until(due);
+            let received = self.receive(&mut process, due);
             // Anything but the process gone before a word means it took the operation and ran it.
             ran |= !matches!(received, Received::Gone);
             match received {

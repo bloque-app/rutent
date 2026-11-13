@@ -6,16 +6,18 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::provider_role::{
-    self, Advertisement, AmountMismatch, Category, ContextMismatch, Deployment, NodeRef, Operation,
-    OuterNode, Remainder, ResultBody, RuleViolation, Statement, StatementShape, Terms,
-    TransferOutcome,
+    self, Advertisement, AmountMismatch, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
+    ArrivalOutcome, ArrivalQuestion, Category, ContextMismatch, CreditRestated, Credits,
+    Deployment, Hold, NodeRef, Operation, OuterNode, RedemptionRefused, Remainder, ResultBody,
+    RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
 };
+use rutent_contracts::provider_role::{InnerSegments, InnerSegmentsViolation, Standing};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 9] = [
+const SCHEMAS: [&str; 15] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -25,18 +27,34 @@ const SCHEMAS: [&str; 9] = [
     "result",
     "judgement",
     "reversal-confirmation",
+    "terms",
+    "hold",
+    "arrival-notice",
+    "arrival-question",
+    "arrival-answer",
+    "inner-segments",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
-/// followed by `-`. `successive-advertisements` and `answered-operation` are bundles of values, not schemas of
-/// their own: see [`SuccessiveAdvertisements`] and [`AnsweredOperation`].
-const SHAPES: [&str; 6] = [
+/// followed by `-`. `successive-advertisements`, `answered-operation`, `arrival-notices` and
+/// `answered-arrival-question` are bundles of values, not schemas of their own: see [`SuccessiveAdvertisements`],
+/// [`AnsweredOperation`], [`ArrivalNotices`] and [`AnsweredArrivalQuestion`].
+const SHAPES: [&str; 15] = [
     "advertisement",
     "statement-envelope",
     "operation",
     "result",
+    "terms",
+    "hold",
+    "arrival-notice",
+    "arrival-question",
+    "arrival-answer",
+    "inner-segments",
     "successive-advertisements",
     "answered-operation",
+    "arrival-notices",
+    "answered-arrival-question",
+    "published-inner-segments",
 ];
 
 /// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
@@ -56,6 +74,51 @@ const ANSWERED_OPERATION_MEMBERS: [(&str, &str); 3] = [
         "urn:rutent:provider-role:advertisement#/$defs/terms",
     ),
 ];
+
+/// The members of an `arrival-notices` bundle: two of a reserve's enveloped arrival notices, for the rule that
+/// relates them (`check_one_credit`).
+const ARRIVAL_NOTICES_MEMBERS: [(&str, &str); 2] = [
+    ("earlier", "urn:rutent:provider-role:arrival-notice"),
+    ("later", "urn:rutent:provider-role:arrival-notice"),
+];
+
+/// An `arrival-notices` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArrivalNotices {
+    earlier: Statement<ArrivalNotice>,
+    later: Statement<ArrivalNotice>,
+}
+
+/// The members of an `answered-arrival-question` bundle: the operator's enveloped question of what arrived and the
+/// reserve's enveloped answer to it, for the rules that relate them (`check_answer`).
+const ANSWERED_ARRIVAL_QUESTION_MEMBERS: [(&str, &str); 2] = [
+    ("question", "urn:rutent:provider-role:arrival-question"),
+    ("answer", "urn:rutent:provider-role:arrival-answer"),
+];
+
+/// The members of a `published-inner-segments` bundle: the advertisement of a record's maker and the enveloped
+/// record, for the rules that relate them (`check_inner_segments`).
+const PUBLISHED_INNER_SEGMENTS_MEMBERS: [(&str, &str); 2] = [
+    ("advertisement", "urn:rutent:provider-role:advertisement"),
+    ("record", "urn:rutent:provider-role:inner-segments"),
+];
+
+/// A `published-inner-segments` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedInnerSegments {
+    advertisement: Statement<Advertisement>,
+    record: Statement<InnerSegments>,
+}
+
+/// An `answered-arrival-question` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnsweredArrivalQuestion {
+    question: Statement<ArrivalQuestion>,
+    answer: Statement<ArrivalAnswer>,
+}
 
 /// A `successive-advertisements` fixture.
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,6 +151,155 @@ impl AnsweredOperation {
 /// rule it breaks.
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
+        (
+            "arrival-notice-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-outer-node",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-asset",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-amount",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-account",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-holder",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-at-an-inner-node",
+            vec![("/statement/node", "type")],
+        ),
+        (
+            "arrival-notice-of-a-zero-amount",
+            vec![("/statement/amount", "pattern")],
+        ),
+        (
+            "arrival-notice-asset-without-its-unit",
+            vec![("/statement/asset", "required")],
+        ),
+        (
+            "arrival-notice-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "arrival-question-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-question-without-a-session",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-question-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "arrival-question-at-an-inner-node",
+            vec![("/statement/node", "type")],
+        ),
+        (
+            "arrival-answer-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-answer-arrived-with-no-notices",
+            vec![("/statement/outcome/notices", "minItems")],
+        ),
+        (
+            "arrival-answer-that-nothing-arrived-carrying-a-notice",
+            vec![("/statement/outcome", "additionalProperties")],
+        ),
+        (
+            "arrival-answer-refusal-saying-when-it-lifts",
+            vec![("/statement/outcome/refusal/class", "enum")],
+        ),
+        (
+            "arrival-answer-carrying-another-shape-as-its-notice",
+            vec![("/statement/outcome/notices/0/shape", "const")],
+        ),
+        (
+            "arrival-answer-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "inner-segments-segment-without-its-amount-in",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-amount-out",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-fee",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-asset-in",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-segment-without-its-transaction",
+            vec![("/statement/segments/0", "required")],
+        ),
+        (
+            "inner-segments-fee-with-a-fraction",
+            vec![("/statement/segments/0/fee", "pattern")],
+        ),
+        (
+            "inner-segments-without-segments",
+            vec![("/statement/segments", "minItems")],
+        ),
+        (
+            "inner-segments-without-its-label",
+            vec![("/statement", "required")],
+        ),
+        (
+            "inner-segments-labelled-as-proof",
+            vec![("/statement/standing", "const")],
+        ),
+        (
+            "inner-segments-without-its-publisher",
+            vec![("/statement", "required")],
+        ),
+        (
+            "inner-segments-under-another-shape",
+            vec![("/shape", "const")],
+        ),
+        (
+            "terms-with-a-zero-denominator",
+            vec![("/statement/fee/proportional/denominator", "pattern")],
+        ),
+        ("terms-under-another-shape", vec![("/shape", "const")]),
+        (
+            "hold-for-no-order-or-session",
+            vec![("/statement/for", "oneOf")],
+        ),
+        (
+            "hold-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "hold-of-a-record-without-its-digest",
+            vec![("/statement/record", "required")],
+        ),
+        (
+            "result-withdrawal-billing-its-fee-separately-as-text",
+            vec![("/statement/outcome/fee/billed_separately", "type")],
+        ),
+        (
+            "result-transfer-failed-showing-the-providers-own-fault",
+            vec![("/statement/outcome/fault", "enum")],
+        ),
         (
             "advertisement-key-without-a-purpose",
             vec![("/statement/keys/0", "required")],
@@ -545,7 +757,70 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
 fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let advertisement = |v: RuleViolation| format!("{:?}", vec![v]);
     let amounts = |v: AmountMismatch| format!("{:?}", vec![v]);
+    let terms = |v: TermsViolation| format!("{:?}", vec![v]);
+    let answer = |v: AnswerMismatch| format!("{:?}", vec![v]);
+    let inner = |v: InnerSegmentsViolation| format!("{:?}", vec![v]);
     vec![
+        (
+            "arrival-notices-of-one-credit-with-another-amount",
+            format!("{:?}", CreditRestated::OtherFigures),
+        ),
+        (
+            "published-inner-segments-against-another-providers-advertisement",
+            inner(InnerSegmentsViolation::NotItsMakersAdvertisement),
+        ),
+        (
+            "published-inner-segments-for-another-publisher",
+            inner(InnerSegmentsViolation::OfAnotherPublisher),
+        ),
+        (
+            "published-inner-segments-at-a-node-its-maker-does-not-declare",
+            inner(InnerSegmentsViolation::NodeNotDeclared),
+        ),
+        (
+            "arrival-question-signed-with-another-key",
+            "NotSignedByOperator".to_owned(),
+        ),
+        (
+            "arrival-answer-carrying-another-reserves-notice",
+            "NestedMaker".to_owned(),
+        ),
+        (
+            "answered-arrival-question-under-another-transaction",
+            answer(AnswerMismatch::AnswersAnotherQuestion),
+        ),
+        (
+            "answered-arrival-question-by-another-reserve",
+            answer(AnswerMismatch::OfAnotherReserve),
+        ),
+        (
+            "answered-arrival-question-at-another-node",
+            answer(AnswerMismatch::AtAnotherNode { notice: 0 }),
+        ),
+        (
+            "answered-arrival-question-in-another-asset",
+            answer(AnswerMismatch::InAnotherAsset { notice: 0 }),
+        ),
+        (
+            "answered-arrival-question-in-another-unit",
+            answer(AnswerMismatch::InAnotherAsset { notice: 0 }),
+        ),
+        (
+            "answered-arrival-question-about-another-account",
+            answer(AnswerMismatch::ToAnotherAccount { notice: 0 }),
+        ),
+        (
+            "terms-made-by-another-party",
+            terms(TermsViolation::OfAnotherMaker),
+        ),
+        (
+            "terms-of-an-exchange-without-a-slippage-regime",
+            terms(TermsViolation::NoSlippageWhereARate),
+        ),
+        (
+            "terms-of-a-reserve-with-a-slippage-regime",
+            terms(TermsViolation::SlippageWhereNoRate),
+        ),
         (
             "advertisement-ramp-within-one-node",
             advertisement(RuleViolation::RampWithinOneNode { tuple: 0 }),
@@ -728,6 +1003,58 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
             bundle.check().map(|_| ()).map_err(|v| format!("{v:?}"))
         }
+        "terms" => {
+            let statement: Statement<TupleTerms> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::check_terms(&statement).map_err(|v| format!("{v:?}"))
+        }
+        "arrival-notices" => {
+            let bundle: ArrivalNotices =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::check_one_credit(&bundle.earlier, &bundle.later)
+                .map(|_| ())
+                .map_err(|v| format!("{v:?}"))
+        }
+        "arrival-question" => {
+            let statement: Statement<ArrivalQuestion> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            statement
+                .check_signed_by_operator()
+                .map_err(|_| "NotSignedByOperator".to_owned())
+        }
+        "published-inner-segments" => {
+            let bundle: PublishedInnerSegments =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::validate_statement(&bundle.advertisement)
+                .map_err(|v| format!("advertisement: {v:?}"))?;
+            provider_role::check_inner_segments(&bundle.record, &bundle.advertisement)
+                .map_err(|v| format!("{v:?}"))
+        }
+        "arrival-answer" => {
+            let statement: Statement<ArrivalAnswer> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            statement
+                .check_context(&statement.deployment, &statement.protocol_version)
+                .map_err(|e| match e {
+                    ContextMismatch::Deployment { .. } => "Deployment".to_owned(),
+                    ContextMismatch::ProtocolVersion { .. } => "ProtocolVersion".to_owned(),
+                    ContextMismatch::NestedMaker { .. } => "NestedMaker".to_owned(),
+                })
+        }
+        "answered-arrival-question" => {
+            let bundle: AnsweredArrivalQuestion =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_signed_by_operator()
+                .map_err(|_| "NotSignedByOperator".to_owned())?;
+            bundle
+                .answer
+                .check_context(&bundle.answer.deployment, &bundle.answer.protocol_version)
+                .map_err(|e| format!("{e:?}"))?;
+            provider_role::check_answer(&bundle.question, &bundle.answer)
+                .map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -736,6 +1063,26 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
 /// reject it. Every other schema-rejected fixture must fail to deserialise.
 fn rust_accepts() -> Vec<(&'static str, &'static str)> {
     vec![
+        (
+            "arrival-notice-of-a-zero-amount",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "arrival-answer-arrived-with-no-notices",
+            "minItems: notices are a Vec",
+        ),
+        (
+            "inner-segments-fee-with-a-fraction",
+            "pattern: amounts are strings in Rust",
+        ),
+        (
+            "inner-segments-without-segments",
+            "minItems: segments are a Vec",
+        ),
+        (
+            "terms-with-a-zero-denominator",
+            "pattern: amounts are strings in Rust",
+        ),
         (
             "statement-envelope-signature-in-a-non-canonical-encoding",
             "pattern: the signature value is a string in Rust",
@@ -909,6 +1256,9 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
     let bundle: &[(&str, &str)] = match shape {
         "successive-advertisements" => &SUCCESSIVE_ADVERTISEMENTS_MEMBERS,
         "answered-operation" => &ANSWERED_OPERATION_MEMBERS,
+        "arrival-notices" => &ARRIVAL_NOTICES_MEMBERS,
+        "answered-arrival-question" => &ANSWERED_ARRIVAL_QUESTION_MEMBERS,
+        "published-inner-segments" => &PUBLISHED_INNER_SEGMENTS_MEMBERS,
         _ => return schema_errors(&validator(shape), instance),
     };
     let members = instance.as_object().cloned().unwrap_or_default();
@@ -960,6 +1310,39 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "statement-envelope" => round_trip::<Statement<Value>>(value),
         "operation" => checked_round_trip::<Operation>(value),
         "result" => checked_round_trip::<ResultBody>(value),
+        "terms" => checked_round_trip::<TupleTerms>(value),
+        "hold" => checked_round_trip::<Hold>(value),
+        "arrival-notice" => checked_round_trip::<ArrivalNotice>(value),
+        "arrival-question" => checked_round_trip::<ArrivalQuestion>(value),
+        "arrival-answer" => checked_round_trip::<ArrivalAnswer>(value),
+        "inner-segments" => checked_round_trip::<InnerSegments>(value),
+        "published-inner-segments" => {
+            let bundle: PublishedInnerSegments =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .advertisement
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.record.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
+        "answered-arrival-question" => {
+            let bundle: AnsweredArrivalQuestion =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .question
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.answer.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
+        "arrival-notices" => {
+            let bundle: ArrivalNotices =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle.earlier.check_shape().map_err(|e| format!("{e:?}"))?;
+            bundle.later.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
         "successive-advertisements" => {
             let bundle: SuccessiveAdvertisements =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1437,6 +1820,320 @@ fn every_valid_fixture_validates_and_every_invalid_one_is_rejected() {
             "missing invalid fixture {name}"
         );
         assert_rule_rejects(name, rule);
+    }
+}
+
+/// A provider's terms are its own, with a slippage regime exactly where its tuple sets a rate; a reserve's hold is
+/// redeemed only for the order it names, or an order accepted in the session it names (round 3 of `T-020-01`).
+// verifies: REQ-QTE-5, REQ-QTE-6, REQ-QTE-15
+#[test]
+fn terms_are_their_providers_own_and_a_hold_is_redeemed_only_for_its_order() {
+    let terms: Statement<TupleTerms> = serde_json::from_value(fixture(
+        "valid",
+        "terms-of-an-exchange-with-its-slippage-regime",
+    ))
+    .unwrap();
+    assert!(terms.statement.tuple.sets_a_rate());
+    assert_eq!(provider_role::check_terms(&terms), Ok(()));
+    let mut other = terms.clone();
+    other.maker = "us-bank".to_owned();
+    other.statement.slippage = None;
+    assert_eq!(
+        provider_role::check_terms(&other),
+        Err(vec![
+            TermsViolation::OfAnotherMaker,
+            TermsViolation::NoSlippageWhereARate
+        ])
+    );
+    let for_order: Statement<Hold> =
+        serde_json::from_value(fixture("valid", "hold-for-an-order")).unwrap();
+    assert_eq!(
+        provider_role::check_redemption(&for_order, "ord-1", None),
+        Ok(())
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_order, "ord-2", Some("sess-1")),
+        Err(RedemptionRefused::ForAnotherOrder)
+    );
+    let for_session: Statement<Hold> =
+        serde_json::from_value(fixture("valid", "hold-for-a-session")).unwrap();
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", Some("sess-1")),
+        Ok(())
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", Some("sess-2")),
+        Err(RedemptionRefused::ForAnotherSession)
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", None),
+        Err(RedemptionRefused::ForAnotherSession)
+    );
+}
+
+/// A reserve's notice of what arrived names the transaction it gives the credit, its per-credit reference: without
+/// it two notices of one credit, signed at different times, couldn't be known as one, nor the deposit keyed on it
+/// (`T-020-18`).
+// verifies: REQ-ORD-23
+#[test]
+fn arrival_notice_without_its_per_credit_reference_is_invalid() {
+    assert_schema_rejects("arrival-notice-without-its-transaction");
+    let notice: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    assert_eq!(notice.statement.transaction, "tx-credit-0001");
+}
+
+/// A reserve's notice names what arrived: its outer node, the asset with its unit, the amount and the account,
+/// with the account's holder, so Core reads the figures from the signed bytes (`T-020-18`).
+// verifies: REQ-ORD-14
+#[test]
+fn arrival_notice_without_its_outer_node_asset_amount_or_account_is_invalid() {
+    for name in [
+        "arrival-notice-without-its-outer-node",
+        "arrival-notice-without-its-asset",
+        "arrival-notice-without-its-amount",
+        "arrival-notice-without-its-account",
+        "arrival-notice-without-its-holder",
+        "arrival-notice-at-an-inner-node",
+        "arrival-notice-asset-without-its-unit",
+        "arrival-notice-of-a-zero-amount",
+    ] {
+        assert_schema_rejects(name);
+    }
+    let notice: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    assert_eq!(notice.check_shape(), Ok(()));
+    assert_eq!(notice.statement.node.network, "co-ach");
+    assert_eq!(
+        (
+            notice.statement.asset.id.as_str(),
+            notice.statement.asset.decimals
+        ),
+        ("COP", 2)
+    );
+    assert_eq!(notice.statement.amount, "150000");
+    assert_eq!(notice.statement.account, "acct-77");
+    assert_eq!(notice.statement.holder, "party-ana");
+}
+
+/// Two notices of one credit, signed at different times, are one credit; the same transaction at another reserve is
+/// another credit, and the same transaction with other figures is refused (`T-020-18`).
+// verifies: REQ-ORD-23
+#[test]
+fn two_notices_of_one_credit_signed_at_different_times_are_one_credit() {
+    let one: ArrivalNotices = serde_json::from_value(fixture(
+        "valid",
+        "arrival-notices-of-one-credit-signed-at-different-times",
+    ))
+    .unwrap();
+    assert_ne!(one.earlier.made_at, one.later.made_at);
+    assert_eq!(
+        provider_role::check_one_credit(&one.earlier, &one.later),
+        Ok(Credits::One)
+    );
+    let two: ArrivalNotices = serde_json::from_value(fixture(
+        "valid",
+        "arrival-notices-of-one-reference-at-two-reserves",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_one_credit(&two.earlier, &two.later),
+        Ok(Credits::Two)
+    );
+    let mut another = one.later.clone();
+    another.statement.transaction = "tx-credit-0002".to_owned();
+    another.statement.amount = "1".to_owned();
+    assert_eq!(
+        provider_role::check_one_credit(&one.earlier, &another),
+        Ok(Credits::Two)
+    );
+    for change in [
+        |n: &mut ArrivalNotice| n.node.network = "co-pse".to_owned(),
+        |n: &mut ArrivalNotice| n.asset.decimals = 0,
+        |n: &mut ArrivalNotice| n.account = "acct-78".to_owned(),
+        |n: &mut ArrivalNotice| n.holder = "party-bo".to_owned(),
+    ] {
+        let mut restated = one.later.clone();
+        change(&mut restated.statement);
+        assert_eq!(
+            provider_role::check_one_credit(&one.earlier, &restated),
+            Err(CreditRestated::OtherFigures)
+        );
+    }
+}
+
+/// The operator's question of what arrived names its own transaction, fresh for the order it is asked for, so the
+/// reserve's answer names it and counts only as that transaction's (`T-020-18`).
+// verifies: REQ-ORD-1
+#[test]
+fn question_of_what_arrived_without_the_orders_transaction_is_invalid() {
+    assert_schema_rejects("arrival-question-without-its-transaction");
+    assert_schema_rejects("arrival-answer-without-its-transaction");
+    let question: Statement<ArrivalQuestion> = serde_json::from_value(fixture(
+        "valid",
+        "arrival-question-of-what-arrived-at-an-account",
+    ))
+    .unwrap();
+    assert_eq!(question.check_shape(), Ok(()));
+    assert_eq!(question.check_signed_by_operator(), Ok(()));
+    assert_eq!(question.statement.transaction, "tx-arrival-1");
+}
+
+/// The reserve answers the question of what arrived under the question's transaction, carrying its notice of the
+/// credit whole, the same notice it sends of its own accord; an answer under another transaction, another
+/// reserve's, or carrying a notice of another node, asset or account doesn't answer it, and a notice another
+/// reserve made isn't the answering reserve's to carry (`T-020-18`).
+// verifies: REQ-ORD-1, REQ-ORD-23
+#[test]
+fn what_arrived_is_answered_by_the_notice_under_the_questions_transaction() {
+    let answered: AnsweredArrivalQuestion = serde_json::from_value(fixture(
+        "valid",
+        "answered-arrival-question-by-the-notice-of-its-credit",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &answered.answer),
+        Ok(())
+    );
+    let unsolicited: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    let ArrivalOutcome::Arrived(arrived) = &answered.answer.statement.outcome else {
+        panic!("the answer carries what arrived");
+    };
+    assert_eq!(arrived.notices, vec![unsolicited.clone()]);
+    assert_eq!(
+        provider_role::check_one_credit(&unsolicited, &arrived.notices[0]),
+        Ok(Credits::One)
+    );
+    let mut stray = answered.answer.clone();
+    stray.maker = "eu-bank".to_owned();
+    stray.statement.transaction = "tx-arrival-2".to_owned();
+    if let ArrivalOutcome::Arrived(arrived) = &mut stray.statement.outcome {
+        arrived.notices[0].statement.account = "acct-78".to_owned();
+    }
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &stray),
+        Err(vec![
+            AnswerMismatch::AnswersAnotherQuestion,
+            AnswerMismatch::OfAnotherReserve,
+            AnswerMismatch::ToAnotherAccount { notice: 0 },
+        ])
+    );
+    assert!(matches!(
+        stray.check_context(&stray.deployment, &stray.protocol_version),
+        Err(ContextMismatch::NestedMaker { .. })
+    ));
+    // The same asset counted in another unit is another asset: an amount is read in its unit.
+    let mut other_unit = answered.answer.clone();
+    if let ArrivalOutcome::Arrived(arrived) = &mut other_unit.statement.outcome {
+        arrived.notices[0].statement.asset.decimals = 0;
+    }
+    assert_eq!(
+        provider_role::check_answer(&answered.question, &other_unit),
+        Err(vec![AnswerMismatch::InAnotherAsset { notice: 0 }])
+    );
+    let nothing: AnsweredArrivalQuestion = serde_json::from_value(fixture(
+        "valid",
+        "answered-arrival-question-that-nothing-arrived",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_answer(&nothing.question, &nothing.answer),
+        Ok(())
+    );
+}
+
+/// A publisher's record of the segments inside its private node gives, for each, the asset and amount in and out
+/// and the fee, which the replay compares with the public movement out (`T-020-18`).
+// verifies: REQ-ORD-41
+#[test]
+fn inner_segment_record_without_its_amounts_in_and_out_or_its_fee_is_invalid() {
+    for name in [
+        "inner-segments-segment-without-its-amount-in",
+        "inner-segments-segment-without-its-amount-out",
+        "inner-segments-segment-without-its-fee",
+        "inner-segments-segment-without-its-asset-in",
+        "inner-segments-fee-with-a-fraction",
+    ] {
+        assert_schema_rejects(name);
+    }
+    let record: Statement<InnerSegments> = serde_json::from_value(fixture(
+        "valid",
+        "inner-segments-of-a-conversion-and-a-transfer",
+    ))
+    .unwrap();
+    let first = &record.statement.segments[0];
+    assert_eq!(
+        (
+            first.asset_in.as_str(),
+            first.amount_in.as_str(),
+            first.asset_out.as_str(),
+            first.amount_out.as_str(),
+            first.fee.as_str()
+        ),
+        ("COP", "150000", "USD", "3600", "1500")
+    );
+    // A record that doesn't add up is still the publisher's record: the contract refuses no figure, so the replay
+    // sees it and records the mismatch.
+    let off: Statement<InnerSegments> =
+        serde_json::from_value(fixture("valid", "inner-segments-that-do-not-add-up")).unwrap();
+    let published: PublishedInnerSegments = serde_json::from_value(fixture(
+        "valid",
+        "published-inner-segments-of-a-node-its-maker-declares",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_inner_segments(&off, &published.advertisement),
+        Ok(())
+    );
+}
+
+/// A publisher's record of inner segments carries its label, the publisher's word, and is made by a provider of
+/// that publisher's which declares the node, stating for it, since a publisher holds no key: inside a private node
+/// there is no other witness (`T-020-18`, `AC-35`).
+// verifies: REQ-ORD-3
+#[test]
+fn publishers_record_of_inner_segments_is_labelled_the_publishers_word() {
+    let record: Statement<InnerSegments> = serde_json::from_value(fixture(
+        "valid",
+        "inner-segments-of-a-conversion-and-a-transfer",
+    ))
+    .unwrap();
+    assert_eq!(record.statement.standing, Standing::PublishersWord);
+    assert_eq!(record.check_shape(), Ok(()));
+    let published: PublishedInnerSegments = serde_json::from_value(fixture(
+        "valid",
+        "published-inner-segments-of-a-node-its-maker-declares",
+    ))
+    .unwrap();
+    assert_eq!(published.record, record);
+    assert_ne!(record.maker, record.statement.publisher);
+    assert_eq!(
+        provider_role::check_inner_segments(&record, &published.advertisement),
+        Ok(())
+    );
+    assert_eq!(
+        serde_json::to_value(&record).unwrap()["statement"]["standing"],
+        "publishers_word"
+    );
+    assert_schema_rejects("inner-segments-without-its-label");
+    assert_schema_rejects("inner-segments-labelled-as-proof");
+    assert_schema_rejects("inner-segments-without-its-publisher");
+    for (name, rule) in [
+        (
+            "published-inner-segments-against-another-providers-advertisement",
+            InnerSegmentsViolation::NotItsMakersAdvertisement,
+        ),
+        (
+            "published-inner-segments-for-another-publisher",
+            InnerSegmentsViolation::OfAnotherPublisher,
+        ),
+        (
+            "published-inner-segments-at-a-node-its-maker-does-not-declare",
+            InnerSegmentsViolation::NodeNotDeclared,
+        ),
+    ] {
+        assert_rule_rejects(name, &format!("{:?}", vec![rule]));
     }
 }
 

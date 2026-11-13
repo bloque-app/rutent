@@ -35,7 +35,7 @@ use rutent_contracts::module_interface::{
 use rutent_contracts::provider_role::VERSION;
 use rutent_prov::catalogue::{Catalogue, Instant, tuples_of};
 use rutent_prov::egress::{NameResolver, ThreadedResolver, TlsConnector};
-use rutent_prov::module::platform::Platform;
+use rutent_prov::module::platform::{Platform, SteppedClock};
 use rutent_prov::module::types::{self, Admitted, Events, Handled, LookupOutcome};
 use rutent_prov::proxy::{
     Bucket, CredentialProxy, InvalidSettings, NamedCall, ProductionWorld, ProxySettings,
@@ -947,28 +947,23 @@ fn key_store_outage_refuses_the_operation_before_anything_of_it_runs() {
     );
 }
 
-/// A callee that runs past its deadline (its outbound call's name lookup hangs) leaves its caller's call
-/// unanswered, and the caller's module is told `unanswered`, never `refused`: the callee may have acted. The
-/// callee's deadline ends before its caller's, so the caller hears it and still answers its own operation.
-// verifies: REQ-ORD-1, REQ-MDL-21, REQ-MDL-11
-#[test]
-fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
-    let pki = tls::Pki::new();
-    let mut running = Running::new(&pki, tls::MappedDialer::default());
-    running.platform.set_deadline(Duration::from_secs(2));
-    running.platform.set_call_budget(Duration::from_secs(1));
-    running.names.hang(&api(RAMP));
-    running.install_probing(
-        &release(RESERVE, &[RAMP]),
-        Vec::new(),
-        &[Probe::Ask {
-            callee: RAMP.to_owned(),
-            kind: OperationKind::Withdrawal,
-        }],
-    );
-    running.install(&release(RAMP, &[]), vec![call(&api(RAMP))]);
+/// Whether `condition` came true within 30 s of real time: a stepper that is never given what it waits for steps
+/// the clock all the same, so the operation ends, and the test fails with its message and does not hang.
+fn came_true_within_30_s(mut condition: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while !condition() {
+        if started.elapsed() > Duration::from_secs(30) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    true
+}
+
+/// Names the call `RESERVE`'s operation `n` makes to `RAMP`, as a route does.
+fn name_ramp_call(running: &mut Running, n: usize) {
     running.platform.routes.name(
-        &id(&format!("tx-{RESERVE}-1")),
+        &id(&format!("tx-{RESERVE}-{n}")),
         NamedCall {
             route: RouteReference {
                 decision_record: id("decision-1"),
@@ -979,10 +974,56 @@ fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
             kinds: vec![OperationKind::Withdrawal],
         },
     );
+}
+
+/// A callee that runs past its deadline (its outbound call's name lookup hangs) leaves its caller's call
+/// unanswered, and the caller's module is told `unanswered`, never `refused`: the callee may have acted. The
+/// callee's deadline ends before its caller's, so the caller hears it and still answers its own operation.
+///
+/// The platform's clock is stepped by the test (`T-013-08`): the deadline is the callee's, a 2 s deadline less the
+/// reserve of half a 1 s budget, and it passes when the test steps the clock 1.5 s once the callee is stuck, after
+/// the operating system's time of the wait has been made as long as it likes. However slowly the caller came up,
+/// the callee is started and is stopped at its deadline.
+// verifies: REQ-ORD-1, REQ-MDL-21, REQ-MDL-11
+#[test]
+fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused_however_slowly_the_caller_started()
+ {
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    let clock = SteppedClock::new();
+    running
+        .platform
+        .set_operation_clock(Arc::new(clock.clone()));
+    running.platform.set_deadline(Duration::from_secs(2));
+    running.platform.set_call_budget(Duration::from_secs(1));
+    running.names.hang(&api(RAMP));
+    // The callee is stuck in its lookup; the operating system's time then passes as it will, and the callee's
+    // deadline is reached by the step alone. The lookup is let go after it, so that the platform sees the step.
+    let (names, host) = (running.names.clone(), api(RAMP));
+    let stepper = std::thread::spawn({
+        let clock = clock.clone();
+        move || {
+            let asked = came_true_within_30_s(|| names.asked(&host) != 0);
+            std::thread::sleep(Duration::from_millis(700));
+            clock.step(Duration::from_millis(1500));
+            names.release();
+            assert!(asked, "the callee's lookup wasn't asked within 30 s");
+        }
+    });
+    running.install_probing(
+        &release(RESERVE, &[RAMP]),
+        Vec::new(),
+        &[Probe::Ask {
+            callee: RAMP.to_owned(),
+            kind: OperationKind::Withdrawal,
+        }],
+    );
+    running.install(&release(RAMP, &[]), vec![call(&api(RAMP))]);
+    name_ramp_call(&mut running, 1);
     let overdue = running.platform.measurements.overdue;
 
     let (handled, events) = running.run(RESERVE, 1);
-    running.names.release();
+    stepper.join().expect("the stepper");
 
     assert_eq!(
         running.platform.measurements.overdue,
@@ -1015,6 +1056,62 @@ fn callee_past_its_deadline_is_unanswered_to_its_caller_never_refused() {
         matches!(direct, Handled::Answered(_)),
         "the callee wasn't started again: {direct:?}"
     );
+}
+
+/// A callee is started only while its caller's remaining time, read on the platform's clock, covers the callee's
+/// budget and the caller's reserve after it (`T-013-08`). On a clock that stands still, a deadline of exactly one and
+/// a half budgets covers them, whatever the processes took to start, and a nanosecond less does not.
+// verifies: REQ-MDL-21
+#[test]
+fn callee_is_started_only_while_its_callers_remaining_time_on_the_platforms_clock_covers_its_budget_and_reserve()
+ {
+    let pki = tls::Pki::new();
+    let mut running = Running::new(&pki, tls::MappedDialer::default());
+    running
+        .platform
+        .set_operation_clock(Arc::new(SteppedClock::new()));
+    running.platform.set_call_budget(Duration::from_secs(1));
+    running.install_probing(
+        &release(RESERVE, &[RAMP]),
+        Vec::new(),
+        &[Probe::Ask {
+            callee: RAMP.to_owned(),
+            kind: OperationKind::Withdrawal,
+        }],
+    );
+    running.install(&release(RAMP, &[]), vec![call(&api(RAMP))]);
+
+    // Just short: refused as too near, and the callee is handed nothing.
+    running
+        .platform
+        .set_deadline(Duration::from_millis(1500) - Duration::from_nanos(1));
+    name_ramp_call(&mut running, 1);
+    let (handled, events) = running.run(RESERVE, 1);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert!(
+        matches!(
+            events.calls.first().map(|c| &c.outcome),
+            Some(CrossModuleOutcome::Refused(r)) if r.reason == CallRefusalReason::DeadlineTooNear
+        ),
+        "{:?}",
+        events.calls
+    );
+    assert_eq!(running.platform.operations_received(RAMP), 0);
+
+    // Exactly enough: the callee is started and handed the operation.
+    running.platform.set_deadline(Duration::from_millis(1500));
+    name_ramp_call(&mut running, 2);
+    let (handled, events) = running.run(RESERVE, 2);
+    assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+    assert!(
+        !matches!(
+            events.calls.first().map(|c| &c.outcome),
+            Some(CrossModuleOutcome::Refused(_))
+        ),
+        "{:?}",
+        events.calls
+    );
+    assert_eq!(running.platform.operations_received(RAMP), 1);
 }
 
 /// Publishes the operator's `polygon` wallet, admits its release signed with the operator key and accepts it, and
@@ -1271,13 +1368,28 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     let dialer = tls::MappedDialer::default().with("185.12.64.41", &slow);
     let mut running = Running::new(&pki, dialer);
     running.platform.set_deadline(Duration::from_secs(2));
+    // The deadline is on the platform's clock, which stands still (`T-013-08`): how long the machine takes to
+    // start the guest never moves it. The peer is cut off at the 2 s it leaves, and the test asserts no bound on
+    // how long that took, which is the machine's.
+    let clock = SteppedClock::with_outward_waits_on_wall_time();
+    running
+        .platform
+        .set_operation_clock(Arc::new(clock.clone()));
     running.names.then(&api(RESERVE), &["185.12.64.41"]);
     running.install(&release(RESERVE, &[]), vec![call(&api(RESERVE))]);
     running.install(&release(RAMP, &[]), Vec::new());
 
-    let started = std::time::Instant::now();
-    let (handled, events) = running.run(RESERVE, 1);
-    let took = started.elapsed();
+    // The call reached the peer, which is dribbling: the clock is stepped to the 2 s deadline, and the peer is cut
+    // off at what its wait left (the operating system's 2 s from the call), after which the platform finds the
+    // deadline passed.
+    let (handled, events) = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let reached = came_true_within_30_s(|| !slow.requests().is_empty());
+            clock.step(Duration::from_secs(2));
+            assert!(reached, "the call didn't reach the peer within 30 s");
+        });
+        running.run(RESERVE, 1)
+    });
 
     assert_eq!(slow.requests().len(), 1, "the slow peer got the call");
     assert_eq!(
@@ -1299,7 +1411,6 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
         events.unknown[0].ended_by,
         types::PlatformRefusal::LimitReached
     );
-    assert!(took < Duration::from_secs(4), "held for {took:?}");
     assert_eq!(events.records.len(), 1, "{:?}", events.records);
     assert!(
         matches!(events.records[0].outcome, CallOutcome::Unknown(_)),
@@ -1308,10 +1419,8 @@ fn slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_run
     );
     assert_eq!(validate_record(&events.records[0]), Ok(()));
 
-    let started = std::time::Instant::now();
     let (handled, _) = running.run(RAMP, 1);
     assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
-    assert!(started.elapsed() < Duration::from_secs(4));
 }
 
 /// A name lookup that never answers is given up at the operation's deadline (`REQ-MDL-11`): the platform doesn't
@@ -1324,15 +1433,27 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     let pki = tls::Pki::new();
     let mut running = Running::new(&pki, tls::MappedDialer::default());
     running.platform.set_deadline(Duration::from_secs(2));
+    // On the platform's clock, which stands still (`T-013-08`); the lookup is given up at the 2 s it leaves. The
+    // resolver hangs for 20 s, so a platform that waited on it past the deadline would be seen in its outcome.
+    let clock = SteppedClock::with_outward_waits_on_wall_time();
+    running
+        .platform
+        .set_operation_clock(Arc::new(clock.clone()));
     running.names.hang(&api(RESERVE));
     running.install(&release(RESERVE, &[]), vec![call(&api(RESERVE))]);
     running.install(&release(RAMP, &[]), Vec::new());
 
-    let started = std::time::Instant::now();
+    // The lookup is asked and hangs: the clock is stepped to the 2 s deadline, the lookup is given up at what its
+    // wait left, and the platform finds the deadline passed.
+    let (names, host) = (running.names.clone(), api(RESERVE));
+    let stepper = std::thread::spawn(move || {
+        let asked = came_true_within_30_s(|| names.asked(&host) != 0);
+        clock.step(Duration::from_secs(2));
+        assert!(asked, "the lookup wasn't asked within 30 s");
+    });
     let (handled, events) = running.run(RESERVE, 1);
-    let took = started.elapsed();
+    stepper.join().expect("the stepper");
 
-    assert!(took < Duration::from_secs(4), "held for {took:?}");
     assert_eq!(
         handled,
         Handled::Refused(types::PlatformRefusal::LimitReached)
@@ -1352,9 +1473,7 @@ fn hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provide
     assert_eq!(validate_record(&events.records[0]), Ok(()));
     assert!(running.dialer.dialled().is_empty(), "nothing was dialled");
 
-    let started = std::time::Instant::now();
     let (handled, _) = running.run(RAMP, 1);
     assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
-    assert!(started.elapsed() < Duration::from_secs(4));
     running.names.release();
 }

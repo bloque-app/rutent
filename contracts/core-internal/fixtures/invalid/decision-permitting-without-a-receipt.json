@@ -1,0 +1,7 @@
+{
+  "request": "req-100",
+  "decision": "dec-100",
+  "outcome": {
+    "answer": "permit"
+  }
+}

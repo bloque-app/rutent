@@ -38,7 +38,7 @@ use super::{Id, Order, RecordId, RecordedInput, StateMachine, Violation};
 pub mod testing;
 
 /// The contract's version: the first `## ` heading of `contracts/state-machine/host/CHANGELOG.md`.
-pub const VERSION: &str = "2.1.0";
+pub const VERSION: &str = "3.0.0";
 
 /// The largest sequence number, 2^53 - 1, so it survives RFC 8785 canonical JSON, which writes numbers as IEEE
 /// doubles: a transition record's `seq`, a refusal record's `seq`, and the `seq` a refusal points to.

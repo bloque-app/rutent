@@ -1,0 +1,46 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "2.0.1",
+  "shape": "urn:rutent:provider-role:terms",
+  "maker": "bank-co",
+  "made_at": "2026-11-06T15:04:05Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "tuple": {
+      "provider": "bank-co",
+      "from": {
+        "node": {
+          "network": "co-ach"
+        },
+        "asset": {
+          "id": "COP",
+          "decimals": 2
+        }
+      },
+      "to": {
+        "node": "bank-ledger",
+        "asset": {
+          "id": "COP",
+          "decimals": 2
+        }
+      }
+    },
+    "fee": {
+      "flat": "100",
+      "proportional": {
+        "numerator": "0",
+        "denominator": "1"
+      }
+    },
+    "slippage": {
+      "regime": "firm"
+    }
+  }
+}

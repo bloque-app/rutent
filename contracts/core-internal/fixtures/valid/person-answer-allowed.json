@@ -1,0 +1,14 @@
+{
+  "request": "req-600",
+  "outcome": {
+    "answer": "allowed"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 56,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "4646464646464646464646464646464646464646464646464646464646464646"
+    }
+  }
+}

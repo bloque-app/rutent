@@ -6,6 +6,7 @@
 mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::Probe;
@@ -21,7 +22,7 @@ use rutent_contracts::module_interface::{
 };
 use rutent_prov::module::engine::{FUEL_PER_PART, MEMORY_PER_PART};
 use rutent_prov::module::limits::{Bounds, LimitHit, LimitKind, MAX_KEY, Metered, Scope};
-use rutent_prov::module::platform::OPERATION_DEADLINE;
+use rutent_prov::module::platform::{OPERATION_DEADLINE, SteppedClock};
 use rutent_prov::module::sandbox::read_frame_up_to;
 use serde_json::json;
 
@@ -46,6 +47,9 @@ fn a_guest_that_loops_is_stopped_when_its_fuel_runs_out() {
             &[Probe::Spin],
         );
         let pid = binding.process(&looping);
+        // The platform's clock stands still (`T-013-08`), so the operation's deadline can't be what stops the guest:
+        // only its fuel can, whatever the machine is doing. How long that took is the machine's, and is printed.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let started = Instant::now();
         let handled = binding.handle(&looping, &common::withdrawal(&looping, 1));
         let took = started.elapsed();
@@ -65,10 +69,6 @@ fn a_guest_that_loops_is_stopped_when_its_fuel_runs_out() {
         );
         let why = binding.measurements.last_trap.clone().unwrap_or_default();
         assert!(why.contains("fuel"), "it stopped for another reason: {why}");
-        assert!(
-            took < OPERATION_DEADLINE / 4,
-            "running out of fuel took {took:?}, too near the deadline"
-        );
         eprintln!(
             "B-03 [{language}]: {FUEL_PER_PART} units of fuel; stopped after {took:?}: {why}"
         );

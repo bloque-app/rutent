@@ -8,9 +8,28 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "audit-check"
+path = "src/bin/audit-check.rs"
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-router = { path = "../router" }
 rutent-stm = { path = "../stm" }
 rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
+# The log's records are read back from its store, and the envelopes it attributes are read as JSON (`T-022-01`).
+serde_json = "1.0.154"
+# The log's Merkle tree and its receipts' digests: SHA-256 (`T-022-01`, ADR-0005).
+sha2 = "0.10"
+# The evidence store's salts: 32 fresh bytes from the operating system for each statement kept (`T-022-03`).
+getrandom = "0.3.4"
+# A party's receipt is signed with the log's own key, apart from the operator's, zeroised when dropped (`T-022-03`,
+# ADR-0005).
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["zeroize"] }
+# A party's receipt is read and written as JSON (`T-022-03`).
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+# Real Ed25519 keys and signed advertisements for the log's attribution tests (`T-022-01`).
+rutent-conformance = { path = "../../conformance", features = ["signing"] }

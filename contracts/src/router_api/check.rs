@@ -2,18 +2,19 @@
 //! serialises to a valid instance. Every `check` recurses through what it holds, so a value built in Rust is
 //! checked whole by one call.
 
-use alloc::{borrow::ToOwned, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-use super::atoms::{seconds_down, seconds_up};
+use super::atoms::{compare_products, seconds_down, seconds_up};
 use super::types::{
     CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
-    Endpoint, Figure, FigureValue, Operation, OperationKind, Origin, Part, PolicyBounds, Pricing,
-    Round,
+    Endpoint, FeeFormula, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part,
+    PolicyBounds, Pricing, Ratio, Round, SettlementTimes, StatedTerms, THREE_DAYS_SECONDS,
+    TupleKey,
 };
-use super::{Amount, Id, Timestamp, Violation};
+use super::{Amount, Id, PositiveAmount, Timestamp, Violation};
 use crate::provider_role::{
-    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, ReserveDirection,
+    ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, Reporting, ReserveDirection,
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
 };
 
@@ -153,6 +154,36 @@ impl Operation {
     }
 }
 
+impl Operation {
+    /// What this operation states as its `amount_out` for an accepted answer of its tuple's provider (a dry run or
+    /// a fresh quote) stating `answer_out` and `answer_fee`: what arrives (`REQ-CAT-11`, `REQ-QTE-11`). Under a tuple
+    /// that reports `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the answer's
+    /// `amount_out` less its charge, the fee restated in this operation's out unit (provider-role's
+    /// [`less_the_charge`](crate::provider_role::less_the_charge)); under `net`, and for an exchange, whose fee is in
+    /// its from asset, the answer's `amount_out` as it stands. `tuple` is the tuple figure the operation cites;
+    /// `None` where it isn't one, or the charge is above the answer's `amount_out`.
+    pub fn stated_out(&self, tuple: &Figure, answer_out: &str, answer_fee: &Fee) -> Option<String> {
+        let terms = match &tuple.value {
+            FigureValue::ReserveTuple { tuple } => &tuple.terms,
+            FigureValue::RampTuple { tuple } => &tuple.terms,
+            FigureValue::ExchangeTuple { tuple } => &tuple.terms,
+            _ => return None,
+        };
+        match (terms.reporting, self.kind) {
+            (
+                Reporting::Gross,
+                OperationKind::Withdrawal | OperationKind::Route | OperationKind::Deposit,
+            ) => crate::provider_role::less_the_charge(
+                answer_out,
+                &answer_fee.amount,
+                self.from.asset.decimals,
+                self.to.asset.decimals,
+            ),
+            _ => Some(answer_out.to_owned()),
+        }
+    }
+}
+
 impl Part {
     /// Checks every operation, and that each starts where the one before it ended, in the same unit, with what
     /// it delivered.
@@ -267,8 +298,19 @@ impl Candidate {
 
 impl PolicyBounds {
     /// Checks that there is at most one ceiling per provider and asset, and per publisher and asset, an asset
-    /// being its id and decimals.
+    /// being its id and decimals; at most one slippage limit per tuple; and that the operator's fee takes at most
+    /// the whole of what arrives in proportion (`numerator ≤ denominator`).
     pub fn check(&self) -> Result<(), Violation> {
+        let limited: Vec<_> = self.slippage_limits.iter().map(|l| &l.tuple).collect();
+        if repeats(&limited) {
+            return Err(Violation("there is at most one slippage limit per tuple"));
+        }
+        let proportion = &self.operator_fee.proportional;
+        if &proportion.numerator > proportion.denominator.amount() {
+            return Err(Violation(
+                "the operator's fee takes at most the whole of what arrives in proportion",
+            ));
+        }
         let providers: Vec<_> = self
             .provider_ceilings
             .iter()
@@ -283,6 +325,51 @@ impl PolicyBounds {
             return Err(Violation(
                 "there is at most one ceiling per provider or publisher and asset",
             ));
+        }
+        Ok(())
+    }
+
+    /// Checks these bounds against the snapshot they route over (`REQ-QTE-9`): every exchange tuple of the
+    /// snapshot that settles within [`THREE_DAYS_SECONDS`], by its price or by any fresh quote about it, has a
+    /// slippage limit here, matched on its provider and its two ends. Reserves and ramps set no rate, so they need
+    /// none; a tuple that declares no time within three days is free of the bound and needs none either.
+    ///
+    /// [`DecisionRecord::check`] runs it, so a record never names bounds that leave such a tuple unlimited.
+    pub fn check_against(&self, snapshot: &CatalogueSnapshot) -> Result<(), Violation> {
+        let within = |figure: &Figure, tuple: &Id| match &figure.value {
+            FigureValue::Price {
+                tuple: of,
+                settlement_seconds,
+                ..
+            } => of == tuple && settlement_seconds.get() <= THREE_DAYS_SECONDS,
+            FigureValue::FreshQuote { tuple: of, quote } => {
+                of == tuple
+                    && matches!(&quote.statement, ResultBody::Conversion(r)
+                        if matches!(&r.outcome, ConversionOutcome::DryRunAccepted(q)
+                            if q.settlement_seconds.get() <= THREE_DAYS_SECONDS))
+            }
+            _ => false,
+        };
+        for tuple in &snapshot.figures {
+            if !matches!(tuple.value, FigureValue::ExchangeTuple { .. }) {
+                continue;
+            }
+            let (Some(provider), Some((from, to))) = (tuple.origin.provider(), tuple_ends(tuple))
+            else {
+                return Err(Violation(
+                    "every exchange tuple has a provider and two ends a slippage limit can name",
+                ));
+            };
+            let declares_within = snapshot.figures.iter().any(|f| within(f, &tuple.figure_id));
+            let limited = self
+                .slippage_limits
+                .iter()
+                .any(|l| &l.tuple.provider == provider && l.tuple.from == from && l.tuple.to == to);
+            if declares_within && !limited {
+                return Err(Violation(
+                    "every exchange tuple settling within three days has a slippage limit in the bounds",
+                ));
+            }
         }
         Ok(())
     }
@@ -307,6 +394,32 @@ impl PolicyBounds {
                 .any(|c| &c.publisher == party && &c.asset == asset),
         }
     }
+}
+
+/// Whether what arrives leaves the customer at least `floor` after the operator's fee (`REQ-ORD-27`, 4.0.0): the
+/// fee is `flat + ceil(arrives × numerator / denominator)`, capped by its `maximum` and never raised to it, and
+/// what is left never goes below nothing. Exactly, with no division: for a whole `k` and a positive `d`,
+/// `ceil(a × n / d) ≤ k` holds exactly when `a × n ≤ k × d`.
+fn leaves_at_least(arrives: &Amount, fee: &FeeFormula, floor: &Amount) -> bool {
+    if floor.is_zero() {
+        return true;
+    }
+    // The fee may take up to `room` and leave the floor.
+    let Some(room) = arrives.checked_sub(floor) else {
+        return false;
+    };
+    if fee.maximum.as_ref().is_some_and(|maximum| maximum <= &room) {
+        return true;
+    }
+    let Some(proportional_room) = room.checked_sub(&fee.flat) else {
+        return false;
+    };
+    compare_products(
+        arrives,
+        &fee.proportional.numerator,
+        &proportional_room,
+        fee.proportional.denominator.amount(),
+    ) != core::cmp::Ordering::Greater
 }
 
 fn repeats<T: PartialEq>(items: &[T]) -> bool {
@@ -336,8 +449,9 @@ impl CatalogueSnapshot {
     ///   relying provider's, the one given to it (ADR-0012; ruled by the orchestrator, 2026-11-06). The relying
     ///   provider is the provider of the tuple a judgement names, not the verifier that made it.
     /// - Answers agree: no two dry-run answers (fresh quotes included) for one tuple and amount, one accepted and
-    ///   one refused; no two judgements of one subject for one tuple, one yes and one no (ruled by the
-    ///   orchestrator, 2026-11-06).
+    ///   one refused; no two judgements of one subject and one class for one tuple, one yes and one no (ruled by
+    ///   the orchestrator, 2026-11-06; by class since `T-020-06`'s review, so a no for one class stands beside a
+    ///   yes for another and drops its candidate).
     /// - A statement figure's age runs from its `made_at` to `taken_at`, rounded up, and its validity from
     ///   `made_at` to its `valid_until`, rounded down (`REQ-QTE-4`).
     /// - A calls figure (3.0.0, `T-011-06`) states no validity, lists each callee once and each kind once per
@@ -462,8 +576,8 @@ impl CatalogueSnapshot {
         self.check_answers_agree()
     }
 
-    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject for one
-    /// tuple.
+    /// No two dry-run answers for one tuple and amount disagree, nor two judgements of one subject and one class
+    /// for one tuple.
     fn check_answers_agree(&self) -> Result<(), Violation> {
         let answers: Vec<(&Id, &str, bool)> = self
             .figures
@@ -494,25 +608,26 @@ impl CatalogueSnapshot {
         }) {
             return Err(Violation("dry-run answers for one tuple and amount agree"));
         }
-        let judgements: Vec<(&Id, &str, bool)> = self
+        let judgements: Vec<(&Id, &str, &str, bool)> = self
             .figures
             .iter()
             .filter_map(|f| match &f.value {
                 FigureValue::Eligibility { tuple, judgement } => Some((
                     tuple,
                     judgement.statement.subject.as_str(),
+                    judgement.statement.class.as_str(),
                     judgement.statement.answer == JudgementAnswer::Yes,
                 )),
                 _ => None,
             })
             .collect();
-        if judgements.iter().any(|(t, s, yes)| {
+        if judgements.iter().any(|(t, s, c, yes)| {
             judgements
                 .iter()
-                .any(|(t2, s2, yes2)| t == t2 && s == s2 && yes != yes2)
+                .any(|(t2, s2, c2, yes2)| t == t2 && s == s2 && c == c2 && yes != yes2)
         }) {
             return Err(Violation(
-                "eligibility judgements of one subject for one tuple agree",
+                "eligibility judgements of one subject and class for one tuple agree",
             ));
         }
         Ok(())
@@ -765,15 +880,16 @@ impl DecisionRecord {
     ///   `module_version`. Each call it names is declared there, and is to the provider of another operation of its
     ///   part (`REQ-MDL-21`).
     /// - A kept candidate (the chosen one, or one on the shortlist) cites no void statement, no figure past its
-    ///   validity, no refused dry run and no judgement of no; arrives at or above the floor and with something in
-    ///   every part; passes no ceiling, counting the value its operations produce as well as what they take in;
+    ///   validity, no refused dry run and no judgement of no; leaves the customer at least the floor after the
+    ///   operator's fee, and arrives with something in every part; passes no ceiling, counting the value its operations produce as well as what they take in;
     ///   uses no excluded provider or tuple; keeps within the part and hop limits; and has every operation within
     ///   its tuple's bands and its price's levels.
     /// - A drop reason that names a figure names one its candidate cites, and the figure supports the drop: a
     ///   stale figure is past its validity, a void statement is void, a voided quote names the condition, a
     ///   refused dry run was refused, and an ineligible judgement answered no. `below_floor`,
     ///   `no_positive_outcome`, `over_ceiling`, `excluded_by_policy` and `outside_band` are recomputed from the
-    ///   candidate's stated amounts and fees, the floor, the bounds and the exposures: they show the stated
+    ///   candidate's stated amounts and fees, the floor, the bounds (the operator's fee among them, since 4.0.0)
+    ///   and the exposures: they show the stated
     ///   amounts consistent with the drops, not with the prices cited, which the router suite recomputes
     ///   (`rutent-conformance`'s `router`, `T-004-02`). `no_positive_outcome` holds when any one part arrives with
     ///   nothing. `outranked` and `suspect_rate_cycle` rest on the ranking: here only that the outranking
@@ -790,6 +906,7 @@ impl DecisionRecord {
     pub fn check(&self) -> Result<(), Violation> {
         self.snapshot.check()?;
         self.bounds.check()?;
+        self.bounds.check_against(&self.snapshot)?;
         if let Round::Choice { refines } = &self.request.round
             && refines.taken_at.unix_nanos() > self.snapshot.taken_at.unix_nanos()
         {
@@ -1157,7 +1274,9 @@ impl DecisionRecord {
     }
 
     /// Whether an operation is confirmed for the choice round: it cites an accepted dry-run answer of its own
-    /// provider for its tuple, at its amount in, with its fee and its amount out, within its validity and not void.
+    /// provider for its tuple, at its amount in, with its fee and stating what arrives by it
+    /// ([`Operation::stated_out`]: under a gross tuple, a same-asset answer's amount out less its charge), within its
+    /// validity and not void.
     /// For a route or exchange that is the provider's fresh quote (`transfer_quote`, `conversion_quote`); for a
     /// withdrawal or deposit, the reserve's accepted dry run.
     fn is_confirmed(&self, operation: &Operation, tuple: &Id) -> bool {
@@ -1178,11 +1297,13 @@ impl DecisionRecord {
                     } if t == tuple => result,
                     _ => return false,
                 };
+                // The operation states what arrives: under a gross tuple, a same-asset answer less its charge.
                 let same_terms = matches!(
                     dry_run_view(&result.statement),
                     Some((_, DryRun::Accepted { amount_in, amount_out, fee, .. }))
                         if amount_in == operation.amount_in.amount().as_str()
-                            && amount_out == operation.amount_out.as_str()
+                            && self.figure(tuple).and_then(|t| operation.stated_out(t, amount_out, fee)).as_deref()
+                                == Some(operation.amount_out.as_str())
                             && fee == &operation.fee
                 );
                 same_terms
@@ -1277,7 +1398,7 @@ impl DecisionRecord {
         let below_floor = request
             .floor
             .as_ref()
-            .is_some_and(|floor| &arriving < floor);
+            .is_some_and(|floor| !leaves_at_least(&arriving, &self.bounds.operator_fee, floor));
         let over: Vec<(CeilingScope, &Id, &Denomination)> = self.ceilings_passed(&placed);
         let excluded = placed
             .iter()
@@ -1302,7 +1423,9 @@ impl DecisionRecord {
                 ));
             }
             if below_floor {
-                return Err(Violation("a kept candidate arrives at or above the floor"));
+                return Err(Violation(
+                    "a kept candidate leaves the customer at least the floor after the operator's fee",
+                ));
             }
             if a_part_arrives_with_nothing {
                 return Err(Violation(
@@ -1444,7 +1567,7 @@ impl DecisionRecord {
                 Ok(())
             }
             DropReason::BelowFloor {} if !below_floor => Err(Violation(
-                "a below-floor reason names a candidate that arrives below the floor",
+                "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
             )),
             DropReason::NoPositiveOutcome {} if !a_part_arrives_with_nothing => Err(Violation(
                 "a no-positive-outcome reason names a candidate with a part that arrives with nothing",
@@ -1821,11 +1944,195 @@ macro_rules! checked_serde {
     )*};
 }
 
+impl SettlementTimes {
+    /// Checks that the segment settled at or after it started (`REQ-QTE-3`).
+    pub fn check(&self) -> Result<(), Violation> {
+        if self.settled_at.unix_nanos() < self.started_at.unix_nanos() {
+            return Err(Violation("a segment settles at or after it starts"));
+        }
+        Ok(())
+    }
+}
+
+impl Figure {
+    /// When the figure stops being usable, in nanoseconds since the Unix epoch, counted from a snapshot taken at
+    /// `taken_at`: `taken_at + (valid_for_seconds − age_seconds)`. Age is rounded up and validity down, so this is
+    /// never later than the figure's own `valid_until`. `None` for a figure that states no validity, which holds
+    /// until replaced (an advertisement, a price); a figure already past its validity expires at `taken_at`.
+    pub fn expires_at(&self, taken_at: &Timestamp) -> Option<i128> {
+        let valid = self.valid_for_seconds?.get();
+        let left = valid.saturating_sub(self.age_seconds.get());
+        Some(taken_at.unix_nanos() + i128::from(left) * 1_000_000_000)
+    }
+}
+
+impl DecisionRecord {
+    /// The earliest expiry ([`Figure::expires_at`]) of the figures `candidate`'s operations cite, from this record's
+    /// snapshot; `None` where none of them states a validity.
+    pub fn earliest_expiry(&self, candidate: &Candidate) -> Option<i128> {
+        candidate
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .flat_map(|o| o.figures.iter())
+            .filter_map(|id| self.figure(id))
+            .filter_map(|f| f.expires_at(&self.snapshot.taken_at))
+            .min()
+    }
+}
+
+impl HeldQuote {
+    /// Checks the record whole, that it chose a candidate, that the hold's validity is at or after the record's
+    /// snapshot was taken, and that it is no later than the earliest expiry of the figures the chosen candidate cites
+    /// ([`DecisionRecord::earliest_expiry`]), so a hold never outlives what its quote rests on (`REQ-QTE-15`,
+    /// `REQ-QTE-4`).
+    pub fn check(&self) -> Result<(), Violation> {
+        self.record.check()?;
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if self.valid_until.unix_nanos() < self.record.snapshot.taken_at.unix_nanos() {
+            return Err(Violation(
+                "a held quote's validity is at or after its record's snapshot",
+            ));
+        }
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| self.valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StatedTerms {
+    /// The history entry of a provider's signed terms (provider-role's `TupleTerms`, `REQ-QTE-6`), received by Core at
+    /// `received_at`: its tuple, fee formula and slippage regime, stated at the later of the statement's `made_at`
+    /// and `received_at`, never `made_at` alone, so terms dated before a segment started but received after it never
+    /// bind it ([`StatedTerms::stated_at`]). Refused where the statement isn't of the terms shape, breaks
+    /// provider-role's `check_terms` (made by another than its tuple's provider, or a slippage regime where its tuple
+    /// sets no rate or none where it does), or a figure isn't one of this contract's atoms.
+    pub fn from_statement(
+        statement: &Statement<crate::provider_role::TupleTerms>,
+        received_at: &Timestamp,
+    ) -> Result<StatedTerms, Violation> {
+        statement
+            .check_shape()
+            .map_err(|_| Violation("stated terms are a terms statement"))?;
+        crate::provider_role::check_terms(statement).map_err(|_| {
+            Violation(
+                "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate",
+            )
+        })?;
+        let terms = &statement.statement;
+        let atom = || Violation("stated terms' figures are this contract's atoms");
+        let end = |e: &crate::provider_role::TupleEnd| Endpoint {
+            node: e.node.clone(),
+            asset: e.asset.clone(),
+        };
+        let made_at = Timestamp::new(statement.made_at.as_str()).ok_or_else(atom)?;
+        let stated_at = if made_at.unix_nanos() >= received_at.unix_nanos() {
+            made_at
+        } else {
+            received_at.clone()
+        };
+        Ok(StatedTerms {
+            tuple: TupleKey {
+                provider: Id::new(terms.tuple.provider.as_str()).ok_or_else(atom)?,
+                from: end(&terms.tuple.from),
+                to: end(&terms.tuple.to),
+            },
+            stated_at,
+            fee: FeeFormula {
+                flat: Amount::new(terms.fee.flat.as_str()).ok_or_else(atom)?,
+                proportional: Ratio {
+                    numerator: Amount::new(terms.fee.proportional.numerator.as_str())
+                        .ok_or_else(atom)?,
+                    denominator: PositiveAmount::new(terms.fee.proportional.denominator.as_str())
+                        .ok_or_else(atom)?,
+                },
+                maximum: match &terms.fee.maximum {
+                    Some(m) => Some(Amount::new(m.as_str()).ok_or_else(atom)?),
+                    None => None,
+                },
+            },
+            slippage: terms.slippage.clone(),
+        })
+    }
+}
+
+impl HeldQuote {
+    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote, whose record
+    /// Core's log names by `record_id` and `record_digest` (core-internal's `decision_record` entry: its
+    /// `decision_record` and its `record`): of the hold shape, naming that record by that id and digest, so a hold
+    /// of another record's candidate of the same id never passes, holding this record's chosen candidate, made by the
+    /// reserve that starts each of its parts, with a validity no later than the earliest expiry of the figures that
+    /// candidate cites ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. That
+    /// `record_digest` is this record's digest is Core's, which computes it; this contract computes no digest.
+    pub fn check_hold(
+        &self,
+        hold: &Statement<crate::provider_role::Hold>,
+        record_id: &Id,
+        record_digest: &crate::module_interface::Digest,
+    ) -> Result<(), Violation> {
+        hold.check_shape()
+            .map_err(|_| Violation("a hold is a hold statement"))?;
+        let named = &hold.statement.record;
+        if named.id != record_id.as_str()
+            || named.digest.value != record_digest.value.as_str()
+            || named.digest.algorithm != crate::provider_role::DigestAlgorithm::Sha256
+            || record_digest.algorithm != crate::module_interface::DigestAlgorithm::Sha256
+        {
+            return Err(Violation(
+                "a hold names its held quote's decision record, by the id and digest the log names it by",
+            ));
+        }
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if hold.statement.candidate != chosen.candidate_id.as_str() {
+            return Err(Violation("a hold holds its record's chosen candidate"));
+        }
+        if chosen
+            .parts
+            .iter()
+            .any(|part| part.operations.first().provider.as_str() != hold.maker)
+        {
+            return Err(Violation(
+                "a hold is made by the reserve that starts each part of its candidate",
+            ));
+        }
+        let valid_until = Timestamp::new(hold.statement.valid_until.as_str())
+            .ok_or(Violation("a hold's validity is a timestamp"))?;
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a hold's validity is no later than the earliest expiry of the figures its candidate cites",
+            ));
+        }
+        if self.valid_until.unix_nanos() > valid_until.unix_nanos() {
+            return Err(Violation(
+                "a held quote is held no longer than its hold's validity",
+            ));
+        }
+        Ok(())
+    }
+}
+
 checked_serde!(
     Operation,
     Part,
     Candidate,
     PolicyBounds,
     CatalogueSnapshot,
-    DecisionRecord
+    DecisionRecord,
+    SettlementTimes,
+    HeldQuote
 );

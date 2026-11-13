@@ -1,0 +1,7 @@
+{
+  "kind": "state_read",
+  "provider": "bridge-pay",
+  "part": "sandboxed",
+  "key": "nonce",
+  "found": true
+}

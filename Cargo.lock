@@ -1455,6 +1455,9 @@ dependencies = [
 [[package]]
 name = "rutent-boundary-check"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "rutent-conformance"
@@ -1485,33 +1488,47 @@ dependencies = [
 name = "rutent-core-audit"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "rutent-conformance",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "rutent-core-authz"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
 name = "rutent-core-orch"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
+ "jsonschema",
+ "proptest",
  "rutent-contracts",
  "rutent-evidence",
  "rutent-prov",
  "rutent-router",
  "rutent-stm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1556,6 +1573,23 @@ dependencies = [
  "rutent-conformance",
  "rutent-contracts",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rutent-scenarios"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "rutent-conformance",
+ "rutent-contracts",
+ "rutent-core-audit",
+ "rutent-core-authz",
+ "rutent-core-orch",
+ "rutent-evidence",
+ "rutent-prov",
+ "rutent-router",
+ "rutent-stm",
  "serde_json",
 ]
 

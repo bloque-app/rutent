@@ -1,0 +1,48 @@
+{
+  "action": {
+    "kind": "resolve_stuck",
+    "order": "ord-21",
+    "carries_out": {
+      "request": "req-200",
+      "decision": "dec-200"
+    },
+    "resolution": {
+      "kind": "deliver",
+      "by": "bank-co",
+      "to": {
+        "reserve": "bank-co",
+        "node": {
+          "network": "co-ach"
+        },
+        "account": "acct-ref-9"
+      },
+      "asset": {
+        "id": "COP",
+        "decimals": 2
+      },
+      "amount": "2500000"
+    },
+    "transaction": "tx-e21"
+  },
+  "decision": {
+    "request": "req-201",
+    "decision": "dec-201",
+    "answer": "permit",
+    "receipt": {
+      "log": "log-main",
+      "index": 47,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "2020202020202020202020202020202020202020202020202020202020202020"
+      }
+    }
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 48,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "2121212121212121212121212121212121212121212121212121212121212121"
+    }
+  }
+}

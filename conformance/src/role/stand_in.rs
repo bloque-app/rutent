@@ -65,6 +65,35 @@ const VALID_UNTIL: &str = "2026-11-13T15:04:05Z";
 /// The publisher behind every stand-in.
 const PUBLISHER: &str = "stand-in-publisher";
 
+/// Who a stand-in is: the provider identifier it advertises and signs as, its publisher, and the seed its
+/// placeholder keys come from (`T-024-01`). The suites' own stand-ins keep the identities `new` gives them; a
+/// simulated provider is a stand-in under an identity of its own, so two of them can be told apart: two reserves
+/// on two private nodes have two publishers (`DEC-24`).
+///
+/// Placeholder keys repeat every 64 seeds, and a stand-in's advertising key is its seed plus 30, so the seeds a
+/// deployment's stand-ins use must avoid the ones `new` uses (0 to 4, 12 and 30 to 34) and each other's, and a
+/// seed plus 30, modulo 64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// The provider identifier.
+    pub provider: String,
+    /// The publisher behind it.
+    pub publisher: String,
+    /// The seed of its placeholder keys.
+    pub seed: u8,
+}
+
+impl Identity {
+    /// An identity.
+    pub fn new(provider: &str, publisher: &str, seed: u8) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            publisher: publisher.to_owned(),
+            seed,
+        }
+    }
+}
+
 /// A role rule a stand-in breaks, set by one of its builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Fault {
@@ -252,6 +281,26 @@ fn terms(min: &str, max: &str, reporting: Reporting, inputs: &[&str]) -> Terms {
     }
 }
 
+/// How a simulated reserve departs from the stand-in's defaults, which `rutent_conformance::sim` picks by the
+/// provider's name (`T-024-03`): what it charges and when it settles, the evidence it declares, and whose books and
+/// nodes it sits beside. The defaults are the stand-in's own, so a stand-in under no shape is the one the role suite
+/// runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shape {
+    /// The seconds it declares to settle, where it isn't the role's own.
+    pub settles_in: Option<u64>,
+    /// What it takes from each movement, quoted and charged, in the asset moved: reported net, so the amount it gives
+    /// out is the amount it took in less this.
+    pub fee: u128,
+    /// What it charges on execution above what it quoted: a charge known only after the movement (`REQ-QTE-5`).
+    pub extra_charge: u128,
+    /// The evidence it declares and gives, where it isn't the role's own.
+    pub grade: Option<EvidenceGrade>,
+    /// The provider whose publisher, bank network and private node it shares, so two providers serve the same
+    /// tuples. Its own are used where it names none.
+    pub beside: Option<String>,
+}
+
 /// A real value-moving operation's transaction: the one a repeat would name.
 fn real_transaction(operation: &Operation) -> Option<&str> {
     match operation {
@@ -311,11 +360,36 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
     }
 }
 
+/// How a refusal says it is final, or when it lifts (`REQ-CAT-18`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalClass {
+    /// Final: asking again changes nothing.
+    Final,
+    /// It lifts at a known time.
+    LiftsAtKnownTime,
+    /// It waits on the person, who can supply what it lacks.
+    WaitsOnPerson,
+}
+
+/// The refusal an operation is answered with, of its kind and of `class`: what a provider that refuses an
+/// operation says (`T-024-01`). A balance verification's refusal is always final, since it can't say when it lifts.
+pub fn refusal_to(operation: &Operation, class: RefusalClass) -> ResultBody {
+    refuse_outside_role(
+        operation,
+        match class {
+            RefusalClass::Final => final_refusal(),
+            RefusalClass::LiftsAtKnownTime => lifting_refusal(),
+            RefusalClass::WaitsOnPerson => waiting_on_the_person(),
+        },
+    )
+}
+
 // Reserve ------------------------------------------------------------------------------------------------
 
 /// A reserve over a book, between a bank network and its ledger, in COP.
 #[derive(Debug, Clone)]
 pub struct Reserve {
+    name: String,
     signer: Signer,
     advertisement: Statement<Advertisement>,
     session: String,
@@ -326,6 +400,7 @@ pub struct Reserve {
     results: BTreeMap<String, Statement<ResultBody>>,
     pending: BTreeMap<String, ReserveMovementOutcome>,
     unknown_next: bool,
+    shape: Shape,
     faults: BTreeSet<Fault>,
 }
 
@@ -347,10 +422,33 @@ impl Reserve {
     /// A reserve that keeps its role. `context.account` holds funds, and `context.session` is its holder's
     /// session.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 1);
+        Self::named(
+            context,
+            &Identity::new(Self::PROVIDER, PUBLISHER, 1),
+            "stand-in-bank",
+            "stand-in-ledger",
+        )
+    }
+
+    /// A reserve that keeps its role under `identity`, between the bank network `bank` and its own private node
+    /// `ledger`, which its publisher declares (`DEC-24`).
+    pub fn named(context: &SuiteContext, identity: &Identity, bank: &str, ledger: &str) -> Self {
+        Self::declaring(context, identity, bank, ledger, false)
+    }
+
+    /// A reserve that keeps its role under `identity`, as [`Reserve::named`] does, declaring that it starts routes on
+    /// automatic deposits where `automatic_deposits` says so (`REQ-ORD-13`).
+    pub fn declaring(
+        context: &SuiteContext,
+        identity: &Identity,
+        bank: &str,
+        ledger: &str,
+        automatic_deposits: bool,
+    ) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -358,9 +456,9 @@ impl Reserve {
                     tuples: vec![
                         ReserveTuple {
                             origin: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
-                            destination: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            destination: NodeRef::Inner(ledger.to_owned()),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
                                 origin: 2,
@@ -374,9 +472,9 @@ impl Reserve {
                             ),
                         },
                         ReserveTuple {
-                            origin: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            origin: NodeRef::Inner(ledger.to_owned()),
                             destination: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
@@ -393,8 +491,8 @@ impl Reserve {
                     ],
                     declaration: ReserveDeclaration {
                         can_require_user_initiated_withdrawal: true,
-                        starts_routes_on_automatic_deposits: false,
-                        maker: Self::PROVIDER.to_owned(),
+                        starts_routes_on_automatic_deposits: automatic_deposits,
+                        maker: identity.provider.clone(),
                         declared_in_version: "0.1.0".to_owned(),
                     },
                 }),
@@ -410,11 +508,12 @@ impl Reserve {
                 }),
                 safe_retry: Some(true),
             },
-            private_nodes: vec!["stand-in-ledger".to_owned()],
+            private_nodes: vec![ledger.to_owned()],
         };
         let mut balances = BTreeMap::new();
         balances.insert(context.account.clone(), 50_000_000);
         Self {
+            name: identity.provider.clone(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             signer,
             session: context.session.clone(),
@@ -425,8 +524,24 @@ impl Reserve {
             results: BTreeMap::new(),
             pending: BTreeMap::new(),
             unknown_next: false,
+            shape: Shape::default(),
             faults: BTreeSet::new(),
         }
+    }
+
+    /// This reserve under `shape`: what it takes from a movement, what it charges beyond the quote, when it declares
+    /// it settles and the evidence it declares. Its advertisement is signed again.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.shape = shape.clone();
+        self
     }
 
     /// Breaks `REQ-CAT-9`: the reserve executes transfers, moving value outside its role.
@@ -522,20 +637,26 @@ impl Reserve {
         if lacks_inputs(&terms.required_inputs, inputs) {
             return ReserveMovementOutcome::Refused(waiting_on_the_person());
         }
-        let fee = Fee {
+        // Reported net: what it gives out is what it took in less its charge, which a dry run quotes at `fee` and a
+        // movement charges at `fee` and the charge beyond it (`REQ-QTE-5`).
+        let charged = |fee: u128| Fee {
             asset: asset.to_owned(),
-            amount: "0".to_owned(),
+            amount: fee.to_string(),
+            billed_separately: None,
         };
+        let out_of = |fee: u128| value.saturating_sub(fee).to_string();
         if dry_run {
             return ReserveMovementOutcome::DryRunAccepted(ReserveDryRunAnswer {
                 amount_in: stated.to_owned(),
-                amount_out: stated.to_owned(),
-                fee,
+                amount_out: out_of(self.shape.fee),
+                fee: charged(self.shape.fee),
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::AmountChanges],
-                settlement_seconds: seconds(86_400),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(86_400)),
             });
         }
+        let taken = self.shape.fee + self.shape.extra_charge;
+        let fee = charged(taken);
         // A withdrawal takes the value out of the holder's account; a deposit puts it in.
         let balance = self.balances.entry(self.account.clone()).or_insert(0);
         match origin {
@@ -548,9 +669,13 @@ impl Reserve {
         self.movements.push(transaction.to_owned());
         let settled = ReserveMovementOutcome::Succeeded(MovementSettlement {
             amount_in: stated.to_owned(),
-            amount_out: stated.to_owned(),
+            amount_out: out_of(taken),
             fee,
-            evidence: evidence(EvidenceGrade::SignedByProvider, Self::PROVIDER, transaction),
+            evidence: evidence(
+                self.shape.grade.unwrap_or(EvidenceGrade::SignedByProvider),
+                &self.name,
+                transaction,
+            ),
         });
         if std::mem::take(&mut self.unknown_next) {
             // The movement happened, but the reserve can't tell yet; its status query tells later.
@@ -666,10 +791,11 @@ impl Typed for Reserve {
                         fee: Fee {
                             asset: t.asset.clone(),
                             amount: "0".to_owned(),
+                            billed_separately: None,
                         },
                         evidence: evidence(
                             EvidenceGrade::SignedByProvider,
-                            Self::PROVIDER,
+                            &self.name,
                             &t.transaction,
                         ),
                     }),
@@ -756,10 +882,15 @@ impl Exchange {
 
     /// An exchange that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 2);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 2))
+    }
+
+    /// An exchange that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -791,7 +922,7 @@ impl Exchange {
         };
         Self {
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
-            rogue: Signer::new(context, Self::PROVIDER, 12),
+            rogue: Signer::new(context, &identity.provider, identity.seed.wrapping_add(10)),
             signer,
             conversions: Vec::new(),
             served: BTreeMap::new(),
@@ -913,6 +1044,7 @@ impl Exchange {
                 c.from.clone()
             },
             amount: "0".to_owned(),
+            billed_separately: None,
         };
         let Some(value) =
             amount(&c.amount).filter(|v| self.advertises(&c.node, &c.from, &c.to, *v))
@@ -966,6 +1098,7 @@ impl Exchange {
         if failing {
             return ConversionOutcome::Failed(Failure {
                 evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+                fault: None,
             });
         }
         if std::mem::take(&mut self.unknown_next) {
@@ -1091,10 +1224,15 @@ impl Ramp {
 
     /// A ramp that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 3);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 3))
+    }
+
+    /// A ramp that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -1308,6 +1446,7 @@ impl Ramp {
         let fee = Fee {
             asset: t.asset.clone(),
             amount: if on_top { "1" } else { "0" }.to_owned(),
+            billed_separately: None,
         };
         if t.dry_run {
             return TransferOutcome::DryRunAccepted(TransferQuote {
@@ -1333,6 +1472,7 @@ impl Ramp {
             );
             return TransferOutcome::Failed(Failure {
                 evidence: evidence(self.grade(), &t.destination, &t.transaction),
+                fault: None,
             });
         }
         if self.converts_internally {
@@ -1490,10 +1630,15 @@ impl Verifier {
 
     /// A verifier that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 4);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 4))
+    }
+
+    /// A verifier that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {

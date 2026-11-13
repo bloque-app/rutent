@@ -1,0 +1,48 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator-desk-b",
+    "acts": "op-login-5",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "report_outcome",
+    "request": {
+      "request": "req-report-es",
+      "order": "ord-1",
+      "effect": {
+        "log": "log-main",
+        "index": 170,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4747474747474747474747474747474747474747474747474747474747474747"
+        }
+      },
+      "outcome": "failed",
+      "reporter": {
+        "party": "operator-desk-b",
+        "acts": "op-login-5",
+        "role": "operator",
+        "kind": "person"
+      },
+      "evidence": {
+        "log": "log-main",
+        "index": 175,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
+        }
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-req-report-es"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "request": "req-g1",
+  "permission": "perm-reg-1",
+  "grantee": {
+    "party": "fin-regulator",
+    "acts": "examiner-3",
+    "role": "regulator",
+    "kind": "person"
+  },
+  "scope": {
+    "kind": "trail"
+  },
+  "by": {
+    "party": "bridge-pay",
+    "acts": "bridge-pay",
+    "role": "provider",
+    "kind": "component"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

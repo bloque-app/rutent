@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:charge",
+  "title": "Charge",
+  "description": "A charge of work to the accountable party the caller acts for, where limits bind, the requests an order fans out to providers included (REQ-OPS-1, REQ-AUZ-8). That the party is the caller's own is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "party",
+    "caller",
+    "work",
+    "count",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "party": {
+      "description": "The accountable party charged: the caller's own.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "caller": {
+      "description": "The caller whose work it is.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "work": {
+      "description": "What kind of work: the caller's own requests, requests fanned out to providers, or questions about people.",
+      "enum": [
+        "request",
+        "fan_out",
+        "person_question"
+      ]
+    },
+    "count": {
+      "description": "How much of it.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/count"
+    },
+    "order": {
+      "description": "The order it is for, where it is for one.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

@@ -1,5 +1,13 @@
 # host changelog
 
+## 3.0.0
+- Breaking, following state-machine 3.0.0: the host's schemas reference the state machine's order and recorded
+  input, so their shapes changed with it. A transition record or snapshot may now hold a `waiting_at_floor`
+  input, and every waiting part in it carries `waiting_since`; a snapshot built for 2.1.0 holding a waiting order
+  without it is refused now, so this is a major bump. No host fixture held a waiting order, so none gains
+  `waiting_since`; the fixtures' headers now name host 3.0.0 and state machine 3.0.0, the versions they are valid
+  for, where they named 2.0.0 and 1.0.0. No Rust type of the host changes. (DEC-4, DEC-20, T-020-01)
+
 ## 2.1.0
 - The Rust code behind this contract (`contracts/src/state_machine/host`) is `no_std` with `alloc`:
   it uses `core` and `alloc` paths, and the crate's

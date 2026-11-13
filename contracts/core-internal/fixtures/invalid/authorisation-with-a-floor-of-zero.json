@@ -1,0 +1,24 @@
+{
+  "authorisation": "auth-17",
+  "order": "ord-17",
+  "origin_reserve": "us-bank",
+  "destination": {
+    "reserve": "bank-co",
+    "node": {
+      "network": "co-ach"
+    },
+    "account": "acct-ref-9"
+  },
+  "to_asset": {
+    "id": "COP",
+    "decimals": 2
+  },
+  "floor": "0",
+  "given_by": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

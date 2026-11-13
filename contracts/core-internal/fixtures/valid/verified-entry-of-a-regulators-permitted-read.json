@@ -1,0 +1,33 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "fin-regulator",
+    "acts": "examiner-3",
+    "role": "regulator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "check_read",
+    "check": {
+      "request": "req-400",
+      "reader": {
+        "party": "fin-regulator",
+        "acts": "examiner-3",
+        "role": "regulator",
+        "kind": "person"
+      },
+      "reads": {
+        "kind": "trail"
+      },
+      "permission": "perm-reg-1",
+      "at": "2026-11-10T09:00:00Z"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

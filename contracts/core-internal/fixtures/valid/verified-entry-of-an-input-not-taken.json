@@ -1,0 +1,41 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "input_not_taken",
+    "input": {
+      "record_id": "rec-not-taken-p3",
+      "recorded_at": "2026-11-06T10:00:00Z",
+      "time_source": "core-orch clock",
+      "source": {
+        "kind": "router",
+        "id": "router"
+      },
+      "standing": "stated",
+      "subject": {
+        "order": "ord-1",
+        "part": "p3"
+      },
+      "observed": {
+        "kind": "no_route",
+        "decision_record": "dr-0001"
+      }
+    },
+    "reason": {
+      "kind": "not_applicable",
+      "reason": "ended"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

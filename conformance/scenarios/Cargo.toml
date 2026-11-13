@@ -1,0 +1,29 @@
+[package]
+name = "rutent-scenarios"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The assembly that puts Core's three parts together and runs M3's scenarios against simulated providers. It may
+# import every crate of ours, and nothing in the workspace imports it (DEC-2, T-020-01). T-024-02 built the assembly
+# and the harness; `rutent-scenarios-vos`, in the VOS client's workspace, runs its checks on three VOS replicas.
+[dependencies]
+rutent-contracts = { path = "../../contracts" }
+rutent-core-audit = { path = "../../components/core-audit" }
+rutent-core-authz = { path = "../../components/core-authz" }
+rutent-prov = { path = "../../components/prov" }
+rutent-evidence = { path = "../../components/evidence" }
+rutent-stm = { path = "../../components/stm" }
+# The simulated providers (`T-024-01`) are admitted through the platform, signed for real, and checked by the
+# role suite, so the conformance crate's signing feature is on.
+rutent-conformance = { path = "..", features = ["signing"] }
+serde_json = "1.0.154"
+# Core's orchestration and the router, which the assembly puts together with the policy engine and the log
+# (`T-024-02`), and the operator's key, which signs Core's statements.
+rutent-core-orch = { path = "../../components/core-orch" }
+rutent-router = { path = "../../components/router" }
+ed25519-dalek = "2.2.0"

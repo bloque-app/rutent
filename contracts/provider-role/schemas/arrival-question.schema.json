@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:arrival-question",
+  "title": "Arrival question",
+  "description": "The operator's question to a reserve of what arrived at one of its accounts for an order, signed with the deployment's operator key (REQ-ORD-23). It names its own transaction, fresh for the order it is asked for, so the answer names it and counts only as that transaction's (REQ-ORD-1); the reserve asked; the holder's session, since what arrived at an account tells whether its funds suffice for that much (REQ-CAT-3, REQ-CAT-4); the account, the outer node and the asset. It names no order: Core's log binds the question to the order it is asked for, as it binds every operation. The reserve answers with its arrival answer (urn:rutent:provider-role:arrival-answer), naming this transaction and carrying its arrival notice of each credit whole.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:arrival-question"
+    },
+    "statement": {
+      "$ref": "#/$defs/question"
+    }
+  },
+  "$defs": {
+    "question": {
+      "description": "The question.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction",
+        "provider",
+        "session",
+        "account",
+        "node",
+        "asset"
+      ],
+      "properties": {
+        "transaction": {
+          "description": "The question's own transaction, fresh for the order it is asked for: every answer names it (REQ-ORD-1).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The reserve asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "session": {
+          "description": "The session of the account's holder or their delegate (REQ-CAT-3): what arrived tells whether the account's funds suffice for that much, so it counts as a balance check (REQ-CAT-4), outside the bound only for the holder's own order.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "account": {
+          "description": "The account at the reserve.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The reserve's outer node, by its network.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "asset": {
+          "description": "The asset, and the unit it is counted in at the outer node: an answer's notice is of this asset in this unit (REQ-CAT-11).",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    }
+  }
+}

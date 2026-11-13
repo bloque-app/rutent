@@ -1,0 +1,15 @@
+{
+  "request": "req-401",
+  "reader": {
+    "party": "bridge-pay",
+    "acts": "bridge-pay",
+    "role": "provider",
+    "kind": "component"
+  },
+  "reads": {
+    "kind": "segment",
+    "order": "ord-17",
+    "segment": "seg-2"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

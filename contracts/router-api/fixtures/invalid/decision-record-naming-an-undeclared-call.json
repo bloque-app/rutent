@@ -22,10 +22,18 @@
       "excluded_tuples": [],
       "max_hops": 2,
       "max_parts": 1,
+      "operator_fee": {
+        "flat": "0",
+        "proportional": {
+          "denominator": "1",
+          "numerator": "0"
+        }
+      },
       "policy_version": "policy-1",
       "protocol_version": "2.0.1",
       "provider_ceilings": [],
-      "publisher_ceilings": []
+      "publisher_ceilings": [],
+      "slippage_limits": []
     },
     "candidates": [
       {
@@ -108,6 +116,7 @@
       }
     ],
     "chosen": "c001",
+    "ranking": "before_operator_fee",
     "request": {
       "amount": "100000000",
       "from": {
@@ -136,7 +145,7 @@
         "node": "hub-c"
       }
     },
-    "router_version": "rutent-router-0.3.0",
+    "router_version": "rutent-router-0.6.0",
     "snapshot": {
       "figures": [
         {

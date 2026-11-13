@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:arrival-notice",
+  "title": "Arrival notice",
+  "description": "A reserve's own signed notice that value arrived at one of its accounts (REQ-ORD-14, REQ-ORD-23): the transaction the reserve gives the credit, its per-credit reference, the outer node it arrived at, the asset with the unit it is counted in, the amount, and the account and the party that holds it. Every notice of one credit names that one transaction, whenever signed, so a reader knows two notices of one credit as one; Core's log keys the deposit on it (core-internal's arrival-names-its-notice and one-order-per-deposit), and the notice's stated entry is about it. A notice answering the operator's question of what arrived travels inside the reserve's answer (urn:rutent:provider-role:arrival-answer), unchanged.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:arrival-notice"
+    },
+    "statement": {
+      "$ref": "#/$defs/notice"
+    }
+  },
+  "$defs": {
+    "notice": {
+      "description": "The notice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction",
+        "node",
+        "asset",
+        "amount",
+        "account",
+        "holder"
+      ],
+      "properties": {
+        "transaction": {
+          "description": "The transaction the reserve gives this one credit: its per-credit reference, the same in every notice of the credit, whenever signed (REQ-ORD-23). The deposit is known by it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The reserve's outer node the value arrived at, by its network: the node belongs to the notice's maker.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "asset": {
+          "description": "The asset, and the unit the amount is counted in (REQ-CAT-11).",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "amount": {
+          "description": "How much arrived, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "account": {
+          "description": "The account at the reserve the value reached.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "holder": {
+          "description": "The party that holds the account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    }
+  }
+}

@@ -342,6 +342,24 @@ pub struct ConversionSettlement {
 pub struct Failure {
     /// The evidence for the failure: at least one piece.
     pub evidence: Vec<EvidencePiece>,
+    /// Whose fault the provider shows the failure was, where it shows one: the customer's or the operator's. Until
+    /// the party it names accepts it, the provider carries the reversal (`REQ-ORD-11`). Absent where it shows none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fault: Option<Fault>,
+}
+
+/// Whose fault a provider shows a failure was (`REQ-ORD-11`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// The customer's.
+    Customer,
+    /// The operator's.
+    Operator,
 }
 
 /// Outcome unknown. It carries nothing, and is left only on a later result with stated evidence.
@@ -600,6 +618,14 @@ pub struct Fee {
     pub asset: String,
     /// The amount, in the origin unit (a conversion's `from` unit).
     pub amount: String,
+    /// Whether the provider bills it separately, outside the amounts it reports (`REQ-AUD-11`, since 3.1.0). Absent
+    /// where it doesn't say: a fee record then says nothing either way.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub billed_separately: Option<bool>,
 }
 
 /// One piece of evidence for an outcome, graded, naming whose it is (`REQ-ORD-33`, `REQ-ORD-39`).

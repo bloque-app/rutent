@@ -1,5 +1,116 @@
 # provider-role changelog
 
+## 3.1.0
+- Docs (`T-020-18`'s review, item 4): two arrival notices under different transactions are two signed claims, each
+  attributable to its reserve, which neither this contract nor the log can tell from two real credits; a reserve
+  stating one credit twice under two references bears the loss (`arrival.rs`, the README's "Arrivals"). No shape or
+  rule changed. (DEC-4, DEC-20, REQ-AUD-2, REQ-ORD-23, T-020-18)
+- An arrival question names its asset with its unit, and an answer is held to both (`T-020-18`'s review, item 3).
+  `check_answer` compared a notice's asset by its id alone, so a notice of the asset counted in another unit, whose
+  amount means another quantity, answered the question. `ArrivalQuestion.asset` is now a `Denomination` (the schema's
+  `asset` the advertisement's `denomination`), and `check_answer` compares the whole denomination (`InAnotherAsset`).
+  One invalid fixture, `answered-arrival-question-in-another-unit`; the question fixtures name `COP` at 2 decimals.
+  (DEC-4, DEC-20, REQ-ORD-1, REQ-ORD-23, REQ-CAT-11, T-020-18)
+- A record of inner segments is made by a provider stating for its publisher (`T-020-18`'s review, item 2). A
+  publisher holds no key, so `check_inner_segments` requiring its maker to be the publisher refused every record a
+  real publisher could sign. `check_inner_segments(record, advertisement) -> Result<(), Vec<InnerSegmentsViolation
+  {NotItsMakersAdvertisement, OfAnotherPublisher, NodeNotDeclared}>>` now takes the maker's advertisement, the one
+  the catalogue accepted last for it: the advertisement is the maker's own, its `publisher` is the record's, and it
+  declares the record's `node` among its `private_nodes`. `OfAnotherMaker` is gone. The label stays
+  `publishers_word`. The record fixtures are made by `acme-internal-rail` for `acme` at `acme-ledger`; a bundle,
+  `published-inner-segments-` (an advertisement and a record), with one valid fixture and three invalid, replaces
+  `inner-segments-made-by-another-party`. (DEC-4, DEC-20, REQ-ORD-41, REQ-ORD-3, REQ-CAT-20, REQ-CAT-22, T-020-18)
+- A publisher's record of the segments inside its private node is a signed statement of its own (`F-015`'s and
+  `T-020-09`'s gap: `CMP-EVIDENCE`'s replay read a record no contract shaped, which the assembly's `Books` filled by
+  hand). One schema, `inner-segments` (`urn:rutent:provider-role:inner-segments`, `INNER_SEGMENTS_SHAPE`,
+  `InnerSegments {node, publisher, standing: Standing {PublishersWord}, segments: Vec<InnerSegment {transaction,
+  asset_in, amount_in, asset_out, amount_out, fee}>}`), made by a provider stating for its
+  publisher, held to its advertisement by `check_inner_segments` (the bullet above). `standing` is a label that travels with the record, always
+  `publishers_word`: inside a private node there is no other witness, so a replay shows consistency with the public
+  exit and never that the segments happened (`REQ-ORD-3`, `AC-35`, `THR-131`). Each segment names the transaction it
+  ran under, as `Books::recorded` asks by node and transactions; the record names none of its own, so its stated
+  entry is about nothing. The contract refuses no figure: a record whose segments don't add up or don't chain is
+  still the publisher's record, and the replay records the mismatch (`REQ-ORD-41`). Minor, folded into 3.1.0 before
+  its release: a shape and a check added, nothing changed. Two valid fixtures, twelve invalid. (DEC-4, DEC-20,
+  REQ-ORD-41, REQ-ORD-3, T-020-18)
+- The operator's question to a reserve of what arrived for an order, and the reserve's answer, are signed statements
+  of their own (`T-020-04`'s gap). Core bound an arrival to its order on a balance verification, which says only that
+  funds suffice. Two schemas:
+  - `arrival-question` (`urn:rutent:provider-role:arrival-question`, `ARRIVAL_QUESTION_SHAPE`, `ArrivalQuestion
+    {transaction, provider, session, account, node: OuterNode, asset: Denomination}`), signed with the deployment's operator key
+    (`Statement<ArrivalQuestion>::check_signed_by_operator`, the operation's `NotSignedByOperator`). It names its own
+    transaction, fresh for the order it is asked for, and no order, as no operation does; and the holder's session,
+    since what arrived at an account tells whether its funds suffice for that much (`REQ-CAT-3`, `REQ-CAT-4`).
+  - `arrival-answer` (`urn:rutent:provider-role:arrival-answer`, `ARRIVAL_ANSWER_SHAPE`, `ArrivalAnswer {transaction,
+    outcome: ArrivalOutcome {Arrived(ArrivedCredits {notices: Vec<Statement<ArrivalNotice>>}), NothingArrived,
+    Refused(BalanceRefused)}}`), made by the reserve asked. It names the question's transaction, so its stated entry
+    is about it (`REQ-ORD-1`), and carries the reserve's notice of each credit whole: the same notice it sends of its
+    own accord, under the question's transaction. Its notices are checked as nested statements (`check_shape`,
+    `check_context`: `NestedMaker`), and a refusal never says when it lifts (`INV-9`). A reader keeps each notice
+    it carries as its own stated entry, about its credit's transaction, which an arrival cites: a deposit is keyed
+    on a notice, never on an answer (core-internal's `arrival-names-its-notice`, `T-020-18`'s review, item 1).
+  - `check_answer(question, answer) -> Result<(), Vec<AnswerMismatch {AnswersAnotherQuestion, OfAnotherReserve,
+    AtAnotherNode {notice}, InAnotherAsset {notice}, ToAnotherAccount {notice}}>>` holds the answer to the question.
+
+  Shapes of their own, not an operation kind and a result kind, so `Operation` and `ResultBody` keep their variants:
+  a kind would be a major (3.0.0's ruling), carrying module-interface, released at 4.0.0, to a major with it. Minor,
+  folded into 3.1.0 before its release: two shapes and two checks added, nothing changed. Six valid fixtures, seventeen
+  invalid (`answered-arrival-question-` is a bundle of a question and its answer). (DEC-4, DEC-20, REQ-ORD-1,
+  REQ-ORD-23, REQ-CAT-3, REQ-CAT-4, INV-9, T-020-18)
+- A reserve's notice of value arriving is a signed statement of its own (`T-020-04`'s gap). Before it, provider-role
+  had no statement a reserve makes of value arriving, so Core took the outer node, asset, amount, account and holder
+  from the assembly's port and kept the reserve's notice as bytes it read only for the transaction its body names.
+  One schema, `arrival-notice` (`urn:rutent:provider-role:arrival-notice`, `ARRIVAL_NOTICE_SHAPE`, `ArrivalNotice
+  {transaction, node: OuterNode, asset: Denomination, amount, account, holder}`), made by the reserve. Its
+  `transaction` is the one the reserve gives the credit, its per-credit reference, the same in every notice of the
+  credit: the deposit's signed transaction core-internal's log already keys on (`arrival-names-its-notice`,
+  `one-order-per-deposit`), so the notice's stated entry is about it. `check_one_credit(earlier, later) ->
+  Result<Credits {One, Two}, CreditRestated {OtherFigures}>` knows two notices of one credit, signed at different
+  times, as one: the same maker, the same transaction, the same figures (`ArrivalNotice::same_figures`); another
+  maker or transaction is another credit, and the same transaction with other figures is refused. Minor, folded into
+  3.1.0 before its release: a shape and a check added, nothing changed. Three valid fixtures, eleven invalid
+  (`arrival-notices-` is a bundle of two notices). (DEC-4, DEC-20, REQ-ORD-14, REQ-ORD-23, REQ-AUD-2, T-020-18)
+- A hold names its own `transaction`, its id (the review of round 3, item 2), required in the schema and `Hold`, so
+  Core appends its stated entry about it and the log keys the hold on it: a hold kept again under a new commitment is
+  the same hold. One invalid fixture, `hold-without-its-transaction`. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
+- A valid fixture, `hold-of-another-records-candidate-of-the-same-id`: a hold of `c1` of record `dr-0099`, which
+  router-api's `HeldQuote::check_hold` refuses for the choice round's `c1` of `dr-0004` (the review of round 3,
+  item 1). No shape or rule changed here. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
+- A provider's terms and a reserve's hold are signed statements of their own (round 3 of the contract, item q).
+  Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them. Two schemas:
+  `terms` (`urn:rutent:provider-role:terms`, `TupleTerms {tuple: TermsTuple {provider, from, to: TupleEnd {node,
+  asset}}, fee: FeeFormula {flat, proportional: Proportion {numerator, denominator}, maximum}, slippage}`), made by
+  the tuple's provider, its slippage regime present exactly where the tuple sets a rate (`check_terms`,
+  `TermsViolation`); and `hold` (`urn:rutent:provider-role:hold`, `Hold {record: HeldRecord {id, digest:
+  RecordDigest}, candidate, for: HeldFor, valid_until}`), made by the reserve that starts each part, redeemed only
+  for its order or an order accepted in its session (`check_redemption`, `RedemptionRefused`). Shapes
+  `TERMS_SHAPE` and `HOLD_SHAPE`. Terms bind from the later of `made_at` and Core's `received_at`. The fee formula
+  and the tuple's ends restate router-api's in this contract's own atoms, since this contract refers to no other;
+  router-api's `fee_formula` and `endpoint` keep their own definitions. Minor, folded into 3.1.0 before its release:
+  two shapes added, nothing changed. Four valid fixtures, seven invalid. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
+- "Less the charge" has a stated unit (round 3 of the contract, item s). Under a tuple that reports `gross`, a
+  segment that keeps its asset delivers its `amount_out` less its charge; `amount_out` is in the out unit and the fee
+  in the origin unit, which differ where a reserve's two ends count in different decimals, so Core's reading
+  (`segments::judge::handed_on`) subtracted unlike units. The charge subtracted is the fee restated in the
+  operation's out asset's unit: multiplied out exactly where it is finer, divided and rounded up where it is
+  coarser, so what arrives is never overstated. Two functions, `charge_in_out_unit(fee, origin_decimals,
+  out_decimals)` and `less_the_charge(amount_out, fee, origin_decimals, out_decimals)`, which router-api's
+  confirmation rule reads, with unit tests across 2, 6 and equal decimals. The fee's own unit, the origin unit, and
+  `check_amounts` are unchanged. Minor, folded into 3.1.0 before its release: two functions added. (DEC-4, DEC-20,
+  REQ-CAT-11, INV-1, T-020-01)
+- A failed result may show whose fault the failure was, the customer's or the operator's: an optional `fault` on
+  the `failed` outcome (`REQ-ORD-11`). Until the party it names accepts it, the provider carries the reversal.
+  Before it, no shape carried it, so `T-020-12`'s Core read a stopgap prefix (`fault:`) in an evidence piece's
+  reference. Minor, folded into 3.1.0 before its release: an optional field, absent on the wire where not shown. A
+  valid and an invalid fixture. (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12)
+- A fee may say whether its provider bills it separately, outside the amounts it reports: an optional
+  `billed_separately` on the result's `fee`. Absent means the provider doesn't say. Before it, no shape carried it, so
+  a fee record (`REQ-AUD-11`) had to state what no provider said. Minor: an optional field, absent on the wire where
+  not given, so a 3.0.0 statement reads the same. A valid and an invalid fixture. The protocol version moves with
+  it, and `check_context` matches it exactly, so a statement made under 3.0.0 is refused under 3.1.0: a provider
+  re-signs its statements, its advertisement among them, under 3.1.0. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)
+
 ## 3.0.0
 - Breaking: a holding account's balance gets its own operation and result, `holding_balance`, so `CMP-CORE-AUDIT`
   reads the balance from the account's module and not from the host's own record of what it sent it. Before, no

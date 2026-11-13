@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "contracts",
     "conformance",
+    "conformance/scenarios",
     "components/router",
     "components/stm",
     "components/prov",

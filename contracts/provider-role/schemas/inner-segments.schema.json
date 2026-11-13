@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:inner-segments",
+  "title": "Inner segments",
+  "description": "A publisher's signed record of the segments that ran inside one of its private nodes (REQ-ORD-41): each with the transaction it ran under, the asset and amount in and out, and the fee. A publisher holds no key: one of its providers makes and signs the record, stating for the publisher, and declares the node among its private nodes. It is labelled the publisher's word (REQ-ORD-3, AC-35): inside a private node there is no other witness, so a replay of the record against the public movement out shows consistency with the exit, never that the segments happened (THR-131). Its figures are recorded as the publisher states them: a record that doesn't add up is still a record, and the replay records the mismatch. It names no transaction of its own, so its stated entry is about nothing.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:inner-segments"
+    },
+    "statement": {
+      "$ref": "#/$defs/record"
+    }
+  },
+  "$defs": {
+    "record": {
+      "description": "The record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "publisher",
+        "standing",
+        "segments"
+      ],
+      "properties": {
+        "node": {
+          "description": "The private node, by its identifier: one the publisher declares (REQ-CAT-20, REQ-CAT-22).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "publisher": {
+          "description": "The publisher whose word the record is: the publisher behind the statement's maker, which states for it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "standing": {
+          "description": "The record's standing: its publisher's word, labelled as such (REQ-ORD-3). It is never proof that the segments happened.",
+          "const": "publishers_word"
+        },
+        "segments": {
+          "description": "The segments, in the order they ran: at least one.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/segment"
+          }
+        }
+      }
+    },
+    "segment": {
+      "description": "One segment inside the node, as the publisher recorded it. Amounts are whole numbers of each asset's unit at the node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction",
+        "asset_in",
+        "amount_in",
+        "asset_out",
+        "amount_out",
+        "fee"
+      ],
+      "properties": {
+        "transaction": {
+          "description": "The transaction the segment ran under.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset_in": {
+          "description": "The asset that went in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount_in": {
+          "description": "The amount that went in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset_out": {
+          "description": "The asset that came out.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount_out": {
+          "description": "The amount that came out.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "fee": {
+          "description": "The fee, in the asset that went in.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "request": "req-500",
+  "party": "acme-treasury",
+  "caller": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "work": "fan_out",
+  "count": 4,
+  "order": "ord-19",
+  "at": "2026-11-10T09:00:00Z"
+}

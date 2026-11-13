@@ -1,0 +1,21 @@
+{
+  "provider": "bank-co",
+  "order": "ord-17",
+  "segment": "seg-4",
+  "measure": {
+    "kind": "dry_run",
+    "said": "yes",
+    "outcome": "failed"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 62,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6363636363636363636363636363636363636363636363636363636363636363"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

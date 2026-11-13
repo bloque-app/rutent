@@ -1,0 +1,39 @@
+{
+  "request": "req-200",
+  "order": "ord-21",
+  "part": "p3",
+  "decider": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "resolution": {
+    "kind": "deliver",
+    "by": "bank-co",
+    "to": {
+      "reserve": "bank-co",
+      "node": {
+        "network": "co-ach"
+      },
+      "account": "acct-ref-9"
+    },
+    "asset": {
+      "id": "COP",
+      "decimals": 2
+    },
+    "amount": "2500000"
+  },
+  "transaction": "tx-e21",
+  "evidence": [
+    {
+      "algorithm": "sha-256",
+      "value": "3131313131313131313131313131313131313131313131313131313131313131"
+    },
+    {
+      "algorithm": "sha-256",
+      "value": "3232323232323232323232323232323232323232323232323232323232323232"
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -1,5 +1,80 @@
 # router-api changelog
 
+## 4.0.0
+- No change to this contract's shapes, types or rules: the six decision-record fixtures that name the router's
+  version (`decision-record-naming-the-calls-each-segment-makes`, which `rutent-router`'s own test compares with,
+  and the five invalid ones made from it) name `rutent-router-0.6.0` as their `router_version`, following the
+  router, whose search now states what arrives for a confirmed operation at a tuple that reports `gross`
+  (`T-011-07`, reading `Operation::stated_out`). The fixtures' envelope signatures are left as they were: no test
+  verifies a fixture's signature. Folded into this unreleased major. (DEC-4, DEC-20, REQ-CAT-11, REQ-QTE-11,
+  T-011-07)
+- A hold is bound to its decision record (the review of round 3, item 1). `HeldQuote::check_hold` compared only
+  the candidate's id, and ids such as `c1` recur across records, so a hold of one record's `c1` passed for another's
+  at the same reserve within its validity. It now takes the record's id and digest, as core-internal's
+  `decision_record` entry names them (`check_hold(hold, record_id: &Id, record_digest: &module_interface::Digest)`),
+  and refuses a hold whose `record` names another. Folded into this unreleased major. A provider-role fixture,
+  `hold-of-another-records-candidate-of-the-same-id`, refused against the choice round's held quote; `hold-for-an-order`
+  admitted. (DEC-4, DEC-20, REQ-QTE-15, THR-127, T-020-01)
+- Stated terms and held quotes from signed statements (round 3 of the contract, item q, with provider-role 3.1.0's
+  `terms` and `hold`). `StatedTerms::from_statement(statement, received_at)` builds a history entry from a
+  provider's signed terms, taking only its tuple's provider's, with a slippage regime exactly where the tuple sets a
+  rate, and states it at the later of `made_at` and Core's `received_at`; `StatedTerms::stated_at` is now that time,
+  when the terms bind from, so the router's `binding`, which filters on it, no longer binds a segment on terms dated
+  before it started but received after. `HeldQuote::check_hold(hold)` holds a reserve's signed hold to the chosen
+  candidate, its maker to the reserve each part starts at, its validity to the earliest expiry of the candidate's
+  figures, and the quote to no longer than the hold. Both new and public. Folded into this unreleased major; the
+  `stated-terms` schema's `stated_at` says the same. Tests read provider-role's fixtures. (DEC-4, DEC-20, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
+- Breaking: an operation's `amount_out` is what arrives by it, and confirmation reads its tuple's terms (round 3 of
+  the contract, item r). The confirmation rule required an operation's `amount_out` to equal its provider's answer
+  exactly, while the floor, each part's chain (the next `amount_in` is the previous `amount_out`) and the
+  `lowest_total_cost` objective read it as what arrives; under a tuple whose terms report `gross` the two differ by
+  the charge, so no valid record could rank, or judge the floor, on what arrives. Confirmation now reads the tuple
+  figure's `terms.reporting`: under `gross`, a same-asset operation (a withdrawal, a route or a deposit) states the
+  answer's `amount_out` less its charge, the fee restated in its out unit (provider-role 3.1.0's
+  `less_the_charge`); an exchange's output stays as its answer states it; under `net` nothing changes. A new public
+  method, `Operation::stated_out(tuple, answer_out, answer_fee)`, which the router suite's
+  `amounts_follow_their_figures` reads too. The router's search is unchanged here (`T-011-07`). Folded into this
+  unreleased major. A valid fixture, `decision-record-choosing-a-gross-deposit-stated-as-what-arrives`, and an
+  invalid one made from a patch, `decision-record-choosing-a-gross-deposit-stated-as-its-answer`. (DEC-4, DEC-5,
+  DEC-20, REQ-CAT-11, REQ-QTE-11, REQ-ORD-27, T-020-01)
+- A held quote never outlives what its quote rests on: `HeldQuote::check` refuses a `valid_until` later than the
+  earliest expiry of the figures the chosen candidate cites, each at the snapshot's `taken_at` plus its validity
+  less its age (`Figure::expires_at`, `DecisionRecord::earliest_expiry`, both new and public; a figure that states no
+  validity caps nothing). Before it, a hold could run past the quotes it was priced on (round 3 of the contract,
+  item v). Folded into this unreleased major. The valid fixture's hold now ends at its quotes' earliest expiry,
+  15:01:55; a new invalid fixture, `held-quote-valid-until-past-its-quotes-figures`, a second later. (DEC-4, DEC-20,
+  REQ-QTE-15, REQ-QTE-4, T-020-01)
+- An operation's `fee` is provider-role's fee by reference, so with provider-role 3.1.0 it may carry the optional
+  `billed_separately`, what the provider stated of billing it separately. The router never sets it. Folded into this
+  unreleased major. (DEC-4, DEC-20, REQ-AUD-11, T-020-09)
+- Judgements agree by tuple, subject and class: two of one subject for one tuple, one yes and one no, are refused
+  only where they judge one class. A tuple whose provider's rules need two classes may hold a yes for one and a no
+  for the other, so the no reaches the record and drops its candidate as `ineligible` (`REQ-AUD-4`, `REQ-CPL-6`).
+  0.4.0's rule compared subjects alone, the orchestrator's reading, changed on the coordinator's word on
+  `T-020-06`'s review. Folded into this unreleased major; a new valid fixture,
+  `catalogue-snapshot-judgements-of-two-classes-disagreeing`. (DEC-4, DEC-20, T-020-06)
+- A major of its own, not folded into 3.0.0: 3.0.0 was released into `develop` with `M2` (pull request #60, merged
+  as `fb883e0`) while this change was on `M3`'s branch, so the contract guard reads 3.0.0 as released and the change
+  below, new required fields and a new rule, needs a bump. Same content as before. (DEC-4, DEC-20, T-020-02)
+- Breaking: the inputs Core keeps beside a decision record, so it reaches them through the contract (`DEC-2`,
+  `REQ-MOD-3`) and the router's quote rules take them from here. `PolicyBounds`
+  gains two required fields, so a record names the bounds it ran under (`REQ-AUD-4`): `operator_fee`, the
+  operator's own fee formula (`REQ-QTE-2`), taken at the destination in the request's `to` unit from what the
+  providers deliver, capped by its maximum and never raised to it, its proportion at most one; and
+  `slippage_limits`, the slippage the operator sets per tuple (`REQ-QTE-9`), keyed by provider and ends, at most
+  one per tuple. A new check, `PolicyBounds::check_against`, which `DecisionRecord::check` runs: every exchange
+  tuple of the snapshot that settles within three days (`THREE_DAYS_SECONDS`, 259,200, inclusive) by its price or a
+  fresh quote has a limit. The floor is judged after the operator's fee (`REQ-ORD-27`): `below_floor` now holds
+  where what is left after the fee is below the floor, and a kept candidate must leave at least the floor. The
+  contract checks both exactly, with no division (`ceil(a × n / d) ≤ k` exactly when `a × n ≤ k × d`), by a
+  `no_std` product of amounts and `Amount::checked_sub`. Ranking stays on the providers' amounts before the fee, and a decision record says so
+  in a new required field, `ranking`, whose one value is `before_operator_fee` (`REQ-QTE-11`). Three new shapes:
+  `stated-terms` (`StatedTerms`, `REQ-QTE-6`, naming its tuple so a history is keyed), `settlement-times` (`SettlementTimes`, `REQ-QTE-3`) and `held-quote`
+  (`HeldQuote`, `REQ-QTE-15`). New required fields and a new rule are a major under `DEC-4`. Every policy-bounds and
+  decision-record fixture gains the fields; six valid fixtures and seventeen invalid ones are new, five of them made from patches.
+  (DEC-2, DEC-4, DEC-20, T-020-02)
+
 ## 3.0.0
 - Breaking: three drop reasons for the candidates 2.x could not state, so a decision record names every path the
   search reaches that ends anywhere, and why it was dropped (`REQ-AUD-4`; ruled by the owner, 2026-11-09, item

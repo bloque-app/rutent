@@ -1,0 +1,8 @@
+{
+  "kind": "segment_record",
+  "transaction": "tx-005",
+  "provider": "fx-desk",
+  "began_on": "1.4.0",
+  "runs_on": "1.5.0",
+  "moves": []
+}

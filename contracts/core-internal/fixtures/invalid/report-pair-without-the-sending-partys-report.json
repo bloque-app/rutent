@@ -1,0 +1,20 @@
+{
+  "order": "ord-17",
+  "segment": "seg-2",
+  "received": {
+    "party": "fx-desk",
+    "amount": "1000000000",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "statement": {
+      "log": "log-main",
+      "index": 61,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6262626262626262626262626262626262626262626262626262626262626262"
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-audit",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "measure",
+    "record": {
+      "provider": "fx-desk",
+      "order": "ord-17",
+      "segment": "seg-3",
+      "measure": {
+        "kind": "quote",
+        "quoted": "2500000",
+        "executed": "2487500",
+        "asset": {
+          "id": "COP",
+          "decimals": 2
+        }
+      },
+      "cites": [
+        {
+          "log": "log-main",
+          "index": 62,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "6363636363636363636363636363636363636363636363636363636363636363"
+          }
+        }
+      ],
+      "at": "2026-11-10T09:00:00Z"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}
