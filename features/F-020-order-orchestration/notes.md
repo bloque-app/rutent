@@ -2860,9 +2860,11 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
   (stated terms with their times), `Holds` (a reserve's held quote) and `Charges` (a charge above its formula,
   raised). Intake's `Quote` gains `price: quote::Shown`, as `T-020-03`'s notes left for this row ("changes the digest
   and nothing else here"). Its `shown_as` comes from the price, and so does the `shown` entry's. Arrival's filing
-  (`T-020-04`) builds the same `Quote` for an automatic deposit, so the new field made it take the price too. That
-  is the only edit there: the price and its label. What arrival does with a route without a firm rate is a gap
-  (below).
+  (`T-020-04`) builds the same `Quote` for an automatic deposit, so the new field made it take the price too. The
+  edit there is the price, its label, and one behaviour change: a route `show` won't show ends the filing's order
+  with the `NotShown` class (`self.end`), as intake refuses it. No arrival test reaches that branch: an untested
+  change to `T-020-04`'s module, for its owner or the coordinator to take or test. What arrival does with a route
+  without a firm rate is a gap (below).
 - **The quote shown (`REQ-QTE-2`).** Read as composition, on the owner's ruling `spec-route-price-composition`.
   `Shown` names:
   - each segment's provider fee and amounts;
@@ -2896,7 +2898,10 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
     charge within is taken off, and a sum past an amount;
   - `no_route_right_now` for undeliverable, no terms for a segment, no slippage limit, and unexplained.
 
-  An `order_refusal` of that class is recorded, and nothing is shown.
+  An `order_refusal` of that class is recorded, and nothing is shown. Through intake this is
+  `route_intake_cant_deliver_is_refused_and_never_shown`: the kit's reserve reports `gross`, and a charge of 4 on
+  each segment leaves its withdrawal handing on less than its deposit was quoted at. The customer is told
+  `no_route_right_now`, one refusal is recorded, no `shown`, and the log admits it all.
 - **Slippage (`REQ-QTE-9`).** Each segment carries `held_to`, from the router's `commitments` over the record's own
   limits:
   - `committed`, with `rate_bps` (the tighter of the quote's regime and the operator's limit) and
@@ -2939,10 +2944,12 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
   built on the next check, never raised again.
 - **Tests, and the order.** The seven tests of the row are in `components/core-orch/tests/quote.rs`, with a kit,
   `tests/quote_support/`, that routes `RouteFinder` over choice-round snapshots written as router-api's JSON: a
-  reserve's withdrawal and deposit, an exchange between them where asked, and answers that are gross or net. Two
+  reserve's withdrawal and deposit, an exchange between them where asked, and answers that are gross or net. Three
   tests beyond the row's list pin the gross reading:
   - `charge_reported_within_what_a_segment_gives_out_is_a_line_of_its_own`;
-  - `route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown`, with the floor case.
+  - `route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown`, with the floor case;
+  - `route_intake_cant_deliver_is_refused_and_never_shown`, through intake, written after the advisor's review,
+    so seen red only by its rule-offs (the last two rows below).
 
   `operators_fee_is_shown_apart_from_the_quotes_sum` and
   `route_with_a_segment_over_three_days_starts_only_after_acceptance` also run through intake, on `T-020-03`'s kit
@@ -2974,6 +2981,8 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
   | the charge compared with its formula | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
   | a segment's charge raised once | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
   | an undelivered raise recorded `failed` | `charge_above_the_formulas_maximum_is_flagged_to_the_operator` |
+  | through intake: the next segment's amount held to what the one before hands on | `route_intake_cant_deliver_…` |
+  | through intake: a gross charge taken off what is handed on | `route_intake_cant_deliver_…` |
 
   Two checks are defence in depth, and no test reaches either alone. The check that the lines add up stayed green
   when switched off: `shown_out`, `arrives` and `difference` are computed from the lines, so they can't disagree. The
@@ -3017,7 +3026,8 @@ Branch `f-020/t-020-07-quote-shown`, from `m3` at `d950ecd`.
 - **Touches**:
   - `components/core-orch/src/quote/` (the module, five files);
   - intake's `Quote` and its build site (`intake/mod.rs`);
-  - arrival's filing (`arrival/filing.rs`), the one call the new field forced;
+  - arrival's filing (`arrival/filing.rs`): the price and label the new field forced, and the untested end on a
+    route not shown (above);
   - the tests `tests/quote.rs` and `tests/quote_support/`, which reuse `intake_support`, `rounds_support` and
     `snapshot_support` unchanged;
   - these notes.

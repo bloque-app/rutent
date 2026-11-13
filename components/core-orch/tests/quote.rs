@@ -17,9 +17,9 @@ use rounds_support::customer;
 use rutent_contracts::core_internal::calls::GeneralEntry;
 use rutent_contracts::core_internal::calls::{Delivery, Evidence, Log, Operator};
 use rutent_contracts::core_internal::{
-    About, Attribution, Difference, Entry, Outcome, Raise, Receipt, ShapeId, ShownAs, SignedWith,
-    StatedEntry, StatedKind, StatedOutcome, StatedStatus, StatedTimeSource, StatedWhat, StatedWhen,
-    What,
+    About, Attribution, Difference, Entry, OrderRefusalClass, Outcome, Raise, Receipt, ShapeId,
+    ShownAs, SignedWith, StatedEntry, StatedKind, StatedOutcome, StatedStatus, StatedTimeSource,
+    StatedWhat, StatedWhen, What,
 };
 use rutent_contracts::provider_role::{Fee, RESULT_SHAPE, SignatureScheme};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, StatedTerms, Timestamp, TupleKey};
@@ -251,6 +251,48 @@ fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
         show(&record, chosen(&record), Some(&amount("990"))),
         Err(NotShown::BelowFloor)
     );
+}
+
+/// Through intake: a route the router chose but can't deliver as composed (the reserve reports gross and charges 4
+/// on each segment, so its withdrawal hands on less than its deposit was quoted to take in) is never shown. The
+/// customer is told the order can't proceed now, one `order_refusal` of that class is recorded, and no `shown`.
+// verifies: REQ-QTE-2, REQ-ORD-18
+#[test]
+fn route_intake_cant_deliver_is_refused_and_never_shown() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    sim.fees.insert(RESERVE.into(), 4);
+    let request = order_request("client-req-undeliverable", customer());
+    let order = order_of(&env.open(&mut sim, &request).expect("the request opens"));
+    let told = env.quote(&mut sim, &order).expect("the routing runs");
+    assert!(
+        matches!(
+            told,
+            Told::Exists {
+                status: Status::CantProceed {
+                    class: OrderRefusalClass::NoRouteRightNow
+                },
+                ..
+            }
+        ),
+        "told {told:?}"
+    );
+    let refusals: Vec<OrderRefusalClass> = env
+        .refusals()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::OrderRefusal {
+                order: Some(o),
+                class,
+                ..
+            } if o == order => Some(class),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refusals, vec![OrderRefusalClass::NoRouteRightNow]);
+    assert!(shown_entries(&env).is_empty(), "nothing is shown");
+    assert!(env.started().is_empty());
+    assert_admitted(&env);
 }
 
 // REQ-QTE-9 ---------------------------------------------------------------------------------------------------------
