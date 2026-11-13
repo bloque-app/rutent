@@ -2051,7 +2051,8 @@ impl Grading for Recorded {
                     whose,
                     rests_on: vec![settled.result.clone()],
                     movement,
-                    // Placeholder for the segments kit's owner (F-024), until it names the private node's publisher.
+                    // A segment's settlement on its provider's word: the label of a private node's publisher counts only for a
+                    // reversal's evidence (`reversal-rests-on-its-evidence`), so a settlement carries none.
                     publisher: None,
                 },
                 when: When {

@@ -284,7 +284,8 @@ impl Grading for ProvidersWord {
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
                 movement: None,
-                // Placeholder for the segments owner (T-020-08), until it names the private node's publisher.
+                // A segment's settlement on its provider's word: the label of a private node's publisher counts only for a
+                // reversal's evidence (`reversal-rests-on-its-evidence`), so a settlement carries none.
                 publisher: None,
             },
             when: When {

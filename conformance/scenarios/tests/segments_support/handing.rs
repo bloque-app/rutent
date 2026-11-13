@@ -283,12 +283,13 @@ pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation
         .unwrap();
 }
 
-/// The holding account's own statement of its withdrawal for a route handed on from `from`: the reserve's verified
-/// result about `from`'s value, on the operator's question under a transaction of its own (`T-020-13`, `REQ-ORD-40`).
-/// Its receipt is what a `holding_withdrawal` cites (`holding-withdrawal-rests-on-its-record`).
-pub fn holding_statement(core: &mut Core, from: &str) -> Receipt {
-    let transaction = format!("tx-holding-{from}-{}", core.log.borrow().entries.len());
-    super::stated_results(core, &id(from), None, &transaction, &[RESERVE]).remove(0)
+/// The holding account's own statement of its withdrawal for `linked`, a route handed on: the reserve's verified
+/// result about the linked order, naming the withdrawal's transaction, on the operator's question under it
+/// (`T-020-13`, `REQ-ORD-40`). Its receipt is what a `holding_withdrawal` cites (`holding-withdrawal-rests-on-its-record`),
+/// and its transaction is the one the log holds one start to (`one-start-per-holding-record`).
+pub fn holding_statement(core: &mut Core, linked: &str) -> Receipt {
+    let transaction = format!("tx-holding-{linked}-{}", core.log.borrow().entries.len());
+    super::stated_results(core, &id(linked), None, &transaction, &[RESERVE]).remove(0)
 }
 
 /// Proves `linked`'s start on `record`, the holding account's record of its withdrawal, citing a statement of it
@@ -299,12 +300,7 @@ pub fn prove(
     linked: &Id,
     record: &rutent_prov::holding::wallet::WithdrawalRecord,
 ) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
-    let from = core
-        .segments
-        .order(linked)
-        .and_then(|o| o.handed_on_from.as_ref().map(|f| f.as_str().to_owned()))
-        .unwrap_or_else(|| super::ORDER.to_owned());
-    let statement = holding_statement(core, &from);
+    let statement = holding_statement(core, linked.as_str());
     let actor = super::core();
     hand_parts(core, &mut rutent_core_orch::stuck::Stuck::new(), |parts| {
         hand_on.prove_start(

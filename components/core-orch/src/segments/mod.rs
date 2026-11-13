@@ -842,6 +842,7 @@ impl Segments {
                 | Observed::EndRequested {}
                 | Observed::DestinationChanged { .. }
                 | Observed::HandedOn { .. }
+                | Observed::HandOnTakenBack { .. }
         ) {
             return false;
         }
