@@ -26,8 +26,8 @@ use rutent_contracts::provider_role::{Fee, RESULT_SHAPE, SignatureScheme};
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, StatedTerms, Timestamp, TupleKey};
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
-    ChargeDesk, Charged, Charges, Checked, ExecutedSegment, HeldTo, HoldError, Holds, NotShown,
-    PriceError, Priced, Prices, SlowSegment, Terms, digest, executed, show,
+    ChargeDesk, ChargeError, Charged, Charges, Checked, ExecutedSegment, HeldTo, HoldError, Holds,
+    NotShown, PriceError, Priced, Prices, SlowSegment, Terms, digest, executed, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};
@@ -978,6 +978,44 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
     };
     assert!(!undelivered.delivered);
     assert_eq!(raises(&env).last(), Some(&(undelivered.raise, false)));
+    assert_admitted(&env);
+}
+
+/// A segment's charge is checked on its one result: checked within on a charge of 10, the same segment handed in
+/// again on another result charging 9 000 is refused, raising nothing, never answered as the first was.
+// verifies: REQ-QTE-5, AC-14
+#[test]
+fn segment_checked_on_one_result_refuses_another() {
+    let mut env = Env::new();
+    let terms = Terms::new();
+    let mut charges = Charges::new();
+    let mut channel = Channel::delivering();
+    let charged = |charge: &str, result: Receipt| Charged {
+        order: id("order-charged"),
+        segment: id("seg-twice"),
+        provider: id(RESERVE),
+        tuple: deposit_tuple(RESERVE),
+        started_at: at("1970-01-01T00:30:00Z"),
+        amount_in: amount("1000000"),
+        charged: amount(charge),
+        advertised: Some(formula("0", "1", "1000", Some("2000"))),
+        result,
+    };
+    let first = stated_result(&mut env, "seg-twice", 10);
+    assert_eq!(
+        charges.check(desk(&mut env, &terms, &mut channel), &charged("10", first)),
+        Ok(Checked::Within)
+    );
+    let second = stated_result(&mut env, "seg-twice-again", 9_000);
+    assert_eq!(
+        charges.check(
+            desk(&mut env, &terms, &mut channel),
+            &charged("9000", second)
+        ),
+        Err(ChargeError::AnotherCharge)
+    );
+    assert!(channel.raised.is_empty(), "nothing raised");
+    assert!(raises(&env).is_empty());
     assert_admitted(&env);
 }
 

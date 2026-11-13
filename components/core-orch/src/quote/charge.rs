@@ -62,6 +62,9 @@ pub struct Flagged {
 pub enum ChargeError {
     /// No formula binds the segment: no terms stated before it started and none advertised.
     NoFormula,
+    /// The segment was checked already on another result, or another charge: a segment has one result that counts,
+    /// so the second is refused, never taken as the first's answer.
+    AnotherCharge,
     /// The log didn't take the raise's entry, or Core's clock couldn't be read; a raise made is kept and its entry
     /// appended as built on the next check, never raised again.
     Append(AppendFailure),
@@ -93,8 +96,11 @@ pub struct ChargeDesk<'a> {
 /// once, appended until the log takes it.
 #[derive(Debug, Clone, Default)]
 pub struct Charges {
-    checked: BTreeMap<(String, String), Kept>,
+    checked: BTreeMap<(String, String), (Seen, Kept)>,
 }
+
+/// What a segment's check was made on: its result, what it took in and what it was charged.
+type Seen = (Receipt, Amount, Amount);
 
 #[derive(Debug, Clone)]
 enum Kept {
@@ -129,6 +135,16 @@ impl Charges {
             charged.order.as_str().to_owned(),
             charged.segment.as_str().to_owned(),
         );
+        let seen: Seen = (
+            charged.result.clone(),
+            charged.amount_in.clone(),
+            charged.charged.clone(),
+        );
+        if let Some((first, _)) = self.checked.get(&key)
+            && first != &seen
+        {
+            return Err(ChargeError::AnotherCharge);
+        }
         if !self.checked.contains_key(&key) {
             // The formula that bound the segment: the terms stated last at or before its start, or else the one its
             // route was priced on; a later statement never applies to it (`REQ-QTE-6`).
@@ -182,10 +198,10 @@ impl Charges {
                     }))
                 }
             };
-            self.checked.insert(key.clone(), kept);
+            self.checked.insert(key.clone(), (seen, kept));
         }
         match self.checked.get_mut(&key) {
-            Some(Kept::Raised(raised)) => {
+            Some((_, Kept::Raised(raised))) => {
                 let receipt = raised.step.append(desk.log)?;
                 Ok(Checked::Flagged(Box::new(Flagged {
                     raise: raised.raise.clone(),
