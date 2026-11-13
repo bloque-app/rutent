@@ -3459,7 +3459,7 @@ pub static RELATIONS: [Relation; 93] = [
         name: "part-waits-for-value-in-motion",
         spec: &["REQ-ORD-2", "INV-4", "REQ-ORD-27", "REQ-AUZ-4"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a part's route restarts, it waits at its floor, is handed on, is resolved or its order ends on request only while none of its value is in motion",
+        refusal: "a part's route restarts, it waits at its floor, is handed on, is resolved, its start is undone or its order ends on request only while none of its value is in motion",
         fields: &[],
         // One predicate (`in_motion`) for every input and decision that would move a part's value from where it
         // sits: a value-moving effect in motion may still deliver, and moving around it moves the same value twice.
@@ -4502,15 +4502,20 @@ fn motion_subject<'a>(
         } => decided_part(order.as_str(), carries_out, history).map(|p| (order.as_str(), p)),
         _ => {
             let i = input(entry)?;
-            matches!(
+            let part = i.subject.part.as_ref()?.as_str();
+            // A start undone on a part still open fails it, so it waits for value in motion as a restart does.
+            let undoes_its_start = matches!(i.observed, Observed::ReversalCompleted { .. })
+                && standing(i.subject.order.as_str(), part, history)
+                    .is_some_and(|s| crate::state_machine::rules::undoes_an_open_part(&s.part, i));
+            (matches!(
                 i.observed,
                 Observed::RouteRecalculated { .. }
                     | Observed::DestinationChanged { .. }
                     | Observed::WaitingAtFloor {}
                     | Observed::HandedOn { .. }
-            )
-            .then_some(())?;
-            Some((i.subject.order.as_str(), i.subject.part.as_ref()?.as_str()))
+            ) || undoes_its_start)
+                .then_some(())?;
+            Some((i.subject.order.as_str(), part))
         }
     }
 }

@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 539 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 541 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -590,6 +590,11 @@
   motion only in the parts the state machine ends, those not past their first segment. Refused: an end requested
   while p2's withdrawal moves; admitted: one while p1, past its start, moves p1-s6. 539 admission cases. (DEC-4,
   DEC-20, REQ-ORD-12, REQ-ORD-2, T-020-01)
+- Folded into 1.0.0 before its release: an open part's start undone waits for value in motion (the ruling on round 2
+  of the contract review). A `reversal_completed` that undoes the start of a part still open fails it, so
+  `part-waits-for-value-in-motion` now cites it, as it does a restart. Refused: p1's withdrawal undone while p1-s6's
+  move is in motion; admitted: with nothing moving. 541 admission cases. (DEC-4, DEC-20, REQ-ORD-3, REQ-ORD-40,
+  INV-4, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
