@@ -263,6 +263,17 @@ impl Closing {
             })
     }
 
+    /// Whether the segment `key` took the movement already, as a node's movement in or out.
+    fn took_in_node(&self, network: &str, movement: &str, key: &(String, String)) -> bool {
+        self.relied
+            .get(&(network.to_owned(), movement.to_owned()))
+            .is_some_and(|takers| {
+                takers
+                    .iter()
+                    .any(|t| t.node && t.order == key.0 && t.segment == key.1)
+            })
+    }
+
     fn take(&mut self, network: &str, movement: &str, key: &(String, String), node: bool) {
         let takers = self
             .relied
@@ -654,23 +665,31 @@ impl Evidenced<'_> {
         };
 
         // Whose word a segment inside a private node rests on: the node's publisher's, where the statement relied
-        // on is by that publisher, through a provider of its (`REQ-ORD-3`). A segment runs inside a node where its
-        // two ends are private, or where it is a part's final deposit into a rail declared private.
+        // on is by that publisher, through a provider of its (`REQ-ORD-3`). Labelled only where the log binds the
+        // segment's from-node as that publisher's private node: inside the node the run's public movement entered,
+        // the segment's own record of that movement, naming the node and resting on its statement, written first. A
+        // part's final deposit into a rail declared private starts at a public node, which nothing binds so: it,
+        // and anything else, is labelled with no publisher.
         let publishers = self.catalogue.publishers();
         let theirs = publishers.publisher_of_provider(settled.provider.as_str());
         let declares = |node: &NodeRef| {
             self.private(node) && publishers.publisher_of_node(node_name(node)) == theirs
         };
-        let inside = (self.private(&operation.from.node) && self.private(&operation.to.node))
-            || into_private_rail;
+        let entered = &operations[self.run_start(operations, settled.place)]
+            .to
+            .node;
+        let moved_in = (!last
+            && self.private(&operation.from.node)
+            && self.private(&operation.to.node)
+            && node_name(entered) == node_name(&operation.from.node))
+        .then(|| self.movement_into(settled, operations))
+        .flatten();
+        let bound = moved_in.is_some() && declares(&operation.from.node);
         let label = match theirs {
-            Some(publisher)
-                if inside && (declares(&operation.from.node) || declares(&operation.to.node)) =>
-            {
-                Some(id(publisher)?)
-            }
+            Some(publisher) if bound => Some(id(publisher)?),
             _ => None,
         };
+        let mut node_takes = Vec::new();
 
         let mut entries = Vec::new();
         let cites = settled.evidence.clone();
@@ -712,12 +731,6 @@ impl Evidenced<'_> {
                 .min()
                 .unwrap_or(EvidenceGrade::Statement)
                 .max(EvidenceGrade::SignedByProvider);
-            // A route ending inside a private rail its reserve's publisher declares stays that publisher's word
-            // (`REQ-ORD-3`, `REQ-ORD-41`, `AC-35`): labelled so, graded a statement.
-            let (own, publisher) = match &label {
-                Some(publisher) => (EvidenceGrade::Statement, Some(publisher.clone())),
-                None => (own, None),
-            };
             entries.push(evidence(
                 id(&format!("{}.reserve", cites.as_str()))?,
                 settled.segment,
@@ -725,7 +738,7 @@ impl Evidenced<'_> {
                 settled.provider.clone(),
                 settled.result.clone(),
                 None,
-                publisher,
+                None,
             ));
         } else {
             // Every movement Core checked is named, whatever the grade, so the log holds what Core took; a public
@@ -738,6 +751,24 @@ impl Evidenced<'_> {
                 (Some((network, _, _)), true) => id(network)?,
                 _ => settled.provider.clone(),
             };
+            // Labelled, the movement into the node comes first, naming it: the log's binding of the node the label
+            // relies on. The segment takes it now as the node's movement in, which its exit doesn't record again.
+            if let (Some(_), Some((network, moved))) = (&label, &moved_in) {
+                entries.push(evidence(
+                    id(&format!("{}.in.{}", cites.as_str(), settled.place))?,
+                    settled.segment,
+                    EvidenceGrade::PublicRecord,
+                    id(network)?,
+                    settled.result.clone(),
+                    Some(public_movement(
+                        network,
+                        moved,
+                        Some(node_name(&operation.from.node)),
+                    )?),
+                    None,
+                ));
+                node_takes.push((network.clone(), moved.as_str().to_owned(), key.clone()));
+            }
             // Inside a private node, a statement its publisher made, through it or a provider of its, is that
             // publisher's word (`REQ-ORD-3`): labelled so, graded a statement.
             let grade = if label.is_some() {
@@ -762,7 +793,6 @@ impl Evidenced<'_> {
         let exits = self.private(&operation.from.node)
             && !self.private(&operation.to.node)
             && side.is_some();
-        let mut node_takes = Vec::new();
         if exits {
             let (replay, consistent) = self.replayed(settled, operations, movement.as_ref())?;
             entries.extend(replay);
@@ -792,6 +822,11 @@ impl Evidenced<'_> {
                         segment.as_str().to_owned(),
                     );
                     for (end, network, moved) in [("in", &into, &into_id), ("out", out, out_id)] {
+                        // Recorded once: a segment whose label it bound took the movement in when it settled.
+                        if end == "in" && self.closing.took_in_node(network, moved.as_str(), &inner)
+                        {
+                            continue;
+                        }
                         node_takes.push((
                             network.clone(),
                             moved.as_str().to_owned(),

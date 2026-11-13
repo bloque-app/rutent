@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, DeploymentOperator, Destination, Entry, FeeTo, MismatchKind, PublicMovement,
-    Receipt, ReplayFound, Role, RouteEnd, Through, What, admit_entry,
+    Actor, ActorKind, Attribution, DeploymentOperator, Destination, Entry, FeeTo, MismatchKind,
+    PublicMovement, Receipt, ReplayFound, Role, RouteEnd, Through, What, admit_entry,
 };
 use rutent_contracts::provider_role::{
     Advertisement, Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE, Statement,
@@ -26,7 +26,7 @@ use rutent_evidence::{
     Status,
 };
 use rutent_prov::catalogue::{
-    Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
+    Bond, Catalogue, Category, Grant, GrantTerms, Instant, Publisher, ReversalCapacity, tuples_of,
 };
 use serde_json::{Value, json};
 
@@ -367,6 +367,7 @@ impl Log {
     }
 
     fn stated(
+        party: &str,
         maker: &str,
         role: &str,
         shape: &str,
@@ -376,7 +377,7 @@ impl Log {
     ) -> Entry {
         serde_json::from_value(json!({
             "kind": "stated",
-            "attribution": { "signature": "verified", "who": { "party": maker, "acts": maker, "role": role, "kind": "component" } },
+            "attribution": { "signature": "verified", "who": { "party": party, "acts": maker, "role": role, "kind": "component" } },
             "what": { "statement": shape },
             "when": { "at": "2026-11-06T15:04:05Z", "source": "party_stated" },
             "received_at": "2026-11-06T15:04:06Z",
@@ -406,6 +407,8 @@ struct Part<'a> {
     bound: RefCell<BTreeSet<usize>>,
     /// The places settled.
     settled: RefCell<BTreeSet<usize>>,
+    /// The party each provider's result states for, where it isn't the provider itself.
+    states_for: BTreeMap<String, String>,
 }
 
 impl<'a> Part<'a> {
@@ -447,7 +450,23 @@ impl<'a> Part<'a> {
             log,
             bound: RefCell::default(),
             settled: RefCell::default(),
+            states_for: BTreeMap::new(),
         }
+    }
+
+    /// Each result stated for its provider's publisher by `catalogue`, as the segments state it: the operator's
+    /// party for a module it publishes, the advertisement's publisher otherwise.
+    fn stating_for_publishers(mut self, catalogue: &Catalogue) -> Self {
+        for op in self.operations {
+            let provider = op.provider.as_str();
+            let party = match catalogue.publishers().publisher(provider) {
+                Some(Publisher::Operator) => "operator".to_owned(),
+                Some(Publisher::Party(publisher)) => publisher,
+                None => continue,
+            };
+            self.states_for.insert(provider.to_owned(), party);
+        }
+        self
     }
 
     /// Settles every segment before `place` not settled yet, each on a result its provider signs for at grade 3 and
@@ -528,7 +547,12 @@ impl<'a> Part<'a> {
                 &format!("rec-{}-bound-{place}", self.order.as_str()),
             ));
         }
+        let party = self
+            .states_for
+            .get(provider)
+            .map_or(provider, String::as_str);
         let result = self.log.push(Log::stated(
+            party,
             provider,
             "provider",
             RESULT_SHAPE,
@@ -1083,7 +1107,7 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
         ("exchange-b", "b-co", 3, &["ledger-b"]),
         ("reserve-wallet", "wallet-co", 3, &[]),
     ]);
-    let run = |deposit_out: &str| {
+    let run = |deposit_out: &str, restart_after: Option<usize>| {
         let mut nets = Networks::default();
         nets.moved(
             "co-ach",
@@ -1152,7 +1176,8 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
             &route,
             end("polygon", "acct-9", ("USDC", 6), "250000000"),
             &log,
-        );
+        )
+        .stating_for_publishers(&catalogue);
         let mut closing = Closing::new();
         let mut found = Vec::new();
         let mut inner = Vec::new();
@@ -1203,10 +1228,34 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
                     .filter(|e| e.1 == "p1-s4")
                     .map(|e| (e.0, e.2, e.3)),
             );
+            if restart_after == Some(place) {
+                closing = Closing::recorded(&log.entries());
+            }
+        }
+        let entries = log.entries();
+        for (at, (_, entry)) in entries.iter().enumerate() {
+            let Entry::Verified(v) = entry else { continue };
+            let What::Evidence {
+                order,
+                publisher: Some(publisher),
+                ..
+            } = &v.what
+            else {
+                continue;
+            };
+            assert!(
+                binds(
+                    &entries[..at],
+                    order.as_str(),
+                    "ledger-b",
+                    publisher.as_str()
+                ),
+                "a label rests on a binding of its from-node the log already holds"
+            );
         }
         (found, inner)
     };
-    let (matching, inner) = run("250000000");
+    let (matching, inner) = run("250000000", None);
     assert_eq!(
         matching[0],
         [],
@@ -1230,29 +1279,39 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
         )],
         "the second, in turn, as the value leaves it to the destination"
     );
+    let closes = [
+        (
+            "ev-ord-1-3.in.3".to_owned(),
+            EvidenceGrade::PublicRecord,
+            None,
+        ),
+        (
+            "ev-ord-1-3".to_owned(),
+            EvidenceGrade::Statement,
+            Some("b-co".to_owned()),
+        ),
+        (
+            "ev-ord-1-4.out.3".to_owned(),
+            EvidenceGrade::PublicRecord,
+            None,
+        ),
+    ];
     assert_eq!(
-        inner,
-        [
-            (
-                "ev-ord-1-3".to_owned(),
-                EvidenceGrade::Statement,
-                Some("b-co".to_owned())
-            ),
-            (
-                "ev-ord-1-4.in.3".to_owned(),
-                EvidenceGrade::PublicRecord,
-                None
-            ),
-            (
-                "ev-ord-1-4.out.3".to_owned(),
-                EvidenceGrade::PublicRecord,
-                None
-            ),
-        ],
+        inner, closes,
         "the exchange closes on the movements in and out; mid-route inside `ledger-b`, its statement is the word of \
-         `ledger-b`'s publisher, which the exchange is a provider of: labelled so, a statement"
+         `ledger-b`'s publisher, which the exchange is a provider of: labelled so, a statement, once the movement \
+         into `ledger-b`, naming it, binds the node in the log"
     );
-    let (mismatching, inner) = run("249999999");
+    let (restarted, inner) = run("250000000", Some(3));
+    assert_eq!(
+        restarted, matching,
+        "a restart inside `ledger-b` replays alike"
+    );
+    assert_eq!(
+        inner, closes,
+        "rebuilt from the log after the exchange settles, Core records its movement into `ledger-b` once"
+    );
+    let (mismatching, inner) = run("249999999", None);
     assert_eq!(
         mismatching[1], matching[1],
         "the first node's replay stands"
@@ -1270,12 +1329,9 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
     );
     assert_eq!(
         inner,
-        [(
-            "ev-ord-1-3".to_owned(),
-            EvidenceGrade::Statement,
-            Some("b-co".to_owned())
-        )],
-        "a node caught misreporting: its exchange gets no public record of in and out"
+        closes[..2],
+        "a node caught misreporting: its exchange keeps the movement into it that bound the label, and gets no \
+         public record out"
     );
 }
 
@@ -1785,6 +1841,41 @@ fn settles_of(log: &Log, order: &str, segment: &str) -> Vec<What> {
         .collect()
 }
 
+/// Whether `history` binds `node` as a private node of `order` published by `publisher`, as the contract reads it:
+/// evidence of the order whose public movement names the node, resting on a verified statement by the publisher
+/// about the order.
+fn binds(history: &[(Receipt, Entry)], order: &str, node: &str, publisher: &str) -> bool {
+    let for_publisher = |r: &Receipt| {
+        history.iter().any(|(receipt, e)| match e {
+            Entry::Stated(s) if receipt == r => {
+                matches!(s.attribution, Attribution::Verified { .. })
+                    && s.attribution.maker().party.as_str() == publisher
+                    && s.about
+                        .as_ref()
+                        .and_then(|a| a.order.as_ref())
+                        .is_some_and(|o| o.as_str() == order)
+            }
+            _ => false,
+        })
+    };
+    history.iter().any(|(_, e)| match e {
+        Entry::Verified(v) => match &v.what {
+            What::Evidence {
+                order: o,
+                movement: Some(movement),
+                rests_on,
+                ..
+            } => {
+                o.as_str() == order
+                    && movement.node.as_ref().is_some_and(|n| n.as_str() == node)
+                    && rests_on.iter().any(for_publisher)
+            }
+            _ => false,
+        },
+        Entry::Stated(_) => false,
+    })
+}
+
 /// Whether `entry` is about `order`.
 fn about(entry: &Entry, order: &str) -> bool {
     serde_json::to_string(entry)
@@ -1794,8 +1885,9 @@ fn about(entry: &Entry, order: &str) -> bool {
 
 /// A route to a rail declared private, from a public node: the deposit's movement on `polygon` is the movement into
 /// the private rail, and the part closes on it and the reserve's statement, the record naming the rail it went
-/// into. A route ending inside the node has no replay, and the reserve's statement is its publisher's word, labelled
-/// with the publisher and graded a statement (`AC-35`, `REQ-ORD-41`).
+/// into. A route ending inside the node has no replay. The deposit starts at a public node, which the log never binds
+/// as the publisher's private node: the reserve's statement names no publisher, graded as its own pieces earn
+/// (`AC-35`, `REQ-ORD-41`).
 // verifies: REQ-ORD-33, REQ-ORD-41
 #[test]
 fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
@@ -1863,13 +1955,13 @@ fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
             (
                 "ev-ord-1-1.reserve".into(),
                 "p1-s2".into(),
-                EvidenceGrade::Statement,
+                EvidenceGrade::SignedByProvider,
                 "reserve-wallet".into(),
                 None
             ),
         ]
     );
-    // The route ends inside the rail: the reserve's statement is its publisher's word, labelled so, and a statement.
+    // The deposit runs from `polygon`, a public node no binding makes `wallet-co`'s: nothing is labelled.
     let publishers: Vec<Option<String>> = d
         .iter()
         .filter_map(|w| match w {
@@ -1879,7 +1971,7 @@ fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
             _ => None,
         })
         .collect();
-    assert_eq!(publishers, [None, Some("wallet-co".to_owned())]);
+    assert_eq!(publishers, [None, None]);
     assert_eq!(replays(&d), [], "ending inside the node: no replay");
 }
 
