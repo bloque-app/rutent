@@ -554,7 +554,13 @@ The production assembly is `F-030`'s.
 - **`F-025`** reviews and records. Its records sit under its feature directory, and its probes are test files of
   `components/prov/`. `T-025-01` and `T-025-02` share a wave and write separate files. Every other finding of its
   becomes a new row of the feature that owns the file.
-- **Rows added after review** edit the module of the row whose gap they close, and the lead runs two that edit one module one after the other, saying so in the feature's notes: `stuck/` (`T-020-16`, then `T-020-17`, then `T-020-20`), `segments/` (`T-020-14` and `T-020-24`), `arrival/` (`T-020-19`), `closing/` (`T-020-22`) and `quote/` with intake (`T-020-14`, `T-020-15`). Where such a row must edit `F-024`'s files, as `T-020-14` does to swap the assembly's charge check for Core's own, or a `DEC-20` path, its Work and commit body say so.
+- **Rows added after review** edit the module of the row whose gap they close, and the lead runs two that edit
+  one module one after the other, saying so in the feature's notes: `stuck/` (`T-020-16`, then `T-020-17`, then
+  `T-020-20`), `segments/` (`T-020-14` and `T-020-24`), `arrival/` (`T-020-19`), `closing/` (`T-020-22`) and
+  `quote/` with intake (`T-020-14`, `T-020-15`). Five of them also edit `F-024`'s files or a `DEC-20` path, and
+  each commit body says so: `T-020-14` swaps the assembly's charge check for Core's own; `T-020-15` and
+  `T-020-16` add a check to `conformance/scenarios/`; `T-020-18` changes the role suite and the stand-in reserve;
+  `T-020-19` makes the assembly's arrival port hand Core the signed notice.
 - **Shared manifests:** a feature adds only its own dependency lines to a crate's `Cargo.toml`, the root
   `Cargo.lock` and `licences/RECORD`, and says so in its commit body.
 
@@ -956,8 +962,9 @@ flowchart LR
   OW --> CR --> AL & SR2 & AD
   HO --> SR2
   NR --> VS
-  S6 & I & V & AL & SR2 & AD & VS --> T
-  OW & HO & CR & AD --> SR
+  OW --> VS
+  S6 & I & OW & HO & AL & SR2 & AD & VS --> T
+  H & V & OW & HO & CR & SR2 & AD --> SR
 ```
 
 | Wave | Tasks |
