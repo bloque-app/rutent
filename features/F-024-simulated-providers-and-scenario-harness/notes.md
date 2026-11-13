@@ -348,8 +348,10 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   pipefail). `--no-fail-fast` makes every crate's tests run, so a verifier in a later crate is not left unrun by an
   earlier failure.
 - **Results are read from libtest's lines** (`test <path> ... ok|FAILED|ignored`; stable has no JSON output). A test
-  is matched **by the last `::` segment of its name**, and passes only if every run of that name passed. A name that
-  failed once, was ignored once or never ran does not pass, so a duplicate name fails closed. Doc tests and tests in
+  is matched **by the last `::` segment of its name**, and passes only if every run of that name passed and the run
+  read at least as many lines for it as the sources hold tests of that name. A name that failed once, was ignored
+  once, never ran, or has a namesake that never ran (42 names occur in more than one file today, most of them the
+  module-format experiment's copies of `components/prov`'s tests) does not pass, so the join fails closed. Doc tests and tests in
   the separate workspaces (the module guests, the VOS twin) print no line the root run reads, so a verifier there is
   not counted until a later row adds its own results.
 - The two new steps are in the `ci` job after Test: report mode (`--results ... --base .evidence-base`, appended to
@@ -360,7 +362,8 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 - **The default of the form item is applied: ratchet only.** The file is not added to `CODEOWNERS` as a path of its
   own (`.github/` is already guarded, and `PLAN.md` §4.4 gives `T-025-05` the review of the file), so no edit of
-  the file needs the owner's click at the release into `main`. What guards it is the comparison below.
+  the file needs the owner's click at the release into `main`. What guards it is the comparison below, which covers
+  the moves the row names (the switch, and `m3` to `m4` or `deferred`) and no others; see the gaps.
 - **The comparison fails whatever the switch says.** A head that reads `strict: off` against a `develop` that reads
   `on` fails; so does an identifier `develop` classes as `m3`, `partly` or `inspect` and the head classes as `m4` or
   `deferred`, unless its new entry cites a row of the plan that this change made to place it there. Were the
@@ -402,8 +405,20 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 - **A deferral excused by §7.1 alone** (`REQ-EXT-1`'s shape) isn't an excuse for a move: the ratchet takes only a
   `DEC-n` for a deferral, so moving an `m3` row to `deferred` by a §7.1 or `ASM-n` change fails until a decision
   carries it. Fail-closed; the owner of the plan can add the decision.
+- **Weakening inside `M3`'s classes is not compared.** An `m3` row may become `partly` (with any `form:` item) or
+  `inspect` (with any named check) and the ratchet does not report it; `PLAN.md` §4.4 asks for the other moves
+  only. **Owner: `T-025-05`**, whose review of the file covers it, or the owner on the form item if the default
+  changes.
 - **The comparison starts once the scope file is on `develop`**, as the row says: until then `T-024-10`'s
   restriction to the `strict:` line and `T-025-05`'s review cover it.
+
+### Run on this branch's tests
+
+`evidence-table --ci --results <the chain's cargo test output>` reads 1509 passing test lines and prints 232 rows:
+184 verified, 5 inspected, 1 partly met, 27 unverified (no test is tagged with them yet; the scenario rows
+`T-024-03` to `T-024-08` tag most of them), 3 M4's and 12 deferred. It exits 0 with the switch off and 0 findings
+against the base. The binary's test of the switch runs on directories of its own, so it reads the same whether the
+real file says `off` or `on` when `T-024-10` flips it.
 
 ### Rule-off table (each rule switched off once; the test that went red)
 
@@ -419,6 +434,7 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 | reclassification reported | `m3 row reclassified against develop is reported`, and the two excuse tests |
 | the excuse needs a placement `develop`'s row lacked | `unrelated edit to a row naming the id does not excuse a reclassification` |
 | an `M4` move needs both cited rows | `reclassification is excused only by a changed placement that it cites` |
+| a tagged test's namesake that never ran | `tagged test with a namesake that never ran is not a verifier` |
 | results fail closed on a name seen twice | `results are joined by the last segment of a test name and fail closed` |
 | only `M3`'s classes are held to the ratchet | `m3 row reclassified against develop is reported` |
 | `--ci` with the switch off fails on the table's findings | `the strict flag always runs strictly and the ci run follows the switch` |

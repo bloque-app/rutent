@@ -236,12 +236,13 @@ impl Results {
         Results { by_name }
     }
 
-    /// A test passed when it ran at least once and every run of that name passed. A name that ran twice and
-    /// failed once, or was ignored once, does not pass: the join is by name, so it fails closed.
-    pub fn passed(&self, name: &str) -> bool {
-        self.by_name
-            .get(name)
-            .is_some_and(|runs| !runs.is_empty() && runs.iter().all(|o| *o == Outcome::Passed))
+    /// A test passed when it ran at least as many times as the sources hold a test of that name (`expected`), and
+    /// every run passed. The join is by name, so it fails closed: a name that failed once, was ignored once, or
+    /// has a twin that never ran (in a workspace the root run doesn't reach, or behind a `cfg`) does not pass.
+    pub fn passed(&self, name: &str, expected: usize) -> bool {
+        self.by_name.get(name).is_some_and(|runs| {
+            runs.len() >= expected.max(1) && runs.iter().all(|o| *o == Outcome::Passed)
+        })
     }
 
     /// The word for a test's state in the report: `passed`, `failed`, `ignored` or `not run`.
@@ -305,6 +306,10 @@ fn cited_ids(cites: &[String]) -> impl Iterator<Item = &String> {
 /// Joins the scope file to the specification's identifiers, the tags and the results.
 pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
     let mut report = Report::default();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for test in inputs.tests {
+        *counts.entry(test.name.as_str()).or_default() += 1;
+    }
     let at = |row: &Row| format!("scope:{}", row.line);
 
     for id in inputs.universe {
@@ -328,7 +333,7 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
             ));
         }
         let (status, detail) = match row.class {
-            Class::M3 => m3_line(row, inputs, &mut report.table, &location),
+            Class::M3 => m3_line(row, inputs, &counts, &mut report.table, &location),
             Class::Partly => {
                 let item = row.cites.iter().find_map(|c| c.strip_prefix("form:"));
                 if item.is_none_or(str::is_empty) {
@@ -391,6 +396,7 @@ pub fn build(scope: &Scope, inputs: &Inputs<'_>) -> Report {
 fn m3_line(
     row: &Row,
     inputs: &Inputs<'_>,
+    counts: &BTreeMap<&str, usize>,
     out: &mut Vec<Finding>,
     location: &str,
 ) -> (String, String) {
@@ -424,7 +430,7 @@ fn m3_line(
     }
     let passing: Vec<&&TestCase> = tagged
         .iter()
-        .filter(|t| inputs.results.passed(&t.name))
+        .filter(|t| inputs.results.passed(&t.name, counts[t.name.as_str()]))
         .collect();
     if passing.is_empty() {
         let states: Vec<String> = tagged

@@ -67,6 +67,7 @@ jobs:
           path: .evidence-base
           persist-credentials: false
       - name: Evidence table, report mode (T-024-09)
+        shell: bash
         run: |
           cargo run --locked --quiet -p rutent-records --bin evidence-table -- \
             --results "$RUNNER_TEMP/test-results.txt" --base .evidence-base | tee -a "$GITHUB_STEP_SUMMARY"

@@ -429,6 +429,22 @@ fn unrelated_edit_to_a_row_naming_the_id_does_not_excuse_a_reclassification() {
 
 // verifies: DEC-21
 #[test]
+fn tagged_test_with_a_namesake_that_never_ran_is_not_a_verifier() {
+    // Two sources hold a test of one name, and the run read one line for it: the other never ran (a workspace the
+    // root run doesn't reach, or a module behind a cfg), so the line proves nothing about the tagged one.
+    let two = format!("{}\n{}", sources(&[]), sources(&[]));
+    let found = table_findings(&scope_text("off", &[]), &two, &all_pass());
+    assert!(
+        some_with(&found, "no-passing-verifier", "AC-1"),
+        "{found:?}"
+    );
+    let twice = format!("{}\n{}", all_pass(), all_pass());
+    let found = table_findings(&scope_text("off", &[]), &two, &twice);
+    assert!(found.is_empty(), "every copy ran and passed: {found:?}");
+}
+
+// verifies: DEC-21
+#[test]
 fn results_are_joined_by_the_last_segment_of_a_test_name_and_fail_closed() {
     let results = Results::parse(&doc(&[
         "running 3 tests",
@@ -441,12 +457,12 @@ fn results_are_joined_by_the_last_segment_of_a_test_name_and_fail_closed() {
         "test result: FAILED. 3 passed; 1 failed",
     ]));
     assert!(
-        !results.passed("one"),
+        !results.passed("one", 1),
         "a name that failed once passes nowhere"
     );
-    assert!(results.passed("two"));
-    assert!(!results.passed("slow") && !results.passed("skipped"));
-    assert!(!results.passed("absent"));
+    assert!(results.passed("two", 1));
+    assert!(!results.passed("slow", 1) && !results.passed("skipped", 1));
+    assert!(!results.passed("absent", 1));
     assert_eq!(results.state("absent"), "not run");
     assert_eq!(results.state("one"), "failed");
     assert!(Results::parse("nothing here").is_empty());
@@ -533,48 +549,60 @@ fn the_strict_flag_always_runs_strictly_and_the_ci_run_follows_the_switch() {
     }
 }
 
+/// A directory holding what the table reads of a repository: the documents and a scope file, but no source.
+fn records_dir(label: &str, scope: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rutent-evidence-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("conformance/evidence")).unwrap();
+    std::fs::create_dir_all(dir.join("adr")).unwrap();
+    for file in ["SPEC.md", "PLAN.md", "PRODUCT.md"] {
+        std::fs::copy(root().join(file), dir.join(file)).unwrap();
+    }
+    for entry in std::fs::read_dir(root().join("adr")).unwrap().flatten() {
+        std::fs::copy(entry.path(), dir.join("adr").join(entry.file_name())).unwrap();
+    }
+    std::fs::write(dir.join("conformance/evidence/v0-scope"), scope).unwrap();
+    dir
+}
+
 // verifies: DEC-17
 #[test]
 fn the_ci_run_fails_a_switch_turned_off_against_a_base_that_has_it_on() {
-    let base = std::env::temp_dir().join(format!("rutent-evidence-base-{}", std::process::id()));
-    std::fs::create_dir_all(base.join("conformance/evidence")).unwrap();
-    for file in ["SPEC.md", "PLAN.md"] {
-        std::fs::copy(root().join(file), base.join(file)).unwrap();
-    }
-    let scope = std::fs::read_to_string(root().join("conformance/evidence/v0-scope")).unwrap();
-    std::fs::write(
-        base.join("conformance/evidence/v0-scope"),
-        scope.replace("strict: off", "strict: on"),
-    )
-    .unwrap();
-    let out = binary()
-        .arg("--ci")
-        .arg("--base")
-        .arg(&base)
-        .output()
-        .expect("the binary runs");
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    // The head and the base are directories of their own, so the test reads the same whatever the real file says.
+    let real = std::fs::read_to_string(root().join("conformance/evidence/v0-scope")).unwrap();
+    let off = real.replace("strict: on", "strict: off");
+    let on = off.replace("strict: off", "strict: on");
+    assert_ne!(off, on);
+    let head = records_dir("head", &off);
+    let base = records_dir("base", &on);
+    let run = |head: &Path, base: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_evidence-table"))
+            .args(["--ci", "--root"])
+            .arg(head)
+            .arg("--base")
+            .arg(base)
+            .output()
+            .expect("the binary runs");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    let (code, stdout) = run(&head, &base);
+    assert_eq!(code, Some(1), "{stdout}");
     assert!(stdout.contains("strict-switch-off"), "{stdout}");
+    // Off against off compares clean, and the switch keeps the table's own findings from failing the run.
+    let (code, stdout) = run(&head, &head);
+    assert_eq!(code, Some(0), "{stdout}");
 
     // A base that has no scope file yet is skipped, and said so; a base with no plan can't be read at all.
     std::fs::remove_file(base.join("conformance/evidence/v0-scope")).unwrap();
-    let out = binary()
-        .arg("--ci")
-        .arg("--base")
-        .arg(&base)
-        .output()
-        .expect("the binary runs");
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    let (code, stdout) = run(&head, &base);
+    assert_eq!(code, Some(0), "{stdout}");
     assert!(stdout.contains("not on the base yet"), "{stdout}");
     std::fs::remove_file(base.join("PLAN.md")).unwrap();
-    let out = binary()
-        .arg("--ci")
-        .arg("--base")
-        .arg(&base)
-        .output()
-        .expect("the binary runs");
-    assert_eq!(out.status.code(), Some(2));
+    let (code, _) = run(&head, &base);
+    assert_eq!(code, Some(2));
     std::fs::remove_dir_all(&base).unwrap();
+    std::fs::remove_dir_all(&head).unwrap();
 }
