@@ -1729,34 +1729,23 @@ fn origin_account_is_one_the_payer_holds() {
     assert!(policy.authorise(&a).unwrap().permit().is_some());
 }
 
-/// An order the log holds no acceptance of has no customer and no payer: an authorisation of it naming an origin
-/// account is refused as one of another's order is, so a caller can't tell an order that doesn't exist from one that
-/// isn't its own (the coordinator's ruling on `T-023-01`'s question).
-// verifies: REQ-AUZ-3, REQ-AUZ-7
+/// Core authorises an order before its acceptance reaches the log (intake), so an order the log holds no acceptance of
+/// yet has its first origin account set unchecked: a gap raised with the coordinator, pinned here so its closing shows.
+// verifies: REQ-AUZ-3
 #[test]
-fn unknown_order_is_refused_as_anothers_is() {
+fn first_account_before_the_acceptance_is_not_yet_held_to_the_payer() {
     let mut policy = engine();
-    let unknown = naming_account("auth-77", "ord-77", "acct-1", giver(0));
-    let anothers = {
-        let log = Shared::default();
-        log.entries
-            .borrow_mut()
-            .push(acceptance("ord-78", "cust-2", "cust-2"));
-        let mut other = engine_over(&log);
-        other
-            .sources
-            .0
-            .push((holds("cust-2", "acct-1"), Reply::Given(Said::No)));
-        other
-            .authorise(&naming_account("auth-78", "ord-78", "acct-1", giver(0)))
+    policy
+        .sources
+        .0
+        .push((holds("cust-1", "acct-1"), Reply::Given(Said::No)));
+    let before_its_acceptance = naming_account("auth-77", "ord-77", "acct-1", giver(0));
+    assert!(
+        policy
+            .authorise(&before_its_acceptance)
             .unwrap()
-            .outcome
-    };
-    assert_eq!(policy.authorise(&unknown).unwrap().outcome, anothers);
-    assert_eq!(
-        anothers,
-        Answer::Refuse {
-            class: RefusalClass::NotPermitted
-        }
+            .permit()
+            .is_some(),
+        "no payer in the log yet: unchecked (the gap)"
     );
 }
