@@ -369,7 +369,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 91] = [
+pub static RELATIONS: [Relation; 93] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -1744,12 +1744,21 @@ pub static RELATIONS: [Relation; 91] = [
         name: "hand-on-links-an-unopened-order",
         spec: &["REQ-ORD-43", "REQ-ORD-13"],
         quantifier: Quantifier::Exists,
-        refusal: "a hand-on links an order not yet opened: its own route, handed on from it, opens it",
+        refusal: "a hand-on links an order not yet opened nor handed on to: its own route, handed on from it, opens it",
         fields: &[],
         // None to point to: a `handed_on` whose linked order already has a route is refused, so the value handed
-        // on never joins an order opened on its own.
-        cites: |e, h| match input(e).map(|i| &i.observed) {
-            Some(Observed::HandedOn { linked_order, .. }) if opened(linked_order.as_str(), h) => {
+        // on never joins an order opened on its own; nor one to an order a hand-on taken back closed; nor one to an
+        // order another part or order already handed on to: one hand-on per linked order.
+        cites: |e, h| match input(e) {
+            Some(
+                i @ crate::state_machine::RecordedInput {
+                    observed: Observed::HandedOn { linked_order, .. },
+                    ..
+                },
+            ) if opened(linked_order.as_str(), h)
+                || taken_back(linked_order.as_str(), h)
+                || handed_on_to_by_another(i, linked_order.as_str(), h) =>
+            {
                 by_fields(0)
             }
             _ => none(),
@@ -1763,22 +1772,24 @@ pub static RELATIONS: [Relation; 91] = [
         refusal: "an order a hand-on links is opened only by its own route, handed on from the order it links",
         fields: &[],
         // None to point to: a `route_chosen` opening an order an earlier `handed_on` names as its linked order is
-        // refused unless it names that order as `handed_on_from`.
+        // refused unless it names that order as `handed_on_from`; and one opening an order a hand-on taken back
+        // closed is refused for good: the linked order was refused, so it never opens.
         cites: |e, h| match input(e) {
             Some(
                 i @ crate::state_machine::RecordedInput {
                     observed: Observed::RouteChosen { handed_on_from, .. },
                     ..
                 },
-            ) if !opened(i.subject.order.as_str(), h)
-                && h.iter().any(|(_, x)| {
-                    verified(x).and_then(input).is_some_and(|earlier| {
-                        matches!(&earlier.observed, Observed::HandedOn { linked_order, .. }
+            ) if taken_back(i.subject.order.as_str(), h)
+                || (!opened(i.subject.order.as_str(), h)
+                    && h.iter().any(|(_, x)| {
+                        verified(x).and_then(input).is_some_and(|earlier| {
+                            matches!(&earlier.observed, Observed::HandedOn { linked_order, .. }
                             if linked_order.as_str() == i.subject.order.as_str()
                                 && handed_on_from.as_ref().map(|f| f.as_str())
                                     != Some(earlier.subject.order.as_str()))
-                    })
-                }) =>
+                        })
+                    })) =>
             {
                 by_fields(0)
             }
@@ -2035,6 +2046,10 @@ pub static RELATIONS: [Relation; 91] = [
                 "publisher",
                 "a publisher's word inside its private node is labelled with the publisher its statement states for, graded a statement",
             ),
+            (
+                "private",
+                "a publisher's word is labelled only where the log binds the segment's from-node as that publisher's private node",
+            ),
         ],
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::ReversalCompleted { .. }) => by_fields(0),
@@ -2070,6 +2085,56 @@ pub static RELATIONS: [Relation; 91] = [
         answers: |_, _, _, _| Match::NotTarget,
     },
     Relation {
+        name: "reversal-carrier-is-of-a-reversal-owed",
+        spec: &["REQ-ORD-11", "REQ-ORD-3"],
+        quantifier: Quantifier::Exists,
+        refusal: "a reversal's carrier is recorded only for a segment owing its reversal",
+        fields: &[],
+        // None to point to: the segment failed, the state machine took it, and its reversal isn't complete.
+        cites: |e, h| match &e.what {
+            What::ReversalCarrier { order, segment, .. }
+                if !part_of_segment(order.as_str(), segment.as_str(), h)
+                    .and_then(|part| standing(order.as_str(), part, h))
+                    .is_some_and(|s| s.reversal_owed(segment.as_str())) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "reversal-carrier-stands-once-the-party-at-fault-carries-it",
+        spec: &["REQ-ORD-11"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "once the party at fault carries a reversal, no other carrier is recorded for it",
+        fields: &[],
+        // The provider carries a reversal until a showing of another's fault is accepted, so the provider followed by
+        // the customer or the operator is the rule; once either stands, nothing replaces it. The same entry again is
+        // a retry.
+        cites: |e, _| match &e.what {
+            What::ReversalCarrier { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::ReversalCarrier { order, segment, .. },
+                Some(
+                    other @ What::ReversalCarrier {
+                        order: o,
+                        segment: s,
+                        carrier,
+                        ..
+                    },
+                ),
+            ) => judge(
+                o == order && s == segment && *carrier != Carrier::Provider && other != &e.what,
+                &[],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
         name: "reversal-carrier-rests-on-its-showing",
         spec: &["REQ-ORD-11", "REQ-AUD-2"],
         quantifier: Quantifier::Exists,
@@ -2080,6 +2145,10 @@ pub static RELATIONS: [Relation; 91] = [
                 "a provider's showing of fault is a verified statement",
             ),
             (
+                "result",
+                "a provider's showing of fault is its result, not a question or another shape",
+            ),
+            (
                 "maker",
                 "a provider's showing of fault is the failed segment's provider's own statement",
             ),
@@ -2088,6 +2157,11 @@ pub static RELATIONS: [Relation; 91] = [
                 "a provider's showing of fault is about its order and segment",
             ),
         ],
+        // The showing is the provider's result for the failed segment, whose failure the state machine took (the
+        // segment owes its reversal: `reversal-carrier-is-of-a-reversal-owed`). That its `fault` names the carrier
+        // can't be read here: the log holds a salted commitment to the result's bytes, not the bytes, so matching the
+        // fault behind it belongs to whoever holds the kept bytes (Core on taking the showing, a checker on
+        // `Evidence::fetch`).
         cites: |e, _| match &e.what {
             What::ReversalCarrier {
                 showing: Some(showing),
@@ -2100,6 +2174,7 @@ pub static RELATIONS: [Relation; 91] = [
                 true,
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
                     segment_provider(order, segment, h) == Some(maker_provider(s)),
                     s.about.as_ref().is_some_and(|a| {
                         a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
@@ -2110,32 +2185,138 @@ pub static RELATIONS: [Relation; 91] = [
         },
     },
     Relation {
-        name: "reversal-carrier-is-accepted-by-the-party-at-fault",
-        spec: &["REQ-ORD-11", "REQ-AUZ-1"],
+        name: "reversal-carrier-rests-on-its-acceptance",
+        spec: &["REQ-ORD-11", "REQ-ORD-32", "REQ-AUZ-1"],
         quantifier: Quantifier::Exists,
-        refusal: "a reversal carried by the party at fault is accepted by that party: the customer, or the operator",
-        fields: &[],
-        // None to point to: the customer's acceptance is one of the order's requester's party in the customer's
-        // role, the operator's one of the deployment operator's party in the operator's role.
-        cites: |e, h| match &e.what {
+        refusal: "a reversal carried by the party at fault rests on that party's act of acceptance in this log",
+        fields: &[
+            (
+                "party",
+                "an acceptance of fault is the party at fault's own: the requester's party in the customer's role, or the deployment operator's",
+            ),
+            (
+                "yes",
+                "a customer's acceptance of fault is its verified yes about the order and segment",
+            ),
+            (
+                "session",
+                "a customer's acceptance of fault is given in its session, still open",
+            ),
+            (
+                "shape",
+                "a customer's acceptance of fault is its fault-acceptance statement, not a dispute or another shape",
+            ),
+            (
+                "showing",
+                "an acceptance of fault names the showing it accepts, by its transaction, and comes after it",
+            ),
+        ],
+        // The act, not a writer's label: the customer's own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in
+        // its session, as an acceptance rests on its yes and session; the operator's `accept_fault` command, by the
+        // deployment operator's party. Either comes after the showing it accepts: the customer's statement is about
+        // the showing's transaction and received after it, the command appended after it.
+        cites: |e, _| match &e.what {
             What::ReversalCarrier {
-                order,
-                carrier,
-                accepted_by: Some(by),
+                accepted_with: Some(act),
+                session,
                 ..
-            } if !match carrier {
-                Carrier::Customer => {
-                    by.role == Role::Customer && requester_of(order.as_str(), h) == Some(&by.party)
+            } => {
+                let mut cites = alloc::vec![by_receipt(act, 0)];
+                if session.is_some() {
+                    cites.extend(by_fields(1));
                 }
-                Carrier::Operator => by.role == Role::Operator && by.party == e.operator.party,
-                Carrier::Provider => false,
-            } =>
-            {
-                by_fields(0)
+                cites
             }
             _ => none(),
         },
-        answers: |_, _, _, _| Match::NotTarget,
+        answers: |e, c, t, h| {
+            let What::ReversalCarrier {
+                order,
+                segment,
+                carrier,
+                showing,
+                accepted_by: Some(by),
+                session,
+                ..
+            } = &e.what
+            else {
+                return Match::NotTarget;
+            };
+            let requester = requester_of(order.as_str(), h);
+            // The showing, and where the log holds it.
+            let shown = showing
+                .as_ref()
+                .and_then(|r| h.iter().position(|(x, _)| x == r).map(|at| (at, &h[at].1)));
+            let after_showing = |entry: &Entry| match (shown, position(entry, h)) {
+                (Some((at, _)), Some(here)) => here > at,
+                _ => false,
+            };
+            match (c.index, carrier, t) {
+                (0, Carrier::Customer, Entry::Stated(s)) => judge(
+                    true,
+                    &[
+                        by.role == Role::Customer
+                            && requester == Some(&by.party)
+                            && requester == Some(&s.attribution.maker().party),
+                        matches!(s.attribution, Attribution::Verified { .. })
+                            && s.about.as_ref().is_some_and(|a| {
+                                a.order.as_ref() == Some(order)
+                                    && a.segment.as_ref() == Some(segment)
+                            }),
+                        true,
+                        s.what.statement.as_str() == super::types::FAULT_ACCEPTANCE_SHAPE,
+                        after_showing(t)
+                            && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
+                                s.received_at.unix_nanos() > showing.received_at.unix_nanos()
+                                    && showing
+                                        .about
+                                        .as_ref()
+                                        .and_then(|a| a.transaction.as_ref())
+                                        .is_some_and(|tx| {
+                                            s.about.as_ref().and_then(|a| a.transaction.as_ref())
+                                                == Some(tx)
+                                        })
+                            }),
+                    ],
+                ),
+                (0, Carrier::Operator, Entry::Verified(v)) => match &v.what {
+                    What::Command {
+                        command: OperatorCommand::AcceptFault,
+                        order: o,
+                        subject,
+                    } => judge(
+                        o.as_ref() == Some(order) && subject.as_ref() == Some(segment),
+                        &[
+                            v.who.role == Role::Operator
+                                && v.who.party == e.operator.party
+                                && &v.who == by,
+                            true,
+                            true,
+                            true,
+                            after_showing(t),
+                        ],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                (1, Carrier::Customer, _) => match permitted(t).map(|v| &v.what) {
+                    Some(What::OpenSession {
+                        request,
+                        opened: Some(opened),
+                    }) => judge(
+                        Some(&opened.session) == session.as_ref(),
+                        &[
+                            requester == Some(&request.holder),
+                            true,
+                            opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
+                            true,
+                            true,
+                        ],
+                    ),
+                    _ => Match::NotTarget,
+                },
+                _ => Match::NotTarget,
+            }
+        },
     },
     Relation {
         name: "decision-record-chains-to-its-orders-previous",
@@ -3321,7 +3502,7 @@ pub static RELATIONS: [Relation; 91] = [
         name: "part-waits-for-value-in-motion",
         spec: &["REQ-ORD-2", "INV-4", "REQ-ORD-27", "REQ-AUZ-4"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a part's route restarts, it waits at its floor, is handed on, is resolved or its order ends on request only while none of its value is in motion",
+        refusal: "a part's route restarts, it waits at its floor, is handed on, is resolved, its start is undone or its order ends on request only while none of its value is in motion",
         fields: &[],
         // One predicate (`in_motion`) for every input and decision that would move a part's value from where it
         // sits: a value-moving effect in motion may still deliver, and moving around it moves the same value twice.
@@ -3330,13 +3511,19 @@ pub static RELATIONS: [Relation; 91] = [
             _ => none(),
         },
         answers: |e, _, t, h| {
-            // An end requested ends every part of the order: none may have value in motion.
+            // An end requested ends the parts that haven't passed their first segment, as the state machine does:
+            // none of those may have value in motion. A part past it goes on, and its moves with it.
             if let Some(order) = ended_on_request(e) {
                 if verified(t).is_some_and(|v| v.what == e.what) {
                     return Match::NotTarget;
                 }
                 return if order_parts(order, h)
                     .into_iter()
+                    .filter(|part| {
+                        standing(order, part, h).is_some_and(|s| {
+                            s.part.state == crate::state_machine::OrderState::NotPastFirstSegment
+                        })
+                    })
                     .any(|part| in_motion(order, part, t, h) == Match::Holds)
                 {
                     Match::Holds
@@ -3557,12 +3744,20 @@ pub static RELATIONS: [Relation; 91] = [
                 "a holding account's withdrawal record is a verified statement",
             ),
             (
+                "result",
+                "a holding account's withdrawal record is its provider's result",
+            ),
+            (
                 "maker",
                 "a holding account's withdrawal record is its holder's own statement",
             ),
             (
                 "order",
-                "a holding account's withdrawal record is about the order whose value it held",
+                "a holding account's withdrawal record is about the linked order whose route it starts",
+            ),
+            (
+                "transaction",
+                "a holding account's withdrawal record names the withdrawal's signed transaction",
             ),
         ],
         cites: |e, _| match &e.what {
@@ -3570,19 +3765,14 @@ pub static RELATIONS: [Relation; 91] = [
             _ => none(),
         },
         answers: |e, _, t, _| match (&e.what, stated(t)) {
-            (
-                What::HoldingWithdrawal {
-                    handed_on_from,
-                    holder,
-                    ..
-                },
-                Some(s),
-            ) => judge(
+            (What::HoldingWithdrawal { order, holder, .. }, Some(s)) => judge(
                 true,
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
                     maker_provider(s) == holder,
-                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(handed_on_from),
+                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
                 ],
             ),
             _ => Match::NotTarget,
@@ -3627,17 +3817,23 @@ pub static RELATIONS: [Relation; 91] = [
         name: "one-start-per-holding-record",
         spec: &["REQ-ORD-40", "INV-5"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a holding account's record proves one start: no other withdrawal record cites it",
+        refusal: "a holding account's record proves one start: no other withdrawal record is of its transaction",
         fields: &[],
+        // Keyed by the withdrawal's signed transaction, the one its record names, not the record's receipt or its
+        // salted commitment, which the same record kept again would change; the same entry again is a retry.
         cites: |e, _| match &e.what {
             What::HoldingWithdrawal { .. } => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|t| &t.what)) {
             (
                 What::HoldingWithdrawal { record, .. },
                 Some(other @ What::HoldingWithdrawal { record: r, .. }),
-            ) => judge(r == record && other != &e.what, &[]),
+            ) => judge(
+                record_transaction(record, h).is_some_and(|x| record_transaction(r, h) == Some(x))
+                    && other != &e.what,
+                &[],
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -4070,6 +4266,40 @@ fn first_segment_of(order: &str, segment: &str, history: &History) -> bool {
     })
 }
 
+/// The transaction the stated record at `record` names, where it names one.
+fn record_transaction<'a>(record: &Receipt, history: &'a History) -> Option<&'a Id> {
+    entry_at(record, history)
+        .and_then(stated)?
+        .about
+        .as_ref()?
+        .transaction
+        .as_ref()
+}
+
+/// Whether another part or order than `hand_on`'s already handed on to `linked` in `history`.
+fn handed_on_to_by_another(
+    hand_on: &crate::state_machine::RecordedInput,
+    linked: &str,
+    history: &History,
+) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|earlier| {
+            matches!(&earlier.observed, Observed::HandedOn { linked_order, .. } if linked_order.as_str() == linked)
+                && (earlier.subject.order != hand_on.subject.order
+                    || earlier.subject.part != hand_on.subject.part)
+        })
+    })
+}
+
+/// Whether `order` is closed in `history` by a hand-on taken back: a `hand_on_taken_back` names it as the linked
+/// order, refused, so it never opens.
+fn taken_back(order: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(verified(e).and_then(input).map(|i| &i.observed),
+            Some(Observed::HandOnTakenBack { linked_order }) if linked_order.as_str() == order)
+    })
+}
+
 /// Whether `order` is opened in `history`: a `route_chosen` of it is recorded.
 fn opened(order: &str, history: &History) -> bool {
     history.iter().any(|(_, e)| {
@@ -4330,15 +4560,20 @@ fn motion_subject<'a>(
         } => decided_part(order.as_str(), carries_out, history).map(|p| (order.as_str(), p)),
         _ => {
             let i = input(entry)?;
-            matches!(
+            let part = i.subject.part.as_ref()?.as_str();
+            // A start undone on a part still open fails it, so it waits for value in motion as a restart does.
+            let undoes_its_start = matches!(i.observed, Observed::ReversalCompleted { .. })
+                && standing(i.subject.order.as_str(), part, history)
+                    .is_some_and(|s| crate::state_machine::rules::undoes_an_open_part(&s.part, i));
+            (matches!(
                 i.observed,
                 Observed::RouteRecalculated { .. }
                     | Observed::DestinationChanged { .. }
                     | Observed::WaitingAtFloor {}
                     | Observed::HandedOn { .. }
-            )
-            .then_some(())?;
-            Some((i.subject.order.as_str(), i.subject.part.as_ref()?.as_str()))
+            ) || undoes_its_start)
+                .then_some(())?;
+            Some((i.subject.order.as_str(), part))
         }
     }
 }
@@ -4540,17 +4775,95 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
                 })
             })
     });
+    // And only where the log binds the segment's from-node as private, and the publisher as that node's: a replay of
+    // the order naming the node, or evidence of the order whose public movement names it, resting on a verified
+    // statement stating for the publisher. A label alone binds nothing.
+    let bound = publisher.as_ref().is_some_and(|p| {
+        i.subject.segment.as_ref().is_some_and(|segment| {
+            from_node_of(i.subject.order.as_str(), segment.as_str(), history)
+                .is_some_and(|node| private_node_of(i.subject.order.as_str(), node, p, history))
+        })
+    });
+    let labelled = labelled && bound;
     let another = moved.is_some_and(|(provider, origin)| {
         whose != provider || (whose == origin && *grade == EvidenceGrade::Statement) || labelled
     });
     match found {
         Match::Mismatch(i) => Match::Mismatch(i),
+        _ if publisher.is_some() && !bound => Match::Mismatch(6),
         _ if publisher.is_some() && !labelled => Match::Mismatch(5),
         _ if !another => Match::Mismatch(2),
         _ if !made => Match::Mismatch(3),
         _ if !reserve && !labelled => Match::Mismatch(4),
         _ => Match::Holds,
     }
+}
+
+/// The inner node `segment` of `order` starts from, by its plans in `history`, where it starts from one.
+fn from_node_of<'a>(order: &str, segment: &str, history: &'a History) -> Option<&'a str> {
+    history
+        .iter()
+        .filter_map(|(_, e)| verified(e).and_then(input))
+        .filter(|i| i.subject.order.as_str() == order)
+        .find_map(|i| {
+            let plan: Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+                Observed::RouteChosen { parts, .. } => {
+                    parts.iter().flat_map(|p| p.segments.iter()).collect()
+                }
+                Observed::RouteRecalculated { segments, .. }
+                | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+                _ => Vec::new(),
+            };
+            plan.into_iter()
+                .find(|s| s.segment_id.as_str() == segment)
+                .and_then(|s| match &s.from.node {
+                    crate::provider_role::NodeRef::Inner(node) => Some(node.as_str()),
+                    crate::provider_role::NodeRef::Outer(_) => None,
+                })
+        })
+}
+
+/// Whether the log binds `node` as a private node of `order` published by `publisher`: a `replay` of the order
+/// naming the node, resting on a verified statement about the order stating for the publisher, or evidence of the
+/// order whose public movement names the node, resting on one.
+fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -> bool {
+    // A verified statement stating for the publisher, about this order: a replay's exit result, or the evidence's
+    // own statement, of another order binds nothing here.
+    let for_publisher = |r: &Receipt| {
+        entry_at(r, history).and_then(stated).is_some_and(|s| {
+            matches!(s.attribution, Attribution::Verified { .. })
+                && &s.attribution.maker().party == publisher
+                && s.about
+                    .as_ref()
+                    .and_then(|a| a.order.as_ref())
+                    .is_some_and(|o| o.as_str() == order)
+        })
+    };
+    history
+        .iter()
+        .any(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::Replay {
+                order: o,
+                nodes,
+                rests_on,
+                ..
+            }) => {
+                o.as_str() == order
+                    && nodes.iter().any(|n| n.as_str() == node)
+                    && for_publisher(rests_on)
+            }
+            Some(What::Evidence {
+                order: o,
+                movement: Some(movement),
+                rests_on,
+                ..
+            }) => {
+                o.as_str() == order
+                    && movement.node.as_ref().is_some_and(|n| n.as_str() == node)
+                    && rests_on.iter().any(for_publisher)
+            }
+            _ => false,
+        })
 }
 
 /// The reserve at the from-node of `segment` of `order`: the provider of the segment of its plans that delivered

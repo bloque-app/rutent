@@ -4483,7 +4483,7 @@
           "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
@@ -4528,7 +4528,7 @@
           "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
