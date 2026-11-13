@@ -1487,8 +1487,10 @@ fn record_in(recorded: &[u8]) -> Option<DecisionRecord> {
 /// whole, before any part's own authorisation, so it is read for the order as a whole. The engine holds each of the
 /// order's moves to the same view, for the move's own part.
 fn authorised(entries: &[Entry], order: &Id, authorisation: &Id) -> Option<Authorisation> {
+    // The order's customer, as its acceptance names it, is the one whose new terms replace those in force.
+    let requester = rutent_core_authz::funds::parties_in(entries, order).map(|p| p.requester);
     rutent_core_authz::funds::Authorised::of(rutent_core_authz::funds::permitted_in(entries))
-        .in_force_as(order, None, authorisation)
+        .in_force_as(order, None, requester.as_ref(), authorisation)
         .cloned()
 }
 

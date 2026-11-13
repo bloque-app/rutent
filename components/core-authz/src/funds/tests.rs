@@ -116,6 +116,26 @@ impl PolicyLog for Shared {
     }
 }
 
+/// What the log holds, with the fixtures' orders' acceptances before it, each with a receipt of its own.
+impl crate::stuck::Receipted for Shared {
+    fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+        if matches!(*self.wiring.borrow(), Wiring::Fails) {
+            return Err(ReadFailure::Unavailable);
+        }
+        let mut entries = crate::funds::acceptances_of_the_fixtures();
+        entries.extend(self.entries.borrow().iter().enumerate().map(|(i, e)| {
+            let receipt = serde_json::from_value(serde_json::json!({
+                "log": "log-main",
+                "index": 9_000 + i,
+                "entry": {"algorithm": "sha-256", "value": format!("{:064x}", 9_000 + i)},
+            }))
+            .unwrap();
+            (receipt, e.clone())
+        }));
+        Ok(entries)
+    }
+}
+
 impl Recorded for Shared {
     fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
         let wiring = self.wiring.borrow().clone();
@@ -1565,5 +1585,178 @@ fn segment_two_plans_list_is_of_the_part_the_first_places_it_in() {
     assert_eq!(
         part_in([&changed, &chosen], &id("ord-1"), &segment),
         Some(id("p2"))
+    );
+}
+
+/// `acceptance` of `order`, as the log records it: requested by `requester` and paid by `payer`.
+fn acceptance(order: &str, requester: &str, payer: &str) -> Entry {
+    let mut entry = read_fixture("verified-entry-of-an-agents-acceptance");
+    entry["what"]["order"] = order.into();
+    entry["what"]["acceptance"] = format!("acc-of-{order}").into();
+    entry["what"]["parties"]["requester"] = requester.into();
+    entry["what"]["parties"]["payer"] = payer.into();
+    serde_json::from_value(entry).unwrap()
+}
+
+/// The fixtures' authorisation, as `id` for `order`, naming `origin_account`, given by `by`.
+fn naming_account(id_: &str, order: &str, origin_account: &str, by: Actor) -> Authorisation {
+    Authorisation {
+        authorisation: id(id_),
+        order: id(order),
+        origin_account: Some(id(origin_account)),
+        given_by: by,
+        ..authorisation()
+    }
+}
+
+/// The account's register's word that `party` holds `account`.
+fn holds(party: &str, account: &str) -> Need {
+    Need {
+        input: id(party),
+        from: Source::Account(id(account)),
+    }
+}
+
+/// New terms are the customer's alone, as the contract's `by_the_customer` reads it: one acting for the order's
+/// requester, as its acceptance names it, in the customer's role. A login of another party stating the customer's role,
+/// whom the roles' register of requesters wrongly lets through, sets no new terms; nor does the requester's own party
+/// in the operator's role. The requester itself does.
+// verifies: REQ-AUZ-3, INV-10
+#[test]
+fn new_terms_are_the_order_requesters_alone() {
+    let mut policy = engine();
+    assert!(
+        policy
+            .authorise(&authorisation())
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    let anew = |n: &str, by: Actor| Authorisation {
+        authorisation: id(n),
+        destination: Destination {
+            account: id("acct-ref-10"),
+            ..authorisation().destination
+        },
+        given_by: by,
+        ..authorisation()
+    };
+    for (n, by) in [
+        (
+            "auth-by-another-customer",
+            actor("cust-2", "cust-2", Role::Customer, ActorKind::Person),
+        ),
+        (
+            "auth-by-the-requesters-operator",
+            actor("cust-1", "cust-1-ops", Role::Operator, ActorKind::Person),
+        ),
+    ] {
+        assert_eq!(
+            policy.authorise(&anew(n, by.clone())).unwrap().outcome,
+            Answer::Refuse {
+                class: RefusalClass::NotPermitted
+            },
+            "{by:?}"
+        );
+    }
+    let by_the_customer = anew("auth-by-the-customer", giver(0));
+    assert!(
+        policy
+            .authorise(&by_the_customer)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+}
+
+/// Only the order's payer moves a part's origin account once one is in force (`only-the-payer-moves-the-origin-
+/// account`): on `ord-31`, paid by `payer-1` and requested by `cust-1`, the requester naming another account than the
+/// one in force, to redirect the payer's refund, is refused, and restating the account in force isn't. Where the payer
+/// is the requester (`ord-17`), it moves the account to one the account's register says it holds.
+// verifies: REQ-AUZ-3, REQ-ORD-17
+#[test]
+fn only_the_payer_moves_the_origin_account() {
+    let log = Shared::default();
+    log.entries
+        .borrow_mut()
+        .push(acceptance("ord-31", "cust-1", "payer-1"));
+    let mut policy = engine_over(&log);
+    let not_permitted = Answer::Refuse {
+        class: RefusalClass::NotPermitted,
+    };
+    let first = naming_account("auth-31", "ord-31", "acct-payer", giver(0));
+    assert!(policy.authorise(&first).unwrap().permit().is_some());
+    let redirect = naming_account("auth-31-redirect", "ord-31", "acct-requester", giver(0));
+    assert_eq!(policy.authorise(&redirect).unwrap().outcome, not_permitted);
+    let restated = naming_account("auth-31-again", "ord-31", "acct-payer", giver(0));
+    assert!(policy.authorise(&restated).unwrap().permit().is_some());
+
+    let first = naming_account("auth-17-acct", "ord-17", "acct-1", giver(0));
+    assert!(policy.authorise(&first).unwrap().permit().is_some());
+    let moved = naming_account("auth-17-moved", "ord-17", "acct-2", giver(0));
+    assert!(policy.authorise(&moved).unwrap().permit().is_some());
+}
+
+/// An authorisation that sets or moves an origin account is held to the payer's own accounts, which the log can't
+/// see: the account's register must say the payer holds it. One the payer doesn't hold is refused, and so is one the
+/// register knows nothing of, as one of another's is; a register out of reach leaves it not known.
+// verifies: REQ-AUZ-3, REQ-ORD-17
+#[test]
+fn origin_account_is_one_the_payer_holds() {
+    let not_permitted = Answer::Refuse {
+        class: RefusalClass::NotPermitted,
+    };
+    for (said, answer) in [
+        (Reply::Given(Said::No), not_permitted),
+        (Reply::Missing, not_permitted),
+        (
+            Reply::Unreachable,
+            Answer::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable,
+            },
+        ),
+    ] {
+        let mut policy = engine();
+        policy
+            .sources
+            .0
+            .push((holds("cust-1", "acct-not-theirs"), said.clone()));
+        let a = naming_account("auth-17-acct", "ord-17", "acct-not-theirs", giver(0));
+        assert_eq!(policy.authorise(&a).unwrap().outcome, answer, "{said:?}");
+    }
+    let mut policy = engine();
+    let a = naming_account("auth-17-acct", "ord-17", "acct-theirs", giver(0));
+    assert!(policy.authorise(&a).unwrap().permit().is_some());
+}
+
+/// An order the log holds no acceptance of has no customer and no payer: an authorisation of it naming an origin
+/// account is refused as one of another's order is, so a caller can't tell an order that doesn't exist from one that
+/// isn't its own (the coordinator's ruling on `T-023-01`'s question).
+// verifies: REQ-AUZ-3, REQ-AUZ-7
+#[test]
+fn unknown_order_is_refused_as_anothers_is() {
+    let mut policy = engine();
+    let unknown = naming_account("auth-77", "ord-77", "acct-1", giver(0));
+    let anothers = {
+        let log = Shared::default();
+        log.entries
+            .borrow_mut()
+            .push(acceptance("ord-78", "cust-2", "cust-2"));
+        let mut other = engine_over(&log);
+        other
+            .sources
+            .0
+            .push((holds("cust-2", "acct-1"), Reply::Given(Said::No)));
+        other
+            .authorise(&naming_account("auth-78", "ord-78", "acct-1", giver(0)))
+            .unwrap()
+            .outcome
+    };
+    assert_eq!(policy.authorise(&unknown).unwrap().outcome, anothers);
+    assert_eq!(
+        anothers,
+        Answer::Refuse {
+            class: RefusalClass::NotPermitted
+        }
     );
 }

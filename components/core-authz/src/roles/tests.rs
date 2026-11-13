@@ -88,6 +88,15 @@ impl crate::funds::Recorded for Kept {
     }
 }
 
+/// What the log holds, with the fixtures' orders' acceptances before it.
+impl crate::stuck::Receipted for Kept {
+    fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, crate::funds::ReadFailure> {
+        let mut entries = crate::funds::acceptances_of_the_fixtures();
+        entries.extend(self.0.iter().cloned());
+        Ok(entries)
+    }
+}
+
 impl Log for Kept {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         self.admit(entry.entry().clone(), Through::General)

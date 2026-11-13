@@ -49,6 +49,32 @@
 //! of other terms that engines racing over one log left there. An authorisation's id names that authorisation only: the same
 //! again, while in force, is decided again; anything else under it, or it once replaced, is refused.
 //!
+//! # The customer, and the payer's account
+//!
+//! The order's parties are its acceptance's, the one record the contract names for them, read from the log on policy's
+//! handle ([`crate::stuck::Receipted`], [`parties_in`]). The register holds two of the contract's own readings to them
+//! (`contracts/src/core_internal/relations.rs`):
+//!
+//! - **The customer gives new terms** (`by_the_customer`): one acting for the order's requester, the party its
+//!   acceptance names, in the customer's role. A stated role alone is not the customer, nor is the requester's party
+//!   in another role. Only its authorisation replaces a part's terms in force.
+//! - **Only the payer moves the origin account** (`only-the-payer-moves-the-origin-account`): a part's origin account
+//!   is set by the first permitted authorisation speaking for it, then only by the payer's, one acting for the party
+//!   the acceptance names as payer, in the customer's role. Anyone else's naming another account than the one in force
+//!   is refused, so a requester can't redirect a payer's refund. And an authorisation that sets or moves an origin
+//!   account is held to the payer's own accounts (core-internal's README, "Who moves the origin account"): the
+//!   account's register must say the payer holds it (`Source::Account`), which the log can't.
+//!
+//! Default, reversible: `T-021-03`'s fixed rule still lets a customer-role actor authorise only for the order's
+//! requester, so a payer that isn't the requester gives no authorisation at all, and on such an order no one moves the
+//! origin account once it is set. The contract lets that payer move it; letting it through needs a word on the payer
+//! that a fixed rule can read, a source or a change to that rule, which is the coordinator's to place.
+//!
+//! An order the log holds no acceptance of has no requester and no payer, so no one gives it new terms or sets its
+//! origin account; such an authorisation is refused `not_permitted`, as one of another's order is, so a caller can't
+//! tell an order that doesn't exist from one that isn't its own (the coordinator's ruling on `T-023-01`'s question).
+//! An account the register knows nothing of is refused the same way.
+//!
 //! # Where the register's rule stands
 //!
 //! These rules read what the log holds as permitted, which a fixed rule, a plain function of the request, can't, so
@@ -60,14 +86,15 @@
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, PolicyLog};
 use rutent_contracts::core_internal::{
-    Action, Answer, Authorisation, Decision, Entry, Outcome, RefusalClass, Role, VerifiedEntry,
-    What,
+    Action, Answer, Authorisation, Decision, Entry, NotKnownCause, Outcome, Parties, RefusalClass,
+    Role, VerifiedEntry, What,
 };
 use rutent_contracts::router_api::Id;
 
 use rutent_contracts::state_machine::Observed;
 
-use crate::engine::{Asked, Engine, Policy, Sources};
+use crate::engine::{Asked, Engine, Need, Policy, Reply, Said, Source, Sources};
+use crate::stuck::Receipted;
 
 /// Why the log couldn't be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +171,32 @@ pub fn part_in<'a>(
     })
 }
 
+/// The parties of `order` the log's acceptance of it names, where `entries` hold one: its requester, its beneficiary
+/// and its payer. The order's parties are its acceptance's, the record the contract names for them.
+pub fn parties_in<'a>(entries: impl IntoIterator<Item = &'a Entry>, order: &Id) -> Option<Parties> {
+    entries.into_iter().find_map(|entry| match entry {
+        Entry::Verified(VerifiedEntry {
+            what: What::Acceptance {
+                order: o, parties, ..
+            },
+            ..
+        }) if o == order => Some(parties.clone()),
+        _ => None,
+    })
+}
+
+/// Whether the order's customer gave `a`: one acting for `requester`, the party its acceptance names, in the
+/// customer's role. Core-internal's `by_the_customer`.
+fn by_the_customer(a: &Authorisation, requester: Option<&Id>) -> bool {
+    a.given_by.role == Role::Customer && requester == Some(&a.given_by.party)
+}
+
+/// Whether the order's payer gave `a`: one acting for `payer`, the party its acceptance names as payer, in the
+/// customer's role. Core-internal's `by_the_payer`.
+fn by_the_payer(a: &Authorisation, payer: Option<&Id>) -> bool {
+    a.given_by.role == Role::Customer && payer == Some(&a.given_by.party)
+}
+
 /// The authorisations `entries` hold as permitted, in their order: each verified `authorise` entry whose outcome is
 /// `permitted`. The one definition every [`Recorded`] reads by. It is core-internal's own reading of a permitted
 /// entry, the private `permitted` its relations hold an effect to (`contracts/src/core_internal/relations.rs`): a
@@ -201,7 +254,12 @@ impl Authorised {
     /// with other terms replaces them, and the ids under them, only where the customer gave it. Another's authorisation
     /// of other terms, which the engine refuses and only engines racing over one log can leave there, never sets the
     /// terms: it is in force under none. A replacement naming one part replaces nothing for another.
-    fn standing(&self, order: &Id, part: Option<&Id>) -> Option<(&Authorisation, Vec<&Id>)> {
+    fn standing(
+        &self,
+        order: &Id,
+        part: Option<&Id>,
+        requester: Option<&Id>,
+    ) -> Option<(&Authorisation, Vec<&Id>)> {
         let mut terms: Option<&Authorisation> = None;
         let mut ids: Vec<&Id> = Vec::new();
         for a in self
@@ -215,7 +273,7 @@ impl Authorised {
                         ids.push(&a.authorisation);
                     }
                 }
-                Some(_) if a.given_by.role != Role::Customer => {}
+                Some(_) if !by_the_customer(a, requester) => {}
                 _ => {
                     terms = Some(a);
                     ids = vec![&a.authorisation];
@@ -225,9 +283,38 @@ impl Authorised {
         terms.map(|t| (t, ids))
     }
 
-    /// The terms in force for `part` of `order`, or for the order as a whole where `part` is none.
-    pub fn in_force(&self, order: &Id, part: Option<&Id>) -> Option<&Authorisation> {
-        self.standing(order, part).map(|(terms, _)| terms)
+    /// The terms in force for `part` of `order`, or for the order as a whole where `part` is none, its customer
+    /// `requester` (the party its acceptance names).
+    pub fn in_force(
+        &self,
+        order: &Id,
+        part: Option<&Id>,
+        requester: Option<&Id>,
+    ) -> Option<&Authorisation> {
+        self.standing(order, part, requester)
+            .map(|(terms, _)| terms)
+    }
+
+    /// The origin account in force for `part` of `order`, its payer `payer`: the one the first permitted authorisation
+    /// speaking for the part names, then each later one the payer gave. `None` where no authorisation speaks for it;
+    /// `Some(None)` where the one in force names no account. Core-internal's `origin_account_in_force`.
+    fn origin_in_force(
+        &self,
+        order: &Id,
+        part: Option<&Id>,
+        payer: Option<&Id>,
+    ) -> Option<Option<&Id>> {
+        let mut current: Option<Option<&Id>> = None;
+        for a in self
+            .permitted
+            .iter()
+            .filter(|a| &a.order == order && speaks_for(a, part))
+        {
+            if current.is_none() || by_the_payer(a, payer) {
+                current = Some(a.origin_account.as_ref());
+            }
+        }
+        current
     }
 
     /// The parts `a` is held to: those it names; or, naming none, the order as a whole and every part an authorisation
@@ -268,9 +355,10 @@ impl Authorised {
         &self,
         order: &Id,
         part: Option<&Id>,
+        requester: Option<&Id>,
         authorisation: &Id,
     ) -> Option<&Authorisation> {
-        self.standing(order, part)
+        self.standing(order, part, requester)
             .filter(|(_, ids)| ids.contains(&authorisation))
             .map(|(terms, _)| terms)
     }
@@ -295,7 +383,7 @@ impl Authorised {
     /// no part, so outside every authorisation.
     pub(crate) fn refuses_move(
         &mut self,
-        log: &mut impl Recorded,
+        log: &mut (impl Recorded + Receipted),
         action: &Action,
     ) -> Option<RefusalClass> {
         let Action::MoveValue {
@@ -319,8 +407,13 @@ impl Authorised {
         let Some(part) = part else {
             return Some(RefusalClass::OutsideAuthorisation);
         };
+        let Ok(entries) = log.receipted() else {
+            return Some(RefusalClass::MissingInput);
+        };
+        let parties = parties_in(entries.iter().map(|(_, e)| e), order);
+        let requester = parties.as_ref().map(|p| &p.requester);
         let inside = self
-            .in_force_as(order, Some(&part), authorisation)
+            .in_force_as(order, Some(&part), requester, authorisation)
             .is_some_and(|a| {
                 a.destination == route.destination
                     && a.to_asset == route.to_asset
@@ -334,27 +427,55 @@ impl Authorised {
     /// Why `a` is refused, where it is, by the log as read now: its id names another authorisation, or one no longer
     /// in force for every part it is held to; or it is a new authorisation naming anything else than the terms in
     /// force for any part it is held to, given by anyone but the customer.
-    fn refuses(&mut self, log: &mut impl Recorded, a: &Authorisation) -> Option<RefusalClass> {
+    fn refuses(
+        &mut self,
+        log: &mut impl Recorded,
+        a: &Authorisation,
+        parties: Option<&Parties>,
+    ) -> Option<RefusalClass> {
         if let Err(class) = self.read(log) {
             return Some(class);
         }
+        let requester = parties.map(|p| &p.requester);
+        let payer = parties.map(|p| &p.payer);
         if let Some(given) = self
             .permitted
             .iter()
             .find(|p| p.authorisation == a.authorisation)
         {
             let again = given == a
-                && self
-                    .held(a)
-                    .into_iter()
-                    .all(|part| self.in_force_as(&a.order, part, &a.authorisation).is_some());
+                && self.held(a).into_iter().all(|part| {
+                    self.in_force_as(&a.order, part, requester, &a.authorisation)
+                        .is_some()
+                });
             return (!again).then_some(RefusalClass::NotPermitted);
         }
         let anew = self.held(a).into_iter().any(|part| {
-            self.in_force(&a.order, part)
+            self.in_force(&a.order, part, requester)
                 .is_some_and(|current| !same_terms(current, a))
         });
-        (anew && a.given_by.role != Role::Customer).then_some(RefusalClass::NotPermitted)
+        if anew && !by_the_customer(a, requester) {
+            return Some(RefusalClass::NotPermitted);
+        }
+        // Only the payer moves a part's origin account once one is in force.
+        let moves_the_account = self.held(a).into_iter().any(|part| {
+            self.origin_in_force(&a.order, part, payer)
+                .is_some_and(|current| current != a.origin_account.as_ref())
+        });
+        (moves_the_account && !by_the_payer(a, payer)).then_some(RefusalClass::NotPermitted)
+    }
+
+    /// The account `a` sets or moves as a part's origin account, where it does: one it names that isn't the one in
+    /// force for a part it is held to, or for a part with none in force yet.
+    fn sets_account<'a>(&self, a: &'a Authorisation, payer: Option<&Id>) -> Option<&'a Id> {
+        let account = a.origin_account.as_ref()?;
+        self.held(a)
+            .into_iter()
+            .any(|part| {
+                self.origin_in_force(&a.order, part, payer)
+                    .is_none_or(|current| current != Some(account))
+            })
+            .then_some(account)
     }
 }
 
@@ -374,12 +495,89 @@ pub(crate) fn plan_of_the_fixtures_move() -> Entry {
     serde_json::from_value(plan).unwrap()
 }
 
+/// The acceptances of the fixtures' orders, as a log would hold them, each with a receipt of its own: `ord-17` and
+/// `ord-18` requested and paid by `cust-1`, `ord-19` by `acme-treasury`. For other rows' test logs, whose authorisations
+/// are of them: the register reads the order's customer and payer from its acceptance.
+#[cfg(test)]
+pub(crate) fn acceptances_of_the_fixtures() -> Vec<(rutent_contracts::core_internal::Receipt, Entry)>
+{
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/valid/verified-entry-of-an-agents-acceptance.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let accepted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    [
+        ("ord-17", "cust-1"),
+        ("ord-18", "cust-1"),
+        ("ord-19", "acme-treasury"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(n, (order, party))| {
+        let mut entry = accepted.clone();
+        entry["what"]["order"] = order.into();
+        entry["what"]["acceptance"] = format!("acc-of-{order}").into();
+        entry["what"]["parties"]["requester"] = party.into();
+        entry["what"]["parties"]["payer"] = party.into();
+        let index = 8_000 + n;
+        let receipt = serde_json::from_value(serde_json::json!({
+            "log": "log-main",
+            "index": index,
+            "entry": {"algorithm": "sha-256", "value": format!("{index:064x}")},
+        }))
+        .unwrap();
+        (receipt, serde_json::from_value(entry).unwrap())
+    })
+    .collect()
+}
+
 /// The consultation's `answer`, held to the register's `refusal`: a refusal stands, and otherwise the register's
 /// refusal, where it has one, is the answer. It never permits.
 pub(crate) fn held(answer: Answer, refusal: Option<RefusalClass>) -> Answer {
     match (answer, refusal) {
         (Answer::Refuse { .. }, _) | (_, None) => answer,
         (_, Some(class)) => Answer::Refuse { class },
+    }
+}
+
+impl<L: PolicyLog + Recorded + Receipted, P, S: Sources> Engine<L, P, S> {
+    /// The consultation's `consulted` answer to `a`, held to the register as the log holds it: the order's parties
+    /// from its acceptance, the terms and the origin account in force, and the account's register's word that the
+    /// payer holds an account `a` sets. It never permits.
+    fn held_to_the_register(&mut self, consulted: Answer, a: &Authorisation) -> Answer {
+        let Ok(entries) = self.log.receipted() else {
+            return held(consulted, Some(RefusalClass::MissingInput));
+        };
+        let parties = parties_in(entries.iter().map(|(_, e)| e), &a.order);
+        if let Some(class) = self.authorised.refuses(&mut self.log, a, parties.as_ref()) {
+            return held(consulted, Some(class));
+        }
+        let payer = parties.as_ref().map(|p| &p.payer);
+        let Some(account) = self.authorised.sets_account(a, payer) else {
+            return consulted;
+        };
+        // An order with no acceptance names no payer: refused as one not the caller's is.
+        let Some(payer) = payer else {
+            return held(consulted, Some(RefusalClass::NotPermitted));
+        };
+        let need = Need {
+            input: payer.clone(),
+            from: Source::Account(account.clone()),
+        };
+        match self.sources.supply(&need) {
+            Reply::Given(Said::Yes) => consulted,
+            // An account the register knows nothing of looks as one of another's does.
+            Reply::Given(Said::No) | Reply::Missing => {
+                held(consulted, Some(RefusalClass::NotPermitted))
+            }
+            Reply::Unreachable => match consulted {
+                Answer::NotKnown { .. } => consulted,
+                _ => Answer::NotKnown {
+                    cause: NotKnownCause::VerifierUnreachable,
+                },
+            },
+        }
     }
 }
 
@@ -392,11 +590,16 @@ impl<L, P, S> Engine<L, P, S> {
 
 /// An authorisation decided through the one consultation, held to the register as the log holds it, and recorded
 /// before it is answered. A permitted one reaches the register only through the log: the next read finds it there.
-impl<L: PolicyLog + Recorded, P: Policy, S: Sources> Authorisations for Engine<L, P, S> {
+impl<L: PolicyLog + Recorded + Receipted, P: Policy, S: Sources> Authorisations
+    for Engine<L, P, S>
+{
     fn authorise(&mut self, authorisation: &Authorisation) -> Result<Decision, AppendFailure> {
         let a = authorisation;
         let consulted = self.consult(Asked::Authorise(a));
-        let answer = held(consulted, self.authorised.refuses(&mut self.log, a));
+        let answer = match consulted {
+            Answer::Refuse { .. } => consulted,
+            _ => self.held_to_the_register(consulted, a),
+        };
         let what = |decision| What::Authorise {
             authorisation: a.clone(),
             decision,

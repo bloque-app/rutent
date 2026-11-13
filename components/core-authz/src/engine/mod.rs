@@ -655,7 +655,9 @@ pub(crate) fn charge_outcome(
 /// Every action that moves value, posts a route or changes the catalogue is decided here, and only on the policy
 /// service's ruling. A stuck order's value never comes this way: a request carrying `resolve_stuck` fails its check
 /// and is refused unrecorded, since it travels only as a stuck move (`REQ-AUZ-4`).
-impl<L: PolicyLog + crate::funds::Recorded, P: Policy, S: Sources> Decisions for Engine<L, P, S> {
+impl<L: PolicyLog + crate::funds::Recorded + crate::stuck::Receipted, P: Policy, S: Sources>
+    Decisions for Engine<L, P, S>
+{
     fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         // A move acts only inside the authorisation in force for its order, as the log policy appends to holds it
@@ -744,12 +746,14 @@ mod tests {
 
     impl crate::stuck::Receipted for Taking {
         fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
-            Ok(self
-                .0
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (nth_receipt(i), e.clone()))
-                .collect())
+            let mut entries = crate::funds::acceptances_of_the_fixtures();
+            entries.extend(
+                self.0
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (nth_receipt(i), e.clone())),
+            );
+            Ok(entries)
         }
     }
 
@@ -759,6 +763,12 @@ mod tests {
     impl PolicyLog for Refusing {
         fn append_decision(&mut self, _: &DecisionEntry) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
+        }
+    }
+
+    impl crate::stuck::Receipted for Refusing {
+        fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
+            Err(ReadFailure::Unavailable)
         }
     }
 
@@ -809,7 +819,11 @@ mod tests {
 
     impl crate::stuck::Receipted for Guarded {
         fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, ReadFailure> {
-            Ok(self.0.clone())
+            // The fixtures' orders' acceptances, read before what the log took, as `held_and` reads their
+            // authorisation: the register's customer and payer for them (`T-021-04`).
+            let mut entries = crate::funds::acceptances_of_the_fixtures();
+            entries.extend(self.0.iter().cloned());
+            Ok(entries)
         }
     }
 
