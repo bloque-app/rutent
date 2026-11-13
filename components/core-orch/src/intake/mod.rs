@@ -159,7 +159,8 @@ pub struct Quote {
     pub to: Endpoint,
     /// What leaves `from`, in its unit.
     pub amount: PositiveAmount,
-    /// What the route delivers at `to`, in its unit, before the operator's fee: the sum of its parts'.
+    /// What arrives at `to`, in its unit, before the operator's fee: the price's `arrives`, the sum of its parts' last
+    /// segments' outputs less any charge a segment reports within what it gives out (`T-020-07`'s review).
     pub delivers: Amount,
     /// How it is shown: always a quote before execution, without a firm rate where a segment is over three days
     /// (`REQ-QTE-7`, `REQ-QTE-10`).
@@ -595,7 +596,7 @@ impl Intake {
             from: kept.request.route.from.clone(),
             to: kept.request.route.to.clone(),
             amount: kept.request.route.amount.clone(),
-            delivers: delivered(&candidate).ok_or(IntakeError::Unofferable)?,
+            delivers: price.arrives.clone(),
             shown_as,
             price,
         };
@@ -1019,16 +1020,6 @@ fn check_destination(
             outcome,
         },
     )
-}
-
-/// What a candidate delivers at the destination: the sum of its parts' last operations' amounts out.
-fn delivered(candidate: &Candidate) -> Option<Amount> {
-    candidate
-        .parts
-        .iter()
-        .try_fold(Amount::zero(), |sum, part| {
-            sum.checked_add(&part.operations.last().amount_out)
-        })
 }
 
 /// The digest of what was shown: SHA-256 of its RFC 8785 canonical JSON, the recorded decision's own rule.

@@ -158,8 +158,8 @@ fn operators_fee_is_shown_apart_from_the_quotes_sum() {
     let price = &quote.price;
     assert_eq!(price.providers_out, amount("1000"));
     assert_eq!(
-        quote.delivers, price.providers_out,
-        "what the route delivers is the quotes' sum"
+        quote.delivers, price.arrives,
+        "what arrives, before the operator's fee"
     );
     assert_eq!(price.operator_fee.formula, env.bounds.operator_fee);
     assert_eq!(price.operator_fee.amount, amount("15"));

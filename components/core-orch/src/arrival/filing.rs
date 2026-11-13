@@ -40,7 +40,7 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
 use rutent_contracts::router_api::{
-    Amount, Candidate, DecisionRecord, DropReason, Endpoint, Id, PositiveAmount, Router,
+    Candidate, DecisionRecord, DropReason, Endpoint, Id, PositiveAmount, Router,
 };
 use rutent_contracts::state_machine::{
     self as stm, Observed, PartPlan, RecordId, RecordedInput, SegmentPlan, Source, SourceKind,
@@ -724,9 +724,6 @@ impl Run {
                 return self.end(desk, refused.class);
             }
         }
-        let Some(delivers) = delivered(&candidate) else {
-            return self.end(desk, OrderRefusalClass::NoRouteRightNow);
-        };
         // Its price, as intake shows one (`T-020-07`): a price the route can't deliver is never shown.
         let price = match crate::quote::show(
             &chosen.record,
@@ -750,7 +747,7 @@ impl Run {
             from: self.filing.route.from.clone(),
             to: self.filing.route.to.clone(),
             amount: self.filing.route.amount.clone(),
-            delivers,
+            delivers: price.arrives.clone(),
             shown_as,
             price,
         };
@@ -831,16 +828,6 @@ impl Run {
         input.check().map_err(|_| ArrivalError::NotNow)?;
         Ok(input)
     }
-}
-
-/// What a candidate delivers at the destination: the sum of its parts' last operations' amounts out.
-fn delivered(candidate: &Candidate) -> Option<Amount> {
-    candidate
-        .parts
-        .iter()
-        .try_fold(Amount::zero(), |sum, part| {
-            sum.checked_add(&part.operations.last().amount_out)
-        })
 }
 
 /// The digest of the quote: SHA-256 of its RFC 8785 canonical JSON, intake's own rule for the quote it shows.
