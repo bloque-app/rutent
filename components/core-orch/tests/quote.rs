@@ -301,6 +301,66 @@ fn route_that_cant_hand_on_what_its_next_segment_was_quoted_at_is_not_shown() {
     assert!(route(987).chosen().is_none(), "a floor above what arrives");
 }
 
+/// An operation priced from its tuple's advertised price, whose reserve reports gross and counts its asset in eight
+/// decimals at its origin and six at its out end, states what arrives as it stands: the charge is not added back and
+/// taken off again. The reviewer's probe: 100 000 050 in, a price of 50, so 1 000 000 arrive, and the route is shown as
+/// that, not refused for giving out 1 000 001 of what it took in.
+// verifies: REQ-QTE-2, REQ-CAT-11
+#[test]
+fn a_priced_gross_operation_with_a_coarser_out_unit_is_shown_as_it_states_what_arrives() {
+    let origin = |provider: &str| {
+        json!({ "kind": "provider", "provider": provider, "publisher": format!("{provider}-group"),
+            "provider_version": "1.0.0", "module_version": "1.0.0" })
+    };
+    let tuple = |id: &str, from: Value, to: Value, decimals: (u8, u8)| {
+        json!({ "figure_id": id, "origin": origin(RESERVE), "age_seconds": 60,
+            "value": { "kind": "reserve_tuple", "tuple": {
+                "origin": from, "destination": to, "asset": "USDC",
+                "decimals": { "origin": decimals.0, "destination": decimals.1 },
+                "terms": { "bands": [{ "min": "1", "max": quote_support::WIDE }],
+                    "reporting": "gross", "required_inputs": [] } } } })
+    };
+    let price = |id: &str, tuple: &str, flat: &str| {
+        json!({ "figure_id": id, "origin": origin(RESERVE), "age_seconds": 60,
+            "value": { "kind": "price", "tuple": tuple, "fee": fee(flat, "0", "1"),
+                "settlement_seconds": 60 } })
+    };
+    let snapshot: rutent_contracts::router_api::CatalogueSnapshot = serde_json::from_value(json!({
+        "snapshot_id": "snap-priced",
+        "taken_at": quote_support::TAKEN_AT,
+        "figures": [
+            tuple("w0", json!({ "network": "polygon" }), json!("hub"), (8, 8)),
+            price("w0-price", "w0", "0"),
+            tuple("d0", json!("hub"), json!({ "network": "polygon" }), (8, 6)),
+            price("d0-price", "d0", "50"),
+        ],
+    }))
+    .unwrap();
+    let request: rutent_contracts::router_api::Request = serde_json::from_value(json!({
+        "request_id": "req-shortlist",
+        "round": { "kind": "shortlist" },
+        "from": { "node": { "network": "polygon" }, "asset": { "id": "USDC", "decimals": 8 } },
+        "to": { "node": { "network": "polygon" }, "asset": { "id": "USDC", "decimals": 6 } },
+        "amount": "100000050",
+        "objective": { "kind": "lowest_total_cost" },
+    }))
+    .unwrap();
+    let record = routed(&request, &snapshot, &bounds(fee("0", "0", "1"), &[]));
+    let candidate = record
+        .candidates()
+        .iter()
+        .find(|c| c.dropped.is_none())
+        .expect("the router lists the route");
+    assert_eq!(
+        candidate.parts.first().operations.last().amount_out,
+        amount("1000000"),
+        "the router states what arrives by the priced deposit"
+    );
+    let shown = show(&record, candidate, None).expect("what the priced operation states arrives");
+    assert_eq!(shown.arrives, amount("1000000"));
+    assert!(shown.within.is_empty(), "no charge is taken off twice");
+}
+
 /// A segment that keeps its asset gives out no more than it takes in less its charge, as `segments::judge` counts it.
 /// The reviewer's sequence: USDC to EURC through an exchange, the customer's floor 950 000; the EURC deposit takes in
 /// 900 000, net, with no fee, and its dry run claims 950 000 out. The router keeps it at the floor on that claim, and

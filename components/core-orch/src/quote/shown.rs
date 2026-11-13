@@ -204,18 +204,23 @@ pub fn show(
     candidate: &Candidate,
     floor: Option<&Amount>,
 ) -> Result<Shown, NotShown> {
-    let legs: Vec<Leg<'_>> = indexed(candidate)
-        .map(|(part, operation, evaluated)| Leg {
-            part,
-            operation,
-            evaluated,
-            amounts: Executed {
-                amount_in: evaluated.amount_in.amount().clone(),
-                fee: evaluated.fee.clone(),
-                amount_out: gives_out(record, evaluated),
-            },
+    let legs = indexed(candidate)
+        .map(|(part, operation, evaluated)| {
+            let answered = rests_on_an_answer(record, evaluated);
+            Ok(Leg {
+                part,
+                operation,
+                evaluated,
+                answered,
+                amounts: Executed {
+                    amount_in: evaluated.amount_in.amount().clone(),
+                    fee: evaluated.fee.clone(),
+                    amount_out: gives_out(record, evaluated, answered)
+                        .ok_or(NotShown::Unexplained)?,
+                },
+            })
         })
-        .collect();
+        .collect::<Result<Vec<Leg<'_>>, NotShown>>()?;
     let mut shown = compose(record, candidate, &legs, false, floor)?;
     // A segment over three days leaves the route no firm rate, and names it (`REQ-QTE-10`).
     if let Firmness::NoFirmRate { slow } = firmness(record, candidate) {
@@ -269,6 +274,7 @@ pub fn executed(
             part,
             operation,
             evaluated,
+            answered: true,
             amounts: segment.executed.clone(),
         });
     }
@@ -278,31 +284,44 @@ pub fn executed(
     compose(record, candidate, &legs, true, None)
 }
 
-/// What a quoted segment gives out, as its provider's answer states it. A record's operation states what arrives by it
-/// (router-api 4.0.0): under a tuple that reports `gross`, a segment that keeps its asset gives out its stated amount
-/// and the charge within it, restated in the out unit, so the lines shown and the hand-on rule (`handed_on`) read what
-/// a result would state, as they do once the segment has run. Any other operation gives out what it states.
-fn gives_out(record: &DecisionRecord, operation: &Operation) -> Amount {
+/// Whether an operation's amount was set by a provider's accepted answer, a dry run or a fresh quote it cites, and
+/// not by its tuple's advertised price.
+fn rests_on_an_answer(record: &DecisionRecord, operation: &Operation) -> bool {
+    operation.figures.iter().any(|id| {
+        record.snapshot.figures.iter().any(|f| {
+            &f.figure_id == id
+                && matches!(
+                    f.value,
+                    FigureValue::DryRun { .. } | FigureValue::FreshQuote { .. }
+                )
+        })
+    })
+}
+
+/// What a quoted segment gives out. A record's operation states what arrives (router-api 4.0.0). Where an accepted
+/// answer set it under a tuple that reports `gross`, a segment that keeps its asset gave out its stated amount and the
+/// charge within it, restated in the out unit: the round trip with the router's `Operation::stated_out`, so the lines
+/// shown and the hand-on rule read what a result would state, as they do once the segment has run. Any other
+/// operation, an exchange or one priced from its advertised price, gives out what it states. `None` where the charge
+/// can't be restated: nothing is shown on a figure that isn't one.
+fn gives_out(record: &DecisionRecord, operation: &Operation, answered: bool) -> Option<Amount> {
     let stated = operation.amount_out.clone();
     let gross = reporting_of(record, operation) == Some(Reporting::Gross)
         && operation.kind != OperationKind::Exchange;
-    if !gross {
-        return stated;
+    if !(answered && gross) {
+        return Some(stated);
     }
-    rutent_contracts::provider_role::charge_in_out_unit(
+    let charge = rutent_contracts::provider_role::charge_in_out_unit(
         &operation.fee.amount,
         operation.from.asset.decimals,
         operation.to.asset.decimals,
-    )
-    .and_then(|charge| {
-        let sum = stated
-            .as_str()
-            .parse::<u128>()
-            .ok()?
-            .checked_add(charge.parse().ok()?)?;
-        Amount::new(sum.to_string())
-    })
-    .unwrap_or(stated)
+    )?;
+    let sum = stated
+        .as_str()
+        .parse::<u128>()
+        .ok()?
+        .checked_add(charge.parse().ok()?)?;
+    Amount::new(sum.to_string())
 }
 
 /// One segment, where it sits, as the router evaluated it, and its amounts: quoted or executed.
@@ -310,6 +329,9 @@ struct Leg<'a> {
     part: u32,
     operation: u32,
     evaluated: &'a Operation,
+    /// Whether a provider's accepted answer set its amounts, as an executed segment's result does, and not its
+    /// tuple's advertised price, which states what arrives as it stands.
+    answered: bool,
     amounts: Executed,
 }
 
@@ -403,7 +425,13 @@ fn compose(
         let (part, operation) = (leg.part, leg.operation);
         let reporting =
             reporting_of(record, leg.evaluated).ok_or(NotShown::NoTerms { part, operation })?;
-        let hands_on = handed_on(leg.evaluated, reporting, &leg.amounts)
+        // Priced, not answered: what the operation states arrives, and no charge is taken from it again.
+        let counted = if leg.answered {
+            reporting
+        } else {
+            Reporting::Net
+        };
+        let hands_on = handed_on(leg.evaluated, counted, &leg.amounts)
             .ok_or(NotShown::Undeliverable { part, operation })?;
         if operation == 0 {
             amount_in = amount_in
