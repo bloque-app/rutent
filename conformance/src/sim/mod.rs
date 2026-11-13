@@ -125,6 +125,9 @@ pub struct Spec {
     pub role: Role,
     /// The provider identifier it advertises and signs as.
     pub provider: String,
+    /// Whether a reserve declares that it starts routes on automatic deposits (`REQ-ORD-13`).
+    #[serde(default)]
+    pub automatic_deposits: bool,
 }
 
 impl Spec {
@@ -133,7 +136,15 @@ impl Spec {
         Self {
             role,
             provider: provider.to_owned(),
+            automatic_deposits: false,
         }
+    }
+
+    /// This provider, a reserve declaring that it starts routes on automatic deposits.
+    #[must_use]
+    pub fn starting_routes_on_automatic_deposits(mut self) -> Self {
+        self.automatic_deposits = true;
+        self
     }
 
     /// Its publisher: one per provider, so two reserves on two private nodes have two (`DEC-24`).
@@ -172,11 +183,12 @@ impl Spec {
     pub fn make(&self, context: &SuiteContext) -> Box<dyn Standin> {
         let identity = self.identity();
         match self.role {
-            Role::Reserve => Box::new(Reserve::named(
+            Role::Reserve => Box::new(Reserve::declaring(
                 context,
                 &identity,
                 &self.bank(),
                 &self.ledger(),
+                self.automatic_deposits,
             )),
             Role::Exchange => Box::new(Exchange::named(context, &identity)),
             Role::Ramp => Box::new(Ramp::named(context, &identity)),

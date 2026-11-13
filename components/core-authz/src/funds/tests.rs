@@ -4,6 +4,7 @@
 
 use super::*;
 use proptest::prelude::*;
+use rutent_contracts::core_internal::Parties;
 use rutent_contracts::core_internal::calls::{DecisionEntry, Decisions};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, DecisionRequest, Destination, Entry, NotKnownCause, Outcome, Receipt,
@@ -173,9 +174,16 @@ impl Recorded for Shared {
 /// Sources that say yes to every input but those the test sets, so what is decided is this row's rule, the
 /// deployment's ruling and the fixed rules the test steers.
 #[derive(Default)]
-struct Sayings(Vec<(Need, Reply<Said>)>);
+struct Sayings(Vec<(Need, Reply<Said>)>, Vec<(Id, Parties)>);
 
 impl Sources for Sayings {
+    fn order_record(&mut self, order: &Id) -> Reply<Parties> {
+        self.1
+            .iter()
+            .find(|(o, _)| o == order)
+            .map_or(Reply::Missing, |(_, parties)| Reply::Given(parties.clone()))
+    }
+
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         self.0
             .iter()
@@ -1756,4 +1764,48 @@ fn first_authorisation_is_held_to_the_payers_accounts() {
         },
         "no acceptance in the log, no payer"
     );
+}
+
+/// An order filed on an automatic deposit is authorised before its acceptance is in the log: its record, which the
+/// filing hands over, names its parties. An operator's authorisation naming the account the value arrived in permits
+/// where the payer holds the account, and is refused `not_permitted` where it doesn't; an order neither the log nor a
+/// record knows is refused as another's is.
+// verifies: REQ-AUZ-3, REQ-ORD-13
+#[test]
+fn an_order_filed_before_its_acceptance_is_known_by_its_record() {
+    let held_by_the_payer = |payer: &str| Parties {
+        requester: id("cust-1"),
+        beneficiary: id("cust-1"),
+        settlement_account_at: None,
+        payer: id(payer),
+    };
+    let operator = || giver(2);
+    let mut policy = engine();
+    policy
+        .sources
+        .1
+        .push((id("ord-77"), held_by_the_payer("cust-1")));
+    let first = naming_account("auth-77", "ord-77", "acct-1", operator());
+    assert!(
+        policy.authorise(&first).unwrap().permit().is_some(),
+        "the payer holds the account the value arrived in"
+    );
+
+    let mut policy = engine();
+    policy
+        .sources
+        .1
+        .push((id("ord-77"), held_by_the_payer("cust-1")));
+    policy
+        .sources
+        .0
+        .push((holds("cust-1", "acct-1"), Reply::Given(Said::No)));
+    let not_theirs = naming_account("auth-77", "ord-77", "acct-1", operator());
+    assert_eq!(
+        policy.authorise(&not_theirs).unwrap().outcome,
+        NOT_PERMITTED
+    );
+
+    let unknown = naming_account("auth-78", "ord-78", "acct-1", operator());
+    assert_eq!(policy.authorise(&unknown).unwrap().outcome, NOT_PERMITTED);
 }

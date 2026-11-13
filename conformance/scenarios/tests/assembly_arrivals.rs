@@ -8,7 +8,7 @@ use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::{ArrivalMatch, Parties, What};
 use rutent_contracts::provider_role::{Denomination, KeyPurpose, OuterNode};
 use rutent_contracts::router_api::PositiveAmount;
-use rutent_core_orch::arrival::{ArrivalError, Arrived, Filing, Report};
+use rutent_core_orch::arrival::{ArrivalError, Arrived, Filed, Filing, Report};
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged, StepError, context};
 use rutent_scenarios::harness::{Given, Scenario, base_request};
@@ -113,6 +113,54 @@ fn value_arriving_with_no_order_opens_none_and_an_undeclared_reserve_starts_noth
         Err(StepError::Arrival(ArrivalError::NotDeclared))
     ));
     assert_eq!(core.verified_whats().len(), entries, "nothing recorded");
+}
+
+/// A filing on an automatic deposit under the real policy engine (`T-020-01`'s round 2 review): the reserve declares
+/// that it starts routes on automatic deposits, and the order, which has no acceptance when the filing asks policy
+/// for its authorisation, is learned from the order record the filing hands over. The deposit starts.
+// verifies: REQ-ORD-13
+#[test]
+fn a_filing_on_an_automatic_deposit_starts_under_the_real_policy() {
+    let given = Given {
+        providers: vec![
+            Spec::of(SimRole::Reserve, RESERVE).starting_routes_on_automatic_deposits(),
+        ],
+        ..Given::one_reserve(Staged::AtOnce)
+    };
+    let (mut core, _) = Scenario::new("Arrivals", "AC-10", given).core(1, &mut Reference);
+    let reported = report(&core, AMOUNT);
+    let Arrived::NoOrder { arrival } = core.arrive(&reported).expect("the arrival is taken") else {
+        panic!("the arrival opens no order");
+    };
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let request = base_request("req-deposit", AMOUNT, &session);
+    let customer = kit::customer().party;
+    let filing = Filing {
+        request: id("deposit-1"),
+        filer: kit::operator_login(),
+        arrival,
+        parties: Parties {
+            requester: customer.clone(),
+            beneficiary: customer.clone(),
+            settlement_account_at: None,
+            payer: customer,
+        },
+        session,
+        destination: request.destination,
+        route: request.route,
+        inputs: request.inputs,
+        needs: Vec::new(),
+    };
+    let filed = core.file(filing);
+    let Ok(Filed::Started { order, .. }) = filed else {
+        panic!("the deposit starts: {filed:?}");
+    };
+    assert!(
+        core.verified_whats()
+            .iter()
+            .any(|w| matches!(w, What::Acceptance { order: o, .. } if o == &order)),
+        "the deposit's order is accepted"
+    );
 }
 
 /// The deployment's operator files a differing arrival anew through the real log, whose operator states as one maker

@@ -300,6 +300,15 @@ pub trait Policy {
 pub trait Sources {
     /// What `need`'s source says, if it can be asked and has it.
     fn supply(&mut self, need: &Need) -> Reply<Said>;
+
+    /// The parties of `order` as its record holds them, where the log holds no acceptance of it yet: an order filed on
+    /// an automatic deposit is authorised before its acceptance is built, and its record, which the filing hands over
+    /// as the order opens, is the only word on who it is for. An order no record knows is `Missing`, as is every
+    /// order a source keeps no record of, which is the default.
+    fn order_record(&mut self, order: &Id) -> Reply<rutent_contracts::core_internal::Parties> {
+        let _ = order;
+        Reply::Missing
+    }
 }
 
 /// The needs of two policies, asked in order: both lists where both name theirs. A missing answer from either is the
