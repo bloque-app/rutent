@@ -784,3 +784,79 @@ recorded and still refused; only the reason differs. Left as it is, and stated h
 `T-014-05`'s) failed once in CI and passed on the same commit. Its margins are a 2 s deadline and a 1 s call budget.
 `T-013-08` makes it deterministic by removing the race, not by widening the margins. It sits in an `M3` wave, as
 `T-011-07` does.
+
+### Design (T-013-08)
+
+- **Cause, reproduced.** The platform starts a callee only while `caller.due - now >= call_budget + call_budget / 2`.
+  With a 2 s deadline and a 1 s budget the caller has 0.5 s from the start of its operation to reach the call. A
+  delay of 600 ms in front of that check on the old code (a temporary sleep, not kept) fails the test at its first
+  assertion, `the callee wasn't stopped at its deadline`, `left: 0, right: 1`, which is the CI failure: the call was
+  refused as `deadline_too_near`, not started, so nothing was `unanswered`. Plain CPU load did not reproduce it: 60
+  runs of the old test passed with 36 and with 100 busy loops on 12 cores (the second at the lowest priority); the
+  caller's start-up on that machine stays far under 0.5 s.
+- **Second CI failure, same file.** `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`
+  failed at `took < 4 s` (`production_world.rs:1336` at `34c700e`) on the push run `43424104071`, and passed on the
+  pull-request run. That is a bound on the machine's speed, not on the platform: a runner that stalls for 4 s
+  anywhere in the operation breaks it. With a temporary 4.5 s stall in the platform after the deadline was set, the
+  old test fails at that assertion (`held for 4.547706083s`), as do the old `slow_peer_...` (its twin bound) and the
+  old `callee_past_...`; the new tests pass under the same stall.
+- **The seam.** `OperationClock` (`module/platform.rs`), held by the platform (`set_operation_clock`). `Monotonic`
+  is the default and is `Instant::now()`, as before. `SteppedClock` stands still until `step` moves it. The clock is
+  read for the operation's own deadline, the caller's remaining time at a call, and the wait for a process's next
+  message; the deadlines handed outward go through `wall_due`.
+- **Production unchanged.** On `Monotonic` the wait is the same single `receive_until(due)`, and the deadlines handed
+  to the proxy world and to name lookups are the same instants.
+- **On a stepped clock** the wait polls the clock every 2 ms and a deadline it has reached has passed, whatever is
+  waiting. Deadlines handed outward are either the operating system's time left on the clock
+  (`SteppedClock::with_outward_waits_on_wall_time`, for tests of a lookup or a peer given up at the deadline, which
+  then take the deadline's 2 s) or a fixed 60 s that a step of the clock ends first (`SteppedClock::new`).
+
+### Tests converted (T-013-08)
+
+In `components/prov/tests/production_world.rs`:
+- `callee_past_its_deadline_is_unanswered_to_its_caller_never_refused_however_slowly_the_caller_started` (the
+  flaky one, renamed to the row's name): the clock stands still, and a stepper thread steps it 1.5 s once the callee
+  is stuck in its lookup.
+- `callee_is_started_only_while_its_callers_remaining_time_on_the_platforms_clock_covers_its_budget_and_reserve`
+  (new): a deadline of exactly 1.5 budgets starts the callee, one nanosecond less refuses it.
+- `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`: stepped clock, a
+  stepper steps the 2 s deadline once the lookup is asked; the `took < 4 s` bounds are gone.
+- `slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs`: the same, stepped once the peer
+  got the call; its two `< 4 s` bounds are gone.
+
+In `components/prov/tests/module_calls.rs`, stepped clock standing still:
+- `call_with_too_little_deadline_left_is_refused` and `call_needs_the_callees_budget_and_the_callers_reserve_left`:
+  their controls (a callee started with 3 s of deadline and a 1 s budget) needed the caller to reach its call within
+  1.5 s.
+
+In `components/prov/tests/module_limits.rs`:
+- `a_guest_that_loops_is_stopped_when_its_fuel_runs_out`: the clock stands still, so only fuel can stop the guest;
+  its `took < OPERATION_DEADLINE / 4` bound (2.5 s of a machine's speed) is gone, and the time is still printed.
+
+### Not converted through the seam (T-013-08)
+
+- `module_limits.rs::a_provider_process_that_misses_the_operation_deadline_is_killed_and_started_again`: its 1 ms
+  deadline is one-sided (the guest spins until its fuel runs out, seconds later), and the platform's wait for it
+  begins before any message could arrive; there is nothing to interlock a step with. Left on real time.
+- `module_admission.rs::admitting_compiler_past_its_wall_time_deadline_is_stopped`: the admitting compiler's
+  deadline is a wall-time bound on another process's exchange, not an operation deadline, and is not read from the
+  seam; its 1 ms deadline is one-sided, and its `took < 20 s` bound is a thousand times the margin. Owner: `F-013`.
+- `proxy_https.rs` (`store_that_never_answers_times_out` and the one after it): they call the HTTPS transport with
+  a real `Instant` deadline and a read timeout, without a platform, so no platform clock reaches them; their bounds
+  (700 ms for a 200 ms timeout over an 800 ms silence, 1.5 s for 800 ms) are a machine's speed. Owner: `F-014`
+  (the proxy's transport), a row if they are seen failing.
+- `module_lifecycle.rs` polls up to 5 s for a killed process to be seen gone: a wait for the operating system, not
+  a deadline or budget of the platform.
+- The 10 s `OPERATION_DEADLINE` and `START_DEADLINE` the other platform tests run under are read on the
+  operating system's time still, as in production; a runner that takes 10 s to start a process fails them, which is
+  the deadline doing its job.
+
+### Defaults (T-013-08)
+
+- The clock is `Monotonic` unless a test sets another. `STEPPED_POLL` 2 ms; `STEPPED_WAIT_CAP` 60 s.
+- The reproduced test's outcomes are unchanged (`unanswered`, never `refused`, callee stopped, started again). Its
+  deadline (2 s) and budget (1 s) are as before.
+
+### Rule-off table (T-013-08)
+
+See the commit body.
