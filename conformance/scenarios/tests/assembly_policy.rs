@@ -201,3 +201,94 @@ fn deployment_refusing_reaches_the_calls_answered_beside_the_engine() {
     );
     assert_eq!(last(&core).outcome, Outcome::Refused { class: refused });
 }
+
+/// A question about a person on the order's shortlisted route reaches the engine through the assembly's policy, which
+/// holds it to the order's shortlist and to its party's charge, and records it on the log's policy handle before it
+/// answers (`T-021-07`; the stand-in answered not known). One asking a provider off the shortlist is refused by the
+/// log itself, and nothing is recorded; one its party wasn't charged for is refused over the party's bound.
+// verifies: DEC-18, REQ-CPL-2, REQ-CPL-6
+#[test]
+fn question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_log() {
+    use rutent_contracts::core_internal::calls::{AppendFailure, PersonQuestions};
+    use rutent_contracts::core_internal::{
+        Authority, Count, PersonOutcome, PersonQuestion, RoutingRound, Work,
+    };
+    let core = accepted();
+    let (order, shortlist, shortlisted) = core
+        .verified_whats()
+        .into_iter()
+        .find_map(|w| match w {
+            What::DecisionRecord {
+                order,
+                round: RoutingRound::Shortlist,
+                record,
+                shortlisted,
+                ..
+            } => Some((order, record, shortlisted.unwrap_or_default())),
+            _ => None,
+        })
+        .expect("the order's shortlist");
+    let provider = shortlisted
+        .first()
+        .cloned()
+        .expect("a shortlisted provider");
+    let caller = kit::customer();
+    let at = charge(&core).at;
+    let question = |request: &str, ask: &str, providers: Vec<rutent_contracts::router_api::Id>| {
+        PersonQuestion {
+            request: id(request),
+            asker: caller.clone(),
+            person: id("person-ref-1"),
+            order: order.clone(),
+            authority: Authority::ShortlistedRoute {
+                shortlist: shortlist.clone(),
+                providers,
+                verifiers: Vec::new(),
+            },
+            ask: vec![id(ask)],
+            asked_before: Vec::new(),
+            at: at.clone(),
+        }
+    };
+
+    // Not charged for: refused over the party's bound, on the record.
+    let answer = core
+        .policy()
+        .ask_about_person(&question(
+            "pq-uncharged",
+            provider.as_str(),
+            shortlisted.clone(),
+        ))
+        .unwrap();
+    let over = RefusalClass::OverBound;
+    assert_eq!(answer.outcome, PersonOutcome::Refused { class: over });
+    assert_eq!(last(&core).outcome, Outcome::Refused { class: over });
+
+    // Charged for, as rounds charges before it asks: allowed, and recorded permitted.
+    let mut c = charge(&core);
+    c.request = id("charge-of-one-person-question");
+    c.work = Work::PersonQuestion;
+    c.count = Count::new(1).unwrap();
+    c.order = Some(order.clone());
+    assert!(matches!(
+        core.policy().charge(&c).unwrap().outcome,
+        ChargeOutcome::Within { .. }
+    ));
+    let answer = core
+        .policy()
+        .ask_about_person(&question("pq-1", provider.as_str(), shortlisted.clone()))
+        .unwrap();
+    assert_eq!(answer.outcome, PersonOutcome::Allowed {});
+    assert_eq!(last(&core).outcome, Outcome::Permitted {});
+
+    // A provider off the shortlist: the log refuses the question outright, so nothing is answered or recorded.
+    let before = core.log().entries().len();
+    let mut off = shortlisted.clone();
+    off.push(id("off-the-shortlist"));
+    assert!(matches!(
+        core.policy()
+            .ask_about_person(&question("pq-off", "off-the-shortlist", off)),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert_eq!(core.log().entries().len(), before, "nothing recorded");
+}
