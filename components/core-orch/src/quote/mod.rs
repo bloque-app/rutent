@@ -16,12 +16,16 @@
 //!   (`T-020-03`) shows it, digests it and records the `shown` entry.
 //! - **[`executed`] and [`Prices`]: the price** (`REQ-QTE-7`). Once every segment has executed, the same lines from
 //!   what each did, labelled the price, recorded as a `shown` entry of `price`. Until then nothing is the price.
-//! - **[`Terms`]: stated terms with their times** (`REQ-QTE-6`). Each tuple's history of `StatedTerms`; the terms
-//!   that bind a segment are the last stated at or before it started, and later ones never apply to it.
-//! - **[`Holds`]: a reserve's held quote** (`REQ-QTE-15`). A choice round's quote held with a stated validity,
-//!   labelled a quote, binding no provider; past its validity it starts nothing.
+//! - **[`Terms`]: stated terms with their times** (`REQ-QTE-6`). Each tuple's history of a provider's signed terms,
+//!   each with its stated entry's receipt, binding from the later of `made_at` and `received_at`; the terms that bind
+//!   a segment are the last binding at or before it started, and later ones never apply to it.
+//! - **[`Holds`]: a reserve's held quote** (`REQ-QTE-15`). A choice round's quote held on the reserve's signed hold,
+//!   labelled a quote, binding no provider; past its validity it starts nothing, and only the order it is for, or one
+//!   accepted in the session it is for, redeems it, once. The redemption hands back the hold's receipt, which an
+//!   acceptance of it cites.
 //! - **[`Charges`]: a charge above its formula** (`REQ-QTE-5`, `AC-14`). A segment's charge, checked against the
-//!   formula that bound it at its start, raised to the operator where it is above it, and the raise recorded.
+//!   formula that bound it at its start, raised to the operator where it is above it, naming its result's stated
+//!   entry and the stated entry of the terms that bound it, and the raise recorded.
 //!
 //! Ranking stays before the operator's fee (router-api's README; the owner's form, `m3-rank-before-fee`): this module
 //! shows the fee on the route the router chose and ranks nothing.
@@ -33,10 +37,10 @@ mod shown;
 mod terms;
 
 pub use charge::{ChargeDesk, ChargeError, Charged, Charges, Checked, Flagged};
-pub use held::{Held, HoldError, Holds};
+pub use held::{Held, HoldError, Holds, RecordedAs, Redeemed, Signed};
 pub use journal::APPEND_TRIES;
 pub use shown::{
     ExecutedSegment, HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin,
     SegmentShown, Shown, SlowSegment, digest, executed, show,
 };
-pub use terms::Terms;
+pub use terms::{InForce, NotTerms, Terms};
