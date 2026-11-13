@@ -2887,3 +2887,16 @@ masked are shown by the rule-off below. Then each new rule was switched off once
 - **Red first:** the start-proof and refusal tests were changed first and seen red on the inert `prove_start`
   (no `holding_withdrawal`; no take-back). **Rule-off, each red:** the `holding_withdrawal` recorded (the start-proof
   test); the take-back recorded (the refusal test); `observe` taking `hand_on_taken_back` (the refusal test).
+- **`Segments::status` no longer tells a refused reader whether an order exists** (the coordinator's item, on
+  `T-020-08`'s read, as `T-023-01` did for notices). It answered `Unknown` before asking policy, and passed policy's
+  whole answer, its reason included, inside `Refused`. Now policy is asked first, whether or not Core follows the
+  order, and a refused reader is told `StatusError::NotReadable` alone, whatever the reason, which stays in the log;
+  only an allowed reader is told `Unknown`. `StatusError::Refused(ReadAnswer)` stays for `stuck::seen_by_provider`
+  (`T-020-11`) and the reversal's afterward read (`T-020-12`), which have the same leak (each answers `Unknown`
+  before asking policy, and passes policy's answer): a hand-off to their owners. Test
+  `stranger_is_refused_alike_for_a_real_order_and_a_missing_one` (`conformance/scenarios/tests/segments.rs`), written
+  first and seen red (the real order refused with policy's answer, the missing one `Unknown` before policy was
+  asked): a stand-in for policy refuses the two for different reasons and records each, since the engine now refuses
+  both `not_permitted` (`4415700`); the stranger gets one bare answer for both, and the log keeps both reasons.
+  Rule-off, each red: policy asked first (the new test); the refusal opaque (the new test and the state-and-age
+  test). The kit gained `append_entry_to`.

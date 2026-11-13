@@ -781,7 +781,7 @@ fn orders_state_and_age_are_readable_by_its_customer_and_the_operator() {
             None,
             &id(ORDER)
         ),
-        Err(StatusError::Refused(_))
+        Err(StatusError::NotReadable)
     ));
     assert_eq!(
         core.log
@@ -1713,4 +1713,113 @@ fn result_outcomes(core: &Core) -> Vec<Outcome> {
         .filter(|v| is_result(&v.what))
         .map(|v| v.outcome)
         .collect()
+}
+
+/// Policy's read checks, standing in for a deployment whose policy refuses a stranger for different reasons: another
+/// party's order as not permitted, an order it knows nothing of as a missing input. Each check is recorded in the
+/// kit's log, on policy's handle, with its reason.
+struct TwoReasons(std::rc::Rc<std::cell::RefCell<TestLog>>);
+
+impl rutent_contracts::core_internal::calls::Reads for TwoReasons {
+    fn check_read(
+        &mut self,
+        check: &rutent_contracts::core_internal::ReadCheck,
+    ) -> Result<
+        rutent_contracts::core_internal::ReadAnswer,
+        rutent_contracts::core_internal::calls::AppendFailure,
+    > {
+        use rutent_contracts::core_internal::{
+            Entry, Outcome, ReadAnswer, ReadOutcome, Reads, RefusalClass, TimeSource,
+            VerifiedEntry, VerifiedKind, When,
+        };
+        let class = match &check.reads {
+            Reads::OrderState { order } if order.as_str() == ORDER => RefusalClass::NotPermitted,
+            _ => RefusalClass::MissingInput,
+        };
+        let entry = Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: check.reader.clone(),
+            what: What::CheckRead {
+                check: check.clone(),
+            },
+            when: When {
+                at: check.at.clone(),
+                source: TimeSource::CoreClock,
+            },
+            outcome: Outcome::Refused { class },
+        });
+        let receipt = append_entry_to(&self.0, &entry);
+        Ok(ReadAnswer {
+            request: check.request.clone(),
+            outcome: ReadOutcome::Refused { class },
+            receipt,
+        })
+    }
+
+    fn grant_permission(
+        &mut self,
+        _: &rutent_contracts::core_internal::PermissionChange,
+    ) -> Result<
+        rutent_contracts::core_internal::Decision,
+        rutent_contracts::core_internal::calls::AppendFailure,
+    > {
+        unreachable!("no permission is granted here")
+    }
+
+    fn revoke_permission(
+        &mut self,
+        _: &rutent_contracts::core_internal::PermissionChange,
+    ) -> Result<
+        rutent_contracts::core_internal::Decision,
+        rutent_contracts::core_internal::calls::AppendFailure,
+    > {
+        unreachable!("no permission is revoked here")
+    }
+}
+
+/// A refused reader can't tell an order that exists from one that doesn't: a stranger asking for the state of the
+/// kit's order and of an order no one opened gets the same bare refusal, after policy was asked both times, while
+/// the log keeps policy's two different reasons (`REQ-ORD-5`, `REQ-AUZ-7`).
+// verifies: REQ-ORD-5, REQ-AUZ-7
+#[test]
+fn stranger_is_refused_alike_for_a_real_order_and_a_missing_one() {
+    let (_world, mut core) = order_waiting_between_segments();
+    let mut reads = TwoReasons(std::rc::Rc::clone(&core.log));
+    let stranger = rutent_contracts::core_internal::Actor {
+        party: id("another-customer"),
+        ..customer()
+    };
+    let mut ask = |core: &mut Core, order: &str| {
+        core.segments.status(
+            &mut reads,
+            &*core.clock,
+            &mut core.ids,
+            &stranger,
+            None,
+            &id(order),
+        )
+    };
+    let real = ask(&mut core, ORDER);
+    let missing = ask(&mut core, "ord-no-one-opened");
+    assert_eq!(real, missing, "the same answer, the order there or not");
+    assert_eq!(real, Err(StatusError::NotReadable));
+    let log = core.log.borrow();
+    let reasons: Vec<_> = log
+        .verified()
+        .into_iter()
+        .filter(|v| matches!(v.what, What::CheckRead { .. }))
+        .map(|v| v.outcome)
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            rutent_contracts::core_internal::Outcome::Refused {
+                class: rutent_contracts::core_internal::RefusalClass::NotPermitted
+            },
+            rutent_contracts::core_internal::Outcome::Refused {
+                class: rutent_contracts::core_internal::RefusalClass::MissingInput
+            },
+        ],
+        "policy asked both times, its two reasons in the log alone"
+    );
 }

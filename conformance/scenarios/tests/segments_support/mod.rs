@@ -1049,6 +1049,11 @@ pub fn append_entry(core: &Core, entry: &Entry, through: Through) -> Receipt {
     core.log.borrow_mut().take(entry, through).unwrap()
 }
 
+/// Appends `entry`, a decision on policy's handle, to `log`: for a stand-in of policy that records its own answers.
+pub fn append_entry_to(log: &Rc<RefCell<TestLog>>, entry: &Entry) -> Receipt {
+    log.borrow_mut().take(entry, Through::Policy).unwrap()
+}
+
 /// The deposit's arrival at the origin reserve, on the reserve's report to the operator's question: one deposit, and
 /// one arrival, for each part of `chosen`'s route, each naming its part where the route has more than one
 /// (`split-deposit-arrival-names-its-part`).
