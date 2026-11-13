@@ -101,6 +101,9 @@ pub enum Permission {
     /// An actor confirming a move's outcome, once unknown, that its mover reported: the second actor's word
     /// (`REQ-AUZ-4`, ADR-0011). Asked by `T-021-06`'s rule.
     ConfirmOutcome,
+    /// An operator's login asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`). Core's own
+    /// actors ask it through [`Permission::CarryOnward`].
+    AskReversal,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
@@ -159,8 +162,21 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
                 // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
                 Action::EraseStatement { .. } => None,
-                // Compile-only for the contract round: no rule lets anyone ask a reversal yet, so policy refuses it.
-                Action::AskReversal { .. } => None,
+                // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
+                // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
+                // Which provider is asked, and that its segment owes the reversal, the log holds
+                // (`reversal-is-asked-of-its-failed-provider`).
+                Action::AskReversal { .. } => match caller.role {
+                    Role::Operator => {
+                        operator_holds(caller, Permission::AskReversal).map(Needs::from)
+                    }
+                    Role::Core => Some(vec![listed(caller, Permission::CarryOnward)].into()),
+                    Role::Customer
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker => None,
+                },
             }
         }
         Asked::Authorise(a) => {

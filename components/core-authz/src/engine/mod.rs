@@ -1109,6 +1109,12 @@ mod tests {
                     .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
             });
         }
+        // Asking the fixtures' order's segment's provider to reverse it (`REQ-ORD-3`).
+        actions.push(Action::AskReversal {
+            order: id("ord-17"),
+            segment: id("seg-2"),
+            provider: id("bridge-pay"),
+        });
         for action in &actions {
             match action {
                 Action::MoveValue { .. }
@@ -1117,8 +1123,7 @@ mod tests {
                 // A decided action too (`REQ-AUD-13`), which policy's role table answers no rule for yet: it joins
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
-                // Asked of a failed segment's provider (`REQ-ORD-3`): it joins this list once policy rules it.
-                Action::AskReversal { .. } => unreachable!("not yet in policy's tables"),
+                Action::AskReversal { .. } => {}
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }
@@ -1254,7 +1259,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 13);
+        assert_eq!(actions.len(), 14);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1296,8 +1301,9 @@ mod tests {
             let permit = decision.permit().expect("a permit");
             let effect = policy.log.effect(action, permit);
             match action {
-                // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on.
-                Action::MoveValue { .. } => assert!(
+                // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on, or, for
+                // a reversal asked, a segment of this log that owes it.
+                Action::MoveValue { .. } | Action::AskReversal { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1357,12 +1363,14 @@ mod tests {
             let caller = &asked.caller;
             let decision = policy.decide(asked).unwrap();
             assert!(decision.permit().is_none(), "{caller:?}");
-            // `T-021-03`'s fixed rule lets only the operator post a route or change the catalogue, and only the user,
-            // Core or the operator ask to move value; it refuses the rest before the deployment's policy is asked.
+            // `T-021-03`'s fixed rule lets only the operator post a route or change the catalogue, only the user,
+            // Core or the operator ask to move value, and only Core or the operator ask a reversal; it refuses the
+            // rest before the deployment's policy is asked.
             let reaches = match asked.action {
                 Action::MoveValue { .. } => {
                     matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
                 }
+                Action::AskReversal { .. } => matches!(caller.role, Role::Core | Role::Operator),
                 _ => caller.role == Role::Operator,
             };
             if reaches {
@@ -1379,8 +1387,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 13 + 2 * 3,
-            "the operator on every action, the user and Core on a move"
+            3 * 14 + 2 * 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal asked"
         );
         let seen: Vec<Actor> = policy
             .policy
