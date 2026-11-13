@@ -12,7 +12,8 @@ use intake_support::*;
 use proptest::prelude::*;
 use rounds_support::{Sim, customer};
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, Entry, NotKnownCause, OrderRefusalClass, RefusalClass, Role, What,
+    Actor, ActorKind, Answer, Authorisation, Entry, NotKnownCause, OrderRefusalClass, RefusalClass,
+    Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::OuterNode;
@@ -882,6 +883,65 @@ fn acceptance_is_carried_on_only_by_the_actor_policy_permitted() {
         })
         .expect("a start");
     assert_eq!(start, customer().acts.as_str());
+    assert_admitted(&env);
+}
+
+// verifies: REQ-ORD-10, REQ-AUZ-9, REQ-AUZ-5
+#[test]
+fn another_login_of_the_requesters_party_carries_on_a_logged_acceptance() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    // Login A accepts: the acceptance is logged, and policy can't decide.
+    env.policy.answer = Answer::NotKnown {
+        cause: NotKnownCause::PolicyUnreachable,
+    };
+    let told = env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert!(matches!(status_of(&told), Status::Waiting { .. }));
+    assert_eq!(env.acceptances().len(), 1);
+
+    // A login of another party is told nothing of the order.
+    let stranger = Actor {
+        party: id("stranger"),
+        ..customer()
+    };
+    assert_eq!(
+        env.accept(&mut sim, &order, &stranger, &digest),
+        Err(IntakeError::NoSuchOrder)
+    );
+
+    // Login B of the requester's own party carries it on, asking the same authorisation again, given by itself, and
+    // appends no second acceptance.
+    let asked = env.policy.asked.len();
+    let told = env.accept(&mut sim, &order, &agent(), &digest).unwrap();
+    assert!(matches!(status_of(&told), Status::Waiting { .. }));
+    assert_eq!(env.policy.asked.len(), asked + 1, "policy is asked again");
+    let again = env.policy.asked.last().unwrap().clone();
+    assert_eq!(again.given_by, agent());
+    assert_eq!(
+        Authorisation {
+            given_by: customer(),
+            at: env.policy.asked[0].at.clone(),
+            ..again
+        },
+        env.policy.asked[0],
+        "the same authorisation"
+    );
+    // Policy refusing B ends nothing: B is told it can't carry it on, and the order waits as it did.
+    env.policy.answer = Answer::Refuse {
+        class: RefusalClass::NotPermitted,
+    };
+    assert_eq!(
+        env.accept(&mut sim, &order, &agent(), &digest),
+        Err(IntakeError::OtherActor)
+    );
+    assert!(env.started().is_empty());
+    assert_eq!(env.acceptances().len(), 1);
+    env.policy.answer = Answer::Permit {};
+    let told = env.accept(&mut sim, &order, &agent(), &digest).unwrap();
+    assert!(matches!(status_of(&told), Status::Accepted { .. }));
+    assert_eq!(env.acceptances().len(), 1, "no second acceptance");
+    assert_eq!(env.started(), vec![order.as_str().to_owned()]);
     assert_admitted(&env);
 }
 

@@ -332,7 +332,8 @@ struct Offered {
 /// each appended as built, so a retry after an append that failed, or whose answer was lost, makes nothing twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Accepting {
-    /// The actor who accepted, whose authorisation policy is asked: the only one who carries it on.
+    /// The actor who accepted, whose authorisation policy is asked. Another login of the requester's party carries it on
+    /// too, once the acceptance is logged and policy hasn't decided the authorisation.
     by: Actor,
     /// The acceptance's id.
     acceptance: Id,
@@ -643,11 +644,35 @@ impl Intake {
         if matches!(kept.status, Status::Accepted { .. }) || kept.ended {
             return Ok(kept.told());
         }
-        if let Some(accepting) = &kept.accepting {
-            // Carried on from where it stopped, by the actor policy permitted alone; the destination isn't
-            // resolved again, since policy permitted on it.
+        if let Some(accepting) = kept.accepting.as_mut() {
+            // Carried on from where it stopped, by the actor that accepted; the destination isn't resolved again,
+            // since policy permitted on it. Where the acceptance is in the log and policy hasn't decided its
+            // authorisation, another login of the requester's own party carries it on too: it asks policy for the
+            // same authorisation again, given by itself, and appends no second acceptance, so the order isn't pinned
+            // to a login whose session may be over. Policy refusing that login ends nothing: the order stays as it
+            // was, for the login that accepted or another. A login of another party never does.
             if &accepting.by != by {
-                return Err(IntakeError::OtherActor);
+                let logged = accepting.pending.len() <= 1;
+                let Some(mut authorisation) = accepting.authorisation.clone() else {
+                    return Err(IntakeError::OtherActor);
+                };
+                if !(logged && by.party == accepting.by.party) {
+                    return Err(IntakeError::OtherActor);
+                }
+                authorisation.given_by = by.clone();
+                authorisation.at = record::now(desk.parts.clock)?;
+                let decision = desk.authorisations.authorise(&authorisation)?;
+                if decision.permit().is_some() {
+                    accepting.authorisation = None;
+                    accepting.by = by.clone();
+                } else if matches!(decision.outcome, Answer::NotKnown { .. }) {
+                    kept.status = Status::Waiting {
+                        wait: Wait::PolicyNotKnown,
+                    };
+                    return Ok(kept.told());
+                } else {
+                    return Err(IntakeError::OtherActor);
+                }
             }
             return carry_on(desk, kept);
         }
