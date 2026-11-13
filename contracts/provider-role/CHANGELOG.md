@@ -1,6 +1,9 @@
 # provider-role changelog
 
 ## 3.1.0
+- A hold names its own `transaction`, its id (the review of round 3, item 2), required in the schema and `Hold`, so
+  Core appends its stated entry about it and the log keys the hold on it: a hold kept again under a new commitment is
+  the same hold. One invalid fixture, `hold-without-its-transaction`. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)
 - A valid fixture, `hold-of-another-records-candidate-of-the-same-id`: a hold of `c1` of record `dr-0099`, which
   router-api's `HeldQuote::check_hold` refuses for the choice round's `c1` of `dr-0004` (the review of round 3,
   item 1). No shape or rule changed here. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)

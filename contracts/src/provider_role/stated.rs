@@ -9,7 +9,8 @@
 //!   its slippage regime. They bind from the later of their `made_at` and Core's `received_at`, never `made_at`
 //!   alone, so terms dated before a segment started but received after it never bind it.
 //! - **A hold** (`urn:rutent:provider-role:hold`) is made by the reserve that starts each part of the route it holds.
-//!   It names the choice round's decision record, by id and digest, the candidate, the order or session it is for,
+//!   It names its own transaction (its id), the choice round's decision record, by id and digest, the candidate, the
+//!   order or session it is for,
 //!   and its validity, at most the earliest validity of the figures its candidate cites (router-api's
 //!   `HeldQuote::check_hold`, which has the record). It is redeemed for that order alone ([`check_redemption`]).
 
@@ -146,6 +147,9 @@ pub fn check_terms(statement: &Statement<TupleTerms>) -> Result<(), Vec<TermsVio
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hold {
+    /// The hold's own transaction: its id, unique to it. Its stated entry is about this transaction, so the log keys
+    /// the hold on it, and a hold kept again under a new commitment is the same hold.
+    pub transaction: String,
     /// The choice round's decision record whose chosen candidate is the quote held.
     pub record: HeldRecord,
     /// The candidate held: the record's chosen one.

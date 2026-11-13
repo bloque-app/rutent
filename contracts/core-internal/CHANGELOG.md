@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 126 invalid ones, each
-  breaking one rule, and 575 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 578 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 103 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -684,3 +684,13 @@
   commitments. One invalid fixture, `raise-of-a-charge-without-its-result`; the charge raise fixtures name their
   result; 575 admission cases, 103 relations. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6, REQ-QTE-15, REQ-AUD-2,
   T-020-01, T-020-07)
+- Folded into 1.0.0 before its release: a hold is keyed on its own transaction (the review of round 3, item 2).
+  `hold-is-redeemed-by-one-order` was keyed on the hold's receipt, so a hold kept again under a new commitment and
+  appended as a new entry could be redeemed by a second order at the held price (`THR-127`), and the log depended on
+  the evidence store to see it (`REQ-AUD-9`). provider-role's `Hold` now names its `transaction`, its id; Core
+  appends its stated entry about that transaction and no order, which attribution binds to the body's; the row is
+  keyed on that transaction, as `one-order-per-deposit` keys a deposit on its notice's, and
+  `held-quote-rests-on-the-reserves-hold` holds the entry to it (field `transaction`). Refused: the same hold kept
+  again under a new commitment and redeemed by ord-2 after ord-9 (`--the-same-hold-kept-again`), a hold appended
+  about nothing (`--transaction`). Admitted: the hold kept again, redeemed again by its own order. 578 admission
+  cases. (DEC-4, DEC-20, REQ-QTE-15, REQ-AUD-9, T-020-01)

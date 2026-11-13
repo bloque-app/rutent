@@ -290,6 +290,16 @@ fn maker_provider(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().acts
 }
 
+/// The transaction of the hold whose stated entry is at `held`: the one its entry is about, the hold's own id.
+fn hold_transaction<'a>(held: &Receipt, history: &'a History) -> Option<&'a Id> {
+    history.iter().find_map(|(r, e)| {
+        let s = stated(e).filter(|_| r == held)?;
+        (s.what.statement.as_str() == crate::provider_role::HOLD_SHAPE)
+            .then(|| s.about.as_ref()?.transaction.as_ref())
+            .flatten()
+    })
+}
+
 /// When `segment` of `order` started, by this log: the time of the first `move_value` effect on it (`REQ-QTE-6`).
 fn segment_started<'a>(
     order: &Id,
@@ -3552,10 +3562,15 @@ pub static RELATIONS: [Relation; 97] = [
                 "maker",
                 "a hold is made by the reserve that starts each part of the order",
             ),
+            (
+                "transaction",
+                "a hold's entry is about its own transaction, the hold's id, and no order",
+            ),
         ],
         // A held quote is redeemed on the reserve's own signed hold, made by the reserve each part starts at, as its
-        // order's yes is. The hold names no transaction, so it is appended about no order, and the acceptance
-        // redeeming it binds it to one (`hold-is-redeemed-by-one-order`). The log holds only a salted commitment to
+        // order's yes is. Its body names its own transaction, the hold's id, so it is appended about that
+        // transaction and no order (attribution binds `about.transaction` to the body's), and the acceptance redeeming
+        // it binds it to one order (`hold-is-redeemed-by-one-order`, keyed on that transaction). The log holds only a salted commitment to
         // its bytes, so that its body names this order, or the session this acceptance was given in
         // (provider-role's `check_redemption`), holds the record's chosen candidate and is still valid
         // (router-api's `HeldQuote::check_hold` and `redeem`) are for whoever holds the kept bytes: Core on intake,
@@ -3585,24 +3600,31 @@ pub static RELATIONS: [Relation; 97] = [
                     matches!(s.attribution, Attribution::Verified { .. }),
                     s.what.statement.as_str() == crate::provider_role::HOLD_SHAPE,
                     origin_reserve == maker && yeses.iter().all(|y| &y.origin_reserve == maker),
+                    s.about
+                        .as_ref()
+                        .is_some_and(|a| a.transaction.is_some() && a.order.is_none()),
                 ],
             )
         },
     },
     Relation {
         name: "hold-is-redeemed-by-one-order",
-        spec: &["REQ-QTE-15", "THR-127"],
+        spec: &["REQ-QTE-15", "THR-127", "REQ-AUD-9"],
         quantifier: Quantifier::NoneOther,
         refusal: "a hold is redeemed for one order: no acceptance of another order redeems it",
         fields: &[],
         // The first acceptance that redeems a hold binds it to its order, as a judgement is bound by its reliance.
-        // The same acceptance again is a retry. A hold kept again under a new commitment and appended as a new
-        // entry is another receipt, which the evidence store's restatement index finds (`T-022-02`), not the log.
-        cites: |e, _| match &e.what {
-            What::Acceptance { held: Some(_), .. } => by_fields(0),
+        // The same acceptance again is a retry. The row is keyed on the hold's own transaction, the one its stated
+        // entry is about, not on its receipt or commitment, as `one-order-per-deposit` keys a deposit on its
+        // notice's: a hold kept again under a new commitment and appended as a new entry is the same hold, so the
+        // log refuses its redemption by a second order without the evidence store (`REQ-AUD-9`, `THR-127`).
+        cites: |e, h| match &e.what {
+            What::Acceptance {
+                held: Some(held), ..
+            } if hold_transaction(held, h).is_some() => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match (&e.what, verified(t).map(|v| &v.what)) {
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|v| &v.what)) {
             (
                 What::Acceptance {
                     order,
@@ -3614,7 +3636,12 @@ pub static RELATIONS: [Relation; 97] = [
                     held: Some(theirs),
                     ..
                 }),
-            ) => judge(held == theirs && other != order, &[]),
+            ) => judge(
+                other != order
+                    && hold_transaction(theirs, h).is_some()
+                    && hold_transaction(theirs, h) == hold_transaction(held, h),
+                &[],
+            ),
             _ => Match::NotTarget,
         },
     },

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:hold",
   "title": "Hold",
-  "description": "A reserve's own signed hold of a quote for a new route before it starts (REQ-QTE-15), made by the reserve that starts each part of the route. It names the choice round's decision record by id and digest, the candidate held, the order or session it is for, and its validity, at most the earliest validity among the figures its candidate cites. It stays a quote until each segment starts and binds no provider. It is redeemed only for the order it names, or an order accepted in the session it names. Core keeps it and appends it as a stated entry about nothing, and the acceptance that redeems it names it.",
+  "description": "A reserve's own signed hold of a quote for a new route before it starts (REQ-QTE-15), made by the reserve that starts each part of the route. It names the choice round's decision record by id and digest, the candidate held, the order or session it is for, and its validity, at most the earliest validity among the figures its candidate cites. It stays a quote until each segment starts and binds no provider. It is redeemed only for the order it names, or an order accepted in the session it names. Core keeps it and appends it as a stated entry about its transaction, the hold's id, and the acceptance that redeems it names it; the log redeems one hold, by that transaction, for one order.",
   "$ref": "urn:rutent:provider-role:statement-envelope",
   "properties": {
     "shape": {
@@ -18,12 +18,17 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "transaction",
         "record",
         "candidate",
         "for",
         "valid_until"
       ],
       "properties": {
+        "transaction": {
+          "description": "The hold's own transaction: its id, unique to it. Its stated entry is about this transaction, so the log keys the hold on it, as it keys a deposit's notice and a holding record on theirs, and a hold kept again under a new commitment is the same hold.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
         "record": {
           "$ref": "#/$defs/record"
         },

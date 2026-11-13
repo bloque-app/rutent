@@ -102,6 +102,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement/for", "oneOf")],
         ),
         (
+            "hold-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
             "hold-of-a-record-without-its-digest",
             vec![("/statement/record", "required")],
         ),

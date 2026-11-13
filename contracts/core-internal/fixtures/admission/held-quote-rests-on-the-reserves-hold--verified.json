@@ -3809,6 +3809,9 @@
         "commitment": {
           "algorithm": "sha-256",
           "value": "eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea"
+        },
+        "about": {
+          "transaction": "tx-hold-1"
         }
       }
     }

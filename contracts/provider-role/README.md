@@ -270,8 +270,8 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 
 Before 3.1.0 Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them,
 though core-internal places "stated terms with their times; a held quote" among stated entries. Each is now its
-maker's own statement, which Core keeps (`Evidence::keep`) and appends as a stated entry about nothing: neither body
-names a transaction.
+maker's own statement, which Core keeps (`Evidence::keep`) and appends as a stated entry: terms about nothing, since
+their body names no transaction, and a hold about its own transaction, its id.
 
 - **Terms** (`TupleTerms`, shape `urn:rutent:provider-role:terms`). The maker is the tuple's provider. The body
   names the tuple, by its provider and both ends (an inner node by identifier or an outer node by its network, and
@@ -282,7 +282,8 @@ names a transaction.
   `StatedTerms::from_statement` builds the router's history entry so). A charge raised against a formula cites both
   the result's entry and the terms' entry (core-internal).
 - **A hold** (`Hold`, shape `urn:rutent:provider-role:hold`). Made by the reserve that starts each part of the
-  route. The body names the choice round's decision record by id and digest (`record`), the candidate held, what it
+  route. The body names its own `transaction`, its id, which its stated entry is about, so the log keys the hold
+  on it; the choice round's decision record by id and digest (`record`), the candidate held, what it
   is `for`, an order or a session before its order exists, and its `valid_until`, at most the earliest validity
   among the figures the candidate cites (router-api's `HeldQuote::check_hold`, which has the record). Redeeming is
   refused for any order but the one it names, or one accepted in the session it names (`check_redemption`). The
@@ -293,7 +294,7 @@ names a transaction.
 | A terms statement names its shape, its tuple, its fee formula; a proportion's denominator is above zero | schema | `terms-under-another-shape`, `terms-with-a-zero-denominator` |
 | Terms are made by their tuple's provider | Rust, `check_terms`: `OfAnotherMaker` | `terms-made-by-another-party` |
 | Terms state a slippage regime exactly where their tuple sets a rate | Rust, `check_terms`: `NoSlippageWhereARate`, `SlippageWhereNoRate` | `terms-of-an-exchange-without-a-slippage-regime`, `terms-of-a-reserve-with-a-slippage-regime` |
-| A hold names its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
+| A hold names its transaction, its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-without-its-transaction`, `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
 | A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
 | A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
 

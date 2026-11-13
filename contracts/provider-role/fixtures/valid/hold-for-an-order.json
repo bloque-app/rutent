@@ -13,6 +13,7 @@
     "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
   },
   "statement": {
+    "transaction": "tx-hold-1",
     "record": {
       "id": "dr-0004",
       "digest": {
