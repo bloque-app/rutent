@@ -663,9 +663,9 @@ fn terms_stated_after_a_segment_started_do_not_apply_to_it() {
 
 // REQ-QTE-15 --------------------------------------------------------------------------------------------------------
 
-/// A reserve holds the quote of a choice round until a validity it states: held, it is a quote, never the price;
-/// at its validity its route may still start; past it, it starts nothing. Only the reserve the route starts at
-/// holds it, and a validity before the quote is refused.
+/// A reserve holds the quote of a choice round for an order until a validity it states, within its figures'
+/// validity: held, it is a quote, never the price; at its validity its route may still start; past it, it starts
+/// nothing. Only the reserve the route starts at holds it, and a validity before the quote is refused.
 // verifies: REQ-QTE-15
 #[test]
 fn held_quote_past_its_validity_starts_nothing() {
@@ -677,27 +677,33 @@ fn held_quote_past_its_validity_starts_nothing() {
         None,
     );
     let candidate = chosen(&record).clone();
-    let until = at("2026-11-06T15:05:00Z");
+    // The dry runs were 20 seconds old at 15:02:00, valid for 120: usable until 15:03:40. Held until 15:03:00.
+    let until = at("2026-11-06T15:03:00Z");
+    let (reserve, order) = (id(quote_support::RESERVE), id("order-held"));
     let mut holds = Holds::new();
     let held = holds
         .hold(
             &id("hold-1"),
-            &id(quote_support::RESERVE),
+            &reserve,
+            &order,
             record.clone(),
             until.clone(),
         )
         .expect("the reserve holds its quote");
     assert_eq!(held.shown.shown_as, ShownAs::Quote, "held, it is a quote");
-    assert_eq!(held.quote.valid_until, until);
+    assert_eq!(
+        held.quote.valid_until, until,
+        "within its figures' validity, as stated"
+    );
 
     let (route, shown) = holds
-        .redeem(&id("hold-1"), &until)
+        .redeem(&id("hold-1"), &reserve, &order, &until)
         .expect("at its validity, it is still usable");
     assert_eq!(route, &candidate);
     assert_eq!(shown.shown_as, ShownAs::Quote);
     assert_eq!(
         holds
-            .redeem(&id("hold-1"), &at("2026-11-06T15:05:01Z"))
+            .redeem(&id("hold-1"), &reserve, &order, &at("2026-11-06T15:03:01Z"))
             .map(|(c, _)| c.clone()),
         Err(HoldError::Redeem(HeldQuoteRefused::PastValidity {
             valid_until: until.clone()
@@ -707,21 +713,28 @@ fn held_quote_past_its_validity_starts_nothing() {
 
     assert_eq!(
         holds
-            .hold(&id("hold-2"), &id("p-other"), record.clone(), until.clone())
+            .hold(
+                &id("hold-2"),
+                &id("p-other"),
+                &order,
+                record.clone(),
+                until.clone()
+            )
             .map(|h| h.reserve.clone()),
         Err(HoldError::NotTheReserve)
     );
     assert!(matches!(
         holds.hold(
             &id("hold-3"),
-            &id(quote_support::RESERVE),
+            &reserve,
+            &order,
             record.clone(),
             at("2026-11-06T15:01:00Z")
         ),
         Err(HoldError::Refused(_))
     ));
     assert!(matches!(
-        holds.hold(&id("hold-1"), &id(quote_support::RESERVE), record, until),
+        holds.hold(&id("hold-1"), &reserve, &order, record, until),
         Err(HoldError::AlreadyHeld)
     ));
     assert!(
@@ -729,8 +742,88 @@ fn held_quote_past_its_validity_starts_nothing() {
         "dropped, with no effect beyond the hold"
     );
     assert!(matches!(
-        holds.redeem(&id("hold-1"), &at("2026-11-06T15:04:00Z")),
+        holds.redeem(&id("hold-1"), &reserve, &order, &at("2026-11-06T15:02:30Z")),
         Err(HoldError::NoSuchHold)
+    ));
+}
+
+/// A hold stated for longer than the figures its route stands on is held no longer than they are usable: until the
+/// dry runs' expiry, 15:03:40, and past it the route starts nothing, though the reserve asked for 15:30.
+// verifies: REQ-QTE-15, REQ-QTE-4
+#[test]
+fn long_hold_is_capped_at_its_figures_validity() {
+    let record = reserve_route(
+        1_000,
+        &Leg::free("USDC"),
+        &Leg::free("USDC"),
+        fee("0", "0", "1"),
+        None,
+    );
+    let (reserve, order) = (id(quote_support::RESERVE), id("order-held"));
+    let mut holds = Holds::new();
+    let held = holds
+        .hold(
+            &id("hold-long"),
+            &reserve,
+            &order,
+            record,
+            at("2026-11-06T15:30:00Z"),
+        )
+        .expect("held, capped");
+    assert_eq!(held.quote.valid_until, at("2026-11-06T15:03:40Z"));
+    assert!(
+        holds
+            .redeem(
+                &id("hold-long"),
+                &reserve,
+                &order,
+                &at("2026-11-06T15:03:40Z")
+            )
+            .is_ok()
+    );
+    assert!(matches!(
+        holds.redeem(
+            &id("hold-long"),
+            &reserve,
+            &order,
+            &at("2026-11-06T15:10:00Z")
+        ),
+        Err(HoldError::Redeem(HeldQuoteRefused::PastValidity { .. }))
+    ));
+}
+
+/// A held quote is redeemed only by the reserve that holds it, for the order it is held for: another reserve, or the
+/// same reserve for another order, is refused within its validity.
+// verifies: REQ-QTE-15
+#[test]
+fn held_quote_is_redeemed_only_by_its_reserve_for_its_order() {
+    let record = reserve_route(
+        1_000,
+        &Leg::free("USDC"),
+        &Leg::free("USDC"),
+        fee("0", "0", "1"),
+        None,
+    );
+    let (reserve, order) = (id(quote_support::RESERVE), id("order-held"));
+    let now = at("2026-11-06T15:02:30Z");
+    let mut holds = Holds::new();
+    holds
+        .hold(
+            &id("hold-1"),
+            &reserve,
+            &order,
+            record,
+            at("2026-11-06T15:03:00Z"),
+        )
+        .expect("held");
+    assert!(holds.redeem(&id("hold-1"), &reserve, &order, &now).is_ok());
+    assert!(matches!(
+        holds.redeem(&id("hold-1"), &id("p-other"), &order, &now),
+        Err(HoldError::NotTheHolder)
+    ));
+    assert!(matches!(
+        holds.redeem(&id("hold-1"), &reserve, &id("order-other"), &now),
+        Err(HoldError::NotTheHolder)
     ));
 }
 
