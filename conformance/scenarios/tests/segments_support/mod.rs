@@ -137,6 +137,8 @@ pub enum On {
     Record,
     /// A provider's result, as its stated entry.
     StatedResult,
+    /// The operator's question, as its stated entry (`T-020-16`).
+    StatedOperation,
     /// The result of the segment named, as its stated entry (`T-020-11`).
     StatedResultOf(&'static str),
     /// The input that binds a segment's provider.
@@ -182,6 +184,9 @@ impl On {
             ),
             (On::StatedResult, Entry::Stated(s)) => {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+            }
+            (On::StatedOperation, Entry::Stated(s)) => {
+                s.what.statement.as_str() == rutent_contracts::provider_role::OPERATION_SHAPE
             }
             (On::StatedResultOf(segment), Entry::Stated(s)) => {
                 s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
@@ -964,6 +969,14 @@ pub fn results_after_the_move(
     (receipts[0].clone(), receipts[1].clone())
 }
 
+/// `maker`'s result about the current order through `transaction`, naming no segment, made at Core's clock now and
+/// appended to the log now: with no question of the operator's beside it, since a move's own mover has asked it
+/// (`T-020-16`). Another provider's statement that backs a confirmation of the move's outcome.
+pub fn result_without_a_question(core: &mut Core, maker: &str, transaction: &str) -> Receipt {
+    let order = id(&core.named.order);
+    stated_results_asking(core, &order, None, transaction, &[maker], false)[0].clone()
+}
+
 /// Each of `makers`' results about `order` through `transaction`, and about `segment` where one is named, signed
 /// with its statements key, made at Core's clock now and appended to the log now, after the operator's question
 /// under that transaction where no segment is named. Their receipts, in `makers`' order.
@@ -973,6 +986,17 @@ fn stated_results(
     segment: Option<&str>,
     transaction: &str,
     makers: &[&str],
+) -> Vec<Receipt> {
+    stated_results_asking(core, order, segment, transaction, makers, true)
+}
+
+fn stated_results_asking(
+    core: &mut Core,
+    order: &Id,
+    segment: Option<&str>,
+    transaction: &str,
+    makers: &[&str],
+    ask: bool,
 ) -> Vec<Receipt> {
     let order = order.clone();
     let made_at = core.clock.now().timestamp().unwrap();
@@ -1019,7 +1043,7 @@ fn stated_results(
     // A stuck resolution's transaction has no question under it yet: the move under it, which the production
     // resolutions would hand the provider (unbuilt), is asked here as the operator's operation about the order,
     // naming no segment, so the providers' results answer it (`answer-follows-its-question`).
-    let question = segment.is_none().then(|| {
+    let question = (ask && segment.is_none()).then(|| {
         let placeholder = SuiteContext::default().deployment.operator_key;
         let mut question = seed_envelope(
             rutent_contracts::provider_role::OPERATION_SHAPE,

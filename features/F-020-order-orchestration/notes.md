@@ -3408,3 +3408,72 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
   `segments_support`'s test log routes one reserve that can't charge above its price. Still without a test of its own:
   the refusal of a store that keeps nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off
   isolates from the compare).
+
+## T-020-16
+
+Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/core-orch/src/stuck/` and `segments/`
+(visibility seams only), `conformance/scenarios/` (the kit, the assembly, two test files); no contract, manifest or
+`DEC-20` path.
+
+- **The production mover** (`stuck/mover.rs`: `Mover`, `Ports`, `Delivering`). A `Resolutions` for a `deliver`. It
+  takes everything from the effect's `Action::ResolveStuck` (provider `by`, destination, asset, amount, the decide
+  step's transaction), never from the caller. The inner node the value rests at is read from Core's record of the
+  operation it signed for the part's last settled segment at that provider (`Segments::sent`). The operation is a
+  `deposit` from that node to the destination's outer node, the destination's account under the one input the
+  provider's advertised deposit tuple requires, signed with the operator key. Order of steps, each once: the
+  operator's question (stated entry about the order and transaction, no segment) is appended; the platform begins the
+  provider's segment of that transaction; the operation is handed over once; events, uses and the segment's record are
+  kept and appended as hand-over entries; the answer is appended as the provider's stated entry; the effect's result
+  follows (written by `Stuck`).
+- **The trait is fallible and resumable.** `Resolutions::resolve(parts, carrying, effect) -> Result<Resolved,
+  AppendFailure>`; an `Err` means the log couldn't take a step and the same call is made again. `Stuck` marks the
+  effect acted on once (`InMotion::acted`) and never drops an acted move; the mover keeps its own per-effect flight, so
+  a retry never hands the provider the operation again (`INV-8`). Stated steps use `Step::append_stated`: the log
+  attributes a statement, so its receipt is of the recorded entry and the receipt rule can't hold it (the kit's log
+  hid this; the assembly's real log showed it).
+- **Outcome mapping, defaults (reversible, fail closed).** `Done` only for an answer that counts under `judge` and says
+  settled. `Failed` only where nothing passed out (platform refused before passing anything, begin refused, question
+  refused by the log, no resting node, no advertised deposit tuple, unit differs from the tuple's, more than one
+  required input, a hand-on) or the provider says failed or refuses finally. `Unknown` for everything else: the
+  platform's `OutcomeUnknown`, the provider's own unknown, waits-on-person, any other refusal, an answer that doesn't
+  count, a drain the contract can't carry.
+- **Known outcome** (`Delivering::statement`). A provider's later statement for the move's transaction is checked
+  (attributable under a published statements key, a result, naming the transaction; the move's own provider's judged
+  against the operation Core signed), kept once as a stated entry about the order and transaction, and returned with
+  the outcome it states (`Stated`). A reporter names it in `Stuck::known_outcome`, a confirmer another maker's in
+  `confirm_outcome`. Nothing is handed to the platform.
+- **Assembly** (`assembly/mod.rs`): `Core::leave_no_route`, `decide_stuck`, `move_stuck`, `Faults::refuse_begin`.
+  Policy is the real engine (`PolicySide`).
+- **Tests.** `conformance/scenarios/tests/stuck_mover.rs`: `decided_delivery_to_the_destination_is_carried_out_on_the_platform`,
+  `decided_delivery_back_to_the_origin_account_is_carried_out_on_the_platform`,
+  `resolution_is_carried_out_only_on_a_move_policy_permitted`,
+  `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result`,
+  `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append`,
+  `failed_move_leaves_the_value_held_and_the_part_stuck`; each ends by replaying the log through `admit_entry`.
+  `tests/assembly_stuck.rs`: `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine`
+  (the assembled Core, the real engine and log: `same_actor` by chain, no permission, and the provider's own desk each
+  refused with the reserve handed nothing; the permitted move done once). All were seen red with the mover stubbed to
+  `Failed`.
+- **Rule-off** (each alone, both files run, file restored; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | mover stubbed (`Failed`) | all seven |
+  | question appended before the hand-over | all seven (the log's `answer-follows-its-question`) |
+  | unknown answers kept `Unknown` | `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result` |
+  | effect marked acted on once | `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append` |
+  | a refused begin fails the move | `failed_move_leaves_the_value_held_and_the_part_stuck` |
+  | the mover's `carried` flag | none red: defence in depth, the kept verdict already stops a second hand-over |
+
+- **Gaps, with owners.**
+  1. `What::Evidence` requires a segment, so `stuck_resolved`'s evidence stays an id of Core's with no entry behind it
+     (a contract shape; the contract author).
+  2. The mover's state is in memory, as `Stuck`'s and `Segments`' are (`F-030`); after a restart a fresh `Stuck`
+     declares nothing and decides nothing, and the log's `part-waits-for-value-in-motion` holds an open effect.
+  3. The provider module's own calls are named for no route (`REQ-MDL-21`): a module that needs one would be refused,
+     failing closed; none of the simulated providers does.
+  4. A hand-on is refused by this mover (`Failed`); `T-020-17`.
+  5. `Stuck::known_outcome` doesn't itself check that the evidence it is given states the outcome reported; the check
+     is in `Delivering::statement`, and the assembly passes its result. Binding the two is `T-020-20`'s.
+  6. The confirmer's evidence must be another maker's statement: this row takes it through `statement` with
+     `outcome: None`; a second provider's status path is not built.

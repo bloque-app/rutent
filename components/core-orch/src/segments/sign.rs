@@ -35,7 +35,7 @@ pub(super) struct Moving<'a> {
 
 /// The real operation, `exact_in` at the amount moved: a withdrawal in the user's session, every other kind with
 /// none.
-pub(super) fn operation(moving: &Moving<'_>) -> Result<Operation, Unwritten> {
+pub(crate) fn operation(moving: &Moving<'_>) -> Result<Operation, Unwritten> {
     let op = moving.operation;
     let (from, to) = (&op.from, &op.to);
     let provider = op.provider.as_str().to_owned();
@@ -99,7 +99,7 @@ pub(super) fn operation(moving: &Moving<'_>) -> Result<Operation, Unwritten> {
 
 /// `operation` in its envelope, made by `maker` at `made_at` for the bounds' deployment and protocol version, signed
 /// with the operator key: the bytes as signed, which are what is logged and what is handed over.
-pub(super) fn sign(
+pub(crate) fn sign(
     key: &mut dyn OperatorKey,
     bounds: &PolicyBounds,
     maker: &Id,

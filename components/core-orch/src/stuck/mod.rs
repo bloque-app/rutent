@@ -69,14 +69,17 @@
 //! **A dispute** (`T-020-12`'s seam): [`Stuck::dispute`] records a part declared stuck in a dispute over who carries
 //! a reversal (`REQ-ORD-11`), as [`Stuck::no_route`] records a part left no route, so it is resolved as any stuck part.
 //!
-//! **Gaps.** Policy's stuck rules, report and confirm included, are unbuilt (`T-021-06`): the engine answers not
-//! known, so nothing moves or settles until they are built, failing closed, and no fixed rule yet compares the
-//! actors or rules the roles a decider, mover or confirmer may hold. A move's outcome is reported once, and a report
-//! that is wrong can't be corrected: the confirmer can only decline it, and the part stays held, failing closed, until
-//! a follow-up row lets a report be withdrawn (on the plan). A segment's move confirmed done isn't taken. No row owns
-//! the production [`Resolutions`] yet: `hand_on` is `T-020-13`'s, and `deliver` needs a new row.
+//! **The production mover** (`T-020-16`): [`Mover`] carries a decided `deliver` out on the platform, in place of
+//! [`Unbuilt`], which fails every resolution. It runs only on an effect the log admitted on a stuck move's permit; see
+//! its module for what it hands the provider and how each answer maps to [`Resolved`].
+//!
+//! **Gaps.** Policy's stuck rules are built (`T-021-06`); the roles a decider, mover and confirmer may hold are its.
+//! A move's outcome is reported once, and a report that is wrong can't be corrected: the confirmer can only decline
+//! it, and the part stays held, failing closed, until a follow-up row lets a report be withdrawn (`T-020-20`). A
+//! segment's move confirmed done isn't taken. The hand-on's mover is `T-020-17`'s.
 //!
 mod journal;
+mod mover;
 mod timing;
 mod view;
 
@@ -109,6 +112,7 @@ use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
 pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
+pub use mover::{Delivering, Mover, NotTaken, Ports, Stated};
 pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
 
@@ -433,23 +437,49 @@ pub enum Moved {
     },
 }
 
+/// What a move step hands the mover besides the effect: whose order and part it is, and Core as the actor that writes
+/// what it records.
+#[derive(Debug, Clone, Copy)]
+pub struct Carrying<'a> {
+    /// The stuck order.
+    pub order: &'a Id,
+    /// Its stuck part.
+    pub part: &'a Id,
+    /// Core, which writes what the move records.
+    pub core: &'a Actor,
+}
+
 /// What carries a stuck order's resolution out: the value moved as the effect's action names it, by the provider it
 /// names. It holds the [`Effect`] it carries out, whose entry the log admitted only on a stuck move's permit
 /// (`REQ-AUZ-1`, `REQ-AUZ-4`).
+///
+/// A call that answers an error stopped before its outcome was kept, because the log couldn't take something now: it
+/// is called again with the same effect, and goes on from where it stopped, never handing the provider what it handed
+/// it already (`INV-8`). The first call is the one the effect was acted on for: [`Stuck`] marks it acted on once, in
+/// the register the segments keep too, and the mover is answerable for the rest.
 pub trait Resolutions {
-    /// Moves the value `effect` resolves.
-    fn resolve(&mut self, effect: &Effect) -> Resolved;
+    /// Moves the value `effect` resolves, and records what the move gave back through `parts`' log.
+    fn resolve(
+        &mut self,
+        parts: &mut Parts<'_>,
+        carrying: &Carrying<'_>,
+        effect: &Effect,
+    ) -> Result<Resolved, AppendFailure>;
 }
 
-/// No way to carry a resolution out yet: each fails, so nothing moves and the part's value stays held. The
-/// production one, which writes the move to the platform, has no row yet: `hand_on` is `T-020-13`'s, `deliver` a
-/// new row's.
+/// No way to carry a resolution out: each fails, so nothing moves and the part's value stays held. The production
+/// one is [`Mover`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unbuilt;
 
 impl Resolutions for Unbuilt {
-    fn resolve(&mut self, _effect: &Effect) -> Resolved {
-        Resolved::Failed
+    fn resolve(
+        &mut self,
+        _parts: &mut Parts<'_>,
+        _carrying: &Carrying<'_>,
+        _effect: &Effect,
+    ) -> Result<Resolved, AppendFailure> {
+        Ok(Resolved::Failed)
     }
 }
 
@@ -560,6 +590,8 @@ struct InMotion {
     /// never took effect, and then the move answers this.
     dropped: Option<ResolveError>,
     effect: Step,
+    /// Whether the effect was acted on: marked in the register once, the first time the mover was called for it.
+    acted: bool,
     action: Action,
     permit: Permit,
     resolved: Option<Resolved>,
@@ -1251,6 +1283,7 @@ impl Stuck {
                 unanswered: None,
                 dropped: None,
                 effect: Step::new(entry),
+                acted: false,
                 action,
                 permit,
                 resolved: None,
@@ -1267,8 +1300,8 @@ impl Stuck {
     /// colluding with the provider holding the funds could misuse (`THR-70`). It counts once another actor confirms it
     /// ([`Stuck::confirm_outcome`]). A move's outcome is reported once: a second report is refused
     /// ([`ResolveError::AlreadyReported`]). Nothing is carried out
-    /// again. Policy's side of reporting and confirming is `T-021-06`'s, unbuilt: until it is, the engine answers not
-    /// known, and nothing settles, failing closed.
+    /// again. Policy's side of reporting and confirming is `T-021-06`'s. The evidence a report names is, for a move the
+    /// production mover carried out, a statement it took ([`Delivering::statement`]).
     pub fn known_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1344,7 +1377,7 @@ impl Stuck {
     /// once it permits, the outcome is recorded as the effect's final result, once: done counts what moved, and the
     /// part resolves once all of it moved; failed frees the part for a new decision. The log records who reported
     /// and who confirmed, each with its evidence. The roles a confirmer may hold (no customer, not the desk of the
-    /// provider holding the funds, `THR-70`) are `T-021-06`'s to rule.
+    /// provider holding the funds, `THR-70`) are policy's rule (`T-021-06`).
     pub fn confirm_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1589,16 +1622,21 @@ impl Stuck {
                 // The part is read again before anything moves: one that left `stuck` while the move stalled
                 // (resolved, or completed by a result recorded since), or holds less than the move names now, is
                 // moved no more. The move is dropped and its decision spent (`INV-4`); its effect, recorded already,
-                // gets its `failed` result, so no effect is left open.
+                // gets its `failed` result, so no effect is left open. Once the mover was called the value may be
+                // moving, so a move that acted is never dropped here.
                 let (order, part_id) = (motion.order.clone(), motion.part.clone());
                 let resolution = match &motion.action {
                     Action::ResolveStuck { resolution, .. } => resolution.clone(),
                     _ => return Err(ResolveError::NoDecision),
                 };
-                let still = self
-                    .unresolved(parts.segments, &order, &part_id)
-                    .and_then(|declared| within(parts.exposures, &order, declared, &resolution))
-                    .and_then(|()| self.to_its_ends(&order, &part_id, &resolution));
+                let acted = motion.acted;
+                let still = if acted {
+                    Ok(())
+                } else {
+                    self.unresolved(parts.segments, &order, &part_id)
+                        .and_then(|declared| within(parts.exposures, &order, declared, &resolution))
+                        .and_then(|()| self.to_its_ends(&order, &part_id, &resolution))
+                };
                 if let Err(why) = still {
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                     if let Some(decided) = carried_out_of(&motion.action) {
@@ -1608,17 +1646,27 @@ impl Stuck {
                     motion.dropped = Some(why);
                     Resolved::Failed
                 } else {
-                    // One register of effects acted on, the segments' and the resolutions' (`INV-8`).
-                    if !parts.segments.act_on(&receipt) {
-                        return Err(ResolveError::AlreadyActed(receipt));
-                    }
+                    // One register of effects acted on, the segments' and the resolutions' (`INV-8`): marked the
+                    // first time only, so a mover that stopped is taken on again, not refused as a second act.
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
+                    if !motion.acted {
+                        if !parts.segments.act_on(&receipt) {
+                            return Err(ResolveError::AlreadyActed(receipt));
+                        }
+                        motion.acted = true;
+                    }
                     let effect = effect_of(
                         motion.action.clone(),
                         motion.permit.clone(),
                         receipt.clone(),
                     );
-                    let resolved = resolutions.resolve(&effect);
+                    let carrying = Carrying {
+                        order: &order,
+                        part: &part_id,
+                        core,
+                    };
+                    let resolved = resolutions.resolve(parts, &carrying, &effect)?;
+                    let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                     motion.resolved = Some(resolved);
                     // Its decision is spent, whatever came of it: a new move needs a new decision.
                     let decided = carried_out_of(&motion.action);

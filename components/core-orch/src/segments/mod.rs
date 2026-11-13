@@ -121,12 +121,17 @@ use crate::snapshot::{
 };
 
 pub use drain::Uncarried;
+/// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
+/// operation and the stated entry of a statement kept (`T-020-16`).
+pub(crate) use drain::{Raw as Drained, entries as drain_entries};
+pub(crate) use journal::stated_entry;
 pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
 pub use sign::Unwritten;
+pub(crate) use sign::sign as sign_operation;
 
 /// How many fresh identifiers are drawn for a transaction before the source is taken as broken.
 const DRAWS: usize = 4;
