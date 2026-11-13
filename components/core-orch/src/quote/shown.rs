@@ -220,16 +220,20 @@ pub fn show(
     // A segment over three days leaves the route no firm rate, and names it (`REQ-QTE-10`).
     if let Firmness::NoFirmRate { slow } = firmness(record, candidate) {
         shown.shown_as = ShownAs::QuoteWithoutFirmRate;
+        // A slow segment the candidate doesn't hold can't be named: nothing is shown.
         shown.no_firm_rate = slow
             .into_iter()
-            .map(|time| SlowSegment {
-                provider: provider_at(&legs, time.part, time.operation),
-                part: time.part,
-                operation: time.operation,
-                tuple: time.tuple,
-                declared_seconds: known(time.declared_seconds),
+            .map(|time| {
+                Some(SlowSegment {
+                    provider: provider_at(&legs, time.part, time.operation)?,
+                    part: time.part,
+                    operation: time.operation,
+                    tuple: time.tuple,
+                    declared_seconds: known(time.declared_seconds),
+                })
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()
+            .ok_or(NotShown::NotTheRecords)?;
     }
     Ok(shown)
 }
@@ -301,11 +305,11 @@ fn known(seconds: u64) -> Option<u64> {
     (seconds != u64::MAX).then_some(seconds)
 }
 
-fn provider_at(legs: &[Leg<'_>], part: u32, operation: u32) -> Id {
+/// The provider of the segment at `part` and `operation`; `None` where no segment sits there.
+fn provider_at(legs: &[Leg<'_>], part: u32, operation: u32) -> Option<Id> {
     legs.iter()
         .find(|l| l.part == part && l.operation == operation)
         .map(|l| l.evaluated.provider.clone())
-        .unwrap_or_else(|| legs[0].evaluated.provider.clone())
 }
 
 /// How the tuple an operation runs through reports its charge: the terms of the tuple figure it cites, from its own

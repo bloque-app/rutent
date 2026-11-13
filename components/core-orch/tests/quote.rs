@@ -771,7 +771,7 @@ fn terms_stated_after_a_segment_started_do_not_apply_to_it() {
                 started_at: started,
                 amount_in: amount("1000000"),
                 charged: amount("2000"),
-                advertised: None,
+                advertised: formula("0", "1", "1000", Some("9000")),
                 result,
             },
         )
@@ -954,9 +954,11 @@ fn held_quote_is_redeemed_only_by_its_reserve_for_its_order() {
 
 // REQ-QTE-5, AC-14 --------------------------------------------------------------------------------------------------
 
-/// A charge known only after execution, above its formula's maximum, is raised to the operator as a `charge`
-/// difference resting on the result's stated entry, and the raise recorded `done`; checked again, it isn't raised
-/// again; a charge at the maximum raises nothing; and a raise that doesn't reach the operator is recorded `failed`.
+/// A charge known only after execution, above its formula's maximum (2 000, where the formula gives 1 000 before
+/// use), is raised to the operator as a `charge` difference resting on the result's stated entry, and the raise
+/// recorded `done`; checked again, it isn't raised again; a charge at the maximum, or between the fee and it, raises
+/// nothing; one naming another provider than its tuple's is refused; and a raise that doesn't reach the operator is
+/// recorded `failed`.
 // verifies: AC-14, REQ-QTE-5
 #[test]
 fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
@@ -964,7 +966,7 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
     let terms = Terms::new();
     let mut charges = Charges::new();
     let mut channel = Channel::delivering();
-    let advertised = formula("0", "1", "1000", Some("1000"));
+    let advertised = formula("0", "1", "1000", Some("2000"));
     let charged = |segment: &str, charge: &str, result: Receipt| Charged {
         order: id("order-charged"),
         segment: id(segment),
@@ -973,12 +975,12 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
         started_at: at("1970-01-01T00:30:00Z"),
         amount_in: amount("1000000"),
         charged: amount(charge),
-        advertised: Some(advertised.clone()),
+        advertised: advertised.clone(),
         result,
     };
 
-    let result = stated_result(&mut env, "seg-over", 1_001);
-    let over = charged("seg-over", "1001", result.clone());
+    let result = stated_result(&mut env, "seg-over", 2_001);
+    let over = charged("seg-over", "2001", result.clone());
     let Checked::Flagged(flagged) = charges
         .check(desk(&mut env, &terms, &mut channel), &over)
         .expect("the charge is checked")
@@ -991,8 +993,8 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
             order: id("order-charged"),
             segment: id("seg-over"),
             provider: id(RESERVE),
-            charged: amount("1001"),
-            maximum: amount("1000"),
+            charged: amount("2001"),
+            maximum: amount("2000"),
             asset: deposit_tuple(RESERVE).from.asset,
         }
     );
@@ -1013,14 +1015,27 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
     assert_eq!(channel.raised.len(), 1);
     assert_eq!(raises(&env).len(), 1);
 
-    // At the maximum: nothing raised.
-    let result = stated_result(&mut env, "seg-at", 1_000);
+    // At the maximum, and above the 1 000 the formula gives before use: within, nothing raised, since a charge
+    // known only after execution is held to the maximum.
+    for (segment, charge) in [("seg-at", 2_000), ("seg-between", 1_500)] {
+        let result = stated_result(&mut env, segment, charge);
+        assert_eq!(
+            charges.check(
+                desk(&mut env, &terms, &mut channel),
+                &charged(segment, &charge.to_string(), result)
+            ),
+            Ok(Checked::Within)
+        );
+    }
+    assert_eq!(channel.raised.len(), 1);
+
+    // A charge naming another provider than its tuple's is refused.
+    let result = stated_result(&mut env, "seg-other", 2_001);
+    let mut foreign = charged("seg-other", "2001", result);
+    foreign.provider = id("p-other");
     assert_eq!(
-        charges.check(
-            desk(&mut env, &terms, &mut channel),
-            &charged("seg-at", "1000", result)
-        ),
-        Ok(Checked::Within)
+        charges.check(desk(&mut env, &terms, &mut channel), &foreign),
+        Err(ChargeError::NotTheTuplesProvider)
     );
     assert_eq!(channel.raised.len(), 1);
 
@@ -1058,7 +1073,7 @@ fn segment_checked_on_one_result_refuses_another() {
         started_at: at("1970-01-01T00:30:00Z"),
         amount_in: amount("1000000"),
         charged: amount(charge),
-        advertised: Some(formula("0", "1", "1000", Some("2000"))),
+        advertised: formula("0", "1", "1000", Some("2000")),
         result,
     };
     let first = stated_result(&mut env, "seg-twice", 10);

@@ -30,9 +30,10 @@ pub struct Charged {
     pub amount_in: Amount,
     /// What its provider charged.
     pub charged: Amount,
-    /// The formula its route was priced on, the price figure its operation cites, for a tuple whose provider
-    /// stated no terms before the segment started.
-    pub advertised: Option<FeeFormula>,
+    /// The formula its route was priced on, the price figure its operation cites: what binds a tuple whose provider
+    /// stated no terms before the segment started. Every operation of a route cites a price, so there is always one,
+    /// and no charge goes unchecked for want of a formula.
+    pub advertised: FeeFormula,
     /// The receipt of its result's stated entry, which a raise rests on.
     pub result: Receipt,
 }
@@ -60,8 +61,8 @@ pub struct Flagged {
 /// Why a charge couldn't be checked or its raise recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChargeError {
-    /// No formula binds the segment: no terms stated before it started and none advertised.
-    NoFormula,
+    /// The charge names another provider than its tuple's.
+    NotTheTuplesProvider,
     /// The segment was checked already on another result, or another charge: a segment has one result that counts,
     /// so the second is refused, never taken as the first's answer.
     AnotherCharge,
@@ -131,6 +132,9 @@ impl Charges {
         desk: ChargeDesk<'_>,
         charged: &Charged,
     ) -> Result<Checked, ChargeError> {
+        if charged.provider != charged.tuple.provider {
+            return Err(ChargeError::NotTheTuplesProvider);
+        }
         let key = (
             charged.order.as_str().to_owned(),
             charged.segment.as_str().to_owned(),
@@ -153,9 +157,7 @@ impl Charges {
                 .binding(&charged.tuple, Some(&charged.started_at))
             {
                 Binding::Binds(terms) => &terms.fee,
-                Binding::Unstated | Binding::Quote => {
-                    charged.advertised.as_ref().ok_or(ChargeError::NoFormula)?
-                }
+                Binding::Unstated | Binding::Quote => &charged.advertised,
             };
             let kept = match check_charge(formula, &charged.amount_in, &charged.charged) {
                 Ok(()) => Kept::Within,
@@ -176,25 +178,24 @@ impl Charges {
                     raise
                         .check()
                         .map_err(|v| ChargeError::Append(AppendFailure::Refused(v)))?;
-                    // Raised once; whether it arrived is what its entry records (`T-023-02` retries it).
-                    let delivered = matches!(desk.operator.raise(&raise), Delivery::Delivered);
-                    let outcome = if delivered {
-                        Outcome::Done {}
-                    } else {
-                        Outcome::Failed {}
+                    // Both entries it may need are built before it is raised, so nothing that fails after the raise
+                    // can have it raised again; whether it arrived is what its entry records (`T-023-02` retries it).
+                    let entry = |outcome| {
+                        journal::built(
+                            desk.core,
+                            What::Raise {
+                                raise: raise.clone(),
+                            },
+                            &raise.at,
+                            outcome,
+                        )
                     };
-                    let entry = journal::built(
-                        desk.core,
-                        What::Raise {
-                            raise: raise.clone(),
-                        },
-                        &raise.at,
-                        outcome,
-                    )?;
+                    let (done, failed) = (entry(Outcome::Done {})?, entry(Outcome::Failed {})?);
+                    let delivered = matches!(desk.operator.raise(&raise), Delivery::Delivered);
                     Kept::Raised(Box::new(Raised {
                         raise,
                         delivered,
-                        step: Step::new(entry),
+                        step: Step::new(if delivered { done } else { failed }),
                     }))
                 }
             };
