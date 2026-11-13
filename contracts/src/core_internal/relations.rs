@@ -2088,6 +2088,10 @@ pub static RELATIONS: [Relation; 91] = [
                 "a provider's showing of fault is a verified statement",
             ),
             (
+                "result",
+                "a provider's showing of fault is its result, not a question or another shape",
+            ),
+            (
                 "maker",
                 "a provider's showing of fault is the failed segment's provider's own statement",
             ),
@@ -2096,6 +2100,11 @@ pub static RELATIONS: [Relation; 91] = [
                 "a provider's showing of fault is about its order and segment",
             ),
         ],
+        // The showing is the provider's result for the failed segment, whose failure the state machine took (the
+        // segment owes its reversal: `reversal-carrier-is-of-a-reversal-owed`). That its `fault` names the carrier
+        // can't be read here: the log holds a salted commitment to the result's bytes, not the bytes, so matching the
+        // fault behind it belongs to whoever holds the kept bytes (Core on taking the showing, a checker on
+        // `Evidence::fetch`).
         cites: |e, _| match &e.what {
             What::ReversalCarrier {
                 showing: Some(showing),
@@ -2108,6 +2117,7 @@ pub static RELATIONS: [Relation; 91] = [
                 true,
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
                     segment_provider(order, segment, h) == Some(maker_provider(s)),
                     s.about.as_ref().is_some_and(|a| {
                         a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
