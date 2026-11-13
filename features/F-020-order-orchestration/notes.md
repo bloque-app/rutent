@@ -3183,3 +3183,41 @@ the code under review or on the rule stubbed off, before the fix.
   - `3f528a4`: 10;
   - `c94bb09`: the nits;
   - the commit that adds these notes.
+
+### T-020-01, contract round 3 integration: notes for whoever wires the quote module
+
+The quote module's `Terms`, `Holds` and `Charges` are libraries no part of Core calls yet, and intake's acceptance
+sets `What::Acceptance.held` to `None`. Whoever wires them (T-020-07's quote owner) must close these, which the
+integration left open:
+
+- **The statement must match the entry's commitment.** `Terms::state` and `Holds::hold` take a stated entry, its
+  receipt and the signed statement, and check the entry's shape, attribution, maker and times against the statement,
+  never the entry's commitment against the statement's bytes: the log holds only a salted commitment, so the caller
+  must have the evidence store's kept bytes behind that commitment be the statement it hands in. Wired to a real
+  intake, the call fetches the kept statement and compares before it keeps terms or a hold.
+- **`redeem` does not verify the caller's session.** `Holds::redeem` takes the session an order was accepted in as the
+  caller states it, and `check_redemption` compares it with a session hold's. The caller must pass the session
+  intake's acceptance actually names, which intake verifies; `redeem` holds the hold to that and nothing more.
+- **`redeemed_by` lives in memory.** The first order to redeem a hold binds it for this process only. Across a
+  restart the log's `hold-is-redeemed-by-one-order` is the guard; the deployment's store (`F-030`) must keep it, or a
+  restarted Core relies on the log refusing a second order's acceptance after the fact.
+- **No caller redeems a hold during acceptance yet.** `Redeemed::hold` is the receipt to put in `held`.
+- **No module hands a provider's signed terms to `Terms::state` yet.** A charge raised on `Charges::check` names the
+  terms in force only from what was kept.
+
+Other things this integration settled, for the record:
+
+- A record's operation states what arrives (router-api 4.0.0). `show` adds a gross charge back only where an accepted
+  answer set the amount, so `handed_on` and the lines shown read what a result would state; a priced operation is
+  checked as it states.
+- The close figures the operator's fee, and the amount a final deposit's public movement is checked against, on what
+  arrives by the segment (`ToGrade::arrives`), as the quote figures the fee: the charge stays with the reserve, so the
+  network moves what arrives.
+- **`accept_fault` trusts the decision it is handed (left, backstopped by the log).** For the customer's acceptance
+  `Reversals::accept_fault` checks that the handed-in request is the caller's own `accept_fault` for this order,
+  segment and showing, answered by the handed-in decision, and that it was permitted. It does not confirm, from the
+  history Core follows, that `decision.receipt` is a permitted `decide` after the showing in a session still open: Core's
+  followed history holds the decision only after the assembly follows the order again, and the session register is
+  policy's. The log's `reversal-carrier-rests-on-its-acceptance` refuses a carrier whose decision isn't such a one, so a
+  wrong decision costs a refused append, never a carrier. Checking it in Core needs the assembly to re-follow before it
+  accepts, which is more than a small change.
