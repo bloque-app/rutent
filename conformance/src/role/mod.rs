@@ -141,6 +141,12 @@ pub trait RoleHarness: RoleProvider {
     ) -> bool {
         false
     }
+
+    /// The internal steps the provider took to serve its segments, in order: how it served them, which the contract
+    /// doesn't show (`REQ-CAT-21`, `T-024-04`). A provider that takes none gives none.
+    fn internal_steps(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A provider run with no test hooks, such as a production adapter.

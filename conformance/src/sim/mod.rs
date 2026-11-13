@@ -149,9 +149,12 @@ impl Spec {
         self
     }
 
-    /// Its publisher: one per provider, so two reserves on two private nodes have two (`DEC-24`).
+    /// Its publisher: one per provider, so two reserves on two private nodes have two (`DEC-24`), unless its shape
+    /// names the publisher it shares with its group (`T-024-04`).
     pub fn publisher(&self) -> String {
-        format!("{}-publisher", self.beside())
+        shape_of(&self.provider)
+            .publisher
+            .unwrap_or_else(|| format!("{}-publisher", self.beside()))
     }
 
     /// The provider whose books and nodes this one sits beside: itself, unless its shape says another
@@ -162,14 +165,67 @@ impl Spec {
             .unwrap_or_else(|| self.provider.clone())
     }
 
-    /// The bank network of a reserve.
+    /// The bank network of a reserve, its outer node: its shape's where that names one (an on-chain network).
     pub fn bank(&self) -> String {
-        format!("{}-bank", self.beside())
+        shape_of(&self.provider)
+            .outer
+            .unwrap_or_else(|| format!("{}-bank", self.beside()))
     }
 
-    /// The private node of a reserve, which its publisher declares.
+    /// The inner node of a reserve, its ledger: a private node its publisher declares, unless its shape names the
+    /// node, one its group shares or one on the operator's public list.
     pub fn ledger(&self) -> String {
-        format!("{}-ledger", self.beside())
+        shape_of(&self.provider)
+            .node
+            .unwrap_or_else(|| format!("{}-ledger", self.beside()))
+    }
+
+    /// The nodes of the operator's public list this provider's tuples reach beyond the default stand-ins' own: a
+    /// reserve's or an exchange's node where its shape says it is public, a ramp's destination, which is one, and its
+    /// origin where its shape says so.
+    pub fn public_nodes(&self) -> Vec<String> {
+        let shape = shape_of(&self.provider);
+        let mut nodes = Vec::new();
+        match self.role {
+            Role::Reserve if shape.public_node => nodes.push(self.ledger()),
+            Role::Exchange if shape.public_node => nodes.extend(shape.node.clone()),
+            Role::Ramp => {
+                nodes.extend(shape.outer.clone());
+                if shape.public_node {
+                    nodes.extend(shape.node.clone());
+                }
+            }
+            _ => {}
+        }
+        nodes
+    }
+
+    /// The private nodes this provider's publisher declares through it: its node unless the operator lists it public
+    /// (`REQ-CAT-22`). The segments it serves inside them are the ones its publisher records (`REQ-ORD-41`).
+    pub fn private_nodes(&self) -> Vec<String> {
+        let shape = shape_of(&self.provider);
+        match self.role {
+            Role::Reserve if !shape.public_node => vec![self.ledger()],
+            Role::Exchange | Role::Ramp if !shape.public_node => shape.node.into_iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The simulated public networks this provider's movements land on, which its module's declaration names: a
+    /// reserve's bank; the public node an exchange converts at or a ramp takes value to. A conversion or a transfer
+    /// into a private node lands on none.
+    pub fn networks(&self) -> Vec<String> {
+        let shape = shape_of(&self.provider);
+        match self.role {
+            Role::Reserve => vec![self.bank()],
+            Role::Exchange => match &shape.node {
+                None => vec!["polygon".to_owned()],
+                Some(node) if shape.public_node => vec![node.clone()],
+                Some(_) => Vec::new(),
+            },
+            Role::Ramp => vec![shape.outer.unwrap_or_else(|| "bsc".to_owned())],
+            Role::Verifier => Vec::new(),
+        }
     }
 
     /// The seed of its placeholder keys: 40 to 59, from its name. A kit that lists several providers checks that
@@ -203,8 +259,12 @@ impl Spec {
                 )
                 .shaped(&shape_of(&self.provider)),
             ),
-            Role::Exchange => Box::new(Exchange::named(context, &identity)),
-            Role::Ramp => Box::new(Ramp::named(context, &identity)),
+            Role::Exchange => {
+                Box::new(Exchange::named(context, &identity).shaped(&shape_of(&self.provider)))
+            }
+            Role::Ramp => {
+                Box::new(Ramp::named(context, &identity).shaped(&shape_of(&self.provider)))
+            }
             Role::Verifier => Box::new(Verifier::named(context, &identity)),
         }
     }
@@ -224,8 +284,98 @@ pub const SLOW_SECONDS: u64 = 4 * 86_400;
 /// - `sim-reserve-slow` declares four days to settle ([`SLOW_SECONDS`]).
 /// - `sim-reserve-charging` charges 7 on each movement beyond what it quoted.
 /// - `sim-reserve-dear` charges 6 000 000 on each movement, quoted.
+///
+/// Two groups of providers that reach one another's nodes (`T-024-04`), each of one publisher where it has a private
+/// node (a private node is its publisher's alone) and its public nodes on the operator's list. The first is a route
+/// across a reserve, an exchange and a ramp, and a second reserve (`AC-1`, `AC-2`, `AC-30`):
+///
+/// - `sim-join-in`, a reserve between its bank and the private node `sim-join-ledger`, in COP;
+/// - `sim-join-exchange`, at that node, from COP to USD, a statement by its publisher;
+/// - `sim-join-ramp`, from that node to the public node `sim-join-chain`, in USD, charging nothing and declaring
+///   600 seconds; `sim-join-ramp-quick`, the same tuple at 5 000 a transfer and 30 seconds; `sim-join-ramp-steps`,
+///   the first with internal steps (`REQ-CAT-21`);
+/// - `sim-join-out`, a reserve in USD between that public node and its own bank.
+///
+/// The second is on-chain: no exchange, no local money (`AC-26`, `AC-27`), all in USDC at two decimals:
+///
+/// - `sim-chain-in`, a reserve between the network `sim-chain-a` and its private node `sim-chain-ledger`;
+/// - `sim-chain-ramp-b`, from that node to the public node `sim-chain-b`; `sim-chain-ramp-c`, from `sim-chain-b` to
+///   `sim-chain-c`;
+/// - `sim-chain-out-c`, a reserve between `sim-chain-c` and the network `sim-chain-d`, and `sim-chain-out-b`, one
+///   between `sim-chain-b` and `sim-chain-e`; each deposits to the address the requester provided
+///   (`beneficiary.address`).
 pub fn shape_of(provider: &str) -> Shape {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    let join = |node: &str| Shape {
+        publisher: Some("sim-join-publisher".to_owned()),
+        node: Some(node.to_owned()),
+        ..Shape::default()
+    };
+    let chain = |node: &str| Shape {
+        publisher: Some("sim-chain-publisher".to_owned()),
+        node: Some(node.to_owned()),
+        ..Shape::default()
+    };
     match provider {
+        "sim-join-in" => join("sim-join-ledger"),
+        "sim-join-exchange" => Shape {
+            asset: Some("COP".to_owned()),
+            to_asset: Some("USD".to_owned()),
+            grade: Some(EvidenceGrade::SignedByProvider),
+            ..join("sim-join-ledger")
+        },
+        "sim-join-ramp" | "sim-join-ramp-steps" => Shape {
+            asset: Some("USD".to_owned()),
+            outer: Some("sim-join-chain".to_owned()),
+            settles_in: Some(600),
+            internal_steps: provider.ends_with("-steps"),
+            ..join("sim-join-ledger")
+        },
+        "sim-join-ramp-quick" => Shape {
+            asset: Some("USD".to_owned()),
+            outer: Some("sim-join-chain".to_owned()),
+            fee: 5_000,
+            settles_in: Some(30),
+            ..join("sim-join-ledger")
+        },
+        "sim-join-out" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            ..Shape::default()
+        },
+        "sim-chain-in" => Shape {
+            asset: Some("USDC".to_owned()),
+            outer: Some("sim-chain-a".to_owned()),
+            ..chain("sim-chain-ledger")
+        },
+        "sim-chain-ramp-b" => Shape {
+            asset: Some("USDC".to_owned()),
+            outer: Some("sim-chain-b".to_owned()),
+            ..chain("sim-chain-ledger")
+        },
+        "sim-chain-ramp-c" => Shape {
+            asset: Some("USDC".to_owned()),
+            node: Some("sim-chain-b".to_owned()),
+            public_node: true,
+            outer: Some("sim-chain-c".to_owned()),
+            ..Shape::default()
+        },
+        "sim-chain-out-c" | "sim-chain-out-b" => {
+            let (node, bank) = if provider.ends_with('c') {
+                ("sim-chain-c", "sim-chain-d")
+            } else {
+                ("sim-chain-b", "sim-chain-e")
+            };
+            Shape {
+                asset: Some("USDC".to_owned()),
+                node: Some(node.to_owned()),
+                public_node: true,
+                outer: Some(bank.to_owned()),
+                deposit_input: Some("beneficiary.address".to_owned()),
+                ..Shape::default()
+            }
+        }
         "sim-reserve-a-quick" => Shape {
             fee: 5_000,
             settles_in: Some(30),
@@ -481,6 +631,12 @@ impl Simulated {
     /// Hands the provider the hooks the role suite drives: the next real operation fails.
     pub fn force_failure(&mut self) -> bool {
         self.provider.force_failure()
+    }
+
+    /// The internal steps the provider took to serve what its books hold, in order (`REQ-CAT-21`): how it served its
+    /// segments, which the route doesn't show.
+    pub fn internal_steps(&self) -> Vec<String> {
+        self.provider.internal_steps()
     }
 
     /// Hands the provider the hooks the role suite drives: the reversed credit arrived.
@@ -753,6 +909,7 @@ pub fn movements_made(
             d.destination.network.clone(),
             d.inputs
                 .get("beneficiary.bank_account")
+                .or_else(|| d.inputs.get("beneficiary.address"))
                 .cloned()
                 .unwrap_or_else(|| format!("{}-beneficiary", text("provider"))),
             d.asset.clone(),
@@ -772,6 +929,10 @@ pub fn movements_made(
         ),
         _ => return Vec::new(),
     };
+    // Value moved into or within a private node is on no public network: its publisher's book records it.
+    if advertisement.is_some_and(|ad| ad.private_nodes.contains(&network)) {
+        return Vec::new();
+    }
     let transaction = text("transaction");
     let pieces = outcome["evidence"].as_array().map_or(1, Vec::len).max(1);
     let each = out / pieces as u128;

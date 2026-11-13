@@ -316,6 +316,25 @@ pub fn bounds(context: &SuiteContext) -> PolicyBounds {
     .expect("bounds")
 }
 
+/// [`bounds`], with the operator's slippage limit, 50 basis points, on each exchange tuple the providers serve, which
+/// every exchange tuple settling within three days needs (`REQ-QTE-9`, `T-024-04`).
+pub fn bounds_for(
+    context: &SuiteContext,
+    providers: &[rutent_conformance::sim::Spec],
+) -> PolicyBounds {
+    let mut bounds = bounds(context);
+    bounds.slippage_limits = providers
+        .iter()
+        .flat_map(prices_of)
+        .filter(|price| price.rate.is_some())
+        .map(|price| {
+            serde_json::from_value(json!({ "tuple": price.tuple, "max_bps": 50 }))
+                .expect("a slippage limit")
+        })
+        .collect();
+    bounds
+}
+
 /// Core's price of `tuple`: no fee, no rate, settling in [`DECLARED`] seconds, stated at the world's clock.
 pub fn price(tuple: TupleKey) -> Price {
     priced(tuple, 0, DECLARED)
@@ -343,29 +362,67 @@ pub fn reserve_prices(reserve: &str) -> Vec<Price> {
     ]
 }
 
-/// The prices Core holds for what `spec` serves, if it is a reserve: its withdrawal from its bank to its ledger and its
-/// deposit back, each at the fee its shape quotes and the time it declares ([`rutent_conformance::sim::shape_of`]).
-/// A reserve under no shape is priced as [`reserve_prices`] prices it. Core prices nothing else yet.
+/// The prices Core holds for what `spec` serves: a reserve's withdrawal from its bank to its ledger and its deposit
+/// back, each at the fee its shape quotes and the time it declares ([`rutent_conformance::sim::shape_of`]); an
+/// exchange's or a ramp's one tuple under a shape (`T-024-04`), the same way. A reserve under no shape is priced as
+/// [`reserve_prices`] prices it. The default exchange and ramp, at the public nodes `polygon` and `bsc` no reserve
+/// reaches, are priced by nothing: no route runs through them.
 pub fn prices_of(spec: &rutent_conformance::sim::Spec) -> Vec<Price> {
     use rutent_conformance::sim::{Role, Shape, shape_of};
-    if spec.role != Role::Reserve {
-        return Vec::new();
-    }
     let shape = shape_of(&spec.provider);
-    if shape == Shape::default() {
-        return reserve_prices(&spec.provider);
+    let unit = |asset: &Option<String>, default: &str| json!({ "id": asset.as_deref().unwrap_or(default), "decimals": 2 });
+    let node = |name: &str, asset: Value| json!({ "node": name, "asset": asset });
+    match spec.role {
+        Role::Reserve => {
+            if shape == Shape::default() {
+                return reserve_prices(&spec.provider);
+            }
+            let asset = unit(&shape.asset, "COP");
+            let bank = json!({ "node": { "network": spec.bank() }, "asset": asset });
+            let ledger = node(&spec.ledger(), asset);
+            let seconds = shape.settles_in.unwrap_or(DECLARED);
+            vec![
+                priced(
+                    tuple(&spec.provider, bank.clone(), ledger.clone()),
+                    shape.fee,
+                    seconds,
+                ),
+                priced(tuple(&spec.provider, ledger, bank), shape.fee, seconds),
+            ]
+        }
+        Role::Exchange => match &shape.node {
+            // An exchange's price carries its rate, which the stand-in keeps at one.
+            Some(at) => {
+                let mut price = priced(
+                    tuple(
+                        &spec.provider,
+                        node(at, unit(&shape.asset, "USDC")),
+                        node(at, unit(&shape.to_asset, "USDT")),
+                    ),
+                    shape.fee,
+                    shape.settles_in.unwrap_or(60),
+                );
+                price.rate = Some(
+                    serde_json::from_value(json!({ "kind": "fixed", "rate": "1" }))
+                        .expect("a fixed rate"),
+                );
+                vec![price]
+            }
+            None => Vec::new(),
+        },
+        Role::Ramp => match (&shape.node, &shape.outer) {
+            (Some(from), Some(to)) => {
+                let asset = unit(&shape.asset, "USDC");
+                vec![priced(
+                    tuple(&spec.provider, node(from, asset.clone()), node(to, asset)),
+                    shape.fee,
+                    shape.settles_in.unwrap_or(600),
+                )]
+            }
+            _ => Vec::new(),
+        },
+        Role::Verifier => Vec::new(),
     }
-    let bank = json!({ "node": { "network": spec.bank() }, "asset": cop() });
-    let ledger = json!({ "node": spec.ledger(), "asset": cop() });
-    let seconds = shape.settles_in.unwrap_or(DECLARED);
-    vec![
-        priced(
-            tuple(&spec.provider, bank.clone(), ledger.clone()),
-            shape.fee,
-            seconds,
-        ),
-        priced(tuple(&spec.provider, ledger, bank), shape.fee, seconds),
-    ]
 }
 
 // The catalogue -----------------------------------------------------------------------------------------------------
@@ -460,7 +517,17 @@ pub fn join(catalogue: &mut Catalogue, installed: &Installed, at: Instant) {
     for node in &ad.private_nodes {
         let _ = catalogue.register_private_holding(node, &ad.publisher, "holding");
     }
+    // The public nodes its tuples reach, on the operator's list, their holding account a wallet the operator
+    // publishes (`REQ-CAT-23`).
+    for node in installed.spec.public_nodes() {
+        let _ = catalogue.publish_operator_module(OPERATOR_WALLET);
+        let _ = catalogue.add_public_node(&node);
+        let _ = catalogue.register_public_holding(&node, OPERATOR_WALLET);
+    }
 }
+
+/// The module the operator publishes to hold the value resting at each public node (`REQ-CAT-23`).
+pub const OPERATOR_WALLET: &str = "operator-wallet";
 
 /// Lists `installed`'s advertisement in Core's catalogue as a test kit does, with no log: granted by
 /// `operator-admin` at the epoch's 1 000th second, and joined at the simulated world's clock. The assembly grants

@@ -48,6 +48,7 @@ pub mod durable;
 mod grading;
 pub mod machine;
 pub mod policy;
+pub mod price;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -466,6 +467,8 @@ pub struct Core {
     readings: grading::Readings,
     issued: Issued,
     exposures: Exposures,
+    /// The prices reported, once per order (`T-024-04`).
+    reported: rutent_core_orch::quote::Prices,
     releases: Releases,
     signer: Signer,
     fresh: Seeded,
@@ -733,13 +736,14 @@ impl Core {
             readings: grading::Readings::default(),
             issued: Issued::new(),
             exposures: Exposures::new(),
+            reported: rutent_core_orch::quote::Prices::new(),
             releases: Releases::new(),
             signer: Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
             },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
-            bounds: kit::bounds(&context),
+            bounds: kit::bounds_for(&context, &config.providers),
             prices,
             quotes: BTreeMap::new(),
             requests: BTreeMap::new(),
@@ -811,6 +815,11 @@ impl Core {
     /// Core's catalogue, to read.
     pub fn catalogue(&self) -> &Catalogue {
         &self.catalogue
+    }
+
+    /// Core's record of value in flight and of the orders declared stuck, to read (`T-024-04`).
+    pub fn exposures(&self) -> &Exposures {
+        &self.exposures
     }
 
     /// The platform with the simulated providers, to read.

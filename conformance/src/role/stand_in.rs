@@ -299,6 +299,24 @@ pub struct Shape {
     /// The provider whose publisher, bank network and private node it shares, so two providers serve the same
     /// tuples. Its own are used where it names none.
     pub beside: Option<String>,
+    /// The publisher it shares with the providers of its group (`T-024-04`), where it isn't its own or its
+    /// `beside`'s: a private node is its publisher's alone, so providers that reach one node share a publisher.
+    pub publisher: Option<String>,
+    /// Its inner node, where it isn't a reserve's own ledger: a reserve's ledger, an exchange's node, a ramp's origin.
+    pub node: Option<String>,
+    /// Whether that node is on the operator's public list: then no publisher declares it private.
+    pub public_node: bool,
+    /// Where it meets a public network, where it isn't the bank of its own: a reserve's outer network, a ramp's
+    /// destination, which is a public node.
+    pub outer: Option<String>,
+    /// The asset a reserve or a ramp moves, or an exchange takes in, in two decimals; the stand-in's own where none.
+    pub asset: Option<String>,
+    /// The asset an exchange gives out.
+    pub to_asset: Option<String>,
+    /// The input a reserve's deposit needs, where it isn't the account of a bank.
+    pub deposit_input: Option<String>,
+    /// A ramp that takes internal steps to serve a segment (`REQ-CAT-21`).
+    pub internal_steps: bool,
 }
 
 /// A real value-moving operation's transaction: the one a repeat would name.
@@ -538,6 +556,19 @@ impl Reserve {
             (shape.grade, advertisement.declarations.evidence.as_mut())
         {
             evidence.grade = grade;
+        }
+        if let Some(offer) = advertisement.offers.reserve.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(asset) = &shape.asset {
+                    tuple.asset.clone_from(asset);
+                }
+                if let (Some(input), NodeRef::Inner(_)) = (&shape.deposit_input, &tuple.origin) {
+                    tuple.terms.required_inputs = vec![input.clone()];
+                }
+            }
+        }
+        if shape.public_node {
+            advertisement.private_nodes.clear();
         }
         self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
         self.shape = shape.clone();
@@ -865,6 +896,8 @@ impl RoleHarness for Reserve {
 /// An exchange converting USDC to USDT at one public node, at a rate of one.
 #[derive(Debug, Clone)]
 pub struct Exchange {
+    name: String,
+    shape: Shape,
     signer: Signer,
     rogue: Signer,
     advertisement: Statement<Advertisement>,
@@ -921,6 +954,8 @@ impl Exchange {
             private_nodes: Vec::new(),
         };
         Self {
+            name: identity.provider.clone(),
+            shape: Shape::default(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             rogue: Signer::new(context, &identity.provider, identity.seed.wrapping_add(10)),
             signer,
@@ -930,6 +965,56 @@ impl Exchange {
             fail_next: false,
             failed_once: false,
             faults: BTreeSet::new(),
+        }
+    }
+
+    /// This exchange under `shape` (`T-024-04`): at the node, between the assets and declaring the evidence the shape
+    /// names, and quoting the seconds it settles in. Its advertisement is signed again. An exchange under no shape
+    /// is the stand-in's own, at the public node `polygon`.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let Some(offer) = advertisement.offers.exchange.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(node) = &shape.node {
+                    tuple.node.clone_from(node);
+                    tuple.from.decimals = 2;
+                    tuple.to.decimals = 2;
+                }
+                if let Some(asset) = &shape.asset {
+                    tuple.from.id.clone_from(asset);
+                }
+                if let Some(asset) = &shape.to_asset {
+                    tuple.to.id.clone_from(asset);
+                }
+            }
+        }
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        // The node of its own, which its publisher declares private, unless the operator lists it public.
+        if let (Some(node), false) = (&shape.node, shape.public_node) {
+            advertisement.private_nodes = vec![node.clone()];
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.shape = shape.clone();
+        self
+    }
+
+    /// The grade of the evidence it gives: the one it declares.
+    fn grade(&self) -> EvidenceGrade {
+        self.shape.grade.unwrap_or(EvidenceGrade::PublicRecord)
+    }
+
+    /// Who the evidence it gives names as its maker: the public node the conversion is on, or, at a node of its
+    /// own, itself.
+    fn by(&self) -> &str {
+        if self.shape.node.is_some() {
+            &self.name
+        } else {
+            "polygon"
         }
     }
 
@@ -1074,7 +1159,7 @@ impl Exchange {
                 direction: c.direction,
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::RateMovesBeyondSlippage],
-                settlement_seconds: seconds(60),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(60)),
             });
         }
         let failing = std::mem::take(&mut self.fail_next);
@@ -1097,7 +1182,7 @@ impl Exchange {
         );
         if failing {
             return ConversionOutcome::Failed(Failure {
-                evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+                evidence: evidence(self.grade(), self.by(), &c.transaction),
                 fault: None,
             });
         }
@@ -1114,7 +1199,7 @@ impl Exchange {
             amount_out,
             rate,
             fee,
-            evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+            evidence: evidence(self.grade(), self.by(), &c.transaction),
         })
     }
 
@@ -1205,6 +1290,7 @@ impl RoleHarness for Exchange {
 /// A ramp moving USDC between two public nodes.
 #[derive(Debug, Clone)]
 pub struct Ramp {
+    shape: Shape,
     signer: Signer,
     advertisement: Statement<Advertisement>,
     transfers: Vec<String>,
@@ -1268,6 +1354,7 @@ impl Ramp {
             private_nodes: Vec::new(),
         };
         Self {
+            shape: Shape::default(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             signer,
             transfers: Vec::new(),
@@ -1280,6 +1367,44 @@ impl Ramp {
             converts_internally: false,
             faults: BTreeSet::new(),
         }
+    }
+
+    /// This ramp under `shape` (`T-024-04`): from the node to the network, in the asset, taking what the shape says
+    /// from each transfer, quoting the seconds it settles in and declaring the evidence it names, with the internal
+    /// steps the shape gives it. Its advertisement is signed again. A ramp under no shape is the stand-in's own,
+    /// from the public node `polygon` to `bsc`.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let Some(offer) = advertisement.offers.ramp.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(node) = &shape.node {
+                    tuple.origin.clone_from(node);
+                }
+                if let Some(outer) = &shape.outer {
+                    tuple.destination.clone_from(outer);
+                }
+                if let Some(asset) = &shape.asset {
+                    tuple.asset.clone_from(asset);
+                    tuple.decimals = EndUnits {
+                        origin: 2,
+                        destination: 2,
+                    };
+                }
+            }
+        }
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        if let (Some(node), false) = (&shape.node, shape.public_node) {
+            advertisement.private_nodes = vec![node.clone()];
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.converts_internally = shape.internal_steps;
+        self.shape = shape.clone();
+        self
     }
 
     /// Breaks `REQ-CAT-13`: the ramp serves amounts and nodes it doesn't advertise.
@@ -1402,7 +1527,9 @@ impl Ramp {
         if self.breaks(Fault::GivesWeakerEvidence) {
             EvidenceGrade::SignedByProvider
         } else {
-            EvidenceGrade::SignedByAnotherParty
+            self.shape
+                .grade
+                .unwrap_or(EvidenceGrade::SignedByAnotherParty)
         }
     }
 
@@ -1436,27 +1563,32 @@ impl Ramp {
         {
             return TransferOutcome::Refused(waiting_on_the_person());
         }
-        // The ramp charges nothing, unless it takes a fee of one unit on top of the amount stated.
+        // The ramp charges nothing, unless it takes a fee of one unit on top of the amount stated, or its shape takes
+        // a fee from what it moves, reported net: what it gives out is what it took in less the fee.
         let on_top = self.breaks(Fault::TakesItsFeeOnTopOfTheAmount);
         let taken = if on_top {
             amount(&t.amount).map_or(t.amount.clone(), |v| (v + 1).to_string())
         } else {
             t.amount.clone()
         };
+        let charged = if on_top { 1 } else { self.shape.fee };
         let fee = Fee {
             asset: t.asset.clone(),
-            amount: if on_top { "1" } else { "0" }.to_owned(),
+            amount: charged.to_string(),
             billed_separately: None,
         };
+        let given_out = amount(&t.amount)
+            .filter(|_| !on_top)
+            .map_or(t.amount.clone(), |v| v.saturating_sub(charged).to_string());
         if t.dry_run {
             return TransferOutcome::DryRunAccepted(TransferQuote {
                 amount_in: taken.clone(),
-                amount_out: t.amount.clone(),
+                amount_out: given_out,
                 fee,
                 direction: t.direction,
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses],
-                settlement_seconds: seconds(600),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(600)),
             });
         }
         if std::mem::take(&mut self.fail_next) {
@@ -1497,7 +1629,7 @@ impl Ramp {
         );
         let settled = TransferOutcome::Succeeded(MovementSettlement {
             amount_in: taken,
-            amount_out: t.amount.clone(),
+            amount_out: given_out,
             fee,
             evidence: evidence(self.grade(), &t.destination, &t.transaction),
         });
@@ -1603,6 +1735,10 @@ impl Typed for Ramp {
 }
 
 impl RoleHarness for Ramp {
+    fn internal_steps(&self) -> Vec<String> {
+        self.internal_steps.clone()
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
         true

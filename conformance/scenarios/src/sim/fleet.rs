@@ -8,7 +8,7 @@ use rutent_conformance::role::{
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
-    BEGIN, BOOK, CHAIN, DEPLOYMENT_KEY, Role, SETTLE, Spec, Standin, chain_host, rail_host,
+    BEGIN, BOOK, CHAIN, DEPLOYMENT_KEY, SETTLE, Spec, Standin, chain_host, rail_host,
 };
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
@@ -91,14 +91,9 @@ pub struct Installed {
     pub declaration: Declaration,
 }
 
-/// The simulated public networks a provider's tuples are on.
+/// The simulated public networks a provider's tuples are on (`Spec::networks`).
 pub(crate) fn networks_of(spec: &Spec) -> Vec<String> {
-    match spec.role {
-        Role::Reserve => vec![spec.bank()],
-        Role::Exchange => vec!["polygon".to_owned()],
-        Role::Ramp => vec!["bsc".to_owned()],
-        Role::Verifier => Vec::new(),
-    }
+    spec.networks()
 }
 
 /// A platform over a [`SimWorld`], with the catalogue that vouches for its releases.
