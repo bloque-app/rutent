@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 548 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 549 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -610,6 +610,11 @@
   it. `hand-on-links-an-unopened-order` now also refuses a `handed_on` naming a linked order another part or order
   already handed on to. Refused: p2 handed on to ord-2 after p3. Admitted: p1 handed on to a fresh ord-41. 548
   admission cases. (DEC-4, DEC-20, REQ-ORD-43, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a private node's binding is the order's own (round 2's re-review of the
+  contract). The replay path of a publisher's label took a replay resting on any statement stating for the
+  publisher; the statement it rests on, as the evidence path's, must now be about this order. Refused: a replay of
+  ord-1 naming ledger-in resting on fx-group's statement about ord-2. Admitted: one resting on its statement about
+  ord-1 (`--a-publishers-word-labelled`). 549 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

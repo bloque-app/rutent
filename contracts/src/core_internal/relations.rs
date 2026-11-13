@@ -4824,13 +4824,19 @@ fn from_node_of<'a>(order: &str, segment: &str, history: &'a History) -> Option<
 }
 
 /// Whether the log binds `node` as a private node of `order` published by `publisher`: a `replay` of the order
-/// naming the node, resting on a verified statement stating for the publisher, or evidence of the order whose
-/// public movement names the node, resting on one.
+/// naming the node, resting on a verified statement about the order stating for the publisher, or evidence of the
+/// order whose public movement names the node, resting on one.
 fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -> bool {
+    // A verified statement stating for the publisher, about this order: a replay's exit result, or the evidence's
+    // own statement, of another order binds nothing here.
     let for_publisher = |r: &Receipt| {
         entry_at(r, history).and_then(stated).is_some_and(|s| {
             matches!(s.attribution, Attribution::Verified { .. })
                 && &s.attribution.maker().party == publisher
+                && s.about
+                    .as_ref()
+                    .and_then(|a| a.order.as_ref())
+                    .is_some_and(|o| o.as_str() == order)
         })
     };
     history
