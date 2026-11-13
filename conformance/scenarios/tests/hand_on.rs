@@ -1366,6 +1366,43 @@ fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
     );
 }
 
+/// A stranger's new terms are refused the same for an order that exists and one that doesn't, before Core says whether
+/// it follows the order, and policy is not asked: only the order's customer, as the log's acceptance names it, learns
+/// more (`REQ-AUZ-7`).
+// verifies: REQ-AUZ-7, REQ-ORD-43
+#[test]
+fn a_strangers_new_terms_are_refused_the_same_whether_the_order_exists() {
+    let (_world, mut core) = waiting_for_the_customer();
+    let stranger = rutent_contracts::core_internal::Actor {
+        party: id("stranger"),
+        ..customer()
+    };
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    let authorised = count(&core, is_authorise);
+    let mut told = Vec::new();
+    for order in [ORDER, "ord-nobody"] {
+        for by in [stranger.clone(), operator()] {
+            let mut new = new_destination(by);
+            new.order = id(order);
+            told.push(hand_on::authorise(
+                &core.segments,
+                &mut stuck,
+                &mut core.policy,
+                &new,
+                &mut reader,
+            ));
+        }
+    }
+    for answer in &told {
+        assert_eq!(
+            answer,
+            &Err(HandOnError::Refused(Refused::NotTheCustomer)),
+            "{told:?}"
+        );
+    }
+    assert_eq!(count(&core, is_authorise), authorised, "policy not asked");
+}
+
 /// A start built and not yet taken is appended as built, and only for the record it was built from: a retry that
 /// passes another record is refused, as a second check on a different result is (`AnotherCharge`), while the identical
 /// retry is answered with the kept start.

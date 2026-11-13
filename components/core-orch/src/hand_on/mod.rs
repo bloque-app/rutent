@@ -185,7 +185,8 @@ impl From<AppendFailure> for HandOnError {
 /// waiting part (the gate `T-021-04` leaves to orchestration). The terms in force and the order's customer are read
 /// from `recorded`, the log's entries as the log holds them, never from the caller ([`in_force`],
 /// [`requester_of`]): every part `new` speaks for must have the same terms in force. Refused, with nothing asked,
-/// otherwise.
+/// otherwise. A caller that isn't the order's customer is told [`Refused::NotTheCustomer`] before anything of the
+/// order, whether it exists or not.
 ///
 /// Once policy permits terms that keep the destination (a new floor), `stuck` follows the order's ends again over
 /// the log's entries read then, so its ends check is never stale (`T-020-11b`). Terms that move the destination are
@@ -198,11 +199,18 @@ pub fn authorise(
     new: &Authorisation,
     recorded: &mut dyn FnMut() -> Vec<Entry>,
 ) -> Result<Decision, HandOnError> {
+    // The caller is the order's customer first, as the log's acceptance names it: policy can't be asked before the
+    // gate holds the terms to a waiting part, so a caller that isn't the customer, of an order that exists or not, is
+    // told one refusal, and only the customer is told more (`REQ-AUZ-7`).
+    let entries = recorded();
+    let requester = requester_of(&entries, &new.order)
+        .filter(|requester| {
+            new.given_by.role == Role::Customer && **requester == new.given_by.party
+        })
+        .ok_or(HandOnError::Refused(Refused::NotTheCustomer))?;
     let order = segments
         .order(&new.order)
         .ok_or(HandOnError::Refused(Refused::Unknown))?;
-    let entries = recorded();
-    let requester = requester_of(&entries, &new.order).ok_or(HandOnError::Unknown)?;
     let mut current: Option<&Authorisation> = None;
     for part in &order.parts {
         let speaks = new
