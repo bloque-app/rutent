@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 522 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 524 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 97 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -555,6 +555,14 @@
   route opening an order a `hand_on_taken_back` names, and `hand-on-links-an-unopened-order` any new hand-on to it.
   Refused: the review's reproduction, and a new hand-on to ord-2 after the take-back. 522 admission cases. (DEC-4,
   DEC-20, REQ-ORD-43, T-020-01, T-020-13)
+- Folded into 1.0.0 before its release: a holding record proves one start, keyed by its transaction (round 2 of the
+  contract review). `one-start-per-holding-record` was keyed by the record's receipt, so the same record kept again
+  under a new commitment was cited again; it is now keyed by the transaction the record names, as
+  `one-order-per-deposit` is. `holding-withdrawal-rests-on-its-record` holds the record to a provider's result
+  (field `result`), about the linked order whose route it starts (field `order`, not `handed_on_from`), naming its
+  transaction (field `transaction`). The world's record is us-bank's result about ord-2 under tx-hold2. Refused: the
+  review's dodge, an operation, a record about ord-1, one naming no transaction. 524 admission cases. (DEC-4, DEC-20,
+  REQ-ORD-40, INV-5, T-020-01, T-020-13)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

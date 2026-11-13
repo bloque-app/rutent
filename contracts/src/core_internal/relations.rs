@@ -3565,12 +3565,20 @@ pub static RELATIONS: [Relation; 91] = [
                 "a holding account's withdrawal record is a verified statement",
             ),
             (
+                "result",
+                "a holding account's withdrawal record is its provider's result",
+            ),
+            (
                 "maker",
                 "a holding account's withdrawal record is its holder's own statement",
             ),
             (
                 "order",
-                "a holding account's withdrawal record is about the order whose value it held",
+                "a holding account's withdrawal record is about the linked order whose route it starts",
+            ),
+            (
+                "transaction",
+                "a holding account's withdrawal record names the withdrawal's signed transaction",
             ),
         ],
         cites: |e, _| match &e.what {
@@ -3578,19 +3586,14 @@ pub static RELATIONS: [Relation; 91] = [
             _ => none(),
         },
         answers: |e, _, t, _| match (&e.what, stated(t)) {
-            (
-                What::HoldingWithdrawal {
-                    handed_on_from,
-                    holder,
-                    ..
-                },
-                Some(s),
-            ) => judge(
+            (What::HoldingWithdrawal { order, holder, .. }, Some(s)) => judge(
                 true,
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
                     maker_provider(s) == holder,
-                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(handed_on_from),
+                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
                 ],
             ),
             _ => Match::NotTarget,
@@ -3635,17 +3638,23 @@ pub static RELATIONS: [Relation; 91] = [
         name: "one-start-per-holding-record",
         spec: &["REQ-ORD-40", "INV-5"],
         quantifier: Quantifier::NoneOther,
-        refusal: "a holding account's record proves one start: no other withdrawal record cites it",
+        refusal: "a holding account's record proves one start: no other withdrawal record is of its transaction",
         fields: &[],
+        // Keyed by the withdrawal's signed transaction, the one its record names, not the record's receipt or its
+        // salted commitment, which the same record kept again would change; the same entry again is a retry.
         cites: |e, _| match &e.what {
             What::HoldingWithdrawal { .. } => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|t| &t.what)) {
             (
                 What::HoldingWithdrawal { record, .. },
                 Some(other @ What::HoldingWithdrawal { record: r, .. }),
-            ) => judge(r == record && other != &e.what, &[]),
+            ) => judge(
+                record_transaction(record, h).is_some_and(|x| record_transaction(r, h) == Some(x))
+                    && other != &e.what,
+                &[],
+            ),
             _ => Match::NotTarget,
         },
     },
@@ -4076,6 +4085,16 @@ fn first_segment_of(order: &str, segment: &str, history: &History) -> bool {
                     if parts.iter().any(|p| p.segments.first().is_some_and(|s| s.segment_id.as_str() == segment)))
         })
     })
+}
+
+/// The transaction the stated record at `record` names, where it names one.
+fn record_transaction<'a>(record: &Receipt, history: &'a History) -> Option<&'a Id> {
+    entry_at(record, history)
+        .and_then(stated)?
+        .about
+        .as_ref()?
+        .transaction
+        .as_ref()
 }
 
 /// Whether `order` is closed in `history` by a hand-on taken back: a `hand_on_taken_back` names it as the linked
