@@ -525,8 +525,14 @@ fn family_of(id: &str) -> &str {
 
 /// True when a clause of `text` names `id` and, for `needle`, says it too.
 fn places(text: &str, id: &str, needle: Option<&str>) -> bool {
-    text.split([';', '|'])
-        .any(|clause| names(clause, id) && needle.is_none_or(|n| clause.contains(n)))
+    text.split([';', '|']).any(|clause| {
+        names(clause, id)
+            && needle.is_none_or(|n| {
+                clause
+                    .to_ascii_lowercase()
+                    .contains(&n.to_ascii_lowercase())
+            })
+    })
 }
 
 /// True when `head` places `id` (in a clause that says `needle`, if one is given) where `base` did not.
@@ -568,7 +574,7 @@ pub fn compare(head: &Scope, base: &Scope, head_plan: &str, base_plan: &str) -> 
                         plan_row(base_plan, dec).as_deref(),
                         plan_row(head_plan, dec).as_deref(),
                         &row.id,
-                        None,
+                        Some("defer"),
                     )
                 }),
             Class::M4 => {

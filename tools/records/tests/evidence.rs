@@ -47,12 +47,16 @@ fn spec() -> String {
 
 /// A plan whose decisions, placement table and feature rows are the ones a row may cite.
 fn plan(dec16: &str, placement: &str, feature: &str) -> String {
+    plan_dec8("The router is pure.", dec16, placement, feature)
+}
+
+fn plan_dec8(dec8: &str, dec16: &str, placement: &str, feature: &str) -> String {
     doc(&[
         "## 1. Decisions",
         "",
         "| ID | Decision |",
         "|---|---|",
-        "| `DEC-8` | The router is pure. |",
+        &format!("| `DEC-8` | {dec8} |"),
         &format!("| `DEC-16` | {dec16} |"),
         "| `DEC-17` | Always in v0. |",
         "",
@@ -654,4 +658,27 @@ fn the_ci_run_is_strict_where_the_scope_file_reads_on() {
     std::fs::remove_dir_all(&head).unwrap();
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("the switch on"), "{stdout}");
+}
+
+// verifies: DEC-17
+#[test]
+fn a_mention_that_does_not_defer_the_id_does_not_excuse_a_deferral() {
+    let base = scope_text("off", &[]);
+    let head = scope_text("off", &["REQ-MOD-3 | deferred | DEC-8"]);
+    let head_plan = plan_dec8(
+        "Not about `REQ-MOD-3`.",
+        "Verifiers wait.",
+        "`M3`: `REQ-OPS-4`, `REQ-OPS-5`",
+        "`REQ-OPS-3`",
+    );
+    let found = ratchet(&head, &base, &head_plan, &plain_plan());
+    assert!(some_with(&found, "reclassified", "REQ-MOD-3"), "{found:?}");
+    let deferring = plan_dec8(
+        "Defers `REQ-MOD-3` to v1.",
+        "Verifiers wait.",
+        "`M3`: `REQ-OPS-4`, `REQ-OPS-5`",
+        "`REQ-OPS-3`",
+    );
+    let found = ratchet(&head, &base, &deferring, &plain_plan());
+    assert!(found.is_empty(), "{found:?}");
 }
