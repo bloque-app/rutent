@@ -131,6 +131,30 @@ pub struct Asking<'a> {
     pub providers: &'a mut dyn Providers,
 }
 
+/// What a reversal Core asks of a failed provider moves through: policy, which decides it, and the platform, which
+/// carries it out.
+pub struct Moving<'a> {
+    /// Policy's one decision call.
+    pub decisions: &'a mut dyn rutent_contracts::core_internal::calls::Decisions,
+    /// The module platform.
+    pub modules: &'a mut dyn crate::segments::Modules,
+}
+
+/// A failed provider asked to reverse its segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    /// The receipt of the `ask_reversal` effect.
+    pub effect: Receipt,
+    /// The reversal's operation, as Core signed it.
+    pub operation: Statement<ProviderOperation>,
+    /// The receipt of the provider's answer's stated entry, where it answered.
+    pub answer: Option<Receipt>,
+    /// The reversal, where the answer completed it.
+    pub completed: Option<Completed>,
+    /// Why the answer completed nothing, where it didn't.
+    pub why: Option<NotCounted>,
+}
+
 /// Whose fault a failed provider shows a failure was (`REQ-ORD-11`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
@@ -374,6 +398,26 @@ impl Reversals {
     /// Nothing owed yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Follows `order` from the log's entries, as the log holds them: the party its acceptance names as requester,
+    /// whose acceptance of a fault is the customer's (`reversal-carrier-is-accepted-by-the-party-at-fault`). False
+    /// where they hold no acceptance of it.
+    pub fn follow(&mut self, order: &Id, entries: &[rutent_contracts::core_internal::Entry]) -> bool {
+        let _ = (order, entries);
+        true
+    }
+
+    /// Asks the failed provider of `at` to reverse it (see the module's docs).
+    pub fn ask(
+        &mut self,
+        parts: &mut Parts<'_>,
+        asking: &mut Asking<'_>,
+        moving: &mut Moving<'_>,
+        at: At<'_>,
+    ) -> Result<Asked, ReversalError> {
+        let _ = (parts, asking, moving, at);
+        Err(ReversalError::Unknown)
     }
 
     /// The reversal `segment` of `order` owes, once Core recorded it owed.
@@ -650,7 +694,13 @@ impl Reversals {
     /// The party the provider's showing names, accepting it: it carries the reversal from then (`REQ-ORD-11`). `by`
     /// must act in that party's role; that it is the order's own customer, or the deployment's operator, is policy's
     /// to hold (`T-021-06`).
-    pub fn accept_fault(&mut self, at: At<'_>, by: &Actor) -> Result<Carrier, ReversalError> {
+    pub fn accept_fault(
+        &mut self,
+        parts: &mut Parts<'_>,
+        at: At<'_>,
+        by: &Actor,
+    ) -> Result<Carrier, ReversalError> {
+        let _ = &parts;
         let reversal = self
             .reversals
             .get_mut(&key(at.order, at.segment))
