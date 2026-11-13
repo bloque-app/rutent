@@ -646,6 +646,12 @@ impl Core {
                 DESTINATION_ACCOUNT.to_owned(),
                 kit::customer().party.as_str().to_owned(),
             );
+            // The payer's account at the origin reserve, which every order's inputs name (`payer.bank_account`):
+            // policy holds an authorisation's origin account to the payer's own (`T-021-04`, the payer gap's ruling).
+            r.accounts.insert(
+                ORIGIN_ACCOUNT.to_owned(),
+                kit::customer().party.as_str().to_owned(),
+            );
         }
         let records = Records {
             log: Rc::clone(&log),
@@ -1510,6 +1516,10 @@ pub fn inputs_of(log: &CoreLog) -> Vec<RecordedInput> {
 
 /// The account the base order delivers to, held by the customer at the destination reserve.
 pub const DESTINATION_ACCOUNT: &str = "acct-2";
+
+/// The payer's account at the origin reserve, held by the customer, the base order's payer: the one its inputs name
+/// (`payer.bank_account`) and its authorisation names as its origin account.
+pub const ORIGIN_ACCOUNT: &str = "acct-1";
 
 /// An actor that is not a person: a component of `party`'s, acting as `acts`, in `role`.
 pub fn component(party: &str, acts: &str, role: Role) -> Actor {
