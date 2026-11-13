@@ -271,6 +271,20 @@ pub struct Changed {
     pub amount: PositiveAmount,
 }
 
+/// A route handed on's start, as the holding account recorded it.
+#[derive(Debug, Clone, Copy)]
+pub struct Start<'a> {
+    /// The linked order whose route it starts.
+    pub linked: &'a Id,
+    /// The holding account's own record of its withdrawal, as its module answered it.
+    pub record: &'a WithdrawalRecord,
+    /// The receipt of the holding account's stated entry of that withdrawal, which the log holds verified: the
+    /// record the `holding_withdrawal` cites (`holding-withdrawal-rests-on-its-record`).
+    pub statement: &'a Receipt,
+    /// Core, acting on its own account: who writes the `holding_withdrawal`.
+    pub core: &'a Actor,
+}
+
 /// A part waiting for the customer, resumed on a route to its own destination under the customer's new terms.
 #[derive(Debug, Clone, Copy)]
 pub struct Resume<'a> {
@@ -966,10 +980,10 @@ impl HandOn {
     /// Core's didn't hand on (after a restart, say) is [`HandOnError::Unknown`]: `F-030`'s.
     pub fn prove_start(
         &mut self,
-        segments: &mut Segments,
-        linked: &Id,
-        record: &WithdrawalRecord,
-    ) -> Result<(), HandOnError> {
+        parts: &mut Parts<'_>,
+        start: Start<'_>,
+    ) -> Result<Receipt, HandOnError> {
+        let (segments, linked, record) = (&mut *parts.segments, start.linked, start.record);
         let held = self
             .linked
             .get(linked.as_str())
@@ -985,7 +999,7 @@ impl HandOn {
         }
         self.spent.insert(spent, linked.as_str().to_owned());
         segments.prove_start(linked);
-        Ok(())
+        Ok(start.statement.clone())
     }
 
     /// Builds a part's input from `by`, as `kind`.
