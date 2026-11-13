@@ -2195,9 +2195,19 @@ pub static RELATIONS: [Relation; 93] = [
                 "session",
                 "a customer's acceptance of fault is given in its session, still open",
             ),
+            (
+                "shape",
+                "a customer's acceptance of fault is its fault-acceptance statement, not a dispute or another shape",
+            ),
+            (
+                "showing",
+                "an acceptance of fault names the showing it accepts, by its transaction, and comes after it",
+            ),
         ],
-        // The act, not a writer's label: the customer's own signed yes, given in its session, as an acceptance
-        // rests on its yes and session; the operator's `accept_fault` command, by the deployment operator's party.
+        // The act, not a writer's label: the customer's own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in
+        // its session, as an acceptance rests on its yes and session; the operator's `accept_fault` command, by the
+        // deployment operator's party. Either comes after the showing it accepts: the customer's statement is about
+        // the showing's transaction and received after it, the command appended after it.
         cites: |e, _| match &e.what {
             What::ReversalCarrier {
                 accepted_with: Some(act),
@@ -2217,6 +2227,7 @@ pub static RELATIONS: [Relation; 93] = [
                 order,
                 segment,
                 carrier,
+                showing,
                 accepted_by: Some(by),
                 session,
                 ..
@@ -2225,6 +2236,14 @@ pub static RELATIONS: [Relation; 93] = [
                 return Match::NotTarget;
             };
             let requester = requester_of(order.as_str(), h);
+            // The showing, and where the log holds it.
+            let shown = showing
+                .as_ref()
+                .and_then(|r| h.iter().position(|(x, _)| x == r).map(|at| (at, &h[at].1)));
+            let after_showing = |entry: &Entry| match (shown, position(entry, h)) {
+                (Some((at, _)), Some(here)) => here > at,
+                _ => false,
+            };
             match (c.index, carrier, t) {
                 (0, Carrier::Customer, Entry::Stated(s)) => judge(
                     true,
@@ -2238,6 +2257,19 @@ pub static RELATIONS: [Relation; 93] = [
                                     && a.segment.as_ref() == Some(segment)
                             }),
                         true,
+                        s.what.statement.as_str() == super::types::FAULT_ACCEPTANCE_SHAPE,
+                        after_showing(t)
+                            && shown.and_then(|(_, x)| stated(x)).is_some_and(|showing| {
+                                s.received_at.unix_nanos() > showing.received_at.unix_nanos()
+                                    && showing
+                                        .about
+                                        .as_ref()
+                                        .and_then(|a| a.transaction.as_ref())
+                                        .is_some_and(|tx| {
+                                            s.about.as_ref().and_then(|a| a.transaction.as_ref())
+                                                == Some(tx)
+                                        })
+                            }),
                     ],
                 ),
                 (0, Carrier::Operator, Entry::Verified(v)) => match &v.what {
@@ -2253,6 +2285,8 @@ pub static RELATIONS: [Relation; 93] = [
                                 && &v.who == by,
                             true,
                             true,
+                            true,
+                            after_showing(t),
                         ],
                     ),
                     _ => Match::NotTarget,
@@ -2267,6 +2301,8 @@ pub static RELATIONS: [Relation; 93] = [
                             requester == Some(&request.holder),
                             true,
                             opened.expires_at.unix_nanos() >= e.when.at.unix_nanos(),
+                            true,
+                            true,
                         ],
                     ),
                     _ => Match::NotTarget,

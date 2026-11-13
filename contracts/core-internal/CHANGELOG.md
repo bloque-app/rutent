@@ -29,8 +29,8 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 541 cases of the log's admission of an entry, from one coherent log, against a citation table
+  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 124 invalid ones, each
+  breaking one rule, and 547 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -595,6 +595,16 @@
   `part-waits-for-value-in-motion` now cites it, as it does a restart. Refused: p1's withdrawal undone while p1-s6's
   move is in motion; admitted: with nothing moving. 541 admission cases. (DEC-4, DEC-20, REQ-ORD-3, REQ-ORD-40,
   INV-4, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a customer's acceptance of fault is a statement of its own shape, after the
+  showing (round 2's re-review of the contract). Any verified statement of the requester's about the segment
+  counted as accepting the fault, a dispute or one made before the showing included. A new schema and type,
+  `fault-acceptance` (`FaultAcceptance {order, segment, transaction, showing, fault}`, shape
+  `urn:rutent:core-internal:fault-acceptance`), is the customer's own signed acceptance naming the showing it
+  accepts, as an acceptance's yes is its reserve's. `reversal-carrier-rests-on-its-acceptance` holds the customer's
+  act to that shape (field `shape`), about the showing's transaction, received and appended after it, and the
+  operator's `accept_fault` to after it (field `showing`). Refused: another shape, one made before the showing, one
+  received before it, one appended before it, one naming another showing, an `accept_fault` before the showing.
+  One schema, one valid fixture, 547 admission cases. (DEC-4, DEC-20, REQ-ORD-11, T-020-01, T-020-12)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate

@@ -2408,6 +2408,30 @@ pub struct OutcomeConfirmation {
     pub at: Timestamp,
 }
 
+/// The shape of a customer's acceptance of a provider's showing of fault: its own signed statement, kept and logged as
+/// a stated entry like any other, naming the showing it accepts (`REQ-ORD-11`).
+pub const FAULT_ACCEPTANCE_SHAPE: &str = "urn:rutent:core-internal:fault-acceptance";
+
+/// A customer's acceptance of a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): the
+/// body of its own signed statement, of shape [`FAULT_ACCEPTANCE_SHAPE`], as an acceptance's yes is its reserve's.
+/// It names the showing it accepts, by the showing's transaction and commitment, so it can't be read as accepting
+/// another, and it says the fault it accepts, so a dispute can't be read as an acceptance. Its stated entry is about
+/// the order, the segment and the showing's transaction. Schema: `urn:rutent:core-internal:fault-acceptance`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaultAcceptance {
+    /// The order.
+    pub order: Id,
+    /// The failed segment.
+    pub segment: Id,
+    /// The transaction the provider's showing, its failed result, is about.
+    pub transaction: Id,
+    /// The commitment the showing's stated entry names it by.
+    pub showing: Digest,
+    /// The fault accepted, as the showing names it: the customer's own where the customer accepts it.
+    pub fault: crate::provider_role::Fault,
+}
+
 /// Who carries a failed segment's reversal (`REQ-ORD-11`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

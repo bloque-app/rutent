@@ -2178,13 +2178,13 @@
           }
         },
         "what": {
-          "statement": "urn:rutent:provider-role:result"
+          "statement": "urn:rutent:core-internal:fault-acceptance"
         },
         "when": {
-          "at": "2026-11-10T09:00:05Z",
+          "at": "2026-11-10T09:00:10Z",
           "source": "party_stated"
         },
-        "received_at": "2026-11-10T09:00:05Z",
+        "received_at": "2026-11-10T09:00:10Z",
         "outcome": {
           "status": "stated"
         },
