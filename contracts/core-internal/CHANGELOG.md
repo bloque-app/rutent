@@ -642,3 +642,11 @@
   (`final-deposit-closes-on-a-public-record--conflict-naming-another-node`). One invalid fixture is valid now
   (`verified-entry-of-signed-evidence-naming-the-movement-core-checked`). (DEC-4, DEC-20, REQ-ORD-33, REQ-ORD-38,
   T-020-09)
+- Folded into 1.0.0 before its release: a refused question about a person is recorded (round 3 of the contract,
+  item t). `shortlisted-authority-cites-its-shortlist`, `provider-asked-before-was-asked` and
+  `asked-before-is-complete` cited every `ask_about_person`, whatever its outcome, so a question policy refused
+  could not be recorded even as a refusal, and the error told the caller whether a digest it named was a record of
+  that order. Each now applies only to a permitted question, as `revocation-revokes-a-grant` does. Admitted: a
+  refused question naming a digest no record has, one naming a provider never asked, one leaving out a provider asked
+  before (`<row>--refused`). 552 admission cases. (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-AUD-1, T-020-01,
+  T-021-07)

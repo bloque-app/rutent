@@ -2876,9 +2876,11 @@ pub static RELATIONS: [Relation; 93] = [
                 "a shortlisted route's authority names only verifiers its shortlist's tuples need",
             ),
         ],
+        // Only a permitted question cites its shortlist; a refused one asked nothing, and is recorded as refused.
         cites: |e, _| match &e.what {
             What::AskAboutPerson { question }
-                if matches!(question.authority, Authority::ShortlistedRoute { .. }) =>
+                if e.outcome == (Outcome::Permitted {})
+                    && matches!(question.authority, Authority::ShortlistedRoute { .. }) =>
             {
                 by_fields(0)
             }
@@ -2928,8 +2930,10 @@ pub static RELATIONS: [Relation; 93] = [
             "order",
             "a provider asked before was asked about the same order",
         )],
+        // Only a permitted question names the providers asked before; a refused one is recorded as refused.
         cites: |e, _| match &e.what {
-            What::AskAboutPerson { question } => (0..question.asked_before.len())
+            What::AskAboutPerson { question } if e.outcome == (Outcome::Permitted {}) => (0
+                ..question.asked_before.len())
                 .flat_map(by_fields)
                 .collect(),
             _ => none(),
@@ -2953,8 +2957,9 @@ pub static RELATIONS: [Relation; 93] = [
         quantifier: Quantifier::NoneOther,
         refusal: "a question names every provider already asked about its order",
         fields: &[],
+        // Only a permitted question is held to the set asked before; a refused one is recorded as refused.
         cites: |e, _| match &e.what {
-            What::AskAboutPerson { .. } => by_fields(0),
+            What::AskAboutPerson { .. } if e.outcome == (Outcome::Permitted {}) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| {
