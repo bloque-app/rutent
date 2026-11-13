@@ -350,8 +350,10 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 - **Results are read from libtest's lines** (`test <path> ... ok|FAILED|ignored`, with the reason after `ignored,`
   allowed; stable has no JSON output), each kept with the `Running <target> (...)` header above it, and the file is
   read lossily, since a jailed test can print bytes that are not UTF-8. A scanned test is joined to its **target and
-  full path**: an integration test to its `tests/x.rs` and the path ending in its name; a unit test to a
-  `unittests` target and a path that starts with its file's module (`src/shape.rs` is `shape::`). It passes only if
+  full path**: an integration test to its `tests/x.rs` and its exact path; a unit test to a `Running unittests`
+  binary whose stem is its own crate's lib or bin name (from the nearest `Cargo.toml`) and the exact path
+  `<file module>::<inline mods>::name` (`src/shape.rs` is `shape::`, a `mod tests { }` adds `tests::`, a top-level
+  test of `src/lib.rs` is the bare name), so a crate that never compiled is vouched for by no other. It passes only if
   the run read at least as many lines for that place and name as the sources hold tests of it, and every one passed.
   So a test that failed, was ignored, never ran, or has a namesake in its own target that never ran does not pass,
   and a namesake in another target (a crate's test of the same name and path) vouches for nothing. Two crates that
@@ -420,7 +422,9 @@ Readings taken without asking, each reversible; the owner's form overrules any o
   nothing), and a test ties the real row to `REQ-MOD-2`, `REQ-MOD-3`, `REQ-MOD-5`, `NFR-7`, `REQ-EXT-2` and
   `REQ-CAT-5`. A `form:` item must be one of the ids in `decisions/questions.json` when the repository holds it; it
   doesn't (the form is untracked and lives outside this repository), so the check is skipped and the report says
-  "form items not checked". A `review:` notes file must not be empty. A deferral is excused only by a clause that
+  "form items not checked". A plan edit cannot widen those sets: every id the head's row allows and `develop`'s does
+  not is `allowance-widened`, always, and the `T-024-09` row excuses no move (only `DEC-` and `F-` rows do). A
+  `review:` notes file must not be empty. A deferral is excused only by a clause that
   says "defer".
 - **The comparison starts once the scope file is on `develop`**, as the row says: until then `T-024-10`'s
   restriction to the `strict:` line and `T-025-05`'s review cover it.
@@ -455,6 +459,8 @@ real file says `off` or `on` when `T-024-10` flips it.
 | a move into inspect or partly met is a reclassification | `m3 row moved to inspected or partly met is reported unless a changed row places it` |
 | a form item the decisions file lacks | `a form item the decisions file lacks is reported`; the binary's test of the decisions file |
 | a review's notes must not be empty | the same binary test |
+| unit tests joined by binary and exact module path | `a unit test of a crate that never compiled is vouched for by no test elsewhere`; `inline modules are part of a unit tests path` |
+| the allowed sets only narrow | `a plan edit that widens the allowed sets is reported and excuses its own move` |
 | a deferral needs a clause that defers | `a mention that does not defer the id does not excuse a deferral` |
 | `--ci` with the switch on is strict | `the ci run is strict where the scope file reads on` |
 | `ignored, <reason>` is ignored | `an ignored test with a reason is read as ignored` |
