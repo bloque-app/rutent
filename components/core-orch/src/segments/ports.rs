@@ -283,6 +283,7 @@ impl Grading for ProvidersWord {
                 grade: EvidenceGrade::Statement,
                 whose: settled.provider.clone(),
                 rests_on: vec![settled.result.clone()],
+                publisher: None,
                 movement: None,
             },
             when: When {

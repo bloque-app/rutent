@@ -635,7 +635,8 @@ impl Evidenced<'_> {
                         grade,
                         whose: Id,
                         rests_on: Receipt,
-                        movement: Option<PublicMovement>| {
+                        movement: Option<PublicMovement>,
+                        publisher: Option<Id>| {
             verified(
                 settled.core,
                 What::Evidence {
@@ -646,9 +647,29 @@ impl Evidenced<'_> {
                     whose,
                     rests_on: vec![rests_on],
                     movement,
+                    publisher,
                 },
                 settled,
             )
+        };
+
+        // Whose word a segment inside a private node rests on: the node's publisher's, where the statement relied
+        // on is by that publisher, through a provider of its (`REQ-ORD-3`). A segment runs inside a node where its
+        // two ends are private, or where it is a part's final deposit into a rail declared private.
+        let publishers = self.catalogue.publishers();
+        let theirs = publishers.publisher_of_provider(settled.provider.as_str());
+        let declares = |node: &NodeRef| {
+            self.private(node) && publishers.publisher_of_node(node_name(node)) == theirs
+        };
+        let inside = (self.private(&operation.from.node) && self.private(&operation.to.node))
+            || into_private_rail;
+        let label = match theirs {
+            Some(publisher)
+                if inside && (declares(&operation.from.node) || declares(&operation.to.node)) =>
+            {
+                Some(id(publisher)?)
+            }
+            _ => None,
         };
 
         let mut entries = Vec::new();
@@ -680,6 +701,7 @@ impl Evidenced<'_> {
                 closing.network.clone(),
                 settled.result.clone(),
                 Some(closing),
+                None,
             ));
             // The reserve's own statement, at the grade its own pieces earn: never the network's record it named.
             let own = graded
@@ -690,6 +712,12 @@ impl Evidenced<'_> {
                 .min()
                 .unwrap_or(EvidenceGrade::Statement)
                 .max(EvidenceGrade::SignedByProvider);
+            // A route ending inside a private rail its reserve's publisher declares stays that publisher's word
+            // (`REQ-ORD-3`, `REQ-ORD-41`, `AC-35`): labelled so, graded a statement.
+            let (own, publisher) = match &label {
+                Some(publisher) => (EvidenceGrade::Statement, Some(publisher.clone())),
+                None => (own, None),
+            };
             entries.push(evidence(
                 id(&format!("{}.reserve", cites.as_str()))?,
                 settled.segment,
@@ -697,6 +725,7 @@ impl Evidenced<'_> {
                 settled.provider.clone(),
                 settled.result.clone(),
                 None,
+                publisher,
             ));
         } else {
             // Every movement Core checked is named, whatever the grade, so the log holds what Core took; a public
@@ -709,13 +738,21 @@ impl Evidenced<'_> {
                 (Some((network, _, _)), true) => id(network)?,
                 _ => settled.provider.clone(),
             };
+            // Inside a private node, a statement its publisher made, through it or a provider of its, is that
+            // publisher's word (`REQ-ORD-3`): labelled so, graded a statement.
+            let grade = if label.is_some() {
+                EvidenceGrade::Statement
+            } else {
+                graded.grade
+            };
             entries.push(evidence(
                 cites.clone(),
                 settled.segment,
-                graded.grade,
+                grade,
                 whose,
                 settled.result.clone(),
                 named,
+                label.clone(),
             ));
         }
 
@@ -767,6 +804,7 @@ impl Evidenced<'_> {
                             id(network)?,
                             result.clone(),
                             Some(public_movement(network, moved, Some(node))?),
+                            None,
                         ));
                     }
                 }

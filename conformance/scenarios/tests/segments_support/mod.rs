@@ -2051,6 +2051,7 @@ impl Grading for Recorded {
                     whose,
                     rests_on: vec![settled.result.clone()],
                     movement,
+                    publisher: None,
                 },
                 when: When {
                     at: settled.at.clone(),

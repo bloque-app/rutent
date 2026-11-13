@@ -708,6 +708,29 @@ fn grading<'a>(
     }
 }
 
+/// The evidence entries among `whats`, with the publisher each is labelled the word of: (id, segment, grade,
+/// publisher).
+fn labels(whats: &[What]) -> Vec<(String, String, EvidenceGrade, Option<String>)> {
+    whats
+        .iter()
+        .filter_map(|w| match w {
+            What::Evidence {
+                evidence,
+                segment,
+                grade,
+                publisher,
+                ..
+            } => Some((
+                evidence.as_str().to_owned(),
+                segment.as_str().to_owned(),
+                *grade,
+                publisher.as_ref().map(|p| p.as_str().to_owned()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The evidence entries among `whats`, with the movement each names: (id, segment, grade, whose, movement).
 fn named(
     whats: &[What],
@@ -851,7 +874,8 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
             "exchange-a".into(),
             None
         )],
-        "inside the node, its provider's signed word"
+        "inside the node, its provider's signed word: not the node's publisher's, since `exchange-a` is another \
+         publisher's provider, so unlabelled"
     );
     // No public movement out yet: the deposit's statement alone closes nothing.
     let mut waiting = grading(&catalogue, &nets, &books, &mut closing);
@@ -1174,10 +1198,10 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
             ));
             found.push(replays(&whats));
             inner.extend(
-                named(&whats)
+                labels(&whats)
                     .into_iter()
                     .filter(|e| e.1 == "p1-s4")
-                    .map(|e| e.0),
+                    .map(|e| (e.0, e.2, e.3)),
             );
         }
         (found, inner)
@@ -1208,8 +1232,25 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
     );
     assert_eq!(
         inner,
-        ["ev-ord-1-3", "ev-ord-1-4.in.3", "ev-ord-1-4.out.3"],
-        "the exchange closes on the movements in and out"
+        [
+            (
+                "ev-ord-1-3".to_owned(),
+                EvidenceGrade::Statement,
+                Some("b-co".to_owned())
+            ),
+            (
+                "ev-ord-1-4.in.3".to_owned(),
+                EvidenceGrade::PublicRecord,
+                None
+            ),
+            (
+                "ev-ord-1-4.out.3".to_owned(),
+                EvidenceGrade::PublicRecord,
+                None
+            ),
+        ],
+        "the exchange closes on the movements in and out; mid-route inside `ledger-b`, its statement is the word of \
+         `ledger-b`'s publisher, which the exchange is a provider of: labelled so, a statement"
     );
     let (mismatching, inner) = run("249999999");
     assert_eq!(
@@ -1229,7 +1270,11 @@ fn route_across_two_private_nodes_replays_each_on_its_way_out() {
     );
     assert_eq!(
         inner,
-        ["ev-ord-1-3"],
+        [(
+            "ev-ord-1-3".to_owned(),
+            EvidenceGrade::Statement,
+            Some("b-co".to_owned())
+        )],
         "a node caught misreporting: its exchange gets no public record of in and out"
     );
 }
@@ -1749,8 +1794,9 @@ fn about(entry: &Entry, order: &str) -> bool {
 
 /// A route to a rail declared private, from a public node: the deposit's movement on `polygon` is the movement into
 /// the private rail, and the part closes on it and the reserve's statement, the record naming the rail it went
-/// into. A route ending inside the node has no replay.
-// verifies: REQ-ORD-33
+/// into. A route ending inside the node has no replay, and the reserve's statement is its publisher's word, labelled
+/// with the publisher and graded a statement (`AC-35`, `REQ-ORD-41`).
+// verifies: REQ-ORD-33, REQ-ORD-41
 #[test]
 fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
     let usdc = json!({ "id": "USDC", "decimals": 6 });
@@ -1817,12 +1863,23 @@ fn final_deposit_into_a_private_rail_closes_on_the_public_movement_into_it() {
             (
                 "ev-ord-1-1.reserve".into(),
                 "p1-s2".into(),
-                EvidenceGrade::SignedByProvider,
+                EvidenceGrade::Statement,
                 "reserve-wallet".into(),
                 None
             ),
         ]
     );
+    // The route ends inside the rail: the reserve's statement is its publisher's word, labelled so, and a statement.
+    let publishers: Vec<Option<String>> = d
+        .iter()
+        .filter_map(|w| match w {
+            What::Evidence { publisher, .. } => {
+                Some(publisher.as_ref().map(|p| p.as_str().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(publishers, [None, Some("wallet-co".to_owned())]);
     assert_eq!(replays(&d), [], "ending inside the node: no replay");
 }
 
