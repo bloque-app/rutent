@@ -1747,9 +1747,11 @@ pub static RELATIONS: [Relation; 91] = [
         refusal: "a hand-on links an order not yet opened: its own route, handed on from it, opens it",
         fields: &[],
         // None to point to: a `handed_on` whose linked order already has a route is refused, so the value handed
-        // on never joins an order opened on its own.
+        // on never joins an order opened on its own; nor one to an order a hand-on taken back closed.
         cites: |e, h| match input(e).map(|i| &i.observed) {
-            Some(Observed::HandedOn { linked_order, .. }) if opened(linked_order.as_str(), h) => {
+            Some(Observed::HandedOn { linked_order, .. })
+                if opened(linked_order.as_str(), h) || taken_back(linked_order.as_str(), h) =>
+            {
                 by_fields(0)
             }
             _ => none(),
@@ -1763,22 +1765,24 @@ pub static RELATIONS: [Relation; 91] = [
         refusal: "an order a hand-on links is opened only by its own route, handed on from the order it links",
         fields: &[],
         // None to point to: a `route_chosen` opening an order an earlier `handed_on` names as its linked order is
-        // refused unless it names that order as `handed_on_from`.
+        // refused unless it names that order as `handed_on_from`; and one opening an order a hand-on taken back
+        // closed is refused for good: the linked order was refused, so it never opens.
         cites: |e, h| match input(e) {
             Some(
                 i @ crate::state_machine::RecordedInput {
                     observed: Observed::RouteChosen { handed_on_from, .. },
                     ..
                 },
-            ) if !opened(i.subject.order.as_str(), h)
-                && h.iter().any(|(_, x)| {
-                    verified(x).and_then(input).is_some_and(|earlier| {
-                        matches!(&earlier.observed, Observed::HandedOn { linked_order, .. }
+            ) if taken_back(i.subject.order.as_str(), h)
+                || (!opened(i.subject.order.as_str(), h)
+                    && h.iter().any(|(_, x)| {
+                        verified(x).and_then(input).is_some_and(|earlier| {
+                            matches!(&earlier.observed, Observed::HandedOn { linked_order, .. }
                             if linked_order.as_str() == i.subject.order.as_str()
                                 && handed_on_from.as_ref().map(|f| f.as_str())
                                     != Some(earlier.subject.order.as_str()))
-                    })
-                }) =>
+                        })
+                    })) =>
             {
                 by_fields(0)
             }
@@ -4071,6 +4075,15 @@ fn first_segment_of(order: &str, segment: &str, history: &History) -> bool {
                 && matches!(&i.observed, Observed::RouteChosen { parts, .. }
                     if parts.iter().any(|p| p.segments.first().is_some_and(|s| s.segment_id.as_str() == segment)))
         })
+    })
+}
+
+/// Whether `order` is closed in `history` by a hand-on taken back: a `hand_on_taken_back` names it as the linked
+/// order, refused, so it never opens.
+fn taken_back(order: &str, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(verified(e).and_then(input).map(|i| &i.observed),
+            Some(Observed::HandOnTakenBack { linked_order }) if linked_order.as_str() == order)
     })
 }
 

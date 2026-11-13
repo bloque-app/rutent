@@ -30,7 +30,7 @@
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
   is held to the rules a value read from the wire is. Twenty-six schemas, 132 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 520 cases of the log's admission of an entry, from one coherent log, against a citation table
+  breaking one rule, and 522 cases of the log's admission of an entry, from one coherent log, against a citation table
   of 97 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
@@ -549,6 +549,12 @@
   (field `private`). Refused: the review's reproduction, fx-desk's own word on p1-s2 at ledger-in labelled
   fx-group, with no node bound; admitted: the same with a replay of ord-1 naming ledger-in on fx-group's statement.
   520 admission cases. (DEC-4, DEC-20, REQ-ORD-3, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a hand-on taken back closes its linked order for good (round 2 of the
+  contract review). After `handed_on`, the linked order's refusal and `hand_on_taken_back`, a `route_chosen` of the
+  linked order handed on from the first was still admitted. `linked-order-opens-on-its-hand-on` now refuses any
+  route opening an order a `hand_on_taken_back` names, and `hand-on-links-an-unopened-order` any new hand-on to it.
+  Refused: the review's reproduction, and a new hand-on to ord-2 after the take-back. 522 admission cases. (DEC-4,
+  DEC-20, REQ-ORD-43, T-020-01, T-020-13)
 - Folded into 1.0.0 before its release: promoting a staged release is a catalogue change of its own, `promote`,
   about one module release, so it names the version it puts in force. Before it, no decided action carried the
   platform's promotion, so policy could not decide who may promote, a permission `REQ-AUZ-6`'s list of separate
