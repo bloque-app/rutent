@@ -1036,6 +1036,7 @@ impl Reversals {
                 whose: whose.maker.clone(),
                 rests_on: vec![statement.clone()],
                 movement: None,
+                publisher: None,
             },
         )?;
         let observed = Observed::ReversalCompleted {
