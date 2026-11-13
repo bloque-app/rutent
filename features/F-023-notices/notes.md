@@ -333,3 +333,8 @@ Each rule switched off alone, `core-orch`'s notice tests run, the rule restored:
 
 - **Red first.** The types and stubs (retry did nothing, the watch found nothing, the operator's pull as it was) were
   written first and the tests after, so each test failed on an assertion before the rules were built.
+
+## Rows added after review (`plan/m3-owed-rows`)
+
+- `T-023-02`'s proposal, one summary log entry per notice delivered or abandoned, is added by `T-020-21` (`core-internal`'s
+  next round) and adopted here by `T-023-03`, which waits for it. Until it lands `Ledger` stays the module's own.
