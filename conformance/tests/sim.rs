@@ -1,7 +1,7 @@
 //! The simulated providers' behaviours and books, in process (`T-024-01`): what a script makes a provider do, and
 //! that a journal replayed into a fresh stand-in gives its books back.
 
-use rutent_conformance::role::{RoleProvider, SuiteContext};
+use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::{
     Act, Behaviour, Crash, Delivery, Entry, Role, Simulated, Spec, movements_made, movements_of,
     operation, recorded_segments,

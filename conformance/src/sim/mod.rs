@@ -675,8 +675,16 @@ pub fn movements_made(
     };
     // What the network moved: what entered a reserve from a public network, or what arrives onto one.
     let out = match operation {
+        // What entered with its charge, but never more than the segment gave out and charged: a withdrawal scripted to
+        // deliver short moved only what it gave.
         Operation::Withdrawal(_) => match number("amount_in") {
-            Some(entered) => entered,
+            Some(entered) => {
+                let charge = outcome["fee"]["amount"]
+                    .as_str()
+                    .and_then(|a| a.parse::<u128>().ok())
+                    .unwrap_or(0);
+                entered.min(given_out.saturating_add(charge))
+            }
             None => return Vec::new(),
         },
         Operation::Deposit(_) | Operation::Transfer(_) => {
