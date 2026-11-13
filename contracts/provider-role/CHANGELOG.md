@@ -1,6 +1,19 @@
 # provider-role changelog
 
 ## 3.1.0
+- A provider's terms and a reserve's hold are signed statements of their own (round 3 of the contract, item q).
+  Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them. Two schemas:
+  `terms` (`urn:rutent:provider-role:terms`, `TupleTerms {tuple: TermsTuple {provider, from, to: TupleEnd {node,
+  asset}}, fee: FeeFormula {flat, proportional: Proportion {numerator, denominator}, maximum}, slippage}`), made by
+  the tuple's provider, its slippage regime present exactly where the tuple sets a rate (`check_terms`,
+  `TermsViolation`); and `hold` (`urn:rutent:provider-role:hold`, `Hold {record: HeldRecord {id, digest:
+  RecordDigest}, candidate, for: HeldFor, valid_until}`), made by the reserve that starts each part, redeemed only
+  for its order or an order accepted in its session (`check_redemption`, `RedemptionRefused`). Shapes
+  `TERMS_SHAPE` and `HOLD_SHAPE`. Terms bind from the later of `made_at` and Core's `received_at`. The fee formula
+  and the tuple's ends restate router-api's in this contract's own atoms, since this contract refers to no other;
+  router-api's `fee_formula` and `endpoint` keep their own definitions. Minor, folded into 3.1.0 before its release:
+  two shapes added, nothing changed. Four valid fixtures, seven invalid. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
 - "Less the charge" has a stated unit (round 3 of the contract, item s). Under a tuple that reports `gross`, a
   segment that keeps its asset delivers its `amount_out` less its charge; `amount_out` is in the out unit and the fee
   in the origin unit, which differ where a reserve's two ends count in different decimals, so Core's reading

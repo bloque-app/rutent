@@ -9,9 +9,10 @@ use super::atoms::{compare_products, seconds_down, seconds_up};
 use super::types::{
     CallKind, Candidate, CatalogueSnapshot, CeilingScope, DecisionRecord, DeclaredCall, DropReason,
     Endpoint, FeeFormula, Figure, FigureValue, HeldQuote, Operation, OperationKind, Origin, Part,
-    PolicyBounds, Pricing, Round, SettlementTimes, THREE_DAYS_SECONDS,
+    PolicyBounds, Pricing, Ratio, Round, SettlementTimes, StatedTerms, THREE_DAYS_SECONDS,
+    TupleKey,
 };
-use super::{Amount, Id, Timestamp, Violation};
+use super::{Amount, Id, PositiveAmount, Timestamp, Violation};
 use crate::provider_role::{
     ConversionOutcome, Denomination, Fee, JudgementAnswer, NodeRef, Reporting, ReserveDirection,
     ReserveMovementOutcome, ResultBody, Statement, StatementShape, TransferOutcome, VoidedBy,
@@ -2002,6 +2003,109 @@ impl HeldQuote {
         {
             return Err(Violation(
                 "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StatedTerms {
+    /// The history entry of a provider's signed terms (provider-role's `TupleTerms`, `REQ-QTE-6`), received by Core at
+    /// `received_at`: its tuple, fee formula and slippage regime, stated at the later of the statement's `made_at`
+    /// and `received_at`, never `made_at` alone, so terms dated before a segment started but received after it never
+    /// bind it ([`StatedTerms::stated_at`]). Refused where the statement isn't of the terms shape, breaks
+    /// provider-role's `check_terms` (made by another than its tuple's provider, or a slippage regime where its tuple
+    /// sets no rate or none where it does), or a figure isn't one of this contract's atoms.
+    pub fn from_statement(
+        statement: &Statement<crate::provider_role::TupleTerms>,
+        received_at: &Timestamp,
+    ) -> Result<StatedTerms, Violation> {
+        statement
+            .check_shape()
+            .map_err(|_| Violation("stated terms are a terms statement"))?;
+        crate::provider_role::check_terms(statement).map_err(|_| {
+            Violation(
+                "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate",
+            )
+        })?;
+        let terms = &statement.statement;
+        let atom = || Violation("stated terms' figures are this contract's atoms");
+        let end = |e: &crate::provider_role::TupleEnd| Endpoint {
+            node: e.node.clone(),
+            asset: e.asset.clone(),
+        };
+        let made_at = Timestamp::new(statement.made_at.as_str()).ok_or_else(atom)?;
+        let stated_at = if made_at.unix_nanos() >= received_at.unix_nanos() {
+            made_at
+        } else {
+            received_at.clone()
+        };
+        Ok(StatedTerms {
+            tuple: TupleKey {
+                provider: Id::new(terms.tuple.provider.as_str()).ok_or_else(atom)?,
+                from: end(&terms.tuple.from),
+                to: end(&terms.tuple.to),
+            },
+            stated_at,
+            fee: FeeFormula {
+                flat: Amount::new(terms.fee.flat.as_str()).ok_or_else(atom)?,
+                proportional: Ratio {
+                    numerator: Amount::new(terms.fee.proportional.numerator.as_str())
+                        .ok_or_else(atom)?,
+                    denominator: PositiveAmount::new(terms.fee.proportional.denominator.as_str())
+                        .ok_or_else(atom)?,
+                },
+                maximum: match &terms.fee.maximum {
+                    Some(m) => Some(Amount::new(m.as_str()).ok_or_else(atom)?),
+                    None => None,
+                },
+            },
+            slippage: terms.slippage.clone(),
+        })
+    }
+}
+
+impl HeldQuote {
+    /// Checks a reserve's signed hold (provider-role's `Hold`, `REQ-QTE-15`) against this held quote: of the hold
+    /// shape, holding this record's chosen candidate, made by the reserve that starts each of its parts, with a
+    /// validity no later than the earliest expiry of the figures that candidate cites
+    /// ([`DecisionRecord::earliest_expiry`]), and this quote held no longer than the hold says. The hold's record id
+    /// and digest name Core's log entry of the record, which this contract can't compute; Core's intake holds them.
+    pub fn check_hold(
+        &self,
+        hold: &Statement<crate::provider_role::Hold>,
+    ) -> Result<(), Violation> {
+        hold.check_shape()
+            .map_err(|_| Violation("a hold is a hold statement"))?;
+        let Some(chosen) = self.record.chosen() else {
+            return Err(Violation("a held quote's record chose a candidate"));
+        };
+        if hold.statement.candidate != chosen.candidate_id.as_str() {
+            return Err(Violation("a hold holds its record's chosen candidate"));
+        }
+        if chosen
+            .parts
+            .iter()
+            .any(|part| part.operations.first().provider.as_str() != hold.maker)
+        {
+            return Err(Violation(
+                "a hold is made by the reserve that starts each part of its candidate",
+            ));
+        }
+        let valid_until = Timestamp::new(hold.statement.valid_until.as_str())
+            .ok_or(Violation("a hold's validity is a timestamp"))?;
+        if self
+            .record
+            .earliest_expiry(chosen)
+            .is_some_and(|expiry| valid_until.unix_nanos() > expiry)
+        {
+            return Err(Violation(
+                "a hold's validity is no later than the earliest expiry of the figures its candidate cites",
+            ));
+        }
+        if self.valid_until.unix_nanos() > valid_until.unix_nanos() {
+            return Err(Violation(
+                "a held quote is held no longer than its hold's validity",
             ));
         }
         Ok(())

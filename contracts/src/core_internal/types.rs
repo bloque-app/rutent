@@ -1569,6 +1569,19 @@ pub enum Difference {
         maximum: Amount,
         /// The asset.
         asset: Denomination,
+        /// The receipt of the stated entry of the result whose charge this is: its provider's verified result about
+        /// the order and segment.
+        result: Receipt,
+        /// The receipt of the stated entry of the provider's signed terms (provider-role's
+        /// `urn:rutent:provider-role:terms`) whose formula the charge is above: in force at the segment's start, by
+        /// [`StatedEntry::binds_from`]. Absent where the provider stated none by then, so the price its route was
+        /// priced on bound it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        terms: Option<Receipt>,
     },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
@@ -2007,6 +2020,15 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         session: Option<Id>,
+        /// The hold it redeems, where its route is a quote a reserve held (`REQ-QTE-15`): the receipt of the
+        /// reserve's verified stated hold (provider-role's `urn:rutent:provider-role:hold`). Absent where it redeems
+        /// none.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        held: Option<Receipt>,
     },
     /// A request or an order that can't proceed, with the class its caller is told (`REQ-ORD-18`, `REQ-ORD-19`).
     OrderRefusal {

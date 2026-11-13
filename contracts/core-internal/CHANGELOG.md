@@ -29,9 +29,9 @@
   cites joined to it by the input's id; the platform's events, the proxy's uses and each segment record handed over with
   their place in their drain. From the checks to the operator: a raise carrying a difference and nothing that can move
   value, answered only by whether it was delivered (ADR-0009). Every shape's check recurses, so a value built in memory
-  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 124 invalid ones, each
-  breaking one rule, and 549 cases of the log's admission of an entry, from one coherent log, against a citation table
-  of 99 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
+  is held to the rules a value read from the wire is. Twenty-seven schemas, 133 valid fixtures and 126 invalid ones, each
+  breaking one rule, and 575 cases of the log's admission of an entry, from one coherent log, against a citation table
+  of 103 relations derived from SPEC.md, each with the ids that demand it. An acceptance given cites its origin reserve's
   yes and the user's session; a shortlist's decision record names its shortlisted providers. (DEC-2, DEC-4, DEC-20,
   T-020-01)
 - Folded into 1.0.0 before its release: the log takes entries through two handles. `Log::append` takes a
@@ -668,3 +668,19 @@
   the customer's: the log `core-audit` builds knows the keys of the operator and of the providers it admitted, and
   no customer's, so a customer's fault acceptance there would be recorded unverified and its carrier refused. 555
   admission cases. (DEC-4, DEC-20, REQ-ORD-11, REQ-AUD-1, T-020-01, T-022-01)
+- Folded into 1.0.0 before its release: a provider's terms and a reserve's hold rest on signed statements (round 3
+  of the contract, item q, with provider-role 3.1.0's `terms` and `hold` shapes). Core kept fee terms and a held
+  quote only in memory, so a charge raised against a formula and a hold redeemed rested on nothing signed. Type
+  changes: `Difference::Charge` gains `result: Receipt`, the stated entry of the result whose charge it is, and
+  `terms: Option<Receipt>`, the provider's signed terms it is above, absent where the price its route was priced on
+  bound it; `What::Acceptance` gains `held: Option<Receipt>`, the reserve's hold it redeems; `StatedEntry::binds_from`
+  is the later of a statement's `made_at` and Core's `received_at`, never `made_at` alone. Four rows:
+  `charge-raise-rests-on-its-result` (verified, a result, its provider's, about its order and segment, the provider the segment's `move_value` named),
+  `charge-raise-rests-on-terms-in-force` (verified, the terms shape, its provider's, binding no later than the
+  segment's first `move_value` effect, so terms dated before a segment started but received after it bind nothing),
+  `held-quote-rests-on-the-reserves-hold` (verified, the hold shape, made by the reserve each part starts at) and
+  `hold-is-redeemed-by-one-order` (no acceptance of another order redeems the same hold). Which tuple terms are for,
+  what a hold's body names, and its validity, are for whoever holds the kept bytes, the log holding only salted
+  commitments. One invalid fixture, `raise-of-a-charge-without-its-result`; the charge raise fixtures name their
+  result; 575 admission cases, 103 relations. (DEC-4, DEC-20, REQ-QTE-5, REQ-QTE-6, REQ-QTE-15, REQ-AUD-2,
+  T-020-01, T-020-07)

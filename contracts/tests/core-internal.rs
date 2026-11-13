@@ -238,7 +238,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 87] = [
+const SCHEMA_RULES: [SchemaRule; 88] = [
+    (
+        "raise-of-a-charge-without-its-result",
+        &[("/difference", "required")],
+        "missing field `result`",
+    ),
     (
         "fault-acceptance-of-the-operators-fault",
         &[("/fault", "enum")],

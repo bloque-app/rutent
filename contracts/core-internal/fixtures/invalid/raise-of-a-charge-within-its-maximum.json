@@ -10,6 +10,14 @@
     "asset": {
       "id": "COP",
       "decimals": 2
+    },
+    "result": {
+      "log": "log-main",
+      "index": 134,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
     }
   },
   "cites": [

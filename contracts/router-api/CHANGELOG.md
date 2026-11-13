@@ -1,6 +1,16 @@
 # router-api changelog
 
 ## 4.0.0
+- Stated terms and held quotes from signed statements (round 3 of the contract, item q, with provider-role 3.1.0's
+  `terms` and `hold`). `StatedTerms::from_statement(statement, received_at)` builds a history entry from a
+  provider's signed terms, taking only its tuple's provider's, with a slippage regime exactly where the tuple sets a
+  rate, and states it at the later of `made_at` and Core's `received_at`; `StatedTerms::stated_at` is now that time,
+  when the terms bind from, so the router's `binding`, which filters on it, no longer binds a segment on terms dated
+  before it started but received after. `HeldQuote::check_hold(hold)` holds a reserve's signed hold to the chosen
+  candidate, its maker to the reserve each part starts at, its validity to the earliest expiry of the candidate's
+  figures, and the quote to no longer than the hold. Both new and public. Folded into this unreleased major; the
+  `stated-terms` schema's `stated_at` says the same. Tests read provider-role's fixtures. (DEC-4, DEC-20, REQ-QTE-6,
+  REQ-QTE-15, T-020-01, T-020-07)
 - Breaking: an operation's `amount_out` is what arrives by it, and confirmation reads its tuple's terms (round 3 of
   the contract, item r). The confirmation rule required an operation's `amount_out` to equal its provider's answer
   exactly, while the floor, each part's chain (the next `amount_in` is the previous `amount_out`) and the

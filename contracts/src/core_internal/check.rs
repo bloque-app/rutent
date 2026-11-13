@@ -600,6 +600,17 @@ impl About {
 }
 
 impl StatedEntry {
+    /// When the statement binds its maker from: the later of its `made_at` (`when.at`) and Core's `received_at`, never
+    /// `made_at` alone, so a statement dated before an instant but received after it doesn't bind from before it. A
+    /// provider's signed terms bind a segment only where they bind from no later than its start (`REQ-QTE-6`).
+    pub fn binds_from(&self) -> &crate::router_api::Timestamp {
+        if self.when.at.unix_nanos() >= self.received_at.unix_nanos() {
+            &self.when.at
+        } else {
+            &self.received_at
+        }
+    }
+
     /// Checks that whoever relayed the statement is not its maker (`REQ-AUD-2`), and what it is about.
     pub fn check(&self) -> Result<(), Violation> {
         if let Some(about) = &self.about {

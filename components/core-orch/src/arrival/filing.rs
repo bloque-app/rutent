@@ -644,6 +644,7 @@ impl Run {
                     origin_reserve: self.arrival.reserve.clone(),
                     yeses: Vec::new(),
                     session: None,
+                    held: None,
                 },
             )?;
             let start = journal::build(

@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::provider_role::{
-    self, Advertisement, AmountMismatch, Category, ContextMismatch, Deployment, NodeRef, Operation,
-    OuterNode, Remainder, ResultBody, RuleViolation, Statement, StatementShape, Terms,
-    TransferOutcome,
+    self, Advertisement, AmountMismatch, Category, ContextMismatch, Deployment, Hold, NodeRef,
+    Operation, OuterNode, RedemptionRefused, Remainder, ResultBody, RuleViolation, Statement,
+    StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 9] = [
+const SCHEMAS: [&str; 11] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -25,16 +25,20 @@ const SCHEMAS: [&str; 9] = [
     "result",
     "judgement",
     "reversal-confirmation",
+    "terms",
+    "hold",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
 /// followed by `-`. `successive-advertisements` and `answered-operation` are bundles of values, not schemas of
 /// their own: see [`SuccessiveAdvertisements`] and [`AnsweredOperation`].
-const SHAPES: [&str; 6] = [
+const SHAPES: [&str; 8] = [
     "advertisement",
     "statement-envelope",
     "operation",
     "result",
+    "terms",
+    "hold",
     "successive-advertisements",
     "answered-operation",
 ];
@@ -88,6 +92,19 @@ impl AnsweredOperation {
 /// rule it breaks.
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
+        (
+            "terms-with-a-zero-denominator",
+            vec![("/statement/fee/proportional/denominator", "pattern")],
+        ),
+        ("terms-under-another-shape", vec![("/shape", "const")]),
+        (
+            "hold-for-no-order-or-session",
+            vec![("/statement/for", "oneOf")],
+        ),
+        (
+            "hold-of-a-record-without-its-digest",
+            vec![("/statement/record", "required")],
+        ),
         (
             "result-withdrawal-billing-its-fee-separately-as-text",
             vec![("/statement/outcome/fee/billed_separately", "type")],
@@ -553,7 +570,20 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
 fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let advertisement = |v: RuleViolation| format!("{:?}", vec![v]);
     let amounts = |v: AmountMismatch| format!("{:?}", vec![v]);
+    let terms = |v: TermsViolation| format!("{:?}", vec![v]);
     vec![
+        (
+            "terms-made-by-another-party",
+            terms(TermsViolation::OfAnotherMaker),
+        ),
+        (
+            "terms-of-an-exchange-without-a-slippage-regime",
+            terms(TermsViolation::NoSlippageWhereARate),
+        ),
+        (
+            "terms-of-a-reserve-with-a-slippage-regime",
+            terms(TermsViolation::SlippageWhereNoRate),
+        ),
         (
             "advertisement-ramp-within-one-node",
             advertisement(RuleViolation::RampWithinOneNode { tuple: 0 }),
@@ -736,6 +766,11 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
             bundle.check().map(|_| ()).map_err(|v| format!("{v:?}"))
         }
+        "terms" => {
+            let statement: Statement<TupleTerms> =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::check_terms(&statement).map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -744,6 +779,10 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
 /// reject it. Every other schema-rejected fixture must fail to deserialise.
 fn rust_accepts() -> Vec<(&'static str, &'static str)> {
     vec![
+        (
+            "terms-with-a-zero-denominator",
+            "pattern: amounts are strings in Rust",
+        ),
         (
             "statement-envelope-signature-in-a-non-canonical-encoding",
             "pattern: the signature value is a string in Rust",
@@ -968,6 +1007,8 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "statement-envelope" => round_trip::<Statement<Value>>(value),
         "operation" => checked_round_trip::<Operation>(value),
         "result" => checked_round_trip::<ResultBody>(value),
+        "terms" => checked_round_trip::<TupleTerms>(value),
+        "hold" => checked_round_trip::<Hold>(value),
         "successive-advertisements" => {
             let bundle: SuccessiveAdvertisements =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1446,6 +1487,54 @@ fn every_valid_fixture_validates_and_every_invalid_one_is_rejected() {
         );
         assert_rule_rejects(name, rule);
     }
+}
+
+/// A provider's terms are its own, with a slippage regime exactly where its tuple sets a rate; a reserve's hold is
+/// redeemed only for the order it names, or an order accepted in the session it names (round 3 of `T-020-01`).
+// verifies: REQ-QTE-5, REQ-QTE-6, REQ-QTE-15
+#[test]
+fn terms_are_their_providers_own_and_a_hold_is_redeemed_only_for_its_order() {
+    let terms: Statement<TupleTerms> = serde_json::from_value(fixture(
+        "valid",
+        "terms-of-an-exchange-with-its-slippage-regime",
+    ))
+    .unwrap();
+    assert!(terms.statement.tuple.sets_a_rate());
+    assert_eq!(provider_role::check_terms(&terms), Ok(()));
+    let mut other = terms.clone();
+    other.maker = "us-bank".to_owned();
+    other.statement.slippage = None;
+    assert_eq!(
+        provider_role::check_terms(&other),
+        Err(vec![
+            TermsViolation::OfAnotherMaker,
+            TermsViolation::NoSlippageWhereARate
+        ])
+    );
+    let for_order: Statement<Hold> =
+        serde_json::from_value(fixture("valid", "hold-for-an-order")).unwrap();
+    assert_eq!(
+        provider_role::check_redemption(&for_order, "ord-1", None),
+        Ok(())
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_order, "ord-2", Some("sess-1")),
+        Err(RedemptionRefused::ForAnotherOrder)
+    );
+    let for_session: Statement<Hold> =
+        serde_json::from_value(fixture("valid", "hold-for-a-session")).unwrap();
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", Some("sess-1")),
+        Ok(())
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", Some("sess-2")),
+        Err(RedemptionRefused::ForAnotherSession)
+    );
+    assert_eq!(
+        provider_role::check_redemption(&for_session, "ord-2", None),
+        Err(RedemptionRefused::ForAnotherSession)
+    );
 }
 
 // verifies: DEC-4

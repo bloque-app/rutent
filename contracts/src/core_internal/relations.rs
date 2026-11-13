@@ -290,6 +290,29 @@ fn maker_provider(statement: &StatedEntry) -> &Id {
     &statement.attribution.maker().acts
 }
 
+/// When `segment` of `order` started, by this log: the time of the first `move_value` effect on it (`REQ-QTE-6`).
+fn segment_started<'a>(
+    order: &Id,
+    segment: &Id,
+    history: &'a History,
+) -> Option<&'a crate::router_api::Timestamp> {
+    history.iter().find_map(|(_, e)| {
+        let v = verified(e)?;
+        match &v.what {
+            What::Effect {
+                action:
+                    Action::MoveValue {
+                        order: o,
+                        segment: s,
+                        ..
+                    },
+                ..
+            } if o == order && s == segment => Some(&v.when.at),
+            _ => None,
+        }
+    })
+}
+
 /// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
 /// under an order names (see `transaction-belongs-to-one-order`).
 fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
@@ -369,7 +392,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 93] = [
+pub static RELATIONS: [Relation; 97] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2719,6 +2742,124 @@ pub static RELATIONS: [Relation; 93] = [
         answers: |_, _, _, _| Match::Holds,
     },
     Relation {
+        name: "charge-raise-rests-on-its-result",
+        spec: &["REQ-QTE-5", "REQ-AUD-2", "AC-14"],
+        quantifier: Quantifier::Exists,
+        refusal: "a charge raised against its formula rests on its result's stated entry in this log",
+        fields: &[
+            ("verified", "a charge's result is a verified statement"),
+            (
+                "result",
+                "a charge's result is its provider's result, not a question or another shape",
+            ),
+            ("maker", "a charge's result is its provider's own statement"),
+            ("about", "a charge's result is about its order and segment"),
+            (
+                "provider",
+                "a charge's provider is its segment's, the one this log's move named",
+            ),
+        ],
+        // A charge above its formula is raised on the provider's own word of what it charged: its verified result
+        // about the order and segment, by the provider the segment's `move_value` effect named, not one the raise
+        // names alone. That the result's fee is the `charged` the raise names is for whoever holds the kept bytes,
+        // the log holding only their salted commitment.
+        cites: |e, _| match &e.what {
+            What::Raise { raise } => match &raise.difference {
+                Difference::Charge { result, .. } => alloc::vec![by_receipt(result, 0)],
+                _ => none(),
+            },
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (What::Raise { raise }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::Charge {
+                order,
+                segment,
+                provider,
+                ..
+            } = &raise.difference
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                    maker_provider(s) == provider,
+                    s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
+                    }),
+                    segment_provider(order, segment, h) == Some(provider),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "charge-raise-rests-on-terms-in-force",
+        spec: &["REQ-QTE-5", "REQ-QTE-6", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a charge raised against stated terms rests on their stated entry in this log",
+        fields: &[
+            ("verified", "a charge's terms are a verified statement"),
+            (
+                "terms",
+                "a charge's terms are its provider's signed terms, not a result or another shape",
+            ),
+            (
+                "maker",
+                "a charge's terms are its segment's provider's own statement",
+            ),
+            (
+                "in_force",
+                "a charge's terms bind from the later of their making and their receipt, no later than its segment's start",
+            ),
+        ],
+        // Terms bind a segment from its start (`REQ-QTE-6`): the first `move_value` effect on it in this log. They
+        // bind from the later of their `made_at` and Core's `received_at` (`StatedEntry::binds_from`), so terms dated
+        // before the start but received after it never bind it. Terms are about no order and the log holds only a
+        // salted commitment to their bytes, so which tuple they are for, that no later terms of that tuple bound
+        // before the start, and that the charge is above their formula, are for whoever holds the kept bytes: Core
+        // on raising it, and a checker through `Evidence::fetch`. A charge raised against the price its route was
+        // priced on, where the provider stated no terms by then, names none.
+        cites: |e, _| match &e.what {
+            What::Raise { raise } => match &raise.difference {
+                Difference::Charge {
+                    terms: Some(terms), ..
+                } => alloc::vec![by_receipt(terms, 0)],
+                _ => none(),
+            },
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let (What::Raise { raise }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::Charge {
+                order,
+                segment,
+                provider,
+                ..
+            } = &raise.difference
+            else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::TERMS_SHAPE,
+                    maker_provider(s) == provider
+                        && segment_provider(order, segment, h) == Some(provider),
+                    segment_started(order, segment, h)
+                        .is_some_and(|start| s.binds_from().unix_nanos() <= start.unix_nanos()),
+                ],
+            )
+        },
+    },
+    Relation {
         name: "erasure-is-carried-out-on-its-decision",
         spec: &["REQ-AUD-13", "REQ-AUZ-1"],
         quantifier: Quantifier::Exists,
@@ -3394,6 +3535,87 @@ pub static RELATIONS: [Relation; 93] = [
                 ),
                 _ => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "held-quote-rests-on-the-reserves-hold",
+        spec: &["REQ-QTE-15", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "an acceptance redeeming a held quote rests on the reserve's hold in this log",
+        fields: &[
+            ("verified", "a hold is a verified statement"),
+            (
+                "hold",
+                "a hold is its reserve's signed hold, not a result or another shape",
+            ),
+            (
+                "maker",
+                "a hold is made by the reserve that starts each part of the order",
+            ),
+        ],
+        // A held quote is redeemed on the reserve's own signed hold, made by the reserve each part starts at, as its
+        // order's yes is. The hold names no transaction, so it is appended about no order, and the acceptance
+        // redeeming it binds it to one (`hold-is-redeemed-by-one-order`). The log holds only a salted commitment to
+        // its bytes, so that its body names this order, or the session this acceptance was given in
+        // (provider-role's `check_redemption`), holds the record's chosen candidate and is still valid
+        // (router-api's `HeldQuote::check_hold` and `redeem`) are for whoever holds the kept bytes: Core on intake,
+        // before it appends the acceptance, and a checker through `Evidence::fetch`.
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                held: Some(held), ..
+            } => alloc::vec![by_receipt(held, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (
+                What::Acceptance {
+                    origin_reserve,
+                    yeses,
+                    ..
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
+                return Match::NotTarget;
+            };
+            let maker = maker_provider(s);
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::HOLD_SHAPE,
+                    origin_reserve == maker && yeses.iter().all(|y| &y.origin_reserve == maker),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "hold-is-redeemed-by-one-order",
+        spec: &["REQ-QTE-15", "THR-127"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a hold is redeemed for one order: no acceptance of another order redeems it",
+        fields: &[],
+        // The first acceptance that redeems a hold binds it to its order, as a judgement is bound by its reliance.
+        // The same acceptance again is a retry. A hold kept again under a new commitment and appended as a new
+        // entry is another receipt, which the evidence store's restatement index finds (`T-022-02`), not the log.
+        cites: |e, _| match &e.what {
+            What::Acceptance { held: Some(_), .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|v| &v.what)) {
+            (
+                What::Acceptance {
+                    order,
+                    held: Some(held),
+                    ..
+                },
+                Some(What::Acceptance {
+                    order: other,
+                    held: Some(theirs),
+                    ..
+                }),
+            ) => judge(held == theirs && other != order, &[]),
+            _ => Match::NotTarget,
         },
     },
     Relation {

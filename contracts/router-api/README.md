@@ -75,14 +75,22 @@ the checks stay public functions of the router:
   is 1 to 10,000 basis points, as provider-role's bounded slippage is: a limit of 0 isn't allowed, and an exchange
   held to no move at all states a firm rate in its own quote, which `commitments` takes where it is tighter.
 - **The history of stated terms** (`REQ-QTE-6`): `StatedTerms`, a fee formula and slippage regime with when they
-  were stated. Core keeps each tuple's history.
+  bind from. Core keeps each tuple's history, each entry built from the provider's signed terms (provider-role
+  3.1.0's `terms`) by `StatedTerms::from_statement`, which takes only the tuple's own provider's, with a slippage
+  regime exactly where the tuple sets a rate, and states it at the later of the statement's `made_at` and Core's
+  `received_at`, never `made_at` alone: terms dated before a segment started but received after it never bind it,
+  and the router's `binding`, which reads `stated_at`, is then right as it stands.
 - **The actual settlement times** (`REQ-QTE-3`): `SettlementTimes`, a segment's declared seconds with when it
   started and settled, never backwards.
 - **The held quote** (`REQ-QTE-15`): `HeldQuote`, a choice round's record that chose a candidate, with a validity at
   or after its snapshot and no later than the earliest expiry of the figures its chosen candidate cites
   (`DecisionRecord::earliest_expiry`): a figure expires at the snapshot's `taken_at` plus its validity less its age,
   never later than its own `valid_until` since age rounds up and validity down; a figure that states no validity
-  caps nothing. A hold never outlives what its quote rests on (`REQ-QTE-4`).
+  caps nothing. A hold never outlives what its quote rests on (`REQ-QTE-4`). The reserve's signed hold (provider-role
+  3.1.0's `hold`) is held to it by `HeldQuote::check_hold`: it holds the record's chosen candidate, is made by the
+  reserve each part starts at, is valid no later than the same earliest expiry, and Core holds the quote no longer
+  than the hold says. The hold's record id and digest name Core's log entry of the record, which this contract
+  can't compute.
 
 The first two sit in the policy bounds, so a decision record names the bounds it ran under (`REQ-AUD-4`); the rest
 are Core's records over these types.
