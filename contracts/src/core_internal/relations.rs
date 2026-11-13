@@ -1744,13 +1744,20 @@ pub static RELATIONS: [Relation; 93] = [
         name: "hand-on-links-an-unopened-order",
         spec: &["REQ-ORD-43", "REQ-ORD-13"],
         quantifier: Quantifier::Exists,
-        refusal: "a hand-on links an order not yet opened: its own route, handed on from it, opens it",
+        refusal: "a hand-on links an order not yet opened nor handed on to: its own route, handed on from it, opens it",
         fields: &[],
         // None to point to: a `handed_on` whose linked order already has a route is refused, so the value handed
-        // on never joins an order opened on its own; nor one to an order a hand-on taken back closed.
-        cites: |e, h| match input(e).map(|i| &i.observed) {
-            Some(Observed::HandedOn { linked_order, .. })
-                if opened(linked_order.as_str(), h) || taken_back(linked_order.as_str(), h) =>
+        // on never joins an order opened on its own; nor one to an order a hand-on taken back closed; nor one to an
+        // order another part or order already handed on to: one hand-on per linked order.
+        cites: |e, h| match input(e) {
+            Some(
+                i @ crate::state_machine::RecordedInput {
+                    observed: Observed::HandedOn { linked_order, .. },
+                    ..
+                },
+            ) if opened(linked_order.as_str(), h)
+                || taken_back(linked_order.as_str(), h)
+                || handed_on_to_by_another(i, linked_order.as_str(), h) =>
             {
                 by_fields(0)
             }
@@ -4267,6 +4274,21 @@ fn record_transaction<'a>(record: &Receipt, history: &'a History) -> Option<&'a 
         .as_ref()?
         .transaction
         .as_ref()
+}
+
+/// Whether another part or order than `hand_on`'s already handed on to `linked` in `history`.
+fn handed_on_to_by_another(
+    hand_on: &crate::state_machine::RecordedInput,
+    linked: &str,
+    history: &History,
+) -> bool {
+    history.iter().any(|(_, e)| {
+        verified(e).and_then(input).is_some_and(|earlier| {
+            matches!(&earlier.observed, Observed::HandedOn { linked_order, .. } if linked_order.as_str() == linked)
+                && (earlier.subject.order != hand_on.subject.order
+                    || earlier.subject.part != hand_on.subject.part)
+        })
+    })
 }
 
 /// Whether `order` is closed in `history` by a hand-on taken back: a `hand_on_taken_back` names it as the linked
