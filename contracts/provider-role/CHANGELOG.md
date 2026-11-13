@@ -1,6 +1,19 @@
 # provider-role changelog
 
 ## 3.1.0
+- A reserve's notice of value arriving is a signed statement of its own (`T-020-04`'s gap). Before it, provider-role
+  had no statement a reserve makes of value arriving, so Core took the outer node, asset, amount, account and holder
+  from the assembly's port and kept the reserve's notice as bytes it read only for the transaction its body names.
+  One schema, `arrival-notice` (`urn:rutent:provider-role:arrival-notice`, `ARRIVAL_NOTICE_SHAPE`, `ArrivalNotice
+  {transaction, node: OuterNode, asset: Denomination, amount, account, holder}`), made by the reserve. Its
+  `transaction` is the one the reserve gives the credit, its per-credit reference, the same in every notice of the
+  credit: the deposit's signed transaction core-internal's log already keys on (`arrival-names-its-notice`,
+  `one-order-per-deposit`), so the notice's stated entry is about it. `check_one_credit(earlier, later) ->
+  Result<Credits {One, Two}, CreditRestated {OtherFigures}>` knows two notices of one credit, signed at different
+  times, as one: the same maker, the same transaction, the same figures (`ArrivalNotice::same_figures`); another
+  maker or transaction is another credit, and the same transaction with other figures is refused. Minor, folded into
+  3.1.0 before its release: a shape and a check added, nothing changed. Three valid fixtures, eleven invalid
+  (`arrival-notices-` is a bundle of two notices). (DEC-4, DEC-20, REQ-ORD-14, REQ-ORD-23, REQ-AUD-2, T-020-18)
 - A hold names its own `transaction`, its id (the review of round 3, item 2), required in the schema and `Hold`, so
   Core appends its stated entry about it and the log keys the hold on it: a hold kept again under a new commitment is
   the same hold. One invalid fixture, `hold-without-its-transaction`. (DEC-4, DEC-20, REQ-QTE-15, T-020-01)

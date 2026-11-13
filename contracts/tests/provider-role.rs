@@ -6,16 +6,17 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::provider_role::{
-    self, Advertisement, AmountMismatch, Category, ContextMismatch, Deployment, Hold, NodeRef,
-    Operation, OuterNode, RedemptionRefused, Remainder, ResultBody, RuleViolation, Statement,
-    StatementShape, Terms, TermsViolation, TransferOutcome, TupleTerms,
+    self, Advertisement, AmountMismatch, ArrivalNotice, Category, ContextMismatch, CreditRestated,
+    Credits, Deployment, Hold, NodeRef, Operation, OuterNode, RedemptionRefused, Remainder,
+    ResultBody, RuleViolation, Statement, StatementShape, Terms, TermsViolation, TransferOutcome,
+    TupleTerms,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Every schema of the contract, registered by `$id` as `urn:rutent:provider-role:<name>`.
-const SCHEMAS: [&str; 11] = [
+const SCHEMAS: [&str; 12] = [
     "common",
     "declarations",
     "reserve-declaration",
@@ -27,20 +28,23 @@ const SCHEMAS: [&str; 11] = [
     "reversal-confirmation",
     "terms",
     "hold",
+    "arrival-notice",
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
-/// followed by `-`. `successive-advertisements` and `answered-operation` are bundles of values, not schemas of
-/// their own: see [`SuccessiveAdvertisements`] and [`AnsweredOperation`].
-const SHAPES: [&str; 8] = [
+/// followed by `-`. `successive-advertisements`, `answered-operation` and `arrival-notices` are bundles of values,
+/// not schemas of their own: see [`SuccessiveAdvertisements`], [`AnsweredOperation`] and [`ArrivalNotices`].
+const SHAPES: [&str; 10] = [
     "advertisement",
     "statement-envelope",
     "operation",
     "result",
     "terms",
     "hold",
+    "arrival-notice",
     "successive-advertisements",
     "answered-operation",
+    "arrival-notices",
 ];
 
 /// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
@@ -60,6 +64,21 @@ const ANSWERED_OPERATION_MEMBERS: [(&str, &str); 3] = [
         "urn:rutent:provider-role:advertisement#/$defs/terms",
     ),
 ];
+
+/// The members of an `arrival-notices` bundle: two of a reserve's enveloped arrival notices, for the rule that
+/// relates them (`check_one_credit`).
+const ARRIVAL_NOTICES_MEMBERS: [(&str, &str); 2] = [
+    ("earlier", "urn:rutent:provider-role:arrival-notice"),
+    ("later", "urn:rutent:provider-role:arrival-notice"),
+];
+
+/// An `arrival-notices` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArrivalNotices {
+    earlier: Statement<ArrivalNotice>,
+    later: Statement<ArrivalNotice>,
+}
 
 /// A `successive-advertisements` fixture.
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +111,46 @@ impl AnsweredOperation {
 /// rule it breaks.
 fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
+        (
+            "arrival-notice-without-its-transaction",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-outer-node",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-asset",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-amount",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-account",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-without-its-holder",
+            vec![("/statement", "required")],
+        ),
+        (
+            "arrival-notice-at-an-inner-node",
+            vec![("/statement/node", "type")],
+        ),
+        (
+            "arrival-notice-of-a-zero-amount",
+            vec![("/statement/amount", "pattern")],
+        ),
+        (
+            "arrival-notice-asset-without-its-unit",
+            vec![("/statement/asset", "required")],
+        ),
+        (
+            "arrival-notice-under-another-shape",
+            vec![("/shape", "const")],
+        ),
         (
             "terms-with-a-zero-denominator",
             vec![("/statement/fee/proportional/denominator", "pattern")],
@@ -577,6 +636,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let terms = |v: TermsViolation| format!("{:?}", vec![v]);
     vec![
         (
+            "arrival-notices-of-one-credit-with-another-amount",
+            format!("{:?}", CreditRestated::OtherFigures),
+        ),
+        (
             "terms-made-by-another-party",
             terms(TermsViolation::OfAnotherMaker),
         ),
@@ -775,6 +838,13 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
             provider_role::check_terms(&statement).map_err(|v| format!("{v:?}"))
         }
+        "arrival-notices" => {
+            let bundle: ArrivalNotices =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            provider_role::check_one_credit(&bundle.earlier, &bundle.later)
+                .map(|_| ())
+                .map_err(|v| format!("{v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -783,6 +853,10 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
 /// reject it. Every other schema-rejected fixture must fail to deserialise.
 fn rust_accepts() -> Vec<(&'static str, &'static str)> {
     vec![
+        (
+            "arrival-notice-of-a-zero-amount",
+            "pattern: amounts are strings in Rust",
+        ),
         (
             "terms-with-a-zero-denominator",
             "pattern: amounts are strings in Rust",
@@ -960,6 +1034,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
     let bundle: &[(&str, &str)] = match shape {
         "successive-advertisements" => &SUCCESSIVE_ADVERTISEMENTS_MEMBERS,
         "answered-operation" => &ANSWERED_OPERATION_MEMBERS,
+        "arrival-notices" => &ARRIVAL_NOTICES_MEMBERS,
         _ => return schema_errors(&validator(shape), instance),
     };
     let members = instance.as_object().cloned().unwrap_or_default();
@@ -1013,6 +1088,14 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "result" => checked_round_trip::<ResultBody>(value),
         "terms" => checked_round_trip::<TupleTerms>(value),
         "hold" => checked_round_trip::<Hold>(value),
+        "arrival-notice" => checked_round_trip::<ArrivalNotice>(value),
+        "arrival-notices" => {
+            let bundle: ArrivalNotices =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle.earlier.check_shape().map_err(|e| format!("{e:?}"))?;
+            bundle.later.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
         "successive-advertisements" => {
             let bundle: SuccessiveAdvertisements =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -1539,6 +1622,97 @@ fn terms_are_their_providers_own_and_a_hold_is_redeemed_only_for_its_order() {
         provider_role::check_redemption(&for_session, "ord-2", None),
         Err(RedemptionRefused::ForAnotherSession)
     );
+}
+
+/// A reserve's notice of what arrived names the transaction it gives the credit, its per-credit reference: without
+/// it two notices of one credit, signed at different times, couldn't be known as one, nor the deposit keyed on it
+/// (`T-020-18`).
+// verifies: REQ-ORD-23
+#[test]
+fn arrival_notice_without_its_per_credit_reference_is_invalid() {
+    assert_schema_rejects("arrival-notice-without-its-transaction");
+    let notice: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    assert_eq!(notice.statement.transaction, "tx-credit-0001");
+}
+
+/// A reserve's notice names what arrived: its outer node, the asset with its unit, the amount and the account,
+/// with the account's holder, so Core reads the figures from the signed bytes (`T-020-18`).
+// verifies: REQ-ORD-14
+#[test]
+fn arrival_notice_without_its_outer_node_asset_amount_or_account_is_invalid() {
+    for name in [
+        "arrival-notice-without-its-outer-node",
+        "arrival-notice-without-its-asset",
+        "arrival-notice-without-its-amount",
+        "arrival-notice-without-its-account",
+        "arrival-notice-without-its-holder",
+        "arrival-notice-at-an-inner-node",
+        "arrival-notice-asset-without-its-unit",
+        "arrival-notice-of-a-zero-amount",
+    ] {
+        assert_schema_rejects(name);
+    }
+    let notice: Statement<ArrivalNotice> =
+        serde_json::from_value(fixture("valid", "arrival-notice-of-a-credit")).unwrap();
+    assert_eq!(notice.check_shape(), Ok(()));
+    assert_eq!(notice.statement.node.network, "co-ach");
+    assert_eq!(
+        (
+            notice.statement.asset.id.as_str(),
+            notice.statement.asset.decimals
+        ),
+        ("COP", 2)
+    );
+    assert_eq!(notice.statement.amount, "150000");
+    assert_eq!(notice.statement.account, "acct-77");
+    assert_eq!(notice.statement.holder, "party-ana");
+}
+
+/// Two notices of one credit, signed at different times, are one credit; the same transaction at another reserve is
+/// another credit, and the same transaction with other figures is refused (`T-020-18`).
+// verifies: REQ-ORD-23
+#[test]
+fn two_notices_of_one_credit_signed_at_different_times_are_one_credit() {
+    let one: ArrivalNotices = serde_json::from_value(fixture(
+        "valid",
+        "arrival-notices-of-one-credit-signed-at-different-times",
+    ))
+    .unwrap();
+    assert_ne!(one.earlier.made_at, one.later.made_at);
+    assert_eq!(
+        provider_role::check_one_credit(&one.earlier, &one.later),
+        Ok(Credits::One)
+    );
+    let two: ArrivalNotices = serde_json::from_value(fixture(
+        "valid",
+        "arrival-notices-of-one-reference-at-two-reserves",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_one_credit(&two.earlier, &two.later),
+        Ok(Credits::Two)
+    );
+    let mut another = one.later.clone();
+    another.statement.transaction = "tx-credit-0002".to_owned();
+    another.statement.amount = "1".to_owned();
+    assert_eq!(
+        provider_role::check_one_credit(&one.earlier, &another),
+        Ok(Credits::Two)
+    );
+    for change in [
+        |n: &mut ArrivalNotice| n.node.network = "co-pse".to_owned(),
+        |n: &mut ArrivalNotice| n.asset.decimals = 0,
+        |n: &mut ArrivalNotice| n.account = "acct-78".to_owned(),
+        |n: &mut ArrivalNotice| n.holder = "party-bo".to_owned(),
+    ] {
+        let mut restated = one.later.clone();
+        change(&mut restated.statement);
+        assert_eq!(
+            provider_role::check_one_credit(&one.earlier, &restated),
+            Err(CreditRestated::OtherFigures)
+        );
+    }
 }
 
 // verifies: DEC-4

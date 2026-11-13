@@ -1,11 +1,12 @@
 # provider-role contract
 
-This contract holds five things:
+This contract holds six things:
 
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
 - the verifier's standalone judgement, and the reserve's reversal confirmation;
 - a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0);
+- a reserve's signed notice of value arriving (3.1.0);
 - the envelope every party statement travels in (`REQ-PRT-1`).
 
 It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a module format.
@@ -24,11 +25,14 @@ It is format-neutral and language-neutral (`DEC-4`): nothing here assumes a modu
 | `urn:rutent:provider-role:reversal-confirmation` | `schemas/reversal-confirmation.schema.json` | A reserve's confirmation that one reversed credit arrived, in its own envelope (ADR-0008) |
 | `urn:rutent:provider-role:terms` | `schemas/terms.schema.json` | A provider's terms for one of its tuples, in the envelope: the tuple by provider and both ends, its fee formula, and its slippage regime where the tuple sets a rate (3.1.0, `REQ-QTE-5`, `REQ-QTE-6`) |
 | `urn:rutent:provider-role:hold` | `schemas/hold.schema.json` | A reserve's hold of a quote, in the envelope: the choice record by id and digest, the candidate, the order or session it is for, its validity (3.1.0, `REQ-QTE-15`) |
+| `urn:rutent:provider-role:arrival-notice` | `schemas/arrival-notice.schema.json` | A reserve's notice of value arriving, in the envelope: the transaction it gives the credit, its per-credit reference, the outer node, the asset with its unit, the amount, the account and its holder (3.1.0, `REQ-ORD-14`, `REQ-ORD-23`) |
 | `urn:rutent:provider-role:common` | `schemas/common.schema.json` | Shared atoms: identifier, version, protocol version, public key, amount, safe integer, timestamp, evidence grade, decimal |
 
-The schemas refer to each other by `$id`. A validator registers all eleven and needs nothing from the network.
+The schemas refer to each other by `$id`. A validator registers all twelve and needs nothing from the network.
 A fixture's file name starts with its shape: `advertisement-`, `statement-envelope-`, `operation-`, `result-`,
-`terms-`, `hold-`, `successive-advertisements-` or `answered-operation-`. The last two are bundles, not schemas:
+`terms-`, `hold-`, `arrival-notice-`, `successive-advertisements-`, `answered-operation-` or `arrival-notices-`. The
+last three are bundles, not schemas: `arrival-notices` is an `earlier` and a `later` enveloped arrival notice, for
+the rule that relates them (`check_one_credit`). Of the other two,
 `successive-advertisements` is a `previous` and a `next` enveloped advertisement, each checked against the
 advertisement schema, for the rules that relate them (`validate_successor`); `answered-operation` is an enveloped
 `operation`, the enveloped `result` that answers it, and the `terms` of the tuple it runs through (the
@@ -297,6 +301,35 @@ their body names no transaction, and a hold about its own transaction, its id.
 | A hold names its transaction, its record by id and digest, its candidate, an order or a session, and its validity | schema | `hold-without-its-transaction`, `hold-of-a-record-without-its-digest`, `hold-for-no-order-or-session` |
 | A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
 | A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
+
+## Arrivals (3.1.0)
+
+Before 3.1.0 provider-role had no statement a reserve makes of value arriving. Core took what arrived from the
+assembly's port and kept the reserve's notice as bytes it read only for the transaction its body names, so nothing
+held the figures to the signed bytes (`T-020-04`'s gap). A notice is now the reserve's own statement, which Core
+keeps and appends as a stated entry.
+
+- **The notice** (`ArrivalNotice`, shape `urn:rutent:provider-role:arrival-notice`). Made by the reserve the value
+  arrived at. The body names the `transaction` the reserve gives the credit, the reserve's outer `node`, by its
+  network, the `asset` with the unit the amount is counted in, the `amount`, above zero, the `account` it reached and
+  the `holder`, the party that holds it (`REQ-ORD-14`, `REQ-ORD-23`).
+- **The transaction is the per-credit reference.** It is the reserve's own, the same in every notice of the credit,
+  whenever signed. It is the deposit's signed transaction core-internal's log keys a deposit on
+  (`arrival-names-its-notice`, `one-order-per-deposit`), so the notice's stated entry is about it, as attribution
+  binds an entry's transaction to the body's.
+- **One credit, one arrival.** `check_one_credit(earlier, later)` says two notices of the same maker and transaction
+  are one credit where they state the same figures (`Credits::One`), refuses the same transaction with another node,
+  asset, unit, amount, account or holder (`CreditRestated::OtherFigures`), and takes another maker's or another
+  transaction's notice as another credit (`Credits::Two`). Times and signatures are left aside.
+
+| Rule | Where | Invalid fixture |
+|---|---|---|
+| A notice names its shape, its transaction, its outer node, its asset with its unit, a positive amount, its account and the account's holder | schema | `arrival-notice-under-another-shape`, `arrival-notice-without-its-transaction`, `arrival-notice-without-its-outer-node`, `arrival-notice-at-an-inner-node`, `arrival-notice-without-its-asset`, `arrival-notice-asset-without-its-unit`, `arrival-notice-without-its-amount`, `arrival-notice-of-a-zero-amount`, `arrival-notice-without-its-account`, `arrival-notice-without-its-holder` |
+| Two notices of one credit state the same figures | Rust, `check_one_credit`: `OtherFigures` | `arrival-notices-of-one-credit-with-another-amount` |
+
+What the contract leaves to its reader: that the notice's maker is a reserve whose advertisement lists that outer
+node and asset (the catalogue's, `F-012`), and that a credit taken once is taken once (Core's, `T-020-19`, holding
+each notice it took against the next by `check_one_credit`).
 
 ## Which rule lives where
 
