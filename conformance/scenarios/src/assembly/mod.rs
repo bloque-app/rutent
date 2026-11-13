@@ -43,6 +43,7 @@
 //!   (`F-030`).
 
 mod arrivals;
+pub mod charges;
 pub mod durable;
 mod grading;
 pub mod machine;
@@ -453,6 +454,11 @@ pub struct Core {
     /// Each filing on an automatic deposit Core was handed, by the order it opened: what its start takes.
     filings: BTreeMap<String, rutent_core_orch::arrival::Filing>,
     segments: Segments,
+    /// The charges checked against the formulas that bound them, and the terms stated (`T-024-03`).
+    charges: rutent_core_orch::quote::Charges,
+    terms: rutent_core_orch::quote::Terms,
+    /// The operator's channel, which a charge above its formula is raised to.
+    pub channel: charges::Channel,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
     readings: grading::Readings,
@@ -687,12 +693,7 @@ impl Core {
             window_secs: 86_400,
         });
         catalogue.set_answer_within(CHECK_ANSWERED_WITHIN);
-        let prices = config
-            .providers
-            .iter()
-            .filter(|s| s.role == rutent_conformance::sim::Role::Reserve)
-            .flat_map(|s| kit::reserve_prices(&s.provider))
-            .collect();
+        let prices = config.providers.iter().flat_map(kit::prices_of).collect();
 
         let feed = match carried_feed {
             Some(feed) => feed,
@@ -716,6 +717,9 @@ impl Core {
             arrivals: rutent_core_orch::arrival::Arrivals::new(),
             filings: BTreeMap::new(),
             segments: Segments::new(),
+            charges: rutent_core_orch::quote::Charges::new(),
+            terms: rutent_core_orch::quote::Terms::new(),
+            channel: charges::Channel::default(),
             closing: rutent_core_orch::closing::Closing::new(),
             readings: grading::Readings::default(),
             issued: Issued::new(),
@@ -803,6 +807,103 @@ impl Core {
     /// The platform with the simulated providers, to read.
     pub fn fleet(&self) -> &Fleet {
         &self.fleet
+    }
+
+    /// The simulated world, to script what a provider does next or to read what it did: its scripts, its books and
+    /// what its rails and networks received. Core's platform stays a view ([`Core::fleet`]).
+    pub fn world(&mut self) -> &mut SimWorld {
+        self.fleet.world()
+    }
+
+    /// Sets the weakest evidence the operator accepts on `tuple` (`REQ-ORD-39`): a provider declaring weaker is left
+    /// out of the snapshot for it. A deployment setting of the catalogue, which `core-internal` has no catalogue
+    /// change for, so it isn't recorded in the log (`T-024-03`'s notes).
+    pub fn set_evidence_floor(
+        &mut self,
+        tuple: rutent_prov::catalogue::TupleKey,
+        floor: rutent_contracts::provider_role::EvidenceGrade,
+    ) {
+        self.catalogue.set_evidence_floor(tuple, floor);
+    }
+
+    /// The holder's delegate asks `reserve` whether the account's balance covers `amount`, in `session`: a balance
+    /// check outside any order, so it counts against the account's bound (`REQ-CAT-3`, `REQ-CAT-4`). It goes through
+    /// Core's catalogue, which logs it and counts it, then to the reserve through the platform, and the answer is
+    /// read through the catalogue, so what the asker is told is yes or no and nothing more (`INV-9`).
+    ///
+    /// # Errors
+    ///
+    /// The refusal the catalogue gives where the check can't be sent: no session, over the bound, no grant.
+    ///
+    /// # Panics
+    ///
+    /// If the platform doesn't answer.
+    pub fn check_balance(
+        &mut self,
+        reserve: &str,
+        session: &Id,
+        amount: &str,
+    ) -> Result<rutent_prov::catalogue::Verdict, rutent_prov::catalogue::CheckRefusal> {
+        let context = context();
+        let statement = json!({
+            "kind": "balance_verification",
+            "transaction": self.fresh.id().as_str(),
+            "provider": reserve,
+            "session": session.as_str(),
+            "account": context.account,
+            "asset": "COP",
+            "amount": amount,
+        });
+        self.check(reserve, statement)
+    }
+
+    /// [`Core::check_balance`] by a dry-run withdrawal of `amount` from `reserve`'s bank, which reveals whether the
+    /// funds suffice as a verification does, and counts as one (`REQ-CAT-4`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::check_balance`].
+    ///
+    /// # Panics
+    ///
+    /// If the platform doesn't answer.
+    pub fn check_by_dry_run(
+        &mut self,
+        reserve: &str,
+        session: &Id,
+        amount: &str,
+    ) -> Result<rutent_prov::catalogue::Verdict, rutent_prov::catalogue::CheckRefusal> {
+        let statement = json!({
+            "kind": "withdrawal",
+            "transaction": self.fresh.id().as_str(),
+            "provider": reserve,
+            "session": session.as_str(),
+            "origin": { "network": format!("{reserve}-bank") },
+            "destination": format!("{reserve}-ledger"),
+            "asset": "COP",
+            "amount": amount,
+            "dry_run": true,
+            "inputs": { "payer.bank_account": ORIGIN_ACCOUNT },
+        });
+        self.check(reserve, statement)
+    }
+
+    fn check(
+        &mut self,
+        reserve: &str,
+        statement: serde_json::Value,
+    ) -> Result<rutent_prov::catalogue::Verdict, rutent_prov::catalogue::CheckRefusal> {
+        let operation = rutent_conformance::sim::operation(&context(), statement);
+        let ticket = self
+            .catalogue
+            .begin_check(&operation.statement, None, self.clock.instant())?;
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        let Handled::Answered(result) = self.fleet.platform.handle(reserve, &operation) else {
+            panic!("the platform refused the check");
+        };
+        Ok(self
+            .catalogue
+            .answer_check(&ticket, &result.statement, self.clock.instant()))
     }
 
     /// Policy, as the other parts reach it: the engine's calls, and the ones answered beside it.

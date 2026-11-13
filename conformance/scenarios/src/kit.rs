@@ -318,15 +318,20 @@ pub fn bounds(context: &SuiteContext) -> PolicyBounds {
 
 /// Core's price of `tuple`: no fee, no rate, settling in [`DECLARED`] seconds, stated at the world's clock.
 pub fn price(tuple: TupleKey) -> Price {
+    priced(tuple, 0, DECLARED)
+}
+
+/// Core's price of `tuple`: a flat fee of `fee`, no rate, settling in `seconds`, stated at the world's clock.
+pub fn priced(tuple: TupleKey, fee: u128, seconds: u64) -> Price {
     Price {
         tuple,
         stated_at: Timestamp::new(WORLD_AT.rfc3339().expect("a time")).expect("a timestamp"),
         fee: serde_json::from_value::<FeeFormula>(json!({
-            "flat": "0", "proportional": { "numerator": "0", "denominator": "1" }
+            "flat": fee.to_string(), "proportional": { "numerator": "0", "denominator": "1" }
         }))
         .expect("a fee formula"),
         rate: None,
-        settlement_seconds: SafeInteger::try_from(DECLARED).expect("a safe integer"),
+        settlement_seconds: SafeInteger::try_from(seconds).expect("a safe integer"),
     }
 }
 
@@ -335,6 +340,31 @@ pub fn reserve_prices(reserve: &str) -> Vec<Price> {
     vec![
         price(tuple(reserve, bank(reserve), ledger(reserve))),
         price(tuple(reserve, ledger(reserve), bank(reserve))),
+    ]
+}
+
+/// The prices Core holds for what `spec` serves, if it is a reserve: its withdrawal from its bank to its ledger and its
+/// deposit back, each at the fee its shape quotes and the time it declares ([`rutent_conformance::sim::shape_of`]).
+/// A reserve under no shape is priced as [`reserve_prices`] prices it. Core prices nothing else yet.
+pub fn prices_of(spec: &rutent_conformance::sim::Spec) -> Vec<Price> {
+    use rutent_conformance::sim::{Role, Shape, shape_of};
+    if spec.role != Role::Reserve {
+        return Vec::new();
+    }
+    let shape = shape_of(&spec.provider);
+    if shape == Shape::default() {
+        return reserve_prices(&spec.provider);
+    }
+    let bank = json!({ "node": { "network": spec.bank() }, "asset": cop() });
+    let ledger = json!({ "node": spec.ledger(), "asset": cop() });
+    let seconds = shape.settles_in.unwrap_or(DECLARED);
+    vec![
+        priced(
+            tuple(&spec.provider, bank.clone(), ledger.clone()),
+            shape.fee,
+            seconds,
+        ),
+        priced(tuple(&spec.provider, ledger, bank), shape.fee, seconds),
     ]
 }
 
