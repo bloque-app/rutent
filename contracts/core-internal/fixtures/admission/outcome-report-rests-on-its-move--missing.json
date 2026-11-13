@@ -693,7 +693,7 @@
           }
         },
         "what": {
-          "statement": "urn:rutent:provider-role:result"
+          "statement": "urn:rutent:provider-role:arrival-notice"
         },
         "when": {
           "at": "2026-11-06T15:04:05Z",

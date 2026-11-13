@@ -2549,6 +2549,10 @@ pub static RELATIONS: [Relation; 97] = [
                 "transaction",
                 "an arrival's notice names the deposit's signed transaction",
             ),
+            (
+                "notice",
+                "an arrival's notice is its reserve's arrival notice, not a hold, an answer or another statement",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::Arrival {
@@ -2571,6 +2575,11 @@ pub static RELATIONS: [Relation; 97] = [
                     matches!(s.attribution, Attribution::Verified { .. }),
                     maker_provider(s) == reserve,
                     s.about.as_ref().is_some_and(|a| a.transaction.is_some()),
+                    // Only provider-role's arrival notice states a deposit: a hold, an arrival answer or a result is
+                    // the reserve's and about a transaction too, and would otherwise key a deposit it never stated.
+                    // An answer's notices are kept and appended each as its own stated entry, about its credit's
+                    // transaction, so a deposit is keyed on a notice, never on the answer that carried it.
+                    s.what.statement.as_str() == crate::provider_role::ARRIVAL_NOTICE_SHAPE,
                 ],
             ),
             _ => Match::NotTarget,
@@ -4482,7 +4491,8 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
 }
 
 /// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
-/// stated entry of `history` under that commitment (`arrival-names-its-notice`).
+/// stated entry of `history` under that commitment (`arrival-names-its-notice`, which holds it to provider-role's
+/// arrival notice before any arrival citing it is admitted, so the shape isn't read again here).
 fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
     let What::Arrival {
         notice: Some(notice),

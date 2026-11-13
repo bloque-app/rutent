@@ -3216,6 +3216,54 @@ Other things this integration settled, for the record:
   (a withdrawal into a reserve), what entered, the charge included (the result's `amount_in`). The simulated network
   (`conformance/src/sim`, `movements_made`) records the same.
 
+## T-020-18
+
+Branch `f-020/t-020-18-arrival-notice-contract`, from `m3` at `34c700e`. A provider-role round, folded into 3.1.0
+(unreleased on `develop`, 3.0.0 there), and, after its review, one row of core-internal 1.0.0 (unreleased). Touches
+`contracts/` only, and two test constants (below).
+
+- **The notice** (`urn:rutent:provider-role:arrival-notice`, `ArrivalNotice`): the reserve's own statement of the
+  transaction it gives the credit, its per-credit reference, with the outer node, the asset and unit, the amount, the
+  account and its holder. The transaction is the deposit's signed transaction the log already keys on
+  (`arrival-names-its-notice`, `one-order-per-deposit`), so `notice_transaction` reads it as it stands.
+  `check_one_credit` knows two notices of one credit as one. Two notices under two references are two claims, the
+  reserve's loss if false (`REQ-AUD-2`).
+- **The question and its answer** (`arrival-question`, `arrival-answer`): shapes of their own, not an operation and
+  a result kind, which would have been a major carrying module-interface with it. The question names its own
+  transaction, the holder's session (a balance check, `REQ-CAT-4`), the account, node and asset with its unit; the
+  answer names the question's transaction and carries each notice whole, or says nothing arrived, or refuses
+  without saying when it lifts. `check_answer` holds one to the other.
+- **The inner-segment record** (`inner-segments`): made by a provider stating for its publisher, which holds no key;
+  `check_inner_segments` takes the maker's advertisement (its publisher, the node among its private nodes). Labelled
+  `publishers_word`; no figure refused, so a mismatch reaches the replay.
+- **The review's high finding** (live on `m3` before this branch): `arrival-names-its-notice` didn't read the cited
+  entry's shape, so a reserve's hold, about its own transaction, passed as a deposit's notice. The row now requires
+  the arrival notice's shape; an answer's notices are each kept as their own stated entry, and an arrival cites
+  those. core-orch's `tests/arrival.rs` and the scenarios' `tests/assembly_arrivals.rs` sign their notices under that
+  shape now (test-only, their bodies their own until `T-020-19`), and the scenarios' seeded deposit
+  (`segments_support::seed_arrival`) cites the reserve's own arrival notice, not its result.
+- **Defaults** (reversible): folded into 3.1.0; standalone shapes; the notice's `transaction` as the per-credit
+  reference; the question's session required, and no order named; three outcomes for an answer, a refusal by the
+  balance-refusal classes; a constant label on the record, a transaction per segment, no arithmetic rule.
+- **Hand-offs:**
+  - `T-020-19`: core-orch's `NOT_A_NOTICE` deny list admits a hold and an arrival answer (each the reserve's, naming
+    a body `transaction`); replace it with `ARRIVAL_NOTICE_SHAPE` and read the body as `ArrivalNotice`. The log now
+    refuses anything else, so the gap is closed fail-closed until then. Append each notice an answer carries as its
+    own stated entry, about its credit's transaction, and call `check_answer` and `check_one_credit`.
+  - `T-020-21`: `answer-follows-its-question` keys on `result` and `operation` only; extend it to `arrival-answer`
+    and `arrival-question`.
+  - `T-024-14`: the simulated publishers emit `InnerSegments`, `Books` reads it, and `Replay` carries the receipts of
+    the inner-segment records it read (`REQ-AUD-9`), so a checker finds what the replay compared.
+  - `F-024`: the test `stand in reserve signs an arrival notice that passes the role suite` [`REQ-ORD-14`,
+    `REQ-ORD-23`] is not written (`conformance/src/role/stand_in.rs`, `suite.rs`). `T-020-18` can't close until it
+    lands.
+  - `F-021`: the question's session, open on the holder's behalf where the order's has ended (`T-020-04`'s
+    hand-off).
+- **Rule off**, each once, its case red: every required notice field; `check_one_credit`'s figures and maker; the
+  question's transaction and session; the answer's transaction; the question's operator key; the answer's nested
+  shapes and context; each of `check_answer`'s comparisons, the unit included; the record's amounts in and out, fee
+  and label; `check_inner_segments`' advertisement, publisher and node; `arrival-names-its-notice`'s shape.
+
 ## Rows added for the gaps the reviews found (`plan/m3-owed-rows`)
 
 Each gap below named "a new `F-020` row" or "no row owns it" now has one. Where a gap sits in another feature's

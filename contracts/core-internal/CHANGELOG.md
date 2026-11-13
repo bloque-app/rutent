@@ -711,3 +711,21 @@
   valid fixture (`decision-request-to-accept-a-fault-in-the-customers-session`), one invalid
   (`verified-entry-of-an-effect-accepting-a-fault`); the fault-acceptance fixtures are gone. 580 admission cases.
   (DEC-4, DEC-20, REQ-ORD-11, REQ-ORD-32, REQ-AUZ-1, T-020-01, T-020-12)
+- Folded into 1.0.0 before its release: a deposit's notice is the reserve's arrival notice (`T-020-18`'s review,
+  item 1, high). `arrival-names-its-notice` held the cited stated entry to being verified, the arrival's reserve's
+  and about a transaction, and never to its shape. Since round 3 a reserve's hold is about its own transaction, so a
+  hold passed, and the operator, filing, could open an order on a deposit the reserve never stated. The row now
+  requires provider-role's `urn:rutent:provider-role:arrival-notice` (new field `notice`, read last), so
+  `one-order-per-deposit`'s deposit, read from an admitted arrival's notice, is always such a notice's. An arrival answer
+  (`urn:rutent:provider-role:arrival-answer`) carries notices whole: each is appended as its own stated entry, about
+  its credit's transaction, and that entry is the one an arrival cites, so a deposit is keyed on a notice and never on
+  the answer that carried it. The world's deposit notice, `tx-k1`'s, is now of that shape, as is the notice kept again in
+  `one-order-per-deposit--the-same-notice-kept-again`; `outcome-confirmation-cites-verified-evidence--about`, which
+  cited that notice as a result about another order, cites a result of its own. Admitted:
+  `--the-reserves-arrival-notice`. Refused: a hold cited as a deposit's notice, an arrival answer cited as one. 583
+  admission cases. Outside `contracts/`, test-only: core-orch's arrival tests and the scenarios' arrival tests sign
+  their notices under that shape (their bodies stay theirs until `T-020-19`), and the scenarios' seeded deposit
+  (`segments_support::seed_arrival`), which cited the reserve's result as its notice, cites the reserve's own arrival
+  notice; core-orch's `NOT_A_NOTICE` deny list
+  stays `T-020-19`'s, and the log now refuses anything it lets through. (DEC-4, DEC-20, REQ-ORD-23, REQ-ORD-14,
+  REQ-AUD-2, T-020-18)
