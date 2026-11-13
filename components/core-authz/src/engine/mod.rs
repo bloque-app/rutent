@@ -1197,6 +1197,7 @@ mod tests {
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
                 Action::AskReversal { .. } => {}
+                Action::AcceptFault { .. } => unreachable!("not yet in policy's tables"),
                 Action::ResolveStuck { .. } => unreachable!("travels only as a stuck move"),
             }
         }

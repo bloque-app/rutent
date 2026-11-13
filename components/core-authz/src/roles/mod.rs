@@ -166,6 +166,9 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds
                 // (`reversal-is-asked-of-its-failed-provider`).
+                // The customer's acceptance of a showing of its fault: no rule lets anyone ask it yet, so policy
+                // refuses it (core-internal's `reversal-carrier-rests-on-its-acceptance`).
+                Action::AcceptFault { .. } => None,
                 Action::AskReversal { .. } => match caller.role {
                     Role::Operator => {
                         operator_holds(caller, Permission::AskReversal).map(Needs::from)

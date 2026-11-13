@@ -997,6 +997,8 @@ fn charge_above_the_formulas_maximum_is_flagged_to_the_operator() {
             charged: amount("2001"),
             maximum: amount("2000"),
             asset: deposit_tuple(RESERVE).from.asset,
+            result: result.clone(),
+            terms: None,
         }
     );
     assert_eq!(flagged.raise.cites, vec![result]);

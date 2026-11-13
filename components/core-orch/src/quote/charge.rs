@@ -171,6 +171,8 @@ impl Charges {
                             charged: flag.charged,
                             maximum: flag.bound,
                             asset: charged.tuple.from.asset.clone(),
+                            result: charged.result.clone(),
+                            terms: None,
                         },
                         cites: vec![charged.result.clone()],
                         at: journal::now(desk.clock)?,

@@ -1055,7 +1055,7 @@ impl World {
             .unwrap();
         let mut statement = snapshot_support::envelope(
             &snapshot_support::deployment(),
-            rutent_contracts::core_internal::FAULT_ACCEPTANCE_SHAPE,
+            "urn:rutent:core-internal:fault-acceptance", // gone from the contract; item 3 replaces this
             by.acts.as_str(),
             2_000,
             json!({ "order": ORDER, "segment": "p1-s2", "transaction": transaction,

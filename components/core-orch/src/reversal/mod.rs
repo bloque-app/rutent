@@ -68,8 +68,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
 use rutent_contracts::core_internal::{
     About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
-    FAULT_ACCEPTANCE_SHAPE, FaultAcceptance, OperatorCommand, Outcome, Permit, ReadCheck,
-    ReadOutcome, Receipt, Role, What,
+    OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -384,8 +383,10 @@ struct Showing {
     /// The receipt of its stated entry.
     receipt: Receipt,
     /// The commitment its stated entry names it by.
+    #[allow(dead_code)] // read again by the customer's decision (item 3)
     commitment: Digest,
     /// The transaction it is about: the failed segment's own.
+    #[allow(dead_code)] // read again by the customer's decision (item 3)
     transaction: Id,
     disputed: bool,
     /// A dispute of it the log couldn't take now, kept by the stuck orders to append: until it is retried to
@@ -424,6 +425,7 @@ struct Accepted {
     /// The customer's statement, as received.
     statement: Option<Vec<u8>>,
     act: Step,
+    #[allow(dead_code)] // item 3 drops it
     session: Option<Id>,
     carrier: Option<Step>,
     carries: Carrier,
@@ -1107,27 +1109,10 @@ impl Reversals {
                     statement,
                     session,
                 } => {
-                    let accepted: Statement<FaultAcceptance> = serde_json::from_slice(statement)
-                        .map_err(|_| ReversalError::NotAnAcceptance)?;
-                    let a = &accepted.statement;
-                    if accepted.shape != FAULT_ACCEPTANCE_SHAPE
-                        || accepted.maker != by.acts.as_str()
-                        || a.order != *at.order
-                        || a.segment != *at.segment
-                        || a.transaction != showing.transaction
-                        || a.showing != showing.commitment
-                        || a.fault != Fault::Customer
-                    {
-                        return Err(ReversalError::NotAnAcceptance);
-                    }
-                    let about = About {
-                        order: Some(at.order.clone()),
-                        segment: Some(at.segment.clone()),
-                        transaction: Some(showing.transaction.clone()),
-                    };
-                    let act =
-                        journal::stated(parts.evidence, parts.clock, statement, by.clone(), about)?;
-                    (act, Some(session.clone()))
+                    // The customer's acceptance is a policy decision now (item 3 builds it): until then it
+                    // accepts nothing.
+                    let _ = (by, statement, session);
+                    return Err(ReversalError::NotAnAcceptance);
                 }
                 Accepting::Operator { by } => {
                     let act = journal::recorded(
@@ -1176,7 +1161,6 @@ impl Reversals {
                     showing: Some(showing.receipt.clone()),
                     accepted_by: Some(accepted.by.clone()),
                     accepted_with: Some(acted),
-                    session: accepted.session.clone(),
                 },
             )?));
         }

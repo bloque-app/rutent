@@ -270,6 +270,7 @@ pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation
                     },
                     origin_reserve: id(RESERVE),
                     yeses: Vec::new(),
+                    held: None,
                     session: None,
                 },
                 when: When {
