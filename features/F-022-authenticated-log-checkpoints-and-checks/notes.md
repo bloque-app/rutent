@@ -464,3 +464,32 @@ hold the checkpointer's and the checker's own rules. Each rule was switched off 
 
 Implied, so switching it off alone fails no test: the checker's check that the signing key is the log's (the
 signature is verified under that same key).
+
+### After the review of `9c446f1` (`T-022-04`)
+
+- **A stored checkpoint is published at least once.** `run_due` hands out every stored checkpoint the caller hasn't
+  acknowledged, not only the ones it issued that run; `Checkpointer::acknowledge(&Ran)` writes a durable cursor
+  record (`Cursor`) into the checkpoint store, after the caller has published. So a write that reached the store and
+  was reported failed, and a restart between the store and the answer, lose no tick: the checkpoint is handed out
+  again until acknowledged. The cursor only names a stored tick and never goes back (otherwise the store is
+  refused on opening, `NOT_ITS_CHECKPOINTS`); the checker's `split_kept` skips cursor records. Publication is
+  therefore at least once, so a checker may be handed a checkpoint twice: identical copies are not a finding.
+- **A backlog is bounded.** A run stores at most `MOST_PER_RUN` (64) ticks and hands out at most as many; the next
+  run continues in order. After a long outage the catch-up takes several runs, with nothing skipped.
+- **What the checker can't see, and what the appointed checker must therefore do** (requirements for `F-030`, who
+  runs the deployment's publication, and `F-033`, who appoints and records the checker):
+  - The checker holds the **openings** and **dated copies of the checkpoints as it received them**. A checkpoint
+    carries the schedule's time, not the time it was written, so only a copy dated on receipt shows a late one.
+  - It **runs each period**, so a tick caught up late is seen to arrive late against its own dated copies.
+  - **Every missing opening is a finding** (`NoOpening`): a checker given a checkpoint without its opening can't
+    open it, and an operator withholding openings is withholding the check.
+- **Reviewer's rulings** (the review of `9c446f1`):
+  - The private-salt reading (the opening, not the checkpoint, carries the salt and the size) is **accepted on
+    those conditions**.
+  - Backdating by catch-up is **bounded to after the last checkpoint the checker holds**: a checkpoint issued late
+    for a tick can only commit to the log as it stood then, so it cannot alter what the checker already holds
+    against earlier ticks.
+- **Rule-off, new rules.** Each switched off, a test failed: handing out unacknowledged checkpoints (the failed
+  write, the restart, the due-ticks tests); the acknowledgement being durable (restart, failed write, review); an
+  acknowledgement naming a stored tick (restart); the review skipping cursor records (review, tool); the cap on
+  ticks issued and the cap on checkpoints handed out (the long-outage test).
