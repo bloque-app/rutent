@@ -410,7 +410,7 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
         ));
     }
     if is_final_deposit(settled)
-        && let Some(arrived) = Amount::new(settled.amount_out.to_owned())
+        && let Some(arrived) = Amount::new(settled.arrives.to_owned())
         && let Some(amount) = rutent_router::quote::operator_fee(settled.operator_fee, &arrived)
     {
         fees.push(entry(
@@ -588,7 +588,7 @@ impl Evidenced<'_> {
                         } else {
                             side.asset.id.clone()
                         },
-                        amount: settled.amount_out.to_owned(),
+                        amount: settled.arrives.to_owned(),
                     };
                     why = verify_movement(&net, &moved.id, &expected).err();
                     let check = public_record_check(&net, &moved.id, &expected);
@@ -981,7 +981,7 @@ impl Evidenced<'_> {
                         },
                         stated: Stated {
                             asset: operation.to.asset.id.clone(),
-                            amount: settled.amount_out.to_owned(),
+                            amount: settled.arrives.to_owned(),
                         },
                     };
                     found_of(

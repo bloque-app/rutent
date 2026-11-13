@@ -1804,6 +1804,7 @@ impl Segments {
                 amount_out: stated_out,
                 ..
             } => {
+                let arrives = handed_on.clone();
                 let amount_out = handed_on;
                 let amount_out = Amount::new(amount_out)
                     .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
@@ -1832,6 +1833,7 @@ impl Segments {
                     segments: live.segments,
                     end: live.route,
                     amount_out: &stated_out,
+                    arrives: &arrives,
                     core: live.core,
                     operator: live.operator,
                     at: &graded_at,

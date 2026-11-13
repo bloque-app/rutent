@@ -565,7 +565,7 @@ impl<'a> Part<'a> {
             provider,
             transaction,
             bytes,
-            amount_out,
+            (amount_out, amount_out),
             &fee,
             &result,
             |settled| grading.grade(settled),
@@ -608,13 +608,34 @@ impl<'a> Part<'a> {
         amount_out: &str,
         fee: &FeeFormula,
     ) -> Vec<What> {
+        self.fees_arriving(
+            place,
+            provider,
+            transaction,
+            bytes,
+            (amount_out, amount_out),
+            fee,
+        )
+    }
+
+    /// [`Part::fees`] for a segment that gave out `amount_out` and of which `arrives` arrives, its charge within the
+    /// rest.
+    fn fees_arriving(
+        &self,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amounts: (&str, &str),
+        fee: &FeeFormula,
+    ) -> Vec<What> {
         let result = receipt(0);
         self.with(
             place,
             provider,
             transaction,
             bytes,
-            amount_out,
+            amounts,
             fee,
             &result,
             |settled| {
@@ -636,7 +657,7 @@ impl<'a> Part<'a> {
         provider: &str,
         transaction: &str,
         bytes: &[u8],
-        amount_out: &str,
+        (amount_out, arrives): (&str, &str),
         fee: &FeeFormula,
         result: &Receipt,
         then: impl FnOnce(&ToGrade<'_>) -> R,
@@ -663,6 +684,7 @@ impl<'a> Part<'a> {
             segments: &self.segments,
             end: &self.end,
             amount_out,
+            arrives,
             core: &core,
             operator: &operator,
             at: &at,
@@ -1037,6 +1059,34 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
         Some(true),
         "billed apart, as the reserve stated"
     );
+    // A final deposit whose tuple reports gross gives out its charge within what it gives out, so the operator's fee is
+    // figured on what arrives, as the quote figures it: a 1 000 000 give-out with 4 000 inside arrives 996 000, and a
+    // fee of 1% of it is 9 960, not 10 000.
+    let one_percent: FeeFormula = serde_json::from_value(
+        json!({ "flat": "0", "proportional": { "numerator": "1", "denominator": "100" } }),
+    )
+    .unwrap();
+    let operator_fee = |arrives: &str| {
+        part.fees_arriving(
+            2,
+            "reserve-wallet",
+            "tx-d",
+            &deposit,
+            ("1000000", arrives),
+            &one_percent,
+        )
+        .into_iter()
+        .find_map(|w| match w {
+            What::Fee {
+                to: FeeTo::Operator,
+                amount,
+                ..
+            } => Some(amount.as_str().to_owned()),
+            _ => None,
+        })
+    };
+    assert_eq!(operator_fee("1000000").as_deref(), Some("10000"));
+    assert_eq!(operator_fee("996000").as_deref(), Some("9960"));
 }
 
 /// Five segments: into `ledger-in`, out of it onto the public `polygon`, from there into `ledger-b`, an exchange
