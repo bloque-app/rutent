@@ -1,12 +1,21 @@
 # provider-role changelog
 
 ## 3.1.0
+- A record of inner segments is made by a provider stating for its publisher (`T-020-18`'s review, item 2). A
+  publisher holds no key, so `check_inner_segments` requiring its maker to be the publisher refused every record a
+  real publisher could sign. `check_inner_segments(record, advertisement) -> Result<(), Vec<InnerSegmentsViolation
+  {NotItsMakersAdvertisement, OfAnotherPublisher, NodeNotDeclared}>>` now takes the maker's advertisement, the one
+  the catalogue accepted last for it: the advertisement is the maker's own, its `publisher` is the record's, and it
+  declares the record's `node` among its `private_nodes`. `OfAnotherMaker` is gone. The label stays
+  `publishers_word`. The record fixtures are made by `acme-internal-rail` for `acme` at `acme-ledger`; a bundle,
+  `published-inner-segments-` (an advertisement and a record), with one valid fixture and three invalid, replaces
+  `inner-segments-made-by-another-party`. (DEC-4, DEC-20, REQ-ORD-41, REQ-ORD-3, REQ-CAT-20, REQ-CAT-22, T-020-18)
 - A publisher's record of the segments inside its private node is a signed statement of its own (`F-015`'s and
   `T-020-09`'s gap: `CMP-EVIDENCE`'s replay read a record no contract shaped, which the assembly's `Books` filled by
   hand). One schema, `inner-segments` (`urn:rutent:provider-role:inner-segments`, `INNER_SEGMENTS_SHAPE`,
   `InnerSegments {node, publisher, standing: Standing {PublishersWord}, segments: Vec<InnerSegment {transaction,
-  asset_in, amount_in, asset_out, amount_out, fee}>}`), made by the publisher (`check_inner_segments`,
-  `InnerSegmentsViolation {OfAnotherMaker}`). `standing` is a label that travels with the record, always
+  asset_in, amount_in, asset_out, amount_out, fee}>}`), made by a provider stating for its
+  publisher, held to its advertisement by `check_inner_segments` (the bullet above). `standing` is a label that travels with the record, always
   `publishers_word`: inside a private node there is no other witness, so a replay shows consistency with the public
   exit and never that the segments happened (`REQ-ORD-3`, `AC-35`, `THR-131`). Each segment names the transaction it
   ran under, as `Books::recorded` asks by node and transactions; the record names none of its own, so its stated

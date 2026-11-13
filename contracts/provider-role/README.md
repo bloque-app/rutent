@@ -375,8 +375,14 @@ before 3.1.0 no contract shaped that record: the assembly's `Books` was filled b
 record is now the publisher's own statement (`InnerSegments`, shape `urn:rutent:provider-role:inner-segments`),
 which Core keeps and appends as a stated entry about nothing, since its body names no transaction of its own.
 
-- **What it names.** The private `node`; the `publisher` whose word it is, the statement's maker
-  (`check_inner_segments`: `OfAnotherMaker`); and the `segments`, at least one, in the order they ran, each with the
+- **Who makes it.** A publisher holds no key, so the record is made and signed by one of its providers, stating for
+  it, as any statement a publisher stands behind is. `check_inner_segments(record, advertisement)` is given the
+  maker's advertisement, the one the catalogue accepted last for it and never one that arrives with the record, and
+  holds the record to it: the advertisement is the maker's own (`NotItsMakersAdvertisement`), its `publisher` is the
+  one the record names (`OfAnotherPublisher`), and it declares the record's `node` among its `private_nodes`
+  (`NodeNotDeclared`). That the record is signed with a key that advertisement lists for `statements` is the
+  reader's, as for every statement.
+- **What it names.** The private `node`; the `publisher` whose word it is; and the `segments`, at least one, in the order they ran, each with the
   `transaction` it ran under (`Books::recorded` asks by node and transactions), the `asset_in` and `amount_in`, the
   `asset_out` and `amount_out`, and the `fee`, in the asset that went in.
 - **Labelled the publisher's word** (`REQ-ORD-3`, `AC-35`). `standing` is required and has one value,
@@ -393,10 +399,11 @@ which Core keeps and appends as a stated entry about nothing, since its body nam
 | A record names its shape, its node, its publisher, its label and at least one segment | schema | `inner-segments-under-another-shape`, `inner-segments-without-its-publisher`, `inner-segments-without-its-label`, `inner-segments-without-segments` |
 | Its label is the publisher's word, and nothing else | schema (`const`), and Rust (`Standing`) | `inner-segments-labelled-as-proof` |
 | Each segment names its transaction, its asset and amount in and out, and its fee, in whole numbers | schema | `inner-segments-segment-without-its-transaction`, `inner-segments-segment-without-its-asset-in`, `inner-segments-segment-without-its-amount-in`, `inner-segments-segment-without-its-amount-out`, `inner-segments-segment-without-its-fee`, `inner-segments-fee-with-a-fraction` |
-| A record is made by the publisher it names | Rust, `check_inner_segments`: `OfAnotherMaker` | `inner-segments-made-by-another-party` |
+| A record is made by a provider of the publisher it names that declares its node, by that provider's advertisement | Rust, `check_inner_segments`: `NotItsMakersAdvertisement`, `OfAnotherPublisher`, `NodeNotDeclared` | `published-inner-segments-against-another-providers-advertisement`, `published-inner-segments-for-another-publisher`, `published-inner-segments-at-a-node-its-maker-does-not-declare` |
 
-What the contract leaves to its reader: that the publisher declares the node as its private node (the catalogue's,
-`REQ-CAT-20`, `REQ-CAT-22`); that each transaction is one of the order's segments at that node, run by one of the
+What the contract leaves to its reader: that the advertisement it passes is the one its catalogue accepted for the
+record's maker, and the record's key one it lists for `statements` (the catalogue's, `REQ-CAT-20`, `REQ-CAT-22`);
+that each transaction is one of the order's segments at that node, run by one of the
 publisher's providers (Core's); and that the segments add up and hand on to the public exit (the replay's).
 
 ## Which rule lives where

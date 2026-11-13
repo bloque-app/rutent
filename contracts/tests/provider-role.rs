@@ -39,7 +39,7 @@ const SCHEMAS: [&str; 15] = [
 /// followed by `-`. `successive-advertisements`, `answered-operation`, `arrival-notices` and
 /// `answered-arrival-question` are bundles of values, not schemas of their own: see [`SuccessiveAdvertisements`],
 /// [`AnsweredOperation`], [`ArrivalNotices`] and [`AnsweredArrivalQuestion`].
-const SHAPES: [&str; 14] = [
+const SHAPES: [&str; 15] = [
     "advertisement",
     "statement-envelope",
     "operation",
@@ -54,6 +54,7 @@ const SHAPES: [&str; 14] = [
     "answered-operation",
     "arrival-notices",
     "answered-arrival-question",
+    "published-inner-segments",
 ];
 
 /// The members of a `successive-advertisements` bundle: the provider's accepted advertisement and the one that
@@ -95,6 +96,21 @@ const ANSWERED_ARRIVAL_QUESTION_MEMBERS: [(&str, &str); 2] = [
     ("question", "urn:rutent:provider-role:arrival-question"),
     ("answer", "urn:rutent:provider-role:arrival-answer"),
 ];
+
+/// The members of a `published-inner-segments` bundle: the advertisement of a record's maker and the enveloped
+/// record, for the rules that relate them (`check_inner_segments`).
+const PUBLISHED_INNER_SEGMENTS_MEMBERS: [(&str, &str); 2] = [
+    ("advertisement", "urn:rutent:provider-role:advertisement"),
+    ("record", "urn:rutent:provider-role:inner-segments"),
+];
+
+/// A `published-inner-segments` fixture.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedInnerSegments {
+    advertisement: Statement<Advertisement>,
+    record: Statement<InnerSegments>,
+}
 
 /// An `answered-arrival-question` fixture.
 #[derive(Debug, Serialize, Deserialize)]
@@ -743,14 +759,23 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
     let amounts = |v: AmountMismatch| format!("{:?}", vec![v]);
     let terms = |v: TermsViolation| format!("{:?}", vec![v]);
     let answer = |v: AnswerMismatch| format!("{:?}", vec![v]);
+    let inner = |v: InnerSegmentsViolation| format!("{:?}", vec![v]);
     vec![
         (
             "arrival-notices-of-one-credit-with-another-amount",
             format!("{:?}", CreditRestated::OtherFigures),
         ),
         (
-            "inner-segments-made-by-another-party",
-            format!("{:?}", InnerSegmentsViolation::OfAnotherMaker),
+            "published-inner-segments-against-another-providers-advertisement",
+            inner(InnerSegmentsViolation::NotItsMakersAdvertisement),
+        ),
+        (
+            "published-inner-segments-for-another-publisher",
+            inner(InnerSegmentsViolation::OfAnotherPublisher),
+        ),
+        (
+            "published-inner-segments-at-a-node-its-maker-does-not-declare",
+            inner(InnerSegmentsViolation::NodeNotDeclared),
         ),
         (
             "arrival-question-signed-with-another-key",
@@ -993,10 +1018,13 @@ fn rust_rules(shape: &str, value: &Value) -> Result<(), String> {
                 .check_signed_by_operator()
                 .map_err(|_| "NotSignedByOperator".to_owned())
         }
-        "inner-segments" => {
-            let statement: Statement<InnerSegments> =
+        "published-inner-segments" => {
+            let bundle: PublishedInnerSegments =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-            provider_role::check_inner_segments(&statement).map_err(|v| format!("{v:?}"))
+            provider_role::validate_statement(&bundle.advertisement)
+                .map_err(|v| format!("advertisement: {v:?}"))?;
+            provider_role::check_inner_segments(&bundle.record, &bundle.advertisement)
+                .map_err(|v| format!("{v:?}"))
         }
         "arrival-answer" => {
             let statement: Statement<ArrivalAnswer> =
@@ -1226,6 +1254,7 @@ fn shape_errors(shape: &str, instance: &Value) -> Vec<(String, String)> {
         "answered-operation" => &ANSWERED_OPERATION_MEMBERS,
         "arrival-notices" => &ARRIVAL_NOTICES_MEMBERS,
         "answered-arrival-question" => &ANSWERED_ARRIVAL_QUESTION_MEMBERS,
+        "published-inner-segments" => &PUBLISHED_INNER_SEGMENTS_MEMBERS,
         _ => return schema_errors(&validator(shape), instance),
     };
     let members = instance.as_object().cloned().unwrap_or_default();
@@ -1283,6 +1312,16 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "arrival-question" => checked_round_trip::<ArrivalQuestion>(value),
         "arrival-answer" => checked_round_trip::<ArrivalAnswer>(value),
         "inner-segments" => checked_round_trip::<InnerSegments>(value),
+        "published-inner-segments" => {
+            let bundle: PublishedInnerSegments =
+                serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            bundle
+                .advertisement
+                .check_shape()
+                .map_err(|e| format!("{e:?}"))?;
+            bundle.record.check_shape().map_err(|e| format!("{e:?}"))?;
+            serde_json::to_value(&bundle).map_err(|e| e.to_string())
+        }
         "answered-arrival-question" => {
             let bundle: AnsweredArrivalQuestion =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -2025,11 +2064,20 @@ fn inner_segment_record_without_its_amounts_in_and_out_or_its_fee_is_invalid() {
     // sees it and records the mismatch.
     let off: Statement<InnerSegments> =
         serde_json::from_value(fixture("valid", "inner-segments-that-do-not-add-up")).unwrap();
-    assert_eq!(provider_role::check_inner_segments(&off), Ok(()));
+    let published: PublishedInnerSegments = serde_json::from_value(fixture(
+        "valid",
+        "published-inner-segments-of-a-node-its-maker-declares",
+    ))
+    .unwrap();
+    assert_eq!(
+        provider_role::check_inner_segments(&off, &published.advertisement),
+        Ok(())
+    );
 }
 
-/// A publisher's record of inner segments carries its label, the publisher's word, and is made by the publisher it
-/// names: inside a private node there is no other witness (`T-020-18`, `AC-35`).
+/// A publisher's record of inner segments carries its label, the publisher's word, and is made by a provider of
+/// that publisher's which declares the node, stating for it, since a publisher holds no key: inside a private node
+/// there is no other witness (`T-020-18`, `AC-35`).
 // verifies: REQ-ORD-3
 #[test]
 fn publishers_record_of_inner_segments_is_labelled_the_publishers_word() {
@@ -2040,7 +2088,17 @@ fn publishers_record_of_inner_segments_is_labelled_the_publishers_word() {
     .unwrap();
     assert_eq!(record.statement.standing, Standing::PublishersWord);
     assert_eq!(record.check_shape(), Ok(()));
-    assert_eq!(provider_role::check_inner_segments(&record), Ok(()));
+    let published: PublishedInnerSegments = serde_json::from_value(fixture(
+        "valid",
+        "published-inner-segments-of-a-node-its-maker-declares",
+    ))
+    .unwrap();
+    assert_eq!(published.record, record);
+    assert_ne!(record.maker, record.statement.publisher);
+    assert_eq!(
+        provider_role::check_inner_segments(&record, &published.advertisement),
+        Ok(())
+    );
     assert_eq!(
         serde_json::to_value(&record).unwrap()["statement"]["standing"],
         "publishers_word"
@@ -2048,10 +2106,22 @@ fn publishers_record_of_inner_segments_is_labelled_the_publishers_word() {
     assert_schema_rejects("inner-segments-without-its-label");
     assert_schema_rejects("inner-segments-labelled-as-proof");
     assert_schema_rejects("inner-segments-without-its-publisher");
-    assert_rule_rejects(
-        "inner-segments-made-by-another-party",
-        &format!("{:?}", InnerSegmentsViolation::OfAnotherMaker),
-    );
+    for (name, rule) in [
+        (
+            "published-inner-segments-against-another-providers-advertisement",
+            InnerSegmentsViolation::NotItsMakersAdvertisement,
+        ),
+        (
+            "published-inner-segments-for-another-publisher",
+            InnerSegmentsViolation::OfAnotherPublisher,
+        ),
+        (
+            "published-inner-segments-at-a-node-its-maker-does-not-declare",
+            InnerSegmentsViolation::NodeNotDeclared,
+        ),
+    ] {
+        assert_rule_rejects(name, &format!("{:?}", vec![rule]));
+    }
 }
 
 // verifies: DEC-4

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:inner-segments",
   "title": "Inner segments",
-  "description": "A publisher's own signed record of the segments that ran inside one of its private nodes (REQ-ORD-41): each with the transaction it ran under, the asset and amount in and out, and the fee. It is labelled the publisher's word (REQ-ORD-3, AC-35): inside a private node there is no other witness, so a replay of the record against the public movement out shows consistency with the exit, never that the segments happened (THR-131). Its figures are recorded as the publisher states them: a record that doesn't add up is still a record, and the replay records the mismatch. It names no transaction of its own, so its stated entry is about nothing.",
+  "description": "A publisher's signed record of the segments that ran inside one of its private nodes (REQ-ORD-41): each with the transaction it ran under, the asset and amount in and out, and the fee. A publisher holds no key: one of its providers makes and signs the record, stating for the publisher, and declares the node among its private nodes. It is labelled the publisher's word (REQ-ORD-3, AC-35): inside a private node there is no other witness, so a replay of the record against the public movement out shows consistency with the exit, never that the segments happened (THR-131). Its figures are recorded as the publisher states them: a record that doesn't add up is still a record, and the replay records the mismatch. It names no transaction of its own, so its stated entry is about nothing.",
   "$ref": "urn:rutent:provider-role:statement-envelope",
   "properties": {
     "shape": {
@@ -29,7 +29,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "publisher": {
-          "description": "The publisher whose word the record is: the statement's maker.",
+          "description": "The publisher whose word the record is: the publisher behind the statement's maker, which states for it.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "standing": {
