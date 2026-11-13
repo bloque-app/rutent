@@ -70,7 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
 use rutent_contracts::core_internal::{
-    Actor, Charge, Entry, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
+    Actor, Charge, Entry, Outcome, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, Observed, RecordedInput, StateMachine};
@@ -336,10 +336,51 @@ impl Notices {
                     .entry(order.as_str().to_owned())
                     .or_insert_with(|| parties.requester.clone());
             }
+            if let Entry::Verified(v) = entry
+                && let What::Raise { raise } = &v.what
+                && v.outcome == (Outcome::Failed {})
+            {
+                sent += self.resend(raise, notice_key, transport)?;
+            }
             self.read += 1;
             self.last = Some(receipt.clone());
         }
         Ok(sent)
+    }
+
+    /// A raise the log records as failed, which the log never updates: sent again unless the ledger holds it
+    /// delivered (`send` sees to that), its tries counted on from the ledger. One still kept from this run (undelivered or abandoned) is
+    /// the retry's, not sent here. Answers how many were sent.
+    fn resend(
+        &mut self,
+        raise: &Raise,
+        key: &mut dyn NoticeKey,
+        transport: &mut dyn Transport,
+    ) -> Result<usize, NoticeError> {
+        let named = Key::Raise {
+            raise: raise.raise.as_str().to_owned(),
+        };
+        let kept = self
+            .undelivered
+            .iter()
+            .chain(&self.abandoned)
+            .any(|u| u.key.as_ref() == Some(&named));
+        if raise.check().is_err() || kept {
+            return Ok(0);
+        }
+        let to = self.operator.clone();
+        let notice = Notice {
+            deployment: self.deployment.clone(),
+            to: to.clone(),
+            about: About::Raise {
+                raise: raise.clone(),
+            },
+            current: false,
+        };
+        let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
+        Ok(usize::from(
+            self.send(transport, to, Some(named), sealed).is_some(),
+        ))
     }
 
     /// Sends `notice` to `to`: `Some(taken)` for a try made, `None` where none was: it used the bound before (it is set
@@ -352,8 +393,10 @@ impl Notices {
         notice: Vec<u8>,
     ) -> Option<bool> {
         let tried = match &key {
-            Some(key @ Key::Order { .. }) => self.ledger.attempts(key),
-            Some(Key::Raise { .. }) | None => 0,
+            // A raise delivered already is not sent again.
+            Some(key @ Key::Raise { .. }) if self.ledger.delivered(key) => return None,
+            Some(key) => self.ledger.attempts(key),
+            None => 0,
         };
         let held = Undelivered {
             to,
@@ -638,7 +681,11 @@ impl Operator for Channel<'_> {
         let Some(sealed) = wire::seal(self.key, notice) else {
             return Delivery::Undelivered;
         };
-        if self.notices.send(self.transport, to, Some(key), sealed) == Some(true) {
+        let taken = self
+            .notices
+            .send(self.transport, to, Some(key.clone()), sealed);
+        // No try was made where it was delivered already, or used its bound before.
+        if taken == Some(true) || (taken.is_none() && self.notices.ledger.delivered(&key)) {
             Delivery::Delivered
         } else {
             Delivery::Undelivered

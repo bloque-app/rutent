@@ -181,6 +181,9 @@ pub enum About {
     },
     /// The heartbeat of the path that warns the operator (`REQ-ORD-7`). The operator's alone.
     Heartbeat {
+        /// The run of the watch that sent it: fresh at each start, so a beat replayed from before a restart is no
+        /// answer to this run's.
+        run: Id,
         /// Its number, counted from 1.
         beat: u64,
         /// When it was sent, by Core's clock.

@@ -257,6 +257,44 @@ in `components/core-orch/tests/notice.rs`. No contract change was made.
   naming the notice (receiver party and role, order, sequence, or a raise's id) and the try (number, taken or not).
   Until `F-024` builds `Notices::resuming` over a durable store, `Notices::new` holds `Volatile`, which keeps nothing
   across a restart: the re-send on restart is closed in the API, not yet in a deployment.
+
+### T-023-02, round 2 (the review of `02bd7f7`)
+
+- **A raise lost to a restart** (medium, closed). The log's `raise` entry is written once, `failed`, and never
+  updated. `Notices::notify` now resends each such entry it reads, keyed `Key::Raise`, unless the ledger holds it
+  delivered or this run keeps it already (undelivered or abandoned); tries count from the ledger, so a raise that used
+  its bound shows in `abandoned()` after a restart and is not tried again. A raise delivered is not sent again, so
+  `Channel::raise` answers delivered for one the ledger holds, and the existing raise test no longer expects a second
+  send of the same raise (the inbox still holds each once). Held by `raise_lost_to_a_restart_is_resent_once`.
+- **Watch guards.** `Watch::with` is `None` for a silence no longer than the interval. An answer counts only for the
+  newest beat sent, so a late answer can't hide a cut. Each heartbeat carries a `run`, an id the assembly makes fresh
+  at each start (`Watch::new(.., run, ..)`; `Inbox::beat()` gives the run and number to hand to `Watch::answered`), so
+  a beat replayed from before a restart is no answer. Held by `watch_refuses_a_silence_no_longer_than_its_interval`,
+  `late_or_replayed_answer_does_not_hide_a_cut`.
+- **The wall clock.** Core has no monotonic source: `Clock` reads the host's wall time. A clock stepped back hides a
+  cut for the length of the step. Documented in `watch.rs`; owner `F-024`: hand the watch a monotonic `Clock` where
+  the host has one.
+- **For `F-024` (the assembly)**
+  - **Abandoned order notices.** `Notices::abandoned()` holds them; the assembly must escalate each to the operator,
+    since nothing else says an order's notice never arrived (the receiver can ask for the current state).
+  - **The second path.** `REQ-ORD-7` holds only if the second path is independent of the first and reliable. It has
+    no heartbeat of its own, and a lasting cut is told once (retried only until the second path takes it). The
+    assembly chooses that transport.
+- **Proposal for the next contract round.** One summary log entry per notice: receiver party and role, order and
+  sequence (or raise id), the last try, and the outcome (delivered or abandoned). It would replace the module's
+  `Ledger` for what a restart needs, and close the never-updated `failed` outcome of a raise's entry.
+
+Rule-offs of this round, each alone:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a rebuild resends a raise the log records as failed | `raise_lost_to_a_restart_is_resent_once` |
+| a raise kept by this run is not resent on reading its entry | `raise_lost_to_a_restart_is_resent_once` |
+| a raise's tries count from the ledger | `raise_lost_to_a_restart_is_resent_once` |
+| a delivered raise is not sent again | `raise_reaches_the_operator_alone_and_answers_its_delivery`, `raise_lost_to_a_restart_is_resent_once` |
+| a silence no longer than the interval is refused | `watch_refuses_a_silence_no_longer_than_its_interval` |
+| only the newest beat is an answer | `late_or_replayed_answer_does_not_hide_a_cut` |
+| only this run's beat is an answer | `late_or_replayed_answer_does_not_hide_a_cut` |
 - **The warning path's heartbeat** (`Watch`, `REQ-ORD-7`, `THR-59`). `Watch::tick` sends a sealed `heartbeat` notice
   to the operator on the path watched every `INTERVAL` = 30 s; the operator's side answers each one it takes
   (`Inbox::take` gives `Taken::Beat(n)`; the assembly passes it to `Watch::answered`). A path with no answer for

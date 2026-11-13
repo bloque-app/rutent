@@ -7,7 +7,7 @@
 //! has and takes a notice only if it is later: a repeated or reordered one changes nothing, and the view is always
 //! the latest state delivered. A missing sequence shows as a gap ([`Inbox::missing`]), which only asking for the
 //! current state recovers (`super::Notices::current`). The operator's events (raises, charges counted ahead) carry
-//! no sequence: each is kept once, by what it is. A heartbeat is not kept: only the latest number ([`Inbox::beat`]).
+//! no sequence: each is kept once, by what it is. A heartbeat is not kept: only the latest ([`Inbox::beat`]).
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,8 +47,9 @@ pub enum Taken {
     Event,
     /// An operator's event held already.
     Repeat,
-    /// A heartbeat of the operator's warning path: its number. Answer it to the watch ([`super::Watch::answered`]).
-    Beat(u64),
+    /// A heartbeat of the operator's warning path: answer it to the watch ([`super::Watch::answered`], with
+    /// [`Inbox::beat`]).
+    Beat,
 }
 
 /// One order as a receiver holds it.
@@ -70,7 +71,7 @@ pub struct Inbox {
     key: PublicKey,
     orders: BTreeMap<String, Held>,
     events: BTreeMap<String, About>,
-    beat: u64,
+    beat: Option<(Id, u64)>,
 }
 
 impl Inbox {
@@ -82,7 +83,7 @@ impl Inbox {
             key,
             orders: BTreeMap::new(),
             events: BTreeMap::new(),
-            beat: 0,
+            beat: None,
         }
     }
 
@@ -107,9 +108,9 @@ impl Inbox {
                 view,
                 ..
             } => self.order(order.as_str(), sequence, view, sealed.notice.current),
-            About::Heartbeat { beat, .. } => {
-                self.beat = self.beat.max(beat);
-                Taken::Beat(beat)
+            About::Heartbeat { run, beat, .. } => {
+                self.beat = Some((run, beat));
+                Taken::Beat
             }
             about @ (About::Raise { .. } | About::Ahead { .. } | About::PathCut { .. }) => {
                 match self.events.entry(event_key(&about)) {
@@ -167,9 +168,9 @@ impl Inbox {
         self.events.values()
     }
 
-    /// The latest heartbeat of the operator's warning path taken, or 0.
-    pub fn beat(&self) -> u64 {
-        self.beat
+    /// The latest heartbeat of the operator's warning path taken: the run that sent it and its number.
+    pub fn beat(&self) -> Option<(&Id, u64)> {
+        self.beat.as_ref().map(|(run, beat)| (run, *beat))
     }
 
     /// The orders held.
@@ -191,8 +192,8 @@ pub(super) fn event_key(about: &About) -> String {
         About::PathCut { since, .. } => {
             serde_json::to_string(&("path_cut", since.as_str())).unwrap_or_default()
         }
-        About::Heartbeat { beat, .. } => {
-            serde_json::to_string(&("heartbeat", beat)).unwrap_or_default()
+        About::Heartbeat { run, beat, .. } => {
+            serde_json::to_string(&("heartbeat", run.as_str(), beat)).unwrap_or_default()
         }
         About::Order {
             order, sequence, ..

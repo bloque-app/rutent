@@ -8,6 +8,15 @@
 //! is noticed on a second path, a transport of its own, with a notice sealed for the operator alone, until that
 //! path takes it. A cut is told once; an answer ends it, and a later cut is told again.
 //!
+//! **Runs and order.** Each watch has a `run`, an id the assembly makes fresh at every start, carried in each
+//! heartbeat: an answer counts only for the newest beat of this run, so a beat replayed from before a restart, or a
+//! late answer to an older beat, can't make a cut path look alive. A silence no longer than the interval is refused
+//! ([`Watch::with`]).
+//!
+//! **The clock.** Silence is measured on Core's [`Clock`], which reads the host's wall time; Core has no monotonic
+//! source (`F-024`'s notes). A clock stepped back hides a cut for the length of the step, and one stepped forward
+//! raises a false cut. The assembly should hand the watch a monotonic [`Clock`] where it has one.
+//!
 //! A refused send is not read as a cut by itself, and an accepted one is not read as alive: only an answer counts.
 //! A path that never answers is cut once [`SILENCE`] has passed since the watch began.
 
@@ -50,6 +59,7 @@ pub struct Tick {
 #[derive(Debug, Clone)]
 pub struct Watch {
     deployment: Id,
+    run: Id,
     operator: Receiver,
     interval: u64,
     silence: u64,
@@ -62,14 +72,29 @@ pub struct Watch {
 
 impl Watch {
     /// A watch on the path to `operator`, begun now, with the default [`INTERVAL`] and [`SILENCE`].
-    pub fn new(deployment: Id, operator: Id, clock: &dyn Clock) -> Self {
-        Self::with(deployment, operator, clock, INTERVAL, SILENCE)
+    pub fn new(deployment: Id, operator: Id, run: Id, clock: &dyn Clock) -> Self {
+        Self::build(deployment, operator, run, clock, INTERVAL, SILENCE)
     }
 
-    /// A watch beating every `interval` seconds, and finding the path cut after `silence` seconds unanswered.
+    /// A watch of run `run` beating every `interval` seconds, and finding the path cut after `silence` seconds
+    /// unanswered; `None` where `silence` is no longer than `interval`, which would call a healthy path cut
+    /// between two beats.
     pub fn with(
         deployment: Id,
         operator: Id,
+        run: Id,
+        clock: &dyn Clock,
+        interval: u64,
+        silence: u64,
+    ) -> Option<Self> {
+        (silence > interval)
+            .then(|| Self::build(deployment, operator, run, clock, interval, silence))
+    }
+
+    fn build(
+        deployment: Id,
+        operator: Id,
+        run: Id,
         clock: &dyn Clock,
         interval: u64,
         silence: u64,
@@ -77,6 +102,7 @@ impl Watch {
         let now = clock.now().seconds;
         Self {
             deployment,
+            run,
             operator: Receiver {
                 party: operator,
                 role: Role::Operator,
@@ -91,10 +117,11 @@ impl Watch {
         }
     }
 
-    /// The operator's side took heartbeat `beat`: the path is alive as of now. An answer to a beat not sent, or to
-    /// one no later than the last answered, counts for nothing.
-    pub fn answered(&mut self, beat: u64, clock: &dyn Clock) {
-        if beat > self.answered && beat <= self.beat {
+    /// The operator's side took heartbeat `beat`: the path is alive as of now. Only an answer to the newest beat
+    /// sent, by this run, counts: a late answer to an older one can't hide a cut, and a beat replayed from another
+    /// run is none.
+    pub fn answered(&mut self, run: &Id, beat: u64, clock: &dyn Clock) {
+        if run == &self.run && beat == self.beat && beat > self.answered {
             self.answered = beat;
             self.heard = clock.now().seconds;
             self.told = false;
@@ -119,6 +146,7 @@ impl Watch {
             let notice = self.sealed(
                 key,
                 About::Heartbeat {
+                    run: self.run.clone(),
                     beat,
                     at: at.clone(),
                 },
