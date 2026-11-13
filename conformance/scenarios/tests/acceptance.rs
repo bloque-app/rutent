@@ -75,8 +75,13 @@ fn repeated_order_request_leaves_one_order() {
     let agent = the_customers_agent(&core);
     let mut by_agent = base_request("req-once", AMOUNT, &session);
     by_agent.caller = agent;
-    let by_agent = core.request(by_agent).expect("the agent's repeat is answered");
-    assert_eq!(by_agent, first, "an actor of the same party is told the same");
+    let by_agent = core
+        .request(by_agent)
+        .expect("the agent's repeat is answered");
+    assert_eq!(
+        by_agent, first,
+        "an actor of the same party is told the same"
+    );
 
     // Quoted and accepted, and then asked again: the order is told as it stands, accepted, and nothing more is
     // opened, quoted or accepted.
@@ -203,10 +208,15 @@ fn balance_check_answers_yes_or_no_and_is_logged_and_counted() {
         core.check_balance(kit::RESERVE, &session, "1000000"),
         Err(CheckRefusal::OverBound)
     );
-    let counted = core.catalogue().counted_checks(&account, core.clock.instant());
+    let counted = core
+        .catalogue()
+        .counted_checks(&account, core.clock.instant());
     assert_eq!(counted, CHECKS_PER_WINDOW, "the refused one isn't counted");
     assert_eq!(
-        core.catalogue().check_log(&account).last().map(|c| c.refused.clone()),
+        core.catalogue()
+            .check_log(&account)
+            .last()
+            .map(|c| c.refused.clone()),
         Some(Some(CheckRefusal::OverBound))
     );
     assert_eq!(core.world().journal(kit::RESERVE).len(), books);
@@ -239,15 +249,30 @@ fn dry_run_changes_nothing_and_refuses_an_undepositable_destination() {
     let order = the_order(&told);
     let quoted = core.quote(&kit::customer(), &order).expect("quoted");
     assert!(
-        matches!(&quoted, Told::Exists { status: Status::Quoted { .. }, .. }),
+        matches!(
+            &quoted,
+            Told::Exists {
+                status: Status::Quoted { .. },
+                ..
+            }
+        ),
         "{quoted:?}"
     );
-    assert!(core.world().journal(kit::RESERVE).is_empty(), "no book entry");
-    assert!(core.world().delivered().is_empty(), "nothing reached its rail");
+    assert!(
+        core.world().journal(kit::RESERVE).is_empty(),
+        "no book entry"
+    );
+    assert!(
+        core.world().delivered().is_empty(),
+        "nothing reached its rail"
+    );
     assert_eq!(moved(&core), effects, "Core carried nothing out");
 
     // A destination the register doesn't hold is refused at the request: nothing is asked of any provider.
-    let asked = core.catalogue().check_log(&rutent_scenarios::assembly::context().account).len();
+    let asked = core
+        .catalogue()
+        .check_log(&rutent_scenarios::assembly::context().account)
+        .len();
     let mut nowhere = base_request("req-nowhere", AMOUNT, &session);
     nowhere.destination.account = id("acct-of-no-one");
     nowhere.inputs.insert(
@@ -267,7 +292,12 @@ fn dry_run_changes_nothing_and_refuses_an_undepositable_destination() {
         ),
         "{told:?}"
     );
-    assert_eq!(core.catalogue().check_log(&rutent_scenarios::assembly::context().account).len(), asked);
+    assert_eq!(
+        core.catalogue()
+            .check_log(&rutent_scenarios::assembly::context().account)
+            .len(),
+        asked
+    );
 
     // A destination the reserve itself can't deposit to is dropped at its dry run: no route, and still nothing
     // changed at the reserve.
@@ -279,7 +309,13 @@ fn dry_run_changes_nothing_and_refuses_an_undepositable_destination() {
     let order = the_order(&told);
     let quoted = core.quote(&kit::customer(), &order).expect("answered");
     assert!(
-        matches!(&quoted, Told::Exists { status: Status::CantProceed { .. }, .. }),
+        matches!(
+            &quoted,
+            Told::Exists {
+                status: Status::CantProceed { .. },
+                ..
+            }
+        ),
         "{quoted:?}"
     );
     assert!(core.world().journal(kit::RESERVE).is_empty());
@@ -312,10 +348,13 @@ fn requester_beneficiary_and_payer_are_recorded_apart_and_checked_by_their_provi
         let mut request = base_request(name, AMOUNT, &session);
         request.parties = parties.clone();
         request.destination.account = id("acct-payee");
-        request.inputs.insert("payer.bank_account".to_owned(), "acct-payer".to_owned());
         request
             .inputs
-            .insert("beneficiary.bank_account".to_owned(), "acct-payee".to_owned());
+            .insert("payer.bank_account".to_owned(), "acct-payer".to_owned());
+        request.inputs.insert(
+            "beneficiary.bank_account".to_owned(),
+            "acct-payee".to_owned(),
+        );
         request
     };
     let told = core.request(apart("req-apart")).expect("opens");
@@ -328,12 +367,15 @@ fn requester_beneficiary_and_payer_are_recorded_apart_and_checked_by_their_provi
     else {
         panic!("a quote is shown: {told:?}");
     };
-    core.accept(&kit::customer(), &order, &digest).expect("accepted");
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
     let recorded = core
         .verified_whats()
         .into_iter()
         .find_map(|w| match w {
-            What::Acceptance { order: o, parties, .. } if o == order => Some(parties),
+            What::Acceptance {
+                order: o, parties, ..
+            } if o == order => Some(parties),
             _ => None,
         })
         .expect("the acceptance records its parties");
@@ -348,14 +390,23 @@ fn requester_beneficiary_and_payer_are_recorded_apart_and_checked_by_their_provi
 
     // The reserve checks what its rules name: its withdrawal names the payer's account and its deposit the
     // beneficiary's. An order that doesn't give one is dropped at that provider's dry run, and none is offered.
-    for (name, missing) in [("req-no-payer", "payer.bank_account"), ("req-no-payee", "beneficiary.bank_account")] {
+    for (name, missing) in [
+        ("req-no-payer", "payer.bank_account"),
+        ("req-no-payee", "beneficiary.bank_account"),
+    ] {
         let mut request = apart(name);
         request.inputs.remove(missing);
         let told = core.request(request).expect("opens");
         let order = the_order(&told);
         let told = core.quote(&kit::customer(), &order).expect("answered");
         assert!(
-            matches!(&told, Told::Exists { status: Status::CantProceed { .. }, .. }),
+            matches!(
+                &told,
+                Told::Exists {
+                    status: Status::CantProceed { .. },
+                    ..
+                }
+            ),
             "{name}: {told:?}"
         );
     }

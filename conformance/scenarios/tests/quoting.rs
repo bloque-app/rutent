@@ -3,6 +3,7 @@
 
 mod routing_support;
 
+use routing_support::*;
 use rutent_conformance::sim::{Role, Spec};
 use rutent_contracts::core_internal::{ShownAs, What};
 use rutent_contracts::state_machine::Observed;
@@ -11,7 +12,6 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
-use routing_support::*;
 
 const SLOW: &str = "sim-reserve-slow";
 
@@ -62,26 +62,48 @@ fn segment_over_three_days_has_no_firm_rate_and_waits_for_acceptance() {
     );
     assert!(core.verified_whats().iter().any(|w| matches!(
         w,
-        What::Shown { shown_as: ShownAs::QuoteWithoutFirmRate, .. }
+        What::Shown {
+            shown_as: ShownAs::QuoteWithoutFirmRate,
+            ..
+        }
     )));
 
     // Nothing starts until the customer accepts it: no start in the log, no effect, nothing at the reserve.
     assert_eq!(started(&core), 0);
     assert!(core.world().journal(SLOW).is_empty());
-    let Told::Exists { status: Status::Quoted { digest, .. }, .. } = told else {
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
         panic!("quoted");
     };
-    core.run(&order).expect_err("an order not accepted has no route to run");
+    core.run(&order)
+        .expect_err("an order not accepted has no route to run");
     assert!(core.world().journal(SLOW).is_empty(), "still nothing moved");
-    let accepted = core.accept(&kit::customer(), &order, &digest).expect("accepted");
-    assert!(matches!(accepted, Told::Exists { status: Status::Accepted { .. }, .. }));
+    let accepted = core
+        .accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    assert!(matches!(
+        accepted,
+        Told::Exists {
+            status: Status::Accepted { .. },
+            ..
+        }
+    ));
     assert_eq!(started(&core), 1, "it starts on the acceptance, once");
 
     // A route whose segments declare three days or less is shown with a firm rate.
     let (mut quick, session) = alone(kit::RESERVE, "AC-13");
     let (_, told) = quoted(
         &mut quick,
-        request_at(kit::RESERVE, "req-firm", AMOUNT, &session, "lowest_total_cost"),
+        request_at(
+            kit::RESERVE,
+            "req-firm",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
     );
     let quote = quote_of(&told).expect("a quote is shown");
     assert_ne!(quote.shown_as, ShownAs::QuoteWithoutFirmRate);
@@ -97,12 +119,23 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     let (mut core, session) = alone(CHARGING, "AC-14");
     let (order, told) = quoted(
         &mut core,
-        request_at(CHARGING, "req-charged", AMOUNT, &session, "lowest_total_cost"),
+        request_at(
+            CHARGING,
+            "req-charged",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
     );
-    let Told::Exists { status: Status::Quoted { digest, .. }, .. } = told else {
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
         panic!("quoted");
     };
-    core.accept(&kit::customer(), &order, &digest).expect("accepted");
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
     let ran = core.run(&order).expect("the order runs");
 
     // The provider quoted no charge and charged 7 on each movement, which only the movement tells.
@@ -113,7 +146,13 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             panic!("{segment:?} isn't flagged: {checked:?}");
         };
         assert!(flagged.delivered, "it reached the operator");
-        let Difference::Charge { charged, maximum, provider, .. } = &flagged.raise.difference else {
+        let Difference::Charge {
+            charged,
+            maximum,
+            provider,
+            ..
+        } = &flagged.raise.difference
+        else {
             panic!("a charge difference");
         };
         assert_eq!(charged.as_str(), "7");
@@ -126,8 +165,10 @@ fn charge_above_the_formulas_maximum_is_flagged() {
         core.log()
             .entries()
             .iter()
-            .filter(|(_, e)| matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
-                if matches!(v.what, What::Raise { .. }) && v.outcome == Outcome::Done {}))
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(v.what, What::Raise { .. }) && v.outcome == Outcome::Done {})
+            })
             .count()
     };
     assert_eq!(raises(&core), 2);
@@ -139,15 +180,31 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     let (mut honest, session) = alone(kit::RESERVE, "AC-14");
     let (order, told) = quoted(
         &mut honest,
-        request_at(kit::RESERVE, "req-honest", AMOUNT, &session, "lowest_total_cost"),
+        request_at(
+            kit::RESERVE,
+            "req-honest",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
     );
-    let Told::Exists { status: Status::Quoted { digest, .. }, .. } = told else {
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
         panic!("quoted");
     };
-    honest.accept(&kit::customer(), &order, &digest).expect("accepted");
+    honest
+        .accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
     let ran = honest.run(&order).expect("runs");
     let checked = honest.check_charges(&order, &ran);
     assert_eq!(checked.len(), 2);
-    assert!(checked.iter().all(|(_, c)| matches!(c, Ok(Checked::Within))));
+    assert!(
+        checked
+            .iter()
+            .all(|(_, c)| matches!(c, Ok(Checked::Within)))
+    );
     assert!(honest.channel.raised.is_empty());
 }

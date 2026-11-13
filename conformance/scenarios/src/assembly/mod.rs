@@ -894,9 +894,9 @@ impl Core {
         statement: serde_json::Value,
     ) -> Result<rutent_prov::catalogue::Verdict, rutent_prov::catalogue::CheckRefusal> {
         let operation = rutent_conformance::sim::operation(&context(), statement);
-        let ticket = self
-            .catalogue
-            .begin_check(&operation.statement, None, self.clock.instant())?;
+        let ticket =
+            self.catalogue
+                .begin_check(&operation.statement, None, self.clock.instant())?;
         self.fleet.platform.world.set_clock(self.clock.instant());
         let Handled::Answered(result) = self.fleet.platform.handle(reserve, &operation) else {
             panic!("the platform refused the check");

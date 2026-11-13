@@ -97,11 +97,11 @@ impl Core {
                 })
                 .next_back()
                 .expect("the segment's result");
-            let started_at = match &entries[usize::try_from(u64::from(effect.index)).expect("a place")].1
-            {
-                Entry::Verified(v) => v.when.at.clone(),
-                Entry::Stated(_) => panic!("an effect is a verified entry"),
-            };
+            let started_at =
+                match &entries[usize::try_from(u64::from(effect.index)).expect("a place")].1 {
+                    Entry::Verified(v) => v.when.at.clone(),
+                    Entry::Stated(_) => panic!("an effect is a verified entry"),
+                };
             let tuple = TupleKey {
                 provider: kit::id(segment.provider.as_str()),
                 from: segment.from.clone(),
@@ -115,10 +115,7 @@ impl Core {
                 .fee
                 .clone();
             // Reported net: what entered is what came out and what was charged.
-            let taken = amount_out
-                .as_str()
-                .parse::<u128>()
-                .expect("an amount")
+            let taken = amount_out.as_str().parse::<u128>().expect("an amount")
                 + charged.as_str().parse::<u128>().expect("an amount");
             let charge = Charged {
                 order: order.clone(),
@@ -140,10 +137,7 @@ impl Core {
                 operator: &mut self.channel,
                 core: &core,
             };
-            checked.push((
-                accounted.segment.clone(),
-                self.charges.check(desk, &charge),
-            ));
+            checked.push((accounted.segment.clone(), self.charges.check(desk, &charge)));
         }
         checked
     }

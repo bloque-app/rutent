@@ -9,6 +9,7 @@
 
 mod routing_support;
 
+use routing_support::*;
 use rutent_conformance::sim::{Act, Behaviour, Role, Spec};
 use rutent_contracts::provider_role::EvidenceGrade;
 use rutent_contracts::router_api::{DropReason, Objective, Router};
@@ -19,7 +20,6 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
-use routing_support::*;
 
 const QUICK: &str = "sim-reserve-a-quick";
 const DEAR: &str = "sim-reserve-dear";
@@ -82,7 +82,10 @@ fn changed_objective_can_change_the_route_and_the_record_explains_it_with_no_pro
     changed.objective = Objective::FastestSettlement {};
     let redecided = RouteFinder::route(&changed, &record.snapshot, &record.bounds);
     let chosen_again = redecided.chosen().expect("a route is chosen");
-    assert_eq!(providers_of(&redecided, chosen_again), [kit::RESERVE, QUICK]);
+    assert_eq!(
+        providers_of(&redecided, chosen_again),
+        [kit::RESERVE, QUICK]
+    );
     assert_eq!(core.world().delivered().len(), calls);
     let after: Vec<usize> = [kit::RESERVE, QUICK]
         .iter()
