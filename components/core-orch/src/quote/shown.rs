@@ -339,8 +339,8 @@ fn reporting_of(record: &DecisionRecord, operation: &Operation) -> Option<Report
 /// what it gives out, which with its charge is at most what it takes in; under `gross` what it gives out, at most
 /// what it takes in, less its charge. `None` where the amounts break that: a segment claiming more out than it takes
 /// in can't deliver it.
-fn handed_on(kind: OperationKind, reporting: Reporting, amounts: &Executed) -> Option<Amount> {
-    if kind == OperationKind::Exchange {
+fn handed_on(operation: &Operation, reporting: Reporting, amounts: &Executed) -> Option<Amount> {
+    if operation.kind == OperationKind::Exchange {
         return Some(amounts.amount_out.clone());
     }
     let handed = crate::segments::handed_on(
@@ -348,6 +348,10 @@ fn handed_on(kind: OperationKind, reporting: Reporting, amounts: &Executed) -> O
         amounts.amount_in.as_str(),
         amounts.amount_out.as_str(),
         &amounts.fee.amount,
+        crate::segments::Units {
+            origin_decimals: operation.from.asset.decimals,
+            out_decimals: operation.to.asset.decimals,
+        },
     )?;
     Amount::new(handed)
 }
@@ -372,7 +376,7 @@ fn compose(
         let (part, operation) = (leg.part, leg.operation);
         let reporting =
             reporting_of(record, leg.evaluated).ok_or(NotShown::NoTerms { part, operation })?;
-        let hands_on = handed_on(leg.evaluated.kind, reporting, &leg.amounts)
+        let hands_on = handed_on(leg.evaluated, reporting, &leg.amounts)
             .ok_or(NotShown::Undeliverable { part, operation })?;
         if operation == 0 {
             amount_in = amount_in

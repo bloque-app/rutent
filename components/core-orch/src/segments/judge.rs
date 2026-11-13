@@ -21,7 +21,7 @@
 
 use rutent_contracts::provider_role::{
     AmountMismatch, ConversionOutcome, Operation, RESULT_SHAPE, Refusal, Remainder, Reporting,
-    ReserveMovementOutcome, ResultBody, Statement, Terms, TransferOutcome,
+    ReserveMovementOutcome, ResultBody, Statement, Terms, TransferOutcome, less_the_charge,
 };
 use rutent_contracts::router_api::Id;
 use rutent_prov::catalogue::{Catalogue, Instant};
@@ -105,7 +105,8 @@ pub enum Counted {
 }
 
 /// Judges `received`, the bytes of a result, as an answer to `operation`, the segment's, at `provider`, against the
-/// tuple's `terms`, at Core's clock `at`.
+/// tuple's `terms`, at Core's clock `at`; `units` are the decimals its two ends count in.
+#[allow(clippy::too_many_arguments)]
 pub fn judge(
     catalogue: &Catalogue,
     at: Instant,
@@ -113,6 +114,7 @@ pub fn judge(
     operation: &Operation,
     terms: &Terms,
     quoted: Option<&Quoted>,
+    units: Units,
     received: &[u8],
 ) -> Result<Counted, NotCounted> {
     catalogue
@@ -150,6 +152,7 @@ pub fn judge(
         amount_in,
         amount_out,
         fee,
+        units,
     ) {
         Some(handed) => Ok(settled(amount_in, amount_out, handed)),
         None => Err(NotCounted::GivesOutMore),
@@ -193,19 +196,49 @@ pub fn judge(
     }
 }
 
+/// The units a segment counts in: its origin's decimals, the unit `amount_in` and the fee are stated in, and its out
+/// asset's, the unit `amount_out` is stated in. A segment that keeps its asset may count it in different decimals at
+/// its two ends (`REQ-CAT-11`), so no amount of one unit is compared with, or subtracted from, one of the other
+/// without restating it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Units {
+    /// The origin's decimals: `amount_in` and the fee are counted in them.
+    pub origin_decimals: u8,
+    /// The out asset's decimals: `amount_out` is counted in them.
+    pub out_decimals: u8,
+}
+
 /// What a segment that keeps its asset hands on, by how its tuple reports its charge (`REQ-CAT-11`): under `net`,
 /// what it gave out, which with its charge is at most what it took in; under `gross`, what it gave out, at most what
-/// it took in, less its charge, which it includes. `None` where the amounts break that, or can't be read.
+/// it took in, less its charge, which it includes, restated in the out unit and rounded up, so what arrives is never
+/// overstated (provider-role's `less_the_charge`). Every comparison is made in the finer of the two units, exactly.
+/// `None` where the amounts break that, or can't be read.
 pub fn handed_on(
     reporting: Reporting,
     amount_in: &str,
     amount_out: &str,
     fee: &str,
+    units: Units,
 ) -> Option<String> {
-    let (taken, out, fee) = (whole(amount_in)?, whole(amount_out)?, whole(fee)?);
+    let (taken, out, charge) = (whole(amount_in)?, whole(amount_out)?, whole(fee)?);
+    // Both in the finer unit: the origin's amounts scaled up to it, or the out amount.
+    let finer = units.origin_decimals.max(units.out_decimals);
+    let scaled = |amount: u128, decimals: u8| -> Option<u128> {
+        amount.checked_mul(10u128.checked_pow(u32::from(finer - decimals))?)
+    };
+    let (taken, charge) = (
+        scaled(taken, units.origin_decimals)?,
+        scaled(charge, units.origin_decimals)?,
+    );
+    let out_scaled = scaled(out, units.out_decimals)?;
     match reporting {
-        Reporting::Net => (out.checked_add(fee)? <= taken).then(|| out.to_string()),
-        Reporting::Gross => (out <= taken).then_some(out.checked_sub(fee)?.to_string()),
+        Reporting::Net => (out_scaled.checked_add(charge)? <= taken).then(|| out.to_string()),
+        Reporting::Gross => {
+            if out_scaled > taken {
+                return None;
+            }
+            less_the_charge(amount_out, fee, units.origin_decimals, units.out_decimals)
+        }
     }
 }
 
@@ -239,8 +272,14 @@ fn transaction_named(result: &ResultBody) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quoted, conversion_bound, converts_within, handed_on};
+    use super::{Quoted, Units, conversion_bound, converts_within, handed_on};
     use rutent_contracts::provider_role::Reporting;
+
+    /// Both ends count in six decimals.
+    const SAME: Units = Units {
+        origin_decimals: 6,
+        out_decimals: 6,
+    };
 
     /// What a segment that keeps its asset hands on, with a charge: under `net`, what it gave out, its charge on top
     /// within what it took in; under `gross`, what it gave out less the charge it includes.
@@ -249,23 +288,85 @@ mod tests {
     fn what_a_segment_hands_on_follows_how_its_tuple_reports_its_charge() {
         // Net: 999 000 out with a charge of 1 000 from 1 000 000 in.
         assert_eq!(
-            handed_on(Reporting::Net, "1000000", "999000", "1000"),
+            handed_on(Reporting::Net, "1000000", "999000", "1000", SAME),
             Some("999000".into())
         );
         // Net: out and charge together more than came in.
-        assert_eq!(handed_on(Reporting::Net, "1000000", "999500", "1000"), None);
+        assert_eq!(
+            handed_on(Reporting::Net, "1000000", "999500", "1000", SAME),
+            None
+        );
         // Gross: 1 000 000 out, the charge of 1 000 within it, so 999 000 is handed on.
         assert_eq!(
-            handed_on(Reporting::Gross, "1000000", "1000000", "1000"),
+            handed_on(Reporting::Gross, "1000000", "1000000", "1000", SAME),
             Some("999000".into())
         );
         // Gross: more out than in.
         assert_eq!(
-            handed_on(Reporting::Gross, "1000000", "1000001", "1000"),
+            handed_on(Reporting::Gross, "1000000", "1000001", "1000", SAME),
             None
         );
         // Gross: a charge above what it gave out.
-        assert_eq!(handed_on(Reporting::Gross, "1000", "500", "1000"), None);
+        assert_eq!(
+            handed_on(Reporting::Gross, "1000", "500", "1000", SAME),
+            None
+        );
+    }
+
+    /// A segment whose two ends count its asset in different decimals compares and subtracts in like units: a charge
+    /// stated in the origin's is restated in the out unit, multiplied out where that is finer and divided and rounded up
+    /// where it is coarser, so what arrives is never overstated.
+    // verifies: REQ-CAT-11, INV-1
+    #[test]
+    fn a_segment_whose_ends_count_in_different_decimals_hands_on_in_like_units() {
+        // Out counts in eight decimals, origin in six: 1.000000 in, a charge of 0.001000 (1 000 origin units, 100 000
+        // out units), and 1.00000000 (100 000 000) out under gross, so 99 900 000 is handed on, not 99 999 000.
+        let finer = Units {
+            origin_decimals: 6,
+            out_decimals: 8,
+        };
+        assert_eq!(
+            handed_on(Reporting::Gross, "1000000", "100000000", "1000", finer),
+            Some("99900000".into())
+        );
+        // More out than in, once both are in the finer unit: 1.00000001.
+        assert_eq!(
+            handed_on(Reporting::Gross, "1000000", "100000001", "1000", finer),
+            None
+        );
+        // Net: 0.999 out with a charge of 0.001 is exactly what came in; one finer unit more is not.
+        assert_eq!(
+            handed_on(Reporting::Net, "1000000", "99900000", "1000", finer),
+            Some("99900000".into())
+        );
+        assert_eq!(
+            handed_on(Reporting::Net, "1000000", "99900001", "1000", finer),
+            None
+        );
+        // Out counts in fewer decimals, origin in eight: 1.00000000 in, 1.000000 out under gross, a charge of one
+        // origin unit rounds up to one out unit, so 999 999 is handed on.
+        let coarser = Units {
+            origin_decimals: 8,
+            out_decimals: 6,
+        };
+        assert_eq!(
+            handed_on(Reporting::Gross, "100000000", "1000000", "1", coarser),
+            Some("999999".into())
+        );
+        // Net: 1.000000 out with a charge of one origin unit is more than 1.00000000 in.
+        assert_eq!(
+            handed_on(Reporting::Net, "100000000", "1000000", "1", coarser),
+            None
+        );
+        assert_eq!(
+            handed_on(Reporting::Net, "100000001", "1000000", "1", coarser),
+            Some("1000000".into())
+        );
+        // A charge above what was given out, once restated: 0.5 out at six decimals, a charge of 0.6 at eight.
+        assert_eq!(
+            handed_on(Reporting::Gross, "100000000", "500000", "60000000", coarser),
+            None
+        );
     }
 
     fn quoted(slippage_bps: Option<u16>) -> Quoted {
