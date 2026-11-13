@@ -14,8 +14,10 @@
 //! - **On the person's own authority.** This row's entry in [`FIXED`](crate::engine) asks the person's record of
 //!   consents whether the consent the question names is that person's and lets the asker's party ask
 //!   (`Source::Consent`, the input the asker's party): a no refuses `not_permitted`, nothing is a missing input. Who
-//!   is asked under the person's own consent is that consent's to bound, and the set asked is bounded below; it isn't
-//!   held to a shortlist, since a person may consent before any route is built.
+//!   is asked under the person's own consent is that consent's to bound, and the set asked is bounded below; where
+//!   the order has a shortlist, everyone asked must be on it too, as on the route (`REQ-CPL-6`'s letter: a provider
+//!   not shortlisted is not asked; the coordinator's ruling on round 1 of the review). Before any shortlist, the
+//!   consent and the set asked bound it.
 //! - **The order's own question, about one of its parties.** On a shortlisted route the same fixed rule holds the
 //!   asker to the order's requester (`Source::Requester`, the input the asker's party), or, stating Core's role, to an
 //!   actor the register lists as carrying the order's authority onward (`Permission::CarryOnward`), and the person
@@ -174,44 +176,68 @@ fn asked_of<'a>(
     })
 }
 
-/// On a shortlisted route: the shortlist cited is the order's latest shortlist round's record, and the authority's
-/// providers and verifiers, and everyone asked, are among the providers it shortlisted and the verifiers its tuples
-/// need. A question on the person's own authority passes.
-fn on_the_route(question: &PersonQuestion, entries: &[(Receipt, Entry)]) -> Option<RefusalClass> {
-    let Authority::ShortlistedRoute {
-        shortlist,
-        providers,
-        verifiers,
-    } = &question.authority
-    else {
-        return None;
-    };
-    let latest = entries.iter().rev().find_map(|(_, entry)| match entry {
+/// The order's latest shortlist round's record: its digest, the providers it shortlisted and the verifiers its tuples
+/// need.
+fn latest_shortlist<'a>(
+    order: &Id,
+    entries: &'a [(Receipt, Entry)],
+) -> Option<(
+    &'a rutent_contracts::module_interface::Digest,
+    &'a [Id],
+    &'a [Id],
+)> {
+    entries.iter().rev().find_map(|(_, entry)| match entry {
         Entry::Verified(VerifiedEntry {
             what:
                 What::DecisionRecord {
-                    order,
+                    order: of,
                     round: RoutingRound::Shortlist,
                     record,
                     shortlisted,
-                    verifiers: needed,
+                    verifiers,
                     ..
                 },
             ..
-        }) if order == &question.order => Some((record, shortlisted, needed)),
+        }) if of == order => Some((
+            record,
+            shortlisted.as_deref().unwrap_or_default(),
+            verifiers.as_slice(),
+        )),
         _ => None,
-    });
-    let Some((record, shortlisted, needed)) = latest else {
-        return Some(RefusalClass::NotPermitted);
-    };
-    let shortlisted = shortlisted.as_deref().unwrap_or_default();
-    let on = record == shortlist
-        && providers.iter().all(|p| shortlisted.contains(p))
-        && verifiers.iter().all(|v| needed.contains(v))
-        && question
+    })
+}
+
+/// Only the order's shortlist is asked (`REQ-CPL-6`). On a shortlisted route: the shortlist cited is the order's
+/// latest shortlist round's record, and the authority's providers and verifiers, and everyone asked, are among the
+/// providers it shortlisted and the verifiers its tuples need. On the person's own consent, where the order has a
+/// shortlist, everyone asked is among them too (round 1 of the review); before any shortlist, the consent and the set
+/// asked bound it.
+fn on_the_route(question: &PersonQuestion, entries: &[(Receipt, Entry)]) -> Option<RefusalClass> {
+    let latest = latest_shortlist(&question.order, entries);
+    let on = match (&question.authority, latest) {
+        (Authority::Person { .. }, None) => true,
+        (Authority::Person { .. }, Some((_, shortlisted, needed))) => question
             .ask
             .iter()
-            .all(|a| shortlisted.contains(a) || needed.contains(a));
+            .all(|a| shortlisted.contains(a) || needed.contains(a)),
+        (Authority::ShortlistedRoute { .. }, None) => false,
+        (
+            Authority::ShortlistedRoute {
+                shortlist,
+                providers,
+                verifiers,
+            },
+            Some((record, shortlisted, needed)),
+        ) => {
+            record == shortlist
+                && providers.iter().all(|p| shortlisted.contains(p))
+                && verifiers.iter().all(|v| needed.contains(v))
+                && question
+                    .ask
+                    .iter()
+                    .all(|a| shortlisted.contains(a) || needed.contains(a))
+        }
+    };
     (!on).then_some(RefusalClass::NotPermitted)
 }
 

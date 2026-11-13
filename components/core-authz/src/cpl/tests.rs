@@ -803,3 +803,37 @@ fn request_id_reused_for_another_question_is_refused() {
     assert_eq!(ask(&mut e, &["kyc-3"], &["kyc-1"]), not_permitted);
     assert_eq!(ask(&mut e, &["kyc-1"], &["kyc-1"]), not_permitted);
 }
+
+/// A question on the person's own consent is held to the order's shortlist too, where the order has one: a provider
+/// not shortlisted is not asked (`REQ-CPL-6`'s letter, the coordinator's ruling on round 1 of the review). Before any
+/// shortlist the consent is the bound, with the set asked.
+// verifies: REQ-CPL-6, REQ-CPL-2
+#[test]
+fn question_on_a_consent_asks_no_provider_off_the_orders_shortlist() {
+    let ask = |e: &mut Tested, request: &str, asks: &str| {
+        e.ask_about_person(&question(request, &agent(), consent("51"), &[asks], &[]))
+            .map(|a| a.outcome)
+    };
+    let mut e = engine(Log::taking(vec![
+        charged_to_the_agent(5),
+        shortlist(ORDER, "53", &["bank-co"], &["kyc-verify"]),
+    ]));
+    assert_eq!(
+        ask(&mut e, "req-1", "aml-screen"),
+        Ok(refused(RefusalClass::NotPermitted))
+    );
+    assert_eq!(
+        ask(&mut e, "req-2", "bank-co"),
+        Ok(PersonOutcome::Allowed {})
+    );
+    assert_eq!(
+        ask(&mut e, "req-3", "kyc-verify"),
+        Ok(PersonOutcome::Allowed {})
+    );
+    // No shortlist yet: the consent and the set asked bound it.
+    let mut e = engine(Log::taking(vec![charged_to_the_agent(1)]));
+    assert_eq!(
+        ask(&mut e, "req-4", "aml-screen"),
+        Ok(PersonOutcome::Allowed {})
+    );
+}
