@@ -42,6 +42,10 @@
 //!   beats not known from the other.
 //! - **An unreachable provider** gives `verifier_unreachable`: core-internal has no cause of its own for it.
 //! - **`AC-17`'s reading is pending** on the owner's form as `spec-ac17-not-known`, with "not known" the default.
+//! - **An unknown order is refused as another's is.** A source of an order's or a segment's record that knows nothing
+//!   of it gives `not_permitted`, the refusal of an order that isn't the caller's, never `missing_input`, so a refused
+//!   caller can't tell an order that doesn't exist from one it may not see (`T-023-01`'s question, the coordinator's
+//!   ruling). The answer and its record are one, so the log keeps the same class.
 
 #[cfg(test)]
 mod entry_points;
@@ -557,6 +561,21 @@ enum Verdict {
     NotKnown(NotKnownCause),
 }
 
+/// The refusal a source answering without its input gives: a missing input, but for a record of an order or of a
+/// segment, where it is the refusal one of another's gives (`not_permitted`). Toward the caller, an order that doesn't
+/// exist and one that isn't its own look the same, so a refused caller can't probe which orders exist (`T-023-01`'s
+/// question, the coordinator's ruling); the log records the same answer.
+fn missing(from: &Source) -> RefusalClass {
+    match from {
+        Source::Requester(_)
+        | Source::OrderOrigin(_)
+        | Source::OrderParties(_)
+        | Source::SegmentOrder(_)
+        | Source::SegmentProvider { .. } => RefusalClass::NotPermitted,
+        _ => RefusalClass::MissingInput,
+    }
+}
+
 /// Asks `policy` what `asked` needs, asks each input of its source, and has `policy` rule over them.
 ///
 /// A provider that can't be reached gives `verifier_unreachable`: core-internal's `NotKnownCause` has no cause of
@@ -571,7 +590,7 @@ fn verdict(policy: &mut impl Policy, sources: &mut impl Sources, asked: Asked<'_
     for need in needs {
         match sources.supply(&need) {
             Reply::Given(said) => inputs.push(Input { need, said }),
-            Reply::Missing => return Verdict::Refuse(RefusalClass::MissingInput),
+            Reply::Missing => return Verdict::Refuse(missing(&need.from)),
             Reply::Unreachable => return Verdict::NotKnown(NotKnownCause::VerifierUnreachable),
         }
     }
@@ -1154,6 +1173,73 @@ mod tests {
         entry.outcome
     }
 
+    /// Toward the caller, an order that doesn't exist and one that isn't the caller's look the same (`T-023-01`'s
+    /// question, the coordinator's ruling): a customer's agent reading an order, authorising it, and asking to move
+    /// value on it is refused `not_permitted` alike, whether the order's record names another party or knows nothing
+    /// of the order. Otherwise a refused caller could probe which orders exist.
+    // verifies: REQ-AUZ-7, REQ-AUZ-1
+    #[test]
+    fn unknown_order_and_anothers_order_answer_alike() {
+        let asked = |order: &str, known: bool| {
+            let mut policy = Engine::with_policy(
+                Taking::default(),
+                Service::ruling(Reply::Given(Ruling::Permit)),
+                Given::default(),
+            );
+            let mut read: Value = fixture!("read-check-by-an-agent-in-its-partys-role");
+            read["reads"]["order"] = order.into();
+            let read: ReadCheck = serde_json::from_value(read).unwrap();
+            let mut authorisation: Authorisation =
+                fixture!("authorisation-of-one-order-given-by-an-agent");
+            authorisation.order = id(order);
+            let mut moved: DecisionRequest = fixture!("decision-request-to-move-value");
+            moved.caller = authorisation.given_by.clone();
+            if let Action::MoveValue { order: o, .. } = &mut moved.action {
+                *o = id(order);
+            }
+            if known {
+                // The order's record names another party: its parties and its requester are someone else.
+                let party = read.reader.party.clone();
+                for from in [
+                    Source::OrderParties(id(order)),
+                    Source::Requester(id(order)),
+                ] {
+                    let need = Need {
+                        input: party.clone(),
+                        from,
+                    };
+                    policy.sources.says.push((need, Reply::Given(Said::No)));
+                }
+            }
+            (
+                policy.check_read(&read).unwrap().outcome,
+                policy.authorise(&authorisation).unwrap().outcome,
+                policy.decide(&moved).unwrap().outcome,
+            )
+        };
+        let not_permitted = RefusalClass::NotPermitted;
+        let anothers = asked("ord-19", true);
+        assert_eq!(
+            anothers,
+            (
+                ReadOutcome::Refused {
+                    class: not_permitted
+                },
+                Answer::Refuse {
+                    class: not_permitted
+                },
+                Answer::Refuse {
+                    class: not_permitted
+                },
+            )
+        );
+        assert_eq!(
+            asked("ord-404", false),
+            anothers,
+            "an unknown order answers as another's"
+        );
+    }
+
     /// The unbuilt engine permits nothing on any call, records each answer first, and answers nothing when the log
     /// takes no entry.
     // verifies: REQ-AUZ-1, REQ-AUZ-5, INV-7
@@ -1181,14 +1267,14 @@ mod tests {
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), unreachable);
         // A move's outcome reported waits on the register's word that its reporter acts for the party it states; a
-        // stuck order's decision is of an order this log has no acceptance of, and a move and a confirmation carry out
-        // nothing it holds as permitted, a decision or a report: each is refused (`T-021-06`), since a refusal beats
-        // not known.
+        // stuck order's decision is of an order this log has no acceptance of, refused as one of another's order is
+        // (`T-023-01`'s question), and a move and a confirmation carry out nothing it holds as permitted, a decision
+        // or a report: each is refused (`T-021-06`), since a refusal beats not known.
         let decision = policy
             .decide_stuck(&fixture!("stuck-decide-naming-its-evidence"))
             .unwrap();
         assert!(decision.permit().is_none());
-        assert_eq!(last(&mut policy), refused(RefusalClass::MissingInput));
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
         let decision = policy
             .move_stuck(&fixture!("stuck-move-carrying-out-a-decision"))
             .unwrap();
