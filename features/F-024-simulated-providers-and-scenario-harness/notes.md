@@ -388,11 +388,12 @@ chain on the new version, so a toolchain release never turns a branch red by its
 ## Rows added after review (`plan/m3-owed-rows`)
 
 - `T-024-03`'s gaps now have owners: Core's own charge check, with the assembly's stand-in deleted, is `T-020-14`;
-  signed terms and holds in intake is `T-020-15`; the evidence floor as a logged change is `T-020-21`, only if the
-  owner rules it must be auditable; the verifier half of `AC-24` is `T-024-12`.
+  signed terms and holds in intake is `T-020-15`; the evidence floor as a logged change stays on the owner's form,
+  with no row; the verifier half of `AC-24` is `T-024-12`.
 - New `F-024` rows: `T-024-11` (`REQ-CPL-9` through the assembly with an agent acting), `T-024-12` (the verifier
   half of `REQ-CPL-12`, and `AC-24`'s) and `T-024-13` (a gross, charged segment end to end, with the closing's
-  public-movement figures at each end).
+  public-movement figures at each end) and `T-024-14` (simulated publishers emit the inner-segment record that
+  `T-020-18` adds, and the assembly's `Books` reads it).
 - `AC-2`'s full route across a reserve, an exchange and a ramp is `T-024-04`'s: the simulated providers that join
   the reserves are added there (see the world paragraph of `T-024-03`).
 - `T-024-10` and `T-025-05` now run in wave 27, after all of them.

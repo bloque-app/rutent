@@ -2061,8 +2061,8 @@ against the old API, then each rule switched off once more after its fix.
 - **Fees** (`REQ-AUD-11`, `closing::fees`). After `segment_settled`, built once and appended as the segment's step:
   the fee its result states, to its provider (only where the fee is in the asset the segment takes in, which `judge`
   holds), and on a part's final deposit the operator's, `rutent_router::quote::operator_fee` over what the deposit
-  gave out, attributed to the operator's `acts`, recorded at zero too. `billed_separately` is always false: provider-role
-  has no field for a fee billed apart (gap below). Fees are recorded whatever the grading, `ProvidersWord` included.
+  gave out, attributed to the operator's `acts`, recorded at zero too. `billed_separately` is what the provider stated, absent where it said
+  nothing (provider-role 3.1.0 added the field, below); the operator's fee record says nothing. Fees are recorded whatever the grading, `ProvidersWord` included.
   Nothing sums them.
 - **Seams in other rows' files** (each named in the commit):
   - `segments/ports.rs` and `segments/mod.rs` (`T-020-08`): `ToGrade` carries what the grading reads (the part, the
@@ -2143,10 +2143,10 @@ against the old API, then each rule switched off once more after its fix.
     A core-internal relation (the `segment_settled` of a part's last deposit cites grade-1 evidence and rests on the
     reserve's verified result) would make it the log's too. `T-020-01`'s contract, foldable while 1.0.0 is
     unreleased; not added here.
-  - A fee billed separately: provider-role 3.0.0's `Fee` has no flag, so every record says `false`. A provider-role
-    change (released): reported, not made.
+  - A fee billed separately: closed by provider-role 3.1.0's optional `fee.billed_separately`, which the fee record
+    carries as stated; no row.
   - A private node's record of its inner segments has no provider-role shape, so `Books` is a seam the assembly fills
-    from each publisher (`F-015`'s notes): a provider-role change, for the owner.
+    from each publisher (`F-015`'s notes): `T-020-18` carries the shape, `T-024-14` is its consumer.
   - Each real network's movement-to-segment matching, finality and reorg rules (`PublicRecords`): `F-031`, one task per
     network (`DEC-13`).
   - A final deposit made in pieces (several movements) can't close: its one destination's movement is one. The
@@ -3227,16 +3227,14 @@ module, the row is that feature's.
 | Signed holds not redeemed in intake; statement vs commitment; the session; `redeemed_by` (`T-020-01`, round 3 integration) | `T-020-15` |
 | Production `Resolutions` for a `deliver` (`T-020-11`'s gap) | `T-020-16` |
 | Production `Resolutions` for a hand-on (`T-020-13`) | `T-020-17`, after `T-020-16` |
-| Provider-role statement of what arrived, a question of what arrived (`T-020-04`) | `T-020-18` |
+| Provider-role statement of what arrived, a question of what arrived (`T-020-04`); the publisher's inner-segment record (`T-020-09`, `F-015`) | `T-020-18`; consumer of the record `T-024-14` |
 | The arrival linked to that notice, and to the earlier arrival it holds against an order (`T-020-04`) | `T-020-19` |
-| A wrong stuck report can't be corrected; a decline then a re-report (`T-020-11`, `stuck/mod.rs` Gaps) | `T-020-20` |
-| A mismatch at a non-final public end isn't recorded (`T-020-09`) | `T-020-22` |
-| Next `core-internal` round: notice summary entry, `Operation::stated_out` doc, the mismatch record, checkpoint and opening shapes, a decline, an earlier-arrival field, an empty shortlist (`T-020-06`), a `HandedOver` item for an operation with no answer (`T-020-08`), possibly the evidence floor as a logged change | `T-020-21` |
+| A wrong stuck report can't be corrected; a decline then a re-report; a segment's move confirmed done not taken (`T-020-11`, `stuck/mod.rs` Gaps) | `T-020-20` |
+| A mismatch at a non-final public end isn't recorded; the final deposit's settlement not held by the log (`T-020-09`) | `T-020-22` |
+| Next `core-internal` round: notice summary entry, `Operation::stated_out` doc, the mismatch record, checkpoint and opening shapes, a decline, an earlier-arrival field, an empty shortlist (`T-020-06`), a `HandedOver` item (`T-020-08`), the holding account's withdrawal record, the final-deposit relation, a late-status action and a confirming party at a later inner node (`T-020-12`) | `T-020-21`; writers `T-020-25` (shortlist, `HandedOver`), `T-020-26` (holding account record), `T-020-22`, `T-020-27` (late status, later inner node) |
 | No writer of `reliance` entries, reserve half (`F-021`'s `T-021-07` notes) | `T-020-23`; the verifier half at the assembly is `T-024-12`; the production verifier stays `F-053`'s |
 | Carry-on refused as `OutsideAuthorisation`; `StatusError::Refused`; `AcceptFault` read from the log | `T-020-24` |
 
-Not given a row by this change: a log kind for the holding account's withdrawal record
-(`REQ-ORD-40`, `T-020-13`'s gap) and a relation holding a final deposit's settlement to a public record and the
-reserve's statement (`T-020-09`'s gap) are named in the notes above; the owner can have either added to
-`T-020-21`'s list. The stuck rows (`T-020-16`, `T-020-17`, `T-020-20`) edit `stuck/`
-one after the other; `T-020-14` and `T-020-24` both edit `segments/`, so the lead runs them in turn.
+The evidence floor as a logged catalogue change has no row: it stays on the owner's form. The stuck rows (`T-020-16`,
+`T-020-17`, `T-020-20`) edit `stuck/` in turn across waves; `T-020-20`, `T-020-25` and `T-020-27` share wave 26 and
+edit `stuck/`, `segments/` and `reversal/`, so the lead runs them in that order.
