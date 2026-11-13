@@ -233,6 +233,15 @@ pub enum Source {
     /// for its accountable party or reaching it along its `ActsFor` chain. A role a request states is only its word,
     /// so a stuck order's decider and mover are held to this too (`T-021-06`).
     OfOperator,
+    /// The person's record of the consents it gave (`REQ-CPL-2`, `T-021-07`): whether the consent under this digest is
+    /// `person`'s own, in force, and lets the accountable party the input names ask about them. It answers no, not
+    /// nothing, for a digest it holds no consent of that person's under.
+    Consent {
+        /// The person, by reference.
+        person: Id,
+        /// The consent, by the digest of its record.
+        consent: rutent_contracts::module_interface::Digest,
+    },
 }
 
 /// One input a decision needs, as the policy service names it.
@@ -387,6 +396,13 @@ pub(crate) const FIXED: &[Rule] = &[
         needs: crate::stuck::needs,
         rule: crate::stuck::rule,
     },
+    Rule {
+        name: "T-021-07: a question about a person is the order's own requester's or Core's, about one of the \
+               order's parties, and, on the person's own authority, rests on a consent that person gave the asker's \
+               party",
+        needs: crate::cpl::needs,
+        rule: crate::cpl::rule,
+    },
 ];
 
 /// The rules `SPEC.md` sets, which every engine asks first: [`Engine::with_policy`] puts them there, so no assembly can leave
@@ -456,12 +472,12 @@ pub struct Engine<L, P, S> {
     pub(crate) charged: crate::parties::Charged,
 }
 
-/// The engine with no policy service and no sources. Its decisions are not known, and each policy trait whose row
-/// hasn't built it yet is a stub on this type, in that row's module, that permits nothing: every call is appended to
-/// the log first, and answered not known where its answer can say so, refused or over its bound where it can't
-/// (`REQ-AUZ-5`). A built call answers on it as it rules: a stuck order's move or a move's confirmation with nothing
-/// permitted behind it in the log is refused, since a refusal beats not known (`T-021-06`). Where the log takes no
-/// entry it answers nothing at all.
+/// The engine with no policy service and no sources. Every policy call is built on [`Engine`] (`T-021-07` the last),
+/// so on this type each answers as its rules do with nothing to consult: appended to the log first, and not known
+/// where its answer can say so, refused where it can't (`REQ-AUZ-5`), and refused where a rule read from the log
+/// finds nothing behind the call, since a refusal beats not known: a stuck order's move or a move's confirmation with
+/// nothing permitted behind it (`T-021-06`), a question about a person its asker's party wasn't charged for
+/// (`T-021-07`). Where the log takes no entry it answers nothing at all.
 pub type Unbuilt<L> = Engine<L, Absent, Absent>;
 
 impl<L> Unbuilt<L> {
@@ -471,9 +487,6 @@ impl<L> Unbuilt<L> {
         Engine::with_policy(log, Absent, Absent)
     }
 }
-
-/// Why the unbuilt stubs know nothing.
-pub(crate) const UNREACHABLE: NotKnownCause = NotKnownCause::PolicyUnreachable;
 
 impl<L, P, S> Engine<L, P, S> {
     /// The engine that appends to `log`, consults the fixed rules and then `policy`, and asks `sources` for each
@@ -668,6 +681,24 @@ pub(crate) fn charge_outcome(
         (Answer::Permit {}, Standing::Over { bound }) => ChargeOutcome::Over { bound },
         (Answer::Refuse { class }, _) => ChargeOutcome::Refused { class },
         (Answer::NotKnown { cause }, _) => ChargeOutcome::NotKnown { cause },
+    }
+}
+
+/// A question about a person answered on the engine's verdict: allowed only where it permits and the set asked about
+/// the order stays within its bound; past the bound where it permits and the set would pass it, so the order counts as
+/// having no route left (`REQ-CPL-5`); refused for the verdict's own class, and not known for its own cause. The only
+/// place in Core that writes an allowed question.
+pub(crate) fn person_outcome(
+    answer: Answer,
+    asked: crate::cpl::SetAsked,
+) -> rutent_contracts::core_internal::PersonOutcome {
+    use crate::cpl::SetAsked;
+    use rutent_contracts::core_internal::PersonOutcome;
+    match (answer, asked) {
+        (Answer::Permit {}, SetAsked::Within) => PersonOutcome::Allowed {},
+        (Answer::Permit {}, SetAsked::Past { bound }) => PersonOutcome::PastBound { bound },
+        (Answer::Refuse { class }, _) => PersonOutcome::Refused { class },
+        (Answer::NotKnown { cause }, _) => PersonOutcome::NotKnown { cause },
     }
 }
 
@@ -1245,7 +1276,6 @@ mod tests {
     // verifies: REQ-AUZ-1, REQ-AUZ-5, INV-7
     #[test]
     fn the_unbuilt_engine_permits_nothing_on_any_call_and_records_first() {
-        let not_known = Outcome::NotKnown { cause: UNREACHABLE };
         let refused = |class| Outcome::Refused { class };
         let mut policy = Unbuilt::new(Taking::default());
 
@@ -1336,8 +1366,16 @@ mod tests {
                 "person-question-on-the-persons-authority-first-asked",
             ))
             .unwrap();
-        assert!(matches!(answer.outcome, PersonOutcome::NotKnown { .. }));
-        assert_eq!(last(&mut policy), not_known);
+        // The register of actors can't be reached, so the consultation is not known; and the asker's party was never
+        // charged for the question, which the log shows, so it is refused over the party's bound (`T-021-07`): a
+        // refusal beats not known.
+        assert!(matches!(
+            answer.outcome,
+            PersonOutcome::Refused {
+                class: RefusalClass::OverBound
+            }
+        ));
+        assert_eq!(last(&mut policy), refused(RefusalClass::OverBound));
 
         let mut policy = Unbuilt::new(Refusing);
         assert_eq!(
@@ -2163,17 +2201,13 @@ mod tests {
     /// How a policy call came out: permitted, or not (refused, not known, over its bound, or no answer at all).
     type Permitted = bool;
 
-    /// One policy call, driven on an engine that consults a policy that records being asked, or, where its row hasn't
-    /// built it yet, on the unbuilt engine, whose stub must permit nothing.
+    /// One policy call, driven on an engine that consults a policy that records being asked. Every row of `F-021` has
+    /// built its call (`T-021-07` the last), so no call is answered by a stub on the unbuilt engine.
     enum Call {
         Built(fn(&mut Engine<Seen, Service, Given>) -> Permitted),
-        Unbuilt {
-            row: &'static str,
-            call: fn(&mut Unbuilt<Seen>) -> Permitted,
-        },
     }
 
-    /// Every method of core-internal's policy traits. A row that builds its call moves it from `Unbuilt` to `Built`.
+    /// Every method of core-internal's policy traits, each built.
     fn calls() -> Vec<(&'static str, Call)> {
         vec![
             (
@@ -2362,16 +2396,54 @@ mod tests {
                 }),
             ),
             (
+                // A first question on the person's own consent, which the record of consents holds, its asker's party
+                // charged for it beforehand, outside the table's calls.
                 "ask_about_person",
-                Call::Unbuilt {
-                    row: "T-021-07",
-                    call: |e| {
-                        e.ask_about_person(&fixture!(
-                            "person-question-on-the-persons-authority-first-asked"
-                        ))
+                Call::Built(|e| {
+                    let question: PersonQuestion =
+                        fixture!("person-question-on-the-persons-authority-first-asked");
+                    let rutent_contracts::core_internal::Authority::Person { consent } =
+                        question.authority.clone()
+                    else {
+                        unreachable!("the fixture rests on the person's consent")
+                    };
+                    let consented = Need {
+                        input: question.asker.party.clone(),
+                        from: Source::Consent {
+                            person: question.person.clone(),
+                            consent,
+                        },
+                    };
+                    e.sources.says.push((consented, Reply::Given(Said::Yes)));
+                    // The person is one of the order's parties; Core's `core-orch` carries the order's authority
+                    // onward, which these sources answer themselves.
+                    let a_party = Need {
+                        input: question.person.clone(),
+                        from: Source::OrderParties(question.order.clone()),
+                    };
+                    e.sources.says.push((a_party, Reply::Given(Said::Yes)));
+                    let mut charged: VerifiedEntry =
+                        fixture!("verified-entry-of-a-charge-counted-within-its-bound");
+                    charged.who = question.asker.clone();
+                    charged.what = What::Charge {
+                        charge: Charge {
+                            request: id("req-charged"),
+                            party: question.asker.party.clone(),
+                            caller: question.asker.clone(),
+                            work: rutent_contracts::core_internal::Work::PersonQuestion,
+                            count: rutent_contracts::core_internal::Count::new(1).unwrap(),
+                            order: Some(question.order.clone()),
+                            at: question.at.clone(),
+                        },
+                        counted_at: Some(question.at.clone()),
+                    };
+                    e.log
+                        .log
+                        .append_decision(&DecisionEntry::try_from(charged).unwrap())
+                        .unwrap();
+                    e.ask_about_person(&question)
                         .is_ok_and(|a| matches!(a.outcome, PersonOutcome::Allowed { .. }))
-                    },
-                },
+                }),
             ),
         ]
     }
@@ -2445,9 +2517,9 @@ mod tests {
         )
     }
 
-    /// Every policy call reaches the one consultation: driven against a policy that records being asked, each built
-    /// call is asked of it, once, and answers as it rules. A call whose row hasn't built it yet is marked so, and its
-    /// stub permits nothing. The table holds every method of core-internal's policy traits.
+    /// Every policy call reaches the one consultation: driven against a policy that records being asked, each call is
+    /// asked of it, once, and answers as it rules. Every row has built its call, so none is left marked unbuilt. The
+    /// table holds every method of core-internal's policy traits.
     // verifies: REQ-AUZ-1
     #[test]
     fn every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt() {
@@ -2472,7 +2544,6 @@ mod tests {
             methods_of_policy(&without_operator),
             Err((vec!["Operators".to_string()], vec!["Operator".to_string()]))
         );
-        let mut unbuilt = Vec::new();
         for (name, call) in calls {
             match call {
                 Call::Built(call) => {
@@ -2493,19 +2564,8 @@ mod tests {
                         assert_eq!(engine.policy.1.ruled.len(), 1, "{name} ruled once");
                     }
                 }
-                Call::Unbuilt { row, call } => {
-                    let mut engine = Unbuilt::new(Seen::default());
-                    assert!(
-                        !call(&mut engine),
-                        "{name}, {row}'s, permits nothing until it is built"
-                    );
-                    assert_eq!(engine.log.called, [name], "the row is the call it makes");
-                    unbuilt.push(row);
-                }
             }
         }
-        unbuilt.dedup();
-        assert_eq!(unbuilt, ["T-021-07"]);
     }
 
     /// A log reachable only through policy's handle, which keeps what it took.

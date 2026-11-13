@@ -120,6 +120,8 @@ use crate::snapshot::{
 
 pub use drain::Uncarried;
 pub use journal::{APPEND_TRIES, Unappended};
+/// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
+pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, judge};
 pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
 pub use sign::Unwritten;
