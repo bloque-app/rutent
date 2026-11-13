@@ -35,7 +35,8 @@
 //! - **Who carries it** ([`Reversals::show_fault`], [`Reversals::accept_fault`], [`Reversals::dispute`],
 //!   `REQ-ORD-11`). The failed provider carries it unless it shows the fault was the customer's or the operator's: its
 //!   failed result naming the fault (provider-role's `Failure.fault`), kept as its result statement, and the party it
-//!   names accepting it by its act: the customer's signed fault acceptance in its open session, or the operator's
+//!   names accepting it by its act: the customer's permitted decision of policy's `accept_fault` in its open session (it
+//!   signs nothing the log can attribute, so Core cites the decision, which the log holds whole), or the operator's
 //!   `accept_fault` command. The `reversal_carrier` records it, resting on both. A dispute over it, by the party it
 //!   names, declares the part stuck through [`Stuck::dispute`], so it is resolved in the stuck order's two steps.
 //! - **Ending** ([`Reversals::end`], `REQ-ORD-12`). An order ends without completing only until its first segment
@@ -67,8 +68,8 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
 use rutent_contracts::core_internal::{
-    About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
-    OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
+    About, Action, Actor, Afterwards, Answer, Carrier as Carries, Decision, DecisionRequest,
+    Effect, Entry, OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -172,14 +173,16 @@ pub use rutent_contracts::provider_role::Fault;
 /// The act of the party at fault accepting a provider's showing (`reversal-carrier-rests-on-its-acceptance`).
 #[derive(Debug, Clone, Copy)]
 pub enum Accepting<'a> {
-    /// The customer: its own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in its open session.
+    /// The customer: policy's permitted decision of its `accept_fault` (`Action::AcceptFault`), asked in its open
+    /// session. The customer signs nothing the log can attribute, so its act is the decision, which the log holds
+    /// whole; the carrier cites it.
     Customer {
-        /// The customer, in the customer's role.
+        /// The customer, in the customer's role: the decision's caller.
         by: &'a Actor,
-        /// Its signed fault acceptance, as received.
-        statement: &'a [u8],
-        /// The session it was given in.
-        session: &'a Id,
+        /// The request the customer's decision answered.
+        request: &'a DecisionRequest,
+        /// Policy's decision of it, as policy answered.
+        decision: &'a Decision,
     },
     /// The operator, by its `accept_fault` command, which Core records in its name.
     Operator {
@@ -316,8 +319,8 @@ pub enum ReversalError {
     NoFaultShown,
     /// A showing of fault was accepted already: the carrier stands.
     FaultSettled,
-    /// The statement isn't the customer's fault acceptance of this showing: its shape, its maker, its order,
-    /// segment, transaction, showing or fault.
+    /// The decision isn't the customer's own acceptance of this showing: not an `accept_fault` request of the caller's
+    /// answered by this decision, or about another order, segment, transaction or showing.
     NotAnAcceptance,
     /// Policy didn't permit the reversal to be asked: nothing was recorded as an effect.
     NotPermitted(Answer),
@@ -383,10 +386,8 @@ struct Showing {
     /// The receipt of its stated entry.
     receipt: Receipt,
     /// The commitment its stated entry names it by.
-    #[allow(dead_code)] // read again by the customer's decision (item 3)
     commitment: Digest,
     /// The transaction it is about: the failed segment's own.
-    #[allow(dead_code)] // read again by the customer's decision (item 3)
     transaction: Id,
     disputed: bool,
     /// A dispute of it the log couldn't take now, kept by the stuck orders to append: until it is retried to
@@ -417,18 +418,33 @@ struct Reversal {
 /// Statements kept as they arrived, each once, by their bytes.
 type Statements = Vec<(Vec<u8>, Step)>;
 
-/// An acceptance of a showing, built: its act (the customer's statement or the operator's command), its carrier
-/// entry and the carrier it records, each appended once.
+/// An acceptance of a showing, built: its act (the customer's decision or the operator's command), its carrier entry
+/// and the carrier it records, each appended once.
 #[derive(Debug, Clone)]
 struct Accepted {
     by: Actor,
-    /// The customer's statement, as received.
-    statement: Option<Vec<u8>>,
-    act: Step,
-    #[allow(dead_code)] // item 3 drops it
-    session: Option<Id>,
+    act: Act,
     carrier: Option<Step>,
     carries: Carrier,
+}
+
+/// The act an acceptance rests on.
+#[derive(Debug, Clone)]
+enum Act {
+    /// The customer's decision, in the log already: policy appended it.
+    Decided(Receipt),
+    /// The operator's `accept_fault` command, appended until the log takes it.
+    Command(Box<Step>),
+}
+
+impl Act {
+    /// The receipt of the act, where the log took it.
+    fn receipt(&self) -> Option<&Receipt> {
+        match self {
+            Act::Decided(receipt) => Some(receipt),
+            Act::Command(step) => step.receipt.as_ref(),
+        }
+    }
 }
 
 /// Core's asking the failed provider to reverse its segment, from the decision on.
@@ -1092,59 +1108,76 @@ impl Reversals {
         if !party_ok {
             return Err(ReversalError::NotTheParty);
         }
-        // A kept acceptance by another actor, or of another statement, nothing of it taken yet, gives way to this one.
-        let statement = match accepting {
-            Accepting::Customer { statement, .. } => Some(statement),
-            Accepting::Operator { .. } => None,
-        };
-        if reversal.accepting.as_ref().is_some_and(|a| {
-            a.act.receipt.is_none() && (a.by != *by || a.statement.as_deref() != statement)
-        }) {
+        // The customer's act is its decision: policy's, permitted, a request of the customer's own for this showing.
+        // Anything else is no acceptance, and a refusal is told so.
+        if let Accepting::Customer {
+            by,
+            request,
+            decision,
+        } = accepting
+        {
+            let Action::AcceptFault {
+                order,
+                segment,
+                showing: named,
+                ..
+            } = &request.action
+            else {
+                return Err(ReversalError::NotAnAcceptance);
+            };
+            if request.caller != *by
+                || decision.request != request.request
+                || order != at.order
+                || segment != at.segment
+                || named.transaction != showing.transaction
+                || named.commitment != showing.commitment
+            {
+                return Err(ReversalError::NotAnAcceptance);
+            }
+            if decision.permit().is_none() {
+                return Err(ReversalError::NotPermitted(decision.outcome));
+            }
+        }
+        // A kept acceptance by another actor, nothing of its act taken yet, gives way to this one.
+        if reversal
+            .accepting
+            .as_ref()
+            .is_some_and(|a| a.act.receipt().is_none() && a.by != *by)
+        {
             reversal.accepting = None;
         }
         if reversal.accepting.is_none() {
-            let (act, session) = match accepting {
-                Accepting::Customer {
+            let act = match accepting {
+                Accepting::Customer { decision, .. } => Act::Decided(decision.receipt.clone()),
+                Accepting::Operator { by } => Act::Command(Box::new(Step::new(journal::recorded(
+                    parts.clock,
                     by,
-                    statement,
-                    session,
-                } => {
-                    // The customer's acceptance is a policy decision now (item 3 builds it): until then it
-                    // accepts nothing.
-                    let _ = (by, statement, session);
-                    return Err(ReversalError::NotAnAcceptance);
-                }
-                Accepting::Operator { by } => {
-                    let act = journal::recorded(
-                        parts.clock,
-                        by,
-                        What::Command {
-                            command: OperatorCommand::AcceptFault,
-                            order: Some(at.order.clone()),
-                            subject: Some(at.segment.clone()),
-                        },
-                        Outcome::Done {},
-                    )?;
-                    (act, None)
-                }
+                    What::Command {
+                        command: OperatorCommand::AcceptFault,
+                        order: Some(at.order.clone()),
+                        subject: Some(at.segment.clone()),
+                    },
+                    Outcome::Done {},
+                )?))),
             };
             reversal.accepting = Some(Accepted {
                 by: by.clone(),
-                statement: statement.map(<[u8]>::to_vec),
-                act: Step::new(act),
-                session,
+                act,
                 carrier: None,
                 carries: carries.clone(),
             });
         }
         let accepted = reversal.accepting.as_mut().ok_or(ReversalError::Unknown)?;
-        let acted = match accepted.act.append(parts.log) {
-            Ok(receipt) => receipt,
-            Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable.into()),
-            Err(refused) => {
-                reversal.accepting = None;
-                return Err(refused.into());
-            }
+        let acted = match &mut accepted.act {
+            Act::Decided(receipt) => receipt.clone(),
+            Act::Command(step) => match step.append(parts.log) {
+                Ok(receipt) => receipt,
+                Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable.into()),
+                Err(refused) => {
+                    reversal.accepting = None;
+                    return Err(refused.into());
+                }
+            },
         };
         if accepted.carrier.is_none() {
             let carrier = match accepted.carries {

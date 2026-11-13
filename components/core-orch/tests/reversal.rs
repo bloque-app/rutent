@@ -17,10 +17,10 @@ use rutent_contracts::core_internal::calls::{
     Signatures, StatementKeys, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
+    Action, Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
     Destination, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
-    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, SignedWith, Through, What, admit_entry,
-    attribute,
+    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, ShowingNamed, SignedWith, Through, What,
+    admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -90,11 +90,6 @@ fn operator() -> Actor {
         role: Role::Operator,
         kind: ActorKind::Person,
     }
-}
-
-/// A customer's statements key.
-fn customer_key(customer: &Actor) -> SigningKey {
-    snapshot_support::signing_key(&format!("{}-statements", customer.acts.as_str()), 1)
 }
 
 fn customer() -> Actor {
@@ -1017,18 +1012,26 @@ impl World {
         self.reversals.confirm(&mut parts, &mut asking, at)
     }
 
-    /// `by` accepting the last showing of the exchange's fault for `p1-s2`, as the customer: its fault acceptance of
-    /// that showing, signed by `by` and received a second after it, in the customer's open session.
+    /// `by` accepting the last showing of the exchange's fault for `p1-s2`, as the customer: policy's decision of its
+    /// `accept_fault`, asked a second after the showing arrived, in the customer's open session, and Core citing it.
     fn accept_as_customer(&mut self, by: &Actor) -> Result<Carrier, ReversalError> {
-        self.accept_as_customer_with(by, "customer")
+        self.accept_as_customer_naming(by, None)
     }
 
-    /// [`World::accept_as_customer`], its acceptance naming `fault`.
-    fn accept_as_customer_with(
+    /// [`World::accept_as_customer`], its decision naming `commitment` in place of the showing's, where given.
+    fn accept_as_customer_naming(
         &mut self,
         by: &Actor,
-        fault: &str,
+        commitment: Option<Digest>,
     ) -> Result<Carrier, ReversalError> {
+        let request = self.acceptance_request(by, commitment);
+        let decision = self.policy.decide(&request).expect("policy decides");
+        self.accept_decided(by, &request, &decision)
+    }
+
+    /// `by` asking policy to accept the last showing of the exchange's fault for `p1-s2`, a second after the Core
+    /// clock last read, in the customer's session: naming `commitment` in place of the showing's, where given.
+    fn acceptance_request(&mut self, by: &Actor, commitment: Option<Digest>) -> DecisionRequest {
         let showing = self
             .log
             .entries()
@@ -1053,28 +1056,41 @@ impl World {
             .as_ref()
             .and_then(|a| a.transaction.clone())
             .unwrap();
-        let mut statement = snapshot_support::envelope(
-            &snapshot_support::deployment(),
-            "urn:rutent:core-internal:fault-acceptance", // gone from the contract; item 3 replaces this
-            by.acts.as_str(),
-            2_000,
-            json!({ "order": ORDER, "segment": "p1-s2", "transaction": transaction,
-                "showing": showing.commitment, "fault": fault }),
-        );
-        snapshot_support::sign_value(&mut statement, &customer_key(by));
-        let statement = serde_json::to_vec(&statement).unwrap();
         self.clock
             .0
             .set(Reading::at(self.clock.0.get().floor().0 + 1));
-        let (order, part, s2, session) = (id(ORDER), id(PART), id("p1-s2"), id(SESSION));
+        DecisionRequest {
+            request: id(&format!("req-accept-{}", self.policy.decided + 1)),
+            caller: by.clone(),
+            action: Action::AcceptFault {
+                order: id(ORDER),
+                segment: id("p1-s2"),
+                showing: ShowingNamed {
+                    transaction,
+                    commitment: commitment.unwrap_or(showing.commitment),
+                },
+                session: id(SESSION),
+            },
+            at: Timestamp::new(Instant(self.clock.0.get().floor().0).rfc3339().unwrap()).unwrap(),
+        }
+    }
+
+    /// Core accepting the fault for `by` on `decision`, policy's answer to `request`.
+    fn accept_decided(
+        &mut self,
+        by: &Actor,
+        request: &DecisionRequest,
+        decision: &Decision,
+    ) -> Result<Carrier, ReversalError> {
+        let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
         self.with(|r, p, _| {
             r.accept_fault(
                 p,
                 at(&order, &part, &s2),
                 Accepting::Customer {
                     by,
-                    statement: &statement,
-                    session: &session,
+                    request,
+                    decision,
                 },
             )
         })
@@ -1215,9 +1231,6 @@ impl StatementKeys for Sources<'_> {
         if *maker == operator().acts {
             return Ok(Some(operator().party));
         }
-        if maker.as_str().starts_with("customer-") {
-            return Ok(Some(maker.clone()));
-        }
         Ok(
             match self.0.catalogue.publishers().publisher(maker.as_str()) {
                 Some(Publisher::Operator) => Some(operator().party),
@@ -1237,19 +1250,9 @@ impl Signatures for Sources<'_> {
         let Ok(value) = serde_json::from_slice::<Value>(received) else {
             return false;
         };
-        // Ed25519 signs deterministically: the operator's statement, or a customer's, verifies where signing it again
-        // gives it.
+        // Ed25519 signs deterministically: the operator's statement verifies where signing it again gives it.
         let maker = value["maker"].as_str().unwrap_or_default().to_owned();
-        let key = if maker == operator().acts.as_str() {
-            Some(snapshot_support::operator_key())
-        } else if maker.starts_with("customer-") {
-            Some(customer_key(&Actor {
-                acts: id(&maker),
-                ..customer()
-            }))
-        } else {
-            None
-        };
+        let key = (maker == operator().acts.as_str()).then(snapshot_support::operator_key);
         if let Some(key) = key {
             let mut again = value.clone();
             snapshot_support::sign_value(&mut again, &key);
@@ -1880,10 +1883,13 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         world.reversals.carrier(&order, &s2),
         Some(&Carrier::Provider(id(EXCHANGE)))
     );
+    let other: Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "ab".repeat(32) }))
+            .unwrap();
     assert_eq!(
-        world.accept_as_customer_with(&customer(), "operator"),
+        world.accept_as_customer_naming(&customer(), Some(other)),
         Err(ReversalError::NotAnAcceptance),
-        "an acceptance of another fault than the showing's"
+        "an acceptance naming another showing than the provider's"
     );
     let mark_customer = world.log.len();
     assert_eq!(world.accept_as_customer(&customer()), Ok(Carrier::Customer));
@@ -2461,4 +2467,137 @@ fn late_delivery_is_recorded_and_moves_nothing() {
         Err(ReversalError::NotAnswered)
     );
     assert_eq!(world.log.len(), appended);
+}
+
+/// The customer's acceptance is policy's permitted decision of its own `accept_fault` for this showing, and the
+/// carrier cites that decision: a refused decision, one of another caller's request, one answering another request,
+/// another action, another segment's and another showing's are each no acceptance, and change no carrier.
+// verifies: REQ-ORD-11
+#[test]
+fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it() {
+    let (order, s2) = (id(ORDER), id("p1-s2"));
+    let mut world = exchange_failed();
+    let part = id(PART);
+    let tx = world
+        .segments
+        .sent(&order, &s2)
+        .unwrap()
+        .0
+        .as_str()
+        .to_owned();
+    let shown = result(
+        EXCHANGE,
+        "conversion",
+        &tx,
+        json!({ "status": "failed", "fault": "customer", "evidence": piece(EXCHANGE) }),
+    );
+    world
+        .with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &shown))
+        .unwrap();
+    let still_the_providers = |world: &World| {
+        assert_eq!(
+            world.reversals.carrier(&id(ORDER), &id("p1-s2")),
+            Some(&Carrier::Provider(id(EXCHANGE)))
+        );
+    };
+
+    // Policy refused it.
+    world.policy.refusing = true;
+    assert!(matches!(
+        world.accept_as_customer(&customer()),
+        Err(ReversalError::NotPermitted(_))
+    ));
+    world.policy.refusing = false;
+    still_the_providers(&world);
+
+    // A decision of a request another asked, answered to the customer, or of another request.
+    let stranger = Actor {
+        party: id("customer-2"),
+        acts: id("customer-2"),
+        ..customer()
+    };
+    let theirs = world.acceptance_request(&stranger, None);
+    let theirs_decided = world.policy.decide(&theirs).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &theirs, &theirs_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "a request of another caller's"
+    );
+    let ours = world.acceptance_request(&customer(), None);
+    assert_eq!(
+        world.accept_decided(&customer(), &ours, &theirs_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "a decision answering another request"
+    );
+    // Another action, or another segment's acceptance.
+    let mut elsewhere = world.acceptance_request(&customer(), None);
+    if let Action::AcceptFault { segment, .. } = &mut elsewhere.action {
+        *segment = id("p1-s3");
+    }
+    let elsewhere_decided = world.policy.decide(&elsewhere).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &elsewhere, &elsewhere_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "another segment's"
+    );
+    for (what, change) in [
+        (
+            "another order's",
+            Box::new(|a: &mut Action| {
+                if let Action::AcceptFault { order, .. } = a {
+                    *order = id("ord-2");
+                }
+            }) as Box<dyn Fn(&mut Action)>,
+        ),
+        (
+            "another transaction's",
+            Box::new(|a: &mut Action| {
+                if let Action::AcceptFault { showing, .. } = a {
+                    showing.transaction = id("tx-elsewhere");
+                }
+            }),
+        ),
+    ] {
+        let mut request = world.acceptance_request(&customer(), None);
+        change(&mut request.action);
+        let decided = world.policy.decide(&request).unwrap();
+        assert_eq!(
+            world.accept_decided(&customer(), &request, &decided),
+            Err(ReversalError::NotAnAcceptance),
+            "{what}"
+        );
+    }
+    let mut another = world.acceptance_request(&customer(), None);
+    another.action = Action::AskReversal {
+        order: id(ORDER),
+        segment: id("p1-s2"),
+        provider: id(EXCHANGE),
+    };
+    let another_decided = world.policy.decide(&another).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &another, &another_decided),
+        Err(ReversalError::NotAnAcceptance),
+        "another action"
+    );
+    still_the_providers(&world);
+
+    // The decision of the customer's own request: the carrier cites its receipt.
+    let mark = world.log.len();
+    let request = world.acceptance_request(&customer(), None);
+    let decision = world.policy.decide(&request).unwrap();
+    assert_eq!(
+        world.accept_decided(&customer(), &request, &decision),
+        Ok(Carrier::Customer)
+    );
+    assert!(world.whats_from(mark).iter().any(|w| matches!(
+        w,
+        What::ReversalCarrier { carrier: rutent_contracts::core_internal::Carrier::Customer,
+            accepted_by: Some(by), accepted_with: Some(act), .. }
+            if *by == customer() && *act == decision.receipt
+    )));
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Customer)
+    );
 }
