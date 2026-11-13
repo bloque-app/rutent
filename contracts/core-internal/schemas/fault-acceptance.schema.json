@@ -30,10 +30,9 @@
       "$ref": "urn:rutent:module-interface:common#/$defs/digest"
     },
     "fault": {
-      "description": "The fault accepted, as the showing names it: the customer's own where the customer accepts it.",
+      "description": "The fault accepted, as the showing names it: the customer's own, since only the customer signs this shape. The operator accepts a fault by its accept_fault command, never by this shape.",
       "enum": [
-        "customer",
-        "operator"
+        "customer"
       ]
     }
   }

@@ -238,7 +238,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 86] = [
+const SCHEMA_RULES: [SchemaRule; 87] = [
+    (
+        "fault-acceptance-of-the-operators-fault",
+        &[("/fault", "enum")],
+        "unknown variant `operator`",
+    ),
     (
         "verified-entry-of-a-replay-resting-on-nothing",
         &[("/what", "required")],

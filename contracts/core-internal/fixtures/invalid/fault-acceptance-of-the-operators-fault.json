@@ -1,0 +1,10 @@
+{
+  "order": "ord-1",
+  "segment": "p1-s2",
+  "transaction": "tx-f2",
+  "showing": {
+    "algorithm": "sha-256",
+    "value": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+  },
+  "fault": "operator"
+}

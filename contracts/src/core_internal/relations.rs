@@ -2214,7 +2214,12 @@ pub static RELATIONS: [Relation; 93] = [
         // The act, not a writer's label: the customer's own signed fault acceptance (`FAULT_ACCEPTANCE_SHAPE`), given in
         // its session, as an acceptance rests on its yes and session; the operator's `accept_fault` command, by the
         // deployment operator's party. Either comes after the showing it accepts: the customer's statement is about
-        // the showing's transaction and received after it, the command appended after it.
+        // the showing's transaction and received after it, the command appended after it. The log holds only salted
+        // commitments, so the body of a customer's acceptance is checked against the showing by whoever holds the
+        // kept bytes: Core on intake, before it appends the carrier, and a checker that fetches both through
+        // `Evidence::fetch`. Each checks that the body's `fault` is `customer` (`AcceptedFault`, the one value),
+        // that its `showing` equals the commitment of the carrier's showing, and that its `order`, `segment` and
+        // `transaction` equal the showing's `about`.
         cites: |e, _| match &e.what {
             What::ReversalCarrier {
                 accepted_with: Some(act),

@@ -650,3 +650,12 @@
   refused question naming a digest no record has, one naming a provider never asked, one leaving out a provider asked
   before (`<row>--refused`). 552 admission cases. (DEC-4, DEC-20, REQ-CPL-2, REQ-CPL-5, REQ-AUD-1, T-020-01,
   T-021-07)
+- Folded into 1.0.0 before its release: a fault acceptance accepts the customer's fault alone (round 3 of the
+  contract, item u). Only the customer signs the `fault-acceptance` shape, since the operator accepts by its
+  `accept_fault` command, so its `fault` is narrowed to `customer`: in the schema (`enum: ["customer"]`) and in Rust,
+  where `FaultAcceptance.fault` is now `AcceptedFault`, a one-variant enum, in place of provider-role's `Fault`.
+  `reversal-carrier-rests-on-its-acceptance` says who checks the body against the showing, since the log holds only
+  salted commitments: Core on intake and a checker through `Evidence::fetch`, each holding the body's `fault` to
+  `customer`, its `showing` to the commitment of the carrier's showing, and its `order`, `segment` and `transaction`
+  to the showing's `about`. One invalid fixture, `fault-acceptance-of-the-operators-fault`: 125 invalid. (DEC-4,
+  DEC-20, REQ-ORD-11, REQ-AUD-2, T-020-01, T-020-12)

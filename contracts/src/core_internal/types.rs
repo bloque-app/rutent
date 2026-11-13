@@ -2428,8 +2428,18 @@ pub struct FaultAcceptance {
     pub transaction: Id,
     /// The commitment the showing's stated entry names it by.
     pub showing: Digest,
-    /// The fault accepted, as the showing names it: the customer's own where the customer accepts it.
-    pub fault: crate::provider_role::Fault,
+    /// The fault accepted, as the showing names it: the customer's own, since only the customer signs this shape.
+    pub fault: AcceptedFault,
+}
+
+/// The fault a customer's acceptance accepts: its own, the one value, since only the customer signs a
+/// [`FaultAcceptance`]. The operator accepts a showing by its `accept_fault` command. Schema:
+/// `urn:rutent:core-internal:fault-acceptance#/properties/fault`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptedFault {
+    /// The customer's, as `provider_role::Fault::Customer` names it in the showing.
+    Customer,
 }
 
 /// Who carries a failed segment's reversal (`REQ-ORD-11`).
