@@ -328,6 +328,10 @@ keeps and appends as a stated entry.
   are one credit where they state the same figures (`Credits::One`), refuses the same transaction with another node,
   asset, unit, amount, account or holder (`CreditRestated::OtherFigures`), and takes another maker's or another
   transaction's notice as another credit (`Credits::Two`). Times and signatures are left aside.
+- **Two references are two claims.** Two notices under different transactions are two signed claims, each
+  attributable to the reserve that made it (`REQ-AUD-2`). Neither this contract nor the log can tell them from two
+  real credits: a reserve that states one credit twice, under two references, has signed for both, and the loss is
+  that reserve's.
 - **The question of what arrived** (`ArrivalQuestion`, shape `urn:rutent:provider-role:arrival-question`). The
   operator's statement, signed with the deployment's `operator_key` (`check_signed_by_operator`), as an operation
   is. It names its own `transaction`, fresh for the order it is asked for, so its answer counts only as that

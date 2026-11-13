@@ -1,6 +1,10 @@
 # provider-role changelog
 
 ## 3.1.0
+- Docs (`T-020-18`'s review, item 4): two arrival notices under different transactions are two signed claims, each
+  attributable to its reserve, which neither this contract nor the log can tell from two real credits; a reserve
+  stating one credit twice under two references bears the loss (`arrival.rs`, the README's "Arrivals"). No shape or
+  rule changed. (DEC-4, DEC-20, REQ-AUD-2, REQ-ORD-23, T-020-18)
 - An arrival question names its asset with its unit, and an answer is held to both (`T-020-18`'s review, item 3).
   `check_answer` compared a notice's asset by its id alone, so a notice of the asset counted in another unit, whose
   amount means another quantity, answered the question. `ArrivalQuestion.asset` is now a `Denomination` (the schema's

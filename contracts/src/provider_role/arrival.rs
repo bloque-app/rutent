@@ -12,6 +12,10 @@
 //! - **One credit, one arrival.** Every notice of one credit names its one transaction, whenever signed, and a reader
 //!   knows two such notices as one credit ([`check_one_credit`]): the same reserve, the same transaction, the same
 //!   figures. The same transaction with other figures is refused, never taken as a second credit.
+//! - **Two references are two claims.** Two notices under different transactions are two signed claims, each
+//!   attributable to the reserve that made it (`REQ-AUD-2`). Neither this contract nor the log can tell them from two
+//!   real credits: a reserve that states one credit twice, under two references, has signed for both, and the loss is
+//!   that reserve's.
 //! - **The question** (`urn:rutent:provider-role:arrival-question`) is the operator's, asking a reserve what arrived
 //!   at an account for an order, under a transaction fresh for that order, in the holder's session.
 //! - **The answer** (`urn:rutent:provider-role:arrival-answer`) is the reserve's, naming the question's transaction,
