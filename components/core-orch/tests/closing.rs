@@ -516,8 +516,29 @@ impl<'a> Part<'a> {
         bytes: &[u8],
         amount_out: &str,
     ) -> Graded {
+        self.grade_arriving(
+            grading,
+            place,
+            provider,
+            transaction,
+            bytes,
+            (amount_out, amount_out),
+        )
+    }
+
+    /// [`Part::grade`] for a segment that gave out `amount_out` and of which `arrives` arrives, its charge within the
+    /// rest (a gross tuple's).
+    fn grade_arriving(
+        &self,
+        grading: &mut dyn Grading,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amounts: (&str, &str),
+    ) -> Graded {
         let (graded, admitted) =
-            self.try_grade(grading, place, provider, transaction, bytes, amount_out);
+            self.try_grade_arriving(grading, place, provider, transaction, bytes, amounts);
         admitted.unwrap_or_else(|why| panic!("the log refuses what the grading answered: {why}"));
         graded
     }
@@ -531,6 +552,26 @@ impl<'a> Part<'a> {
         transaction: &str,
         bytes: &[u8],
         amount_out: &str,
+    ) -> (Graded, Result<(), String>) {
+        self.try_grade_arriving(
+            grading,
+            place,
+            provider,
+            transaction,
+            bytes,
+            (amount_out, amount_out),
+        )
+    }
+
+    /// [`Part::try_grade`] for a segment of which `arrives` arrives of the `amount_out` it gave out.
+    fn try_grade_arriving(
+        &self,
+        grading: &mut dyn Grading,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amounts: (&str, &str),
     ) -> (Graded, Result<(), String>) {
         let fee = no_fee();
         assert!(
@@ -565,7 +606,7 @@ impl<'a> Part<'a> {
             provider,
             transaction,
             bytes,
-            (amount_out, amount_out),
+            amounts,
             &fee,
             &result,
             |settled| grading.grade(settled),
@@ -730,7 +771,7 @@ fn fixture_world() -> (Catalogue, Networks, Kept) {
         ("reserve-wallet", "wallet-co", 1, &[]),
     ]);
     let mut nets = Networks::default();
-    nets.moved("co-ach", "tx-w", "ach-77", "ledger-in-holding", "COP", W.1);
+    nets.moved("co-ach", "tx-w", "ach-77", "ledger-in-holding", "COP", W.0);
     nets.served("polygon");
     let mut books = Kept::default();
     books.record("ledger-in", "tx-w", ("COP", W.0), ("COP", W.1), "100000");
@@ -1400,7 +1441,7 @@ fn shared_movement_keeps_one_segment_per_order_as_the_providers_word() {
     ]);
     let mut nets = Networks::default();
     for tx in ["tx-w1", "tx-w2"] {
-        nets.moved("co-ach", tx, "ach-shared", "ledger-in-holding", "COP", W.1);
+        nets.moved("co-ach", tx, "ach-shared", "ledger-in-holding", "COP", W.0);
     }
     for tx in ["tx-d1", "tx-d2"] {
         nets.moved("polygon", tx, "poly-shared", "acct-9", "USDC", D.1);
@@ -1640,7 +1681,7 @@ fn movements_core_checked_are_taken_live_and_after_a_restart() {
         ("reserve-wallet", "wallet-co", 1, &[]),
     ]);
     nets.moved("polygon", "tx-d", "poly-55", "acct-9", "USDC", D.1);
-    nets.moved("co-ach", "tx-wb", "ach-77", "ledger-in-holding", "COP", W.1);
+    nets.moved("co-ach", "tx-wb", "ach-77", "ledger-in-holding", "COP", W.0);
     nets.moved("polygon", "tx-db", "poly-55", "acct-9", "USDC", D.1);
     let log = Log::default();
     let a = Part::new(
@@ -2389,4 +2430,84 @@ fn exchange_and_ramp_operations_are_held_to_their_own_tuples_floors() {
         admits(&catalogue, &nobody, false),
         Err(Unadmitted::NotListed)
     );
+}
+
+/// What the network moved at each end of a gross segment, whose charge is within what it gives out (`DEC-13`): value
+/// entering a reserve from a public network is what entered, charge included; value leaving onto one is what arrives,
+/// the charge staying with the reserve. The withdrawal took in W.0 and its result gave out the same, W.1 of it
+/// arriving: the network moved W.0 and the segment closes on it, where a record of W.1 is another amount. The deposit
+/// gave out D.0 with D.1 arriving: the network moved D.1.
+// verifies: REQ-ORD-33, REQ-CAT-11
+#[test]
+fn a_charged_gross_segment_closes_on_what_the_network_moved_at_each_end() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let pieces = json!([
+        piece(1, "poly-55", "polygon"),
+        piece(3, "book-d", "reserve-wallet")
+    ]);
+    let deposit = deposit("tx-d", pieces);
+    // The network that recorded what entered, W.0, though W.1 arrives by it: it settles.
+    let (_, entered) = settles(part.grade_arriving(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        (W.0, W.1),
+    ));
+    assert_eq!(
+        named(&entered)[0].4,
+        moved("co-ach", "ach-77", None),
+        "the movement it names is checked against what entered: a network that recorded what arrives names none"
+    );
+    let exchange = result(
+        "conversion",
+        "exchange-a",
+        "tx-x",
+        X,
+        ("COP", "199800"),
+        json!([piece(3, "book-x", "exchange-a")]),
+    );
+    settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        1,
+        "exchange-a",
+        "tx-x",
+        &exchange,
+        X.1,
+    ));
+    // The deposit gave out D.0 and D.1 arrives by it. A network that recorded all it gave out moved another amount.
+    nets.moved("polygon", "tx-d", "poly-54", "acct-9", "USDC", D.0);
+    assert!(matches!(
+        part.grade_arriving(
+            &mut grading(&catalogue, &nets, &books, &mut closing),
+            2,
+            "reserve-wallet",
+            "tx-d",
+            &deposit,
+            (D.0, D.1),
+        ),
+        Graded::Waits(Short::NoPublicRecord(Some(_)))
+    ));
+    // The network records what arrives, D.1: it settles.
+    nets.moved("polygon", "tx-d", "poly-55", "acct-9", "USDC", D.1);
+    let (_, d) = settles(part.grade_arriving(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        2,
+        "reserve-wallet",
+        "tx-d",
+        &deposit,
+        (D.0, D.1),
+    ));
+    assert!(!d.is_empty());
 }

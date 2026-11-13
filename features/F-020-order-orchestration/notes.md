@@ -3210,14 +3210,8 @@ Other things this integration settled, for the record:
 - A record's operation states what arrives (router-api 4.0.0). `show` adds a gross charge back only where an accepted
   answer set the amount, so `handed_on` and the lines shown read what a result would state; a priced operation is
   checked as it states.
-- The close figures the operator's fee, and the amount a final deposit's public movement is checked against, on what
-  arrives by the segment (`ToGrade::arrives`), as the quote figures the fee: the charge stays with the reserve, so the
-  network moves what arrives.
-- **`accept_fault` trusts the decision it is handed (left, backstopped by the log).** For the customer's acceptance
-  `Reversals::accept_fault` checks that the handed-in request is the caller's own `accept_fault` for this order,
-  segment and showing, answered by the handed-in decision, and that it was permitted. It does not confirm, from the
-  history Core follows, that `decision.receipt` is a permitted `decide` after the showing in a session still open: Core's
-  followed history holds the decision only after the assembly follows the order again, and the session register is
-  policy's. The log's `reversal-carrier-rests-on-its-acceptance` refuses a carrier whose decision isn't such a one, so a
-  wrong decision costs a refused append, never a carrier. Checking it in Core needs the assembly to re-follow before it
-  accepts, which is more than a small change.
+- The close figures the operator's fee on what arrives by the segment (`ToGrade::arrives`), as the quote figures it.
+  A public movement is checked against what the network actually moved at that end: onto a public node (a final
+  deposit, and the exit replay's `PublicExit`), what arrives, the charge staying with the reserve; from a public node
+  (a withdrawal into a reserve), what entered, the charge included (the result's `amount_in`). The simulated network
+  (`conformance/src/sim`, `movements_made`) records the same.

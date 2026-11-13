@@ -1,10 +1,10 @@
 //! The simulated providers' behaviours and books, in process (`T-024-01`): what a script makes a provider do, and
 //! that a journal replayed into a fresh stand-in gives its books back.
 
-use rutent_conformance::role::SuiteContext;
+use rutent_conformance::role::{RoleProvider, SuiteContext};
 use rutent_conformance::sim::{
-    Act, Behaviour, Crash, Delivery, Entry, Role, Simulated, Spec, movements_of, operation,
-    recorded_segments,
+    Act, Behaviour, Crash, Delivery, Entry, Role, Simulated, Spec, movements_made, movements_of,
+    operation, recorded_segments,
 };
 use rutent_contracts::provider_role::{Operation, Statement};
 use serde_json::{Value, json};
@@ -360,4 +360,70 @@ fn a_repeat_sends_no_movement_again() {
     assert_eq!(first.movements.len(), 1);
     let repeat = sim.answer(&withdrawal("tx-1", "1000"), &Behaviour::default());
     assert!(repeat.movements.is_empty());
+}
+
+/// What a public network records is what it moved: value entering a reserve from a public network is what entered, the
+/// charge included, whatever the tuple reports; value leaving onto one is what arrives, which under a gross tuple is
+/// what the reserve gave out less its charge. A net tuple's deposit moves what it gave out.
+// verifies: REQ-MOD-4, REQ-CAT-11
+#[test]
+fn a_public_network_records_what_entered_and_what_arrives() {
+    use rutent_contracts::provider_role::Reporting;
+    let net = Spec::of(Role::Reserve, "sim-reserve")
+        .make(&context())
+        .advertisement()
+        .into_statement()
+        .statement;
+    let mut gross = net.clone();
+    for tuple in &mut gross.offers.reserve.as_mut().unwrap().tuples {
+        tuple.terms.reporting = Reporting::Gross;
+    }
+    let deposit = operation(
+        &context(),
+        json!({
+            "kind": "deposit", "transaction": "tx-d", "provider": "sim-reserve",
+            "origin": "sim-reserve-ledger", "destination": { "network": "sim-reserve-bank" },
+            "asset": "COP", "amount": "1000000", "dry_run": false,
+            "inputs": { "beneficiary.bank_account": "acct-1" },
+        }),
+    );
+    let withdrawal = withdrawal("tx-w", "1000000");
+    // A charge of 4 000 on what it took in, 1 000 000, and gave out, its charge within.
+    let result = |kind: &str| -> Value {
+        json!({ "kind": kind, "transaction": "tx", "outcome": {
+            "status": "succeeded", "amount_in": "1000000", "amount_out": "1000000",
+            "fee": { "asset": "COP", "amount": "4000" }, "evidence": [{ "reference": "tx" }] } })
+    };
+    let amounts = |made: Vec<rutent_conformance::sim::Movement>| -> Vec<String> {
+        made.into_iter().map(|m| m.amount).collect()
+    };
+    assert_eq!(
+        amounts(movements_made(
+            &deposit.statement,
+            &result("deposit"),
+            Some(&gross)
+        )),
+        ["996000"],
+        "a gross deposit moves what arrives"
+    );
+    assert_eq!(
+        amounts(movements_made(
+            &deposit.statement,
+            &result("deposit"),
+            Some(&net)
+        )),
+        ["1000000"],
+        "a net deposit moves what it gave out"
+    );
+    for ad in [&gross, &net] {
+        assert_eq!(
+            amounts(movements_made(
+                &withdrawal.statement,
+                &result("withdrawal"),
+                Some(ad)
+            )),
+            ["1000000"],
+            "a withdrawal's value entered with its charge, whatever its tuple reports"
+        );
+    }
 }
