@@ -4483,7 +4483,7 @@
           "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
@@ -4528,7 +4528,7 @@
           "value": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
         },
         "about": {
-          "order": "ord-1",
+          "order": "ord-2",
           "transaction": "tx-hold2"
         }
       }
@@ -4583,68 +4583,38 @@
         }
       },
       "entry": {
-        "kind": "verified",
-        "who": {
-          "party": "rutent",
-          "acts": "core-orch",
-          "role": "core",
-          "kind": "component"
-        },
-        "what": {
-          "call": "input",
-          "input": {
-            "record_id": "rec-x-route5",
-            "recorded_at": "2026-11-06T10:00:00Z",
-            "time_source": "core-orch clock",
-            "source": {
-              "kind": "customer",
-              "id": "user-42"
-            },
-            "standing": "stated",
-            "subject": {
-              "order": "ord-5"
-            },
-            "observed": {
-              "kind": "route_chosen",
-              "decision_record": "dr-0041",
-              "parts": [
-                {
-                  "part_id": "p1",
-                  "segments": [
-                    {
-                      "segment_id": "p1-s1",
-                      "provider": "us-bank",
-                      "kind": "deposit",
-                      "from": {
-                        "node": "ledger-in",
-                        "asset": {
-                          "id": "USDC",
-                          "decimals": 6
-                        }
-                      },
-                      "to": {
-                        "node": {
-                          "network": "base"
-                        },
-                        "asset": {
-                          "id": "USDC",
-                          "decimals": 6
-                        }
-                      }
-                    }
-                  ]
-                }
-              ],
-              "handed_on_from": "ord-1"
-            }
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
           }
         },
-        "when": {
-          "at": "2026-11-10T09:00:00Z",
-          "source": "core_clock"
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
         },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
         "outcome": {
-          "status": "observed"
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "3838383838383838383838383838383838383838383838383838383838383838"
+        },
+        "about": {
+          "order": "ord-2",
+          "transaction": "tx-hold2"
         }
       }
     }
@@ -4659,15 +4629,15 @@
     },
     "what": {
       "call": "holding_withdrawal",
-      "order": "ord-5",
+      "order": "ord-2",
       "handed_on_from": "ord-1",
       "holder": "us-bank",
       "record": {
         "log": "log-main",
-        "index": 189,
+        "index": 80,
         "entry": {
           "algorithm": "sha-256",
-          "value": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+          "value": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
         }
       }
     },

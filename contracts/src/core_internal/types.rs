@@ -1812,6 +1812,9 @@ pub enum MismatchKind {
 pub enum OperatorCommand {
     /// Appoint the checker outside the operator (`REQ-AUD-10`).
     AppointChecker,
+    /// Accept a provider's showing that a failed segment's failure was the operator's, so the operator carries its
+    /// reversal (`REQ-ORD-11`): about the order, its subject the segment.
+    AcceptFault,
 }
 
 /// Something that came after an order ended (`REQ-ORD-25`, `REQ-ORD-31`).
@@ -2287,6 +2290,22 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         accepted_by: Option<Actor>,
+        /// The act the acceptance rests on, by receipt: the customer's verified stated yes about the order and
+        /// segment, or the operator's `accept_fault` command. Present exactly where the carrier isn't the provider.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        accepted_with: Option<Receipt>,
+        /// The customer's session its yes was given in, as an acceptance is (`REQ-ORD-32`): present exactly where the
+        /// customer carries it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        session: Option<Id>,
     },
     /// A holding account's own record of the withdrawal that starts a route handed on (`REQ-ORD-40`, `INV-5`): the
     /// start proof, which settles the linked order's first segment. The linked order's first move rests on it
@@ -2387,6 +2406,30 @@ pub struct OutcomeConfirmation {
     pub confirmed_with: Receipt,
     /// When, by Core's clock.
     pub at: Timestamp,
+}
+
+/// The shape of a customer's acceptance of a provider's showing of fault: its own signed statement, kept and logged as
+/// a stated entry like any other, naming the showing it accepts (`REQ-ORD-11`).
+pub const FAULT_ACCEPTANCE_SHAPE: &str = "urn:rutent:core-internal:fault-acceptance";
+
+/// A customer's acceptance of a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): the
+/// body of its own signed statement, of shape [`FAULT_ACCEPTANCE_SHAPE`], as an acceptance's yes is its reserve's.
+/// It names the showing it accepts, by the showing's transaction and commitment, so it can't be read as accepting
+/// another, and it says the fault it accepts, so a dispute can't be read as an acceptance. Its stated entry is about
+/// the order, the segment and the showing's transaction. Schema: `urn:rutent:core-internal:fault-acceptance`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaultAcceptance {
+    /// The order.
+    pub order: Id,
+    /// The failed segment.
+    pub segment: Id,
+    /// The transaction the provider's showing, its failed result, is about.
+    pub transaction: Id,
+    /// The commitment the showing's stated entry names it by.
+    pub showing: Digest,
+    /// The fault accepted, as the showing names it: the customer's own where the customer accepts it.
+    pub fault: crate::provider_role::Fault,
 }
 
 /// Who carries a failed segment's reversal (`REQ-ORD-11`).
