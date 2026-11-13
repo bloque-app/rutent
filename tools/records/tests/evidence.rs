@@ -610,7 +610,8 @@ fn the_ci_run_fails_a_switch_turned_off_against_a_base_that_has_it_on() {
 // verifies: DEC-21
 #[test]
 fn an_ignored_test_with_a_reason_is_read_as_ignored() {
-    let results = Results::parse("test a::skipped ... ignored, needs a network\ntest a::plain ... ignored");
+    let results =
+        Results::parse("test a::skipped ... ignored, needs a network\ntest a::plain ... ignored");
     assert_eq!(results.state("skipped"), "ignored");
     assert_eq!(results.state("plain"), "ignored");
     assert!(!results.passed("skipped", 1));
@@ -624,7 +625,33 @@ fn results_with_bytes_that_are_not_utf8_are_read_lossily() {
     let mut bytes = b"test a::one ... ok\nprinted: ".to_vec();
     bytes.extend([0xff, 0xfe, 0x80, b'\n']);
     std::fs::write(&path, bytes).unwrap();
-    let out = binary().arg("--results").arg(&path).output().expect("the binary runs");
+    let out = binary()
+        .arg("--results")
+        .arg(&path)
+        .output()
+        .expect("the binary runs");
     std::fs::remove_file(&path).unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// verifies: DEC-17
+#[test]
+fn the_ci_run_is_strict_where_the_scope_file_reads_on() {
+    let real = std::fs::read_to_string(root().join("conformance/evidence/v0-scope")).unwrap();
+    let on = real.replace("strict: off", "strict: on");
+    let head = records_dir("on", &on);
+    let out = Command::new(env!("CARGO_BIN_EXE_evidence-table"))
+        .args(["--ci", "--root"])
+        .arg(&head)
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    std::fs::remove_dir_all(&head).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("the switch on"), "{stdout}");
 }
