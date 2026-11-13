@@ -53,6 +53,27 @@ pub(super) fn verified(
     GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)
 }
 
+/// A record of `what` by `who` at Core's clock with `outcome`, checked: an operator's command, an effect.
+pub(super) fn recorded(
+    clock: &dyn Clock,
+    who: &Actor,
+    what: What,
+    outcome: Outcome,
+) -> Result<GeneralEntry, AppendFailure> {
+    let entry = Entry::Verified(VerifiedEntry {
+        kind: VerifiedKind::Verified,
+        who: who.clone(),
+        what,
+        when: When {
+            at: now(clock)?,
+            source: TimeSource::CoreClock,
+        },
+        outcome,
+    });
+    entry.check().map_err(AppendFailure::Refused)?;
+    GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)
+}
+
 /// The parts of an envelope a stated entry names, read without trusting anything in it.
 #[derive(Deserialize)]
 struct Claimed {
