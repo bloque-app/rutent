@@ -1384,3 +1384,35 @@ fn decline_is_held_to_its_permission_its_customer_and_holder_checks_and_its_repo
         }
     ));
 }
+
+/// The order's record names a party the log's acceptances don't: a decider, a confirmer or a decliner acting for it is
+/// refused by the fixed rule alone, since the log's chain rule reads acceptances only. The record names `alice`'s own
+/// desk as a party of `ord-1`.
+// verifies: REQ-AUZ-4
+#[test]
+fn decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused() {
+    let named = || {
+        let mut register = Register::of_the_world();
+        register.order_parties.push((id("ord-1"), alice().party));
+        register
+    };
+    let not_permitted = refuse(RefusalClass::NotPermitted);
+
+    let (mut policy, request) = engine("decline", named());
+    let decline = decline_by(&request, &alice(), "req-decline");
+    assert_eq!(
+        policy.decline_outcome(&decline).unwrap().outcome,
+        not_permitted
+    );
+
+    let (mut policy, request) = engine("settled_es", named());
+    let confirmation = confirmation_by(&request, &alice(), "req-confirm");
+    assert_eq!(
+        policy.confirm_outcome(&confirmation).unwrap().outcome,
+        not_permitted
+    );
+
+    let (mut policy, request) = engine("sd", named());
+    let decide = decision_by(&request, &alice(), "req-decide");
+    assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
+}

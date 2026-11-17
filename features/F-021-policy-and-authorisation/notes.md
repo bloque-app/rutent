@@ -1454,8 +1454,13 @@ Branch `f-021/t-021-09-decline-and-status-policy`, from `m3` at `4b306ca9`. Edit
      `F-024`'s; no edit made here.
   2. The deployment's register must list `DeclineOutcome` and `AskStatus` for its logins: configuration, owner
      `F-021`'s register docs / the deployment.
-  3. Whether the decline's fixed `not_of` rule is covered apart from the log's chain rule: it is redundant with it
-     (the log's acceptance names the same parties), kept as defence in depth, and switching it off alone stays green.
+  3. Policy doesn't read whether a report is already settled: a decline after a confirmation, a second decline, a
+     confirmation after a decline. These rest on the contract rows `outcome-decline-rests-on-its-report` and
+     `outcome-confirmation-rests-on-its-report`; the log's refusal comes back as `Err(AppendFailure::Refused)`.
+     `T-020-20` must treat that `Err` as a refusal, not a crash. Owner: `T-020-20`.
+  4. `CarryOnward` now also carries Core's status ask: any provider, any order, bound to the segment's provider only
+     by the log's `status-is-asked-of-the-segments-provider`. A widening of that permission, for the register's docs
+     and the deployment's listing of Core's logins. Owner: the deployment and F-021's register docs.
 - **Red first.** The five named tests and the guard were written before the code. Against a stub that refused every
   decline and an `AskStatus` role arm of `None`, `decline of an outcome report ...is permitted and recorded first`,
   `decline by the reporters own party or login is refused` (answered `not_permitted` for `same_actor`), `decline by an
@@ -1467,7 +1472,7 @@ Branch `f-021/t-021-09-decline-and-status-policy`, from `m3` at `4b306ca9`. Edit
   | Rule switched off | Tests that went red |
   |---|---|
   | the decline's permission | `decline_is_held_to_its_permission_its_customer_and_holder_checks_and_its_report` |
-  | the decline's fixed not-the-customer by party | none alone: redundant with the log's chain rule, below |
+  | the fixed not-the-order-party rule, on the decline, on `confirm_outcome` and on `decide_stuck` (the review's probe: the order's record names a party its acceptances don't) | `decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused` for each; the confirm and decide switch-offs also turn `neither_the_customer_nor_the_holders_desk_resolves_its_order` red. Before the probe, T-021-06's two had the same gap |
   | reporter and decliner one actor | `decline_by_the_reporters_own_party_or_login_is_refused`, `decline_by_an_actor_whose_acts_for_chain_reaches_the_reporters_party_is_refused` (and the confirmation's two) |
   | the customer along its chain (log) | `decline_is_held_to_...` (the holding company case), `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
   | the holder's desk either way | `decline_is_held_to_...`, `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
