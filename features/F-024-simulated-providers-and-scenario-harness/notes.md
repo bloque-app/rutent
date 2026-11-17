@@ -622,3 +622,61 @@ real file says `off` or `on` when `T-024-10` flips it.
 - **`T-024-16`** owns `T-024-09`'s two low gaps in `tools/records/`: a test whose attribute is not first on its
   line is not found by the tag check, and a fixture crate the root manifest excludes but that has no `[workspace]`
   line of its own would be counted as run by the evidence table.
+
+## T-024-11: `REQ-CPL-9` through the assembly, with an agent acting
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/presence.rs`): the three the row names. In each, the customer's agent (its party
+the customer's, its login `agent-1`, kind `Agent`) is listed in `Registers` and scoped to what the order takes
+(`OpenSession`, `Authorise`, `Charge(Request)`, `Charge(FanOut)`, and no `AskAboutPerson`); it opens the session, requests,
+quotes and accepts; the reserve is scripted to demand a person's presence on its withdrawal; Core runs the order.
+- `presence demanded of an agent through the assembly is reported as the reserve's outcome`: the segment's outcome is
+  `WaitingOnThePerson`; the statement is the reserve's (maker, and the log's attribution of the stated entry Core
+  reported); its signed body states a refusal of class `waits_on_person`; the reserve moved nothing; the order is
+  neither complete nor failed; and Core's only input after the route is the segment's start (`provider_bound`).
+- `presence demanded of a person gives the same outcome as of an agent`: the same function with the customer's person
+  acting, compared field by field on what matters: the reserve's statement (maker, signed body, attribution), the
+  order's state, what the reserve's book holds, every input Core took after the route, and the number of decisions.
+  The person's run is checked to be a real demand, so two runs that stopped short alike don't pass.
+- `core takes no step after a reserve's demand of presence`, run with each actor: the segment's start is Core's last
+  input; no decision follows the move's, whose decision comes before its effect; and no input and no decision is
+  recorded after the reserve's statement Core reported.
+
+**Added.** `Fault::WaitsOnPerson { provider, kind }` and `harness::plant(core, &fault)` (`conformance/scenarios/src/
+harness.rs`), which `Step::Plant` now calls, so a test that drives Core's own calls plants a fault between them. The
+behaviour itself (`Act::RefuseWaitingOnThePerson`) was in the simulator already (`conformance/src/sim/`), so nothing
+there changed; nothing in `components/` changed.
+
+**Defaults taken.**
+- `Core::fleet()` stays a view. The row asks it to lend the fleet to the script; `Core::world()` (`T-024-04`) already
+  lends the simulated world for scripting, and the fault goes through it, so the fleet's grants stay unreachable from
+  a test (the two compile-fail doc tests hold it). `T-021-07`'s note that the fleet is "lent only shared" was about
+  `fleet()` and is met by `world()`.
+- The agent's scope is the four calls above. `AskAboutPerson` is left out: the order asks no one about a person, and
+  an agent can't be told from a person on this path by anything Core passes the reserve.
+- `AC-28` is the scenario's accepted criterion (the base order's shape); `presence.rs` tests `REQ-*` rows, which the
+  harness's `Scenario::new` takes only through an `AC-*`.
+- The statement compared is the signed body the reserve stated (`bytes`), not the log index, which differs by who asked
+  (the agent's run records the same calls, but a log index is an artefact of the order of records).
+
+**Gaps, with owners.**
+- The decision clause ("no decision follows the move's") has no rule-off: the only way to make Core decide after a
+  demand is a change in `components/core-orch`'s segments that no rule asks for, and the entries' order is asserted on
+  the log's real indices. Owner: none needed; `T-024-06`'s stuck path is where a decision after a demand could arise.
+- What an agent may then do at the reserve (approve, be refused) is the reserve's own and isn't Core's to test:
+  `REQ-CPL-9` is closed by Core's reporting only. Owner: the reserve's own conformance (`F-053`).
+- The comparison ignores the order's amount by design (the demand's statement holds none), so a run for another amount
+  gives the same outcome and that is no finding.
+
+**Rule-off table** (each switched off alone, under `alarm 400`, restored; the tests were green first, except that the
+first two were written passing, the code being there):
+
+| Switched off | Red |
+|---|---|
+| the segments' `WaitsOnPerson` arm (falls to the generic refusal, failed) | all three tests |
+| Core takes a `failed` input after the demand (the arm also records one) | all three; the first version of the first test stayed green on it (its list of kinds named none that exists), so it now asserts the inputs equal `provider_bound` alone |
+| the demand reported under another maker | the first and the second test (the third is about steps, and stays green) |
+| the agent's `Authorise` scope | all three (a step of the agent's order is refused, so the order never runs) |
+| the agent listed in `Registers` | all three (a step of the agent's order is refused, so the order never runs) |
+| the order's amount differing between agent and person | none, by design (above) |
