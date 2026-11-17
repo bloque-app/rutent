@@ -16,10 +16,15 @@
 //!   bytes, once; this reads it again from what the log and the store hold, so a copy appended with no relay named is
 //!   found too.
 //! - [`unproven`], a read that holds each entry the log marks `verified` against the statement the store keeps, so an
-//!   attribution that nothing kept bears out is found (`EXP-1`'s `G-09`). The log checks it on append; its opening
-//!   reads no statement but an advertisement's (`T-022-01`), and the outside checker (`T-022-04`) holds none.
+//!   attribution that nothing kept bears out is found (`EXP-1`'s `G-09`). The log checks it on append and again on
+//!   opening, with its register (`T-022-08`); this is the read for whoever holds the history and the evidence but not
+//!   the register, the outside checker's tool among them (`audit-check --evidence`, through [`KeptOnDisk`]).
 //!
 //! Neither read changes the log or the store.
+
+pub mod disk;
+
+pub use disk::KeptOnDisk;
 
 use rutent_contracts::core_internal::calls::{
     AppendFailure, Evidence, GeneralEntry, KeptStatements, Log, Signatures,

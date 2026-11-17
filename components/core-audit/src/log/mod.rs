@@ -22,6 +22,10 @@
 //!    nothing; since a failed write may still have reached the store, it reads the store back before its next
 //!    append (`INV-7`, `NFR-5`).
 //!
+//! **Opening** reads every record back and runs step 2 again on each stated entry the store marks `verified`, over the
+//! history before it, so an entry no kept statement bears out doesn't open as sound; a statement erased since is no
+//! loss, and the log opens ([`AuditLog::open`], `T-022-08`).
+//!
 //! `core-audit`'s own checks (`T-022-05`, `T-022-06`) append through a [`General`] handle, never through this type,
 //! so they can write no decision entry, and, since a [`GeneralEntry`] holds none attributed `verified`, attribute no
 //! statement. [`Policy`] is the matching handle for the policy engine, which writes nothing else.
@@ -41,10 +45,12 @@ use rutent_contracts::core_internal::calls::{
     Log, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Entry, KeptStatement, Receipt, Through, Violation, admit_entry, attribute,
+    Attribution, Entry, KeptStatement, Receipt, STATED_WITHOUT_ITS_KEPT_BYTES, StatedEntry, Through,
+    Violation, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, DigestAlgorithm, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, SafeInteger, to_canonical};
+use rutent_contracts::router_api::Id;
 
 pub use kept::KeptInMemory;
 pub use keys::{Clock, Settings, SystemClock};
@@ -69,6 +75,72 @@ pub const ADVERTISEMENT_NOT_KEPT: &str =
 
 /// The refusal of a stated entry whose kept bytes don't bear out its commitment: SHA-256 of the salt and the bytes.
 pub const KEPT_BYTES_DIFFER: &str = "a stated entry's kept bytes bear out its commitment: SHA-256 of the salt followed by the bytes";
+
+/// The refusal to open a store holding a stated entry marked `verified` that the statement kept under its commitment
+/// contradicts: the append's own attribution, run again over the history before it, the register as it then stood
+/// and the kept bytes, doesn't reach the entry the store holds (`REQ-AUD-2`, `T-022-08`).
+pub const KEPT_STATEMENT_CONTRADICTS: &str = "every stated entry the log's store marks verified is borne out, on opening, by the statement kept under its commitment, as its append attributed it";
+
+/// Why the log didn't open ([`AuditLog::open_naming`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotOpened {
+    /// As [`AuditLog::open`] answers: a store or an evidence store that can't be read now, or a record that breaks
+    /// a rule of the log's.
+    Failed(AppendFailure),
+    /// A stated entry the store marks `verified` that the statement kept under its commitment contradicts: the
+    /// receipt it has at its place in the store. Nothing is repaired or dropped.
+    Contradicted {
+        /// The entry.
+        entry: Receipt,
+    },
+}
+
+impl From<AppendFailure> for NotOpened {
+    fn from(failure: AppendFailure) -> Self {
+        NotOpened::Failed(failure)
+    }
+}
+
+impl From<NotOpened> for AppendFailure {
+    fn from(not: NotOpened) -> Self {
+        match not {
+            NotOpened::Failed(failure) => failure,
+            NotOpened::Contradicted { .. } => {
+                AppendFailure::Refused(Violation(KEPT_STATEMENT_CONTRADICTS))
+            }
+        }
+    }
+}
+
+/// The receipt of the record `bytes` at `index` of the log named `log`: SHA-256 of the record, at its place.
+fn receipt_of(log: &Id, index: usize, bytes: &[u8]) -> Receipt {
+    Receipt {
+        log: log.clone(),
+        index: SafeInteger::try_from(index as u64).expect("a log of fewer than 2^53 entries"),
+        entry: digest(&merkle::sha256(bytes)),
+    }
+}
+
+/// The entries `records` hold, as the log's file holds them, each with the receipt it has at its place in the log
+/// named `log`, read as the log reads them back but with nothing attributed, kept or registered: what a reader
+/// outside the log holds (`audit-check`). A record that isn't an entry in its canonical form is passed over, its
+/// place kept, for the checker finds it (`Finding::RecordNotAnEntry`).
+pub fn read_history(log: &Id, records: &[Vec<u8>]) -> Vec<(Receipt, Entry)> {
+    records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, bytes)| {
+            entry_of(bytes).map(|entry| (receipt_of(log, index, bytes), entry))
+        })
+        .collect()
+}
+
+/// The entry `bytes` are the canonical record of, where they are one.
+fn entry_of(bytes: &[u8]) -> Option<Entry> {
+    serde_json::from_slice(bytes)
+        .ok()
+        .filter(|e: &Entry| e.check().is_ok() && record(e).ok().as_deref() == Some(bytes))
+}
 
 /// Whether `entry` is a stated entry of an advertisement's shape.
 fn is_advertisement(entry: &Entry) -> bool {
@@ -142,11 +214,7 @@ impl State {
     ) -> Receipt {
         let hash = merkle::sha256(bytes);
         let index = self.history.len();
-        let receipt = Receipt {
-            log: settings.log.clone(),
-            index: SafeInteger::try_from(index as u64).expect("a log of fewer than 2^53 entries"),
-            entry: digest(&hash),
-        };
+        let receipt = receipt_of(&settings.log, index, bytes);
         self.register
             .record(settings, &self.history, &entry, advertisement);
         self.leaves.push(merkle::leaf_hash(bytes));
@@ -164,12 +232,74 @@ fn bearing_out(kept: &KeptStatement) -> Option<Vec<u8>> {
     (digest(&merkle::sha256(&salted)) == kept.commitment).then_some(bytes)
 }
 
+/// What the log's attribution of a stated entry reached.
+enum Attributed {
+    /// The evidence store keeps nothing under the entry's commitment: never kept, or erased since (`REQ-AUD-13`). A
+    /// statement answered under another commitment than the one asked is nothing kept under that one.
+    NotKept,
+    /// The evidence store keeps bytes under the commitment that don't bear it out.
+    BytesDiffer,
+    /// The entry the log records, attributed from the kept bytes, and those bytes.
+    Recorded(StatedEntry, Vec<u8>),
+}
+
+/// The log's one attribution of `claim`, a stated entry as its writer hands it over, unverified: the bytes kept under
+/// its commitment held to it (SHA-256 of the salt followed by the bytes), then `core-internal`'s [`attribute`] over
+/// `state`'s history and register as they stand before the entry, with a strict Ed25519 check. The append runs it on
+/// every stated entry; the opening runs it again on every one the store marks `verified`, over the history and the
+/// register read back to that entry's place, which are the ones the append ran it over (`T-022-08`). A store it
+/// can't read fails it, so neither path takes an unread store for an erased statement.
+fn attribute_stated<K: KeptStatements>(
+    settings: &Settings,
+    state: &State,
+    kept: &mut K,
+    claim: &StatedEntry,
+) -> Result<Attributed, AppendFailure> {
+    let Some(statement) = kept
+        .kept(&claim.commitment)?
+        .filter(|k| k.commitment == claim.commitment)
+    else {
+        return Ok(Attributed::NotKept);
+    };
+    let Some(bytes) = bearing_out(&statement) else {
+        return Ok(Attributed::BytesDiffer);
+    };
+    let mut keys = Keys {
+        settings,
+        register: &state.register,
+    };
+    let recorded = attribute(claim, &state.history, kept, &mut keys, &Ed25519Strict)?;
+    Ok(Attributed::Recorded(recorded, bytes))
+}
+
 impl<S: Store, K: KeptStatements> AuditLog<S, K> {
     /// Opens the log kept in `store`, reading back every record it holds, with `kept` the evidence store's read and
     /// `settings` the deployment's. It refuses a store holding a record that isn't an entry in its canonical form,
     /// and one holding an advertisement whose bytes `kept` doesn't keep as its commitment names them: the register
     /// would otherwise come back without it.
+    ///
+    /// It re-attributes what it reads back (`REQ-AUD-2`, `T-022-08`): every stated entry the store marks `verified` is
+    /// held to the statement kept under its commitment by the append's own attribution, over the history and the
+    /// register before it, so by the same checks (commitment, deployment, maker, shape, time, key, transaction, a
+    /// strict signature, and, from the register, that the key is the maker's and the party the one it states for).
+    /// Where the kept statement doesn't reach the entry the store holds, the opening is refused
+    /// ([`KEPT_STATEMENT_CONTRADICTS`]; [`AuditLog::open_naming`] names the entry), and nothing is repaired or
+    /// dropped. Where the evidence store keeps nothing under the commitment, the statement was erased since, which is
+    /// no loss: history must still check after an erasure (`REQ-AUD-13`, `AC-36`), so the log opens, and the bound
+    /// evidence store reports bytes gone with no erasure (`receipts::BoundStore::missing`). An evidence store that
+    /// can't be read answers [`AppendFailure::Unavailable`], and the log doesn't open. An entry marked unverified is
+    /// held to nothing here.
+    ///
+    /// Its cost: one read of the evidence store and one strict Ed25519 check for each `verified` stated entry, beside
+    /// the read back the log already makes; for a module the operator publishes, `attribute` also walks the history
+    /// for its releases, as its append did.
     pub fn open(settings: Settings, store: S, kept: K) -> Result<Self, AppendFailure> {
+        Self::open_naming(settings, store, kept).map_err(AppendFailure::from)
+    }
+
+    /// Opens the log as [`AuditLog::open`] does, naming the entry a kept statement contradicts where that refuses
+    /// the opening ([`NotOpened::Contradicted`]).
+    pub fn open_naming(settings: Settings, store: S, kept: K) -> Result<Self, NotOpened> {
         let mut log = AuditLog {
             settings,
             store,
@@ -183,18 +313,17 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
     }
 
     /// The history, the tree and the register as the store and the evidence store hold them, built apart, so a read
-    /// that fails part-way leaves the log's own as they were.
-    fn read_back(&mut self) -> Result<State, AppendFailure> {
+    /// that fails part-way leaves the log's own as they were. Each stated entry marked `verified` is re-attributed as
+    /// [`AuditLog::open`] says.
+    fn read_back(&mut self) -> Result<State, NotOpened> {
         let records = self.store.records().map_err(|e| match e {
             StoreError::Unavailable(_) => AppendFailure::Unavailable,
             StoreError::Corrupt(_) => AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)),
         })?;
         let mut state = State::default();
         for bytes in records {
-            let entry: Entry = serde_json::from_slice(&bytes)
-                .ok()
-                .filter(|e: &Entry| e.check().is_ok() && record(e).ok().as_ref() == Some(&bytes))
-                .ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
+            let entry =
+                entry_of(&bytes).ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
             let advertisement = match &entry {
                 Entry::Stated(s) if is_advertisement(&entry) => Some(
                     self.kept
@@ -203,10 +332,29 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                         .and_then(|k| bearing_out(&k))
                         .ok_or(AppendFailure::Refused(Violation(ADVERTISEMENT_NOT_KEPT)))?,
                 ),
-                // Only an advertisement's bytes are read back: a statement erased since is no loss to the register
-                // (`REQ-AUD-13`).
+                // Only an advertisement's bytes are read back for the register: a statement erased since is no loss
+                // to it (`REQ-AUD-13`).
                 _ => None,
             };
+            if let Entry::Stated(stated) = &entry
+                && let Attribution::Verified { who } = &stated.attribution
+            {
+                let claim = StatedEntry {
+                    attribution: Attribution::Unverified {
+                        claimed_by: who.clone(),
+                    },
+                    ..stated.clone()
+                };
+                match attribute_stated(&self.settings, &state, &mut self.kept, &claim)? {
+                    Attributed::NotKept => {}
+                    Attributed::Recorded(again, _) if again == *stated => {}
+                    Attributed::Recorded(..) | Attributed::BytesDiffer => {
+                        return Err(NotOpened::Contradicted {
+                            entry: receipt_of(&self.settings.log, state.history.len(), &bytes),
+                        });
+                    }
+                }
+            }
             state.take(&self.settings, &bytes, entry, advertisement.as_deref());
         }
         Ok(state)
@@ -249,32 +397,20 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
         }
         let (entry, advertisement) = match entry {
             Entry::Stated(claim) => {
-                let kept = self
-                    .kept
-                    .kept(&claim.commitment)?
-                    .filter(|k| k.commitment == claim.commitment);
-                let bytes = match &kept {
-                    Some(k) => Some(
-                        bearing_out(k)
-                            .ok_or(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)))?,
+                match attribute_stated(&self.settings, &self.state, &mut self.kept, claim)? {
+                    Attributed::NotKept => {
+                        return Err(AppendFailure::Refused(Violation(
+                            STATED_WITHOUT_ITS_KEPT_BYTES,
+                        )));
+                    }
+                    Attributed::BytesDiffer => {
+                        return Err(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)));
+                    }
+                    Attributed::Recorded(recorded, bytes) => (
+                        Entry::Stated(recorded),
+                        Some(bytes).filter(|_| is_advertisement(entry)),
                     ),
-                    None => None,
-                };
-                let mut keys = Keys {
-                    settings: &self.settings,
-                    register: &self.state.register,
-                };
-                let recorded = attribute(
-                    claim,
-                    &self.state.history,
-                    &mut self.kept,
-                    &mut keys,
-                    &Ed25519Strict,
-                )?;
-                (
-                    Entry::Stated(recorded),
-                    bytes.filter(|_| is_advertisement(entry)),
-                )
+                }
             }
             Entry::Verified(_) => (entry.clone(), None),
         };
