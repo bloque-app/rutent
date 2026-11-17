@@ -4293,3 +4293,16 @@ more), one probe in `tests/reversal.rs`.
   | the log lets a statement close a deposit (contract relation, restored) | the statement-alone test, `providers_word_never_closes_a_part` |
   | the log refuses every close, a public record's included (contract relation, restored) | the public-record-admitted test and nine older ones |
   | a final deposit also records a mismatch | none: not observable. Core's check returns `NoPublicRecord` first, so the guard is defence in depth; the log's `non_final` row (the contract's cases) is the second |
+
+### T-020-22, review answers (of `cd515045`)
+
+- **1. A regrade after a restart raised twice.** `Unraised::expect` now skips a segment whose mismatch is pending
+  already (it only fills in the entry's place, so the receipts bind) or raised; `rebuilt` also records the segments the
+  log holds a raise of, so a segment graded again after its raise isn't raised again. Test
+  `a_segment_graded_again_after_a_restart_raises_its_mismatch_once` (the reviewer's probe, plus a regrade after the
+  raise). It also covers the pile of receipt-less pendings after a failed hand-over (item 3).
+- **2. A refused raise stalls the part.** Default 1 is narrowed: only `Unavailable` fails the run. A `Refused` raise
+  entry (or one that fails its own check) is kept readable in `Closing::refused_raises()` (order, segment, why), the
+  mismatch is not tried again, and the part runs on. Test `a_raise_the_log_refuses_is_kept_readable_and_stops_nothing`.
+- **Rule-offs:** the dedupe off, and the raised-skip off alone: `a_segment_graded_again_after_a_restart_raises_its_mismatch_once`;
+  a refusal failing the run: `a_raise_the_log_refuses_is_kept_readable_and_stops_nothing`. None hung.

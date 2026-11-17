@@ -249,6 +249,13 @@ impl Closing {
         closing
     }
 
+    /// The raises of a non-final public end's mismatch the log refused, each with its order, segment and why: a refusal
+    /// is deterministic and the raise advisory, so the part runs on and the refusal stays readable here
+    /// (`T-020-22`).
+    pub fn refused_raises(&self) -> &[(Id, Id, rutent_contracts::core_internal::Violation)] {
+        self.unraised.refused()
+    }
+
     /// The order and segment that first took the public movement `movement` on `network`, if one did.
     pub fn evidences(&self, network: &str, movement: &str) -> Option<(&str, &str)> {
         self.relied

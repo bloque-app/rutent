@@ -3249,3 +3249,120 @@ fn final_deposit_settled_on_a_public_record_and_the_reserves_statement_is_admitt
     assert_eq!(evidence[1].3, "reserve-wallet");
     assert!(mismatches(&whats).is_empty());
 }
+
+/// A segment graded again after a restart that rebuilt Core's record from the log (the crash came after the graded
+/// entries were appended and before `segment_settled`) raises its mismatch once: a pending one is never doubled, and
+/// a mismatch pending with no receipt after a failed hand-over isn't piled up either.
+// verifies: REQ-ORD-9
+#[test]
+fn a_segment_graded_again_after_a_restart_raises_its_mismatch_once() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "99000000"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let mut first = Closing::new();
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut first),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    let receipts = receipts_of(&log, whats.len());
+    // The restart: Core's record is rebuilt from the log, which holds the mismatch and no raise; the segment is graded
+    // again, answering the same entries, which the log holds already (the same receipts).
+    let mut rebuilt = Closing::recorded(&log.entries());
+    let mut ev = grading(&catalogue, &nets, &books, &mut rebuilt);
+    let (graded, _) = part.try_grade(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1);
+    assert!(matches!(graded, Graded::Settles { .. }));
+    // Told twice, as a re-run of the settle is.
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    let (mut channel, mut ids) = (
+        Channel {
+            raised: Vec::new(),
+            reaches: true,
+        },
+        Counter(0),
+    );
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1, "raised once");
+    assert_eq!(raises_in(&log).len(), 1);
+    // Graded again after it was raised: not raised again.
+    let (graded, _) = part.try_grade(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1);
+    assert!(matches!(graded, Graded::Settles { .. }));
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+}
+
+/// A log that refuses a raise's entry, as a rule does and will again: the raise is advisory and moves nothing, so the
+/// part isn't failed for it. The refusal stays readable, the mismatch isn't tried again, and only a log that can't
+/// take the entry now fails the run.
+// verifies: REQ-ORD-9
+#[test]
+fn a_raise_the_log_refuses_is_kept_readable_and_stops_nothing() {
+    struct Refusing;
+    impl rutent_contracts::core_internal::calls::Log for Refusing {
+        fn append(&mut self, _: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Refused(Violation("a rule of the log")))
+        }
+    }
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "99000000"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    let (_, whats) = settles(part.grade(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1));
+    let receipts = receipts_of(&log, whats.len());
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    let (mut channel, mut ids) = (
+        Channel {
+            raised: Vec::new(),
+            reaches: true,
+        },
+        Counter(0),
+    );
+    let core = actor("rutent-core", Role::Core);
+    let mut refusing = Refusing;
+    assert_eq!(
+        ev.raise(RaiseDesk {
+            log: &mut refusing,
+            clock: &Noon,
+            fresh: &mut ids,
+            operator: &mut channel,
+            core: &core,
+        }),
+        Ok(()),
+        "a refusal fails no run"
+    );
+    assert_eq!(channel.raised.len(), 1);
+    // Not tried again, whatever the log now says.
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+    assert!(raises_in(&log).is_empty());
+    let refused = closing.refused_raises();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(
+        (refused[0].0.as_str(), refused[0].1.as_str()),
+        ("ord-1", "p1-s1")
+    );
+    assert_eq!(refused[0].2, Violation("a rule of the log"));
+}

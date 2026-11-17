@@ -96,19 +96,45 @@ struct Raised {
     receipt: Option<Receipt>,
 }
 
-/// Core's record of the mismatches it found and has not raised and recorded yet.
+/// Core's record of the mismatches it found and has not raised and recorded yet, those it has, and the raises the log
+/// refused.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Unraised(Vec<Pending>);
+pub(super) struct Unraised {
+    pending: Vec<Pending>,
+    /// The segments (order, segment) whose mismatch is raised and recorded, or whose raise the log refused: a segment
+    /// graded again, as after a restart, is never raised a second time.
+    settled: Vec<(Id, Id)>,
+    /// The raises the log refused, with why: kept readable, since a refusal is deterministic and the raise is
+    /// advisory, so it stops nothing ([`Closing::refused_raises`](super::Closing::refused_raises)).
+    refused: Vec<(Id, Id, Violation)>,
+}
 
 impl Unraised {
-    /// A mismatch graded, its entry the `index`th the grading answered.
+    /// A mismatch graded, its entry the `index`th the grading answered. Ignored where this segment's mismatch is
+    /// pending already (a segment graded again after a restart rebuilt it from the log) or raised.
     pub(super) fn expect(
         &mut self,
         (order, segment): (Id, Id),
         (found, moved, stated): (PublicEndMismatch, PublicFigures, PublicFigures),
         index: usize,
     ) {
-        self.0.push(Pending {
+        let key = (order.clone(), segment.clone());
+        if self.settled.contains(&key)
+            || self
+                .pending
+                .iter()
+                .any(|p| p.order == order && p.segment == segment && p.found == found)
+        {
+            // A pending one read from the log takes the new receipts' place: the entries are equal, so the receipts
+            // are the same.
+            for p in &mut self.pending {
+                if p.order == order && p.segment == segment && p.index.is_none() {
+                    p.index = Some(index);
+                }
+            }
+            return;
+        }
+        self.pending.push(Pending {
             order,
             segment,
             found,
@@ -122,7 +148,7 @@ impl Unraised {
 
     /// The receipts of the entries the grading answered for `segment` of `order`, once appended.
     pub(super) fn bind(&mut self, order: &Id, segment: &Id, receipts: &[Receipt]) {
-        for pending in &mut self.0 {
+        for pending in &mut self.pending {
             if &pending.order == order
                 && &pending.segment == segment
                 && pending.receipt.is_none()
@@ -133,8 +159,13 @@ impl Unraised {
         }
     }
 
+    /// The raises the log refused: the segment's order and segment, and why.
+    pub(super) fn refused(&self) -> &[(Id, Id, Violation)] {
+        &self.refused
+    }
+
     /// The mismatches the log holds and no raise cites, after a restart that lost Core's record: raised on the next
-    /// call, as one whose raise the log never took.
+    /// call, as one whose raise the log never took. Those it holds a raise of are not raised again.
     pub(super) fn rebuilt(history: &[(Receipt, Entry)]) -> Self {
         let raised = |receipt: &Receipt| {
             history.iter().any(|(_, entry)| match entry {
@@ -148,41 +179,47 @@ impl Unraised {
                 _ => false,
             })
         };
-        Self(
-            history
-                .iter()
-                .filter_map(|(receipt, entry)| match entry {
-                    Entry::Verified(VerifiedEntry {
-                        what:
-                            What::PublicMismatch {
-                                order,
-                                segment,
-                                found,
-                                moved,
-                                stated,
-                                ..
-                            },
+        let mut rebuilt = Self::default();
+        for (receipt, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what:
+                    What::PublicMismatch {
+                        order,
+                        segment,
+                        found,
+                        moved,
+                        stated,
                         ..
-                    }) if !raised(receipt) => Some(Pending {
-                        order: order.clone(),
-                        segment: segment.clone(),
-                        found: *found,
-                        moved: moved.clone(),
-                        stated: stated.clone(),
-                        index: None,
-                        receipt: Some(receipt.clone()),
-                        raised: None,
-                    }),
-                    _ => None,
-                })
-                .collect(),
-        )
+                    },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            if raised(receipt) {
+                rebuilt.settled.push((order.clone(), segment.clone()));
+            } else {
+                rebuilt.pending.push(Pending {
+                    order: order.clone(),
+                    segment: segment.clone(),
+                    found: *found,
+                    moved: moved.clone(),
+                    stated: stated.clone(),
+                    index: None,
+                    receipt: Some(receipt.clone()),
+                    raised: None,
+                });
+            }
+        }
+        rebuilt
     }
 
     /// Raises each mismatch whose entry the log took, once, and records the raise as built, `done` where it reached
     /// the operator and `failed` where it didn't. Both entries a raise may need are built before it is raised, so
     /// nothing that fails after the raise can have it raised again. Each is tried even where an earlier one couldn't
-    /// be recorded; the first failure is answered.
+    /// be recorded. Only a log that can't take an entry now (`Unavailable`) is answered, and the raise is tried again
+    /// next time; a refusal is deterministic, the raise advisory and moving nothing, so it is kept in
+    /// [`Self::refused`] and the mismatch is not tried again.
     pub(super) fn raise(&mut self, desk: RaiseDesk<'_>) -> Result<(), AppendFailure> {
         let RaiseDesk {
             log,
@@ -192,48 +229,63 @@ impl Unraised {
             core,
         } = desk;
         let mut first = Ok(());
-        for pending in &mut self.0 {
+        let mut finished = Vec::new();
+        for (at, pending) in self.pending.iter_mut().enumerate() {
             let Some(receipt) = pending.receipt.clone() else {
                 continue;
             };
-            if pending.raised.is_none() {
-                let at = clock
-                    .now()
-                    .timestamp()
-                    .ok_or(AppendFailure::Refused(Violation(
-                        "Core's clock reads a time a timestamp can hold",
-                    )))?;
-                let raise = Raise {
-                    raise: fresh.id(),
-                    difference: Difference::PublicEnd {
-                        order: pending.order.clone(),
-                        segment: pending.segment.clone(),
-                        found: pending.found,
-                        moved: pending.moved.clone(),
-                        stated: pending.stated.clone(),
-                    },
-                    cites: vec![receipt],
-                    at,
-                };
-                raise.check().map_err(AppendFailure::Refused)?;
-                let entry = |outcome| built(core, &raise, outcome);
-                let (done, failed) = (entry(Outcome::Done {})?, entry(Outcome::Failed {})?);
-                let delivered = matches!(operator.raise(&raise), Delivery::Delivered);
-                pending.raised = Some(Raised {
-                    entry: if delivered { done } else { failed },
-                    receipt: None,
-                });
-            }
-            if let Some(raised) = &mut pending.raised
-                && raised.receipt.is_none()
-                && let Err(failure) = append(log, raised)
-                && first.is_ok()
-            {
-                first = Err(failure);
+            let done = (|| {
+                if pending.raised.is_none() {
+                    let at = clock
+                        .now()
+                        .timestamp()
+                        .ok_or(AppendFailure::Refused(Violation(
+                            "Core's clock reads a time a timestamp can hold",
+                        )))?;
+                    let raise = Raise {
+                        raise: fresh.id(),
+                        difference: Difference::PublicEnd {
+                            order: pending.order.clone(),
+                            segment: pending.segment.clone(),
+                            found: pending.found,
+                            moved: pending.moved.clone(),
+                            stated: pending.stated.clone(),
+                        },
+                        cites: vec![receipt],
+                        at,
+                    };
+                    raise.check().map_err(AppendFailure::Refused)?;
+                    let entry = |outcome| built(core, &raise, outcome);
+                    let (done, failed) = (entry(Outcome::Done {})?, entry(Outcome::Failed {})?);
+                    let delivered = matches!(operator.raise(&raise), Delivery::Delivered);
+                    pending.raised = Some(Raised {
+                        entry: if delivered { done } else { failed },
+                        receipt: None,
+                    });
+                }
+                match &mut pending.raised {
+                    Some(raised) if raised.receipt.is_none() => append(log, raised),
+                    _ => Ok(()),
+                }
+            })();
+            match done {
+                Ok(()) => finished.push(at),
+                Err(AppendFailure::Refused(why)) => {
+                    self.refused
+                        .push((pending.order.clone(), pending.segment.clone(), why));
+                    finished.push(at);
+                }
+                Err(failure) => {
+                    if first.is_ok() {
+                        first = Err(failure);
+                    }
+                }
             }
         }
-        self.0
-            .retain(|p| p.raised.as_ref().is_none_or(|r| r.receipt.is_none()));
+        for at in finished.into_iter().rev() {
+            let gone = self.pending.remove(at);
+            self.settled.push((gone.order, gone.segment));
+        }
         first
     }
 }
