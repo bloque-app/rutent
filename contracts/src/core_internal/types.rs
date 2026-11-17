@@ -1540,6 +1540,30 @@ pub enum Direction {
     Over,
 }
 
+/// One party's figure in a pair of reports that can't be compared: an amount, in the asset and unit it was stated in.
+/// Schema: `urn:rutent:core-internal:raise#/$defs/reported`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reported {
+    /// The amount, in the asset's unit.
+    pub amount: Amount,
+    /// The asset, and the unit it is counted in.
+    pub asset: Denomination,
+}
+
+/// Why a holding account's balance can't be compared with the value held or evidenced there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingIncomparable {
+    /// Value is evidenced at the account in another asset, or another unit, than the account's (`INV-1`).
+    EvidencedInAnotherAsset,
+    /// Value is evidenced at an account no reading of its balance was given for (`INV-1`).
+    NoReading,
+    /// The sum held or evidenced there passes what an amount can state (78 digits), so it is past every balance, by
+    /// more than an amount can state (`REQ-AUD-15`, `INV-1`).
+    SumPastTheBound,
+}
+
 /// The difference a raise carries. Schema: `urn:rutent:core-internal:raise#/$defs/difference`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1569,6 +1593,33 @@ pub enum Difference {
         asset: Denomination,
         /// Whose word the balance was.
         word: Word,
+    },
+    /// A segment's two reports can't be compared: they state two assets, or one asset in two units (`REQ-ORD-9`,
+    /// `THR-107`). Each figure is given as it was stated.
+    ReportsNotComparable {
+        /// The order raised.
+        order: Id,
+        /// The segment.
+        segment: Id,
+        /// What the sending party reports it sent.
+        sent: Reported,
+        /// What the receiving party reports it received.
+        received: Reported,
+    },
+    /// A holding account's balance can't be compared with the value held or evidenced there (`REQ-AUD-15`,
+    /// `INV-1`).
+    HoldingNotComparable {
+        /// The holding account.
+        account: Id,
+        /// Whose word the balance was: present exactly when a balance was read, so absent for `no_reading`.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        word: Option<Word>,
+        /// Why it can't be compared.
+        reason: HoldingIncomparable,
     },
     /// A provider charged above its formula's maximum (`REQ-QTE-5`).
     Charge {

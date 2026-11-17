@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:raise",
   "title": "Raise",
-  "description": "A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an order, so a raise only detects (REQ-ORD-9, REQ-AUD-15, ADR-0009). That the difference is a real one (two amounts or times that differ, a charge above its maximum) is checked by the Rust types.",
+  "description": "A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an order, so a raise only detects (REQ-ORD-9, REQ-AUD-15, ADR-0009). That the difference is a real one (two amounts or times that differ, a charge above its maximum, two reports in two assets or units) is checked by the Rust types.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -44,7 +44,9 @@
         "kind": {
           "enum": [
             "reports",
+            "reports_not_comparable",
             "holding",
+            "holding_not_comparable",
             "charge",
             "settlement_time"
           ]
@@ -73,12 +75,42 @@
             ],
             "properties": {
               "kind": {
+                "const": "reports_not_comparable"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_reports_not_comparable"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
                 "const": "holding"
               }
             }
           },
           "then": {
             "$ref": "#/$defs/difference_holding"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_not_comparable"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding_not_comparable"
           }
         },
         {
@@ -224,6 +256,56 @@
         }
       }
     },
+    "difference_reports_not_comparable": {
+      "description": "A segment's two reports can't be compared: they state two assets, or one asset in two units (REQ-ORD-9, THR-107). That the two assets differ is checked by the Rust types.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "sent",
+        "received"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reports_not_comparable"
+        },
+        "order": {
+          "description": "The order raised.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "sent": {
+          "description": "What the sending party reports it sent, as it stated it.",
+          "$ref": "#/$defs/reported"
+        },
+        "received": {
+          "description": "What the receiving party reports it received, as it stated it.",
+          "$ref": "#/$defs/reported"
+        }
+      }
+    },
+    "reported": {
+      "description": "One party's figure: an amount, in the asset and unit it was stated in.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amount",
+        "asset"
+      ],
+      "properties": {
+        "amount": {
+          "description": "The amount, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    },
     "difference_holding": {
       "description": "A holding account's balance and the value held there for orders disagree (REQ-AUD-15).",
       "type": "object",
@@ -265,6 +347,62 @@
             "publisher"
           ]
         }
+      }
+    },
+    "difference_holding_not_comparable": {
+      "description": "A holding account's balance can't be compared with the value held or evidenced there (REQ-AUD-15, INV-1). It names whose word the balance was exactly when a balance was read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_not_comparable"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "word": {
+          "description": "Whose word the balance was.",
+          "enum": [
+            "checked",
+            "publisher"
+          ]
+        },
+        "reason": {
+          "description": "Why it can't be compared: value evidenced in another asset or unit than the account's, value evidenced at an account with no reading, or a sum past what an amount can state, so past every balance.",
+          "enum": [
+            "evidenced_in_another_asset",
+            "no_reading",
+            "sum_past_the_bound"
+          ]
+        }
+      },
+      "if": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "const": "no_reading"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "word"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "word"
+        ]
       }
     }
   }

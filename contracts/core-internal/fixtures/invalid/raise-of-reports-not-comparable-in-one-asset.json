@@ -1,0 +1,41 @@
+{
+  "raise": "raise-5",
+  "difference": {
+    "kind": "reports_not_comparable",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "sent": {
+      "amount": "1000000",
+      "asset": {
+        "id": "USDC",
+        "decimals": 6
+      }
+    },
+    "received": {
+      "amount": "1000000",
+      "asset": {
+        "id": "USDC",
+        "decimals": 6
+      }
+    }
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 60,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6161616161616161616161616161616161616161616161616161616161616161"
+      }
+    },
+    {
+      "log": "log-main",
+      "index": 61,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6262626262626262626262626262626262626262626262626262626262626262"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -627,3 +627,68 @@ signature is verified under that same key).
   | a `&mut` in a pure module | structure test |
 
   None hung.
+
+### The review's fix round (`T-022-05`, after `3db31459`)
+
+The review found CHANGES: a comparison that couldn't be made was silent, so `REQ-ORD-9`, `REQ-AUD-15` and `INV-1`
+failed open. This round needed a contract change, made under that rule's lift for exactly this case.
+
+- **The contract (`core-internal` 1.0.0, folded in before its release, no bump: it is unreleased against
+  `develop`).** Two kinds of `Difference`, each with its schema `$def` in `raise.schema.json` and an arm of
+  `Raise::check`:
+  - `reports_not_comparable { order, segment, sent: {amount, asset}, received: {amount, asset} }` (`Reported`): two
+    reports in two assets, or one asset in two units (`THR-107`), each figure as its party stated it. `Raise::check`
+    refuses one whose two assets are one (`raise-of-reports-not-comparable-in-one-asset`), and accepts equal amounts
+    where the assets differ (`raise-of-reports-of-one-amount-in-two-units`). Chosen over an optional
+    `received_asset` on `reports`, which would have let `reports` carry equal amounts and weakened its rule.
+  - `holding_not_comparable { account, word?, reason }`, `reason` one of `evidenced_in_another_asset`,
+    `no_reading`, `sum_past_the_bound` (`HoldingIncomparable`). `word` is present exactly when a balance was read,
+    so never for `no_reading`, where there is no balance whose word it could be; the schema (`if`/`then`/`else`) and
+    `Raise::check` both hold it.
+  - Four valid fixtures, three invalid (one Rust rule, two schema rules); README's rule, shape and record tables and
+    the changelog. `Raise::check`'s refusal text gained "two reports in two assets or units"; it still contains the
+    old text, so existing tests matching it hold.
+  - The other users of `Difference` in the workspace: the only exhaustive match is `Raise::check`; the rest
+    (`relations.rs`, `core-orch`'s charge and stuck raises, the scenarios' tests) use `let ... else`, `matches!` or a
+    `_` arm, so nothing else changed and no behaviour was added there.
+- **The checks raise each.** `ReportsVerdict::NotComparable` and `HoldingVerdict::NotComparable` now carry the
+  contract's difference, and `Compare` raises on `Differs` and `NotComparable` alike, records the raise, and changes
+  nothing else. The local `Incomparable` enum is gone. `INV-1`: `Evidenced` carries `evidence`, the receipt of the
+  log's entry that evidences the value, so a raise about an account cites what it rests on; an account read cites its
+  check and those entries, an unread one those entries alone (no check is recorded for it: there is no reading).
+- **Defaults taken this round** (fail closed, reversible):
+  7. A per-order or evidenced sum past 78 digits is past every balance, by more than an amount can state: it is
+     raised as `holding_not_comparable` with `reason: sum_past_the_bound` and the balance's word, never as a
+     `short` with a `by` that would understate it.
+  8. A raise for `INV-1` cites the check (where read) and every distinct evidence receipt at the account, in the
+     evidence's order.
+  9. A deterministic refusal of a raise's record is answered `AppendFailure::Refused`, which no caller retries;
+     only an unavailable log is `Unavailable`. The contract allows it (`Refused` is the variant for a broken rule),
+     but see gap 6.
+  10. `Receipt` is allowed in a pure module (`Evidenced` holds one): it is a plain value with no method reaching the
+      log. The structure test no longer forbids it.
+- Defaults 2 and 5 above are replaced: different assets or units are raised, and a `NotComparable` verdict is raised.
+  Gap 1 above is closed.
+- **Gaps added, with owners.**
+  6. `AppendFailure`'s doc says nothing was appended; a comparison answered `Refused` because its raise's record was
+     refused has appended its own record (the pair or check) first, and the operator's channel was already handed the
+     raise. A comparison-specific answer, or a note on `Comparisons` that the comparison's record stands, is the
+     contract author's (`core-internal`), with the caller's handling `F-020`'s, which has no caller of `Comparisons`
+     yet.
+  7. `holding_not_comparable` names no asset; the operator reads the account's asset from its check's entry and the
+     cited evidence. A richer shape, if the operator's channel (`F-023`, `T-023-02`) needs it, is a contract change.
+- **The structure test, hardened.** Every `use` is read whole up to its `;`, `pub`, `pub(crate)` or private and
+  wherever it stands; `super::` reaches only the pure siblings (`report`, `holding`, `evidenced`), so neither
+  `super::super`, `super::detect` nor `mod.rs`'s re-exports pass; a path written in place is read too; no crate named
+  `rutent_*` but `rutent_contracts` may appear (prov, stm, router, evidence, core); `extern crate`, `include!` and
+  `#[path` are refused. The test holds its own reader to the review's three dodges and eight more.
+- **The purity generator** draws, for reports apart, another asset (`EURC`) or the same code in other decimals
+  (`THR-107`'s unit case), and asserts the unit case was drawn more than ten times in 400.
+- **Tests first.** Contract: the seven fixtures and their table rows were added first and seen red on the fixture
+  test's assertions (unknown kinds); then the shapes with `Raise::check`'s two arms switched off, seen red on the two
+  rules; then the arms. `core-audit`: the behaviour tests (each not-comparable case raises, the refusal answer) were
+  written first; the pure layer's verdict payload had to change for them to compile, so it was put in first with the
+  detector untouched, and they were seen red on their assertions (nothing raised, `Unavailable` answered); then the
+  detector. The hardened structure test was seen red on the current tree (`use super::Incomparable`, an item of
+  `mod.rs`, not a pure sibling) before the pure layer dropped it. The generator change adds no code: its red is the
+  rule-off of comparing the asset's id alone.

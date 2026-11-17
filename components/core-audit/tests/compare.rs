@@ -19,14 +19,14 @@ use rutent_contracts::core_internal::calls::{
     is_decision,
 };
 use rutent_contracts::core_internal::{
-    Attribution, Difference, Direction, Entry, HoldingReading, Raise, Receipt, ReportPair,
-    VerifiedEntry, What, Word,
+    Attribution, Difference, Direction, Entry, HoldingIncomparable, HoldingReading, Raise, Receipt,
+    ReportPair, Reported, VerifiedEntry, What, Word,
 };
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, Denomination, Deployment, VERSION};
 use rutent_contracts::router_api::{Amount, Id, Timestamp};
 use rutent_core_audit::compare::{
-    Compare, Evidenced, HoldingVerdict, Incomparable, ReportsVerdict, check_holding,
-    compare_reports, value_evidenced_against_balances,
+    Compare, Evidenced, HoldingVerdict, ReportsVerdict, check_holding, compare_reports,
+    value_evidenced_against_balances,
 };
 use rutent_core_audit::log::{
     AuditLog, Clock, General, KeptInMemory, MemoryStore, Settings, Store,
@@ -627,6 +627,86 @@ fn difference_between_reports_raises_and_changes_nothing_else() {
     compare.report_pair(&differing).unwrap();
     assert_eq!(kinds(&log).last().unwrap(), "raise:failed");
     assert_eq!(desk.raised().len(), 2);
+
+    // Reports of two assets, or of one asset in two units (`THR-107`), can't be compared: that is raised too, with
+    // each figure as it was stated, even where the two amounts read alike, and nothing else changes.
+    desk.answer.set(Delivery::Delivered);
+    let decimals = pair.sent.asset.decimals;
+    for received in [
+        asset("EURC", decimals),
+        asset(&pair.sent.asset.id, decimals + 2),
+    ] {
+        let mut apart = pair.clone();
+        apart.received.asset = serde_json::from_value(received).unwrap();
+        let before = log.borrow().entries().to_vec();
+        let receipt = compare.report_pair(&apart).unwrap();
+        assert_eq!(
+            &kinds(&log)[before.len()..],
+            ["report_pair:observed", "raise:done"],
+            "{:?}",
+            apart.received.asset
+        );
+        let raise = desk.raised().pop().unwrap();
+        assert_eq!(
+            raise.difference,
+            Difference::ReportsNotComparable {
+                order: apart.order.clone(),
+                segment: apart.segment.clone(),
+                sent: Reported {
+                    amount: apart.sent.amount.clone(),
+                    asset: apart.sent.asset.clone(),
+                },
+                received: Reported {
+                    amount: apart.received.amount.clone(),
+                    asset: apart.received.asset.clone(),
+                },
+            }
+        );
+        assert_eq!(
+            raise.cites,
+            [
+                receipt,
+                apart.sent.statement.clone(),
+                apart.received.statement.clone()
+            ]
+        );
+        assert_eq!(last_raise(&log), Some(raise));
+        assert_eq!(&log.borrow().entries()[..before.len()], &before[..]);
+    }
+    // Two differences and two reports apart, each raised once.
+    assert_eq!(desk.raised().len(), 4);
+}
+
+/// `verdict` as it would be for the same figures under `order` and `segment`.
+fn relabelled(verdict: &ReportsVerdict, order: &Id, segment: &Id) -> ReportsVerdict {
+    let relabel = |difference: &Difference| match difference.clone() {
+        Difference::Reports {
+            sent,
+            received,
+            asset,
+            ..
+        } => Difference::Reports {
+            order: order.clone(),
+            segment: segment.clone(),
+            sent,
+            received,
+            asset,
+        },
+        Difference::ReportsNotComparable { sent, received, .. } => {
+            Difference::ReportsNotComparable {
+                order: order.clone(),
+                segment: segment.clone(),
+                sent,
+                received,
+            }
+        }
+        other => panic!("not a report's difference: {other:?}"),
+    };
+    match verdict {
+        ReportsVerdict::Match => ReportsVerdict::Match,
+        ReportsVerdict::Differs(d) => ReportsVerdict::Differs(relabel(d)),
+        ReportsVerdict::NotComparable(d) => ReportsVerdict::NotComparable(relabel(d)),
+    }
 }
 
 /// The comparison depends on the two amounts and the two assets alone: the same pair gives the same verdict, and
@@ -637,7 +717,7 @@ fn comparison_is_a_pure_function_of_the_two_reports() {
     // Nothing but a function of the pair's data: it coerces to a plain function pointer on shared references.
     let _: fn(&ReportPair) -> ReportsVerdict = compare_reports;
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-    let (mut matches, mut differs, mut apart) = (0, 0, 0);
+    let (mut matches, mut differs, mut apart, mut units) = (0, 0, 0, 0);
     for case in 0..400 {
         let seed = rng.0;
         let sent = rng.amount();
@@ -648,18 +728,34 @@ fn comparison_is_a_pure_function_of_the_two_reports() {
         let mut value = valid("report-pair-of-a-route-segment");
         value["sent"]["amount"] = sent.clone().into();
         value["received"]["amount"] = received.clone().into();
+        // Another asset, or the same asset in another unit (`THR-107`): its code alike, its decimals not.
         let other_asset = rng.below(5) == 0;
         if other_asset {
-            value["received"]["asset"] = asset("EURC", 6);
+            let decimals = value["sent"]["asset"]["decimals"].as_u64().unwrap() as u8;
+            value["received"]["asset"] = if rng.below(2) == 0 {
+                asset("EURC", decimals)
+            } else {
+                units += 1;
+                let code = value["sent"]["asset"]["id"].as_str().unwrap().to_owned();
+                asset(&code, (decimals + 1 + rng.below(36) as u8) % 37)
+            };
         }
         let pair: ReportPair = serde_json::from_value(value.clone()).unwrap();
         let verdict = compare_reports(&pair);
 
         let expected = if other_asset {
             apart += 1;
-            ReportsVerdict::NotComparable(Incomparable::AssetsDiffer {
-                sent: pair.sent.asset.clone(),
-                received: pair.received.asset.clone(),
+            ReportsVerdict::NotComparable(Difference::ReportsNotComparable {
+                order: pair.order.clone(),
+                segment: pair.segment.clone(),
+                sent: Reported {
+                    amount: Amount::new(sent).unwrap(),
+                    asset: pair.sent.asset.clone(),
+                },
+                received: Reported {
+                    amount: Amount::new(received).unwrap(),
+                    asset: pair.received.asset.clone(),
+                },
             })
         } else if sent == received {
             matches += 1;
@@ -685,39 +781,171 @@ fn comparison_is_a_pure_function_of_the_two_reports() {
         moved.received.party = id("another-receiver");
         moved.sent.statement.index = serde_json::from_value(json!(900 + case)).unwrap();
         moved.received.statement.index = serde_json::from_value(json!(1_900 + case)).unwrap();
-        let again = compare_reports(&moved);
-        match (&verdict, &again) {
-            (
-                ReportsVerdict::Differs(Difference::Reports {
-                    sent,
-                    received,
-                    asset,
-                    ..
-                }),
-                ReportsVerdict::Differs(Difference::Reports {
-                    sent: s,
-                    received: r,
-                    asset: a,
-                    order,
-                    segment,
-                }),
-            ) => {
-                assert_eq!((sent, received, asset), (s, r, a));
-                assert_eq!((order, segment), (&moved.order, &moved.segment));
-            }
-            (a, b) => assert_eq!(a, b, "case {case}"),
-        }
+        assert_eq!(
+            compare_reports(&moved),
+            relabelled(&verdict, &moved.order, &moved.segment),
+            "case {case}, seed {seed:#x}"
+        );
     }
-    // The three outcomes were each drawn.
+    // The three outcomes were each drawn, and among the reports apart, one asset in two units.
     assert!(
-        matches > 20 && differs > 20 && apart > 20,
-        "{matches} {differs} {apart}"
+        matches > 20 && differs > 20 && apart > 20 && units > 10,
+        "{matches} {differs} {apart} {units}"
     );
 }
 
+/// The pure comparison modules. Each may import the contracts' data types and these siblings, and nothing else.
+const PURE: [&str; 3] = ["report", "holding", "evidenced"];
+
+/// `source` without its comment lines, its whitespace folded to single spaces, so a declaration split across lines
+/// reads as one.
+fn flat_code(source: &str) -> String {
+    source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `c` can be part of an identifier.
+fn ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Every place `word` stands as a whole word in `code`.
+fn words<'a>(code: &'a str, word: &'a str) -> impl Iterator<Item = usize> + 'a {
+    code.match_indices(word)
+        .map(|(at, _)| at)
+        .filter(move |&at| {
+            let before = code[..at].chars().next_back();
+            let after = code[at + word.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+}
+
+/// Each `use` declaration of `code`, whatever its visibility and wherever it stands, whole up to its `;`, without
+/// the keyword.
+fn use_declarations(code: &str) -> Vec<String> {
+    words(code, "use")
+        .map(|at| {
+            let rest = code[at + 3..].trim_start();
+            rest[..rest.find(';').unwrap_or(rest.len())].to_owned()
+        })
+        .collect()
+}
+
+/// The first segment of each path `tree` names after `super::`: its own, or that of each top-level item of a braced
+/// group.
+fn sibling_heads(tree: &str) -> Vec<String> {
+    let head = |item: &str| -> String { item.trim().chars().take_while(|c| ident(*c)).collect() };
+    let tree = tree.trim();
+    let Some(group) = tree.strip_prefix('{') else {
+        return vec![head(tree)];
+    };
+    let (mut heads, mut item, mut depth) = (Vec::new(), String::new(), 0);
+    for c in group.chars() {
+        match c {
+            '}' if depth == 0 => break,
+            ',' if depth == 0 => heads.push(head(&std::mem::take(&mut item))),
+            '{' => {
+                depth += 1;
+                item.push(c);
+            }
+            '}' => {
+                depth -= 1;
+                item.push(c);
+            }
+            _ => item.push(c),
+        }
+    }
+    heads.push(head(&item));
+    heads.into_iter().filter(|h| !h.is_empty()).collect()
+}
+
+/// Why `code`, a pure module's, could reach something that moves value, if it could: each reason found.
+fn reach_of(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for declaration in use_declarations(code) {
+        let path = declaration.trim_start_matches("::");
+        if let Some(tree) = path.strip_prefix("super::") {
+            for head in sibling_heads(tree) {
+                if !PURE.contains(&head.as_str()) {
+                    found.push(format!(
+                        "imports super::{head}, not a pure sibling: use {declaration}"
+                    ));
+                }
+            }
+        } else if !path.starts_with("rutent_contracts::") {
+            found.push(format!(
+                "imports outside the contracts and its siblings: use {declaration}"
+            ));
+        }
+        for capability in ["calls::", "Log", "Operator", "Clock"] {
+            if path.contains(capability) {
+                found.push(format!("imports {capability}: use {declaration}"));
+            }
+        }
+    }
+    // A path written in place, outside any `use`.
+    for at in words(code, "super") {
+        let rest = &code[at..];
+        if rest.starts_with("super::super") {
+            found.push("names super::super".to_owned());
+        } else if let Some(tree) = rest.strip_prefix("super::") {
+            if !tree.starts_with('{') {
+                let head: String = tree.chars().take_while(|c| ident(*c)).collect();
+                if !PURE.contains(&head.as_str()) {
+                    found.push(format!("names super::{head}, not a pure sibling"));
+                }
+            }
+        }
+    }
+    for (at, _) in code.match_indices("rutent_") {
+        let name: String = code[at..].chars().take_while(|c| ident(*c)).collect();
+        if name != "rutent_contracts" {
+            found.push(format!("names the crate {name}"));
+        }
+    }
+    for forbidden in [
+        "&mut",
+        "unsafe",
+        "static ",
+        "Cell",
+        "Rc<",
+        "Arc<",
+        "Mutex",
+        "dyn ",
+        "Box<",
+        "thread_local",
+        "std::fs",
+        "std::net",
+        "std::process",
+        "std::env",
+        "std::time",
+        "crate::",
+        "extern crate",
+        "include!",
+        "include_str!",
+        "#[path",
+        "fn raise",
+        ".raise(",
+        ".append(",
+    ] {
+        if code.contains(forbidden) {
+            found.push(format!("holds {forbidden:?}"));
+        }
+    }
+    found
+}
+
 /// The comparison modules reach nothing that moves value, by what they import and what they can hold: data types of
-/// the contracts, shared references, no handle, no channel, no clock and no interior mutability. The crate takes no
-/// dependency on orchestration, so there is no path to the state machine or the provider system from it.
+/// the contracts, their pure siblings, shared references, no handle, no channel, no clock and no interior
+/// mutability. Every `use` is read whole, `pub` or not, across its lines; a path written in place is read too; no
+/// other crate of the workspace is named. The crate takes no dependency on orchestration, so there is no path to
+/// the state machine or the provider system from it.
 // verifies: REQ-ORD-9
 #[test]
 fn comparison_modules_reach_nothing_that_moves_value() {
@@ -725,52 +953,50 @@ fn comparison_modules_reach_nothing_that_moves_value() {
     let _: fn(&[HoldingReading], &[Evidenced]) -> Vec<rutent_core_audit::compare::Finding> =
         value_evidenced_against_balances;
     let manifest = env!("CARGO_MANIFEST_DIR");
-    for file in ["report", "holding", "evidenced"] {
+    for file in PURE {
         let path = format!("{manifest}/src/compare/{file}.rs");
-        let source = std::fs::read_to_string(&path).unwrap();
-        // Code only: no comment, and no test module.
-        let code: String = source
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for line in code.lines().filter(|l| l.trim_start().starts_with("use ")) {
-            let path = line.trim_start().trim_start_matches("use ");
-            assert!(
-                path.starts_with("rutent_contracts::") || path.starts_with("super::"),
-                "{file}: imports only contracts' data types and its siblings: {line}"
-            );
-            for capability in ["calls::", "Log", "Operator", "Clock", "Receipt"] {
-                assert!(
-                    !path.contains(capability),
-                    "{file}: imports {capability}: {line}"
-                );
-            }
-        }
-        for forbidden in [
-            "&mut",
-            "unsafe",
-            "static ",
-            "Cell",
-            "Rc<",
-            "Arc<",
-            "Mutex",
-            "dyn ",
-            "Box<",
-            "thread_local",
-            "std::fs",
-            "std::net",
-            "std::process",
-            "std::env",
-            "std::time",
-            "crate::",
-            "rutent_core",
-            "fn raise",
-            ".raise(",
-            ".append(",
-        ] {
-            assert!(!code.contains(forbidden), "{file}: holds {forbidden:?}");
-        }
+        let code = flat_code(&std::fs::read_to_string(&path).unwrap());
+        let reach = reach_of(&code);
+        assert!(reach.is_empty(), "{file}: {}", reach.join("; "));
+    }
+    // The reader reads a sibling's braced group as one sibling.
+    assert!(
+        reach_of(&flat_code(
+            "use super::holding::{HoldingVerdict, judge, sum};"
+        ))
+        .is_empty()
+    );
+    // The reader itself is red on each way round it a reviewer found, and on the plain ones.
+    for (dodge, sneak) in [
+        ("a pub use", "pub use super::super::log::General as Sneak;"),
+        ("a pub(crate) use", "pub(crate) use crate::log::General;"),
+        (
+            "a use across lines",
+            "use rutent_contracts::core_internal::{\n    calls::Operator as Sneak,\n};",
+        ),
+        (
+            "a path in a body",
+            "fn sneak() { let _ = rutent_prov::catalogue::DEFAULT_CLOCK_SKEW_SECONDS; }",
+        ),
+        ("the router", "use rutent_router::quote;"),
+        ("the state machine", "fn s() { rutent_stm::run(); }"),
+        ("the evidence store", "use rutent_evidence as e;"),
+        ("the detectors", "use super::detect::Compare;"),
+        ("the module's own re-export", "use super::Compare;"),
+        (
+            "a sibling's parent in place",
+            "fn s() { super::super::log::x(); }",
+        ),
+        ("a log", "use rutent_contracts::core_internal::calls::Log;"),
+        (
+            "a group reaching past the siblings",
+            "use super::{holding::sum, detect::Compare};",
+        ),
+    ] {
+        assert!(
+            !reach_of(&flat_code(sneak)).is_empty(),
+            "the reader misses {dodge}: {sneak}"
+        );
     }
     // No dependency on the parts that move value (`DEC-2`).
     let manifest_text = std::fs::read_to_string(format!("{manifest}/Cargo.toml")).unwrap();
@@ -921,10 +1147,34 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
         &[("ord-1", &huge), ("ord-2", &huge)],
         "checked",
     );
+    let past = Difference::HoldingNotComparable {
+        account: id("hold-huge"),
+        word: Some(Word::Checked),
+        reason: HoldingIncomparable::SumPastTheBound,
+    };
     assert_eq!(
         check_holding(&reading),
-        HoldingVerdict::NotComparable(Incomparable::SumPastTheBound)
+        HoldingVerdict::NotComparable(past.clone())
     );
+    // A sum past what an amount states is past every balance: it is raised as not comparable, citing the check.
+    let before = log.borrow().entries().to_vec();
+    let receipt = compare.holding_reading(&reading).unwrap();
+    assert_eq!(
+        &kinds(&log)[before.len()..],
+        ["holding_check:observed", "raise:done"]
+    );
+    let raise = desk.raised().pop().unwrap();
+    assert_eq!(
+        (raise.difference.clone(), raise.cites.clone()),
+        (past, vec![receipt])
+    );
+    assert_eq!(
+        serde_json::to_value(&raise.difference).unwrap(),
+        json!({"kind": "holding_not_comparable", "account": "hold-huge", "word": "checked",
+               "reason": "sum_past_the_bound"})
+    );
+    assert_eq!(last_raise(&log), Some(raise));
+    assert_eq!(&log.borrow().entries()[..before.len()], &before[..]);
 }
 
 /// A private node's balance is its publisher's word: a difference carries that label and so does the check's
@@ -1039,6 +1289,7 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
                     order: id(&format!("ord-{case}-{o}")),
                     asset: serde_json::from_value(asset("USDC", 6)).unwrap(),
                     amount: Amount::new(amount.to_string()).unwrap(),
+                    evidence: stand_in(o),
                 });
             }
             // What the account holds for its orders is what its module reports; the evidence is Core's own.
@@ -1116,61 +1367,145 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
     }
     assert_eq!((clean_total, raised_total), (400, 400));
 
-    // Evidence at an account with no reading, and in another asset than the account's, can't be compared.
+    // Evidence at an account with no reading, and in another asset or unit than the account's, can't be compared.
     let reading = holding("hold-a", "10", &[], "checked");
     let usdc: Denomination = serde_json::from_value(asset("USDC", 6)).unwrap();
-    let eurc: Denomination = serde_json::from_value(asset("EURC", 6)).unwrap();
-    let item = |account: &str, asset: &Denomination| Evidenced {
-        account: id(account),
-        order: id("ord-1"),
-        asset: asset.clone(),
-        amount: Amount::new("10").unwrap(),
-    };
-    let findings = value_evidenced_against_balances(
-        std::slice::from_ref(&reading),
-        &[
-            item("hold-a", &eurc),
-            item("hold-unread", &usdc),
-            item("hold-unread", &usdc),
-        ],
-    );
-    assert_eq!(findings.len(), 2);
-    assert_eq!(
-        findings[0].verdict,
-        HoldingVerdict::NotComparable(Incomparable::EvidencedInAnotherAsset)
-    );
-    assert_eq!(findings[1].account, id("hold-unread"));
-    assert_eq!(
-        findings[1].verdict,
-        HoldingVerdict::NotComparable(Incomparable::NoReading)
-    );
+    for other in [asset("EURC", 6), asset("USDC", 2)] {
+        let other: Denomination = serde_json::from_value(other).unwrap();
+        let item = |account: &str, asset: &Denomination| Evidenced {
+            asset: asset.clone(),
+            ..item_amount(account, "10")
+        };
+        let findings = value_evidenced_against_balances(
+            std::slice::from_ref(&reading),
+            &[
+                item("hold-a", &other),
+                item("hold-unread", &usdc),
+                item("hold-unread", &usdc),
+            ],
+        );
+        assert_eq!(findings.len(), 2);
+        assert_eq!(
+            findings[0].verdict,
+            HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
+                account: id("hold-a"),
+                word: Some(Word::Checked),
+                reason: HoldingIncomparable::EvidencedInAnotherAsset,
+            })
+        );
+        assert_eq!(findings[1].account, id("hold-unread"));
+        assert_eq!(
+            findings[1].verdict,
+            HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
+                account: id("hold-unread"),
+                word: None,
+                reason: HoldingIncomparable::NoReading,
+            })
+        );
+    }
 
-    // Through the checks: only the account that differs is checked and raised, and nothing else changes.
+    // Through the checks: each account that differs or can't be compared is raised, citing its check where it was
+    // read and the entries its value is evidenced by, and nothing else changes.
     let log = bare();
     let desk = Desk::new();
     let mut compare = checks(&log, &desk);
+    // Stand-ins for the log's entries the evidence rests on: any entry of the log may be cited.
+    let rests: Vec<Receipt> = (0..6)
+        .map(|i| {
+            compare
+                .holding_reading(&holding(&format!("hold-rest-{i}"), "0", &[], "checked"))
+                .unwrap()
+        })
+        .collect();
+    assert!(desk.raised().is_empty());
+    let on = |account: &str, amount: &str, rest: usize| Evidenced {
+        evidence: rests[rest].clone(),
+        ..item_amount(account, amount)
+    };
     let readings = [
         holding("hold-1", "30", &[], "checked"),
         holding("hold-2", "55", &[], "publisher"),
         holding("hold-3", "7", &[], "checked"),
+        holding("hold-4", "7", &[], "publisher"),
     ];
     let evidence = [
-        item_amount("hold-1", "10"),
-        item_amount("hold-1", "20"),
-        item_amount("hold-2", "60"),
-        item_amount("hold-3", "7"),
+        on("hold-1", "10", 0),
+        on("hold-1", "20", 0),
+        on("hold-2", "60", 1),
+        on("hold-3", "7", 2),
+        Evidenced {
+            asset: serde_json::from_value(asset("USDC", 2)).unwrap(),
+            ..on("hold-4", "7", 3)
+        },
+        on("hold-unread", "4", 4),
+        on("hold-unread", "5", 5),
+        on("hold-unread", "6", 4),
     ];
+    let before = log.borrow().len();
     let checked = compare
         .evidenced_against_balances(&readings, &evidence)
         .unwrap();
-    assert_eq!(checked.len(), 1);
-    assert_eq!(kinds(&log), ["holding_check:observed", "raise:done"]);
-    let raise = desk.raised().pop().unwrap();
-    assert_eq!(raise.cites, checked);
+    assert_eq!(checked.len(), 2);
+    assert_eq!(
+        &kinds(&log)[before..],
+        [
+            "holding_check:observed",
+            "raise:done",
+            "holding_check:observed",
+            "raise:done",
+            "raise:done"
+        ]
+    );
+    let raised = desk.raised();
+    assert_eq!(raised.len(), 3);
+    assert_eq!(raised[0].cites, [checked[0].clone(), rests[1].clone()]);
     assert!(matches!(
-        raise.difference,
+        raised[0].difference,
         Difference::Holding { direction: Direction::Short, word: Word::Publisher, ref by, .. } if by.amount().as_str() == "5"
     ));
+    assert_eq!(raised[1].cites, [checked[1].clone(), rests[3].clone()]);
+    assert_eq!(
+        raised[1].difference,
+        Difference::HoldingNotComparable {
+            account: id("hold-4"),
+            word: Some(Word::Publisher),
+            reason: HoldingIncomparable::EvidencedInAnotherAsset,
+        }
+    );
+    assert_eq!(raised[2].cites, [rests[4].clone(), rests[5].clone()]);
+    assert_eq!(
+        raised[2].difference,
+        Difference::HoldingNotComparable {
+            account: id("hold-unread"),
+            word: None,
+            reason: HoldingIncomparable::NoReading,
+        }
+    );
+    assert_eq!(last_raise(&log).as_ref(), raised.last());
+
+    // A raise whose record the log refuses for good, here one citing what isn't an entry of the log, is answered
+    // refused, not unavailable, so its caller doesn't append the comparison again and raise it again without end.
+    let before = log.borrow().len();
+    let nowhere = Evidenced {
+        evidence: stand_in(9_999),
+        ..item_amount("hold-nowhere", "1")
+    };
+    let answer = compare.evidenced_against_balances(&[], &[nowhere]);
+    assert!(
+        matches!(answer, Err(AppendFailure::Refused(_))),
+        "{answer:?}"
+    );
+    assert_eq!(
+        log.borrow().len(),
+        before,
+        "the refused raise is not recorded"
+    );
+}
+
+/// A receipt of no entry of any test's log, at `index`: for the pure comparison, which reads no receipt.
+fn stand_in(index: u64) -> Receipt {
+    serde_json::from_value(json!({"log": LOG, "index": index, "entry": {"algorithm": "sha-256", "value": "ab".repeat(32)}}))
+        .unwrap()
 }
 
 fn item_amount(account: &str, amount: &str) -> Evidenced {
@@ -1179,5 +1514,6 @@ fn item_amount(account: &str, amount: &str) -> Evidenced {
         order: id("ord-1"),
         asset: serde_json::from_value(asset("USDC", 6)).unwrap(),
         amount: Amount::new(amount).unwrap(),
+        evidence: stand_in(0),
     }
 }

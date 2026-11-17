@@ -4,11 +4,11 @@
 //! Like [`super::report`], this module imports data types of the contracts and nothing else, so the check reaches
 //! nothing that moves value; a test holds that.
 
-use rutent_contracts::core_internal::{Difference, Direction, HoldingReading, Word};
+use rutent_contracts::core_internal::{
+    Difference, Direction, HoldingIncomparable, HoldingReading, Word,
+};
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Amount, Id, PositiveAmount};
-
-use super::Incomparable;
 
 /// What checking a holding account finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +17,21 @@ pub enum HoldingVerdict {
     Match,
     /// It is short of the sum or over it: the difference to raise, labelled with whose word the balance is.
     Differs(Difference),
-    /// It can't be compared; nothing is raised for it.
-    NotComparable(Incomparable),
+    /// It can't be compared: the difference to raise, a `HoldingNotComparable` naming why.
+    NotComparable(Difference),
+}
+
+/// That `account`'s balance, `word`'s where one was read, can't be compared, for `reason`.
+pub fn not_comparable(
+    account: &Id,
+    word: Option<Word>,
+    reason: HoldingIncomparable,
+) -> HoldingVerdict {
+    HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
+        account: account.clone(),
+        word,
+        reason,
+    })
 }
 
 /// The sum of `amounts`, or `None` where it passes what an amount can state (78 digits).
@@ -52,16 +65,23 @@ pub fn judge(
             asset: asset.clone(),
             word,
         }),
-        // The two differ, so their difference is above zero and inside what an amount states.
-        None => HoldingVerdict::NotComparable(Incomparable::SumPastTheBound),
+        // The two differ, so their difference is above zero and inside what an amount states; were it not, it
+        // can't be stated, and is raised as such.
+        None => not_comparable(account, Some(word), HoldingIncomparable::SumPastTheBound),
     }
 }
 
 /// Checks a holding account's balance against the sum of what each order holds there. The balance keeps the word it
-/// was read under: a private node's is its publisher's, and a difference says so (`REQ-AUD-15`).
+/// was read under: a private node's is its publisher's, and a difference says so (`REQ-AUD-15`). A sum past what an
+/// amount can state is past every balance, by more than an amount states: it is raised as not comparable, so it
+/// fails closed and states no `by` it can't know.
 pub fn check_holding(reading: &HoldingReading) -> HoldingVerdict {
     let Some(held) = sum(reading.held_for.iter().map(|h| h.amount.amount())) else {
-        return HoldingVerdict::NotComparable(Incomparable::SumPastTheBound);
+        return not_comparable(
+            &reading.account,
+            Some(reading.word),
+            HoldingIncomparable::SumPastTheBound,
+        );
     };
     judge(
         &reading.account,

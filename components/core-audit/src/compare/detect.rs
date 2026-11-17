@@ -116,10 +116,9 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
             Delivery::Delivered => Outcome::Done {},
             Delivery::Undelivered => Outcome::Failed {},
         };
-        // A raise that couldn't be recorded is answered unavailable, so its writer appends the comparison again.
-        self.record(What::Raise { raise }, outcome, at)
-            .map(|_| ())
-            .map_err(|_| AppendFailure::Unavailable)
+        // A raise the log can't record now is answered unavailable, so its writer appends the comparison again; one
+        // the log refuses is answered refused, which no retry would change, so the writer doesn't raise it again.
+        self.record(What::Raise { raise }, outcome, at).map(|_| ())
     }
 
     /// Records the check of `reading`, without its balance (`REQ-AUD-6`), and answers its receipt.
@@ -142,9 +141,10 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
     }
 
     /// Across orders, compares the value evidenced at each node with its holding account's balance (`INV-1`). For
-    /// each account that differs it records the check and raises the difference, as a single reading's check does,
-    /// and changes nothing else; an account that can't be compared raises nothing. It answers the receipts of the
-    /// checks it recorded.
+    /// each account read that differs or can't be compared it records the check and raises the difference, citing
+    /// the check and the entries its value is evidenced by; for each account with value evidenced and no reading it
+    /// raises that, citing those entries alone, as no check was read. It changes nothing else, and answers the
+    /// receipts of the checks it recorded.
     pub fn evidenced_against_balances(
         &mut self,
         readings: &[HoldingReading],
@@ -153,13 +153,24 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
         let at = self.now()?;
         let findings = value_evidenced_against_balances(readings, evidenced);
         let mut receipts = Vec::new();
-        // The findings of the readings come first, in the readings' order.
-        for (finding, reading) in findings.into_iter().zip(readings) {
-            if let HoldingVerdict::Differs(difference) = finding.verdict {
+        // The findings of the readings come first, in the readings' order, then the unread accounts'.
+        for (place, finding) in findings.into_iter().enumerate() {
+            let Some(difference) = finding.verdict.to_raise() else {
+                continue;
+            };
+            let mut cites = Vec::new();
+            if let Some(reading) = readings.get(place) {
                 let check = self.record_check(reading, &at)?;
-                self.raise(difference, vec![check.clone()], &at)?;
+                cites.push(check.clone());
                 receipts.push(check);
             }
+            cites.extend(
+                evidenced
+                    .iter()
+                    .filter(|e| e.account == finding.account)
+                    .map(|e| e.evidence.clone()),
+            );
+            self.raise(difference, cites, &at)?;
         }
         Ok(receipts)
     }
@@ -173,7 +184,7 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
             Outcome::Observed {},
             &at,
         )?;
-        if let ReportsVerdict::Differs(difference) = compare_reports(pair) {
+        if let Some(difference) = compare_reports(pair).to_raise() {
             let cites = vec![
                 receipt.clone(),
                 pair.sent.statement.clone(),
@@ -187,10 +198,34 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
     fn holding_reading(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
         let at = self.now()?;
         let receipt = self.record_check(reading, &at)?;
-        if let HoldingVerdict::Differs(difference) = check_holding(reading) {
+        if let Some(difference) = check_holding(reading).to_raise() {
             self.raise(difference, vec![receipt.clone()], &at)?;
         }
         Ok(receipt)
+    }
+}
+
+impl ReportsVerdict {
+    /// The difference to raise: one of two amounts, or of two reports that can't be compared; none for a match.
+    fn to_raise(self) -> Option<Difference> {
+        match self {
+            ReportsVerdict::Match => None,
+            ReportsVerdict::Differs(difference) | ReportsVerdict::NotComparable(difference) => {
+                Some(difference)
+            }
+        }
+    }
+}
+
+impl HoldingVerdict {
+    /// The difference to raise: a short, an over, or a balance that can't be compared; none for a match.
+    fn to_raise(self) -> Option<Difference> {
+        match self {
+            HoldingVerdict::Match => None,
+            HoldingVerdict::Differs(difference) | HoldingVerdict::NotComparable(difference) => {
+                Some(difference)
+            }
+        }
     }
 }
 
