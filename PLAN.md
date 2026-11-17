@@ -558,8 +558,8 @@ The production assembly is `F-030`'s.
 - **Rows added after review** edit the module of the row whose gap they close. Where two are in different waves,
   the later depends on the earlier (`T-020-14` before `T-020-23` and `T-020-24`, `T-020-15` before `T-020-24`,
   `T-020-16` before `T-020-17` before `T-020-20` in `stuck/`); where two share a wave, the lead runs them in turn
-  and says so in the feature's notes: `stuck/` and `segments/` in wave 26 (`T-020-20`, then `T-020-25`, then
-  `T-020-27`); `T-020-28`, in wave 26, depends on `T-020-23` and `T-020-24` and follows `T-020-19`, `T-020-25` and `T-020-27`, whose directories it also edits, each merged first; `T-022-08` before `T-022-07` in `audit-check` (waves 25 and 26), and `T-024-13` (wave 25) before `T-024-15` (wave 26) in the
+  and says so in the feature's notes: `stuck/` and `segments/` in wave 27 (`T-020-20`, then `T-020-25`, then
+  `T-020-27`); `T-020-28`, in wave 27, depends on `T-020-23` and `T-020-24` and follows `T-020-19`, `T-020-25` and `T-020-27`, whose directories it also edits, each merged first; `T-022-08` before `T-022-07` in `audit-check` (waves 25 and 26), and `T-024-13` (wave 25) before `T-024-15` (wave 26) in the
   stand-in reserve. Five also edit `F-024`'s files or a `DEC-20` path, and each commit body says so: `T-020-14` swaps the
   assembly's charge check for Core's own; `T-020-15` and `T-020-16` add a check to `conformance/scenarios/`;
   `T-020-19` makes the assembly's arrival port hand
