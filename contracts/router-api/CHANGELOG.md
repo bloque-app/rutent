@@ -1,6 +1,10 @@
 # router-api changelog
 
 ## 4.0.0
+- Docs (`T-020-21`, item 2): `Operation::stated_out`'s `None` means nothing arrives by the answer, so it confirms
+  nothing and a candidate through it is dropped as delivering nothing; it is never read as the answer's
+  `amount_out`. No shape, type or rule changed. Folded into this unreleased major. (DEC-4, DEC-20, REQ-CAT-11,
+  REQ-QTE-11, T-020-21)
 - No change to this contract's shapes, types or rules: the six decision-record fixtures that name the router's
   version (`decision-record-naming-the-calls-each-segment-makes`, which `rutent-router`'s own test compares with,
   and the five invalid ones made from it) name `rutent-router-0.6.0` as their `router_version`, following the

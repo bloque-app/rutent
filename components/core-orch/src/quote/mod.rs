@@ -37,7 +37,10 @@ mod shown;
 mod terms;
 
 pub use charge::{ChargeDesk, ChargeError, Charged, Charges, Checked, Flagged};
-pub use held::{Held, HoldError, Holds, RecordedAs, Redeemed, Signed};
+pub use held::{
+    AcceptedQuote, Held, HoldDesk, HoldError, Holds, RecordedAs, Redeemed, Redemption, Signed,
+    TakeHoldError,
+};
 pub use journal::APPEND_TRIES;
 pub use shown::{
     ExecutedSegment, HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin,

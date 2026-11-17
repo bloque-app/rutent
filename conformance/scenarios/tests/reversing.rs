@@ -4,7 +4,7 @@
 //! Each drives Core's own `request`, `quote`, `accept` and `run`, and its reversals, recalculation and stuck order,
 //! over [`execution_support`]'s world.
 //!
-//! The stuck resolution's move is made by [`failure_support::Moves`]: the production mover is `T-020-16`'s, in review.
+//! The stuck resolution's move is made by Core's own mover (`T-020-16`).
 
 mod execution_support;
 mod failure_support;
@@ -25,6 +25,7 @@ use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
 use rutent_core_orch::reversal::{Confirmation, NotCounted, Word};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_core_orch::stuck::{Moved, ResolveError, Resolved};
+use rutent_scenarios::assembly::StepError;
 use rutent_scenarios::assembly::{Core, ORIGIN_ACCOUNT};
 use rutent_scenarios::kit::{self, AMOUNT, id};
 
@@ -251,7 +252,7 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     let (mut core, order, exchange) = stuck_with_no_route("AC-6");
     // Stuck, with nothing rolled back: the withdrawal is settled and the value rests at the reserve's ledger.
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
-    assert!(core.is_stuck(&order));
+    assert!(core.is_stuck(&order, &core.part_of(&order).expect("a part")));
     let values = core.stuck_values();
     assert_eq!(values.len(), 1);
     let held = values[0].clone();
@@ -308,7 +309,7 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     // A decision names its evidence: none is refused.
     assert!(matches!(
         core.decide_stuck(&order, &alice, &resolution, &[]),
-        Err(ResolveError::NoEvidence)
+        Err(StepError::Resolve(ResolveError::NoEvidence))
     ));
     assert_eq!(effects(&core), 0);
 
@@ -323,22 +324,18 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     };
 
     // It is not moved by the one that decided, nor by Core: nothing moves.
-    let mut moves = Moves::default();
     for mover in [alice.clone(), kit::core()] {
-        let moved = core.carry_out_stuck(&order, &decided, &mover, &mut moves);
+        let moved = core.move_stuck(&order, &decided, &mover);
         assert!(
             !matches!(moved, Ok(Moved::CarriedOut { .. })),
             "{mover:?}: {moved:?}"
         );
     }
     assert_eq!(effects(&core), 0, "no value moved");
-    assert!(moves.0.is_empty());
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
 
     // Another moves it, once, and the part ends: its value back at the origin.
-    let moved = core
-        .carry_out_stuck(&order, &decided, &bob, &mut moves)
-        .expect("moved");
+    let moved = core.move_stuck(&order, &decided, &bob).expect("moved");
     assert!(
         matches!(
             moved,
@@ -350,7 +347,6 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
         "{moved:?}"
     );
     assert_eq!(effects(&core), 1, "one move");
-    assert_eq!(moves.0.len(), 1);
     assert_eq!(state(&mut core, &order), OrderState::EndedWithoutCompleting);
     assert!(core.stuck_values().is_empty());
     let _ = (exchange, held);

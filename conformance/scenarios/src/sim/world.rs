@@ -69,12 +69,25 @@ pub struct SimWorld {
     seeded: HashMap<(String, String), String>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
+    /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
+    /// deadline (silent, late), which is real time's to judge (`T-013-08`).
+    pub(crate) wall_time: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl SimWorld {
     /// A world with nothing in it.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A behaviour that never answers, or answers past the deadline, is about the operating system's time passing:
+    /// the platform's clock then follows it from here on, and that scenario's deadline is a real one.
+    fn follow_wall_time_for(&self, behaviour: &Behaviour) {
+        if (behaviour.silent || behaviour.late)
+            && let Some(flag) = &self.wall_time
+        {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Serves `host` at the next address, and gives it.
@@ -133,6 +146,7 @@ impl SimWorld {
     }
 
     fn queue(&mut self, provider: &str, on: Option<&str>, dry_run: bool, behaviour: Behaviour) {
+        self.follow_wall_time_for(&behaviour);
         self.scripts
             .entry(provider.to_owned())
             .or_default()
@@ -146,6 +160,7 @@ impl SimWorld {
 
     /// What `provider` does once its queued behaviours are used up. Without it, it answers as its role asks.
     pub fn otherwise(&mut self, provider: &str, behaviour: Behaviour) {
+        self.follow_wall_time_for(&behaviour);
         self.scripts
             .entry(provider.to_owned())
             .or_default()

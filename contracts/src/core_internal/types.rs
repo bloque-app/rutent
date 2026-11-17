@@ -449,6 +449,18 @@ pub enum Action {
         /// The provider that failed it, asked to reverse.
         provider: Id,
     },
+    /// Asking a segment's provider where the segment stands, late, once it failed or fell silent (`REQ-ORD-1`, `AC-5`'s
+    /// late delivery): a decided action, taken as an effect under a fresh transaction of its order and appended
+    /// before the question is sent. What the provider answers is kept as its statement and moves nothing
+    /// (`INV-4`). The provider is the one the segment's move went to (`status-is-asked-of-the-segments-provider`).
+    AskStatus {
+        /// The order.
+        order: Id,
+        /// The segment asked about.
+        segment: Id,
+        /// The segment's provider, asked.
+        provider: Id,
+    },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
     /// open session and naming the showing it accepts, so it can't be read as accepting another. It takes no effect:
@@ -1513,6 +1525,17 @@ pub enum HandedOver {
         /// How it ended.
         outcome: UseOutcome,
     },
+    /// An operation whose module passed something out and then ended with no answer the platform passes on: the
+    /// platform's own record of it (`Events::unknown`), so an outcome unknown can cite it (`REQ-MDL-8`, `REQ-ORD-1`).
+    OperationUnanswered {
+        /// The provider whose module handled it.
+        provider: Id,
+        /// The operation's transaction.
+        transaction: Id,
+        /// What ended it, as the platform names it: the reason it would have been refused for had the module passed
+        /// nothing out. A label to read, which no decision branches on.
+        ended_by: Token,
+    },
     /// A segment's record, as the platform hands it over when the segment ends (`REQ-MDL-5`).
     SegmentRecord {
         /// The segment's transaction.
@@ -1538,6 +1561,31 @@ pub enum Direction {
     Short,
     /// The balance is over it.
     Over,
+}
+
+/// One party's figure in a pair of reports that can't be compared: an amount, in the asset and unit it was stated in.
+/// Schema: `urn:rutent:core-internal:raise#/$defs/reported`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reported {
+    /// The amount, in the asset's unit.
+    pub amount: Amount,
+    /// The asset, and the unit it is counted in.
+    pub asset: Denomination,
+}
+
+/// Why a holding account's balance can't be compared with the value held or evidenced there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingIncomparable {
+    /// Value is evidenced at the account in another asset, or another unit, than the account's (`INV-1`).
+    EvidencedInAnotherAsset,
+    /// Value is evidenced at an account no reading of its balance was given for (`INV-1`).
+    NoReading,
+    /// The value held or evidenced there is past the balance by more than an amount can state (78 digits): a short
+    /// no `by` can state. A sum past the bound whose difference from the balance an amount states is a `holding`
+    /// difference instead (`REQ-AUD-15`, `INV-1`).
+    SumPastTheBound,
 }
 
 /// The difference a raise carries. Schema: `urn:rutent:core-internal:raise#/$defs/difference`.
@@ -1570,6 +1618,41 @@ pub enum Difference {
         /// Whose word the balance was.
         word: Word,
     },
+    /// A segment's two reports can't be compared: they state two assets, or one asset in two units (`REQ-ORD-9`,
+    /// `THR-107`). Each figure is given as it was stated.
+    ReportsNotComparable {
+        /// The order raised.
+        order: Id,
+        /// The segment.
+        segment: Id,
+        /// What the sending party reports it sent.
+        sent: Reported,
+        /// What the receiving party reports it received.
+        received: Reported,
+    },
+    /// A holding account's balance can't be compared with the value held or evidenced there (`REQ-AUD-15`,
+    /// `INV-1`).
+    HoldingNotComparable {
+        /// The holding account.
+        account: Id,
+        /// Whose word the balance was: present exactly when a balance was read, so absent for `no_reading`.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        word: Option<Word>,
+        /// The account's asset, in the unit its balance was read in: present exactly when a balance was read, so
+        /// absent for `no_reading`. The log's check entry names no asset, so the raise states it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        asset: Option<Denomination>,
+        /// Why it can't be compared.
+        reason: HoldingIncomparable,
+    },
     /// A provider charged above its formula's maximum (`REQ-QTE-5`).
     Charge {
         /// The order.
@@ -1597,6 +1680,30 @@ pub enum Difference {
             skip_serializing_if = "Option::is_none"
         )]
         terms: Option<Receipt>,
+        /// Set where the charge is stated in an asset no formula covers: a formula carries no asset and counts in the
+        /// segment's `from` asset only, so `maximum` is then no formula's and reads as nothing allowed. Only a charge
+        /// in another asset than the segment's is so marked (`no-formula-marks-a-charge-in-another-asset`,
+        /// `REQ-QTE-5`). Absent for a charge held to a formula.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        no_formula: Option<NoFormula>,
+    },
+    /// A non-final segment's public record contradicts what its provider said it moved (`REQ-ORD-33`): the
+    /// difference of a [`What::PublicMismatch`], raised and changing nothing else (ADR-0009).
+    PublicEnd {
+        /// The order.
+        order: Id,
+        /// The segment.
+        segment: Id,
+        /// Which figure differs.
+        found: PublicEndMismatch,
+        /// What the network moved.
+        moved: PublicFigures,
+        /// What the provider said it moved.
+        stated: PublicFigures,
     },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
@@ -1607,6 +1714,52 @@ pub enum Difference {
         /// The p99 now, in seconds.
         now_seconds: SafeInteger,
     },
+}
+
+/// The mark of a charge stated in an asset no fee formula covers. Schema:
+/// `urn:rutent:core-internal:raise#/$defs/difference_charge/properties/no_formula`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoFormula {
+    /// No formula of the segment's tuple counts in the asset the charge is stated in.
+    ForThisAsset,
+}
+
+/// Which figure of a non-final segment's public record contradicts its provider's, in the order the movement's check
+/// reads them: its destination, then its asset, then its amount (`REQ-ORD-33`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicEndMismatch {
+    /// The movement went to another destination.
+    WrongDestination,
+    /// It moved another asset.
+    WrongAsset,
+    /// It moved another amount.
+    WrongAmount,
+}
+
+/// A movement's figures at a public end: where it went, what asset and how much, as the network or the provider
+/// states them. Schema: `urn:rutent:core-internal:raise#/$defs/public_figures`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicFigures {
+    /// The destination on the network.
+    pub destination: Id,
+    /// The asset, by its id on the network.
+    pub asset: Id,
+    /// The amount, in the asset's unit.
+    pub amount: Amount,
+}
+
+impl PublicEndMismatch {
+    /// Whether `moved` and `stated` differ in the figure this names.
+    pub fn differs(self, moved: &PublicFigures, stated: &PublicFigures) -> bool {
+        match self {
+            PublicEndMismatch::WrongDestination => moved.destination != stated.destination,
+            PublicEndMismatch::WrongAsset => moved.asset != stated.asset,
+            PublicEndMismatch::WrongAmount => moved.amount != stated.amount,
+        }
+    }
 }
 
 /// A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an
@@ -2108,6 +2261,15 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         part: Option<Id>,
+        /// The receipt of the earlier arrival of the same deposit this one holds against an order: the deposit as it
+        /// was first recorded, against no order, or an earlier filing of it. So a checker sees one deposit, not
+        /// several (`arrival-names-its-earlier-arrival`, `REQ-ORD-23`). Absent on a deposit's first arrival.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        earlier: Option<Receipt>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {
@@ -2347,8 +2509,19 @@ pub enum What {
         handed_on_from: Id,
         /// The holding account's provider: the route's starting reserve, which made the record.
         holder: Id,
+        /// The inner node the holding account is at, where the route handed on starts
+        /// (`holding-withdrawal-starts-a-handed-on-route`).
+        node: Id,
         /// The receipt of the record: the holder's verified stated entry of the withdrawal.
         record: Receipt,
+        /// At a private node, the node's publisher whose word the record is, labelled as such (`REQ-ORD-40`): the
+        /// party the record's maker states for. Absent where it isn't a publisher's word.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        publisher: Option<Id>,
     },
     /// An input recorded, but not taken: the state machine or the host refused it, so it moves no order, and the
     /// log keeps its trace (`REQ-AUD-1`) beside the inputs it took, which `standing` reads alone.
@@ -2375,6 +2548,106 @@ pub enum What {
         /// The decision.
         decision: Id,
     },
+    /// A mover's report of a move's outcome declined by an actor of another party and login, on its own evidence: a
+    /// decision on policy's handle, answered by policy for its decliner as a confirmation is (`REQ-AUZ-4`,
+    /// ADR-0011). A declined report settles nothing and frees nothing, and only after it may a new report of the same
+    /// effect stand (`one-report-per-effect`); no confirmation confirms it.
+    DeclineOutcome {
+        /// The request.
+        request: OutcomeDecline,
+        /// The decision.
+        decision: Id,
+    },
+    /// One notice's summary, once it was delivered or abandoned: what a restart needs to send it no more
+    /// (`REQ-ORD-20`, `REQ-ORD-7`). A raise's summary closes the raise's own entry, written once (`done` or `failed`).
+    NoticeSummary {
+        /// Whom it was for.
+        to: NoticeReceiver,
+        /// What it was a notice of.
+        of: NoticeOf,
+        /// The number of its last try, counted from 1.
+        last_try: Count,
+        /// How it ended.
+        ended: NoticeEnd,
+    },
+    /// A non-final segment whose public record contradicts what its provider said it moved: the segment still
+    /// settles on its provider's declared grade, and the contradiction is recorded here and raised (`REQ-ORD-33`,
+    /// `REQ-AUD-1`, ADR-0009).
+    PublicMismatch {
+        /// The order.
+        order: Id,
+        /// The segment.
+        segment: Id,
+        /// The public node its movement is at.
+        node: OuterNode,
+        /// The movement Core checked.
+        movement: PublicMovement,
+        /// Which figure differs.
+        found: PublicEndMismatch,
+        /// What the network moved.
+        moved: PublicFigures,
+        /// What the provider said it moved.
+        stated: PublicFigures,
+        /// The receipt of what the provider said: its verified result about the order and segment
+        /// (`public-mismatch-rests-on-the-providers-result`).
+        rests_on: Receipt,
+    },
+    /// A stuck part's evidence, graded, saying whose it is: the evidence a stuck resolution's `stuck_resolved` cites,
+    /// of a part and no segment, since a resolution moves the part's value outside its plan (`REQ-ORD-39`,
+    /// `REQ-AUZ-4`).
+    PartEvidence {
+        /// The evidence's id: the one `stuck_resolved` cites as its `evidence`.
+        evidence: Id,
+        /// The order.
+        order: Id,
+        /// The part.
+        part: Id,
+        /// The grade: a statement alone grades as a statement.
+        grade: EvidenceGrade,
+        /// The party whose evidence it is.
+        whose: Id,
+        /// The receipts of the stated entries it rests on, at least one, each once.
+        rests_on: Vec<Receipt>,
+    },
+}
+
+/// Whom a notice was for: a party, in the role it receives in. Schema:
+/// `urn:rutent:core-internal:verified-entry#/$defs/notice_receiver`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoticeReceiver {
+    /// The party.
+    pub party: Id,
+    /// The role it receives in.
+    pub role: Role,
+}
+
+/// What a notice was of. Schema: `urn:rutent:core-internal:verified-entry#/$defs/notice_of`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NoticeOf {
+    /// A change of an order: the `sequence`-th of its changes, counted from 1.
+    Order {
+        /// The order.
+        order: Id,
+        /// The change's sequence.
+        sequence: Count,
+    },
+    /// A raise to the operator.
+    Raise {
+        /// The raise's id (`notice-summary-names-its-raise`).
+        raise: Id,
+    },
+}
+
+/// How a notice ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeEnd {
+    /// Its receiver's transport took it.
+    Delivered,
+    /// Its last try failed, and it is sent no more: its receiver recovers by asking for the current state.
+    Abandoned,
 }
 
 /// Why a recorded input wasn't taken: the state machine's answer, or the host's.
@@ -2434,6 +2707,29 @@ pub struct OutcomeConfirmation {
     pub confirmer: Actor,
     /// The confirmation's evidence: a verified stated entry about the move's order and part, by receipt.
     pub confirmed_with: Receipt,
+    /// When, by Core's clock.
+    pub at: Timestamp,
+}
+
+/// A mover's report of a move's outcome declined, on another actor's word (`REQ-AUZ-4`, ADR-0011): it cites the report
+/// by receipt, and an actor of another accountable party and another login than the reporter declines it with its
+/// own evidence, a verified stated entry about the move's order and part, another entry than the report's, by another
+/// maker. Policy decides it, the way it decides a confirmation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeDecline {
+    /// The request's id.
+    pub request: Id,
+    /// The order.
+    pub order: Id,
+    /// The receipt of the effect whose outcome was unknown.
+    pub effect: Receipt,
+    /// The receipt of the report it declines: a permitted `report_outcome` of the same effect, still open.
+    pub report: Receipt,
+    /// Who declines it.
+    pub decliner: Actor,
+    /// The decline's evidence: a verified stated entry about the move's order and part, by receipt.
+    pub declined_with: Receipt,
     /// When, by Core's clock.
     pub at: Timestamp,
 }
@@ -2730,4 +3026,95 @@ impl<'de> Deserialize<'de> for Entry {
             _ => Err(D::Error::custom("an entry's kind is stated or verified")),
         }
     }
+}
+
+// --- Checkpoints (ADR-0005) ------------------------------------------------------------------------------------
+
+/// A checkpoint's `shape`.
+pub const CHECKPOINT_SHAPE: &str = "urn:rutent:core-internal:checkpoint";
+
+/// A checkpoint opening's `shape`.
+pub const CHECKPOINT_OPENING_SHAPE: &str = "urn:rutent:core-internal:checkpoint-opening";
+
+checked_text!(
+    /// A checkpoint's tick on its schedule, as 16 lower-case hexadecimal digits, so a checkpoint's size never tells how
+    /// far along the schedule it is. Schema: `urn:rutent:core-internal:checkpoint#/$defs/tick`.
+    Tick,
+    |t| t.len() == 16 && t.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+    "a tick is 16 lower-case hexadecimal digits"
+);
+
+checked_text!(
+    /// A 64-byte Ed25519 signature, base64url without padding, in its canonical form. Schema:
+    /// `urn:rutent:core-internal:checkpoint#/$defs/signature/properties/value`.
+    SignatureValue,
+    |t| t.len() == 86 && is_base64url(t),
+    "a signature is 64 bytes, base64url without padding, in its canonical form"
+);
+
+/// The one shape a checkpoint has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CheckpointShape {
+    /// [`CHECKPOINT_SHAPE`].
+    #[serde(rename = "urn:rutent:core-internal:checkpoint")]
+    Checkpoint,
+}
+
+/// The one shape a checkpoint's opening has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CheckpointOpeningShape {
+    /// [`CHECKPOINT_OPENING_SHAPE`].
+    #[serde(rename = "urn:rutent:core-internal:checkpoint-opening")]
+    CheckpointOpening,
+}
+
+/// The log's signature on a checkpoint. Schema: `urn:rutent:core-internal:checkpoint#/$defs/signature`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointSignature {
+    /// Always Ed25519, verified strictly.
+    pub scheme: SignatureScheme,
+    /// The log's own key, never the operator's statement key.
+    pub key: PublicKey,
+    /// The signature over the RFC 8785 canonical JSON of the checkpoint without `signature.value`.
+    pub value: SignatureValue,
+}
+
+/// What the operator publishes for one tick of a schedule fixed in advance, whether or not the log moved: a short,
+/// fixed-size, signed commitment to the log's history and nothing else, no size, no root, no count and no salt
+/// (`REQ-AUD-14`, ADR-0005). Schema: `urn:rutent:core-internal:checkpoint`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    /// Always [`CHECKPOINT_SHAPE`].
+    pub shape: CheckpointShape,
+    /// The log.
+    pub log: Id,
+    /// The tick.
+    pub tick: Tick,
+    /// When the tick fell on the schedule, never the time of writing.
+    pub at: Timestamp,
+    /// The commitment: SHA-256 over a domain, the log, the tick, a fresh salt, the log's size and its root, as
+    /// `core-audit`'s checkpointer computes it; only an opening's holder can open it.
+    pub commitment: Digest,
+    /// The log's signature.
+    pub signature: CheckpointSignature,
+}
+
+/// What a checkpoint commits to, beside its root, and the salt: kept in `CMP-CORE-AUDIT`'s own checkpoint store,
+/// outside the log, and handed to the checker with the history, never published (`REQ-AUD-14`, `REQ-AUD-10`). Schema:
+/// `urn:rutent:core-internal:checkpoint-opening`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointOpening {
+    /// Always [`CHECKPOINT_OPENING_SHAPE`].
+    pub shape: CheckpointOpeningShape,
+    /// The log.
+    pub log: Id,
+    /// The tick, as its checkpoint has it.
+    pub tick: Tick,
+    /// The salt, 32 fresh bytes.
+    pub salt: Salt,
+    /// The number of entries the log held, whose root the checkpoint commits to.
+    pub size: SafeInteger,
 }

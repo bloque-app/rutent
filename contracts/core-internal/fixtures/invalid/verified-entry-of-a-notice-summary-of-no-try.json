@@ -1,0 +1,30 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "notice_summary",
+    "to": {
+      "party": "cust-1",
+      "role": "customer"
+    },
+    "of": {
+      "kind": "order",
+      "order": "ord-1",
+      "sequence": 3
+    },
+    "last_try": 0,
+    "ended": "delivered"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

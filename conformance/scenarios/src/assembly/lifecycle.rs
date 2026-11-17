@@ -22,10 +22,7 @@ use rutent_core_orch::reversal::{
 };
 use rutent_core_orch::rounds::{self, History, Presence};
 use rutent_core_orch::segments::{Live, Ran, StatusError};
-use rutent_core_orch::stuck::{
-    Deciding, Moved, Moving, NoRouteLeft, NoRouteRecorded, Resolutions, ResolveError, Stuck, Watch,
-    Watching,
-};
+use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Watch, Watching};
 use rutent_router::RouteFinder;
 use serde_json::Value;
 
@@ -40,7 +37,6 @@ pub struct Lifecycle {
     histories: BTreeMap<String, History>,
     /// The route each order's part runs now, once recalculated: its record and its segments.
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
-    stuck: Stuck,
     reversals: Reversals,
 }
 
@@ -301,7 +297,6 @@ impl Core {
             exposures: &mut self.exposures,
         };
         let watched = self
-            .life
             .stuck
             .watch(
                 &mut parts,
@@ -343,7 +338,6 @@ impl Core {
             exposures: &mut self.exposures,
         };
         let recorded = self
-            .life
             .stuck
             .no_route(
                 &mut parts,
@@ -375,83 +369,14 @@ impl Core {
             .iter()
             .map(|(_, e)| e.clone())
             .collect();
-        self.life
-            .stuck
+        self.stuck
             .follow(&self.segments, &logged, order)
             .map_err(StepError::Stuck)
     }
 
-    /// `decider`'s decision of how `order`'s stuck part is resolved, under policy, naming `evidence`.
-    ///
-    /// # Errors
-    ///
-    /// As `Stuck::decide`.
-    pub fn decide_stuck(
-        &mut self,
-        order: &Id,
-        decider: &Actor,
-        resolution: &rutent_contracts::core_internal::Resolution,
-        evidence: &[rutent_contracts::module_interface::Digest],
-    ) -> Result<rutent_contracts::core_internal::Decision, ResolveError> {
-        let part = self.part_of(order).map_err(|_| ResolveError::NotStuck)?;
-        let mut parts = rutent_core_orch::stuck::Parts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        self.life.stuck.decide(
-            &mut parts,
-            &mut self.policy,
-            Deciding {
-                order,
-                part: &part,
-                decider,
-                resolution,
-                evidence,
-            },
-        )
-    }
-
-    /// `mover`'s carrying out of a decision, through `moves`: the one step that moves value.
-    ///
-    /// # Errors
-    ///
-    /// As `Stuck::carry_out`.
-    pub fn carry_out_stuck(
-        &mut self,
-        order: &Id,
-        carries_out: &rutent_contracts::core_internal::Decided,
-        mover: &Actor,
-        moves: &mut dyn Resolutions,
-    ) -> Result<Moved, ResolveError> {
-        let core = kit::core();
-        let mut parts = rutent_core_orch::stuck::Parts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        self.life.stuck.carry_out(
-            &mut parts,
-            &mut self.policy,
-            moves,
-            Moving {
-                order,
-                carries_out,
-                mover,
-                core: &core,
-            },
-        )
-    }
-
     /// What the operator sees of the value resting in stuck orders.
     pub fn stuck_values(&self) -> Vec<rutent_core_orch::stuck::StuckValue> {
-        self.life.stuck.stuck_values(&self.exposures, &self.clock)
+        self.stuck.stuck_values(&self.exposures, &self.clock)
     }
 
     /// What `reader`, a provider, reads of `segment` of `order`.
@@ -479,12 +404,6 @@ impl Core {
     /// The state of `segment`'s part as Core follows it, with the segment's.
     pub fn followed(&self, order: &Id) -> Option<rutent_contracts::state_machine::Order> {
         self.segments.order(order).cloned()
-    }
-
-    /// Whether `order`'s part is held stuck by Core's segments.
-    pub fn is_stuck(&self, order: &Id) -> bool {
-        self.part_of(order)
-            .is_ok_and(|part| self.segments.stuck(order, &part))
     }
 
     /// The provider's answer to `segment`'s operation of `order`, asked again under its own transaction: what a

@@ -22,8 +22,12 @@
 //!    one [`StatementKeys::signs_for`] answers, whose first trust in a provider is the advertising keys of its latest
 //!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold.
 //!
-//! So a verified entry's `acts` and `party` are both bound to its key. Its `role` stays the writer's label: no
-//! relation may read a stated entry's role.
+//! So a verified entry's `acts` and `party` are both bound to its key. Its `role` is held to one its maker holds:
+//! the maker the operator signs as states as the `operator`, and every other maker, a provider, a verifier or a module
+//! the operator publishes, as a `provider` or a `verifier`. A statement whose bytes bear the claim out in any other
+//! role is refused, not recorded, since the writer mislabelled a genuine statement (`REQ-AUD-2`, `T-022-02`'s probe).
+//! The log can't tell a provider from a verifier, which the catalogue knows, so no relation reads a stated entry's
+//! role.
 //!
 //! So a verified entry's shape, time, key and transaction are the bytes' own, and one about an order is tied to it
 //! through a signed transaction, which [`STATED_RELATIONS`](super::STATED_RELATIONS) keeps to one order. An entry
@@ -183,6 +187,20 @@ fn signed_by_its_maker(
     keys.signs_for(maker, &claim.signed_with, &claim.when.at)
 }
 
+/// The refusal of a stated entry whose kept bytes bear its claim out, made in a role its maker doesn't hold.
+pub const IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD: &str =
+    "a verified statement is recorded only in a role its maker holds";
+
+/// Whether `maker` holds `role`: the operator's own maker the operator's role, any other maker a provider's or a
+/// verifier's.
+fn holds_role(maker: &Id, role: Role, operator: &Id) -> bool {
+    if maker == operator {
+        role == Role::Operator
+    } else {
+        matches!(role, Role::Provider | Role::Verifier)
+    }
+}
+
 /// The refusal of a stated entry whose commitment names no statement the evidence store keeps.
 pub const STATED_WITHOUT_ITS_KEPT_BYTES: &str =
     "a stated entry names a statement the evidence store keeps";
@@ -229,8 +247,8 @@ fn decode(text: &str) -> Option<Vec<u8>> {
 /// Attributes `claim`, a stated entry as its writer handed it to the log, from the statement kept under its
 /// commitment: the entry the log records, `verified` to its claimed maker only where the kept bytes bear the claim
 /// out (see the module's steps), and otherwise unverified. It refuses an entry its writer attributed `verified`,
-/// and one whose commitment names no kept statement; a key or store it can't reach fails the append, and nothing is
-/// recorded.
+/// one whose commitment names no kept statement, and one its bytes bear out in a role its maker doesn't hold; a key
+/// or store it can't reach fails the append, and nothing is recorded.
 pub fn attribute(
     claim: &StatedEntry,
     history: &History,
@@ -280,6 +298,11 @@ pub fn attribute(
                 && keys.publisher(&claimed_by.acts)?.as_ref() == Some(&claimed_by.party)
         }
     };
+    if verified && !holds_role(&claimed_by.acts, claimed_by.role, &keys.operator()?) {
+        return Err(AppendFailure::Refused(Violation(
+            IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD,
+        )));
+    }
     let mut entry = claim.clone();
     if verified {
         entry.attribution = Attribution::Verified {

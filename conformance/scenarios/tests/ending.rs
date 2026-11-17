@@ -155,7 +155,6 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
 
 // verifies: AC-8
 #[test]
-#[ignore = "blocked: components/core-orch/src/reversal/journal.rs rejects the audit log's receipt for a verified stated entry; see F-024 notes, T-024-06"]
 fn complete_order_whose_start_is_proven_undone_is_marked_failed_and_notified() {
     let (mut core, session) = core_with("AC-8", &[RESERVE]);
     let (order, ran) = run(

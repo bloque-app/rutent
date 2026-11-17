@@ -672,7 +672,7 @@ impl Reversals {
             .ok_or(ReversalError::Unknown)?;
         let state = reversal.asking.as_mut().ok_or(ReversalError::Unknown)?;
         // The operation, then the effect, before anything takes effect (`INV-7`).
-        state.question.append(parts.log)?;
+        state.question.append_question(parts.log)?;
         let effect_receipt = state.effect.append(parts.log)?;
         let effect = Effect {
             action: state.action.clone(),
@@ -874,7 +874,7 @@ impl Reversals {
             .ok_or(ReversalError::Unknown)?;
         let question = reversal.question.as_mut().ok_or(ReversalError::Unknown)?;
         // Appended before it is sent, so the log binds its answer to the order and segment before the answer exists.
-        question.question.append(parts.log)?;
+        question.question.append_question(parts.log)?;
         if !question.sent {
             question.answer = asking.providers.ask(&question.origin, &question.bytes);
             question.sent = true;

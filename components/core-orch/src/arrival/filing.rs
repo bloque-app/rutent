@@ -594,6 +594,7 @@ impl Run {
                 // deposit's order is routed as one part, so its arrival names none.
                 notice: Some(self.arrival.notice.clone()),
                 part: None,
+                earlier: None,
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

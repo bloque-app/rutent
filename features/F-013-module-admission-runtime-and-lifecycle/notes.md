@@ -844,12 +844,54 @@ In `components/prov/tests/module_limits.rs`:
 - `proxy_https.rs` (`store_that_never_answers_times_out` and the one after it): they call the HTTPS transport with
   a real `Instant` deadline and a read timeout, without a platform, so no platform clock reaches them; their bounds
   (700 ms for a 200 ms timeout over an 800 ms silence, 1.5 s for 800 ms) are a machine's speed. Owner: `F-014`
-  (the proxy's transport). An `F-014` row is owed now, since they are the same wall-clock class this row fixes.
+  (the proxy's transport). The `F-014` row is `T-014-06` (wave 25), which also takes the three tests of `egress.rs` with the same kind of bound.
 - `module_lifecycle.rs` polls up to 5 s for a killed process to be seen gone: a wait for the operating system, not
   a deadline or budget of the platform.
 - The 10 s `OPERATION_DEADLINE` and `START_DEADLINE` the other platform tests run under are read on the
   operating system's time still, as in production; a runner that takes 10 s to start a process fails them, which is
   the deadline doing its job.
+
+### Follow-up (T-013-08): stepped clock in every cross-module call test
+
+`route_calls.rs::call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router` failed once in a full
+workspace run under load, and passed alone and in 10 later runs. It ran on the real `Monotonic` clock, so spawning
+the wasm children of p-r1, p-r2 and p-z could pass the 10 s `OPERATION_DEADLINE`, and the call was then refused on
+its deadline instead of as `NotNamedByRoute`. Its binding now has a `SteppedClock`, with the assertions unchanged.
+The same class was closed in every other test that makes a cross-module call on a platform with no operation clock:
+`module_calls.rs` (4 tests), `module_limits.rs` (4 tests), `proxy_calls.rs` (3 tests) and `production_world.rs`
+(4 tests). Not changed, because they are about real time or never start a callee: the single-process tests of
+`module_limits.rs`, `module_lifecycle.rs`, `module_process.rs` and the others, and `egress.rs`, whose deadlines are
+the outward ones. `START_DEADLINE` is still read on the operating system's time (the platform hands it to the
+spawn directly); a start that passes it fails the install, not the assertion.
+
+The scenarios' fleet had the same flaw in principle, and it is fixed as defence, but it was not why `execution_routes`
+failed. `Fleet::with_context` built its platform on the real clock, so under load a simulated provider's call could pass
+its real deadline, or its start `START_DEADLINE`. Every `Fleet` platform now runs on a `ScenarioClock` that stands still
+(a scenario that scripts a `silent` or `late` provider is about a real deadline passing, so queueing that behaviour makes
+the clock follow the operating system's time from then on, without a jump), and `Platform::set_start_deadline` (new,
+default `START_DEADLINE`, so production is unchanged) is set to 120 s on a fleet, since a start is the machine's work
+and no scenario is about start-up time. Edited: `module/platform.rs` (F-013's), `fleet.rs` and `world.rs` (F-024's).
+
+The real cause of the five `execution_routes` failures (`CantProceed { class: NoRouteRightNow }` where a quote is
+expected, within 8 to 20 s, and only while other worktrees were building, which is why load seemed to matter) was the
+shared simulated-provider build. `conformance/scenarios/src/sim/disk.rs::built_guests` built the guests into
+`<target>/rutent-sim-guests` and rebuilt them only when the `built` marker was older than the newest file of the
+current worktree's sources. Every worktree in a build lane shares one target directory, so a worktree on an older base
+whose files had just been edited rebuilt the guests from its own sources and left the marker newest; the next worktree
+saw a marker newer than its sources and ran on guests without the simulated providers `T-024-04` added. Confirmed
+deterministically: `execution_routes` passed on `f013i`; the guests were then rebuilt from a scratch checkout of
+`b8c416e0` into the same directory; the same test run again from `f013i` failed 5 of 5 in 13 s. Fixed: the build is now
+in `<target>/rutent-sim-guests/<key>`, where the key is a hash of the paths and bytes of the guests' sources
+(`module-guests`, the WIT, `conformance/src`, `contracts/src`), so two trees never share a build and a file's age
+decides nothing; the newest three other builds are kept and older ones, and the loose files of the earlier layout, are
+removed. `RUTENT_SIM_GUESTS` still overrides it.
+Review of that fix added: builds are taken one at a time under a lock directory in the target (they share cargo's
+intermediate `sim-guests-build`, which another key's build could overwrite between `cargo build` and `componentize`),
+each is made in `<key>.tmp-<pid>` and renamed into place whole, a build's use is its `built` marker's time and only
+builds unused for more than a day are removed (a running test may still read an old one), and the key also covers
+`conformance/Cargo.toml`, `contracts/Cargo.toml` and `rust-toolchain.toml`. The prov tests' two platform builders
+(`module_support/mod.rs`, `signed.rs`) get the same 120 s start deadline as the fleet, for `holding_handed_on`'s
+"the wallet runs" under load. CI, with one checkout, was never affected.
 
 ### Defaults (T-013-08)
 

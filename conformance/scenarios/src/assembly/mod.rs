@@ -84,6 +84,10 @@ use rutent_core_orch::segments::{
     StatusError,
 };
 use rutent_core_orch::snapshot::{Exposures, Price, Releases};
+use rutent_core_orch::stuck::{
+    Deciding, Moved, Mover, Moving, NoRouteLeft, Parts as StuckParts, Ports, ResolveError, Stuck,
+    StuckError,
+};
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::lifecycle::Staging;
 use rutent_prov::module::platform::Platform;
@@ -277,6 +281,11 @@ pub struct Faults {
     pub carried: usize,
     /// Why a planted swap failed, if it did.
     pub swap_failed: Option<rutent_contracts::state_machine::host::HostError>,
+    /// The platform refuses to begin the segment at this place in the calls to begin, once: nothing passes out, so
+    /// the effect it was to carry out failed (`T-020-16`).
+    pub refuse_begin: Option<usize>,
+    /// How many segments the platform was asked to begin so far.
+    pub begun: usize,
     /// How many seconds Core's clock moves on while each operation is carried out (`T-024-06`): what a provider's
     /// segment takes, so the settlements Core learns its p99 from have a duration.
     pub operation_takes: u64,
@@ -299,6 +308,12 @@ impl Modules for Running<'_> {
         provider: &Id,
         transaction: &rutent_contracts::module_interface::Identifier,
     ) -> Result<String, rutent_contracts::module_interface::PlatformRefusal> {
+        let place = self.faults.begun;
+        self.faults.begun += 1;
+        if self.faults.refuse_begin == Some(place) {
+            self.faults.refuse_begin = None;
+            return Err(rutent_contracts::module_interface::PlatformRefusal::Unavailable);
+        }
         self.platform.world.set_clock(self.clock.instant());
         Modules::begin_segment(self.platform, provider, transaction)
     }
@@ -462,6 +477,9 @@ pub struct Core {
     /// Each filing on an automatic deposit Core was handed, by the order it opened: what its start takes.
     filings: BTreeMap<String, rutent_core_orch::arrival::Filing>,
     segments: Segments,
+    /// The parts Core declared stuck, and the mover that carries their resolutions out (`T-020-16`).
+    stuck: Stuck,
+    mover: Mover,
     /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
     /// the key they are signed with and the transport that takes them.
     notices: rutent_core_orch::notice::Notices,
@@ -471,6 +489,9 @@ pub struct Core {
     kept: LogsRead,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
+    /// The quotes reserves hold, which an acceptance may redeem (`T-020-15`); which order redeemed which is rebuilt
+    /// from the log whenever Core is put together on a disk (`Holds::recorded`).
+    holds: rutent_core_orch::quote::Holds,
     readings: grading::Readings,
     issued: Issued,
     /// What goes wrong with an order and how it ends (`T-024-06`).
@@ -515,12 +536,26 @@ pub enum StepError {
     Arrival(rutent_core_orch::arrival::ArrivalError),
     /// The order is in no state that step can take.
     NotNow(&'static str),
+    /// Declaring a part stuck, or following its ends, refused or stopped (`T-020-16`).
+    Stuck(StuckError),
+    /// A step of a stuck order's resolution was refused or stopped (`T-020-16`).
+    Resolve(ResolveError),
     /// A recalculation couldn't be tried (`T-024-06`).
     Recalc(rutent_core_orch::recalc::RecalcError),
-    /// The stuck record refused or stopped (`T-024-06`).
-    Stuck(rutent_core_orch::stuck::StuckError),
     /// A reversal or an ending was refused or stopped (`T-024-06`).
     Reversal(rutent_core_orch::reversal::ReversalError),
+}
+
+impl From<StuckError> for StepError {
+    fn from(e: StuckError) -> Self {
+        StepError::Stuck(e)
+    }
+}
+
+impl From<ResolveError> for StepError {
+    fn from(e: ResolveError) -> Self {
+        StepError::Resolve(e)
+    }
 }
 
 impl From<rutent_core_orch::arrival::ArrivalError> for StepError {
@@ -740,6 +775,8 @@ impl Core {
             arrivals: rutent_core_orch::arrival::Arrivals::new(),
             filings: BTreeMap::new(),
             segments: Segments::new(),
+            stuck: Stuck::new(),
+            mover: Mover::new(),
             notices: rutent_core_orch::notice::Notices::new(
                 kit::id("rutent-scenarios"),
                 kit::operator().party,
@@ -748,6 +785,7 @@ impl Core {
             wire: charges::Wire::default(),
             kept,
             closing: rutent_core_orch::closing::Closing::new(),
+            holds: rutent_core_orch::quote::Holds::new(),
             readings: grading::Readings::default(),
             issued: Issued::new(),
             life: lifecycle::Lifecycle::new(),
@@ -777,6 +815,7 @@ impl Core {
             core.readings.tie_by_destination();
         }
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
+        core.holds = rutent_core_orch::quote::Holds::recorded(core.log.borrow().entries());
         if reopened {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
             core.relist()?;
@@ -1282,6 +1321,8 @@ impl Core {
             prices: &self.prices,
             core: &core,
             operator: &operator,
+            holds: &mut self.holds,
+            kept: &mut self.kept,
         };
         call(&mut self.intake, &mut desk)
     }
@@ -1325,7 +1366,80 @@ impl Core {
         order: &Id,
         digest: &rutent_contracts::module_interface::Digest,
     ) -> Result<Told, StepError> {
-        let told = self.with_desk(|intake, desk| intake.accept(desk, order, by, digest, None))?;
+        self.accept_holding(by, order, digest, None)
+    }
+
+    /// The quotes reserves hold: where a scenario keeps a reserve's signed hold (`Holds::hold`) for an acceptance
+    /// to name.
+    pub fn holds(&mut self) -> &mut rutent_core_orch::quote::Holds {
+        &mut self.holds
+    }
+
+    /// Core's holds lost and rebuilt from the log, as a restart leaves them (`Holds::recorded`): no quote is held, and
+    /// which order redeemed which hold is what the log's acceptances say.
+    pub fn holds_rebuilt_from_log(&mut self) {
+        self.holds = rutent_core_orch::quote::Holds::recorded(self.log.borrow().entries());
+    }
+
+    /// Takes a reserve's signed hold, `bytes` as they arrived, of the quote `record` chose (recorded in the log as
+    /// `recorded_id` and `recorded_digest`), held until `valid_until` (`Holds::take`): kept, appended as a stated
+    /// entry about its own transaction and held for an acceptance to name. It answers the receipt of the hold's entry.
+    /// Nothing delivers a reserve's hold to Core yet; a scenario hands it here (`T-020-15`).
+    ///
+    /// # Errors
+    ///
+    /// If the bytes aren't a hold, the log refused them, or the hold isn't kept.
+    pub fn state_hold(
+        &mut self,
+        bytes: &[u8],
+        recorded_id: &Id,
+        recorded_digest: &rutent_contracts::module_interface::Digest,
+        record: DecisionRecord,
+        valid_until: rutent_contracts::router_api::Timestamp,
+    ) -> Result<Receipt, rutent_core_orch::quote::TakeHoldError> {
+        // The log's own record of the entry the call appended is read back from the log as it stands after.
+        struct Now<'a>(&'a RefCell<CoreLog>);
+        impl rutent_core_orch::quote::Recorded for Now<'_> {
+            fn entry(&self, receipt: &Receipt) -> Option<Entry> {
+                rutent_core_orch::quote::Recorded::entry(
+                    &charges::Log(self.0.borrow().entries()),
+                    receipt,
+                )
+            }
+        }
+        let log = Rc::clone(&self.log);
+        let recorded = Now(&log);
+        let desk = rutent_core_orch::quote::HoldDesk {
+            evidence: &mut self.keeper,
+            log: &mut self.general,
+            recorded: &recorded,
+            clock: &self.clock,
+            catalogue: &self.catalogue,
+        };
+        self.holds
+            .take(
+                desk,
+                bytes,
+                rutent_core_orch::quote::RecordedAs {
+                    id: recorded_id,
+                    digest: recorded_digest,
+                },
+                record,
+                valid_until,
+            )
+            .map(|held| held.hold.clone())
+    }
+
+    /// [`Core::accept`], naming `hold`, the transaction of a reserve's hold of the quote shown (`T-020-15`).
+    pub fn accept_holding(
+        &mut self,
+        by: &Actor,
+        order: &Id,
+        digest: &rutent_contracts::module_interface::Digest,
+        hold: Option<&Id>,
+    ) -> Result<Told, StepError> {
+        let told = self
+            .with_desk(|intake, desk| intake.accept_holding(desk, order, by, digest, None, hold))?;
         if let Some(start) = self.intake.start(order).cloned()
             && !self.started.contains_key(order.as_str())
         {
@@ -1502,6 +1616,185 @@ impl Core {
             ran.push(self.run_live(&live)?);
         }
         Ok(ran)
+    }
+
+    /// Declares the part of `order` stuck for want of a route (`REQ-ORD-28`): its recalculations at their bound, the
+    /// value left resting where the last segment that settled put it. Core's record of the order's ends is taken
+    /// from the log's own entries, as the assembly follows an order (`T-020-11`, `T-020-16`).
+    ///
+    /// # Errors
+    ///
+    /// If the order hasn't started, or the part can't be declared.
+    pub fn leave_no_route(&mut self, order: &Id) -> Result<(), StepError> {
+        let started = self
+            .started
+            .get(order.as_str())
+            .cloned()
+            .ok_or(StepError::NotNow("the order started"))?;
+        let part = kit::id(
+            started
+                .plan
+                .first()
+                .ok_or(StepError::NotNow("the order has a part"))?
+                .part_id
+                .as_str(),
+        );
+        let core = kit::core();
+        let outcome = rutent_core_orch::recalc::Recalculation::NoRouteLeft { recalculated: 0 };
+        let last = started.record.record_id().clone();
+        let mut parts = StuckParts {
+            clock: &self.clock,
+            log: &mut self.general,
+            fresh: &mut self.fresh,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+        };
+        self.stuck.no_route(
+            &mut parts,
+            NoRouteLeft {
+                order,
+                part: &part,
+                outcome: &outcome,
+                last_record: &last,
+                core: &core,
+            },
+        )?;
+        self.feed()?;
+        let entries: Vec<Entry> = self
+            .log
+            .borrow()
+            .entries()
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect();
+        self.stuck.follow(&self.segments, &entries, order)?;
+        Ok(())
+    }
+
+    /// The decide step of `order`'s stuck part, asked of the engine through the assembly's policy
+    /// (`REQ-AUZ-4`).
+    ///
+    /// # Errors
+    ///
+    /// If Core refuses it before policy is asked, or the log can't take it.
+    pub fn decide_stuck(
+        &mut self,
+        order: &Id,
+        decider: &Actor,
+        resolution: &rutent_contracts::core_internal::Resolution,
+        evidence: &[rutent_contracts::module_interface::Digest],
+    ) -> Result<rutent_contracts::core_internal::Decision, StepError> {
+        let started = self
+            .started
+            .get(order.as_str())
+            .cloned()
+            .ok_or(StepError::NotNow("the order started"))?;
+        let part = kit::id(
+            started
+                .plan
+                .first()
+                .ok_or(StepError::NotNow("the order has a part"))?
+                .part_id
+                .as_str(),
+        );
+        let mut policy = self.policy.clone();
+        let mut parts = StuckParts {
+            clock: &self.clock,
+            log: &mut self.general,
+            fresh: &mut self.fresh,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+        };
+        Ok(self.stuck.decide(
+            &mut parts,
+            &mut policy,
+            Deciding {
+                order,
+                part: &part,
+                decider,
+                resolution,
+                evidence,
+            },
+        )?)
+    }
+
+    /// The move step of `order`'s stuck part, carrying out `carries_out`: policy decides it through the assembly's
+    /// engine, and the production mover hands the platform the effect it records (`REQ-AUZ-4`, `T-020-16`).
+    ///
+    /// # Errors
+    ///
+    /// If Core refuses it before policy is asked, or the log can't take a step of it.
+    pub fn move_stuck(
+        &mut self,
+        order: &Id,
+        carries_out: &rutent_contracts::core_internal::Decided,
+        mover: &Actor,
+    ) -> Result<Moved, StepError> {
+        let core = kit::core();
+        let operator = kit::operator();
+        let mut policy = self.policy.clone();
+        let readings = self.readings.clone();
+        readings.refresh(&self.fleet.platform.world);
+        let mut running = Running {
+            platform: &mut self.fleet.platform,
+            clock: &self.clock,
+            faults: &mut self.faults,
+            feed: &mut self.feed,
+            log: &self.log,
+            swap_to: self.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut parts = StuckParts {
+            clock: &self.clock,
+            log: &mut self.general,
+            fresh: &mut self.fresh,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+        };
+        let mut no_proxy = NoProxy;
+        let mut delivering = self.mover.on(Ports {
+            modules: &mut running,
+            uses: &mut no_proxy,
+            evidence: &mut self.keeper,
+            catalogue: &self.catalogue,
+            operator_key: &mut self.signer,
+            bounds: &self.bounds,
+            operator: &operator,
+        });
+        let moved = self.stuck.carry_out(
+            &mut parts,
+            &mut policy,
+            &mut delivering,
+            Moving {
+                order,
+                carries_out,
+                mover,
+                core: &core,
+            },
+        );
+        self.feed()?;
+        Ok(moved?)
+    }
+
+    /// The first part of a started `order`'s plan.
+    pub fn first_part(&self, order: &Id) -> Option<Id> {
+        self.started
+            .get(order.as_str())
+            .and_then(|s| s.plan.first())
+            .map(|p| kit::id(p.part_id.as_str()))
+    }
+
+    /// Whether Core holds the stuck part of `order` unresolved (`T-020-11`).
+    pub fn is_stuck(&self, order: &Id, part: &Id) -> bool {
+        self.stuck.is_stuck(order, part)
+    }
+
+    /// The platform's count of operations handed to `provider`.
+    pub fn operations_received(&self, provider: &str) -> usize {
+        self.fleet.platform.operations_received(provider)
     }
 
     /// Runs one part as `live` says, each segment after the one before settles.

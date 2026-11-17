@@ -8,7 +8,7 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, KeptStatements, Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
-    Attribution, Entry, KeptStatement, SignedWith, StatedEntry, attribute,
+    Attribution, Entry, KeptStatement, Role, SignedWith, StatedEntry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE};
@@ -639,4 +639,51 @@ fn statement_naming_a_member_twice_is_refused_before_the_record() {
         bind_statement(&catalogue, &clock, twice.as_bytes()),
         Err(Refusal::DuplicateMember { at })
     );
+}
+
+/// A statement of a module the operator publishes, refused before the record, is claimed as that module's in the
+/// provider's role, for the operator's party: a module is a provider, and the log records a statement only in a
+/// role its maker holds (core-internal's `attribute`), so a claim in the operator's role would be refused once the
+/// module's key verified it.
+// verifies: REQ-AUD-2
+#[test]
+fn operators_module_statement_is_claimed_in_the_providers_role() {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let clock = TestClock::at(4_000);
+    let mut value = dry_run_value(&deployment(), 3_500);
+    value["maker"] = json!("wallet-module");
+    let bytes = sign(value, &operator_key());
+    let refused = RefusedStatement {
+        tuple: withdrawal_tuple(RESERVE),
+        bytes,
+        reason: Refusal::NoTuple,
+        verified: true,
+    };
+    let mut log = KeptLog::default();
+    let mut evidence = KeptEvidence::default();
+    record_refused(&mut evidence, &mut log, &clock, &catalogue, &refused, None).unwrap();
+    let [Entry::Stated(claim)] = log.entries.as_slice() else {
+        panic!("one stated entry");
+    };
+    let Attribution::Unverified { claimed_by } = &claim.attribution else {
+        panic!("appended unverified");
+    };
+    assert_eq!(
+        (
+            claimed_by.acts.as_str(),
+            claimed_by.party.as_str(),
+            claimed_by.role
+        ),
+        ("wallet-module", "operator", Role::Provider)
+    );
+    let claim = claim.clone();
+    let mut sources = LogSources {
+        catalogue: &catalogue,
+        evidence: &evidence,
+        log: &log,
+        at: clock.now().floor(),
+    };
+    let mut keys = LogSources { ..sources };
+    let signatures = LogSources { ..sources };
+    assert!(attribute(&claim, &[], &mut sources, &mut keys, &signatures).is_ok());
 }

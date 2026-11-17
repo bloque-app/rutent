@@ -3408,3 +3408,526 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
   `segments_support`'s test log routes one reserve that can't charge above its price. Still without a test of its own:
   the refusal of a store that keeps nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off
   isolates from the compare).
+
+## T-020-15: signed holds wired into intake
+
+- **Design.** An acceptance may name the hold of the quote it accepts (`Intake::accept_holding`; `accept` is
+  `accept_holding(.., None)`). Intake redeems it through `Holds::redeem`, once the destination checks pass and just
+  before the acceptance is built, and cites the receipt of the hold's stated entry as `What::Acceptance.held`. `redeem`
+  now takes a `Redemption` (every field intake verified: the request's origin reserve, the order, the session the
+  reserve's yes was asked in (`offered.session`, the same value the acceptance records), the quote's decision record
+  and candidate, Core's clock) and the log's read of the evidence store (`KeptStatements`). It refuses, in order: no
+  such hold; another reserve than the holder; another order or session (`check_redemption`); another order having
+  redeemed it; a hold of another quote (`NotThisQuote`); a kept statement that is not the hold (`NotWhatIsKept`:
+  nothing kept, SHA-256 of salt and bytes not equal to the entry's commitment, or bytes that don't read as the signed
+  hold Core holds); past validity. Nothing is redeemed unless every check passes.
+- **`redeemed_by` rebuilt.** It moved out of `Held` into `Holds.redeemed` (hold transaction to order), and
+  `Holds::recorded(history)` rebuilds it from the log's acceptances (an acceptance's `held` receipt names a stated entry
+  whose `about.transaction` is the hold), as `Closing::recorded` does. A hold kept again after a restart meets the
+  order that redeemed it, so the log's `hold-is-redeemed-by-one-order` is not what refuses the second order.
+- **Also added.** `Holds::take` (the hold's own taking, as `Terms::take`: keep, append as a stated entry about the
+  transaction, read back, `hold`); the assembly's `Core::state_hold`, `accept_holding`, `holds_rebuilt_from_log`, and
+  the Desk's `holds` and `kept` fields (`conformance/scenarios/src/assembly/`, an F-024 file, edited for this row as
+  the plan says).
+- **Defaults (reversible, fail closed).**
+  1. The acceptance **names** the hold (a transaction id); intake never picks one by matching the quote.
+  2. A hold that isn't redeemed refuses the acceptance (`IntakeError::Hold`), the order stays quoted; it is never
+     accepted without the hold. The destination's check, resolved first, is already in the log by then.
+  3. A hold is redeemed only for the quote it holds (same decision record id and candidate). So two orders can
+     only meet on one hold if the second names a hold of the first's quote: it is refused as `RedeemedByAnother`,
+     checked before `NotThisQuote` so that the one-order rule is seen on its own.
+  4. The commitment is recomputed (salt then bytes, SHA-256), stronger than `Terms::take`'s equality.
+  5. A redemption is not released if the acceptance is then refused by the log: the hold stays bound to that order
+     (rebuilt state after a restart would show it unbound).
+- **Gaps.**
+  1. No module delivers a reserve's signed hold: `Holds::take` has no production caller (`F-013`/`F-030`).
+  2. The held quotes themselves are in memory; keeping them across a restart is `F-030`'s (a reading: only
+     `redeemed_by` is rebuilt here).
+  3. A session hold made before an order exists can't be redeemed through intake: an order's quote is a record of its
+     own routing, and a hold of another record is `NotThisQuote`. Owner: a new `F-020` row if the product wants
+     pre-order holds (needs a way to route on a held record).
+  4. `intake_support`'s evidence store now makes real salted commitments (so a kept hold can be held to one).
+- **Tests.** `components/core-orch/tests/intake_holds.rs` (six named plus two more: no hold named, and another quote's
+  or no hold) and `conformance/scenarios/tests/holds.rs` (the assembled Core's acceptance names the receipt; one order
+  only, also after `holds_rebuilt_from_log`). `tests/quote.rs` redeem calls go through the new signature.
+- **Rule-off, each red** (`intake_holds` and `quote` run; a rule switched off alone, file restored):
+
+  | Rule switched off | Red |
+  |---|---|
+  | SHA-256 of salt and bytes equals the commitment | `hold_whose_kept_statement_does_not_match_its_entrys_commitment_is_not_redeemed` |
+  | kept bytes read as the signed hold Core holds | the same |
+  | one order per hold | `a_hold_is_redeemed_by_one_order_only`, `redemption_is_rebuilt_from_the_log_when_core_is_reopened` |
+  | hold is for this order or session | `hold_redeemed_in_another_session_than_the_one_it_was_made_for_is_refused` |
+  | hold is of the quote accepted | `a_hold_of_another_quote_or_none_kept_is_not_redeemed` |
+  | session is the one intake verified (none passed) | four, among them the session test |
+  | validity (Core's clock replaced by an old time) | six (crude: it also breaks every redemption) |
+  | `Holds::recorded` reads nothing | `redemption_is_rebuilt_from_the_log_when_core_is_reopened` |
+  | the acceptance cites the receipt | three, among them `accepting_a_quote_held_by_a_reserve_redeems_the_hold_into_the_acceptance` |
+
+  Not isolated by a single switch-off: the store keeping nothing (`ok_or`, covered by the forgetting store in the kept
+  test but the same refusal as the others), and "an acceptance naming no hold redeems none" (`None => None`; the test
+  asserts the outcome, no mutation of it was tried).
+
+## T-020-16
+
+Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/core-orch/src/stuck/` and `segments/`
+(visibility seams only), `conformance/scenarios/` (the kit, the assembly, two test files); no contract, manifest or
+`DEC-20` path.
+
+- **The production mover** (`stuck/mover.rs`: `Mover`, `Ports`, `Delivering`). A `Resolutions` for a `deliver`. It
+  takes everything from the effect's `Action::ResolveStuck` (provider `by`, destination, asset, amount, the decide
+  step's transaction), never from the caller. The inner node the value rests at is read from Core's record of the
+  operation it signed for the part's last settled segment at that provider (`Segments::sent`). The operation is a
+  `deposit` from that node to the destination's outer node, the destination's account under the one input the
+  provider's advertised deposit tuple requires, signed with the operator key. Order of steps, each once: the
+  operator's question (stated entry about the order and transaction, no segment) is appended; the platform begins the
+  provider's segment of that transaction; the operation is handed over once; events, uses and the segment's record are
+  kept and appended as hand-over entries; the answer is appended as the provider's stated entry; the effect's result
+  follows (written by `Stuck`).
+- **The trait is fallible and resumable.** `Resolutions::resolve(parts, carrying, effect) -> Result<Resolved,
+  AppendFailure>`; an `Err` means the log couldn't take a step and the same call is made again. `Stuck` marks the
+  effect acted on once (`InMotion::acted`) and never drops an acted move; the mover keeps its own per-effect flight, so
+  a retry never hands the provider the operation again (`INV-8`). Stated steps use `Step::append_stated`: the log
+  attributes a statement, so its receipt is of the recorded entry and the receipt rule can't hold it (the kit's log
+  hid this; the assembly's real log showed it).
+- **Outcome mapping, defaults (reversible, fail closed; reviewed).** `Done` only for an answer that counts under
+  `judge` and says settled. `Failed` only for what Core itself saw: nothing passed out (a platform refusal on the list
+  that proves it: `Unavailable`, `NotHandled`, `VersionExploited`, the statement-key refusals, and the output refusals
+  that apply only where the module passed nothing out), a begin refused so, the question refused by the log or
+  recorded unattributed, no resting node, no advertised deposit tuple, a unit differing from the tuple's, more than one
+  required input, a hand-on. `Unknown` for everything else, so a part is never freed on a word that may hide a
+  movement: the platform's `OutcomeUnknown`, `DuplicateTransaction` or any refusal not on the list, the provider's own
+  unknown, waits-on-person, **and the provider's own "failed" or final refusal**. A provider's failure frees the part
+  only through `known_outcome` and `confirm_outcome` by another party (the owner's ruling of 2026-11-14): a provider
+  that paid could otherwise say "failed" and be paid twice.
+- **Re-entry** (`Carrying::again`, `Resolutions::may_have_handed_over`). `Stuck` marks an effect acted on at the first
+  call and tells every later call it is a re-entry. A mover holding no record of an effect acted on (a restart) answers
+  `Unknown` and hands over nothing. A mover that knows it handed nothing over lets `Stuck` read the part's ends again
+  (the customer may have replaced them), dropping the move as before if they changed. The question must be recorded
+  attributed (its receipt isn't the digest of the entry as built) before anything is handed over.
+- **Known outcome** (`Delivering::statement`). A provider's later statement for the move's transaction is checked
+  (attributable under a published statements key, a result, naming the transaction; the move's own provider's judged
+  against the operation Core signed), kept once as a stated entry about the order and transaction, and returned with
+  the outcome it states (`Stated`). A reporter names it in `Stuck::known_outcome`, a confirmer another maker's in
+  `confirm_outcome`. Nothing is handed to the platform.
+- **Assembly** (`assembly/mod.rs`): `Core::leave_no_route`, `decide_stuck`, `move_stuck`, `Faults::refuse_begin`.
+  Policy is the real engine (`PolicySide`).
+- **Tests.** `conformance/scenarios/tests/stuck_mover.rs`: `decided_delivery_to_the_destination_is_carried_out_on_the_platform`,
+  `decided_delivery_back_to_the_origin_account_is_carried_out_on_the_platform`,
+  `resolution_is_carried_out_only_on_a_move_policy_permitted`,
+  `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result`,
+  `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append`,
+  `failed_move_leaves_the_value_held_and_the_part_stuck`; after review:
+  `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it`,
+  `move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again`,
+  `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures`,
+  `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over`,
+  `stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination`, and two unit tests in
+  `stuck/mover.rs`; each of the scenario ones ends by replaying the log through `admit_entry`.
+  `tests/assembly_stuck.rs`: `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine`
+  (the assembled Core, the real engine and log: `same_actor` by chain, no permission, and the provider's own desk each
+  refused with the reserve handed nothing; the permitted move done once). All were seen red with the mover stubbed to
+  `Failed`.
+- **Rule-off** (each alone, both files run, file restored; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | mover stubbed (`Failed`) | all seven |
+  | question appended before the hand-over | all seven (the log's `answer-follows-its-question`) |
+  | unknown answers kept `Unknown` | `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result` |
+  | effect marked acted on once | `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append` |
+  | a refused begin fails the move | `failed_move_leaves_the_value_held_and_the_part_stuck` |
+  | the mover's `carried` flag | none red: defence in depth, the kept verdict already stops a second hand-over |
+  | a provider's own failure answers `Failed` (review B1) | `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it` |
+  | any platform refusal read as nothing passed out (B2) | `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures` |
+  | a mover with no record of an acted-on effect carries it out (B2; the platform forgets its begins too) | `move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again` |
+  | the platform's `OutcomeUnknown` answers `Failed` (S1) | `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures` |
+  | the unit check against the tuple (S1) | `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over` |
+  | more than one required input (S1) | `only_a_tuple_whose_inputs_the_account_can_fill_is_asked` (unit test, `cargo test -p rutent-core-orch --lib`) |
+  | the question's receipt must be an attributed one (S2) | `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over` |
+  | the ends re-read when nothing was handed over (S3) | `stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination` |
+
+  The kit's log gained `attribute_from_now` and `stop_attributing`: from then on its receipts for stated entries are of
+  the entry as the real log records it, attributed, which is how the question's check is seen here. The refusal
+  fallback arm of `Answered::Refused` (a refusal not on the list, on the hand-over) has no test of its own.
+
+- **Gaps, with owners.**
+  1. `What::Evidence` requires a segment, so `stuck_resolved`'s evidence stays an id of Core's with no entry behind it
+     (a contract shape; owner `T-020-21`).
+  2. The mover's state is in memory, as `Stuck`'s and `Segments`' are (`F-030`); after a restart a fresh `Stuck`
+     declares nothing and decides nothing, and the log's `part-waits-for-value-in-motion` holds an open effect.
+  3. The provider module's own calls are named for no route (`REQ-MDL-21`): a module that needs one would be refused,
+     failing closed; none of the simulated providers does.
+  4. A hand-on is refused by this mover (`Failed`); `T-020-17`.
+  5. `Stuck::known_outcome` doesn't itself check that the evidence it is given states the outcome reported; the check
+     is in `Delivering::statement`, and the assembly passes its result. Binding the two is `T-020-20`'s.
+  6. The confirmer's evidence must be another maker's statement: this row takes it through `statement` with
+     `outcome: None`; a second provider's status path is not built.
+
+## T-020-17
+
+Branch `f-020/t-020-17-hand-on`, from `m3` at `b77fa932`. Edits `components/core-orch/src/stuck/` (`mover.rs`, the new
+`handing.rs`), one `pub(crate)` seam in `hand_on/mod.rs` (`resting`), and the kit (`segments_support/resolving.rs`,
+the new `tests/stuck_hand_on.rs`). No contract, manifest or `DEC-20` path.
+
+- **The arm** (`Delivering::resolve_hand_on`). `resolve` dispatches on the resolution; a `HandOn` goes to the
+  withdrawal, a `Deliver` as before. Policy is asked nothing more. Steps, each once: (1) the route is held to Core's
+  own records before the wallet is asked anything: the linked order's own accepted route (`LinkedRoutes::accepted`),
+  one part, starting at the inner node where `hand_on::resting` says the part's value rests, in its asset, with no
+  withdrawal first, of an order Core doesn't follow, the node's holding account the provider the decision names,
+  all of what the part holds; (2) the operator's signed withdrawal statement is shown to the mover before the wallet
+  is handed it (`Withdrawals::withdraw`'s `asked`), checked against what was decided, and recorded as the operator's
+  question about the linked order and the wallet's transaction, attributed; (3) the wallet is asked once; (4) what
+  the platform and proxy handed over is kept and appended; (5) the answer.
+- **Answer.** `Done` only for the holding account's own record, held by `proves_start` to the decided provider, node,
+  asset, order and amount and to the route's first segment. `Failed` only where Core saw nothing pass out: the route
+  refused, the question not recorded attributed, the statement not the one decided, a platform refusal on
+  `nothing_passed_out`. `Unknown` for everything else once the wallet was handed the statement: the wallet's own
+  failure, `DuplicateTransaction`, `OutcomeUnknown`, a wrong result, no record, a record proving nothing of this start.
+  A re-entry with no record of the effect answers `Unknown` and hands over nothing.
+- **Ports.** `Withdrawals` (holder of a node; withdraw with the show-first rule), `LinkedRoutes`, `HandingOn`,
+  `Delivering::handing_on`; without them a hand-on fails. `Wallets` is `Withdrawals` over `Holdings` and the platform:
+  a statement the mover refuses is replaced by a reversal, which no plain wallet handles, so the platform refuses it
+  as not handled before running anything. `OperatorSigns` is the operator key as the wallet's `Operator`.
+  `Mover::withdrawn(effect)` gives, once done, the route, the record and the question's receipt: the hand-on takes
+  its plan from it and `prove_start` its record.
+- **Tests** (`tests/stuck_hand_on.rs`, nine, each ending or replaying through `admit_entry` where a history is built):
+  the five named, plus no-memory re-entry, wallet failures classified, question attributed and exact, and no ports.
+  The holding account is a stand-in driven through the same rule as `Holdings::start_handed_on`.
+- **Rule-off** (each alone, file run, restored; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | arm stubbed to `Failed` | six of nine |
+  | route starts where the value rests | `hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused` |
+  | route is the linked order's | the same |
+  | holder is the decided provider | the same |
+  | one part only | the same |
+  | no withdrawal first | the same |
+  | question must be attributed | `hand_on_question_must_be_recorded_attributed_and_be_the_withdrawal_decided` |
+  | statement is the decided withdrawal | the same |
+  | `Done` only on a proving record | `hand_on_with_an_unproven_start_is_refused` |
+  | only the proven refusals are `Failed` / the platform's refusal list | `a_wallets_failure_or_a_refusal_that_could_follow_a_hand_over_is_unknown_not_failed` |
+  | no memory means `Lost` | `hand_on_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again` |
+  | linked order not already followed; all of what the part holds | none red: `hand_on`'s `AlreadyOpened` and decide's `within` hold them first |
+
+- **Review round (of `e4065786`).**
+  1. *Blocker, fixed.* The mover now holds the linked order to what the log records before the wallet is asked:
+     `hand_on::linked_accepted` (the checks `build_hand_on` made, now one function both call) runs in `plan_hand` over
+     the log's entries (`LogRead`, `HandingOn::log`): the decision record is in the log, the acceptance is the
+     customer's own, of the linked order, keeps the original requester, and the plan fits its yeses; the route's first
+     segment is the decided provider's. `AcceptedRoute` gains `acceptance`. A linked order accepted on an automatic
+     deposit is refused with the wallet shown nothing (`hand_on_to_a_linked_order_the_customer_did_not_accept_is_refused_before_the_wallet_is_asked`).
+  2. *Re-ask, fixed.* The verdict is set from the wallet's answer before anything that can fail; a drain that can't
+     be kept makes the outcome `Unknown` (`uncarried`), never an error to retry; and a flight that was asked with no
+     verdict answers `Unknown` without calling the wallet. Test `a_call_that_stopped_after_the_wallet_was_asked_never_asks_it_again`
+     (the clock made unreadable once the wallet was handed the statement).
+  3. *Green rule-offs, pinned.* `hand_on_to_a_linked_order_core_already_follows_is_refused_before_the_wallet_is_asked`
+     and `a_hand_on_resolved_directly_for_less_than_the_part_holds_is_refused` (a direct `Resolutions::resolve`, past `within`).
+  4. *Owners.* `PLAN.md`'s `T-020-26` row now carries the known-outcome path for an unknown hand-on (with the one
+     prov seam: the wallet's signed answer and transaction on `HandedOnStart`), the assembly calling `handing_on`, and
+     the real plain wallet's scenario, with named tests. `T-024-06`'s row is not edited.
+  5. The `Effect` parameter of `withdraw` is read only by a `debug_assert!`, for `core-authz`'s entry-point scan;
+     said in a comment.
+
+  Rule-off of the round (each alone, file restored): the acceptance and decision-record check red on the customer's-acceptance
+  test and the route-refused test; the already-followed guard red on its test; the whole-value check red on the
+  direct-resolve test. Still green, each defence in depth: the first segment's provider (the acceptance's yeses refuse a
+  plan from another reserve first), the re-ask guard and the drain rule (the verdict is set before either can matter).
+
+- **Defaults** (reversible, fail closed): one-part linked orders only; a hand-on only where the node's holder is the
+  operator's plain wallet (`Holdings`), so a private node's holder fails closed; the route comes from the assembly's
+  `LinkedRoutes`, Core's log holds only its decision record's id and acceptance; the question is about the linked
+  order, as `holding-withdrawal-rests-on-its-record` needs.
+- **Gaps, with owners.**
+  1. The wallet's signed answer isn't handed out by `start_handed_on` (`HandedOnStart` carries the record, not the
+     statement), so the `holding_withdrawal`'s statement receipt can't be written from the mover's result, and an
+     `Unknown` hand-on has no known-outcome path (`Mover::statement` answers `NoMove`): `T-020-26`, with a prov seam
+     (the row now names it).
+  2. The real plain wallet isn't run in these tests (the kit's reserves' nodes are private, the wallet's binaries are
+     prov's build): `T-020-26`'s scenario runs it with the assembled Core; the `Wallets` adapter's refusal path is untested.
+  3. `HandOn::hand_on` isn't held to the plan the mover withdrew for; the assembly passes `Withdrawn::route`: `T-020-26`.
+  4. The assembly doesn't call `handing_on` yet: `T-020-26` (its row now names it; `T-024-06` is not edited).
+  5. A private node's holder (a provider's module) isn't driven: `T-020-26`.
+
+## Owners added by `plan/m3-owed-rows-2`
+
+| Gap, and the note it is in | Owner |
+|---|---|
+| `relayed_by: None` at five sites of core-orch (`T-022-02`'s finding 2) | `T-020-28`, wave 26, after `T-020-23` and `T-020-24` (dependencies) and, run in turn, `T-020-19`, `T-020-25` and `T-020-27` |
+| `decision-is-for-its-caller`, the role check in `attribute()`, a "no formula in this asset" marker on a charge raise (`T-020-14`'s closed gap 3; `T-020-21` the shape, `T-020-29` the writer), `What::Evidence` without a segment (`T-020-16`'s gap 1), and `answer-follows-its-question` for the arrival shapes (`T-020-18`'s hand-off) | `T-020-21`; the evidence entry for `stuck_resolved` is written by `T-020-20` (3) |
+| `NOT_A_NOTICE` replaced by a positive check of `ARRIVAL_NOTICE_SHAPE`, and the seeded deposit's per-credit reference (`T-020-18`'s hand-offs) | `T-020-19` |
+| `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |
+| `Terms::take` has no production caller (`T-020-14`, gap 1) | `M4`, `F-030` and `F-031`, in the same table |
+| The stand-in reserve's arrival-notice test (`T-020-18`'s hand-off to `F-024`) | `T-024-15` |
+
+## T-020-21: `core-internal`'s next round
+
+Branch `f-020/t-020-21-core-internal-round`, from `m3` at `c99e130a`. Edits `contracts/` (core-internal, and one doc of
+router-api), a `DEC-20` path, and only the consumer lines that compiling needs (named below).
+
+- **Versioning: folded into 1.0.0, no bump** (reversible default). The row asks for one `DEC-4` bump whose changelog
+  names each change. core-internal 1.0.0 is on no `develop` (`git show origin/develop:contracts/CONTRACTS` lists no
+  core-internal), so `PLAN.md` §4.4 and retrospective lesson 7 make folding into the unreleased major the rule, as
+  `T-022-05` did. The changelog's last entry names each item, by number. router-api's doc change folds into its own
+  unreleased 4.0.0 (`develop` has 3.0.0), with a changelog line. The contract guard against `origin/develop` reads
+  core-internal as a new contract.
+- **Item by item** (what was built, or why not):
+  1. *Notice summary*: `What::NoticeSummary {to: NoticeReceiver {party, role}, of: NoticeOf (order {order,
+     sequence} | raise {raise}), last_try: Count, ended: NoticeEnd (delivered | abandoned)}`, observed. Rows
+     `notice-summary-names-its-raise` (exists) and `one-summary-per-notice` (none other).
+  2. *`Operation::stated_out`*: doc only, router-api.
+  3. *Public-end mismatch*: `What::PublicMismatch {order, segment, node: OuterNode, movement, found:
+     PublicEndMismatch, moved, stated: PublicFigures, rests_on}`; the raise's `Difference::PublicEnd {order, segment,
+     found, moved, stated}`; Rust holds the named figure to differ, in both; row
+     `public-mismatch-rests-on-the-providers-result` (closing rows).
+  4. *Checkpoint shapes*: schemas `checkpoint` and `checkpoint-opening`; `Checkpoint`, `CheckpointOpening`, `Tick`,
+     `SignatureValue`, `CheckpointSignature`, the two shape enums and constants.
+  5. *Decline*: `What::DeclineOutcome {request: OutcomeDecline, decision}`, a decision kind (`is_decision`), on its
+     own trait `OutcomeDeclines`; row `outcome-decline-rests-on-its-report`; `one-report-per-effect` lets a new report
+     stand after a decline; `outcome-confirmation-rests-on-its-report` gains `declined`;
+     `outcome-confirmation-cites-verified-evidence` cites the decline's evidence.
+  6. *Earlier arrival*: `What::Arrival.earlier`; row `arrival-names-its-earlier-arrival` (reserve, deposit).
+  7. *Empty shortlist*: **already met** at `c99e130a`: "a shortlist may keep no provider" was folded into 1.0.0
+     (`T-020-01`), with `verified-entry-of-a-shortlist-record-keeping-no-provider` and the admission cases
+     `input-cites-its-decision-record--no-route-on-a-shortlist-keeping-none` (admitted) and
+     `--no-route-on-another-orders-empty-shortlist` (refused). Not built again; the named test runs those fixtures.
+     The writer is `T-020-25`'s.
+  8. *`HandedOver` item*: `HandedOver::OperationUnanswered {provider, transaction, ended_by: Token}`.
+  9. *Holding account's record*: the kind and the relation were **already met** (`holding_withdrawal` and
+     `handed-on-route-starts-on-its-holding-record`, folded in by `T-020-13`'s integration round 2, after the gap was
+     written). What was missing: its `node` (the row's test) and `REQ-ORD-40`'s label at a private node. Built:
+     `node` (required) and `publisher` (optional); `holding-withdrawal-starts-a-handed-on-route` gains `node`,
+     `holding-withdrawal-rests-on-its-record` gains `publisher`. Every fixture holding one was patched to name
+     `ledger-in` (insertions only).
+  10. *Final-deposit relation*: **already met**: `final-deposit-closes-on-a-public-record` (closing rows, `T-020-09`'s
+     review, H2b) holds a part's last deposit to grade 1 naming its movement and a verified statement of the
+     segment's provider. Not built again; the named test runs its cases. That the reserve's statement is a `result`
+     shape the row doesn't read; a verified statement bound to that segment is in practice one (residual, below).
+  11. *Late status and a later inner node*: `Action::AskStatus {order, segment, provider}`, decided and taken as an
+     effect, row `status-is-asked-of-the-segments-provider`. `reversal-rests-on-its-evidence` reads the reserve at
+     the segment's from-node (its `reserve` reading) instead of the order's origin reserve for the failed provider's
+     own word. Corrected on review: this widens admission and closes no fail-open. The base row already refused the
+     origin reserve's word at a node not its own, through `reserve`; the change admits one case more, the provider
+     that delivered to a later inner node failing out of it and vouching for itself as that node's reserve
+     (`REQ-ORD-3`'s second sentence), which a split order's later part needs. At the first node the two readings are
+     one reserve, and no admitted history moved; `--the-origin-reserves-own-word-at-a-later-inner-node` was refused
+     before too, its field now `whose` where it was `reserve`. A reversible reading, on the owner's form (ADR-0008's
+     open question).
+  12. *`decision-is-for-its-caller`*: row (none to point to) on `decide`.
+  13. *Role check*: `attribute` refuses (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`) a statement whose bytes bear its
+     claim out in a role its maker doesn't hold: the operator's maker as `operator`, any other as `provider` or
+     `verifier`.
+  14. *No-formula mark*: `Difference::Charge.no_formula: Option<NoFormula>` (`for_this_asset`); row
+     `no-formula-marks-a-charge-in-another-asset`. `maximum` stays required, `0` beside the mark.
+  15. *A stuck part's evidence*: `What::PartEvidence {evidence, order, part, grade, whose, rests_on}`; rows
+     `part-evidence-rests-on-statements` and `stuck-resolved-cites-its-parts-evidence`.
+  16. *Arrival answers*: `answer-follows-its-question` holds an `arrival-answer` to an `arrival-question`.
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0 (above);
+  - the decline on a trait of its own, `OutcomeDeclines`, so no `StuckOrders` implementer changes; nothing
+    implements it yet, so no report is declined and a wrong report holds its part;
+  - `Action::AskStatus` decided by policy, as `ask_reversal` is, so its question is appended before it is sent;
+    policy's role table answers `None` for it, so it is refused, as `erase_statement` is;
+  - `part_evidence` a kind of its own rather than an optional segment on `evidence`, so no reader of a segment's
+    evidence meets one without a segment;
+  - `stuck-resolved-cites-its-parts-evidence` as none other: it refuses a citation of another order's or part's
+    evidence, or of a segment's, and admits one with no entry, since Core appends none before `T-020-20`;
+  - the role a maker holds read from the log alone: the operator's maker, or any other as provider or verifier;
+    a mislabelled genuine statement refused rather than recorded unverified;
+  - the checkpoint shapes carry the contract's `$id`s as their `shape`; the commitment's computation stays
+    `core-audit`'s;
+  - a public end's figures as identifiers and an amount (`PublicFigures`), the destination an `Id` (128 characters,
+    the identifier pattern);
+  - the holding record's `node` the route's first segment's inner node; core-orch's `hand_on` fills it from the
+    linked route it recorded, refusing an outer start (`NotAHandedOnRoute`, unreachable after `proves_start`).
+- **Consumer lines changed to compile** (no behaviour): `core-orch` `arrival/mod.rs`, `arrival/filing.rs`
+  (`earlier: None`), `quote/charge.rs` (`no_formula: None`, as the row says), `hand_on/mod.rs` (`node`,
+  `publisher: None`; `T-020-17` edits the same module: a merge to watch); `core-authz` `roles/mod.rs`
+  (`AskStatus => None`), `parties/mod.rs` (`Scope::AskStatus`), `engine/mod.rs` (a test's exhaustive arm, and
+  its guard's table marking `OutcomeDeclines` unbuilt, `false`, until policy implements it);
+  `core-audit` `tests/log.rs` (two name maps); `conformance/scenarios/tests/segments_support/mod.rs`
+  (`earlier: None`).
+- **Red first.** The fixtures (by a generator in the scratch folder, `f020t/gen.py`) and the nineteen named tests in
+  `contracts/tests/core-internal.rs` came first, against the contract at `c99e130a`: all nineteen failed, on an
+  assertion or a panic reading a fixture, none on a compile error (the tests name fixtures, rows and one constant
+  only). Two of them, for the items already met (7, and the row's `route handed on whose first move rests on no
+  holding account record is refused`), failed only through the `node` the round patched into their histories; their
+  cases were in the table already and pass beside the shape. The shapes, schemas and rows followed.
+- **Histories the log refused, sorted.** After the shapes, `core-authz`'s unit tests went red on two test artefacts,
+  none a Core bug: three of them read `RELATIONS[0]` as the effect row, which the new `decision-is-for-its-caller`
+  had displaced (the row moved after `permit-backs-one-effect`, so `RELATIONS[0]` is the effect row again); and its
+  guard that every policy trait is built met `OutcomeDeclines` (marked unbuilt, above). No workspace history was
+  refused by a new row: Core's `decide` entries name their caller, its statements claim the role their maker holds,
+  and nothing appends an arrival answer, a decline, a part's evidence or a status ask yet.
+- **Gaps, with owners.**
+  1. Policy's answer to `decline_outcome` (`OutcomeDeclines` for the engine, as `confirm_outcome` is, `T-021-06`'s
+     roles): no row owns it; `T-020-20` needs it, and edits only `stuck/`. Owner: the lead, a row of `F-021`'s (or
+     `T-020-20` widened to `core-authz`'s `stuck`), which also flips the engine guard's `OutcomeDeclines` to `true`.
+  2. Policy's rule for `ask_status` (`roles` answers `None`): `T-020-27` needs a permitted ask. Owner: the lead, a
+     policy row (as for `erase_statement`).
+  3. `stuck-resolved-cites-its-parts-evidence` admits a `stuck_resolved` whose evidence has no entry, since Core
+     writes none until `T-020-20`; tightening it to "an entry exists" is a contract change after `T-020-20` lands.
+     Owner: the next `F-020` contract row.
+  4. The holding record's and a reversal's private-node label: the log can't tell a node declared private from the
+     catalogue. Residual, as before (`T-025-05` reads it).
+  5. `final-deposit-closes-on-a-public-record` holds the reserve's statement verified and the segment's, not of
+     `result` shape. A verified statement bound to the segment is in practice its result; residual, noted for
+     `T-020-22`.
+  6. A provider and a verifier are one role class to the log: a provider claiming `verifier` is not caught. Owner:
+     a later round with a catalogue read in `StatementKeys` (none in `M3`).
+  7. `T-022-05`'s gap 4 (a report's tolerance by increment and gross or net) was named for "`T-020-21`'s round" in
+     `F-022`'s notes but isn't in this row's list; not built. Owner: the lead.
+- **Rule-off table** (each switched off alone, `rutent-contracts`' tests run under a 600 s alarm, tree restored; none
+  hung):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `decision-is-for-its-caller` | `decision_whose_actor_is_not_the_requests_caller_is_refused`, the citation table's |
+  | `outcome-decline-rests-on-its-report`, and each of its fields `party`, `login`, `evidence`, `open` | `decline_of_a_report_naming_no_report_is_invalid`, the citation table's |
+  | `one-report-per-effect`'s "a declined report stands no more" | the same two |
+  | `outcome-confirmation-rests-on-its-report`'s `declined` | the same two |
+  | `outcome-confirmation-cites-verified-evidence` citing a decline's evidence | the citation table's |
+  | `stuck-resolved-cites-its-parts-evidence` | `stuck_resolved_citing_an_evidence_entry_that_names_another_part_is_refused`, the citation table's |
+  | `status-is-asked-of-the-segments-provider` | `request_for_a_providers_late_status_without_its_segment_is_invalid`, the citation table's |
+  | `arrival-names-its-earlier-arrival`, and its `reserve`, `deposit` | `arrival_naming_an_earlier_arrival_of_another_reserve_is_invalid`, the citation table's |
+  | `part-evidence-rests-on-statements` | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | its `verified` | the citation table's |
+  | its `about`, the "no segment" conjunct alone | none: the transaction-binding conjunct refuses the case too (kept for an unverified statement naming no transaction) |
+  | its `about`, whole | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | `notice-summary-names-its-raise`; `one-summary-per-notice` | `notice_summary_entry_without_its_outcome_is_invalid`, the citation table's |
+  | `no-formula-marks-a-charge-in-another-asset`, and its `asset` | `charge_raise_marked_as_having_no_formula_whose_fee_is_in_the_segments_own_asset_is_refused`, the citation table's |
+  | `holding-withdrawal-rests-on-its-record`'s `publisher`; `holding-withdrawal-starts-a-handed-on-route`'s `node` | `holding_account_withdrawal_record_without_its_node_is_invalid`, the citation table's |
+  | `reversal-rests-on-its-evidence` keyed back on the failed provider (not the from-node's reserve) | `reversal_at_a_later_inner_node_rests_on_that_nodes_confirming_party`, the citation table's |
+  | `answer-follows-its-question`'s arrival shapes; an operation taken for an arrival question | `arrival_answer_with_no_arrival_question_before_it_is_refused`, the citation table's |
+  | `public-mismatch-rests-on-the-providers-result`, and its `maker` | `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid`, the citation table's |
+  | its `verified`, `result`, `about` | the citation table's |
+  | `What::PublicMismatch`'s figure differs; a `public_end` raise is real | the fixture tests, `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid` |
+  | `What::PartEvidence` rests on statements, at least one | the fixture tests, `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid` |
+  | `attribute`'s role a maker holds | `the_log_not_the_writer_attributes_a_stated_entry`, `verified_statement_recorded_in_a_role_its_maker_does_not_hold_is_refused` |
+  | schema: a summary's `ended`, a try from 1; a mismatch's `segment`; a decline's `report`; a holding record's `node`; a part's evidence's `part`; a status ask's `segment`; an unanswered operation's `transaction`; an opening's `salt`; a checkpoint's closed properties, its tick's pattern | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` and each item's named test |
+
+### T-020-21, the review of `457ecc62`
+
+The review (Opus, fresh): changes, no blocker. Each item, as built on this branch:
+
+1. *A stuck part's evidence tied to its own part* (should-fix). `part-evidence-rests-on-statements`'s `about` now
+   holds each statement to the part's own resolution: about the order and the transaction a `resolve_stuck` effect
+   whose decide step names the part goes under, no segment, first bound to the order alone (`about_the_resolution`,
+   as an outcome's evidence about a stuck resolution is). The reviewer's probes, the evidence named for p1 or for a
+   part with no resolution on p3's result under `tx-d3`, are refused cases (`--another-part`,
+   `--a-part-with-no-resolution`). **Default, reversible**: a bare statement (grade 4) rests on the provider the
+   resolution names to move the value (`resolution.by`), a new field `provider`, as a segment's rests on its
+   provider's (`--provider` refused, `--the-moving-providers-word` admitted).
+2. *Item 11's write-up corrected* (above, the CHANGELOG and the README): a widening, not a closed fail-open. The
+   reviewer's cases as fixtures: D, the node's reserve failing out of it on its own word, is
+   `--at-a-later-inner-node-its-reserves-own-word` (admitted, the round's own); A, the node's reserve confirming
+   another's failure, `--at-a-later-inner-node-the-nodes-reserve-on-anothers-failure` (admitted); B, another failed
+   provider's own word there, `--at-a-later-inner-node-the-failed-providers-own-word` (refused, `whose`).
+3. *Rows for the gaps*: `T-021-09` (policy's answer to `decline_outcome`, which flips `core-authz`'s guard back,
+   and its rule for `ask_status`; wave 26, before `T-020-20` and `T-020-27`, which now wait on it and move to wave
+   27 with `T-020-25` and `T-020-28`); `T-020-30` (the next contract round: gap 3, a stuck resolution's evidence
+   entry required, gap 7, `T-022-05`'s report tolerance by increment and gross or net, and, at the coordinator's word,
+   `T-022-06`'s review's role on a measure record, per provider and per verifier; wave 28; `T-020-31` is left for
+   `T-022-06`'s author's measure-caller row). `T-024-10` and
+   `T-025-05` wait on both, in wave 29.
+4. *An operator's module's role* (should-fix). `core-orch`'s `snapshot::record_refused` claimed a module the
+   operator publishes in the operator's role, which the round's `attribute` refuses once the module's key verifies
+   it. SPEC has a module as a provider (`REQ-MDL-1`; the catalogue's `Publisher::Operator` is "a module it
+   publishes"), and every other writer claims it so, so the writer changed: the provider's role, for the operator's
+   party. Test `operators_module_statement_is_claimed_in_the_providers_role` (`core-orch`'s
+   `tests/snapshot_statements.rs`), and the contract's attribution case
+   `refused--a-module-the-operator-publishes-in-the-operators-role`.
+
+Low items, each done: the round's entry in `contracts/CHANGELOG.md`; `entry_at`'s doc comment restored above it,
+`receipt_of`'s its own; a charge marked `no_formula` names a `maximum` of `0` (`Raise::check`, invalid fixture
+`raise-of-a-charge-marked-with-no-formula-naming-a-maximum`), and an unmarked charge in another asset stays admitted
+until `T-020-29` writes the mark (`T-020-29`'s gap); a public end's mismatch is at its movement's network
+(`Rust`, invalid fixture `verified-entry-of-a-public-mismatch-at-another-network`) and of a segment that isn't a
+part's final deposit (`public-mismatch-rests-on-the-providers-result`'s `non_final`, case `--non_final`); that its
+node is the segment's planned public end stays Core's to hold (`T-020-22`), named in the README; the README says
+`earlier` is never required and a checker links one deposit's arrivals by its notices' signed transaction.
+
+- **Order of work.** The review's fixes came before their fixtures this time; each new rule was switched off once
+  and a test went red (below).
+- **Gaps, updated.** 1 and 2 are `T-021-09`'s, 3 and 7 `T-020-30`'s. 4, 5 and 6 stand as written.
+- **Rule-offs of the review round:**
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `part-evidence-rests-on-statements`'s `provider` (grade 4 on the moving provider's word) | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | its `about` on the part's own resolution transaction | the same two |
+  | `public-mismatch-rests-on-the-providers-result`'s `non_final` | `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid`, the citation table's |
+  | a public mismatch at its movement's network (`What::check`) | the fixture tests, the mismatch test |
+  | a marked charge's maximum of nothing (`Raise::check`) | the fixture tests, the no-formula test |
+  | `record_refused` claiming an operator's module as a provider | `operators_module_statement_is_claimed_in_the_providers_role` |
+
+## Journal receipts come from the log (`f-020/journal-receipts-from-the-log`)
+
+**The bug.** `reversal/journal.rs::append` took a receipt only where its digest was the SHA-256 of the entry as Core
+built it (`is_receipt_of`). The audit log attributes a stated entry from its kept bytes before it records it
+(`AuditLog::append_through`, step 2): an entry Core handed in unverified, and the log could bear out, is recorded
+`verified`, so its receipt is of the entry recorded, not of the one handed in. In the assembled Core every reversal
+step that appended a statement the log could attribute (Core's own question to the failed provider, its question to
+the origin reserve, the providers' signed answers and late words) got a receipt the check refused, was tried three
+times and ended `Append(Unavailable)`: ask, confirm and every later step. The kit's log hid it, since it answers the
+receipt rule's digest; `T-024-06` found it with the real log, and `T-020-16` had met the same class in `stuck/` and
+added `Step::append_stated`.
+
+**The journals, one verdict each** (every append of core-orch's journals, and whether it can be handed a stated entry
+the log re-attributes, and checks the receipt against the entry as built):
+
+| Append | Stated entry? | Checks the receipt against the entry as built? | Verdict |
+|---|---|---|---|
+| `quote/journal.rs:64` (`Step::append`) | yes (the quote's statements) | no: takes the log's receipt | fine |
+| `quote/journal.rs:90` (`built_stated`) | yes | no | fine |
+| `reversal/journal.rs:150` (`append`) and `:178` (`Step::append`) | yes (questions, answers, late words, a return's statement) and verified | **yes, for both** | **affected, fixed** |
+| `arrival/journal.rs:100` | yes | no | fine |
+| `rounds/journal.rs:45` (`append_stated`), `:97`, `:130` | yes, and verified records | no | fine |
+| `segments/journal.rs:31` and `:38` (`append_general`) | yes | no: the model the fix follows | fine |
+| `snapshot/journal.rs:15` | yes (a refused statement's stated entry) | no | fine |
+| `stuck/journal.rs:55` (`append`) and `:84` (`Step::append`) | no: only `built()`'s verified entries reach them | yes, and rightly | fine: verified entries only |
+| `stuck/journal.rs:98` (`append_stated`) | yes | no (`T-020-16`) | fine |
+
+Also read, outside the list: `hand_on/mod.rs:406` checks the receipt too, but its steps are verified entries only
+(`T-020-17`'s file; not touched), `recalc/mod.rs:809` and `intake/record.rs:45` take the log's receipt. `stuck/mover.rs`
+:557 deliberately compares an attributed question's receipt with the entry as built, to find a question the log
+recorded **un**attributed; that is a check of the attribution, not a receipt rule, and stays.
+
+**The fix.** `reversal/journal.rs::append` takes the log's receipt for a stated entry, as `segments/journal.rs::
+append_general` does, and holds a verified entry to the receipt rule as before. One function serves both
+(`Step::append` goes through it), so there is no second copy. What the check protected stays: a verified entry's
+receipt must still be its own digest (an answer for another entry is no answer and is tried again, then
+`Unavailable`), and a refusal, a statement's included, is returned at once and never retried or swallowed. The log's
+`admit_entry` is the gate for a statement: a question recorded unattributed cannot be cited by the effect that follows
+it, and the log refuses that effect.
+
+**Core's own questions are guarded** (the review of `08ec786b`). Taking any receipt for a stated entry would let a
+question the log recorded **un**attributed go through: its receipt is the digest of the entry as built, the log can't
+tie it to the operator, and `admit_entry` refuses the provider's answer after the value moved. `Step::append_question`
+(used for `ask_reversal`'s operation and the confirm question, nothing else) refuses such a receipt before anything
+is handed over, as `stuck/mover.rs` does for its question, and refuses again on a retry, the log answering its equal
+entry with the same receipt. Answers and late words stay unguarded: an unattributed provider's answer is legitimate.
+
+**Tests.** The file's `World` is built over a log that attributes (`World::attributing`; the charge test opts out, as it
+cites the statements it kept by the receipts of the entries as handed in): on a stated entry it runs
+core-internal's `attribute` over the evidence store's kept bytes and the catalogue's keys, as `AuditLog` does, records
+the entry attributed, and answers an equal entry with its own receipt; the receipt it answers is of the entry
+recorded. It is not `AuditLog` itself: the audit log's key register is fed only by granted advertisements recorded in
+it, and the `World`'s policy writes its decisions raw, so the audit log's `admit_entry` is not run on append: every
+test replays it over what the log holds (`admitted_from`), as the others of this file do. Core's assembly doesn't hold
+a reversal yet (`T-024-06` wires it): its own test with the audit log itself is that row's `AC-8`, which passed with a
+one-line local fix of this function.
+
+**Rule-off table.**
+
+| Rule switched off | Tests that go red |
+|---|---|
+| `append` takes the log's receipt for a stated entry (switched back to the receipt rule's check for every entry; before the fix, the same: `Append(Unavailable)`) | `a_reversal_is_asked_over_a_log_that_attributes_its_statements`, `a_reversal_is_confirmed_over_a_log_that_attributes_its_statements`, `a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements` |
+| a verified entry's receipt must be its own digest (check removed) | `a_verified_entrys_receipt_is_still_its_own_digest` |
+| a refusal is returned, never retried or swallowed (turned into a retry) | `a_refusal_of_the_log_is_never_swallowed` |
+| a question recorded unattributed backs no move (`append_question`'s digest check off) | `a_question_the_log_leaves_unattributed_backs_no_move` |
+
+Run once per rule, under a hard timeout, nothing hung. The three journals of the list that check no receipt
+(`quote`, `arrival`, `rounds`, `segments`, `snapshot`) and `stuck`'s, which handles its statements by `append_stated`,
+have no rule of this kind to switch off: no test is added to them.

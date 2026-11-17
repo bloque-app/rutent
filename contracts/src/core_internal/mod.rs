@@ -84,7 +84,8 @@ mod standing;
 mod types;
 
 pub use attribution::{
-    STATED_WITHOUT_ITS_KEPT_BYTES, attribute, granted_advertising_keys, release_statement_keys,
+    IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD, STATED_WITHOUT_ITS_KEPT_BYTES, attribute,
+    granted_advertising_keys, release_statement_keys,
 };
 pub use relations::{
     Answers, CLOSING_RELATIONS, Cite, Cites, DeploymentOperator, History, Match, Quantifier,

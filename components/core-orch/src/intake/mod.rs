@@ -36,7 +36,11 @@
 //!    the `route_chosen` input, recorded once (`REQ-ORD-34`, `REQ-ORD-19`). Both entries are built once and appended as
 //!    built. Where the log couldn't be written now, the next acceptance by the actor policy permitted, and by no other,
 //!    carries them on, without asking policy or resolving the destination again; where the log refuses one, the order
-//!    ends, of a class. The order is told accepted only once it has started.
+//!    ends, of a class. The order is told accepted only once it has started. An acceptance may name the hold of the
+//!    quote it accepts ([`Intake::accept_holding`], `REQ-QTE-15`): intake redeems it for this order, in the session
+//!    it verified for the acceptance and for the request's origin reserve, once the statement kept behind the hold's
+//!    entry is held to the entry's commitment, and cites the hold's receipt as the acceptance's `held`; a hold that
+//!    isn't redeemed refuses the acceptance with nothing recorded for it, and an acceptance naming none redeems none.
 //!
 //! **What the caller is told holds no provider's text** (`REQ-ORD-18`). [`Told`] carries identifiers, a class from
 //! a closed list and the quote Core built from the router's record; a provider's words stay in its stated entry.
@@ -49,7 +53,7 @@ mod record;
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, KeptStatements, Log};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
     Entry, OrderRefusalClass, PartYes, Parties, Receipt, Role, ShownAs, What,
@@ -65,6 +69,7 @@ use rutent_contracts::state_machine::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::quote::{AcceptedQuote, HoldError, Holds, Redemption};
 use crate::rounds::{self, History, Need, Offer, Order, Parts, Presence, Routing, RoutingError};
 use crate::snapshot::{Price, check_part};
 
@@ -279,6 +284,9 @@ pub enum IntakeError {
     Fresh,
     /// The offered route has no reserve's yes to cite, or a part Core can't run.
     Unofferable,
+    /// The hold the acceptance names is not redeemed, for this reason: nothing was recorded for the acceptance and
+    /// the order stands as it was, quoted (`REQ-QTE-15`).
+    Hold(HoldError),
 }
 
 impl From<AppendFailure> for IntakeError {
@@ -315,6 +323,11 @@ pub struct Desk<'a, 'p> {
     pub core: &'a Actor,
     /// The operator, in whose name Core signs its questions and records.
     pub operator: &'a Actor,
+    /// The quotes reserves hold, which an acceptance may redeem (`REQ-QTE-15`).
+    pub holds: &'a mut Holds,
+    /// The log's own read of what the evidence store kept under a commitment: what a hold is held to before it is
+    /// redeemed.
+    pub kept: &'a mut dyn KeptStatements,
 }
 
 /// The route offered, kept until it is accepted.
@@ -640,6 +653,28 @@ impl Intake {
         quote: &Digest,
         owner: Option<&Id>,
     ) -> Result<Told, IntakeError> {
+        self.accept_holding(desk, order, by, quote, owner, None)
+    }
+
+    /// [`Intake::accept`], where the acceptance names `hold`, the transaction of a reserve's hold of the quote shown
+    /// (`REQ-QTE-15`): intake redeems it for this order through [`Holds::redeem`], in the session it verified for the
+    /// acceptance and for the origin reserve of the request, never a session or a reserve the caller names, and the
+    /// acceptance cites the receipt of the hold's stated entry as its `held`. A hold that is not redeemed (not
+    /// held, for another order or session, redeemed by another order, not a hold of this quote, kept bytes that
+    /// are not the hold, past its validity) is [`IntakeError::Hold`], with the acceptance not recorded and the hold
+    /// not redeemed. Naming no hold records an acceptance that cites none and redeems none.
+    ///
+    /// An acceptance carried on from where it stopped is already built and cites what it cited: `hold` is read
+    /// only when the acceptance is built.
+    pub fn accept_holding(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+        owner: Option<&Id>,
+        hold: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
         let kept = self.kept_for(desk.actors, by, order)?;
         if matches!(kept.status, Status::Accepted { .. }) || kept.ended {
             return Ok(kept.told());
@@ -755,6 +790,33 @@ impl Intake {
                 })
             })
             .collect::<Result<Vec<_>, IntakeError>>()?;
+        // The hold the acceptance names, redeemed for this order only: in the session the acceptance is given in
+        // (`offered.session`, the one the reserve's yes was asked in) and for the request's origin reserve, never a
+        // session or reserve the caller says. Last before the acceptance is built, so a refusal leaves nothing behind.
+        let held = match hold {
+            None => None,
+            Some(transaction) => {
+                let now = record::now(desk.parts.clock)?;
+                let redeemed = desk
+                    .holds
+                    .redeem(
+                        Redemption {
+                            transaction,
+                            reserve: &request.origin_reserve,
+                            order,
+                            session: Some(&offered.session),
+                            quote: AcceptedQuote {
+                                record: &offered.quote.decision_record,
+                                candidate: &offered.quote.candidate,
+                            },
+                            now: &now,
+                        },
+                        &mut *desk.kept,
+                    )
+                    .map_err(IntakeError::Hold)?;
+                Some(redeemed.hold.clone())
+            }
+        };
         let acceptance = desk.parts.fresh.id();
         let accepted = record::build(
             desk.parts.clock,
@@ -770,7 +832,7 @@ impl Intake {
                 origin_reserve: request.origin_reserve.clone(),
                 yeses,
                 session: Some(offered.session.clone()),
-                held: None,
+                held,
             },
         )?;
         let start = record::build(

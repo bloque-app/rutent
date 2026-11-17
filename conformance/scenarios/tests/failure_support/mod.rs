@@ -4,15 +4,12 @@
 
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
-
-use rutent_contracts::core_internal::{Actor, ActorKind, Effect, Role};
+use rutent_contracts::core_internal::{Actor, ActorKind, Role};
 use rutent_contracts::router_api::{Amount, FeeFormula};
 use rutent_contracts::state_machine::{Observed, OrderState};
 use rutent_core_orch::intake::OrderRequest;
 use rutent_core_orch::notice::{About, Change, Notice};
 use rutent_core_orch::segments::{Accounted, Ran};
-use rutent_core_orch::stuck::{Resolutions, Resolved};
 use rutent_scenarios::kit::id;
 
 /// `request`, the customer holding that it takes no less than `floor` at the destination.
@@ -86,17 +83,5 @@ pub fn staff(desk: &str, login: &str) -> Actor {
         acts: id(login),
         role: Role::Operator,
         kind: ActorKind::Person,
-    }
-}
-
-/// What carries a resolution out, watched: every effect it was handed, each answered as scripted, or moved as named
-/// once the script runs out. The production mover is `T-020-16`'s, in review: this stands in for it.
-#[derive(Default)]
-pub struct Moves(pub Vec<Effect>, pub VecDeque<Resolved>);
-
-impl Resolutions for Moves {
-    fn resolve(&mut self, effect: &Effect) -> Resolved {
-        self.0.push(effect.clone());
-        self.1.pop_front().unwrap_or(Resolved::Done)
     }
 }

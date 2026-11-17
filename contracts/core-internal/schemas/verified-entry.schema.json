@@ -141,7 +141,11 @@
             "confirm_outcome",
             "reversal_carrier",
             "holding_withdrawal",
-            "input_not_taken"
+            "input_not_taken",
+            "decline_outcome",
+            "notice_summary",
+            "public_mismatch",
+            "part_evidence"
           ]
         }
       },
@@ -729,6 +733,66 @@
           },
           "then": {
             "$ref": "#/$defs/what_input_not_taken"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "decline_outcome"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_decline_outcome"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "notice_summary"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_notice_summary"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "public_mismatch"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_public_mismatch"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "part_evidence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_part_evidence"
           }
         }
       ]
@@ -1380,6 +1444,10 @@
         "part": {
           "description": "The part of the order it is for: required where the order's route has more than one part. The arrival's matcher fills it (T-020-04).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "earlier": {
+          "description": "The receipt of the earlier arrival of the same deposit this one holds against an order: the deposit as it was first recorded, against no order, or an earlier filing of it, so a checker sees one deposit, not several (arrival-names-its-earlier-arrival, REQ-ORD-23). Absent on a deposit's first arrival.",
+          "$ref": "urn:rutent:core-internal:receipt"
         }
       },
       "allOf": [
@@ -2176,6 +2244,7 @@
         "order",
         "handed_on_from",
         "holder",
+        "node",
         "record"
       ],
       "properties": {
@@ -2194,9 +2263,17 @@
           "description": "The holding account's provider: the route's starting reserve, which made the record.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
+        "node": {
+          "description": "The inner node the holding account is at, where the route handed on starts (holding-withdrawal-starts-a-handed-on-route).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
         "record": {
           "description": "The receipt of the record: the holder's verified stated entry of the withdrawal.",
           "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "publisher": {
+          "description": "At a private node, the node's publisher whose word the record is, labelled as such (REQ-ORD-40): the party the record's maker states for. Absent where it isn't a publisher's word.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     },
@@ -2513,6 +2590,296 @@
       "properties": {
         "status": {
           "const": "observed"
+        }
+      }
+    },
+    "what_decline_outcome": {
+      "description": "A mover's report of a move's outcome declined by an actor of another party and login, on its own evidence: a decision on policy's handle, answered by policy for its decliner as a confirmation is (REQ-AUZ-4, ADR-0011). A declined report settles nothing and frees nothing; only after it may a new report of the same effect stand, and no confirmation confirms it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "request",
+        "decision"
+      ],
+      "properties": {
+        "call": {
+          "const": "decline_outcome"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request",
+            "order",
+            "effect",
+            "report",
+            "decliner",
+            "declined_with",
+            "at"
+          ],
+          "properties": {
+            "request": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "order": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+            },
+            "effect": {
+              "description": "The receipt of the effect whose outcome was unknown.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "report": {
+              "description": "The receipt of the report it declines: a permitted report_outcome of the same effect, still open.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "decliner": {
+              "description": "Who declines it: another accountable party and another login than its reporter.",
+              "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+            },
+            "declined_with": {
+              "description": "The decline's evidence: a verified stated entry about the move's order and part, by receipt.",
+              "$ref": "urn:rutent:core-internal:receipt"
+            },
+            "at": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+            }
+          }
+        },
+        "decision": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_notice_summary": {
+      "description": "One notice's summary, once it was delivered or abandoned: what a restart needs to send it no more (REQ-ORD-20, REQ-ORD-7). A raise's summary closes the raise's own entry, written once.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "to",
+        "of",
+        "last_try",
+        "ended"
+      ],
+      "properties": {
+        "call": {
+          "const": "notice_summary"
+        },
+        "to": {
+          "$ref": "#/$defs/notice_receiver"
+        },
+        "of": {
+          "$ref": "#/$defs/notice_of"
+        },
+        "last_try": {
+          "description": "The number of its last try, counted from 1.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
+        },
+        "ended": {
+          "description": "How it ended: its receiver's transport took it, or its last try failed and it is sent no more.",
+          "enum": [
+            "delivered",
+            "abandoned"
+          ]
+        }
+      }
+    },
+    "notice_receiver": {
+      "description": "Whom a notice was for: a party, in the role it receives in.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "party",
+        "role"
+      ],
+      "properties": {
+        "party": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "role": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/role"
+        }
+      }
+    },
+    "notice_of": {
+      "description": "What a notice was of: a change of an order, at its sequence, or a raise.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "order",
+            "raise"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "order"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/notice_of_order"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "raise"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/notice_of_raise"
+          }
+        }
+      ]
+    },
+    "notice_of_order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "sequence"
+      ],
+      "properties": {
+        "kind": {
+          "const": "order"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "sequence": {
+          "description": "The change's sequence, counted from 1.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
+        }
+      }
+    },
+    "notice_of_raise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "raise"
+      ],
+      "properties": {
+        "kind": {
+          "const": "raise"
+        },
+        "raise": {
+          "description": "The raise's id (notice-summary-names-its-raise).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "what_public_mismatch": {
+      "description": "A non-final segment whose public record contradicts what its provider said it moved: the segment still settles on its provider's declared grade, and the contradiction is recorded here and raised (REQ-ORD-33, REQ-AUD-1, ADR-0009). That the figure it names differs is checked by the Rust types.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "segment",
+        "node",
+        "movement",
+        "found",
+        "moved",
+        "stated",
+        "rests_on"
+      ],
+      "properties": {
+        "call": {
+          "const": "public_mismatch"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The public node its movement is at.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "movement": {
+          "description": "The movement Core checked.",
+          "$ref": "#/$defs/public_movement"
+        },
+        "found": {
+          "$ref": "urn:rutent:core-internal:raise#/$defs/public_end_mismatch"
+        },
+        "moved": {
+          "description": "What the network moved.",
+          "$ref": "urn:rutent:core-internal:raise#/$defs/public_figures"
+        },
+        "stated": {
+          "description": "What the provider said it moved.",
+          "$ref": "urn:rutent:core-internal:raise#/$defs/public_figures"
+        },
+        "rests_on": {
+          "description": "The receipt of what the provider said: its verified result about the order and segment (public-mismatch-rests-on-the-providers-result).",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    },
+    "what_part_evidence": {
+      "description": "A stuck part's evidence, graded, saying whose it is: the evidence a stuck resolution's stuck_resolved cites, of a part and no segment, since a resolution moves the part's value outside its plan (REQ-ORD-39, REQ-AUZ-4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "evidence",
+        "order",
+        "part",
+        "grade",
+        "whose",
+        "rests_on"
+      ],
+      "properties": {
+        "call": {
+          "const": "part_evidence"
+        },
+        "evidence": {
+          "description": "The evidence's id: the one stuck_resolved cites as its evidence.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "part": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "grade": {
+          "description": "The grade: a statement alone grades as a statement.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
+        },
+        "whose": {
+          "description": "The party whose evidence it is.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "rests_on": {
+          "description": "The stated entries it rests on, at least one, each once.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:core-internal:receipt"
+          }
         }
       }
     }

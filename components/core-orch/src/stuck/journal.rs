@@ -90,3 +90,26 @@ impl Step {
         Ok(receipt)
     }
 }
+
+impl Step {
+    /// Appends a stated entry unless the log took it already. The log attributes a statement, so its receipt is of
+    /// the entry it recorded and not of the one handed in: the receipt rule can't hold it, and the log's own equal
+    /// entry rule makes a retried append one entry (`INV-8`).
+    pub(super) fn append_stated(&mut self, log: &mut dyn Log) -> Result<Receipt, AppendFailure> {
+        if let Some(receipt) = &self.receipt {
+            return Ok(receipt.clone());
+        }
+        let mut last = AppendFailure::Unavailable;
+        for _ in 0..APPEND_TRIES {
+            match log.append(&self.entry) {
+                Ok(receipt) => {
+                    self.receipt = Some(receipt.clone());
+                    return Ok(receipt);
+                }
+                Err(AppendFailure::Unavailable) => last = AppendFailure::Unavailable,
+                Err(refused) => return Err(refused),
+            }
+        }
+        Err(last)
+    }
+}

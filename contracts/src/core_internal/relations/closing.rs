@@ -1,6 +1,6 @@
 //! The citation table's rows for evidence and closing (`T-020-09`): a part's final deposit settled only on a public
-//! record and its reserve's verified statement, one public movement evidencing one segment, and a replay resting on its
-//! exit's result. Kept apart from the rest of the table so the rows other tasks add don't meet these; [`admit_entry`]
+//! record and its reserve's verified statement, one public movement evidencing one segment, a replay resting on its
+//! exit's result, and a mismatch at a non-final public end resting on what its provider said (`T-020-21`). Kept apart from the rest of the table so the rows other tasks add don't meet these; [`admit_entry`]
 //! reads them after [`RELATIONS`](super::RELATIONS).
 //!
 //! [`admit_entry`]: super::admit_entry
@@ -81,7 +81,7 @@ fn relied_on(entry: &VerifiedEntry) -> Option<(&PublicMovement, &Id, &Id)> {
 }
 
 /// The rows, in the order the engine reads them. `contracts/core-internal/README.md` lists them with the rest.
-pub static CLOSING_RELATIONS: [Relation; 3] = [
+pub static CLOSING_RELATIONS: [Relation; 4] = [
     Relation {
         name: "final-deposit-closes-on-a-public-record",
         spec: &["REQ-ORD-33", "REQ-ORD-39"],
@@ -195,6 +195,57 @@ pub static CLOSING_RELATIONS: [Relation; 3] = [
                     about.and_then(|a| a.segment.as_ref()) == Some(segment),
                 ],
             )
+        },
+    },
+    Relation {
+        name: "public-mismatch-rests-on-the-providers-result",
+        spec: &["REQ-ORD-33", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a mismatch at a public end rests on its provider's result, a stated entry of this log",
+        fields: &[
+            (
+                "verified",
+                "a mismatch's provider result is a verified statement",
+            ),
+            (
+                "result",
+                "a mismatch rests on its provider's result, not a question or another shape",
+            ),
+            (
+                "maker",
+                "a mismatch rests on the result of its segment's provider, the one this log's move named",
+            ),
+            (
+                "about",
+                "a mismatch's provider result is about its order and segment",
+            ),
+            (
+                "non_final",
+                "a public end's mismatch is recorded for a segment that isn't a part's final deposit, which closes on a public record alone",
+            ),
+        ],
+        // What the provider said it moved is its own verified result about the segment: the log holds its salted
+        // commitment, so that the figures the mismatch states are the result's is for whoever holds the kept bytes.
+        cites: |e, _| match &e.what {
+            What::PublicMismatch { rests_on, .. } => alloc::vec![by_receipt(rests_on, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (&e.what, stated(t)) {
+            (What::PublicMismatch { order, segment, .. }, Some(s)) => judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                    segment_provider(order, segment, h) == Some(maker_provider(s)),
+                    s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
+                    }),
+                    // A part's final deposit is held to a public record (`final-deposit-closes-on-a-public-record`):
+                    // a contradiction there settles nothing, so it is no non-final end's mismatch.
+                    !final_deposit(order.as_str(), segment.as_str(), h),
+                ],
+            ),
+            _ => Match::NotTarget,
         },
     },
 ];

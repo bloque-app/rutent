@@ -216,6 +216,7 @@
             "post_route",
             "change_catalogue",
             "ask_reversal",
+            "ask_status",
             "accept_fault",
             "erase_statement",
             "resolve_stuck"
@@ -281,6 +282,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_ask_reversal"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "ask_status"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_ask_status"
           }
         },
         {
@@ -461,6 +477,33 @@
         },
         "provider": {
           "description": "The provider that failed it, asked to reverse.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_ask_status": {
+      "description": "Asking a segment's provider where the segment stands, late, once it failed or fell silent (REQ-ORD-1, INV-4): a decided action, taken as an effect under a fresh transaction of its order before the question is sent. The provider is the one the segment's move went to, which the log holds (status-is-asked-of-the-segments-provider); its answer is kept as its statement and moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "provider"
+      ],
+      "properties": {
+        "kind": {
+          "const": "ask_status"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment asked about.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The segment's provider, asked.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

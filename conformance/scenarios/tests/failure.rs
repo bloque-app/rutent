@@ -335,7 +335,10 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
         .record_no_route(&order, &outcome)
         .expect("no route recorded");
     assert_eq!(recorded.state, OrderState::WaitingForCustomer);
-    assert!(!core.is_stuck(&order), "it is the customer's, not stuck");
+    assert!(
+        !core.is_stuck(&order, &core.part_of(&order).expect("a part")),
+        "it is the customer's, not stuck"
+    );
     assert!(core.stuck_values().is_empty(), "nor on the operator's view");
     core.clock.advance(600);
     let status = core
@@ -469,7 +472,7 @@ fn stuck_by_silence() -> (
 
     // The order is stuck; the operator is warned and the customer told, and both read it so.
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
-    assert!(core.is_stuck(&order));
+    assert!(core.is_stuck(&order, &core.part_of(&order).expect("a part")));
     let to_operator = told_to_the_operator(&mut core, &order);
     assert_eq!(
         to_operator.last(),
@@ -518,12 +521,11 @@ fn stuck_by_silence() -> (
 fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_moves_nothing_twice()
  {
     let (core, order, _) = stuck_by_silence();
-    assert!(core.is_stuck(&order));
+    assert!(core.is_stuck(&order, &core.part_of(&order).expect("a part")));
 }
 
 // verifies: AC-5
 #[test]
-#[ignore = "blocked: components/core-orch/src/reversal/journal.rs rejects the audit log's receipt for a verified stated entry; see F-024 notes, T-024-06"]
 fn a_late_delivery_moves_nothing_twice() {
     use rutent_core_orch::stuck::HISTORY;
 

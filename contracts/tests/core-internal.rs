@@ -9,9 +9,9 @@ use rutent_contracts::core_internal::Attribution;
 use rutent_contracts::core_internal::calls::{
     ATTRIBUTED_BY_ITS_WRITER, AppendFailure, Authorisations, Charges, Comparisons,
     DECISION_ON_THE_GENERAL_HANDLE, DecisionEntry, Decisions, Delivery, Evidence, Fetched,
-    GeneralEntry, Kept, KeptStatements, Log, Measures, Operator, PersonQuestions, PolicyLog,
-    RECORD_ON_THE_POLICY_HANDLE, Reads, Sessions, Signatures, StatementKeys, StuckOrders,
-    is_decision,
+    GeneralEntry, Kept, KeptStatements, Log, Measures, Operator, OutcomeDeclines, PersonQuestions,
+    PolicyLog, RECORD_ON_THE_POLICY_HANDLE, Reads, Sessions, Signatures, StatementKeys,
+    StuckOrders, is_decision,
 };
 use rutent_contracts::core_internal::{
     Action, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
@@ -24,7 +24,10 @@ use rutent_contracts::core_internal::{
     Receipt, ReportPair, SessionAnswer, SessionRequest, StatedEntry, StuckDecide, StuckMove,
     VERSION, VerifiedEntry,
 };
-use rutent_contracts::core_internal::{DeploymentOperator, Quantifier, STATED_RELATIONS, Through};
+use rutent_contracts::core_internal::{
+    Checkpoint, CheckpointOpening, DeploymentOperator, IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD,
+    Quantifier, STATED_RELATIONS, Through,
+};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::router_api::Id;
@@ -34,7 +37,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:core-internal:<shape>`.
-const SHAPES: [&str; 26] = [
+const SHAPES: [&str; 28] = [
     "common",
     "receipt",
     "decision-request",
@@ -61,6 +64,8 @@ const SHAPES: [&str; 26] = [
     "entry",
     "kept-statement",
     "permission-change",
+    "checkpoint",
+    "checkpoint-opening",
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
@@ -73,7 +78,23 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 39] = [
+const RUST_RULES: [(&str, &str); 44] = [
+    (
+        "verified-entry-of-a-public-mismatch-at-another-network",
+        "a public end's mismatch is at the network its movement is on",
+    ),
+    (
+        "raise-of-a-charge-marked-with-no-formula-naming-a-maximum",
+        "a charge marked as having no formula names a maximum of nothing",
+    ),
+    (
+        "verified-entry-of-a-public-mismatch-whose-figures-agree",
+        "a public end's mismatch names a figure the network and the provider differ on",
+    ),
+    (
+        "raise-of-a-public-end-whose-figures-agree",
+        "a raise's difference is a real one",
+    ),
     (
         "verified-entry-of-an-effect-accepting-a-fault",
         "a customer's acceptance of fault is a decision, and takes no effect",
@@ -199,6 +220,10 @@ const RUST_RULES: [(&str, &str); 39] = [
         "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
     ),
     (
+        "raise-of-reports-not-comparable-in-one-asset",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+    ),
+    (
         "report-pair-of-one-party-reporting-both",
         "a segment's two reports are by two different parties",
     ),
@@ -241,7 +266,77 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 87] = [
+const SCHEMA_RULES: [SchemaRule; 105] = [
+    (
+        "verified-entry-of-a-notice-summary-without-its-outcome",
+        &[("/what", "required")],
+        "missing field `ended`",
+    ),
+    (
+        "verified-entry-of-a-notice-summary-of-no-try",
+        &[("/what/last_try", "minimum")],
+        "a count is 1 to 2^53 - 1",
+    ),
+    (
+        "verified-entry-of-a-public-mismatch-without-its-segment",
+        &[("/what", "required")],
+        "missing field `segment`",
+    ),
+    (
+        "checkpoint-carrying-its-size",
+        &[("", "additionalProperties")],
+        "unknown field `size`",
+    ),
+    (
+        "checkpoint-carrying-its-salt",
+        &[("", "additionalProperties")],
+        "unknown field `salt`",
+    ),
+    (
+        "checkpoint-whose-tick-tells-its-size",
+        &[("/tick", "pattern")],
+        "a tick is 16 lower-case hexadecimal digits",
+    ),
+    (
+        "checkpoint-opening-without-its-salt",
+        &[("", "required")],
+        "missing field `salt`",
+    ),
+    (
+        "verified-entry-of-a-decline-naming-no-report",
+        &[("/what/request", "required")],
+        "missing field `report`",
+    ),
+    (
+        "handover-operation-ended-with-no-answer-without-its-transaction",
+        &[("", "required")],
+        "missing field `transaction`",
+    ),
+    (
+        "handover-operation-ended-with-no-answer-without-what-ended-it",
+        &[("", "required")],
+        "missing field `ended_by`",
+    ),
+    (
+        "verified-entry-of-a-holding-withdrawal-without-its-node",
+        &[("/what", "required")],
+        "missing field `node`",
+    ),
+    (
+        "decision-request-to-ask-a-late-status-without-its-segment",
+        &[("/action", "required")],
+        "missing field `segment`",
+    ),
+    (
+        "verified-entry-of-a-stuck-parts-evidence-without-its-part",
+        &[("/what", "required")],
+        "missing field `part`",
+    ),
+    (
+        "verified-entry-of-a-stuck-parts-evidence-resting-on-nothing",
+        &[("/what/rests_on", "minItems")],
+        "a stuck part's evidence rests on stated entries, at least one, each once",
+    ),
     (
         "raise-of-a-charge-without-its-result",
         &[("/difference", "required")],
@@ -501,6 +596,26 @@ const SCHEMA_RULES: [SchemaRule; 87] = [
         "raise-carrying-an-order-state-change",
         &[("", "additionalProperties")],
         "unknown field `order_state`",
+    ),
+    (
+        "raise-of-an-unread-account-naming-a-word",
+        &[("/difference", "not")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-holding-not-comparable-without-its-word",
+        &[("/difference", "required")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-an-unread-account-naming-an-asset",
+        &[("/difference", "not")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-holding-not-comparable-without-its-asset",
+        &[("/difference", "required")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
     ),
     (
         "raise-citing-nothing",
@@ -812,6 +927,8 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "entry" => round_trip::<Entry>(value),
         "kept-statement" => round_trip::<KeptStatement>(value),
         "permission-change" => round_trip::<PermissionChange>(value),
+        "checkpoint" => round_trip::<Checkpoint>(value),
+        "checkpoint-opening" => round_trip::<CheckpointOpening>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }
@@ -1043,7 +1160,7 @@ fn platform_event_handed_to_the_log_without_its_transaction_is_invalid() {
         .filter(|n| n.starts_with("handover-") && n.ends_with("-without-its-transaction"))
         .collect();
     // Every kind of item the platform or the proxy hands over.
-    assert_eq!(missing.len(), 7, "{missing:?}");
+    assert_eq!(missing.len(), 8, "{missing:?}");
     for name in &missing {
         assert_rejected(name);
     }
@@ -1277,13 +1394,14 @@ fn a_decision_entry_reaches_the_log_only_through_policys_handle() {
         .filter(|(n, _)| shape_of(n) == "verified-entry")
         .collect();
     // The decision kinds, by their tag on the wire, written out apart from `is_decision`.
-    const DECISION_CALLS: [&str; 12] = [
+    const DECISION_CALLS: [&str; 13] = [
         "decide",
         "authorise",
         "stuck_decide",
         "stuck_move",
         "report_outcome",
         "confirm_outcome",
+        "decline_outcome",
         "open_session",
         "check_read",
         "grant_permission",
@@ -1536,6 +1654,13 @@ fn the_log_not_the_writer_attributes_a_stated_entry() {
                 got,
                 Err(AppendFailure::Refused(Violation(
                     STATED_WITHOUT_ITS_KEPT_BYTES
+                ))),
+                "{name}"
+            ),
+            "role" => assert_eq!(
+                got,
+                Err(AppendFailure::Refused(Violation(
+                    IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD
                 ))),
                 "{name}"
             ),
@@ -2544,6 +2669,14 @@ impl StuckOrders for Unbuilt {
         Err(AppendFailure::Unavailable)
     }
 }
+impl OutcomeDeclines for Unbuilt {
+    fn decline_outcome(
+        &mut self,
+        _: &rutent_contracts::core_internal::OutcomeDecline,
+    ) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+}
 impl PersonQuestions for Unbuilt {
     fn ask_about_person(&mut self, _: &PersonQuestion) -> Result<PersonAnswer, AppendFailure> {
         Err(AppendFailure::Unavailable)
@@ -2604,6 +2737,15 @@ fn every_call_between_cores_parts_can_be_held_as_a_trait_object() {
     let mut authorisations: Box<dyn Authorisations> = Box::new(Unbuilt);
     assert_eq!(
         authorisations.authorise(&read("authorisation-of-one-order-with-a-floor")),
+        Err(AppendFailure::Unavailable)
+    );
+    let mut declines: Box<dyn OutcomeDeclines> = Box::new(Unbuilt);
+    let declined: VerifiedEntry = read("verified-entry-of-an-outcome-report-declined");
+    let What::DeclineOutcome { request, .. } = &declined.what else {
+        panic!("a decline")
+    };
+    assert_eq!(
+        declines.decline_outcome(request),
         Err(AppendFailure::Unavailable)
     );
     let mut stuck: Box<dyn StuckOrders> = Box::new(Unbuilt);
@@ -2708,4 +2850,302 @@ fn the_log_refuses_an_authorisation_naming_no_part_or_one_part_twice() {
         // Nor does it read from the wire.
         assert!(serde_json::from_value::<Entry>(serde_json::to_value(&built).unwrap()).is_err());
     }
+}
+
+// --- T-020-21: core-internal's next round ---------------------------------------------------------------------
+
+/// Runs one admission case through [`admit_entry`] and holds it to what the case expects.
+fn assert_case(name: &str) {
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures")
+            .join("admission")
+            .join(format!("{name}.json")),
+    );
+    let history: Vec<(Receipt, Entry)> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                serde_json::from_value(item["receipt"].clone()).unwrap(),
+                serde_json::from_value(item["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let entry: Entry = serde_json::from_value(case["entry"].clone())
+        .unwrap_or_else(|e| panic!("{name}: the entry doesn't read: {e}"));
+    let got = admit_entry(
+        &history,
+        &entry,
+        through(&case, &entry),
+        &operator_of(&case),
+    );
+    assert_eq!(got, expected(name, &case), "{name}");
+}
+
+/// Asserts that an admission case is refused, whatever its expectation says, so a case can't pass by naming no row.
+fn assert_case_refused(name: &str) {
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures")
+            .join("admission")
+            .join(format!("{name}.json")),
+    );
+    assert!(
+        case["breaks"].is_string(),
+        "{name} is a case the log refuses"
+    );
+    assert_case(name);
+}
+
+// verifies: REQ-ORD-20, REQ-ORD-7
+#[test]
+fn notice_summary_entry_without_its_outcome_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-a-notice-summary-delivered");
+    assert_accepted_by_both("verified-entry-of-a-notice-summary-of-a-raise-abandoned");
+    assert_rejected("verified-entry-of-a-notice-summary-without-its-outcome");
+    assert_rejected("verified-entry-of-a-notice-summary-of-no-try");
+    // A raise's summary names a raise of the log, and a notice has one summary.
+    assert_case("world--notice_summary");
+    assert_case_refused("notice-summary-names-its-raise--missing");
+    assert_case_refused("one-summary-per-notice--conflict");
+    assert_case("one-summary-per-notice--the-same-summary-again");
+}
+
+// verifies: REQ-ORD-33, REQ-AUD-1
+#[test]
+fn mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-a-public-mismatch-of-a-wrong-amount");
+    assert_accepted_by_both("verified-entry-of-a-public-mismatch-of-a-wrong-destination");
+    assert_rejected("verified-entry-of-a-public-mismatch-without-its-segment");
+    assert_rejected("verified-entry-of-a-public-mismatch-whose-figures-agree");
+    assert_rejected("verified-entry-of-a-public-mismatch-at-another-network");
+    // Raised to the operator as a difference and nothing that can move value (ADR-0009).
+    assert_accepted_by_both("raise-of-a-wrong-amount-at-a-public-end");
+    assert_rejected("raise-of-a-public-end-whose-figures-agree");
+    // What the provider said is its verified result about the segment.
+    assert_case("world--public_mismatch");
+    assert_case_refused("public-mismatch-rests-on-the-providers-result--maker");
+    // A part's final deposit closes on a public record: a contradiction there is no non-final end's mismatch.
+    assert_case_refused("public-mismatch-rests-on-the-providers-result--non_final");
+}
+
+// verifies: REQ-AUD-14
+#[test]
+fn checkpoint_carrying_a_size_or_a_salt_is_invalid() {
+    assert_accepted_by_both("checkpoint-of-a-tick");
+    assert_rejected("checkpoint-carrying-its-size");
+    assert_rejected("checkpoint-carrying-its-salt");
+    assert_rejected("checkpoint-whose-tick-tells-its-size");
+}
+
+// verifies: REQ-AUD-14
+#[test]
+fn checkpoint_opening_without_its_salt_is_invalid() {
+    assert_accepted_by_both("checkpoint-opening-of-a-tick");
+    assert_rejected("checkpoint-opening-without-its-salt");
+}
+
+// verifies: REQ-AUZ-4, ADR-0011
+#[test]
+fn decline_of_a_report_naming_no_report_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-an-outcome-report-declined");
+    assert_rejected("verified-entry-of-a-decline-naming-no-report");
+    // A decline is policy's, on its handle, by another party and login than the reporter, on its own evidence, of
+    // a report still open; after it a new report stands, and the declined one is confirmed by nothing.
+    assert_case("world--decline");
+    for name in [
+        "outcome-decline-rests-on-its-report--missing",
+        "outcome-decline-rests-on-its-report--party",
+        "outcome-decline-rests-on-its-report--login",
+        "outcome-decline-rests-on-its-report--evidence",
+        "outcome-decline-rests-on-its-report--open",
+        "outcome-confirmation-rests-on-its-report--declined",
+    ] {
+        assert_case_refused(name);
+    }
+    assert_case("one-report-per-effect--a-new-report-after-a-decline");
+}
+
+// verifies: REQ-ORD-23
+#[test]
+fn arrival_naming_an_earlier_arrival_of_another_reserve_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-an-arrival-naming-its-earlier-arrival");
+    assert_case("world--arrival_earlier");
+    assert_case_refused("arrival-names-its-earlier-arrival--reserve");
+    assert_case_refused("arrival-names-its-earlier-arrival--deposit");
+}
+
+// verifies: REQ-AUD-4, REQ-ORD-28
+#[test]
+fn empty_shortlist_is_recorded_and_a_no_route_can_cite_it() {
+    assert_accepted_by_both("verified-entry-of-a-shortlist-record-keeping-no-provider");
+    assert_case("input-cites-its-decision-record--no-route-on-a-shortlist-keeping-none");
+    assert_case_refused(
+        "input-cites-its-decision-record--no-route-on-another-orders-empty-shortlist",
+    );
+}
+
+// verifies: REQ-MDL-8, REQ-ORD-1
+#[test]
+fn handed_over_operation_that_ended_with_no_answer_cites_the_platforms_record() {
+    assert_accepted_by_both("handover-operation-ended-with-no-answer");
+    assert_accepted_by_both("verified-entry-of-an-operation-that-ended-with-no-answer");
+    assert_rejected("handover-operation-ended-with-no-answer-without-its-transaction");
+    assert_rejected("handover-operation-ended-with-no-answer-without-what-ended-it");
+}
+
+// verifies: REQ-ORD-40
+#[test]
+fn holding_account_withdrawal_record_without_its_node_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-a-holding-withdrawal");
+    assert_accepted_by_both("verified-entry-of-a-holding-withdrawal-labelled-its-publishers-word");
+    assert_rejected("verified-entry-of-a-holding-withdrawal-without-its-node");
+    // The node is the one the route handed on starts at, and a label names the party its record states for.
+    assert_case_refused("holding-withdrawal-starts-a-handed-on-route--node");
+    assert_case("holding-withdrawal-rests-on-its-record--labelled-its-publishers-word");
+    assert_case_refused("holding-withdrawal-rests-on-its-record--publisher");
+}
+
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused() {
+    assert_case_refused("handed-on-route-starts-on-its-holding-record--missing");
+    assert_case_refused("handed-on-route-starts-on-its-holding-record--holder");
+}
+
+// verifies: REQ-ORD-33, AC-32
+#[test]
+fn final_deposit_settled_on_a_statement_alone_is_refused_by_the_log() {
+    assert_case("world--final_deposit");
+    for name in [
+        "final-deposit-closes-on-a-public-record--conflict",
+        "final-deposit-closes-on-a-public-record--conflict-without-its-movement",
+        "final-deposit-closes-on-a-public-record--conflict-resting-on-another-statement",
+    ] {
+        assert_case_refused(name);
+    }
+}
+
+// verifies: REQ-ORD-3
+#[test]
+fn reversal_at_a_later_inner_node_rests_on_that_nodes_confirming_party() {
+    // The node's reserve, the provider that delivered there, confirms another's failure out of it (as before), and
+    // its own failure out of it on its own word, labelled a statement (REQ-ORD-3's second sentence; the widening).
+    assert_case(
+        "reversal-rests-on-its-evidence--at-a-later-inner-node-the-nodes-reserve-on-anothers-failure",
+    );
+    assert_case("reversal-rests-on-its-evidence--at-a-later-inner-node-its-reserves-own-word");
+    // No other failed provider's own word counts there, the order's origin reserve's included.
+    assert_case_refused(
+        "reversal-rests-on-its-evidence--at-a-later-inner-node-the-failed-providers-own-word",
+    );
+    assert_case_refused(
+        "reversal-rests-on-its-evidence--the-origin-reserves-own-word-at-a-later-inner-node",
+    );
+}
+
+// verifies: REQ-ORD-1, INV-4
+#[test]
+fn request_for_a_providers_late_status_without_its_segment_is_invalid() {
+    assert_accepted_by_both("decision-request-to-ask-a-providers-late-status");
+    assert_rejected("decision-request-to-ask-a-late-status-without-its-segment");
+    // Decided, then taken as an effect, of the segment's own provider only.
+    assert_case("world--decide_status");
+    assert_case("world--effect_status");
+    assert_case_refused("status-is-asked-of-the-segments-provider--missing");
+}
+
+// verifies: REQ-AUZ-1
+#[test]
+fn decision_whose_actor_is_not_the_requests_caller_is_refused() {
+    assert_case("decision-is-for-its-caller--its-caller");
+    assert_case_refused("decision-is-for-its-caller--missing");
+}
+
+// verifies: REQ-AUD-2
+#[test]
+fn verified_statement_recorded_in_a_role_its_maker_does_not_hold_is_refused() {
+    let cases = attribution_cases();
+    let (_, case) = cases
+        .iter()
+        .find(|(name, _)| name == "refused--a-role-its-maker-does-not-hold")
+        .expect("the case");
+    let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+    assert_eq!(claim.attribution.maker().role, Role::Customer);
+    let got = attribute(
+        &claim,
+        &case_history(case),
+        &mut sources(case),
+        &mut sources(case),
+        &sources(case),
+    );
+    assert_eq!(
+        got,
+        Err(AppendFailure::Refused(Violation(
+            IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD
+        )))
+    );
+    // The same claim in the role its maker holds is verified.
+    let mut held = claim.clone();
+    let Attribution::Unverified { claimed_by } = &mut held.attribution else {
+        panic!("an unverified claim")
+    };
+    claimed_by.role = Role::Provider;
+    let entry = attribute(
+        &held,
+        &case_history(case),
+        &mut sources(case),
+        &mut sources(case),
+        &sources(case),
+    )
+    .expect("verified");
+    assert!(matches!(entry.attribution, Attribution::Verified { .. }));
+}
+
+// verifies: REQ-QTE-5, AC-14
+#[test]
+fn charge_raise_marked_as_having_no_formula_whose_fee_is_in_the_segments_own_asset_is_refused() {
+    assert_accepted_by_both("raise-of-a-charge-in-an-asset-no-formula-covers");
+    assert_rejected("raise-of-a-charge-marked-with-no-formula-naming-a-maximum");
+    assert_case("no-formula-marks-a-charge-in-another-asset--in-another-asset");
+    assert_case_refused("no-formula-marks-a-charge-in-another-asset--asset");
+    assert_case_refused("no-formula-marks-a-charge-in-another-asset--missing");
+}
+
+// verifies: REQ-ORD-39, REQ-AUZ-4
+#[test]
+fn evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid() {
+    assert_accepted_by_both("verified-entry-of-a-stuck-parts-evidence");
+    assert_rejected("verified-entry-of-a-stuck-parts-evidence-without-its-part");
+    assert_rejected("verified-entry-of-a-stuck-parts-evidence-resting-on-nothing");
+    assert_case("world--part_evidence");
+    assert_case("part-evidence-rests-on-statements--the-moving-providers-word");
+    // Its own part's, through its resolution's own transaction: not another part's, nor a part with no resolution.
+    for name in [
+        "part-evidence-rests-on-statements--about",
+        "part-evidence-rests-on-statements--another-part",
+        "part-evidence-rests-on-statements--a-part-with-no-resolution",
+        "part-evidence-rests-on-statements--provider",
+    ] {
+        assert_case_refused(name);
+    }
+}
+
+// verifies: REQ-AUZ-4, REQ-ORD-39
+#[test]
+fn stuck_resolved_citing_an_evidence_entry_that_names_another_part_is_refused() {
+    assert_case("stuck-resolved-cites-its-parts-evidence--its-parts-evidence");
+    assert_case_refused("stuck-resolved-cites-its-parts-evidence--conflict");
+}
+
+// verifies: REQ-ORD-1, REQ-ORD-23
+#[test]
+fn arrival_answer_with_no_arrival_question_before_it_is_refused() {
+    assert_case("answer-follows-its-question--an-arrival-answer-after-its-question");
+    assert_case_refused(
+        "answer-follows-its-question--an-arrival-answer-with-no-question-before-it",
+    );
+    assert_case_refused("answer-follows-its-question--an-arrival-answer-after-an-operation");
 }

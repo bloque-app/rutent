@@ -729,3 +729,81 @@
   notice; core-orch's `NOT_A_NOTICE` deny list
   stays `T-020-19`'s, and the log now refuses anything it lets through. (DEC-4, DEC-20, REQ-ORD-23, REQ-ORD-14,
   REQ-AUD-2, T-020-18)
+- Folded into 1.0.0 before its release: a comparison that can't be made is raised (`T-022-05`'s review, item 1).
+  `Difference` had no shape for two reports in two assets, or one asset in two units, which `THR-107` names, nor for
+  a holding account whose balance can't be set against the value held or evidenced there, so the checks dropped
+  them in silence and `REQ-ORD-9`, `REQ-AUD-15` and `INV-1` failed open. Two new kinds: `reports_not_comparable`,
+  naming the order, the segment and each party's figure as it stated it (`Reported`: amount and asset), which
+  `Raise::check` refuses where the two assets are one; and `holding_not_comparable`, naming the account, why
+  (`HoldingIncomparable`: `evidenced_in_another_asset`, `no_reading`, or `sum_past_the_bound`, value held or
+  evidenced past the balance by more than an amount states) and the balance's `word` and the account's `asset`
+  exactly when a balance was read, since the check's entry names no asset; the schema and `Raise::check` both hold
+  that. `Raise::check`'s rule names the new case. Five valid fixtures (reports in two units and in two assets) and
+  five invalid ones. Outside `contracts/`, `core-audit`'s `compare` raises each. (DEC-4, DEC-20, REQ-ORD-9,
+  REQ-AUD-15, INV-1, THR-107, T-022-05)
+- Folded into 1.0.0 before its release: `core-internal`'s next round, the items the rows since gathered (`T-020-21`).
+  Its row asks for one `DEC-4` bump; 1.0.0 isn't on `develop` yet, so `PLAN.md` §4.4 and retrospective lesson 7 fold
+  it into the unreleased major, as `T-022-05` did, and the guard reads core-internal as a new contract. Each change,
+  by the row's item:
+  1. A notice's summary, `notice_summary {to: {party, role}, of: order {order, sequence} | raise {raise}, last_try,
+     ended: delivered | abandoned}`, observed, for what a restart needs in place of the notice module's `Ledger`; a
+     raise's closes the raise's own entry, written once. `notice-summary-names-its-raise` holds a raise's to a raise
+     of the log, `one-summary-per-notice` keeps one per notice and receiver (`T-023-02`'s proposal; `T-023-03`).
+     (REQ-ORD-20, REQ-ORD-7)
+  2. router-api's `Operation::stated_out` documents its `None` (router-api's changelog; no shape).
+  3. A mismatch at a non-final public end, `public_mismatch {order, segment, node, movement, found: wrong_destination
+     | wrong_asset | wrong_amount, moved, stated, rests_on}`, and its raise, `difference: public_end {order, segment,
+     found, moved, stated}` (`PublicFigures`: destination, asset, amount); the Rust types hold the figure `found`
+     names to differ and the mismatch to its movement's network, and `public-mismatch-rests-on-the-providers-result`
+     holds `rests_on` to the segment's provider's verified result about it, on a segment that isn't a part's final
+     deposit (`T-020-22`). (REQ-ORD-33, REQ-AUD-1, ADR-0009)
+  4. Two shapes for a checkpoint and its opening, `checkpoint` (`shape`, `log`, `tick` as 16 hexadecimal digits,
+     `at`, `commitment`, `signature`) and `checkpoint-opening` (`shape`, `log`, `tick`, `salt`, `size`), so a party
+     outside rutent's crates has a schema; a checkpoint carrying a size or a salt is invalid (`T-022-04`'s hand-off;
+     `T-022-07`). (REQ-AUD-14, REQ-AUD-10)
+  5. A decline of an outcome report, `decline_outcome {request: OutcomeDecline {request, order, effect, report,
+     decliner, declined_with, at}, decision}`, a decision kind on policy's handle through a call of its own,
+     `OutcomeDeclines::decline_outcome`. `outcome-decline-rests-on-its-report` holds it to a permitted report of the
+     same move by another party and login, on another maker's statement, while the move and the report stand;
+     `outcome-confirmation-cites-verified-evidence` holds its evidence as a confirmation's; `one-report-per-effect`
+     admits a new report once the earlier one is declined, and `outcome-confirmation-rests-on-its-report` confirms no
+     declined report (`T-020-20`). (REQ-AUZ-4, ADR-0011)
+  6. `arrival.earlier`, the earlier arrival of the same deposit an arrival holds against an order;
+     `arrival-names-its-earlier-arrival` holds it to an arrival at the same reserve, of the same deposit by its
+     notice's signed transaction (`T-020-04`'s gap; `T-020-19`). (REQ-ORD-23, REQ-ORD-14)
+  7. An empty shortlist's record was folded in already ("a shortlist may keep no provider", above); its test is
+     named now, on the fixtures that held it (`T-020-25` writes it). (REQ-AUD-4)
+  8. `HandedOver`'s `operation_unanswered {provider, transaction, ended_by}`, the platform's own record of an
+     operation that ended with no answer (`T-020-08`'s gap; `T-020-25`). (REQ-MDL-8, REQ-ORD-1)
+  9. The holding account's record and its relation were folded in already (`holding_withdrawal`,
+     `handed-on-route-starts-on-its-holding-record`, above); it now names its inner `node`, which
+     `holding-withdrawal-starts-a-handed-on-route` holds the route handed on to start at, and at a private node its
+     `publisher`, the label `REQ-ORD-40` asks for, which `holding-withdrawal-rests-on-its-record` holds to the party
+     the record's maker states for (`T-020-26`). (REQ-ORD-40, INV-5)
+  10. The final-deposit relation was folded in already (`final-deposit-closes-on-a-public-record`, above, on
+     `T-020-09`'s review); its test is named now (`T-020-22` writes Core's side). (REQ-ORD-33, AC-32)
+  11. `Action::AskStatus {order, segment, provider}`, asking a provider for a late status, decided and taken as an
+     effect, held to the segment's provider by `status-is-asked-of-the-segments-provider`; and
+     `reversal-rests-on-its-evidence` reads the reserve at the segment's from-node, not the order's origin reserve,
+     for the failed provider's own word. That widens admission in one case only: the provider that delivered to a
+     later inner node fails out of it and vouches for itself as that node's reserve, as `REQ-ORD-3`'s second
+     sentence allows; the origin reserve's word at a node not its own was refused before too (on `reserve`, now on
+     `whose`), and no admitted history moved. A reversible reading, on the owner's form as ADR-0008's open question
+     (`T-020-12`'s gaps; `T-020-27`). (REQ-ORD-1, REQ-ORD-3, INV-4)
+  12. `decision-is-for-its-caller`: a `decide` entry whose actor isn't its request's caller is refused (`T-022-02`'s
+     probe). (REQ-AUZ-1)
+  13. `attribute` records a verified statement only in a role its maker holds, the operator's maker as the
+     operator and any other as a provider or a verifier, and refuses one whose bytes bear its claim out in another
+     (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`; `T-022-02`'s probe). A module the operator publishes is a provider, so
+     core-orch's `record_refused` claims it in the provider's role, not the operator's. (REQ-AUD-2)
+  14. A charge's `no_formula: for_this_asset`, the mark of a fee in an asset no formula covers, beside its
+     `maximum` of nothing, which `Raise::check` holds to `0`; `no-formula-marks-a-charge-in-another-asset` holds it
+     to a charge in another asset than its segment's `from` (`T-020-14`'s closed gap 3; `T-020-29`). (REQ-QTE-5)
+  15. A stuck part's evidence, `part_evidence {evidence, order, part, grade, whose, rests_on}`, of a part and no
+     segment; `part-evidence-rests-on-statements` holds it to statements about its own part's resolution, through the
+     transaction that part's `resolve_stuck` names, a bare statement to the provider the resolution names, and
+     `stuck-resolved-cites-its-parts-evidence` refuses a `stuck_resolved` citing another order's or part's evidence,
+     or a segment's (`T-020-16`'s gap 1; `T-020-20`). (REQ-ORD-39, REQ-AUZ-4)
+  16. `answer-follows-its-question` holds a reserve's `arrival-answer` to the `arrival-question` Core asked under its
+     transaction, as a `result` to its `operation` (`T-020-18`'s hand-off). (REQ-ORD-1, REQ-ORD-23)
+  Twenty-eight schemas, 106 relations and 4 closing ones, three stated. (DEC-4, DEC-20, T-020-21)

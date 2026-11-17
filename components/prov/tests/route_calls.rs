@@ -12,10 +12,11 @@ use rutent_contracts::module_interface::{
     validate_call, validate_call_against,
 };
 use rutent_contracts::router_api::{DecisionRecord, RecordedDecision};
-use rutent_prov::module::platform::Platform;
+use rutent_prov::module::platform::{Platform, SteppedClock};
 use rutent_prov::module::types::{Events, Handled};
 use rutent_prov::proxy::RouteNotNamed;
 use serde_json::json;
+use std::sync::Arc;
 
 fn id(text: &str) -> Identifier {
     Identifier::new(text).expect("an identifier")
@@ -86,6 +87,9 @@ fn call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router() {
     broken.chosen = Some(rutent_contracts::router_api::Id::new("c999").expect("an id"));
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): spawning five wasm children under load can pass the real
+        // 10 s deadlines, and the call would then be refused on its deadline, not as `NotNamedByRoute`.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         for callee in ["p-r2", "p-z"] {
             install(
                 &mut binding,
