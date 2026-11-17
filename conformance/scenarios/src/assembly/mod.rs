@@ -848,6 +848,12 @@ impl Core {
         self.readings.tie_by_destination();
     }
 
+    /// From now on, `provider`'s record of the segments inside its node is altered after it was signed, as a forger
+    /// would: a fault the scenarios plant (`T-024-14`). Core's books refuse it, so the replay finds nothing recorded.
+    pub fn forge_record_of(&mut self, provider: &str) {
+        self.readings.forge(provider);
+    }
+
     /// The log.
     pub fn log(&self) -> std::cell::Ref<'_, CoreLog> {
         self.log.borrow()
@@ -876,6 +882,31 @@ impl Core {
     /// Core's record of value in flight and of the orders declared stuck, to read (`T-024-04`).
     pub fn exposures(&self) -> &Exposures {
         &self.exposures
+    }
+
+    /// The records the publishers keep of the segments inside private node `node`, one for each provider that serves
+    /// in it, as Core reads them to replay a route (`T-024-14`, `REQ-ORD-41`): what each provider's book says now,
+    /// signed as the provider, held to its advertisement. A record that fails either is not among them.
+    pub fn publishers_records(
+        &self,
+        node: &str,
+    ) -> Vec<
+        rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::InnerSegments>,
+    > {
+        self.readings.refresh(&self.fleet.platform.world);
+        self.readings.published_in(node)
+    }
+
+    /// What Core's books give for private node `node` and the segments run under `transactions`, as the closing reads
+    /// them (`T-024-14`).
+    pub fn books_for(
+        &self,
+        node: &str,
+        transactions: &[Id],
+    ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
+        use rutent_core_orch::closing::Books;
+        self.readings.refresh(&self.fleet.platform.world);
+        self.readings.recorded(node, transactions)
     }
 
     /// The platform with the simulated providers, to read.

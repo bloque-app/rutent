@@ -60,6 +60,12 @@ impl<T: Typed> RoleProvider for T {
 
 /// When stand-ins say they made a statement.
 const MADE_AT: &str = "2026-11-06T15:04:05Z";
+
+/// When the stand-ins make their statements.
+#[cfg(feature = "signing")]
+pub(crate) fn made_at() -> &'static str {
+    MADE_AT
+}
 /// Until when stand-ins' quotes and judgements hold, and when a lifting refusal lifts.
 const VALID_UNTIL: &str = "2026-11-13T15:04:05Z";
 /// The publisher behind every stand-in.
