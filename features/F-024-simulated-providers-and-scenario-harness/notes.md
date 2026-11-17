@@ -522,7 +522,7 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 - A scope file with no `strict:` line reads off, and the table reports it.
 - With no results file nothing counts as passed, and the table says `no-results`.
-- A review (`review:F-0NN`) counts only if the feature's notes exist; a check counts only if it is one of the three
+- A review (`review:F-0NN`) counts only if the feature's notes exist; a check counts only if it is one of the two
   named. **The tool does not run those checks**; the documentation, boundary and licence checks are CI steps of their
   own, and an inspection row is "verified" by naming them, as the row says.
 - A `deferred` row needs one `DEC-`, `ASM-` or `F-` identifier the plan or the specification defines. It does not
@@ -612,6 +612,71 @@ real file says `off` or `on` when `T-024-10` flips it.
 - `AC-2`'s full route across a reserve, an exchange and a ramp is `T-024-04`'s: the simulated providers that join
   the reserves are added there (see the world paragraph of `T-024-03`).
 - `T-024-10` and `T-025-05` now run in wave 27, after all of them.
+
+## T-024-06: failure, stuck, reversal and ending scenarios
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/`, each carrying exactly the `AC-*` of its plan bracket): `failure.rs` (`AC-42`,
+`AC-12`, `AC-40`, `AC-5`), `ending.rs` (`AC-7`, `AC-8`, `AC-9`, `AC-41`) and `reversing.rs` (`AC-4`, `AC-6`), with
+`failure_support/` beside `execution_support/`. Each drives Core's own `request`, `quote`, `accept` and `run`, and the
+methods below, over the simulated providers.
+
+**Added to the assembly** (`conformance/scenarios/src/assembly/lifecycle.rs`, nothing in `components/`): Core's own
+records of what goes wrong (`Recalculations`, `Stuck`, `Reversals`, `Notices`) held beside the segments, with `recalculate`,
+`run_recalculated`, `watch`, `record_no_route`, `decide_stuck`, `carry_out_stuck`, `owe_reversal`, `ask_reversal`,
+`confirm_reversal`, `end`, `returned`, `late_delivery`, `notify` and `notices_to`; `Core::run` split into `run_live`;
+`Faults::operation_takes` (a segment takes seconds of Core's clock, so p99 has a history); `reprice_deposits` (a price that
+moved after the quote) and `set_check_bound` (deployment settings). No simulator change was needed.
+
+**Defaults taken.**
+- `AC-5`: "stops answering" is the provider that took the deposit and never answered (`Behaviour::late`), so its outcome
+  is unknown and its value held; the p99 is a real history of twenty settled orders at 10 s an operation. "The operator
+  is warned" is the operator's notice of the `stuck_declared` change; "the provider can see it" is `seen_by_provider`.
+  A late delivery is the provider's answer asked again under its own transaction, kept by `Reversals::later`.
+- `AC-12`: the reserve's price moves after the quote (`reprice_deposits`), so the only route from the ledger falls below
+  the floor.
+- `AC-40`: the recalculation to the same destination is the same reserve again; with its dry run refused, the order
+  waits. After `no_route` Core's recalculations answer `NoRouteLeft` (routed no more) where the kit's answered `Held`;
+  both mean no route starts. The customer's new destination and the hand-on are not run here (below).
+- `AC-7`: the second half runs on an order whose deposit was refused (first segment settled, order open) and on a complete one.
+- `AC-9`: the destination's report is a signed deposit result that says the payment came back.
+- `AC-41`: the expected changes are the inputs the state machine applies to the order, replayed from the log.
+- Policy's stuck rules are the real engine's and the resolution's move is Core's own mover (`T-020-16`, merged).
+- `AC-5`'s late delivery is folded into the plan-named test, so the name's promise holds.
+
+**Gaps, with owners.**
+- **`AC-4` and `AC-6` are written and `#[ignore]`d.** The reversal journal's receipt rule (`T-020-12`) is fixed on
+  `m3-next` and `AC-8` and `AC-5`'s late delivery now run. What still blocks the two: the simulated world binds no
+  private node to its publisher, so a failed exchange's own answer completes nothing (`FailedProvidersOwn`) and the
+  reserve's confirmation is refused as the same publisher's. Owner: `T-024-14`, whose row now says so (the simulated world binds each
+  private node to its publisher, the two `#[ignore]`s come off, and the rule-offs run). The "other party" half of `AC-4` has no simulated route at all: a private
+  node is its publisher's alone, so no other publisher's provider starts where the origin reserve's node is; it is held
+  in `components/core-orch/tests/reversal.rs`. Drop the `#[ignore]` when the node is bound. Evidence-table rows `AC-4`
+  and `AC-6` stay unverified until then.
+- **`AC-40`'s second half** (customer's new destination, hand-on to a linked order) runs on the kit only
+  (`tests/hand_on.rs`): the assembly doesn't wire `hand_on`. Owner: a later `F-024` row.
+- **`AC-5`'s `Behaviour::late`** waits the fleet's real deadline; the order is accepted before it is scripted, so the quote's calls don't run under it. The stale-guest builds behind the earlier `NoRouteRightNow` flake are fixed on `m3-next`.
+- The customer's session lasts about a quarter hour of Core's clock, which bounds how many slow orders one scenario runs.
+
+**Rule-off table** (each rule switched off in `components/` or `contracts/` for one run, with other scenarios' rules off in
+the same run where each red names its own cause, and restored; the tests were green first). `AC-4` and `AC-6` could not be run.
+
+| Scenario | Switched off | Red |
+|---|---|---|
+| `AC-42` | the floor check at a settled segment (`segments/mod.rs`, `holds_floor`) | the deposit is handed over after the short withdrawal |
+| `AC-12` | the router's `BelowFloor` drop | the recalculation is refused by Core's own check instead of waiting |
+| `AC-40` | the rule that places a part with no route at a failed deposit's node (`after_no_route`) | stuck, not waiting for the customer |
+| `AC-5` | the stuck clock's twice (`over_time`, four times) | not stuck past twice the p99 |
+| `AC-5` (late half) | recording the late statement (`Reversals::later` appends nothing) | the late delivery is not kept |
+| `AC-7` | the state machine's end only before the first segment settles (`after_end_requested`) | the order past its first segment ends |
+| `AC-8` | the state machine's failing a part whose start is proven undone | the order stays complete |
+| `AC-9` | the destination check on a return (`makers.contains`) | another provider's report is recorded as the return |
+| `AC-41` | the operator among an order's receivers (`receivers_of`) | `AC-41`, and the operator's half of `AC-7` and `AC-9` |
+
+`AC-6`'s second rule is held by two layers (Core's `SameParty`/`SameLogin` and policy's `one_actor`): both off together
+is what the table would switch off; neither alone turns the scenario red. (Untested: `AC-6` is ignored.) Once un-ignored it is rule-offed in both layers together, then each alone. Both people hold both permissions, so
+the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameActor` from policy once Core's is off), not a missing permission.
 
 ## Owed rows (plan/m3-owed-rows-2)
 

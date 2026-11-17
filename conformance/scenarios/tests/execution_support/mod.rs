@@ -152,7 +152,7 @@ pub fn within(
 /// The order `request` opens, quoted; what quoting it told.
 pub fn quoted(core: &mut Core, request: OrderRequest) -> (Id, Told) {
     let told = core.request(request).expect("the request opens an order");
-    let order = Core::order_of(&told).expect("an order");
+    let order = Core::order_of(&told).unwrap_or_else(|| panic!("an order: {told:?}"));
     let told = core.quote(&kit::customer(), &order).expect("quoted");
     (order, told)
 }
