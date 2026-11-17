@@ -447,10 +447,114 @@ impl Results {
     }
 }
 
+/// A manifest line without its `#` comment; a `#` inside a quoted string is not a comment.
+fn cut_comment(line: &str) -> &str {
+    let mut quote = None;
+    for (at, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '#') => return &line[..at],
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            _ => {}
+        }
+    }
+    line
+}
+
+/// The strings of a TOML array of basic (`"a"`) or literal (`'a'`) strings; `None` for anything else: another
+/// value, a multi-line string, an escape, a missing bracket.
+fn string_array(text: &str) -> Option<Vec<String>> {
+    let mut rest = text.trim().strip_prefix('[')?;
+    let mut out = Vec::new();
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.trim() == "]" {
+            return Some(out);
+        }
+        let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let body = &rest[1..];
+        let end = body.find(quote)?;
+        if end == 0 && body[1..].starts_with(quote) {
+            return None;
+        }
+        let value = &body[..end];
+        if quote == '"' && value.contains('\\') {
+            return None;
+        }
+        out.push(value.to_string());
+        rest = &body[end + 1..];
+    }
+}
+
+/// The directories the root manifest's `[workspace]` table `exclude`s, as paths under the root with no trailing
+/// slash. Only the `exclude` key of the `[workspace]` table itself counts (not another table's, not a comment's);
+/// the list may span lines and hold basic or literal strings. A manifest that is missing or has no `exclude`
+/// excludes nothing. An `exclude` the reader cannot fully parse (the inline form `workspace = { .. }`, a dotted
+/// key, a value that is not an array of single-line strings) is an error, never "nothing excluded": a crate wrongly
+/// counted as run would vouch for tests the root run never reaches.
+fn excluded_dirs(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let text = match std::fs::read_to_string(root.join("Cargo.toml")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let unread = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: cannot read the workspace `exclude` ({why}); write `exclude = [\"dir\", ..]` in the [workspace] table",
+                root.join("Cargo.toml").display()
+            ),
+        )
+    };
+    let mut in_workspace = false;
+    let mut list = String::new();
+    let mut open = false;
+    for line in text.lines() {
+        let line = cut_comment(line).trim();
+        if open {
+            list.push_str(line);
+            open = !line.contains(']');
+            continue;
+        }
+        let key = line.split('=').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            if line.starts_with("[workspace.exclude") {
+                return Err(unread("a [workspace.exclude] table"));
+            }
+            in_workspace = line == "[workspace]";
+        } else if key == "workspace" || key.starts_with("workspace.") {
+            return Err(unread("a `workspace` key outside a [workspace] table"));
+        } else if in_workspace && key == "exclude" {
+            let value = line.split_once('=').map_or("", |(_, v)| v).trim();
+            list.push_str(value);
+            open = !value.contains(']');
+        }
+    }
+    if open {
+        return Err(unread("a list that is never closed"));
+    }
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    let strings =
+        string_array(&list).ok_or_else(|| unread("not an array of single-line strings"))?;
+    Ok(strings
+        .iter()
+        .map(|s| s.trim_end_matches('/').trim_start_matches("./"))
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect())
+}
+
 /// Every `.rs` file under `root` that the root workspace's `cargo test` can run: the walk of the tag check, less
-/// `experiments/` and every directory that is a workspace of its own (a `Cargo.toml` with `[workspace]`: the module
-/// guests, the VOS twin, the wallet guest), whose tests the root run never reaches and so cannot vouch for.
+/// `experiments/`, every directory the root manifest `exclude`s, and every directory that is a workspace of its own
+/// (a `Cargo.toml` with `[workspace]`: the module guests, the VOS twin, the wallet guest), whose tests the root run
+/// never reaches and so cannot vouch for. An excluded directory is matched by its whole path under the root, so a
+/// member crate of the same name elsewhere is walked. An `exclude` the reader cannot parse is an `InvalidData`
+/// error.
 pub fn find_member_rust_files(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let excluded = excluded_dirs(root)?;
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -466,7 +570,10 @@ pub fn find_member_rust_files(root: &std::path::Path) -> std::io::Result<Vec<std
                 let skipped = name == "target"
                     || name == "experiments"
                     || name.starts_with('.')
-                    || own_workspace;
+                    || own_workspace
+                    || path
+                        .strip_prefix(root)
+                        .is_ok_and(|under| excluded.iter().any(|dir| dir == under));
                 if !skipped {
                     stack.push(path);
                 }

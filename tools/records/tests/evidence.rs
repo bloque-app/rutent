@@ -645,6 +645,80 @@ fn only_the_tests_the_root_workspace_runs_are_scanned() {
     assert_eq!(found, ["crates/a/tests/t.rs"]);
 }
 
+// verifies: DEC-21
+#[test]
+fn crate_the_root_manifest_excludes_is_not_counted_as_run_by_the_table() {
+    let dir = std::env::temp_dir().join(format!("rutent-evidence-excluded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |path: &str, text: &str| {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    // Two ways of writing the list, and an `exclude` key of another table, which excludes nothing.
+    write(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/f\"]\n# exclude = [\"crates/a\"]\nexclude = [\n    \"fixtures/f\", # a fixture\n    \"other/g/\",\n    'lit/h', # a literal string\n    \"hash/#h\",\n]\n\n[workspace.metadata]\nexclude = [\"crates/a\"]\n",
+    );
+    for krate in [
+        "crates/a",
+        "crates/f",
+        "fixtures/f",
+        "fixtures/fx",
+        "other/g",
+        "other/g/inner",
+        "lit/h",
+        "hash/#h",
+    ] {
+        // None of them holds a `[workspace]` line of its own.
+        write(&format!("{krate}/Cargo.toml"), "[package]\nname = \"c\"\n");
+        write(&format!("{krate}/tests/t.rs"), "");
+    }
+    let found: Vec<String> = rutent_records::evidence::find_member_rust_files(&dir)
+        .unwrap()
+        .iter()
+        .map(|p| p.strip_prefix(&dir).unwrap().display().to_string())
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        found,
+        [
+            "crates/a/tests/t.rs",
+            "crates/f/tests/t.rs",
+            "fixtures/fx/tests/t.rs"
+        ]
+    );
+}
+
+// verifies: DEC-21
+#[test]
+fn a_root_manifest_exclude_the_reader_cannot_parse_is_an_error_not_silence() {
+    let dir = std::env::temp_dir().join(format!("rutent-evidence-unread-{}", std::process::id()));
+    for (label, manifest) in [
+        (
+            "inline table",
+            "workspace = { members = [], exclude = [\"x\"] }\n",
+        ),
+        ("dotted key", "workspace.exclude = [\"x\"]\n"),
+        ("not an array", "[workspace]\nexclude = \"x\"\n"),
+        ("not strings", "[workspace]\nexclude = [x]\n"),
+        ("escape", "[workspace]\nexclude = [\"a\\\\b\"]\n"),
+        (
+            "multi-line string",
+            "[workspace]\nexclude = [\"\"\"x\"\"\"]\n",
+        ),
+        ("never closed", "[workspace]\nexclude = [\"x\"\n"),
+    ] {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("c/tests")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(dir.join("c/tests/t.rs"), "").unwrap();
+        let found = rutent_records::evidence::find_member_rust_files(&dir);
+        assert!(found.is_err(), "{label}: read as {found:?}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 // verifies: DEC-17
 #[test]
 fn the_real_scope_file_is_well_formed_and_places_every_spec_identifier() {
