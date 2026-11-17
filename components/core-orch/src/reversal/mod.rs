@@ -531,7 +531,7 @@ impl Reversals {
             let Some(v) = verified(entry) else { continue };
             match &v.what {
                 What::Decide { request, .. }
-                    if v.outcome == (Outcome::Permitted {})
+                    if matches!(v.outcome, Outcome::Permitted {})
                         && matches!(&request.action, Action::AcceptFault { order: o, .. } if o == order) =>
                 {
                     faults.push((receipt.clone(), request.clone()));
