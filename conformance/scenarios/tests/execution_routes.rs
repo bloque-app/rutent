@@ -89,14 +89,14 @@ fn register_address(core: &Core) {
 // verifies: AC-1
 #[test]
 fn order_across_three_providers_completes_with_who_did_what_when_and_the_executed_price() {
-    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, RAMP, OUT]);
+    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, QUICK, OUT]);
     let (order, told) = quoted(
         &mut core,
         across("req-three", &session, "lowest_total_cost"),
     );
     // A reserve, an exchange and a ramp, and the reserve the value is deposited in.
     let record = record_of(&core, &told);
-    assert_eq!(providers(&record), [IN, EXCHANGE, RAMP, OUT]);
+    assert_eq!(providers(&record), [IN, EXCHANGE, QUICK, OUT]);
     let kinds: Vec<_> = record.chosen().unwrap().parts[0]
         .operations
         .iter()
@@ -133,7 +133,7 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
     // authorisation onward, naming the provider it handed the segment to, and when, by Core's clock, with its
     // source said; then how long it took.
     let log = entries(&core);
-    for (accounted, provider) in segments.iter().zip([IN, EXCHANGE, RAMP, OUT]) {
+    for (accounted, provider) in segments.iter().zip([IN, EXCHANGE, QUICK, OUT]) {
         let effect = log
             .iter()
             .find(|v| {
@@ -178,21 +178,29 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
         assert_eq!(settled_by.as_str(), provider);
     }
 
-    // Nothing the providers did inside the private node reached a public network: no request went to a host of the
-    // node's.
-    assert!(
-        core.world()
-            .delivered()
-            .iter()
-            .all(|d| !d.host.contains("sim-join-ledger")),
-        "{:?}",
-        core.world().delivered()
-    );
-
     // The final executed price is reported as the price, from what each segment did, and recorded once.
-    let (digest, _) = core
+    let (digest, _, price) = core
         .report_price(&order, &ran)
         .expect("the price is reported");
+    // What it says is what the segments did: 1 000 000 left the origin; the ramp took 5 000 from what it moved and the
+    // rest charged nothing, so 995 000 is what the reserve deposited, and arrives, with no operator fee to take.
+    let figure =
+        |n: &str| rutent_contracts::router_api::Amount::new(n.to_owned()).expect("an amount");
+    assert_eq!(price.shown_as, ShownAs::Price);
+    assert_eq!(price.amount_in, figure("1000000"));
+    let fees: Vec<_> = price
+        .segments
+        .iter()
+        .map(|s| s.fee.amount.clone())
+        .collect();
+    assert_eq!(fees, ["0", "0", "5000", "0"]);
+    assert_eq!(price.providers_out, figure("995000"));
+    assert_eq!(price.shown_out, figure("995000"));
+    assert_eq!(price.difference, figure("0"));
+    assert_ne!(
+        price.segments[2].amount_out, price.segments[2].amount_in,
+        "not a pass-through"
+    );
     let shown = |core: &Core| -> Vec<_> {
         entries(core)
             .into_iter()

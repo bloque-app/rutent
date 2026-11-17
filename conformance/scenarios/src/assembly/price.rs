@@ -9,7 +9,7 @@ use rutent_contracts::core_internal::{Receipt, calls::AppendFailure};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Fee;
 use rutent_contracts::router_api::Id;
-use rutent_core_orch::quote::{ExecutedSegment, NotShown, PriceError, Priced};
+use rutent_core_orch::quote::{ExecutedSegment, NotShown, PriceError, Priced, Shown};
 use rutent_core_orch::segments::{Ran, SegmentOutcome};
 use rutent_router::quote::Executed;
 
@@ -33,7 +33,7 @@ pub enum PriceNotReported {
 impl Core {
     /// Reports `order`'s executed price: built from what each segment `ran` took in, charged and gave out, each on its
     /// own result, and recorded as a `shown` entry labelled the price, once. The digest it is named by and the receipt
-    /// of the entry.
+    /// of the entry, and the price as it was reported.
     ///
     /// # Errors
     ///
@@ -42,7 +42,7 @@ impl Core {
         &mut self,
         order: &Id,
         ran: &[Ran],
-    ) -> Result<(Digest, Receipt), PriceNotReported> {
+    ) -> Result<(Digest, Receipt, Shown), PriceNotReported> {
         let started = self
             .started
             .get(order.as_str())
@@ -83,8 +83,10 @@ impl Core {
         }
         let priced = Priced::new(order, &started.record, candidate, &segments)
             .map_err(PriceNotReported::NotShown)?;
-        self.reported
+        let (digest, receipt) = self
+            .reported
             .report(&mut self.general, &self.clock, &kit::core(), &priced)
-            .map_err(PriceNotReported::Price)
+            .map_err(PriceNotReported::Price)?;
+        Ok((digest, receipt, priced.price().clone()))
     }
 }
