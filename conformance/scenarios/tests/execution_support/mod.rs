@@ -13,8 +13,8 @@ use rutent_conformance::sim::{Role, Spec};
 use rutent_contracts::core_internal::{
     Actor, Destination, Entry, Parties, PublicMovement, VerifiedEntry, What,
 };
-use rutent_contracts::provider_role::{Denomination, EvidenceGrade, KeyPurpose, OuterNode};
-use rutent_contracts::router_api::{DecisionRecord, Id, PositiveAmount};
+use rutent_contracts::provider_role::{EvidenceGrade, KeyPurpose, OuterNode};
+use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_contracts::state_machine::OrderState;
 use rutent_core_orch::arrival::{Filing, Report};
 use rutent_core_orch::intake::{OrderRequest, Status, Told};
@@ -312,18 +312,19 @@ pub fn report(
         "maker": reserve,
         "made_at": core.clock.timestamp().as_str(),
         "signature": { "scheme": "ed25519", "key": "", "value": "" },
-        "statement": { "kind": "arrival", "transaction": credit, "amount": amount },
+        // provider-role's `ArrivalNotice`: what Core reads the arrival's figures from.
+        "statement": {
+            "transaction": credit,
+            "node": OuterNode { network: network.to_owned() },
+            "asset": asset,
+            "amount": amount,
+            "account": rutent_scenarios::assembly::context().account,
+            "holder": kit::customer().party,
+        },
     });
     sign_value(&mut notice, &statements_key(reserve));
     Report {
         reserve: id(reserve),
-        node: OuterNode {
-            network: network.to_owned(),
-        },
-        asset: serde_json::from_value::<Denomination>(asset).expect("a denomination"),
-        amount: PositiveAmount::new(amount).expect("an amount"),
-        account: id(&rutent_scenarios::assembly::context().account),
-        holder: kit::customer().party,
         notice: serde_json::to_vec(&notice).expect("bytes"),
     }
 }

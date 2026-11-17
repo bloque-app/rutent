@@ -5,13 +5,17 @@
 //!
 //! One [`Arrivals`] takes value arriving at a reserve, in three calls, reaching what intake reaches (its [`Desk`]):
 //!
-//! 1. **[`Arrivals::arrive`]** takes a reserve's [`Report`]: what arrived, where, to whose account, and the reserve's
-//!    notice, its signed statement naming the transaction the reserve gave the credit, kept and appended about that
-//!    transaction alone, since no order is bound to it. One deposit is one arrival: a deposit is known by that
-//!    transaction, whatever bytes carry it, and reported again with other figures it is refused. Every `arrival` names
-//!    the deposit's notice by its commitment (`arrival-names-its-notice`), so the log holds one order per deposit
-//!    (`one-order-per-deposit`), and one held against a part of a split order names the part. The orders open there
-//!    ([`OpenOrders`]), read again on every call, decide what it is:
+//! 1. **[`Arrivals::arrive`]** takes a reserve's [`Report`]: the reserve's signed arrival notice (provider-role's
+//!    `ArrivalNotice`), as received, and nothing else. Core requires its shape positively (`read_notice`: the
+//!    notice's shape, its body the contract's, its maker the reserve reported, its amount above zero), keeps it, reads
+//!    it back as the log's own read gives it, and appends it as the reserve's stated entry, about its transaction
+//!    alone, since no order is bound to it. What arrived (outer node, asset, amount, account and holder) is read from
+//!    those signed bytes and from no other source (`REQ-ORD-14`, `REQ-ORD-23`). One deposit is one arrival: a deposit
+//!    is known by the reserve's per-credit reference, the transaction its notice signs, so two notices of one credit
+//!    are one arrival whatever bytes or time carry them (`check_one_credit`), and the same reference with other
+//!    figures is refused. Every `arrival` names the deposit's notice by its commitment (`arrival-names-its-notice`),
+//!    so the log holds one order per deposit (`one-order-per-deposit`), and one held against a part of a split order
+//!    names the part. The orders open there ([`OpenOrders`]), read again on every call, decide what it is:
 //!    - **none open** for its holder at its reserve, outer node, asset and account, other than orders that already
 //!      have their arrival: an `arrival` with no order, citing the notice. It opens no order and holds nothing, so
 //!      nothing counts against the operator (`REQ-ORD-14`);
@@ -45,10 +49,11 @@ use rutent_contracts::core_internal::{
     About, Actor, ArrivalMatch, Destination, Entry, OrderRefusalClass, Parties, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{Denomination, OuterNode};
+use rutent_contracts::provider_role::{
+    ArrivalNotice, Credits, Denomination, OuterNode, Statement, check_one_credit,
+};
 use rutent_contracts::router_api::{Id, PositiveAmount, Request, Router};
 use rutent_contracts::state_machine::RecordedInput;
-use serde::Deserialize;
 
 use crate::intake::{Desk, OrderRecord};
 use crate::rounds::{Need, RoutingError};
@@ -98,22 +103,14 @@ pub struct OpenOrder {
     pub part: Option<Id>,
 }
 
-/// Value arriving at a reserve, as the reserve's module reported it: what arrived, where, to whose account, and the
-/// reserve's own notice, its signed statement as received, naming no transaction.
+/// Value arriving at a reserve, as the reserve's module reported it: the reserve, and its own signed notice as
+/// received (provider-role's `ArrivalNotice`, `T-020-18`). What arrived (outer node, asset, amount, account and
+/// holder) is the notice's, read by Core from the signed bytes and from nothing else: a port states no figure of its
+/// own (`REQ-ORD-14`, `REQ-ORD-23`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
-    /// The reserve.
+    /// The reserve the notice came from: it must be the notice's maker.
     pub reserve: Id,
-    /// The outer node it arrived at.
-    pub node: OuterNode,
-    /// The asset.
-    pub asset: Denomination,
-    /// How much arrived, in the asset's unit.
-    pub amount: PositiveAmount,
-    /// The account it reached.
-    pub account: Id,
-    /// The party that holds the account.
-    pub holder: Id,
     /// The reserve's notice, as received.
     pub notice: Vec<u8>,
 }
@@ -216,7 +213,9 @@ pub enum ArrivalError {
     Log(AppendFailure),
     /// The reserve's notice names no shape, time or key a stated entry can hold.
     Unrecordable,
-    /// The notice isn't the reserve's own, about nothing: another maker, or a transaction named in its body.
+    /// The bytes aren't the reserve's own arrival notice: not of provider-role's notice shape, a body that isn't the
+    /// contract's `ArrivalNotice`, another maker, a figure that is no amount or identifier, or bytes the evidence
+    /// store keeps other than as received. Nothing was kept or appended.
     NotItsNotice,
     /// The notice was reported before with other figures: one notice is one arrival.
     OtherFigures,
@@ -290,7 +289,8 @@ struct Target {
 /// One notice taken, kept from its first call until its arrival is recorded.
 #[derive(Debug, Clone)]
 struct Noted {
-    report: Report,
+    /// What the reserve's signed notice states.
+    credit: Credit,
     /// The deposit's transaction, as the reserve's notice signs it: the key a deposit is known by.
     transaction: String,
     /// The commitment the evidence store keeps its bytes under.
@@ -330,42 +330,72 @@ fn files_at(filer: &Actor, reserve: &Id) -> bool {
     filer.role == Role::Operator || &filer.party == reserve
 }
 
-/// The parts of a notice's envelope Core reads: its maker, and whether its body names a transaction.
-#[derive(Deserialize)]
-struct NoticeEnvelope {
-    shape: String,
-    maker: String,
-    statement: serde_json::Value,
+/// What a reserve's signed arrival notice states, as Core read it from the bytes: the figures every later step uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Credit {
+    reserve: Id,
+    node: OuterNode,
+    asset: Denomination,
+    amount: PositiveAmount,
+    account: Id,
+    holder: Id,
+    /// The deposit's transaction: the reserve's per-credit reference.
+    transaction: String,
+    /// The statement as it was read.
+    statement: Statement<ArrivalNotice>,
 }
 
-/// The shapes a notice of value arriving is not: every statement shape a contract names for something else, a
-/// reserve's catalogue statements (its advertisement, its declarations, its reserve declaration) among them.
-const NOT_A_NOTICE: &[&str] = &[
-    "urn:rutent:provider-role:statement-envelope",
-    rutent_contracts::provider_role::ADVERTISEMENT_SHAPE,
-    "urn:rutent:provider-role:declarations",
-    "urn:rutent:provider-role:reserve-declaration",
-    rutent_contracts::provider_role::OPERATION_SHAPE,
-    rutent_contracts::provider_role::JUDGEMENT_SHAPE,
-    rutent_contracts::provider_role::REVERSAL_CONFIRMATION_SHAPE,
-    "urn:rutent:provider-role:common",
-    rutent_contracts::module_interface::RELEASE_ASSERTION_SHAPE,
-    rutent_contracts::router_api::DECISION_RECORD_SHAPE,
-];
+/// What `report`'s notice states, where it is its reserve's own arrival notice: the bytes read as provider-role's
+/// [`ArrivalNotice`] in its envelope, of its shape (checked positively, so a hold, an arrival answer or any other
+/// statement of the reserve is none, whatever its body), made by the reserve the report names, its transaction, account
+/// and holder identifiers and its amount above zero. Nothing else of the bytes is trusted, and none of the figures
+/// comes from anywhere else.
+fn read_notice(report: &Report) -> Option<Credit> {
+    let statement = serde_json::from_slice::<Statement<ArrivalNotice>>(&report.notice).ok()?;
+    statement.check_shape().ok()?;
+    let notice = &statement.statement;
+    Some(Credit {
+        reserve: Id::new(&statement.maker).filter(|maker| maker == &report.reserve)?,
+        node: notice.node.clone(),
+        asset: notice.asset.clone(),
+        amount: PositiveAmount::new(&notice.amount)?,
+        account: Id::new(&notice.account)?,
+        holder: Id::new(&notice.holder)?,
+        transaction: Id::new(&notice.transaction)?.as_str().to_owned(),
+        statement,
+    })
+}
 
-/// The deposit's transaction `report`'s notice signs, where the notice is its reserve's own: made by the reserve, its
-/// body naming the transaction the reserve gave the credit, and of no shape a contract names for something else (an
-/// advertisement, a declaration, an operation, a judgement, a confirmation, a release assertion or a decision record),
-/// nor a result, which answers a question Core asked under its transaction (`answer-follows-its-question`).
-/// provider-role has no shape for a notice of value arriving, so nothing else of its body is read.
-fn notice_transaction(report: &Report) -> Option<String> {
-    let n = serde_json::from_slice::<NoticeEnvelope>(&report.notice).ok()?;
-    let transaction = n.statement.get("transaction")?.as_str()?.to_owned();
-    (n.maker == report.reserve.as_str()
-        && Id::new(&transaction).is_some()
-        && !NOT_A_NOTICE.contains(&n.shape.as_str())
-        && n.shape != rutent_contracts::provider_role::RESULT_SHAPE)
-        .then_some(transaction)
+/// Whether the evidence store, read by the log's own read, keeps behind `commitment` the statement `credit` was read
+/// from: the notice the log attributes and the figures Core uses are one.
+fn kept_as_read(
+    desk: &mut Desk<'_, '_>,
+    commitment: &Digest,
+    credit: &Credit,
+) -> Result<bool, ArrivalError> {
+    let kept = desk.kept.kept(commitment)?;
+    Ok(kept
+        .filter(|k| &k.commitment == commitment)
+        .and_then(|k| unbase64url(k.bytes.as_str()))
+        .and_then(|bytes| serde_json::from_slice::<Statement<ArrivalNotice>>(&bytes).ok())
+        .is_some_and(|statement| statement == credit.statement))
+}
+
+/// The bytes base64url text without padding writes, or `None` where it isn't such text.
+fn unbase64url(text: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
+    for c in text.bytes() {
+        let v = u32::try_from(ALPHABET.iter().position(|a| *a == c)?).ok()?;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from(acc >> bits).ok()?);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 /// Whether two filings are the same but for which login of the filer's party made them (`REQ-OPS-5`).
@@ -441,21 +471,27 @@ impl Arrivals {
         open: &mut dyn OpenOrders,
         report: &Report,
     ) -> Result<Arrived, ArrivalError> {
-        let transaction = notice_transaction(report).ok_or(ArrivalError::NotItsNotice)?;
-        // One deposit, one arrival: a deposit is known by the transaction its reserve's notice signs, whatever bytes
-        // carry it (`one-order-per-deposit`); the same deposit with other figures is refused.
+        let credit = read_notice(report).ok_or(ArrivalError::NotItsNotice)?;
+        let transaction = credit.transaction.clone();
+        // One deposit, one arrival: a deposit is known by its reserve's per-credit reference, the transaction its
+        // notice signs, whatever bytes carry it (`one-order-per-deposit`). Two notices of one credit are one arrival;
+        // the same reference with other figures is refused, as is anything `check_one_credit` doesn't take as one
+        // credit.
         let at = match self
             .notices
             .iter()
-            .position(|n| n.report.reserve == report.reserve && n.transaction == transaction)
+            .position(|n| n.credit.reserve == credit.reserve && n.transaction == transaction)
         {
-            Some(at) if !same_figures(&self.notices[at].report, report) => {
-                return Err(ArrivalError::OtherFigures);
+            Some(at) => {
+                match check_one_credit(&self.notices[at].credit.statement, &credit.statement) {
+                    Ok(Credits::One) => at,
+                    Ok(Credits::Two) => return Err(ArrivalError::NotItsNotice),
+                    Err(_) => return Err(ArrivalError::OtherFigures),
+                }
             }
-            Some(at) => at,
             None => {
                 let maker =
-                    confirm::reserve_maker(desk.parts.catalogue, desk.operator, &report.reserve);
+                    confirm::reserve_maker(desk.parts.catalogue, desk.operator, &credit.reserve);
                 // The notice is about the deposit's own transaction, bound to no order.
                 let about = About {
                     order: None,
@@ -472,8 +508,12 @@ impl Arrivals {
                 let Entry::Stated(stated) = &notice else {
                     return Err(ArrivalError::Unrecordable);
                 };
+                // What the log will attribute is what Core read its figures from.
+                if !kept_as_read(desk, &stated.commitment, &credit)? {
+                    return Err(ArrivalError::NotItsNotice);
+                }
                 self.notices.push(Noted {
-                    report: report.clone(),
+                    credit,
                     transaction,
                     commitment: stated.commitment.clone(),
                     notice,
@@ -487,7 +527,16 @@ impl Arrivals {
         };
         let mut noted = self.notices[at].clone();
         let result = self.carry_on(desk, open, &mut noted);
-        self.notices[at] = noted;
+        // A notice the log refused, or whose arrival it refused (an unattributed notice, which the log holds to nothing),
+        // is no deposit's: it holds no reference, so the reserve's own notice of that credit, sent after it, is taken
+        // anew and not read as the same arrival.
+        let refused = matches!(&result, Err(ArrivalError::Log(AppendFailure::Refused(_))))
+            && (noted.notice_receipt.is_none() || matches!(noted.arrival, Some((_, None))));
+        if refused {
+            self.notices.remove(at);
+        } else {
+            self.notices[at] = noted;
+        }
         result
     }
 
@@ -505,7 +554,7 @@ impl Arrivals {
             &noted.notice,
             &mut noted.notice_receipt,
         )?;
-        let report = noted.report.clone();
+        let report = noted.credit.clone();
         if noted.arrival.is_none() {
             // A question under way is carried on for its own order; otherwise the orders open now decide.
             let target = match &noted.confirming {
@@ -798,19 +847,10 @@ impl Arrivals {
     }
 }
 
-/// Whether two reports state the same figures.
-fn same_figures(first: &Report, again: &Report) -> bool {
-    first
-        == &Report {
-            notice: first.notice.clone(),
-            ..again.clone()
-        }
-}
-
 /// The open order `report` is held against, among `open`, leaving out the orders in `taken`: only one of its holder's,
 /// at its reserve, outer node and asset, for its account; the first stating the amount that arrived matches, and
 /// otherwise the first differs. None open there, it meets no order.
-fn target(report: &Report, open: Vec<OpenOrder>, taken: &BTreeSet<String>) -> Option<Target> {
+fn target(report: &Credit, open: Vec<OpenOrder>, taken: &BTreeSet<String>) -> Option<Target> {
     let here: Vec<OpenOrder> = open
         .into_iter()
         .filter(|o| {

@@ -594,7 +594,10 @@ impl Run {
                 // deposit's order is routed as one part, so its arrival names none.
                 notice: Some(self.arrival.notice.clone()),
                 part: None,
-                earlier: None,
+                // The deposit was recorded before this order opened, against no order: this arrival holds it against
+                // the order, and names that one, so a checker reads one deposit, not two
+                // (`arrival-names-its-earlier-arrival`).
+                earlier: Some(self.arrival.receipt.clone()),
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

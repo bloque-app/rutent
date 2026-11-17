@@ -115,38 +115,77 @@ impl Providers for Reserve {
 }
 
 /// The shape the tests' reserve gives its notices: provider-role's arrival notice, the only shape the log takes as a
-/// deposit's notice (`arrival-names-its-notice`). The body is still the test's own; `T-020-19` reads it as the contract's.
+/// deposit's notice (`arrival-names-its-notice`), and the one Core requires (`T-020-19`).
 const NOTICE_SHAPE: &str = rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE;
 
-/// The transaction the reserve gives the `n`th credit.
+/// The transaction the reserve gives the `n`th credit: its per-credit reference.
 fn credit(n: u32) -> String {
     format!("credit-{n}")
 }
 
-/// The reserve's notice that `units` arrived at [`ACCOUNT`], signed, naming the transaction it gave the credit.
-fn notice(units: u64, n: u32) -> Vec<u8> {
-    let body = json!({
-        "kind": "arrival",
-        "transaction": credit(n),
-        "node": "polygon",
-        "asset": "USDC",
-        "amount": units.to_string(),
-        "account": ACCOUNT,
-    });
-    let value = envelope(&deployment(), NOTICE_SHAPE, RESERVE, START, body);
-    sign(value, &statements_key(RESERVE, 1))
+/// What the reserve's notice states of one credit: provider-role's `ArrivalNotice`, the contract's own body.
+#[derive(Clone)]
+struct Credit {
+    n: u32,
+    units: u64,
+    node: OuterNode,
+    asset: Denomination,
+    account: String,
+    holder: Id,
+}
+
+impl Credit {
+    /// `units` of USDC arriving at polygon, at [`ACCOUNT`] of the customer, under the reference of the `n`th credit.
+    fn new(units: u64, n: u32) -> Self {
+        Self {
+            n,
+            units,
+            node: polygon(),
+            asset: usdc(),
+            account: ACCOUNT.into(),
+            holder: customer().party,
+        }
+    }
+
+    /// The body the contract names for a notice of this credit.
+    fn body(&self) -> Value {
+        json!({
+            "transaction": credit(self.n),
+            "node": self.node,
+            "asset": self.asset,
+            "amount": self.units.to_string(),
+            "account": self.account,
+            "holder": self.holder,
+        })
+    }
+
+    /// The notice, signed by `maker`'s statements key, under `shape`, made at `made_at`.
+    fn notice_as(&self, shape: &str, maker: &str, made_at: u64) -> Vec<u8> {
+        let value = envelope(&deployment(), shape, maker, made_at, self.body());
+        sign(value, &statements_key(RESERVE, 1))
+    }
+
+    /// The reserve's notice of the credit, signed.
+    fn notice(&self) -> Vec<u8> {
+        self.notice_as(NOTICE_SHAPE, RESERVE, START)
+    }
+
+    /// The report of the notice.
+    fn report(&self) -> Report {
+        reported(self.notice())
+    }
 }
 
 /// A report of `units` arriving at [`RESERVE`] to the customer's [`ACCOUNT`].
 fn report(units: u64, n: u32) -> Report {
+    Credit::new(units, n).report()
+}
+
+/// The report of the reserve's `notice`, as received.
+fn reported(notice: Vec<u8>) -> Report {
     Report {
         reserve: id(RESERVE),
-        node: polygon(),
-        asset: usdc(),
-        amount: amount(units),
-        account: id(ACCOUNT),
-        holder: customer().party,
-        notice: notice(units, n),
+        notice,
     }
 }
 
@@ -450,11 +489,10 @@ proptest! {
         }
         let before = env.len();
         for (n, units) in units.iter().enumerate() {
-            let mut report = report(*units, n as u32);
+            let report = report(*units, n as u32);
             if elsewhere != "none" {
                 other_amount(&mut open, *units);
             }
-            report.amount = amount(*units);
             let arrived = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &report).unwrap();
             prop_assert!(matches!(arrived, Arrived::NoOrder { .. }), "{arrived:?}");
         }
@@ -1606,10 +1644,8 @@ fn one_notice_is_one_arrival_whatever_figures_it_comes_with() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
-    let reported = report(1000, 0);
     deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
-    let mut other = reported.clone();
-    other.amount = amount(900);
+    let other = report(900, 0);
     let len = env.len();
     let again = arrive(
         &mut env,
@@ -1708,10 +1744,11 @@ fn an_arrival_is_held_against_its_holders_order_not_yet_arrived() {
         .unwrap(),
     );
     // A stranger's deposit at the same account, while the second order is still open, meets no order.
-    let stranger = Report {
+    let stranger = Credit {
         holder: id("a-stranger"),
-        ..report(1000, 2)
-    };
+        ..Credit::new(1000, 2)
+    }
+    .report();
     let theirs = arrive(
         &mut env,
         &mut providers,
@@ -2329,13 +2366,13 @@ fn a_restated_notice_is_the_same_arrival() {
     .unwrap();
     assert_eq!(again, arrived);
     assert_eq!(env.len(), len);
+    let nine_hundred: Value = serde_json::from_slice(&report(900, 0).notice).unwrap();
     let other = Report {
-        notice: serde_json::to_vec_pretty(&value)
+        notice: serde_json::to_vec_pretty(&nine_hundred)
             .unwrap()
             .into_iter()
             .chain(*b" ")
             .collect(),
-        amount: amount(900),
         ..first
     };
     env.store.borrow_mut().restates_next = Some(place);
@@ -2786,10 +2823,7 @@ fn a_deposit_is_known_by_its_transaction_and_every_arrival_names_its_notice() {
         Ok(first)
     );
     assert_eq!((env.store.borrow().kept.len(), env.len()), (kept, len));
-    let other = Report {
-        amount: amount(999),
-        ..reencoded
-    };
+    let other = report(999, 0);
     assert_eq!(
         arrive(
             &mut env,
@@ -3020,5 +3054,556 @@ fn automatic_deposit_whose_route_cant_be_delivered_ends_unshown() {
     )));
     assert!(env.acceptances().is_empty());
     assert!(env.started().is_empty());
+    assert_admitted(&env);
+}
+
+// T-020-19: the arrival rests on the reserve's signed notice -------------------------------------------------------
+
+/// The receipt of the entry at `index`, as the tests' log gives one.
+fn receipt_at(index: usize) -> Receipt {
+    serde_json::from_value(json!({
+        "log": "log-1",
+        "index": index,
+        "entry": { "algorithm": "sha-256", "value": "72".repeat(32) },
+    }))
+    .unwrap()
+}
+
+/// Every `arrival` entry the log holds, with its receipt, as recorded.
+fn arrival_entries(env: &Env) -> Vec<(Receipt, What)> {
+    env.book
+        .borrow()
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (_, e))| match e {
+            Entry::Verified(v) if matches!(v.what, What::Arrival { .. }) => {
+                Some((receipt_at(at), v.what.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether any stated entry of the notice shape, or any arrival, was recorded: what a refused notice must not leave.
+fn leaves_nothing(env: &Env, len: usize, kept: usize) {
+    assert_eq!(env.len(), len, "nothing appended");
+    assert_eq!(env.store.borrow().kept.len(), kept, "nothing kept");
+    assert!(arrival_entries(env).is_empty(), "no arrival");
+    assert!(order_records(env).is_empty(), "no order");
+}
+
+/// What an arrival states of what arrived, its node, asset and amount, is what the reserve's signed notice states, not
+/// what a port said; and the account's holder, who decides which order it is held against, is the notice's too.
+// verifies: REQ-ORD-23
+#[test]
+fn arrivals_figures_are_read_from_the_reserves_signed_notice() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    // The notice states 750 USDT at base, which is no open order's: the open order is for 1 000 USDC at polygon.
+    let stated = Credit {
+        node: OuterNode {
+            network: "base".into(),
+        },
+        asset: Denomination {
+            id: "USDT".into(),
+            decimals: 6,
+        },
+        ..Credit::new(750, 0)
+    };
+    let mut open = Open(vec![open_order(&id("ord-open"))]);
+    let arrived = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &stated.report(),
+    )
+    .unwrap();
+    assert!(matches!(arrived, Arrived::NoOrder { .. }), "{arrived:?}");
+    let recorded = arrival_entries(&env);
+    let [
+        (
+            _,
+            What::Arrival {
+                node,
+                asset,
+                amount: arrived_amount,
+                order,
+                ..
+            },
+        ),
+    ] = &recorded[..]
+    else {
+        panic!("{recorded:?}");
+    };
+    assert_eq!(node, &stated.node);
+    assert_eq!(asset, &stated.asset);
+    assert_eq!(arrived_amount.as_str(), "750");
+    assert_eq!(order, &None);
+    assert_eq!(providers.asked(), 0, "the notice meets no open order");
+
+    // The notice states another holder than the order's: the arrival is not held against the customer's order.
+    let stranger = Credit {
+        holder: id("a-stranger"),
+        ..Credit::new(1000, 1)
+    };
+    let arrived = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &stranger.report(),
+    )
+    .unwrap();
+    assert!(matches!(arrived, Arrived::NoOrder { .. }), "{arrived:?}");
+    assert_eq!(providers.asked(), 0);
+    // Nor against it when the notice states another account than the order's, or the order's amount in another unit.
+    for (n, other) in [
+        Credit {
+            account: "acct-9".into(),
+            ..Credit::new(1000, 2)
+        },
+        Credit {
+            asset: Denomination {
+                id: "USDC".into(),
+                decimals: 18,
+            },
+            ..Credit::new(1000, 3)
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let arrived = arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &other.report(),
+        )
+        .unwrap();
+        assert!(
+            matches!(arrived, Arrived::NoOrder { .. }),
+            "{n}: {arrived:?}"
+        );
+    }
+    assert_eq!(providers.asked(), 0);
+    // The notice that does state the open order's figures is held against it.
+    let held = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &Credit::new(1000, 4).report(),
+    )
+    .unwrap();
+    assert!(matches!(held, Arrived::Held { .. }), "{held:?}");
+    assert_admitted(&env);
+}
+
+/// Two notices of one credit, by its per-credit reference, are one arrival, whenever and however they were signed; two
+/// references are two deposits, and one reference with other figures is refused.
+// verifies: REQ-ORD-23
+#[test]
+fn two_notices_of_one_credit_are_one_arrival() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let first = Credit::new(1000, 0);
+    let arrived = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &first.report(),
+    )
+    .unwrap();
+    // The same credit, signed again later: other bytes, other time.
+    let later = reported(first.notice_as(NOTICE_SHAPE, RESERVE, START + 5));
+    assert_ne!(later.notice, first.notice());
+    let (len, kept) = (env.len(), env.store.borrow().kept.len());
+    let again = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &later,
+    )
+    .unwrap();
+    assert_eq!(again, arrived);
+    assert_eq!((env.len(), env.store.borrow().kept.len()), (len, kept));
+    assert_eq!(arrival_entries(&env).len(), 1);
+    // Another reference, the same figures: another credit, its own arrival and notice.
+    let other = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &Credit::new(1000, 1).report(),
+    )
+    .unwrap();
+    assert_ne!(other, arrived);
+    let all = arrival_entries(&env);
+    assert_eq!(all.len(), 2);
+    let notices: Vec<_> = all
+        .iter()
+        .map(|(_, w)| match w {
+            What::Arrival { notice, .. } => notice.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_ne!(notices[0], notices[1], "each deposit cites its own notice");
+    // One reference, other figures, even where signed as a second notice: refused, nothing kept.
+    let (len, kept) = (env.len(), env.store.borrow().kept.len());
+    let restated = Credit {
+        units: 999,
+        ..first.clone()
+    };
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &restated.report()
+        ),
+        Err(ArrivalError::OtherFigures)
+    );
+    for credit in [
+        Credit {
+            account: "acct-9".into(),
+            ..first.clone()
+        },
+        Credit {
+            holder: id("a-stranger"),
+            ..first.clone()
+        },
+        Credit {
+            node: OuterNode {
+                network: "base".into(),
+            },
+            ..first.clone()
+        },
+        Credit {
+            asset: Denomination {
+                id: "USDC".into(),
+                decimals: 18,
+            },
+            ..first
+        },
+    ] {
+        assert_eq!(
+            arrive(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &mut Open::default(),
+                &credit.report()
+            ),
+            Err(ArrivalError::OtherFigures)
+        );
+    }
+    assert_eq!((env.len(), env.store.borrow().kept.len()), (len, kept));
+    assert_eq!(arrival_entries(&env).len(), 2);
+    assert_admitted(&env);
+}
+
+/// A deposit filed on after its arrival met no order is held against the order the filing opened by a second `arrival`,
+/// which names the first, so one deposit reads as one and not two (`arrival-names-its-earlier-arrival`).
+// verifies: REQ-ORD-23
+#[test]
+fn deposit_filed_again_against_another_order_names_its_earlier_arrival() {
+    for filer in [reserve_filer(), operator()] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let first = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        // Another deposit meets no order too, and is not the one filed.
+        let unrelated = deposit(&mut env, &mut providers, &mut arrivals, 1000, 1);
+        let filed = file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(filer, &first),
+        )
+        .unwrap();
+        let Filed::Started { order, .. } = filed else {
+            panic!("{filed:?}");
+        };
+        let all = arrival_entries(&env);
+        let held: Vec<_> = all
+            .iter()
+            .filter(|(_, w)| matches!(w, What::Arrival { order: Some(o), .. } if o == &order))
+            .collect();
+        let [
+            (
+                _,
+                What::Arrival {
+                    earlier, notice, ..
+                },
+            ),
+        ] = &held[..]
+        else {
+            panic!("{held:?}");
+        };
+        assert_eq!(earlier.as_ref(), Some(&first), "the arrival it holds");
+        let (
+            _,
+            What::Arrival {
+                notice: of_first, ..
+            },
+        ) = all.iter().find(|(r, _)| r == &first).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(notice, of_first, "one deposit, one notice");
+        // The arrivals that met no order name no earlier one, and the other deposit's names nothing of this one.
+        for (receipt, what) in &all {
+            if let What::Arrival {
+                order: None,
+                earlier,
+                ..
+            } = what
+            {
+                assert_eq!(earlier, &None, "{receipt:?}");
+            }
+        }
+        assert_ne!(Some(&unrelated), earlier.as_ref());
+        assert_admitted(&env);
+    }
+}
+
+/// A notice the log could not attribute to its reserve (signed with a key the reserve never listed) creates no arrival,
+/// and so no order a filing could rest on.
+// verifies: REQ-ORD-14, REQ-AUD-2
+#[test]
+fn notice_the_log_could_not_attribute_to_its_reserve_creates_no_arrival() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let credit = Credit::new(1000, 0);
+    let forged = reported(sign(
+        envelope(&deployment(), NOTICE_SHAPE, RESERVE, START, credit.body()),
+        &statements_key(RESERVE, 7),
+    ));
+    let refused = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &forged,
+    );
+    assert!(matches!(refused, Err(ArrivalError::Log(_))), "{refused:?}");
+    assert!(arrival_entries(&env).is_empty(), "no arrival");
+    // Nor an arrival against an open order. Core can't read the log's attribution of a notice (a gap, in the notes), so
+    // it still asks the reserve its balance question for the order before the log refuses the arrival; nothing the
+    // reserve is sent moves value, and none of it is an operation.
+    let order = explicit_order(&mut env, &mut providers);
+    let operations = providers.sim.received.len();
+    let mut open = Open(vec![open_order(&order)]);
+    let refused = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &forged);
+    assert!(matches!(refused, Err(ArrivalError::Log(_))), "{refused:?}");
+    assert!(arrival_entries(&env).is_empty(), "no arrival");
+    assert_eq!(
+        providers.sim.received.len(),
+        operations,
+        "no operation sent"
+    );
+    assert!(
+        order_records(&env)
+            .iter()
+            .all(|w| !matches!(w, What::Acceptance { order: o, .. } if o != &order))
+    );
+    // The same reserve's real notice of the same credit, later: taken, as the forged one holds no deposit.
+    let real = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &credit.report(),
+    );
+    assert!(real.is_ok(), "{real:?}");
+}
+
+/// Value arriving on a notice no one could attribute opens no order, whatever follows it: the arrival that would be
+/// filed on is never recorded, so there is none to file.
+// verifies: REQ-ORD-14
+#[test]
+fn unattributed_arrival_still_creates_no_order() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let credit = Credit::new(1000, 0);
+    let forged = reported(sign(
+        envelope(&deployment(), NOTICE_SHAPE, RESERVE, START, credit.body()),
+        &statements_key("an-impostor", 1),
+    ));
+    let refused = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &forged,
+    );
+    assert!(matches!(refused, Err(ArrivalError::Log(_))), "{refused:?}");
+    // A filer holds no receipt of it to file on: any receipt it names is no arrival Core recorded.
+    let no_arrival = receipt_at(0);
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &no_arrival),
+    );
+    assert_eq!(filed, Err(ArrivalError::NoSuchArrival));
+    assert!(order_records(&env).is_empty());
+    assert!(arrival_entries(&env).is_empty());
+    assert_admitted(&env);
+}
+
+/// What the log would take for a notice only by its relation: a signed hold, or an arrival answer, each the reserve's
+/// and each with a body `transaction`, is not a notice, and, with every other body or shape that is not the
+/// contract's, is refused before anything is kept or appended.
+// verifies: REQ-ORD-14, REQ-AUD-2
+#[test]
+fn signed_hold_or_arrival_answer_is_not_taken_for_an_arrival_notice() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let stated = Credit::new(1000, 0);
+    let signed = |shape: &str, maker: &str, body: Value| {
+        sign(
+            envelope(&deployment(), shape, maker, START, body),
+            &statements_key(RESERVE, 1),
+        )
+    };
+    let with = |key: &str, value: Value| {
+        let mut body = stated.body();
+        body[key] = value;
+        body
+    };
+    let hold = signed(
+        rutent_contracts::provider_role::HOLD_SHAPE,
+        RESERVE,
+        json!({ "transaction": credit(0), "reserve": RESERVE }),
+    );
+    let answer = signed(
+        rutent_contracts::provider_role::ARRIVAL_ANSWER_SHAPE,
+        RESERVE,
+        json!({ "transaction": credit(0), "outcome": { "status": "nothing_arrived" } }),
+    );
+    let question = signed(
+        rutent_contracts::provider_role::ARRIVAL_QUESTION_SHAPE,
+        RESERVE,
+        json!({ "transaction": credit(0), "provider": RESERVE, "session": "s", "account": ACCOUNT,
+                "node": polygon(), "asset": usdc() }),
+    );
+    // The notice's shape over another statement's body, and the notice's body under another statement's shape.
+    let hold_as_notice = signed(
+        NOTICE_SHAPE,
+        RESERVE,
+        json!({ "transaction": credit(0), "reserve": RESERVE }),
+    );
+    let answer_as_notice = signed(
+        NOTICE_SHAPE,
+        RESERVE,
+        json!({ "transaction": credit(0), "outcome": { "status": "nothing_arrived" } }),
+    );
+    let as_result = signed(RESULT_SHAPE, RESERVE, stated.body());
+    let as_hold = signed(
+        rutent_contracts::provider_role::HOLD_SHAPE,
+        RESERVE,
+        stated.body(),
+    );
+    // A body that lacks a field, carries an extra one, or states what no amount is.
+    let mut short = stated.body();
+    short.as_object_mut().unwrap().remove("holder");
+    let short = signed(NOTICE_SHAPE, RESERVE, short);
+    let extra = signed(NOTICE_SHAPE, RESERVE, with("kind", json!("arrival")));
+    let zero = signed(NOTICE_SHAPE, RESERVE, with("amount", json!("0")));
+    let negative = signed(NOTICE_SHAPE, RESERVE, with("amount", json!("-5")));
+    let fraction = signed(NOTICE_SHAPE, RESERVE, with("amount", json!("1.5")));
+    let numeric = signed(NOTICE_SHAPE, RESERVE, with("amount", json!(1000)));
+    let unnamed = signed(NOTICE_SHAPE, RESERVE, with("transaction", json!("")));
+    let elsewhere = signed(NOTICE_SHAPE, "another-reserve", stated.body());
+    let (len, kept) = (env.len(), env.store.borrow().kept.len());
+    for (what, bytes) in [
+        ("a hold", hold),
+        ("an arrival answer", answer),
+        ("an arrival question", question),
+        ("a hold's body under the notice's shape", hold_as_notice),
+        (
+            "an answer's body under the notice's shape",
+            answer_as_notice,
+        ),
+        ("a notice's body as a result", as_result),
+        ("a notice's body as a hold", as_hold),
+        ("a notice without its holder", short),
+        ("a notice with a field the contract doesn't name", extra),
+        ("a notice of no amount", zero),
+        ("a notice of a negative amount", negative),
+        ("a notice of a fraction", fraction),
+        ("a notice whose amount is a number", numeric),
+        ("a notice naming no transaction", unnamed),
+        ("another reserve's notice", elsewhere),
+        ("bytes that are no statement", b"not json".to_vec()),
+    ] {
+        for held in [Open::default(), Open(vec![open_order(&id("ord-open"))])] {
+            let mut held = held;
+            let refused = arrive(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &mut held,
+                &reported(bytes.clone()),
+            );
+            assert_eq!(refused, Err(ArrivalError::NotItsNotice), "{what}");
+        }
+    }
+    leaves_nothing(&env, len, kept);
+    assert_eq!(providers.asked(), 0);
+    // The contract's own notice, beside them, is taken.
+    let taken = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &stated.report(),
+    );
+    assert!(matches!(taken, Ok(Arrived::NoOrder { .. })), "{taken:?}");
+    assert_admitted(&env);
+}
+
+/// Figures are read from the notice the log's own read gives back, and only if it is the statement Core read them
+/// from: a store that keeps nothing behind the commitment leaves the notice unrecorded and the deposit unknown.
+// verifies: REQ-AUD-2, REQ-ORD-23
+#[test]
+fn notice_the_store_keeps_nothing_behind_is_refused() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (len, asked) = (env.len(), env.kept.asked);
+    env.kept.forgets = true;
+    let refused = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &report(1000, 0),
+    );
+    assert_eq!(refused, Err(ArrivalError::NotItsNotice));
+    assert!(env.kept.asked > asked, "the read was made");
+    assert_eq!(env.len(), len, "nothing appended");
+    env.kept.forgets = false;
+    // The deposit was never taken: the same notice, read back, is taken now.
+    let taken = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open::default(),
+        &report(1000, 0),
+    );
+    assert!(matches!(taken, Ok(Arrived::NoOrder { .. })), "{taken:?}");
     assert_admitted(&env);
 }
