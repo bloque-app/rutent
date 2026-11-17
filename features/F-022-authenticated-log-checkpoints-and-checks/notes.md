@@ -775,3 +775,55 @@ CHANGES: one should-fix and five lows, each done.
   | N8: `super :: detect :: …` in `holding.rs` | structure test |
   | N9: an inline `calls::Operator` bound and `o . raise (r)` in `holding.rs` | structure test |
   | N10: `mod sneak;` in `holding.rs`, with `holding/sneak.rs` reaching `crate::compare::detect` | structure test |
+
+## T-022-06
+
+- **Layout.** `components/core-audit/src/measures/`: `compute` (pure: `measure(history, window) -> Report`), `record`
+  (`Record<L, C>`, the `Measures` impl: appends each `MeasureRecord` through a `General` handle on the log and a clock,
+  nothing else) and `trail` (`read_trail`, a regulator's read). `log::Unbuilt` keeps its `Measures` impl.
+- **Measures come from the log.** `measure` takes the log's entries as `AuditLog::entries()` hands them out and a
+  `Window`; it counts the log's `measure` entries and nothing a caller supplies. Each measure is per provider or
+  verifier (the record's `provider`, keyed by its text) and `COUNTS` says in words what each counts. The window is on
+  the record's own `at`, half open, read by the instant (fraction to the nanosecond).
+  Quotes: per asset (code and decimals), executed below, at and above the quote, with the total shortfall and excess
+  (`None` once a total passes 78 digits, never wrapped). Dry runs: yes/no against done/failed. Failures: by market
+  direction, with no figure counted apart. Refusals, reversals. Answers: yes/no, rate of no (`Rate`, counts, per
+  million on request, no floats).
+- **Not a measure of a measure.** The measures are structural about reaching nothing that moves value as `T-022-05`'s:
+  `compute` imports only contract types, `std::collections` and `std::cmp`, takes `&` references, and a structure
+  test reads its source (the reader is `compare`'s, copied, with those two std imports allowed). `Record`'s reach is
+  its type (`General<L>`, `Clock`); `read_trail` is generic over `ReadChecks`, a one-method trait with a blanket impl
+  over policy's `Reads`, so it cannot name grant or revoke. The test reads their sources for it. `DEC-2` unchanged.
+- **The regulator's read.** Policy (`T-021-02`) decides and records the read, allowed or refused, as `check_read`
+  (reader in its role, what, permission, time; no balance or secret). `read_trail` asks policy first, then holds the
+  answer to the log: the trail is served only if the entry at the answer's receipt is a `check_read` equal to the
+  check, with the answer's outcome; otherwise `Unrecorded`, nothing served. A refusal is returned with no entry in it
+  and is checked recorded the same way. The trail is the history up to and including the read's own record. The log
+  itself admits a permitted read only on a grant in the log, not revoked (`permitted-read-rests-on-its-grant`).
+- **Defaults taken** (fail closed, reversible):
+  1. Each distinct measure entry counts once; an identical record is one entry (log idempotence), two records are two.
+  2. The window is on the record's `at`, not the entry's `when`.
+  3. A read that is not of the trail is refused by `read_trail` before policy is asked.
+  4. Anything unrecorded or answered for another request releases nothing.
+  5. Quotes are compared in the asset's own unit, per asset; nothing is summed across assets or providers.
+  6. Provider and verifier are one key (the record carries one `provider` id).
+- **Gaps, with owners.**
+  1. Orchestration has no caller of `Measures::measure`, so no run records any measure by itself: `F-020`
+     (orchestration) owns calling it. The scenario test plays that part, writing records from each segment's own
+     accounting and receipts, through `Core::measure_writer`.
+  2. That door is a new file `conformance/scenarios/src/assembly/measures.rs` (and its `pub mod` line), since the
+     assembly keeps the log's handle private. It is `F-024`'s file: `T-024-02`'s owner should accept or move it.
+  3. In the assembled Core `Act::Fail` at the reserve took no effect on a withdrawal or a deposit (the order settled);
+     `Act::Refuse` works. So no failed segment is produced by a run, and the live test counts failures as the runs
+     came to (0) while the failure measure is exercised on the real log in `core-audit`'s tests: `F-024`
+     (`T-024-01`, the simulated providers' `force_failure` hook).
+  4. No run reverses anything in M3, so the reversals count over a run is 0 (it is counted from `Input` entries and
+     held to the measure); positive counts are `core-audit`'s unit test: `F-020` (reversal rows).
+  5. Failures carry no market figure in M3 (the contract says so), so all count as `no_figure`.
+  6. Quote and executed amounts and the dry-run said/outcome reach the log only inside a `MeasureRecord`: the log's
+     other entries don't hold them (they are in kept statements), so measures can't be derived from the rest of the log
+     without evidence access: `F-020` for the feed.
+- **Tests.** `components/core-audit/tests/measures.rs` (real `AuditLog`; policy stood in for by `Stand`, which records
+  on policy's handle) and `conformance/scenarios/tests/bulk_measures.rs` (assembled Core over the simulated reserve,
+  real engine, the operator's grant, revocation). Written after the code, then attacked by the rule-offs below, not seen
+  red first; honest note, as `T-022-05`.
