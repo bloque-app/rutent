@@ -692,3 +692,29 @@ failed open. This round needed a contract change, made under that rule's lift fo
   detector. The hardened structure test was seen red on the current tree (`use super::Incomparable`, an item of
   `mod.rs`, not a pure sibling) before the pure layer dropped it. The generator change adds no code: its red is the
   rule-off of comparing the asset's id alone.
+- **Rule-off table for this round** (each switched off once from the committed tree, the named tests run under a
+  300 s alarm, the tree restored from git; none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | `Raise::check`'s `reports_not_comparable` arm (`=> false`) | contract fixture test (`raise-of-reports-not-comparable-in-one-asset` accepted by Rust) |
+  | `Raise::check`'s word rule | contract fixture tests (`raise-of-an-unread-account-naming-a-word`, `raise-of-a-holding-not-comparable-without-its-word` accepted by Rust) |
+  | the schema's word rule (`if`/`then`/`else`) | contract fixture test (both word fixtures' schema errors) |
+  | a report pair that can't be compared not raised | report-raises |
+  | a holding that can't be compared not raised | short/over (sum past the bound), `INV-1` |
+  | unread accounts not raised in `INV-1` | `INV-1` |
+  | the evidence's receipts not cited | `INV-1` |
+  | a refused raise record answered `Unavailable` (the old mapping) | `INV-1` (the refusal case) |
+  | reports compared by the asset's code alone | pure-function (the unit case; the old generator drew only `EURC`, which differs by code, so it would have stayed green), report-raises |
+  | evidence compared by the asset's code alone | `INV-1` |
+  | a sum past the bound read as a match | short/over |
+  | the balance's word dropped from a holding that can't be compared | short/over, `INV-1` (`Raise::check` refuses the raise) |
+  | `pub use super::super::log::General` in `holding.rs` | structure test |
+  | a multi-line `use ...::{ calls::Operator as X }` in `holding.rs` | structure test |
+  | an inline `rutent_prov::...` path in a body in `holding.rs` | structure test |
+  | `use super::detect::Compare` in `report.rs` | structure test |
+
+  The first two rows were one run (both arms off), each fixture's failure naming its arm. The structure test also
+  holds its reader to these dodges and eight more in its own body, and was red on the tree before this round (`use
+  super::Incomparable`). A first cut of the reader split `super::holding::{a, b}` on every comma and refused it: a
+  bug of the test, fixed to read a braced group by its top-level items, with a case holding it.
