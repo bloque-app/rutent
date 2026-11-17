@@ -68,8 +68,8 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, Reads};
 use rutent_contracts::core_internal::{
-    About, Action, Actor, Afterwards, Answer, Carrier as Carries, Decision, DecisionRequest,
-    Effect, Entry, OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
+    About, Action, Actor, Afterwards, Answer, Carrier as Carries, DecisionRequest, Effect, Entry,
+    OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -175,14 +175,12 @@ pub use rutent_contracts::provider_role::Fault;
 pub enum Accepting<'a> {
     /// The customer: policy's permitted decision of its `accept_fault` (`Action::AcceptFault`), asked in its open
     /// session. The customer signs nothing the log can attribute, so its act is the decision, which the log holds
-    /// whole; the carrier cites it.
+    /// whole; the carrier cites it. Core finds the decision in its own history ([`Reversals::follow`]): the permitted
+    /// decide of the customer's request for this order, segment and showing. The caller hands in no decision, so a
+    /// copy it keeps, stale or made up, carries nothing and blocks nothing (`REQ-ORD-11`).
     Customer {
         /// The customer, in the customer's role: the decision's caller.
         by: &'a Actor,
-        /// The request the customer's decision answered.
-        request: &'a DecisionRequest,
-        /// Policy's decision of it, as policy answered.
-        decision: &'a Decision,
     },
     /// The operator, by its `accept_fault` command, which Core records in its name.
     Operator {
@@ -319,8 +317,8 @@ pub enum ReversalError {
     NoFaultShown,
     /// A showing of fault was accepted already: the carrier stands.
     FaultSettled,
-    /// The decision isn't the customer's own acceptance of this showing: not an `accept_fault` request of the caller's
-    /// answered by this decision, or about another order, segment, transaction or showing.
+    /// The log, as Core follows it, holds no permitted decision of the customer's own `accept_fault` of this showing:
+    /// none, only a refused one, or only those of another caller, order, segment, transaction or showing.
     NotAnAcceptance,
     /// Policy didn't permit the reversal to be asked: nothing was recorded as an effect.
     NotPermitted(Answer),
@@ -480,6 +478,9 @@ pub struct Reversals {
     reversals: BTreeMap<(String, String), Reversal>,
     /// Each order's requester's party, from its acceptance in the log ([`Reversals::follow`]).
     requesters: BTreeMap<String, Id>,
+    /// Each order's permitted `accept_fault` decisions the log holds ([`Reversals::follow`]): their receipts, and the
+    /// requests they decided.
+    faults: BTreeMap<String, Vec<(Receipt, DecisionRequest)>>,
     /// Each order's private nodes the log binds to their publisher ([`Reversals::follow`]), by node.
     bound: BTreeMap<String, BTreeMap<String, Id>>,
     ends: BTreeMap<String, (Step, RecordedInput)>,
@@ -525,9 +526,16 @@ impl Reversals {
         };
         let mut bound = BTreeMap::new();
         let mut requester = None;
-        for (_, entry) in history {
+        let mut faults = Vec::new();
+        for (receipt, entry) in history {
             let Some(v) = verified(entry) else { continue };
             match &v.what {
+                What::Decide { request, .. }
+                    if matches!(v.outcome, Outcome::Permitted {})
+                        && matches!(&request.action, Action::AcceptFault { order: o, .. } if o == order) =>
+                {
+                    faults.push((receipt.clone(), request.clone()));
+                }
                 What::Acceptance {
                     order: o, parties, ..
                 } if o == order => requester = Some(parties.requester.clone()),
@@ -559,6 +567,7 @@ impl Reversals {
             }
         }
         self.bound.insert(order.as_str().to_owned(), bound);
+        self.faults.insert(order.as_str().to_owned(), faults);
         match requester {
             Some(requester) => {
                 self.requesters.insert(order.as_str().to_owned(), requester);
@@ -1073,7 +1082,7 @@ impl Reversals {
         // and anyone else is told so before anything of the order, its showing or its state, which tells a stranger
         // nothing of whether the order exists (`REQ-AUZ-7`).
         let by = match accepting {
-            Accepting::Customer { by, .. } | Accepting::Operator { by } => by,
+            Accepting::Customer { by } | Accepting::Operator { by } => by,
         };
         if requester.as_ref() != Some(&by.party) && by.party != parts.operator.party {
             return Err(ReversalError::NotTheParty);
@@ -1108,36 +1117,30 @@ impl Reversals {
         if !party_ok {
             return Err(ReversalError::NotTheParty);
         }
-        // The customer's act is its decision: policy's, permitted, a request of the customer's own for this showing.
-        // Anything else is no acceptance, and a refusal is told so.
-        if let Accepting::Customer {
-            by,
-            request,
-            decision,
-        } = accepting
-        {
-            let Action::AcceptFault {
-                order,
-                segment,
-                showing: named,
-                ..
-            } = &request.action
-            else {
-                return Err(ReversalError::NotAnAcceptance);
-            };
-            if request.caller != *by
-                || decision.request != request.request
-                || order != at.order
-                || segment != at.segment
-                || named.transaction != showing.transaction
-                || named.commitment != showing.commitment
-            {
-                return Err(ReversalError::NotAnAcceptance);
-            }
-            if decision.permit().is_none() {
-                return Err(ReversalError::NotPermitted(decision.outcome));
-            }
-        }
+        // The customer's act is its decision: policy's, permitted, a request of the customer's own for this showing,
+        // as Core's own history holds it. Anything else is no acceptance, a refused decision included: the log holds
+        // none that is permitted.
+        let decided = match accepting {
+            Accepting::Customer { by } => Some(
+                self.faults
+                    .get(at.order.as_str())
+                    .and_then(|held| {
+                        held.iter().rev().find(|(_, request)| {
+                            matches!(
+                                &request.action,
+                                Action::AcceptFault { order, segment, showing: named, .. }
+                                    if order == at.order
+                                        && segment == at.segment
+                                        && named.transaction == showing.transaction
+                                        && named.commitment == showing.commitment
+                            ) && request.caller == *by
+                        })
+                    })
+                    .map(|(receipt, _)| receipt.clone())
+                    .ok_or(ReversalError::NotAnAcceptance)?,
+            ),
+            Accepting::Operator { .. } => None,
+        };
         // A kept acceptance by another actor, nothing of its act taken yet, gives way to this one.
         if reversal
             .accepting
@@ -1148,7 +1151,9 @@ impl Reversals {
         }
         if reversal.accepting.is_none() {
             let act = match accepting {
-                Accepting::Customer { decision, .. } => Act::Decided(decision.receipt.clone()),
+                Accepting::Customer { .. } => {
+                    Act::Decided(decided.clone().ok_or(ReversalError::NotAnAcceptance)?)
+                }
                 Accepting::Operator { by } => Act::Command(Box::new(Step::new(journal::recorded(
                     parts.clock,
                     by,
