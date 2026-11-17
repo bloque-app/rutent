@@ -384,6 +384,9 @@ impl WasmBinding {
         )?;
         // The suite expects an accepted upgrade to run at once; the lifecycle's tests stage their own.
         platform.set_staging(None);
+        // Starting a process is the machine's work, which a stepped clock can't move: on a loaded machine it can pass
+        // the 10 s a production start is given, and no test here is about start-up time (`T-013-08`).
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
         Ok(Self {
             catalogue,
             listed: BTreeSet::new(),

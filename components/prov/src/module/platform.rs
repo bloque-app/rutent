@@ -464,6 +464,8 @@ pub struct Platform<W: World> {
     stack: Vec<Context>,
     events: Events,
     deadline: Duration,
+    /// The most a process may take to start, on the operating system's time: [`START_DEADLINE`] by default.
+    start_deadline: Duration,
     clock: Arc<dyn OperationClock>,
     stderrs: Stderrs,
     bounds: Bounds,
@@ -510,6 +512,7 @@ impl<W: World> Platform<W> {
             stack: Vec::new(),
             events: Events::default(),
             deadline: OPERATION_DEADLINE,
+            start_deadline: START_DEADLINE,
             clock: Arc::new(Monotonic),
             stderrs: Stderrs::default(),
             bounds: Bounds::DEFAULT,
@@ -557,6 +560,13 @@ impl<W: World> Platform<W> {
         if let Ok(mut log) = self.stderrs.lock() {
             log.set_capacity(capacity);
         }
+    }
+
+    /// Sets the most a provider's process may take to start, [`START_DEADLINE`] by default. A start is the operating
+    /// system's work and cannot be stepped, so a test of something other than start-up on a loaded machine gives
+    /// it room.
+    pub fn set_start_deadline(&mut self, deadline: Duration) {
+        self.start_deadline = deadline;
     }
 
     /// Sets the clock the deadlines and a callee's remaining budget run on, [`Monotonic`] by default
@@ -662,7 +672,7 @@ impl<W: World> Platform<W> {
             &machine,
             [&admitted[0], &admitted[1]],
             &self.stderrs,
-            START_DEADLINE,
+            self.start_deadline,
         )
         .ok()?;
         keep_last(
