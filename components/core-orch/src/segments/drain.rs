@@ -31,7 +31,7 @@ pub struct Uncarried {
 /// One drain as it was taken, kept whole until every item of it is appended: what the platform or the proxy handed
 /// over is never lost to a step that fails after it was taken.
 #[derive(Debug, Clone)]
-pub(super) enum Raw {
+pub(crate) enum Raw {
     /// One call of `take_events`.
     Events(Events),
     /// One call of `take_uses`.
@@ -42,7 +42,7 @@ pub(super) enum Raw {
 
 impl Raw {
     /// Its items, in order.
-    pub(super) fn items(&self) -> Result<Vec<HandedOver>, Uncarried> {
+    pub(crate) fn items(&self) -> Result<Vec<HandedOver>, Uncarried> {
         match self {
             Raw::Events(events) => of_events(events),
             Raw::Uses(uses) => of_uses(uses),
@@ -51,7 +51,7 @@ impl Raw {
     }
 
     /// Whether it holds nothing to append.
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Raw::Events(e) => {
                 e.records.is_empty()
@@ -188,7 +188,7 @@ pub(super) fn of_record(record: &SegmentRecord) -> Result<HandedOver, Uncarried>
 }
 
 /// One drain's items as `hand_over` entries, each naming the drain and its place.
-pub(super) fn entries(items: Vec<HandedOver>, drain: &Id) -> Result<Vec<What>, Uncarried> {
+pub(crate) fn entries(items: Vec<HandedOver>, drain: &Id) -> Result<Vec<What>, Uncarried> {
     items
         .into_iter()
         .enumerate()

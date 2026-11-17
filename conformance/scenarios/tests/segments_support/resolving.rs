@@ -10,12 +10,14 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, Delivery, Operator, PolicyLog, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, Decision, Destination, Effect, Outcome, Raise, Role, StuckDecide,
-    StuckMove, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    Actor, ActorKind, Answer, Decision, Destination, Effect, Raise, Role, StuckDecide, StuckMove,
+    TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::OuterNode;
 use rutent_contracts::router_api::{Id, Timestamp};
-use rutent_core_orch::stuck::{Parts, Resolutions, Resolved, Stuck, Watch, Watching};
+use rutent_core_orch::stuck::{
+    Carrying, Delivering, Mover, Parts, Ports, Resolutions, Resolved, Stuck, Watch, Watching,
+};
 
 use super::{Core, General, PART, PolicyPath, TestLog, authorisation_of, id};
 
@@ -78,9 +80,14 @@ impl Operator for Raises {
 pub struct Moves(pub Vec<Effect>, pub VecDeque<Resolved>);
 
 impl Resolutions for Moves {
-    fn resolve(&mut self, effect: &Effect) -> Resolved {
+    fn resolve(
+        &mut self,
+        _parts: &mut Parts<'_>,
+        _carrying: &Carrying<'_>,
+        effect: &Effect,
+    ) -> Result<Resolved, AppendFailure> {
         self.0.push(effect.clone());
-        self.1.pop_front().unwrap_or(Resolved::Done)
+        Ok(self.1.pop_front().unwrap_or(Resolved::Done))
     }
 }
 
@@ -92,6 +99,8 @@ pub struct PermitsEveryStep {
     pub asked: usize,
     /// It answers as if to another request than the one it was sent.
     pub answers_another: bool,
+    /// It refuses every move step for this class, recording the refusal as the engine would (`T-020-16`).
+    pub refuses_moves: Option<rutent_contracts::core_internal::RefusalClass>,
 }
 
 impl PermitsEveryStep {
@@ -100,6 +109,7 @@ impl PermitsEveryStep {
             log: PolicyPath(Rc::clone(log)),
             asked: 0,
             answers_another: false,
+            refuses_moves: None,
         }
     }
 
@@ -110,6 +120,17 @@ impl PermitsEveryStep {
         what: What,
         at: &Timestamp,
     ) -> Result<Decision, AppendFailure> {
+        self.answer(request, who, what, at, Answer::Permit {})
+    }
+
+    fn answer(
+        &mut self,
+        request: &Id,
+        who: &Actor,
+        what: What,
+        at: &Timestamp,
+        answer: Answer,
+    ) -> Result<Decision, AppendFailure> {
         self.asked += 1;
         let entry = VerifiedEntry {
             kind: VerifiedKind::Verified,
@@ -119,7 +140,7 @@ impl PermitsEveryStep {
                 at: at.clone(),
                 source: TimeSource::CoreClock,
             },
-            outcome: Outcome::Permitted {},
+            outcome: answer.outcome(),
         };
         let entry = DecisionEntry::try_from(entry).map_err(AppendFailure::Refused)?;
         let receipt = self.log.append_decision(&entry)?;
@@ -131,7 +152,7 @@ impl PermitsEveryStep {
         Ok(Decision {
             request: request.clone(),
             decision: request.clone(),
-            outcome: Answer::Permit {},
+            outcome: answer,
             receipt,
         })
     }
@@ -152,7 +173,11 @@ impl StuckOrders for PermitsEveryStep {
             request: request.clone(),
             decision: request.request.clone(),
         };
-        self.permit(&request.request, &request.mover, what, &request.at)
+        let answer = match self.refuses_moves {
+            Some(class) => Answer::Refuse { class },
+            None => Answer::Permit {},
+        };
+        self.answer(&request.request, &request.mover, what, &request.at, answer)
     }
 
     fn report_outcome(
@@ -285,4 +310,50 @@ pub fn two_makers(
         .expect("a statement by another maker")
         .clone();
     (first.0, second.0)
+}
+
+/// Runs `with` over Core's stuck parts and the production mover over `modules`, the world's platform as the segments
+/// reach it: the kit's evidence store and operator key, the record's bounds, no credential proxy (`T-020-16`).
+pub fn on_platform<T>(
+    core: &mut Core,
+    catalogue: &rutent_prov::catalogue::Catalogue,
+    modules: &mut dyn rutent_core_orch::segments::Modules,
+    mover: &mut Mover,
+    with: impl FnOnce(&mut Parts<'_>, &mut Delivering<'_>) -> T,
+) -> T {
+    on_platform_signing(core, catalogue, modules, mover, None, with)
+}
+
+/// [`on_platform`], the operation signed with `key` where one is given, and with Core's operator key otherwise.
+pub fn on_platform_signing<T>(
+    core: &mut Core,
+    catalogue: &rutent_prov::catalogue::Catalogue,
+    modules: &mut dyn rutent_core_orch::segments::Modules,
+    mover: &mut Mover,
+    key: Option<&mut dyn rutent_core_orch::rounds::OperatorKey>,
+    with: impl FnOnce(&mut Parts<'_>, &mut Delivering<'_>) -> T,
+) -> T {
+    let mut general = General(Rc::clone(&core.log));
+    let mut parts = Parts {
+        clock: &*core.clock,
+        log: &mut general,
+        fresh: &mut core.ids,
+        issued: &core.issued,
+        segments: &mut core.segments,
+        exposures: &mut core.exposures,
+    };
+    let mut no_proxy = rutent_core_orch::segments::NoProxy;
+    let mut delivering = mover.on(Ports {
+        modules,
+        uses: &mut no_proxy,
+        evidence: &mut core.store,
+        catalogue,
+        operator_key: match key {
+            Some(key) => key,
+            None => &mut core.key,
+        },
+        bounds: &core.record.bounds,
+        operator: &core.operator,
+    });
+    with(&mut parts, &mut delivering)
 }
