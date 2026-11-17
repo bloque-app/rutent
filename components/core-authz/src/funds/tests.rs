@@ -174,14 +174,14 @@ impl Recorded for Shared {
 /// Sources that say yes to every input but those the test sets, so what is decided is this row's rule, the
 /// deployment's ruling and the fixed rules the test steers.
 #[derive(Default)]
-struct Sayings(Vec<(Need, Reply<Said>)>, Vec<(Id, Parties)>);
+struct Sayings(Vec<(Need, Reply<Said>)>, Vec<(Id, Reply<Parties>)>);
 
 impl Sources for Sayings {
     fn order_record(&mut self, order: &Id) -> Reply<Parties> {
         self.1
             .iter()
             .find(|(o, _)| o == order)
-            .map_or(Reply::Missing, |(_, parties)| Reply::Given(parties.clone()))
+            .map_or(Reply::Missing, |(_, reply)| reply.clone())
     }
 
     fn supply(&mut self, need: &Need) -> Reply<Said> {
@@ -1772,7 +1772,7 @@ fn first_authorisation_is_held_to_the_payers_accounts() {
 /// record knows is refused as another's is.
 // verifies: REQ-AUZ-3, REQ-ORD-13
 #[test]
-fn an_order_filed_before_its_acceptance_is_known_by_its_record() {
+fn order_filed_on_an_automatic_deposit_is_still_authorised_when_its_record_is_reachable() {
     let held_by_the_payer = |payer: &str| Parties {
         requester: id("cust-1"),
         beneficiary: id("cust-1"),
@@ -1784,7 +1784,7 @@ fn an_order_filed_before_its_acceptance_is_known_by_its_record() {
     policy
         .sources
         .1
-        .push((id("ord-77"), held_by_the_payer("cust-1")));
+        .push((id("ord-77"), Reply::Given(held_by_the_payer("cust-1"))));
     let first = naming_account("auth-77", "ord-77", "acct-1", operator());
     assert!(
         policy.authorise(&first).unwrap().permit().is_some(),
@@ -1795,7 +1795,7 @@ fn an_order_filed_before_its_acceptance_is_known_by_its_record() {
     policy
         .sources
         .1
-        .push((id("ord-77"), held_by_the_payer("cust-1")));
+        .push((id("ord-77"), Reply::Given(held_by_the_payer("cust-1"))));
     policy
         .sources
         .0
@@ -1808,4 +1808,56 @@ fn an_order_filed_before_its_acceptance_is_known_by_its_record() {
 
     let unknown = naming_account("auth-78", "ord-78", "acct-1", operator());
     assert_eq!(policy.authorise(&unknown).unwrap().outcome, NOT_PERMITTED);
+}
+
+/// An order record out of reach is not known, as every unreachable input is: it is not read as no record, which
+/// would refuse the order as another's. The authorisation answers not known with the cause an unreachable input
+/// gives, nothing is permitted, and asked again with the source back it is permitted. (`REQ-AUZ-5`, `AC-17`)
+// verifies: REQ-AUZ-5
+#[test]
+fn unreachable_order_record_gives_not_known_and_nothing_moves() {
+    let mut policy = engine();
+    policy.sources.1.push((id("ord-77"), Reply::Unreachable));
+    let first = naming_account("auth-77", "ord-77", "acct-1", giver(2));
+    assert_eq!(
+        policy.authorise(&first).unwrap().outcome,
+        Answer::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        }
+    );
+    assert!(
+        policy.log.permitted().unwrap().is_empty(),
+        "the log holds no permitted authorisation"
+    );
+
+    // An order the log holds an acceptance of never asks the record.
+    let own = naming_account("auth-17-acct", "ord-17", "acct-1", giver(0));
+    policy.sources.1.push((id("ord-17"), Reply::Unreachable));
+    assert!(policy.authorise(&own).unwrap().permit().is_some());
+
+    // The record back, the same authorisation is permitted.
+    policy.sources.1.retain(|(o, _)| o != &id("ord-77"));
+    policy.sources.1.push((
+        id("ord-77"),
+        Reply::Given(Parties {
+            requester: id("cust-1"),
+            beneficiary: id("cust-1"),
+            settlement_account_at: None,
+            payer: id("cust-1"),
+        }),
+    ));
+    assert!(policy.authorise(&first).unwrap().permit().is_some());
+}
+
+/// A record the source answers but says nothing of is no record: the order is refused as another's is, whatever the
+/// authorisation names, so a caller can't tell it from one that isn't its own. (`REQ-AUZ-3`)
+// verifies: REQ-AUZ-3
+#[test]
+fn order_record_the_source_knows_nothing_of_is_refused_as_anothers() {
+    let mut policy = engine();
+    policy.sources.1.push((id("ord-77"), Reply::Missing));
+    let first = naming_account("auth-77", "ord-77", "acct-1", giver(2));
+    assert_eq!(policy.authorise(&first).unwrap().outcome, NOT_PERMITTED);
+    let nobody = naming_account("auth-78", "ord-78", "acct-1", giver(2));
+    assert_eq!(policy.authorise(&nobody).unwrap().outcome, NOT_PERMITTED);
 }
