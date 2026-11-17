@@ -745,3 +745,68 @@ first two were written passing, the code being there):
 | the agent's `Authorise` scope | all three (a step of the agent's order is refused, so the order never runs) |
 | the agent listed in `Registers` | all three (a step of the agent's order is refused, so the order never runs) |
 | the order's amount differing between agent and person | none, by design (above) |
+
+
+## T-024-13: a gross, charged segment through the scenarios kit
+
+Branch `f-024/t-024-13-gross-charged-segment`, from `m3` at `d4006ba4`. Readings taken without asking, each reversible.
+
+**Tests** (`conformance/scenarios/tests/gross_charged.rs`, over the assembled Core and `sim-reserve-gross`, a reserve whose
+tuples report gross and which charges 5 000 on each movement, quoted): the five the row names, and three that keep them
+honest.
+- `gross_charged_segment_hands_the_next_segment_what_arrives` (`REQ-ORD-21`, `REQ-CAT-11`): the reserve states each segment
+  gross (1 000 000 in, 1 000 000 out, 5 000 charge; then 995 000, 995 000, 5 000); Core records the charge by value and hands
+  on 995 000 then 990 000; the deposit the reserve was asked for is 995 000, not the 1 000 000 quoted or stated. Each charge
+  is `Within` its formula (a charge read off the gross figures, which differ by nothing, would be none).
+- `a_shortfall_of_a_gross_segment_is_what_the_next_segment_moves_and_not_its_failure` (same tags): the withdrawal states 1%
+  short; the deposit moves 985 000 (990 000 less the charge), and the order completes.
+- `operators_fee_is_figured_on_what_arrives_of_a_gross_segment` (`REQ-QTE-2`): a fee of 1 000 plus 1% comes to 10 900 on the
+  990 000 that arrives, asserted in the quote Core shows (`providers_out` 995 000, the last charge as its own line, `shown_out`
+  979 100, `difference` 15 900), in the price reported once it ran, and in the log's `fee` records (5 000, 5 000, operator
+  10 900). Not 10 950 (on what the last segment states) nor 11 000 (on what left).
+- `final_deposit_closes_on_the_public_movement_at_what_arrives_the_charge_staying_with_the_reserve` (`REQ-ORD-33`): the
+  bank's network holds 990 000, which is what Core settled; and its negative,
+  `final_deposit_that_reaches_the_network_at_its_stated_gross_figure_does_not_close` (a network at 995 000: the deposit
+  doesn't settle, the order doesn't complete).
+- `withdrawals_public_movement_is_checked_at_what_entered_the_charge_included` (`REQ-ORD-33`): the network holds 1 000 000,
+  the result's `amount_in`; and its negative `withdrawal_that_reaches_the_network_at_what_arrived_is_no_public_record` (a
+  network at 995 000: Core rests no public movement on it; the reserve's own word is kept, graded as its word).
+- `charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core` (`AC-14`): `sim-reserve-gross-charging` charges
+  5 007 against 5 000; both charges are `Flagged`, delivered, raised with `charged` 5 007 and `maximum` 5 000, no terms, no
+  no-formula mark, before the deposit is handed over; none passed.
+
+**Added to the simulator** (`conformance/`): `Shape::gross`; `sim::GROSS_FEE`; the names `sim-reserve-gross` and
+`sim-reserve-gross-charging` in `sim::shape_of`; `Behaviour::charge_misplaced` (the network records a movement with its charge on
+the wrong side, the result unchanged), which only the two negative tests use.
+
+**Added to the assembly** (`conformance/scenarios/src/`): `Core::set_operator_fee` (the kit's bounds leave it at nothing, so no
+earlier scenario could show the fee figured on anything), `Core::charged_of` (what Core noted of a settled charge), and a
+fix to `Core::report_price`: it fed Core's `Priced` the net amount a segment handed on as the segment's `amount_out`, where
+`Executed` takes what the result states. Equal under net, which is all `T-024-04` ran; under gross it was refused
+(`Undeliverable`). It now reads the stated figure from the log's kept statement of the result. Not a Core bug.
+
+**Defaults taken.** The reserve states a gross `amount_out` equal to what it took in. Scenarios take the label of `AC-1` (hand-on,
+fee) and `AC-32` (closing), the net cases this row adds to. The operator's fee is set on `Core`, before the request, as a
+deployment setting. The negative tests use a new knob rather than editing the network's record in place.
+
+**Gaps, with owners.** None blocks the row. A withdrawal whose network record disagrees still settles at a lower grade (the
+provider's word), since only a final deposit needs a public record; that is Core's rule (`T-020-09`), not changed. `T-020-29`'s
+marked raise (a fee in another asset) still has no scenario: no simulated provider states one (`T-024-14`'s sim, `F-024`).
+
+**Rule-off table** (each switched off alone with `gross_charged` run, restored; Core-side switches were temporary edits to
+`components/core-orch`, restored by `git checkout`, never committed; the tests were green first; nothing hung). The tests were
+written before the shapes were wired but the shapes went in first, so "red first" is shown by the first four rows.
+
+| Switched off | Red |
+|---|---|
+| the reserve's tuples reporting gross | all eight |
+| the gross answer stating what it took in | five: hand-on, shortfall, fee, closing, `AC-14` |
+| the network recording what arrives under a gross tuple | five: hand-on, shortfall, fee, closing, `AC-14` (the order never completes) |
+| `Behaviour::charge_misplaced` | the two negative tests |
+| `Core::set_operator_fee` | `operators_fee_is_figured_on_what_arrives_of_a_gross_segment` |
+| `report_price` reading the stated figure | the same test (`Undeliverable`) |
+| Core's closing checking a deposit's movement at what arrives | six: every test that runs an order to its close, and the negative |
+| Core's closing checking a withdrawal's movement at what entered | the two withdrawal tests |
+| Core's hand-on of a gross segment, less its charge | seven |
+| Core's charge check reading the charge | `charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core` |
+| the operator's fee figured on what the last segment states, not what arrives | eight |
