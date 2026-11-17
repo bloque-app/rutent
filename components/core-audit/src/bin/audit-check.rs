@@ -20,9 +20,12 @@
 //!
 //! `--evidence` is the operator's evidence store's directory as it is on the disk, read and never written
 //! (`statements::KeptOnDisk`). With it the tool runs `unproven` over the history: each `verified` entry a kept
-//! statement doesn't bear out is a finding, printed `NotBorneOut { index: N }`; each whose statement the store doesn't
-//! keep, erased or lost, is printed apart as `unread`, and is no finding, since history must check after an erasure
-//! (`REQ-AUD-13`). `unproven` holds a statement to the deployment it names, so `--evidence` takes the deployment as
+//! statement doesn't bear out is a finding, printed `NotBorneOut { index: N }`. A stated entry whose statement isn't
+//! filed is erased only where the history holds a decided erasure of it (the `done` result of a permitted
+//! `erase_statement` effect) and the store marks it erased: printed apart as `erased: entry N's ...`, no finding,
+//! since history must check after an erasure (`REQ-AUD-13`). Every other case is a finding: a statement neither
+//! filed nor marked (`StatementLost { index: N }`), a mark with no decided erasure (`MarkWithoutItsErasure`), and a
+//! mark whose bytes are still filed (`MarkedYetFiled`), which are held to the entry all the same. `unproven` holds a statement to the deployment it names, so `--evidence` takes the deployment as
 //! statements name it: `--deployment`, its name, and `--operator-key`, the operator's public key, which is part of
 //! that name and is only compared, never verified or signed with. What `unproven` can't check is that a key is its
 //! maker's: that is the log's register, which the log holds on opening. Without `--evidence`, the output says the
@@ -137,10 +140,9 @@ fn run(args: &[String]) -> Result<bool, String> {
         Some(e) => {
             let mut kept = KeptOnDisk::read(&e.dir)?;
             let history = read_history(&given.log, &records);
-            Some(
-                unproven(&history, &mut kept, &e.deployment)
-                    .map_err(|_| format!("{} can't be read", e.dir.display()))?,
-            )
+            let found = unproven(&history, &mut kept, &e.deployment)
+                .map_err(|_| format!("{} can't be read", e.dir.display()))?;
+            Some((found, kept.erasures(&history)))
         }
     };
     for finding in &report.findings {
@@ -154,20 +156,32 @@ fn run(args: &[String]) -> Result<bool, String> {
         None => println!(
             "the evidence was not read: no verified entry was held to the statement kept behind it"
         ),
-        Some(found) => {
+        Some((found, erasures)) => {
             for (receipt, _) in &found.found {
                 println!("NotBorneOut {{ index: {} }}", receipt.index.get());
             }
-            for receipt in &found.unread {
+            for receipt in &erasures.lost {
+                println!("StatementLost {{ index: {} }}", receipt.index.get());
+            }
+            for commitment in &erasures.undecided {
                 println!(
-                    "unread: entry {}'s statement isn't kept (erased, or lost), so it was held to nothing",
+                    "MarkWithoutItsErasure {{ commitment: {} }}",
+                    commitment.as_str()
+                );
+            }
+            for commitment in &erasures.marked_yet_filed {
+                println!("MarkedYetFiled {{ commitment: {} }}", commitment.as_str());
+            }
+            for receipt in &erasures.erased {
+                println!(
+                    "erased: entry {}'s statement was erased on the log's decided erasure, so it was held to nothing",
                     receipt.index.get()
                 );
             }
             if found.found.is_empty() {
                 println!("every verified entry whose statement is kept is borne out by it");
             }
-            clean &= found.found.is_empty();
+            clean &= found.found.is_empty() && erasures.is_clean();
         }
     }
     Ok(clean)

@@ -33,7 +33,8 @@ use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::checkpoint::{Checkpointer, Schedule};
 use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::log::{
-    AuditLog, Clock, FileStore, KEPT_STATEMENT_CONTRADICTS, NotOpened, Settings, record,
+    AuditLog, Clock, FileStore, KEPT_STATEMENT_CONTRADICTS, NotOpened,
+    STATEMENT_GONE_WITHOUT_ITS_ERASURE, Settings, record,
 };
 use rutent_core_audit::receipts::{EvidenceStore, Keeper, LogsRead};
 use serde_json::{Value, json};
@@ -951,11 +952,223 @@ fn audit_check_with_the_evidence_reports_an_erased_statement_as_unread_and_not_a
     let output = audit_check(&dir, &dir.history(), true, "0", "1");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let out = stdout(&output);
-    assert!(!out.contains("NotBorneOut"), "{out}");
-    let unread: Vec<&str> = out.lines().filter(|l| l.starts_with("unread")).collect();
-    assert_eq!(unread.len(), 1, "{out}");
     assert!(
-        unread[0].contains(&format!("entry {}", bank.index.get())),
+        !out.contains("NotBorneOut") && !out.contains("StatementLost") && !out.contains("Mark"),
         "{out}"
     );
+    let erased: Vec<&str> = out.lines().filter(|l| l.starts_with("erased")).collect();
+    assert_eq!(erased.len(), 1, "{out}");
+    assert!(
+        erased[0].contains(&format!("entry {}", bank.index.get())),
+        "{out}"
+    );
+
+    // The same decided erasure with the store's mark gone: no erasure the store carried out, so the statement is
+    // lost, a finding.
+    std::fs::remove_file(
+        dir.evidence()
+            .join("erased")
+            .join(stated.commitment.value.as_str()),
+    )
+    .unwrap();
+    let output = audit_check(&dir, &dir.history(), true, "0", "1");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let out = stdout(&output);
+    assert!(
+        out.contains(&format!("StatementLost {{ index: {} }}", bank.index.get())),
+        "{out}"
+    );
+    assert!(!out.lines().any(|l| l.starts_with("erased")), "{out}");
+}
+
+/// Where the statement kept behind an entry is gone with no decided erasure of it, `kept` is the file the evidence
+/// store files it in.
+fn kept_file(dir: &TempDir, commitment: &Digest) -> PathBuf {
+    dir.evidence()
+        .join("kept")
+        .join(format!("{}.json", commitment.value.as_str()))
+}
+
+fn mark_file(dir: &TempDir, commitment: &Digest) -> PathBuf {
+    dir.evidence()
+        .join("erased")
+        .join(commitment.value.as_str())
+}
+
+/// The stated entry at `receipt` in `run`'s log.
+fn commitment_at(run: &Run, receipt: &Receipt) -> Digest {
+    match &run.entries()[receipt.index.get() as usize].1 {
+        Entry::Stated(s) => s.commitment.clone(),
+        Entry::Verified(_) => panic!("a stated entry"),
+    }
+}
+
+/// Tampering that passes for an erasure doesn't open as sound. A `verified` entry whose statement is gone with no
+/// decided erasure of it in the history is refused on opening, naming it: an honest entry whose statement was removed
+/// by hand, a forged entry whose statement was removed after it was written, and a forged entry beside a mark of
+/// erasure made by hand with its contradicting statement still filed (the evidence store removes bytes behind a mark
+/// when it opens, so the log then finds nothing kept, and no decided erasure). An erasure the log decided still opens
+/// (`store whose verified entry's statement was erased still opens`).
+// verifies: REQ-AUD-2, REQ-AUD-13
+#[test]
+fn store_whose_verified_entrys_statement_is_gone_with_no_erasure_is_refused_on_opening() {
+    let (run, bank) = honest("gone");
+    let (who, key) = (provider("us-bank"), public_key(&statements_key("us-bank")));
+    let bank_commitment = commitment_at(&run, &bank);
+    let genuine = run.keep(&quote("us-bank", "tx-9", "1.00"));
+    let dir = run.close();
+    let honest_file = std::fs::read(dir.history()).unwrap();
+    let index = honest_file.iter().filter(|b| **b == b'\n').count();
+    let gone = |entry: Receipt| Some(NotOpened::Gone { entry });
+
+    // An honest entry's statement removed by hand.
+    let bytes = std::fs::read(kept_file(&dir, &bank_commitment)).unwrap();
+    std::fs::remove_file(kept_file(&dir, &bank_commitment)).unwrap();
+    assert_eq!(
+        reopen(&dir).err(),
+        gone(bank.clone()),
+        "an honest entry's statement removed"
+    );
+    assert_eq!(
+        reopen_plain(&dir),
+        Err(AppendFailure::Refused(Violation(
+            STATEMENT_GONE_WITHOUT_ITS_ERASURE
+        )))
+    );
+    assert_eq!(
+        std::fs::read(dir.history()).unwrap(),
+        honest_file,
+        "nothing repaired or dropped"
+    );
+    std::fs::write(kept_file(&dir, &bank_commitment), &bytes).unwrap();
+    assert!(reopen(&dir).is_ok());
+
+    // Probe 1: a forged entry, its statement removed after it was written.
+    let forged = marked_verified(&who, &key, &genuine, "tx-9");
+    write_into(&dir.history(), &forged);
+    assert!(
+        reopen(&dir).is_ok(),
+        "the genuine bytes bear the forged entry out while they are kept"
+    );
+    let bytes = std::fs::read(kept_file(&dir, &genuine)).unwrap();
+    std::fs::remove_file(kept_file(&dir, &genuine)).unwrap();
+    assert_eq!(
+        reopen(&dir).err(),
+        gone(receipt_at(index, &forged)),
+        "probe 1"
+    );
+    std::fs::write(kept_file(&dir, &genuine), &bytes).unwrap();
+    std::fs::write(dir.history(), &honest_file).unwrap();
+
+    // Probe 2: a forged entry the filed statement contradicts, and a mark of erasure made by hand.
+    let contradicted = marked_verified(&who, &key, &genuine, "tx-1");
+    write_into(&dir.history(), &contradicted);
+    std::fs::write(mark_file(&dir, &genuine), b"").unwrap();
+    assert_eq!(
+        reopen(&dir).err(),
+        gone(receipt_at(index, &contradicted)),
+        "probe 2"
+    );
+}
+
+/// With the evidence, tampering that passes for an erasure is a finding, never an erasure: a forged entry whose
+/// statement was removed (`StatementLost`), a forged entry beside a hand-made mark with its contradicting statement
+/// still filed (`NotBorneOut`, `MarkWithoutItsErasure`, `MarkedYetFiled`), and an honest entry's statement removed
+/// behind a hand-made mark (`MarkWithoutItsErasure`). None is printed as erased, and each run exits 1.
+// verifies: REQ-AUD-9, REQ-AUD-13
+#[test]
+fn audit_check_with_the_evidence_reports_a_statement_gone_with_no_erasure_as_a_finding() {
+    let (run, bank) = honest("tool-gone");
+    let (who, key) = (provider("us-bank"), public_key(&statements_key("us-bank")));
+    let bank_commitment = commitment_at(&run, &bank);
+    let genuine = run.keep(&quote("us-bank", "tx-9", "1.00"));
+    let dir = run.close();
+    let honest_file = std::fs::read(dir.history()).unwrap();
+    let index = honest_file.iter().filter(|b| **b == b'\n').count();
+    let no_erasure = |out: &str| assert!(!out.lines().any(|l| l.starts_with("erased")), "{out}");
+
+    // Probe 1.
+    write_into(
+        &dir.history(),
+        &marked_verified(&who, &key, &genuine, "tx-9"),
+    );
+    let bytes = std::fs::read(kept_file(&dir, &genuine)).unwrap();
+    std::fs::remove_file(kept_file(&dir, &genuine)).unwrap();
+    let found = audit_check(&dir, &dir.history(), true, "0", "1");
+    assert_eq!(found.status.code(), Some(1), "{found:?}");
+    let out = stdout(&found);
+    assert!(
+        out.contains(&format!("StatementLost {{ index: {index} }}")),
+        "{out}"
+    );
+    assert_eq!(out.matches("StatementLost").count(), 1, "{out}");
+    no_erasure(&out);
+    std::fs::write(kept_file(&dir, &genuine), &bytes).unwrap();
+    std::fs::write(dir.history(), &honest_file).unwrap();
+
+    // Probe 2.
+    write_into(
+        &dir.history(),
+        &marked_verified(&who, &key, &genuine, "tx-1"),
+    );
+    std::fs::write(mark_file(&dir, &genuine), b"").unwrap();
+    let found = audit_check(&dir, &dir.history(), true, "0", "1");
+    assert_eq!(found.status.code(), Some(1), "{found:?}");
+    let out = stdout(&found);
+    let value = genuine.value.as_str();
+    assert!(
+        out.contains(&format!("NotBorneOut {{ index: {index} }}")),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("MarkWithoutItsErasure {{ commitment: {value} }}")),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("MarkedYetFiled {{ commitment: {value} }}")),
+        "{out}"
+    );
+    no_erasure(&out);
+    std::fs::remove_file(mark_file(&dir, &genuine)).unwrap();
+    std::fs::write(dir.history(), &honest_file).unwrap();
+
+    // An honest entry's statement removed behind a hand-made mark.
+    std::fs::remove_file(kept_file(&dir, &bank_commitment)).unwrap();
+    std::fs::write(mark_file(&dir, &bank_commitment), b"").unwrap();
+    let found = audit_check(&dir, &dir.history(), true, "0", "1");
+    assert_eq!(found.status.code(), Some(1), "{found:?}");
+    let out = stdout(&found);
+    assert!(
+        out.contains(&format!(
+            "MarkWithoutItsErasure {{ commitment: {} }}",
+            bank_commitment.value.as_str()
+        )),
+        "{out}"
+    );
+    assert!(
+        !out.contains("MarkedYetFiled") && !out.contains("StatementLost"),
+        "{out}"
+    );
+    no_erasure(&out);
+}
+
+/// A store whose verified statements were attributed under a grant later revoked by a done catalogue change still
+/// opens: each is held to the register as it stood before it, when the grant was in force.
+// verifies: REQ-AUD-2
+#[test]
+fn store_still_opens_after_a_trusted_providers_grant_is_revoked_later() {
+    let (run, bank) = honest("revoked");
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": "us-bank", "tuple": "tuple-us-bank"}),
+        "2026-11-07T00:00:00Z",
+    );
+    let (entries, root) = (run.entries(), run.log.borrow().root());
+    let dir = run.close();
+    let reopened = reopen(&dir).expect("the grant was in force when the quote was attributed");
+    assert_eq!(reopened.entries(), &entries[..]);
+    assert_eq!(reopened.root(), root);
+    assert!(matches!(
+        &reopened.entries()[bank.index.get() as usize].1,
+        Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. })
+    ));
 }

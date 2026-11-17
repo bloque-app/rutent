@@ -45,8 +45,8 @@ use rutent_contracts::core_internal::calls::{
     Log, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Attribution, Entry, KeptStatement, Receipt, STATED_WITHOUT_ITS_KEPT_BYTES, StatedEntry,
-    Through, Violation, admit_entry, attribute,
+    Attribution, Entry, KeptStatement, Outcome, Receipt, STATED_WITHOUT_ITS_KEPT_BYTES,
+    StatedEntry, Through, Violation, What, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, DigestAlgorithm, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, SafeInteger, to_canonical};
@@ -81,6 +81,12 @@ pub const KEPT_BYTES_DIFFER: &str = "a stated entry's kept bytes bear out its co
 /// and the kept bytes, doesn't reach the entry the store holds (`REQ-AUD-2`, `T-022-08`).
 pub const KEPT_STATEMENT_CONTRADICTS: &str = "every stated entry the log's store marks verified is borne out, on opening, by the statement kept under its commitment, as its append attributed it";
 
+/// The refusal to open a store holding a stated entry marked `verified` whose statement the evidence store doesn't
+/// keep, where the history holds no decided erasure of it: the `done` result of a permitted `erase_statement` effect
+/// for its commitment. An erasure is no loss (`REQ-AUD-13`); bytes gone with no decision behind them are, and the log
+/// doesn't open on an attribution nothing can bear out any more (`REQ-AUD-2`, `T-022-08`).
+pub const STATEMENT_GONE_WITHOUT_ITS_ERASURE: &str = "every stated entry the log's store marks verified has its statement kept, or erased on a decided erasure the log holds";
+
 /// Why the log didn't open ([`AuditLog::open_naming`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotOpened {
@@ -90,6 +96,12 @@ pub enum NotOpened {
     /// A stated entry the store marks `verified` that the statement kept under its commitment contradicts: the
     /// receipt it has at its place in the store. Nothing is repaired or dropped.
     Contradicted {
+        /// The entry.
+        entry: Receipt,
+    },
+    /// A stated entry the store marks `verified` whose statement the evidence store doesn't keep, with no decided
+    /// erasure of it in the history: lost, not erased. The receipt it has at its place.
+    Gone {
         /// The entry.
         entry: Receipt,
     },
@@ -107,6 +119,9 @@ impl From<NotOpened> for AppendFailure {
             NotOpened::Failed(failure) => failure,
             NotOpened::Contradicted { .. } => {
                 AppendFailure::Refused(Violation(KEPT_STATEMENT_CONTRADICTS))
+            }
+            NotOpened::Gone { .. } => {
+                AppendFailure::Refused(Violation(STATEMENT_GONE_WITHOUT_ITS_ERASURE))
             }
         }
     }
@@ -140,6 +155,19 @@ fn entry_of(bytes: &[u8]) -> Option<Entry> {
     serde_json::from_slice(bytes)
         .ok()
         .filter(|e: &Entry| e.check().is_ok() && record(e).ok().as_deref() == Some(bytes))
+}
+
+/// The commitments `history` holds a decided erasure of: each the `done` result of a permitted `erase_statement`
+/// effect for it, read as the evidence store reads it before it erases (`receipts::store::decided_erasure`).
+pub fn decided_erasures(history: &[(Receipt, Entry)]) -> Vec<&Digest> {
+    history
+        .iter()
+        .filter(|(_, e)| {
+            matches!(e, Entry::Verified(v)
+                if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Done {})
+        })
+        .filter_map(|(r, _)| crate::receipts::store::decided_erasure(history, r).ok())
+        .collect()
 }
 
 /// Whether `entry` is a stated entry of an advertisement's shape.
@@ -284,15 +312,18 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
     /// strict signature, and, from the register, that the key is the maker's and the party the one it states for).
     /// Where the kept statement doesn't reach the entry the store holds, the opening is refused
     /// ([`KEPT_STATEMENT_CONTRADICTS`]; [`AuditLog::open_naming`] names the entry), and nothing is repaired or
-    /// dropped. Where the evidence store keeps nothing under the commitment, the statement was erased since, which is
-    /// no loss: history must still check after an erasure (`REQ-AUD-13`, `AC-36`), so the log opens, and the bound
-    /// evidence store reports bytes gone with no erasure (`receipts::BoundStore::missing`). An evidence store that
-    /// can't be read answers [`AppendFailure::Unavailable`], and the log doesn't open. An entry marked unverified is
-    /// held to nothing here.
+    /// dropped. Where the evidence store keeps nothing under the commitment, the statement was erased since only if
+    /// the history holds a decided erasure of it (the `done` result of a permitted `erase_statement` effect): that is
+    /// no loss, since history must still check after an erasure (`REQ-AUD-13`, `AC-36`), and the log opens. With no
+    /// such erasure the statement is gone, not erased, and the opening is refused
+    /// ([`STATEMENT_GONE_WITHOUT_ITS_ERASURE`], [`NotOpened::Gone`]). An evidence store that can't be read answers
+    /// [`AppendFailure::Unavailable`], and the log doesn't open. An entry marked unverified is held to nothing here:
+    /// its bytes gone with no erasure are the bound evidence store's report (`receipts::BoundStore::missing`).
     ///
     /// Its cost: one read of the evidence store and one strict Ed25519 check for each `verified` stated entry, beside
     /// the read back the log already makes; for a module the operator publishes, `attribute` also walks the history
-    /// for its releases, as its append did.
+    /// for its releases, as its append did; and, only where a `verified` entry's statement isn't kept, one walk of the
+    /// history for each `done` result, to find the decided erasures.
     pub fn open(settings: Settings, store: S, kept: K) -> Result<Self, AppendFailure> {
         Self::open_naming(settings, store, kept).map_err(AppendFailure::from)
     }
@@ -321,6 +352,9 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
             StoreError::Corrupt(_) => AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)),
         })?;
         let mut state = State::default();
+        // Verified entries whose statement isn't kept: erased, or gone. Which, the whole history says, since an
+        // erasure is decided after the entry it erases.
+        let mut gone: Vec<(Receipt, Digest)> = Vec::new();
         for bytes in records {
             let entry = entry_of(&bytes)
                 .ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
@@ -346,7 +380,10 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                     ..stated.clone()
                 };
                 match attribute_stated(&self.settings, &state, &mut self.kept, &claim)? {
-                    Attributed::NotKept => {}
+                    Attributed::NotKept => gone.push((
+                        receipt_of(&self.settings.log, state.history.len(), &bytes),
+                        stated.commitment.clone(),
+                    )),
                     Attributed::Recorded(again, _) if *again == *stated => {}
                     Attributed::Recorded(..) | Attributed::BytesDiffer => {
                         return Err(NotOpened::Contradicted {
@@ -356,6 +393,12 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                 }
             }
             state.take(&self.settings, &bytes, entry, advertisement.as_deref());
+        }
+        if !gone.is_empty() {
+            let erased = decided_erasures(&state.history);
+            if let Some((entry, _)) = gone.into_iter().find(|(_, c)| !erased.contains(&c)) {
+                return Err(NotOpened::Gone { entry });
+            }
         }
         Ok(state)
     }

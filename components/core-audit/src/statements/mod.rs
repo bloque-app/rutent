@@ -24,7 +24,7 @@
 
 pub mod disk;
 
-pub use disk::KeptOnDisk;
+pub use disk::{Erasures, KeptOnDisk};
 
 use rutent_contracts::core_internal::calls::{
     AppendFailure, Evidence, GeneralEntry, KeptStatements, Log, Signatures,
