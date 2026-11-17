@@ -155,7 +155,7 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
         let mut receipts = Vec::new();
         // The findings of the readings come first, in the readings' order, then the unread accounts'.
         for (place, finding) in findings.into_iter().enumerate() {
-            let Some(difference) = finding.verdict.to_raise() else {
+            let Some(difference) = finding.verdict.into_raise() else {
                 continue;
             };
             let mut cites = Vec::new();
@@ -184,7 +184,7 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
             Outcome::Observed {},
             &at,
         )?;
-        if let Some(difference) = compare_reports(pair).to_raise() {
+        if let Some(difference) = compare_reports(pair).into_raise() {
             let cites = vec![
                 receipt.clone(),
                 pair.sent.statement.clone(),
@@ -198,7 +198,7 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
     fn holding_reading(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
         let at = self.now()?;
         let receipt = self.record_check(reading, &at)?;
-        if let Some(difference) = check_holding(reading).to_raise() {
+        if let Some(difference) = check_holding(reading).into_raise() {
             self.raise(difference, vec![receipt.clone()], &at)?;
         }
         Ok(receipt)
@@ -207,7 +207,7 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
 
 impl ReportsVerdict {
     /// The difference to raise: one of two amounts, or of two reports that can't be compared; none for a match.
-    fn to_raise(self) -> Option<Difference> {
+    fn into_raise(self) -> Option<Difference> {
         match self {
             ReportsVerdict::Match => None,
             ReportsVerdict::Differs(difference) | ReportsVerdict::NotComparable(difference) => {
@@ -219,7 +219,7 @@ impl ReportsVerdict {
 
 impl HoldingVerdict {
     /// The difference to raise: a short, an over, or a balance that can't be compared; none for a match.
-    fn to_raise(self) -> Option<Difference> {
+    fn into_raise(self) -> Option<Difference> {
         match self {
             HoldingVerdict::Match => None,
             HoldingVerdict::Differs(difference) | HoldingVerdict::NotComparable(difference) => {
