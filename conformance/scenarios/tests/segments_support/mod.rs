@@ -165,6 +165,8 @@ pub enum On {
     Handed,
     /// A route handed on's `holding_withdrawal`, its start (`T-020-13`).
     Start,
+    /// A provider's reliance on a judgement (`T-020-23`).
+    Reliance,
 }
 
 impl On {
@@ -211,6 +213,7 @@ impl On {
             (On::Handed, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
             (On::Start, Entry::Verified(v)) => matches!(v.what, What::HoldingWithdrawal { .. }),
+            (On::Reliance, Entry::Verified(v)) => matches!(v.what, What::Reliance { .. }),
             (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })),
             _ => false,
@@ -227,6 +230,13 @@ pub struct TestLog {
     pub attributed: std::ops::Range<usize>,
     pub entries: Vec<(Entry, Through)>,
     pub faults: VecDeque<(On, Fault)>,
+    /// Holds a `reliance` to the log's own row, `reliance-names-its-judges-statement`, as far as this log can: it
+    /// refuses one whose judgement is no stated entry it holds, or was claimed by another than its judge
+    /// (`T-020-23`). `Core::admitted` holds the whole row on the finished history.
+    pub guards_reliance: bool,
+    /// How many times a `reliance` was offered to the log, whether or not it was new to it (`T-020-23`): the log
+    /// keeps an equal entry once, so its entries alone can't tell a writer that wrote once from one that wrote twice.
+    pub reliance_appends: usize,
 }
 
 impl TestLog {
@@ -254,6 +264,28 @@ impl TestLog {
             }
             _ => None,
         };
+        if On::Reliance.matches(entry) {
+            self.reliance_appends += 1;
+        }
+        if self.guards_reliance
+            && let Entry::Verified(v) = entry
+            && let What::Reliance {
+                judgement, judge, ..
+            } = &v.what
+        {
+            let held = usize::try_from(judgement.index.get())
+                .ok()
+                .and_then(|i| self.entries.get(i));
+            let by_judge = matches!(held, Some((Entry::Stated(s), _))
+                if s.attribution.maker().acts == *judge);
+            if !by_judge {
+                return Err(AppendFailure::Refused(
+                    rutent_contracts::core_internal::Violation(
+                        "a reliance names a stated judgement of this log",
+                    ),
+                ));
+            }
+        }
         if fault == Some(Fault::Unavailable) {
             return Err(AppendFailure::Unavailable);
         }

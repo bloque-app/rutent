@@ -4,6 +4,7 @@
 use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,25 +12,46 @@ use rutent_contracts::module_interface::{Host, SecretRefusalReason};
 
 use super::support::*;
 use crate::egress::{NameResolver, ThreadedResolver};
+use crate::module::platform::{OperationClock, SteppedClock};
 use crate::proxy::{
     Bucket, CredentialProxy, HttpsTransport, InvalidSettings, KvConfig, KvResolver, Refusal,
     StoreAddress, StoreScheme, Token,
 };
 
-/// A resolver whose every lookup hangs until it is released, or 20 seconds pass.
+/// A resolver whose every lookup hangs until it is released, or 20 seconds pass. It says when it was first asked
+/// and whether a lookup has returned.
 #[derive(Clone, Default)]
-struct Hanging(Arc<(Mutex<bool>, Condvar)>);
+struct Hanging {
+    gate: Arc<(Mutex<bool>, Condvar)>,
+    asked: Arc<(Mutex<usize>, Condvar)>,
+    returned: Arc<AtomicBool>,
+}
 
 impl Hanging {
     fn release(&self) {
-        *self.0.0.lock().unwrap() = true;
-        self.0.1.notify_all();
+        *self.gate.0.lock().unwrap() = true;
+        self.gate.1.notify_all();
+    }
+
+    /// Waits until a lookup has been asked of it; thirty seconds is only a stop for a test that fails.
+    fn wait_asked(&self) {
+        let (count, wake) = &*self.asked;
+        let _ = wake
+            .wait_timeout_while(count.lock().unwrap(), Duration::from_secs(30), |n| *n == 0)
+            .unwrap();
+    }
+
+    /// Whether a lookup has returned, which one given up at its deadline has not while it hangs.
+    fn returned(&self) -> bool {
+        self.returned.load(Ordering::SeqCst)
     }
 }
 
 impl NameResolver for Hanging {
     fn resolve(&self, _: &Host, _: NonZeroU16) -> Vec<IpAddr> {
-        let (released, wake) = &*self.0;
+        *self.asked.0.lock().unwrap() += 1;
+        self.asked.1.notify_all();
+        let (released, wake) = &*self.gate;
         let mut done = released.lock().unwrap();
         let started = Instant::now();
         while !*done && started.elapsed() < Duration::from_secs(20) {
@@ -38,16 +60,19 @@ impl NameResolver for Hanging {
                 .unwrap()
                 .0;
         }
+        self.returned.store(true, Ordering::SeqCst);
         Vec::new()
     }
 }
 
 /// A store reached by a host name whose lookup never answers gives `store_unavailable` at the operation's
-/// deadline, and the platform is held no longer than that.
+/// deadline, and the platform is held no longer than that: the clock stands still until the lookup is asked, then
+/// is stepped past the deadline, and the refusal comes while the lookup still hangs (`T-014-06`).
 // verifies: REQ-MDL-11, REQ-MDL-17
 #[test]
 fn store_whose_name_lookup_hangs_is_unavailable_at_the_deadline() {
     let hanging = Hanging::default();
+    let clock = SteppedClock::new();
     let ca = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proxy/tls/ca.pem"),
     )
@@ -61,7 +86,8 @@ fn store_whose_name_lookup_hangs_is_unavailable_at_the_deadline() {
         Some(&ca),
     )
     .expect("a transport")
-    .with_resolver(ThreadedResolver::new(hanging.clone()));
+    .with_resolver(ThreadedResolver::new(hanging.clone()).with_clock(Arc::new(clock.clone())))
+    .with_clock(Arc::new(clock.clone()));
     let resolver = || {
         KvResolver::openbao(
             KvConfig::new(
@@ -87,18 +113,24 @@ fn store_whose_name_lookup_hangs_is_unavailable_at_the_deadline() {
         )
         .expect("admitted");
     let who = caller("alpha");
-    let started = Instant::now();
     proxy
         .begin_operation_until(
             &who,
             &id("tx-1"),
-            Some(started + Duration::from_millis(400)),
+            Some(clock.now() + Duration::from_millis(400)),
         )
         .expect("the operation starts");
     proxy
         .begin_request(&who, &id("tx-1"), &name(OPERATION))
         .expect("the request is in flight");
 
+    let stepper = {
+        let (hanging, clock) = (hanging.clone(), clock.clone());
+        std::thread::spawn(move || {
+            hanging.wait_asked();
+            clock.step(Duration::from_secs(1));
+        })
+    };
     let refused = proxy
         .lookup(&who, &lookup("tx-1", OPERATION, SECRET))
         .expect_err("a store that never resolves answers nothing");
@@ -106,9 +138,9 @@ fn store_whose_name_lookup_hangs_is_unavailable_at_the_deadline() {
     assert!(matches!(refused, Refusal::Store(_)), "{refused:?}");
     assert_eq!(refused.wire_reason(), SecretRefusalReason::StoreUnavailable);
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "held for {:?}",
-        started.elapsed()
+        !hanging.returned(),
+        "the lookup was given up while the resolver still hung"
     );
+    stepper.join().unwrap();
     hanging.release();
 }

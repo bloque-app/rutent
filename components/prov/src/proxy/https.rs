@@ -21,7 +21,10 @@ use rutent_contracts::module_interface::{Host, Identifier};
 
 use super::settings::{RoleSettings, StoreAddress, StoreScheme};
 use super::transport::{Request, Response, Transport, TransportError};
-use crate::egress::{Lookup, LookupRefused, NameResolver, SystemResolver, ThreadedResolver};
+use crate::egress::{
+    Lookup, LookupRefused, NameResolver, STEPPED_SLICE, SystemResolver, ThreadedResolver,
+};
+use crate::module::platform::{Monotonic, OperationClock};
 
 /// The default for each of connecting, sending and reading.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -42,6 +45,11 @@ pub struct HttpsTransport {
     /// Resolves the store's host, each lookup given up at the deadline of the operation it serves and the lookups
     /// in flight capped, as the egress layer's are (`REQ-MDL-11`).
     names: Arc<dyn NameResolver + Send + Sync>,
+    /// Whether `names` is still the default, which follows this transport's clock when it is set.
+    default_names: bool,
+    /// The clock the deadline and each exchange's timeout are read on (`T-014-06`): [`Monotonic`], the operating
+    /// system's, unless a test sets another.
+    clock: Arc<dyn OperationClock>,
 }
 
 impl core::fmt::Debug for HttpsTransport {
@@ -96,6 +104,8 @@ impl HttpsTransport {
             timeout: DEFAULT_TIMEOUT,
             max_answer: DEFAULT_MAX_ANSWER,
             names: Arc::new(ThreadedResolver::new(SystemResolver)),
+            default_names: true,
+            clock: Arc::new(Monotonic),
         })
     }
 
@@ -122,6 +132,19 @@ impl HttpsTransport {
     /// behind a [`ThreadedResolver`], so a lookup is given up at the deadline.
     pub fn with_resolver(mut self, names: impl NameResolver + Send + Sync + 'static) -> Self {
         self.names = Arc::new(names);
+        self.default_names = false;
+        self
+    }
+
+    /// The same transport, reading the time on `clock` (`T-014-06`): the deadline it is given is a time on that
+    /// clock, and so is each exchange's timeout. The default resolver follows it; one set by
+    /// [`HttpsTransport::with_resolver`] is the caller's to put on the same clock. By default the clock is the
+    /// operating system's, and nothing in production sets another.
+    pub fn with_clock(mut self, clock: Arc<dyn OperationClock>) -> Self {
+        if self.default_names {
+            self.names = Arc::new(ThreadedResolver::new(SystemResolver).with_clock(clock.clone()));
+        }
+        self.clock = clock;
         self
     }
 
@@ -169,9 +192,16 @@ impl HttpsTransport {
         }
         let stream = addresses
             .iter()
-            .find_map(|a| TcpStream::connect_timeout(a, left(self.timeout, due)?).ok())
+            .find_map(|a| {
+                TcpStream::connect_timeout(a, left(&*self.clock, self.timeout, due)?).ok()
+            })
             .ok_or(TransportError::new("could not connect to the store"))?;
-        Ok(Bounded::new(stream, self.timeout, due))
+        Ok(Bounded::new(
+            stream,
+            self.timeout,
+            due,
+            Arc::clone(&self.clock),
+        ))
     }
 
     /// The request's bytes. A path or header that could break the request's framing is refused.
@@ -290,48 +320,85 @@ pub(crate) fn handshake<S: Read + Write>(
     Ok(stream)
 }
 
-/// What is left of `step` before `due`: the step itself with no deadline, and `None` once the deadline has passed.
-pub(crate) fn left(step: Duration, due: Option<Instant>) -> Option<Duration> {
+/// What is left of `step` before `due` on `clock`: the step itself with no deadline, and `None` once the deadline
+/// has passed.
+pub(crate) fn left(
+    clock: &dyn OperationClock,
+    step: Duration,
+    due: Option<Instant>,
+) -> Option<Duration> {
     let left = match due {
-        Some(due) => step.min(due.saturating_duration_since(Instant::now())),
+        Some(due) => step.min(due.saturating_duration_since(clock.now())),
         None => step,
     };
     (!left.is_zero()).then_some(left)
 }
 
-/// A TCP connection whose every read and write, the TLS handshake's included, is bounded by `step` and by what
-/// is left until `due` (`REQ-MDL-11`): a peer that sends a byte now and then, each within a step, is still cut off
-/// at the deadline. Once it has passed, every read and write fails as timed out.
+/// A TCP connection whose every read and write, the TLS handshake's included, ends at one deadline on the
+/// operation's clock (`REQ-MDL-11`, `T-014-06`): `now + step`, set once when the exchange begins, or `due` if that
+/// is sooner. A peer that sends a byte now and then is still cut off at it. Once it has passed, every read and
+/// write fails as timed out, wherever the exchange is.
+///
+/// On the operating system's clock a read or write waits on the socket for what is left, a single wait, as it
+/// always did. On a clock that does not follow wall time the socket's timeout is only the slice it waits in
+/// ([`STEPPED_SLICE`]): the clock is read between slices, so a step of it is seen.
 pub(crate) struct Bounded {
     tcp: TcpStream,
-    step: Duration,
-    due: Option<Instant>,
+    clock: Arc<dyn OperationClock>,
+    end: Instant,
 }
 
 impl Bounded {
-    /// `tcp`, bounded by `step` and `due`.
-    pub(crate) fn new(tcp: TcpStream, step: Duration, due: Option<Instant>) -> Self {
-        Bounded { tcp, step, due }
+    /// `tcp`, bounded by `step` from now and by `due`, on `clock`.
+    pub(crate) fn new(
+        tcp: TcpStream,
+        step: Duration,
+        due: Option<Instant>,
+        clock: Arc<dyn OperationClock>,
+    ) -> Self {
+        let end = clock.now() + step;
+        let end = due.map_or(end, |due| due.min(end));
+        Bounded { tcp, clock, end }
     }
 
-    fn left(&self) -> std::io::Result<Duration> {
-        left(self.step, self.due).ok_or_else(|| std::io::Error::from(ErrorKind::TimedOut))
+    /// Runs `attempt` with the socket and the time it may wait, again after each slice that ended with the
+    /// deadline not yet reached.
+    fn within<T>(
+        &mut self,
+        mut attempt: impl FnMut(&mut TcpStream, Duration) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let wall = self.clock.follows_wall_time();
+        loop {
+            let left = self.end.saturating_duration_since(self.clock.now());
+            if left.is_zero() {
+                return Err(std::io::Error::from(ErrorKind::TimedOut));
+            }
+            let slice = if wall { left } else { left.min(STEPPED_SLICE) };
+            match attempt(&mut self.tcp, slice) {
+                Err(e)
+                    if !wall && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                }
+                outcome => return outcome,
+            }
+        }
     }
 }
 
 impl Read for Bounded {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let left = self.left()?;
-        self.tcp.set_read_timeout(Some(left))?;
-        self.tcp.read(buf)
+        self.within(|tcp, slice| {
+            tcp.set_read_timeout(Some(slice))?;
+            tcp.read(buf)
+        })
     }
 }
 
 impl Write for Bounded {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let left = self.left()?;
-        self.tcp.set_write_timeout(Some(left))?;
-        self.tcp.write(buf)
+        self.within(|tcp, slice| {
+            tcp.set_write_timeout(Some(slice))?;
+            tcp.write(buf)
+        })
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

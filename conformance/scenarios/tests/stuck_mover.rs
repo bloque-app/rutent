@@ -1566,3 +1566,143 @@ fn authorised_anew(
     first.who = given_by;
     Entry::Verified(first)
 }
+
+// The reserve half of `REQ-CPL-12` on the mover's path (`T-020-23`) ---------------------------------------------------
+
+/// The reliance entries the log holds: the place of each, with its judgement's receipt, judge and relying provider.
+fn reliances(core: &Core) -> Vec<(usize, Receipt, String, String)> {
+    core.log
+        .borrow()
+        .records()
+        .into_iter()
+        .filter_map(|(at, what)| match what {
+            What::Reliance {
+                judgement,
+                judge,
+                relied_on_by,
+                ..
+            } => Some((
+                at,
+                judgement.clone(),
+                judge.as_str().to_owned(),
+                relied_on_by.as_str().to_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The place of the operator's question under the decided transaction.
+fn question_place(core: &Core) -> usize {
+    let transaction = decided_transaction(core);
+    let log = core.log.borrow();
+    log.entries
+        .iter()
+        .position(|(e, _)| {
+            matches!(e, Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::OPERATION_SHAPE
+                    && s.about.as_ref().is_some_and(|a| a.transaction.as_ref() == Some(&transaction)))
+        })
+        .expect("the operator's question")
+}
+
+/// An input declared to rest on a judgement, after the segment that carried it was handed over (so refused as too
+/// late, and kept), is relied on when the stuck mover hands the provider it: the reliance names the judge and the
+/// provider, is in the log before the question and so before the operation, and the history is admitted.
+// verifies: REQ-CPL-12
+#[test]
+fn stuck_delivery_of_an_input_resting_on_a_judgement_leaves_a_reliance_before_the_send() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let (_, theirs) = results_after_the_move(&mut core, None, "tx-judged");
+    let judgement = rutent_core_orch::reliance::Judgement {
+        receipt: theirs,
+        judge: id(OTHER_RESERVE),
+    };
+    // The deposit's segment was handed over (and never begun) already: the declaration is late for it, and stands.
+    assert_eq!(
+        core.segments.rests_on(
+            &id(&core.named.order),
+            "beneficiary.bank_account",
+            judgement.clone()
+        ),
+        Err(rutent_core_orch::reliance::Rests::TooLate)
+    );
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let resolution = to_destination(&core, AMOUNT);
+    let permitted = decide(&mut core, &mut stuck, &mut policy, &alice, &resolution).expect("asked");
+    let delivered = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    assert!(matches!(
+        delivered.moved,
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    assert_eq!(delivered.carried.len(), 1);
+    let held = reliances(&core);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(
+        (held[0].1.clone(), held[0].2.as_str(), held[0].3.as_str()),
+        (judgement.receipt, OTHER_RESERVE, RESERVE)
+    );
+    assert!(
+        held[0].0 < question_place(&core),
+        "the reliance precedes the question, and so the send"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A judgement the log won't take as its judge's stops the delivery: nothing is handed the provider, and the move
+/// is failed.
+// verifies: REQ-CPL-12
+#[test]
+fn stuck_delivery_whose_reliance_the_log_refuses_sends_nothing() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    core.log.borrow_mut().guards_reliance = true;
+    let (_, theirs) = results_after_the_move(&mut core, None, "tx-judged");
+    let wrong = rutent_core_orch::reliance::Judgement {
+        receipt: theirs,
+        judge: id(RESERVE),
+    };
+    let _ = core
+        .segments
+        .rests_on(&id(&core.named.order), "beneficiary.bank_account", wrong);
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let resolution = to_destination(&core, AMOUNT);
+    let permitted = decide(&mut core, &mut stuck, &mut policy, &alice, &resolution).expect("asked");
+    let delivered = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    assert!(delivered.carried.is_empty(), "nothing was sent");
+    assert!(reliances(&core).is_empty());
+    assert!(
+        !matches!(
+            delivered.moved,
+            Ok(Moved::CarriedOut {
+                resolved: Resolved::Done,
+                ..
+            })
+        ),
+        "{:?}",
+        delivered.moved
+    );
+}

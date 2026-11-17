@@ -4218,3 +4218,185 @@ wallet's signed answer to it), `conformance/scenarios/src/assembly/` (`holding.r
   green on the first fixtures (every question there was the operator's), so `--a-hand-on-through-a-transaction-bound-by-no-operator-question`
   was added (its first version sat after the result, so the result rule masked the question rule; moved before it) and the rule is now red on the contract test and the table's cases. The holder's stated failure withdrawing the start (L1) is green:
   `flight.known` is cleared when the failure is taken, which already withdraws it; the flag is defence in depth.
+
+## T-020-22
+
+A mismatch at a non-final public end is recorded and raised; the final-deposit settlement relation is held on both
+sides. Code: `components/core-orch/src/closing/` (`mod.rs` for the grading, the new `public_end.rs` for the raise).
+Two additive hooks on the `Grading` seam in `segments/` (below). Tests: `tests/closing.rs` (the row's seven, and two
+more), one probe in `tests/reversal.rs`.
+
+- **What is recorded.** In `Evidenced::graded`, a segment that is not a part's final deposit, whose movement's check
+  (`verify_movement`) answers `WrongDestination`, `WrongAsset` or `WrongAmount` against a final record, gets a
+  `public_mismatch` entry among the entries it settles on, after its evidence and any replay: its order, segment, the
+  planned public end as `node`, the movement (network and id), the figure that differs, what the network moved (its
+  record) and what the provider said (the figures the check was held to), resting on the segment's result. The
+  segment settles on the grade it earns as before: the evidence entry is unchanged, still naming no movement, since
+  the check is `unchecked`; no input, no state change. Not a mismatch: a movement the network can't vouch for
+  (unknown, not final, reorged out) or on another network.
+- **The planned public end (`T-020-21`'s README item).** `public_end::planned_end` takes the node from the segment's
+  operation, the outer node at either end on the movement's network, and never from the network's record, which the
+  log can't check. For a withdrawal out of a public rail that is its `from`; for a non-final deposit out to a public
+  one, its `to`.
+- **The raise.** A `public_end` difference citing the mismatch's entry, delivered through the operator's channel and
+  recorded `done` or `failed` by the delivery, as the charge raise is. It needs the mismatch's receipt, which only the
+  segments' append makes known, so the `Grading` trait gets two defaulted methods: `recorded(settled, receipts)`
+  (called after the graded entries are appended, again on a re-run of the settle) and `raise(desk)` (called on every
+  run of a part, after the charges are checked, with a `RaiseDesk` of the log, clock, fresh ids, the operator's
+  channel and Core's actor). `Closing` keeps the mismatches not yet raised and recorded: made once, its two entries
+  built before it is raised, appended until the log takes it. `Closing::recorded` rebuilds them from the log: a
+  mismatch with no raise citing it is raised on the next run, a raised one is not.
+- **The final-deposit relation.** `final-deposit-closes-on-a-public-record` already holds a part's last deposit to
+  grade 1 naming its movement on the authorised network and a verified statement of the segment's provider
+  (`T-020-21` item 10, already met). This row writes Core's side and the two tests: Core waits for the record
+  (`Waits(NoPublicRecord)`, a contradicting record included, which records no mismatch), the log refuses a deposit
+  settled on a statement, and a deposit on a public record and the reserve's statement is admitted.
+- **Defaults** (reversible, fail closed):
+  1. A raise whose record the log can't take fails the run of the part, as a charge's does; the raise made is kept,
+     and the next run appends it as built and raises nothing again.
+  2. A mismatch whose figures the log's shapes can't hold (an id or an amount in a spelling they refuse) waits the
+     segment as unreadable, as every other entry of this function does, rather than settling with the contradiction
+     unrecorded.
+  3. A raise cites the mismatch's entry alone; the result is reachable through it.
+  4. A raise delivered but not recorded before a stop is raised again after a restart (the charge raise's own gap).
+- **Gaps, with owners.**
+  1. A non-final public end at an **inner** public node (one on the operator's public list) can't be recorded:
+     `public_mismatch.node` is an outer node. Core records none there, though the segment's check ran. Owner: the next
+     `core-internal` round (`T-020-30`), which would give the node a shape for an inner end; the lead.
+  2. `Grading::raise` runs on every run of every part and raises mismatches of any order, since `Closing` is Core's
+     record across orders. Harmless, but a per-order raise would be tidier. Owner: `T-024-02` (assembly).
+  3. The mismatch's figures that the provider "said" are those the movement's check was held to (the result's
+     amounts and the operation's asset); that they are the result's is for whoever holds the kept bytes, as the
+     contract says. Owner: none (stated residual).
+  4. The raise's ranking and the operator's channel are `T-023-02`'s.
+- **Seam edits outside `closing/`** (additive, defaulted, so no other grading changes): `segments/ports.rs` (the two
+  methods and `RaiseDesk`), `segments/mod.rs` (two call sites and `graded_receipts`). Said here so the lead can
+  sequence them against rows that edit `segments/`.
+- **Order of work.** Each test was written first and seen red on an assertion (after the two hooks existed as
+  no-ops), then the code.
+- **Rule-off table** (each switched off alone, file restored; none hung; `closing` and `reversal` test binaries):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a mismatch never recorded | the recorded-and-still-settles test, the each-figure test, the raise test, the retry test, the planned-end test |
+  | figures swapped (what the network moved and what the provider said) | the recorded test, the each-figure test |
+  | `raise` does nothing | the raise test, the retry test |
+  | raised again on every call | the retry test |
+  | delivery ignored (always `done`) | the retry test |
+  | no rebuild from the log after a restart | the retry test (restart half) |
+  | the rebuild ignores a raise the log holds | the raise test (restart half) |
+  | receipts not bound to the mismatch | the raise test, the retry test |
+  | planned end taken from the `to` side only | the recorded test, each-figure, raise, retry, planned-end tests |
+  | segments don't hand the grading its receipts | `the_grading_is_told_what_it_answered_and_asked_to_raise_on_every_run` |
+  | segments never ask the grading to raise | the same test |
+  | Core settles a final deposit on a statement | the statement-alone test, the public-record test and eleven older ones |
+  | the log lets a statement close a deposit (contract relation, restored) | the statement-alone test, `providers_word_never_closes_a_part` |
+  | the log refuses every close, a public record's included (contract relation, restored) | the public-record-admitted test and nine older ones |
+  | a final deposit also records a mismatch | none: not observable. Core's check returns `NoPublicRecord` first, so the guard is defence in depth; the log's `non_final` row (the contract's cases) is the second |
+
+### T-020-22, review answers (of `cd515045`)
+
+- **1. A regrade after a restart raised twice.** `Unraised::expect` now skips a segment whose mismatch is pending
+  already (it only fills in the entry's place, so the receipts bind) or raised; `rebuilt` also records the segments the
+  log holds a raise of, so a segment graded again after its raise isn't raised again. Test
+  `a_segment_graded_again_after_a_restart_raises_its_mismatch_once` (the reviewer's probe, plus a regrade after the
+  raise). It also covers the pile of receipt-less pendings after a failed hand-over (item 3).
+- **2. A refused raise stalls the part.** Default 1 is narrowed: only `Unavailable` fails the run. A `Refused` raise
+  entry (or one that fails its own check) is kept readable in `Closing::refused_raises()` (order, segment, why), the
+  mismatch is not tried again, and the part runs on. Test `a_raise_the_log_refuses_is_kept_readable_and_stops_nothing`.
+- **Rule-offs:** the dedupe off, and the raised-skip off alone: `a_segment_graded_again_after_a_restart_raises_its_mismatch_once`;
+  a refusal failing the run: `a_raise_the_log_refuses_is_kept_readable_and_stops_nothing`. None hung.
+
+## T-020-23
+
+Branch `f-020/t-020-23-reliance-writer`, from `m3` at `ea6c290c`. Edits `components/core-orch/` (`reliance/`, new;
+`segments/mod.rs` where an operation's inputs are handed over; `segments/journal.rs`, two helpers made `pub(crate)`;
+`lib.rs`) and `conformance/scenarios/tests/` (`reliance.rs`, new; the kit `segments_support/mod.rs`, additive). No
+contract is changed: `What::Reliance` and its relation (`reliance-names-its-judges-statement`) were `T-021-07`'s.
+
+- **Design.**
+  1. *The register.* `reliance::Reliances` holds which of an order's inputs rest on which judgement
+     (`Judgement { receipt, judge }`: the receipt of the stated entry holding it, and its maker) and the reliance
+     entries written. Core reads a name and a value, never where a value came from, so declaring that an input rests on
+     a judgement is the caller's (`Segments::rests_on(order, input, judgement)`).
+  2. *The writer.* `Reliances::write(log, core, at, order, provider, judgements)` builds one `reliance` entry (Core's
+     own, `outcome: observed`) per order, judgement and relying provider, once, and appends it unchanged however often
+     it is called. The log, not Core, says whether the judgement is the judge's: it refuses a judgement that is no
+     stated entry of the log, is not verified, was made by another than the judge named, or is about another order. Core
+     asks it and sends nothing on a refusal.
+  3. *The hook.* When a segment is handed over, the judgements its operation's inputs rest on are taken from the
+     register and kept with the segment (`InFlight::relies`, beside `carries`, the names of the inputs). `advance`
+     writes them first, before the segment's hold, question, effect and the operation, so a refusal leaves nothing of the
+     segment recorded but policy's decision, and a retry (a segment resumed from where it stopped) finds them written
+     and appends nothing again. A segment whose inputs rest on nothing writes nothing.
+  4. *The refusal.* A reliance the log refuses or can't take comes back as `SegmentsError::Append`, as every other
+     append of a segment does, so the callers that already map it (`stuck`, `recalc`) need no change; the segment stays
+     handed over in Core's register and is asked again on the next run, which the log refuses again.
+- **Defaults taken (reversible, failing closed).**
+  - *Declared by the caller.* A declaration is made before the segment that carries the input is handed over:
+    afterwards it is `Rests::TooLate`, since its reliance would come after the send. An input resting on one judgement
+    and declared again on another is `Rests::Another`, not replaced; the same one again is a no-op.
+  - *One entry per order, judgement and provider*, not per segment or input: two segments of one provider relying on one
+    judgement leave one entry; another provider relying on it, or the same provider for another order, one each.
+  - *Time.* The entry's time is Core's clock at its first try and doesn't change on a retry, so a retry is an equal
+    entry the log keeps once.
+  - *Judge and relier may be one party.* The log's row doesn't forbid it, so Core doesn't.
+  - *Only what an operation carries.* An input no tuple of the route takes is handed to no one, so nothing relies on
+    what rests on it (`required_inputs` stays the one filter).
+- **For `T-024-12` (the verifier half at the assembly).** Drive it through `Segments`: after the order's route is
+  chosen and before `run_part`, for each input that rests on a judgement call
+  `core.segments.rests_on(&order, "<input name>", Judgement { receipt, judge })`, `receipt` being the log's receipt of the
+  stated entry of the judgement and `judge` its maker's id (the verifier, or the reserve). Then run as usual. The
+  `reliance` entries follow by themselves, one for each provider handed such an input. Standalone, without
+  `Segments`, `Reliances::write` takes the same. The receipt of a verifier's judgement isn't handed back by the
+  routing (`Offer::Offered` carries the reserve's yes only, in `reserve_yes`, and a judgement's `Answer::receipt` is
+  private to `rounds`): the assembly reads it from the log, the stated entry of shape `JUDGEMENT_SHAPE` made by the
+  verifier, with the receipt the log gave it (gap 1). A false judgement is the same: the stand-in's wrong yes is a
+  stated entry like any other, and the reliance names its maker and the provider that relied on it.
+- **Review round 1.** (1) The stuck mover (`stuck/mover.rs`) fills the tuple's required input with the destination's
+  account and sends it with `carry_out`; it now consults `Segments::resting` when it writes its flight and, before the
+  question and the send, writes the reliance through `Segments::write_reliance`: one the log refuses fails the move
+  (nothing sent, `Resolved::Failed`), one it can't take now is tried again. (2) A declaration refused as `TooLate` is
+  still stored, so later segments and the mover write their reliance; only the segment already sent goes without, and the
+  caller is told. Tests: `stuck delivery of an input resting on a judgement leaves a reliance before the send` and
+  `stuck delivery whose reliance the log refuses sends nothing` (`stuck_mover.rs`), the first of which declares late
+  (`TooLate`) and relies on its being kept. Rule-offs: the mover's write switched off, and the late declaration not
+  stored: both red on both tests. (4) The `REQ-ORD-28` / `REQ-CPL-12` residual below goes on the owner's form.
+- **Review of Core's loss paths** (the row's Done when). Inspected: every place in `components/*/src` that names a cost,
+  a bearer or a charge. Core writes no entry or call that debits, bills or charges the operator or a customer for a
+  judgement's falsity: a `reliance` names the judge and the relying provider and nothing else, and no other path reads
+  it. The cost allocations Core does carry are `REQ-ORD-28` (the operator resolves and bears a *stuck* order, in
+  `core-authz`'s `stuck`, unrelated to judgements), `REQ-ORD-30` (an undone start's loss is the origin reserve's,
+  `reversal`), and the charge check (`REQ-QTE-5`, a raise to the operator that moves nothing). Residual, a decision of
+  the owner's and not a Core defect: where a false judgement is what leaves an order with no route, `REQ-ORD-28` still
+  puts the stuck order on the operator, and the `reliance` entry is what shows the operator whom to recover from
+  under contract (outside this document, `REQ-CPL-12`); Core doesn't tell such a stuck order from another.
+- **Gaps, with owners.**
+  1. The verifier's judgement receipt isn't returned by the routing (above). Owner: `T-024-12` reads it from the log;
+     a field on `Routed` is a small row of `F-020` if a second caller wants it.
+  2. The register of what rests on what is in memory, like the flights it serves: a restarted Core declares again and
+     appends an equal entry only if its clock reading is the same, which it isn't. Owner: `F-030` (restart), which
+     rebuilds `Segments` as a whole.
+  3. Hand-overs this row does not cover: a routing question's dry run (`rounds/ask.rs::inputs_for` fills the inputs a
+     tuple requires into every question), a reversal's `carry_out` (`reversal/`, which asks the failed provider to
+     reverse), and a hand-on's start. None of them carries a judgement-backed input today, so no reliance is written
+     there. Owner: `F-053` (`M5`, `DEC-16`), with the production verifier, if a tuple's input comes to rest on a
+     verifier's word on those paths. Covered after review: the stuck mover (below).
+  4. The real log's row is proved here on the finished history (`Core::admitted`); the scenario log (`TestLog`) refuses
+     a reliance only by its guard (`guards_reliance`: the cited entry is a stated entry claimed by the judge). The
+     attribution part, a statement the log attributes to no one, is the contract's `--verified` fixture.
+- **Histories the log refused.** None in this row's tests. One kit note: `results_after_the_move` appends a question
+  and two results under a transaction; the judge's result is the judgement, about the order through that transaction,
+  which the relation's `about` row takes as agreeing with the relying order.
+- **Rule-off table**, each once, file restored, run under a timeout, none hung:
+
+  | Rule switched off | Red |
+  |---|---|
+  | `advance` never writes the reliance | the four scenario tests |
+  | the reliance written only once the operation was carried (after the send) | the four scenario tests |
+  | the log's refusal of the entry swallowed (the segment goes on) | `reliance on a judgement the log did not verify as its judge's is not written`; `reliance is written before the operation that relies on it is sent` |
+  | the writer keeps no entry (each call builds and offers anew) | `one judgement relied on by one provider is written once`; unit `a retry is the same entry at the same time` |
+  | an input may be declared on another judgement (`Rests::Another` off) | `one judgement relied on by one provider is written once`; unit `inputs name each judgement they rest on once` |
+  | a declaration after the send accepted (`Rests::TooLate` off) | `one judgement relied on by one provider is written once` |
+  | the entry names the provider as judge | the four scenario tests |
+  | every judgement declared for the order relied on, whatever the inputs carried | `provider relying on a reserve's judgement leaves a reliance entry naming both` |

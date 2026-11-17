@@ -130,6 +130,12 @@ impl Core {
             .collect()
     }
 
+    /// What Core noted of `segment` of `order`'s settled charge for its check: what the segment took in, the charge its
+    /// result stated, the tuple and the price it was held to (`T-020-14`, `T-024-13`).
+    pub fn charged_of(&self, order: &Id, segment: &Id) -> Option<rutent_core_orch::quote::Charged> {
+        self.segments.charged(order, segment).cloned()
+    }
+
     /// The operations of `order`'s chosen route, in order.
     pub fn route_operations(&self, order: &Id) -> Vec<rutent_contracts::router_api::Operation> {
         let Some(started) = self.started.get(order.as_str()) else {
