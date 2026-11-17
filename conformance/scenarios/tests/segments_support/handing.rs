@@ -313,6 +313,18 @@ pub fn prove_citing(
     record: &rutent_prov::holding::wallet::WithdrawalRecord,
     statement: &Receipt,
 ) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
+    prove_labelled(core, hand_on, linked, record, statement, None)
+}
+
+/// [`prove_citing`], the record labelled `publisher`'s word where the node is private (`REQ-ORD-40`).
+pub fn prove_labelled(
+    core: &mut Core,
+    hand_on: &mut rutent_core_orch::hand_on::HandOn,
+    linked: &Id,
+    record: &rutent_prov::holding::wallet::WithdrawalRecord,
+    statement: &Receipt,
+    publisher: Option<&Id>,
+) -> Result<Receipt, rutent_core_orch::hand_on::HandOnError> {
     let actor = super::core();
     hand_parts(core, &mut rutent_core_orch::stuck::Stuck::new(), |parts| {
         hand_on.prove_start(
@@ -322,7 +334,38 @@ pub fn prove_citing(
                 record,
                 statement,
                 core: &actor,
+                publisher,
             },
         )
+    })
+}
+
+/// The holding account's own signed answer to a withdrawal under `transaction`, as the plain wallet gives one: a
+/// withdrawal result from `maker`, made at `made_at`, signed with its statements key, whose `outcome` is
+/// [`wallet_succeeded`] or another a test scripts (`T-020-26`).
+pub fn wallet_answer(
+    maker: &str,
+    transaction: &str,
+    made_at: &str,
+    outcome: serde_json::Value,
+) -> Vec<u8> {
+    let mut answer = super::seed_envelope(
+        rutent_contracts::provider_role::RESULT_SHAPE,
+        maker,
+        serde_json::json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome }),
+    );
+    answer["made_at"] = made_at.into();
+    rutent_conformance::signing::sign_value(&mut answer, &super::statements_key_of(maker));
+    serde_json::to_vec(&answer).expect("a signed answer is JSON")
+}
+
+/// A withdrawal that succeeded for `amount`, with the wallet's own record of it, `{maker}-withdrawal-{transaction}`.
+pub fn wallet_succeeded(maker: &str, transaction: &str, amount: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "succeeded",
+        "amount_in": amount,
+        "amount_out": amount,
+        "fee": { "asset": "COP", "amount": "0" },
+        "evidence": [{ "grade": 4, "reference": format!("{maker}-withdrawal-{transaction}"), "by": maker }],
     })
 }

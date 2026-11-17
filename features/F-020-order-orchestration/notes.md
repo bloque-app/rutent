@@ -4098,3 +4098,123 @@ Branch `f-020/t-020-24-integration-items`, from `m3` at `7ac373aa`.
   refusal than `NoSuchOrder`; `follow` keeping decides whatever their outcome (the log's refusal then carries);
   and the same with the first matching decide taken (the earlier refused decision then is cited).
 
+## T-020-26
+
+Branch `f-020/t-020-26-holding-withdrawal-record`, from `m3` at `4b306ca9`. Edits `core-orch` `hand_on/` and `stuck/`,
+the prov seam (`holding/wallet/handed_on.rs`, and the private `movement` in `holding/wallet.rs`, which now hands the
+wallet's signed answer to it), `conformance/scenarios/src/assembly/` (`holding.rs`, small hunks in `mod.rs`), the kit
+(`segments_support`: `prove_labelled`, `wallet_answer`, `Core::admitted_skipping`) and `contracts/core-internal/` (a
+`DEC-20` path).
+
+- **Design.**
+  1. *The record.* `prove_start` already wrote the `holding_withdrawal`; the row adds its label (`Start::publisher`,
+     read by the assembly from the catalogue's `publisher_of_node`; `None` at a public node) and
+     `HandOn::recover_starts(segments, entries)`, which proves again, after a restart, each start whose
+     `holding_withdrawal` the log holds: Core's own entry, for a linked order opened by a `route_chosen` naming the
+     order it was handed on from, with a `handed_on` of that order naming it, every part starting at the record's node
+     with a segment of its holder; once per order. Anything else proves nothing. The assembly calls it on `reopened`.
+  2. *The wallet's answer.* `HandedOnStart` gains `transaction` and `answer` (the signed result as the platform passed
+     it on). The mover keeps the answer as the holder's stated entry about the linked order under the wallet's own
+     transaction (the question's), before the effect's result, and answers `Done` only when the record proves the
+     start, the answer says the same (`said`), and the log recorded the answer attributed. `Mover::withdrawn` gives the
+     answer's receipt (`Withdrawn::statement`), which the `holding_withdrawal` cites, and works for a hand-on left
+     unknown once `Delivering::statement` took the holder's answer as `Done`. `Delivering::statement` for a hand-on
+     checks the statement (attributable, a result, the wallet's transaction; the holder's judged: `Done` only for a
+     record that proves the start, `Failed` for its own failure or final refusal, otherwise `Unknown`; a succeeded
+     answer that proves nothing of the start is `NotCounted`; a wallet never asked is `NoMove`).
+  3. *The assembly.* `Core::move_stuck` hands the mover `HandingOn {HeldWallets over Holdings, Accepted, LogHandle}`.
+     `LogHandle` is the log's own `Rc`, read live. The platform is shared by the mover and the wallets through a
+     `RefCell<Running>` (`Shared`). `Core::hand_on` writes the hand-on and the start from `Mover::withdrawn`.
+  4. *The contract arm* (found by this row; decided by the coordinator): the wallet names its own transaction, which
+     the question binds to the linked order, but `outcome-confirmation-cites-verified-evidence` read a stuck
+     resolution's own transaction only, so no statement of the wallet could be the evidence of a hand-on's outcome.
+     The log can't take the same bytes about two orders (a verified statement's `about` transaction must be the
+     body's, and a transaction belongs to one order). The row's `about` now also accepts a statement about the linked
+     order the decision named, no segment, through a transaction first bound to it and to no segment. Folded into
+     core-internal's unreleased 1.0.0. It reads no maker: a confirmation needs another maker's statement, so holding
+     the arm to the holding account's maker would make it impossible; that the record is the holder's own is
+     `holding-withdrawal-rests-on-its-record`'s and Core's (`said`).
+- **Tests.** `tests/hand_on_record.rs` (four), `tests/stuck_hand_on.rs` (five added: known outcome Done, through
+  report, confirmation, hand-on, record and the linked order's first move, and admitted whole; a holder's failure frees
+  the part only on a confirmation, admitted; a wallet never asked; an answer that doesn't bear out its record; an
+  answer the log couldn't attribute), `tests/assembly_hand_on.rs` (two), `contracts/tests/core-internal.rs`
+  (`hand_on_outcome_report_rests_on_a_statement_about_its_linked_order`, five fixtures). The two T-020-17 assertions
+  that counted one stated entry now count two (question, answer). Tests were written beside the code, not seen red
+  first; the rule-offs below were the check.
+- **Rule-off** (each alone, file restored, none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the hand-on arm of the evidence row | the contract test, and the citation table's cases |
+  | evidence about the linked order only (`about.order == Some(linked)`) | none red in the first round, which the review corrected (S3, below): the binding rule refuses another order's statement, but not one that names no order |
+  | no segment | the contract test and the table's cases |
+  | transaction first bound to the linked order | the same |
+  | the record labelled its publisher | `record_at_a_private_node_is_labelled_its_publishers_word` |
+  | a recovered record must be Core's | `proven_start_is_rebuilt_from_the_log_after_a_restart` |
+  | its holder starts the route | the same |
+  | it needs the hand-on | the same |
+  | the answer kept as the holder's stated entry | eight of `stuck_hand_on` |
+  | the answer bears out the record | `hand_on_whose_answer_does_not_bear_out_its_record_is_left_unknown` |
+  | an unattributed answer backs no done | `hand_on_whose_answer_the_log_could_not_attribute_is_left_unknown` |
+  | the statement verifies under a published key | the known-outcome test |
+  | a holder's failure is read as failed | the failure-confirmation test |
+  | a record that proves nothing bears out nothing | the known-outcome test |
+  | a known outcome starts the route | the known-outcome test |
+
+- **Defaults** (reversible, fail closed): a hand-on stays a one-part, plain-wallet-at-a-public-node matter; the label is
+  given only where the catalogue names a publisher for the node; a success with no record of the wallet's own is kept
+  as `Unknown`; an answer the log recorded unattributed, or one Core can't keep, leaves the outcome `Unknown`; the
+  contract arm reads no maker (above).
+- **Gaps, with owners.**
+  1. The scenario that runs the real plain wallet with the assembled Core moved to `T-024-17` (a public node on a
+     route's path: the reserve's ledger is private and can't also be public; an accepted release for the
+     operator-published wallet in the log; a linked-order intake path). This row's assembled-Core test is the
+     fail-closed one: the log refuses a hand-on to a linked order it holds no acceptance of.
+  2. The mover's and the hand-on's state is in memory (`F-030`); after a restart a fresh mover has no flight, so the
+     known-outcome path needs the flight kept. `recover_starts` rebuilds only the proven starts.
+  3. The assembly's `reopened` carries neither the holdings nor the accepted routes (`F-030`).
+  4. A private node's holder (a provider's module) isn't driven (`T-020-17`'s gap 5), nor is the label at a node
+     the catalogue declares private tested with the real catalogue's `publisher_of_node` (the kit labels by hand).
+
+### T-020-26, the review of `66e821d4` (Opus): changes
+
+- **S1, fixed.** `about_the_linked_order` took any transaction first bound to the linked order. A late "succeeded" of an
+  earlier effect's withdrawal (confirmed failed) could be the evidence of a later effect, and one route be funded on a
+  withdrawal the log holds failed (probe E). The transaction's binding entry must now be the operator's own
+  `operation` question, appended after the cited effect and before that effect's result. Fixtures
+  `--a-hand-on-through-another-effects-transaction` (probe E) and `--a-hand-on-through-a-question-after-its-result`.
+- **S2, fixed.** A report of a hand-on rests on the holding account's own statement: the evidence's maker is the
+  resolution's `by`, read in the row's `maker` field (probe H: a mover reporting failed on an unrelated maker's
+  word, confirmed on the holder's own `succeeded`, then a new decision: the pay-twice path). A confirmation or a
+  decline keeps the row's own rule, since `outcome-confirmation-rests-on-its-report` needs another maker's party.
+  `--a-hand-ons-linked-order-through-another-makers-statement` is now the refused
+  `--a-hand-on-reported-on-another-makers-statement`; the valid other-maker case is a `confirm_outcome`
+  (`--a-hand-ons-confirmation-on-another-makers-statement`). The same looseness on the deliver arm is `T-020-30`'s
+  new item (4), not changed here.
+- **S3, fixed.** A stated result naming only a transaction, no order, is admitted at append; only the conjunct
+  `about.order == Some(linked)` refuses the report. The first round's note that the binding rule refuses it first was
+  wrong, and is corrected in the rule-off table above. Fixture `--a-hand-on-through-a-statement-naming-no-order`.
+- **L1, fixed.** `Mover::withdrawn` answers `None` once the holding account has stated, in a statement Core took, that
+  the withdrawal failed (`a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure`).
+- **L2.** `T-020-16`'s gap 5 (`known_outcome` and `confirm_outcome` don't check that the evidence states the outcome
+  claimed) was routed to `T-020-20` but its row didn't carry it: it does now, as an item with the test `report whose
+  evidence states another outcome than the one reported is refused`.
+- **L3.** `prov/src/holding/wallet/handed_on.rs`: if `to_vec(&signed)` fails after the wallet moved value, the
+  account's `self.ledger = next` is skipped. It is the same shape as the existing `proof_of_withdrawal(..)?`, and it
+  can't fail in practice (a signed result is JSON). Noted as a known shape; the mover answers `Unknown` for it.
+- **L4.** No test here checks that the re-serialised real wallet's answer verifies under its key. If it didn't, the
+  outcome would fail closed to `Unknown`. `T-024-17` runs that path with the real wallet and owns the test.
+- **L5.** The unreachable fallback in the shown transaction (`unwrap_or_else(|| linked.clone())`) is removed: the
+  transaction parsed for the question's entry is the one kept. Left as they are: the mover's state is in memory
+  (gap 2 above), and the label at a private node is tested with a hand-given publisher.
+- **Owner's form, with its default.** SPEC doesn't say whether a confirmer's evidence maker must be a party to the
+  order. Default: not required beyond the existing "another party" rule.
+- **Merge.** `origin/m3` (`7ac373aa`) merged with a plain signed merge; `PLAN.md` and these notes kept both sides (the
+  row count is 73 with `T-024-17`, whose wave is 29, beside `T-020-31`).
+
+- **Rule-offs of the review round** (each alone, file restored, none hung): a report of a hand-on resting on the holder's
+  own, the question after the effect, the question before the result, and the statement naming the linked order: each
+  red on the contract test and the citation table's cases. The binding entry being the operator's own question was
+  green on the first fixtures (every question there was the operator's), so `--a-hand-on-through-a-transaction-bound-by-no-operator-question`
+  was added (its first version sat after the result, so the result rule masked the question rule; moved before it) and the rule is now red on the contract test and the table's cases. The holder's stated failure withdrawing the start (L1) is green:
+  `flight.known` is cleared when the failure is taken, which already withdraws it; the flag is defence in depth.

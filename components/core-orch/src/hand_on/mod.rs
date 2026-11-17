@@ -300,6 +300,11 @@ pub struct Start<'a> {
     pub statement: &'a Receipt,
     /// Core, acting on its own account: who writes the `holding_withdrawal`.
     pub core: &'a Actor,
+    /// The party whose private node the route starts at, where the node is declared private (the catalogue's word,
+    /// which the assembly reads): the record is then its publisher's word, labelled as such, and the log holds the
+    /// label to the party the record's maker states for (`REQ-ORD-40`, `holding-withdrawal-rests-on-its-record`).
+    /// `None` at a public node, where the record is the operator's own module's.
+    pub publisher: Option<&'a Id>,
 }
 
 /// A part waiting for the customer, resumed on a route to its own destination under the customer's new terms.
@@ -387,6 +392,7 @@ struct KeptStart {
     step: Step,
     record: WithdrawalRecord,
     statement: Receipt,
+    publisher: Option<Id>,
 }
 
 /// An entry built once, and its receipt once the log took it.
@@ -1024,7 +1030,10 @@ impl HandOn {
         let (linked, record) = (start.linked, start.record);
         // A start built and not yet taken is appended as built.
         if let Some(kept) = self.starts.get_mut(linked.as_str()) {
-            if &kept.record != record || &kept.statement != start.statement {
+            if &kept.record != record
+                || &kept.statement != start.statement
+                || kept.publisher.as_ref() != start.publisher
+            {
                 return Err(HandOnError::Unproven(Unproven::AnotherStart));
             }
             return Self::record_start(parts, &mut kept.step, linked);
@@ -1060,7 +1069,7 @@ impl HandOn {
                 holder: held.reserve.clone(),
                 node,
                 record: start.statement.clone(),
-                publisher: None,
+                publisher: start.publisher.cloned(),
             },
         )?;
         let taken = Self::record_start(parts, &mut step, linked);
@@ -1076,12 +1085,72 @@ impl HandOn {
                         step,
                         record: record.clone(),
                         statement: start.statement.clone(),
+                        publisher: start.publisher.cloned(),
                     },
                 );
             }
             Err(_) => {}
         }
         taken
+    }
+
+    /// Rebuilds, from the log's `entries`, the starts a restarted Core's `segments` forget: each route handed on
+    /// whose `holding_withdrawal` the log holds is proven again, so its segments are handed over without the
+    /// holding account being asked again (`REQ-ORD-43`, `REQ-ORD-40`). Returns how many it proved.
+    ///
+    /// Fail closed: the record counts only as Core's own entry, for a linked order the log opened by a
+    /// `route_chosen` that names the order it was handed on from, with a `handed_on` of that order naming it, from
+    /// an inner node that is the node the record names, whose every part starts with a segment of the record's
+    /// holder; and only once for the order. Anything else proves nothing, and the order's segments are refused as
+    /// before. The record's statement, and that one statement starts one route, are the log's own rows.
+    pub fn recover_starts(segments: &mut Segments, entries: &[Entry]) -> usize {
+        let mut proven = 0;
+        let mut seen: Vec<&str> = Vec::new();
+        for entry in entries {
+            let Entry::Verified(v) = entry else {
+                continue;
+            };
+            let What::HoldingWithdrawal {
+                order,
+                handed_on_from,
+                holder,
+                node,
+                ..
+            } = &v.what
+            else {
+                continue;
+            };
+            if v.who.role != Role::Core
+                || !matches!(v.outcome, Outcome::Observed {})
+                || seen.contains(&order.as_str())
+            {
+                continue;
+            }
+            let opened = entries.iter().any(|e| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
+                    if input.subject.order.as_str() == order.as_str()
+                        && matches!(&input.observed, Observed::RouteChosen { parts, handed_on_from: Some(from), .. }
+                            if from.as_str() == handed_on_from.as_str()
+                                && !parts.is_empty()
+                                && parts.iter().all(|part| part.segments.first().is_some_and(|s|
+                                    s.provider.as_str() == holder.as_str()
+                                        && matches!(&s.from.node,
+                                            rutent_contracts::provider_role::NodeRef::Inner(n) if n.as_str() == node.as_str())))
+                        )))
+            });
+            let handed = entries.iter().any(|e| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
+                    if input.subject.order.as_str() == handed_on_from.as_str()
+                        && matches!(&input.observed, Observed::HandedOn { linked_order, .. }
+                            if linked_order.as_str() == order.as_str())))
+            });
+            if opened && handed {
+                seen.push(order.as_str());
+                segments.prove_start(order);
+                proven += 1;
+            }
+        }
+        proven
     }
 
     /// Appends a start's `holding_withdrawal`, built once, and once the log takes it has the segments hand the

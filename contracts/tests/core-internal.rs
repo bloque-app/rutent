@@ -3149,3 +3149,35 @@ fn arrival_answer_with_no_arrival_question_before_it_is_refused() {
     );
     assert_case_refused("answer-follows-its-question--an-arrival-answer-after-an-operation");
 }
+
+// --- T-020-26: a hand-on's outcome rests on the holding account's own answer -----------------------------------
+
+// verifies: REQ-ORD-1, REQ-AUZ-4
+#[test]
+fn hand_on_outcome_report_rests_on_a_statement_about_its_linked_order() {
+    let row = "outcome-confirmation-cites-verified-evidence";
+    // A report rests on the holding account's own answer about the linked order the decision named, through the
+    // transaction the operator's own question, appended after this effect and before its result, bound to it; a
+    // confirmation rests on another maker's.
+    assert_case(&format!(
+        "{row}--a-hand-ons-report-on-the-holding-accounts-own-answer"
+    ));
+    assert_case(&format!(
+        "{row}--a-hand-ons-confirmation-on-another-makers-statement"
+    ));
+    // Each rule alone: a report on another maker's statement (`maker`); another order's statement, a segment of the
+    // linked order's, a transaction first bound to another order, another effect's transaction, a question appended
+    // after the result, a transaction no operator question bound, and a statement naming no order (each `about`).
+    for name in [
+        "a-hand-on-reported-on-another-makers-statement",
+        "a-hand-on-through-another-order",
+        "a-hand-on-through-a-segment-of-its-linked-order",
+        "a-hand-on-through-a-transaction-bound-to-another-order",
+        "a-hand-on-through-another-effects-transaction",
+        "a-hand-on-through-a-question-after-its-result",
+        "a-hand-on-through-a-transaction-bound-by-no-operator-question",
+        "a-hand-on-through-a-statement-naming-no-order",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+}

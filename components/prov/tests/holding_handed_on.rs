@@ -110,6 +110,20 @@ fn handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record() {
         start.record.reference
     );
 
+    // The wallet's own signed answer comes with it, naming the withdrawal's transaction (`T-020-26`): the holding
+    // account's statement of it, which the host keeps.
+    assert!(
+        start
+            .transaction
+            .starts_with(&format!("{POLYGON_WALLET}-withdrawal-"))
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&start.answer).expect("a signed result");
+    assert_eq!(
+        answer["statement"]["transaction"],
+        start.transaction.as_str()
+    );
+    assert_eq!(answer["maker"], POLYGON_WALLET);
+
     // The value left the account for the route: the order holds what is left, by the wallet's own word too.
     assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 40));
     assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 41));

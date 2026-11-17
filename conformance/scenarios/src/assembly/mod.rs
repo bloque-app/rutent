@@ -46,6 +46,7 @@ mod arrivals;
 pub mod charges;
 pub mod durable;
 mod grading;
+pub mod holding;
 pub mod lifecycle;
 pub mod machine;
 pub mod measures;
@@ -481,6 +482,11 @@ pub struct Core {
     /// The parts Core declared stuck, and the mover that carries their resolutions out (`T-020-16`).
     stuck: Stuck,
     mover: Mover,
+    /// The operator's holding accounts, the routes the linked orders were accepted on and what Core handed on
+    /// (`T-020-26`).
+    holdings: rutent_prov::holding::wallet::Holdings,
+    linked: BTreeMap<String, rutent_core_orch::stuck::AcceptedRoute>,
+    hand_on: rutent_core_orch::hand_on::HandOn,
     /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
     /// the key they are signed with and the transport that takes them.
     notices: rutent_core_orch::notice::Notices,
@@ -778,6 +784,9 @@ impl Core {
             segments: Segments::new(),
             stuck: Stuck::new(),
             mover: Mover::new(),
+            holdings: rutent_prov::holding::wallet::Holdings::default(),
+            linked: BTreeMap::new(),
+            hand_on: rutent_core_orch::hand_on::HandOn::new(),
             notices: rutent_core_orch::notice::Notices::new(
                 kit::id("rutent-scenarios"),
                 kit::operator().party,
@@ -820,6 +829,9 @@ impl Core {
         if reopened {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
             core.relist()?;
+            // The routes handed on whose start the holding account's record proved: proven again from the log, so
+            // their segments are handed over without the holding account being asked again (`T-020-26`).
+            core.recover_starts();
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1769,7 +1781,7 @@ impl Core {
         let mut policy = self.policy.clone();
         let readings = self.readings.clone();
         readings.refresh(&self.fleet.platform.world);
-        let mut running = Running {
+        let running = RefCell::new(Running {
             platform: &mut self.fleet.platform,
             clock: &self.clock,
             faults: &mut self.faults,
@@ -1777,7 +1789,7 @@ impl Core {
             log: &self.log,
             swap_to: self.swap_to.as_deref_mut(),
             readings: &readings,
-        };
+        });
         let mut parts = StuckParts {
             clock: &self.clock,
             log: &mut self.general,
@@ -1787,15 +1799,32 @@ impl Core {
             exposures: &mut self.exposures,
         };
         let mut no_proxy = NoProxy;
-        let mut delivering = self.mover.on(Ports {
-            modules: &mut running,
-            uses: &mut no_proxy,
-            evidence: &mut self.keeper,
-            catalogue: &self.catalogue,
-            operator_key: &mut self.signer,
+        // The hand-on's reach (`T-020-26`): the operator's holding accounts, run on the platform the move's other
+        // calls go to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
+        let mut modules = holding::Shared(&running);
+        let mut wallets = holding::HeldWallets {
+            holdings: &mut self.holdings,
+            running: &running,
             bounds: &self.bounds,
-            operator: &operator,
-        });
+        };
+        let accepted = holding::Accepted(&self.linked);
+        let log = holding::LogHandle(Rc::clone(&self.log));
+        let mut delivering = self
+            .mover
+            .on(Ports {
+                modules: &mut modules,
+                uses: &mut no_proxy,
+                evidence: &mut self.keeper,
+                catalogue: &self.catalogue,
+                operator_key: &mut self.signer,
+                bounds: &self.bounds,
+                operator: &operator,
+            })
+            .handing_on(rutent_core_orch::stuck::HandingOn {
+                withdrawals: &mut wallets,
+                routes: &accepted,
+                log: &log,
+            });
         let moved = self.stuck.carry_out(
             &mut parts,
             &mut policy,

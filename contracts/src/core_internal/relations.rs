@@ -1397,11 +1397,11 @@ pub static RELATIONS: [Relation; 106] = [
             ),
             (
                 "maker",
-                "an outcome's evidence is not the deployment operator's own statement",
+                "an outcome's evidence is not the deployment operator's own statement, and a hand-on's report rests on the holding account's own",
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part: a move_value's own segment, a stuck resolution's own transaction",
+                "an outcome's evidence is about its move's own order and part: a move_value's own segment, a stuck resolution's own transaction, a hand-on's linked order through the holding account's own transaction",
             ),
             ("after", "an outcome's evidence follows its move in the log"),
             (
@@ -1430,9 +1430,17 @@ pub static RELATIONS: [Relation; 106] = [
                 return Match::NotTarget;
             };
             let moved = entry_at(effect, h);
-            let about = moved
-                .and_then(verified)
-                .is_some_and(|m| evidence_about(s, m, h));
+            let about = moved.and_then(verified).is_some_and(|m| {
+                evidence_about(
+                    &Evidence {
+                        statement: s,
+                        effect,
+                        operator: &e.operator.maker,
+                    },
+                    m,
+                    h,
+                )
+            });
             // Evidence older than the move can't say what the move came to: neither one appended before it, nor one its
             // maker made before it, appended after.
             let after = match (moved.and_then(|m| position(m, h)), position(t, h)) {
@@ -1448,7 +1456,7 @@ pub static RELATIONS: [Relation; 106] = [
                     matches!(s.attribution, Attribution::Verified { .. }),
                     // What a provider answered, never Core's own question re-appended, nor the operator's word.
                     s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
-                    maker_provider(s) != &e.operator.maker,
+                    maker_provider(s) != &e.operator.maker && holders_own(e, moved, s),
                     about,
                     after,
                     made,
@@ -5141,19 +5149,103 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
     }
 }
 
-/// Whether `statement` is about the move `effect` moved: a `move_value`'s segment itself, through that segment's
+/// Whether a report of a hand-on rests on the holding account's own statement (`REQ-ORD-1`): a mover could otherwise
+/// report the failure of a withdrawal the holder says it made on an unrelated maker's word, and have it confirmed on
+/// the holder's own, and a new decision would follow (`THR-70`). A confirmation or a decline needs another maker's
+/// party than the report's (`outcome-confirmation-rests-on-its-report`), so it reads no maker beyond the row's own, and
+/// neither does a report of anything but a hand-on.
+fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &StatedEntry) -> bool {
+    if !matches!(citing.what, What::ReportOutcome { .. }) {
+        return true;
+    }
+    match moved
+        .and_then(verified)
+        .and_then(effect_action)
+        .map(|(a, _)| a)
+    {
+        Some(Action::ResolveStuck {
+            resolution: Resolution::HandOn { by, .. },
+            ..
+        }) => maker_provider(statement) == by,
+        _ => true,
+    }
+}
+
+/// The evidence an outcome's report, confirmation or decline cites, and what it is cited for.
+struct Evidence<'a> {
+    statement: &'a StatedEntry,
+    /// The receipt of the effect whose outcome it speaks of.
+    effect: &'a Receipt,
+    /// The deployment operator's maker.
+    operator: &'a Id,
+}
+
+/// Whether `evidence` is about the move `effect` moved: a `move_value`'s segment itself, through that segment's
 /// transaction; a stuck resolution's own transaction, the one its decide step named and its effect goes under, a
-/// planless part's too.
-fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &History) -> bool {
+/// planless part's too; and, for a hand-on, the withdrawal the holding account ran for the linked order, under its own
+/// transaction (`T-020-26`).
+fn evidence_about(evidence: &Evidence<'_>, effect: &VerifiedEntry, history: &History) -> bool {
+    let statement = evidence.statement;
     match effect_action(effect).map(|(a, _)| a) {
         Some(Action::MoveValue { order, segment, .. }) => {
             about_the_segment(statement, order, segment, history)
         }
         Some(Action::ResolveStuck {
-            order, transaction, ..
-        }) => about_the_resolution(statement, order, transaction, history),
+            order,
+            transaction,
+            resolution,
+            ..
+        }) => {
+            about_the_resolution(statement, order, transaction, history)
+                // A hand-on is moved by the holding account's own withdrawal for the linked order, under the
+                // wallet's own transaction, which the operator's own question, appended after this effect and before
+                // its result, bound to the linked order.
+                || matches!(resolution, Resolution::HandOn { linked_order, .. }
+                    if about_the_linked_order(evidence, linked_order, history))
+        }
         _ => false,
     }
+}
+
+/// Whether `evidence` is about the linked order a hand-on's decision named, through the transaction of this effect's
+/// own withdrawal: the transaction is first bound to that order and to no segment (`binding_of`), by the operator's
+/// own `operation` question appended after the effect and before the effect's result. A transaction an earlier
+/// effect's question bound is that effect's, so a late answer of a withdrawal the log holds failed is no evidence of
+/// another's.
+fn about_the_linked_order(evidence: &Evidence<'_>, linked: &Id, history: &History) -> bool {
+    let Some(about) = &evidence.statement.about else {
+        return false;
+    };
+    let Some(transaction) = &about.transaction else {
+        return false;
+    };
+    if about.order.as_ref() != Some(linked)
+        || about.segment.is_some()
+        || binding_of(transaction, history)
+            .is_none_or(|(order, segment)| order != linked || segment.is_some())
+    {
+        return false;
+    }
+    let Some(effect_at) = history.iter().position(|(r, _)| r == evidence.effect) else {
+        return false;
+    };
+    let result_at = history.iter().position(|(_, x)| {
+        verified(x).is_some_and(
+            |r| matches!(&r.what, What::Result { effect } if effect == evidence.effect),
+        )
+    });
+    let Some(bound_at) = history.iter().position(|(_, x)| {
+        stated(x)
+            .and_then(order_transaction)
+            .is_some_and(|(_, t)| t == transaction)
+    }) else {
+        return false;
+    };
+    let question = stated(&history[bound_at].1).is_some_and(|q| {
+        q.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+            && maker_provider(q) == evidence.operator
+    });
+    question && bound_at > effect_at && result_at.is_none_or(|r| bound_at < r)
 }
 
 /// Whether `statement` is about a stuck resolution of `order` through its own `transaction`: it names the order and
