@@ -144,6 +144,9 @@ struct HandFlight {
     /// The start the holding account's stated answer proved, taken as a known outcome ([`Delivering::statement`]):
     /// what [`Mover::withdrawn`] gives for a withdrawal left unknown, once its answer is on record attributed.
     known: Option<(HandedOnStart, Receipt)>,
+    /// The holding account said, in a statement Core took, that the withdrawal failed: nothing starts on it again,
+    /// whatever else it said.
+    failed: bool,
     /// What the platform and the proxy handed over, each item once, in the order taken.
     drains: Vec<Step>,
     uncarried: bool,
@@ -246,6 +249,9 @@ impl Mover {
         };
         // Done on the holding account's own record, kept as its stated answer; or left unknown and later known done
         // on that answer ([`Delivering::statement`]). Never on a start the log holds no answer for.
+        if flight.failed {
+            return None;
+        }
         let (start, statement) = match (&flight.verdict, &flight.known) {
             (Some(Resolved::Done), _) => (flight.start.as_ref()?, flight.statement.as_ref()?),
             (_, Some((start, statement))) => (start, statement),
@@ -952,6 +958,7 @@ impl Delivering<'_> {
             answer: None,
             statement: None,
             known: None,
+            failed: false,
             drains: Vec::new(),
             uncarried: false,
         })
@@ -1025,6 +1032,7 @@ impl Delivering<'_> {
                 if !exact {
                     return false;
                 }
+                let wallets_transaction = transaction.clone();
                 let about = About {
                     order: Some(linked.clone()),
                     segment: None,
@@ -1056,7 +1064,7 @@ impl Delivering<'_> {
                         sent = true;
                         question = Some(step);
                         shown = Some(Shown {
-                            transaction: Id::new(&w.transaction).unwrap_or_else(|| linked.clone()),
+                            transaction: wallets_transaction,
                         });
                         true
                     }
@@ -1326,6 +1334,12 @@ impl Delivering<'_> {
         // A statement the log recorded unattributed rests on no key: it is evidence of nothing.
         if is_receipt_of(&receipt, &step.entry) {
             return Err(NotTaken::Unattributable);
+        }
+        if outcome == Some(Resolved::Failed)
+            && let Some(Kept::Hand(flight)) = self.mover.kept.get_mut(&key(effect))
+        {
+            flight.failed = true;
+            flight.known = None;
         }
         if let (Some(record), Some(Kept::Hand(flight))) =
             (proved, self.mover.kept.get_mut(&key(effect)))

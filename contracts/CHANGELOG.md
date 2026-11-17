@@ -55,5 +55,5 @@ directory (see `README.md`).
   documents its `None`, folded into its unreleased 4.0.0. Each contract's changelog names the changes. (DEC-4,
   DEC-20, T-020-21)
 - core-internal's `outcome-confirmation-cites-verified-evidence` accepts, for a hand-on, a statement about the linked
-  order the decision named through a transaction first bound to that order, so the holding account's own answer can
-  be the evidence of a hand-on's outcome; folded into the unreleased 1.0.0 (`T-020-26`). (DEC-4, DEC-20, T-020-26)
+  order the decision named through the transaction of the effect's own withdrawal, and holds a report to the holding
+  account's own maker, so the holding account's own answer can be the evidence of a hand-on's outcome; folded into the unreleased 1.0.0 (`T-020-26`). (DEC-4, DEC-20, T-020-26)

@@ -1992,3 +1992,31 @@ fn hand_on_whose_answer_the_log_could_not_attribute_is_left_unknown() {
     assert_eq!(stated_about(&core, LINKED).len(), 2, "the answer is kept");
     still_held(&core);
 }
+
+/// A start the holding account's answer once proved is given to no hand-on once the holding account has also stated
+/// that the withdrawal failed: the two statements disagree, and nothing starts on either.
+// verifies: REQ-ORD-1, REQ-ORD-40
+#[test]
+fn a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure() {
+    let (mut world, mut core, _stuck, mut mover, _policy, _carries_out, effect, _wallet) =
+        left_unknown();
+    let transaction = wallets_transaction();
+    let done = later_answer(
+        &core,
+        RESERVE,
+        wallet_succeeded(RESERVE, &transaction, AMOUNT),
+    );
+    take(&mut core, &mut world, &mut mover, &effect, &done).expect("taken");
+    assert!(mover.withdrawn(&effect).is_some());
+    let failed = later_answer(
+        &core,
+        RESERVE,
+        serde_json::json!({
+            "status": "failed",
+            "evidence": [{ "grade": 4, "reference": "x", "by": RESERVE }],
+        }),
+    );
+    let stated = take(&mut core, &mut world, &mut mover, &effect, &failed).expect("taken");
+    assert_eq!(stated.outcome, Some(Resolved::Failed));
+    assert!(mover.withdrawn(&effect).is_none());
+}

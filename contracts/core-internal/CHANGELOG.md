@@ -813,12 +813,16 @@
   decision named, so no statement of the wallet could be the evidence a report or a confirmation of the hand-on's
   outcome cites: `outcome-confirmation-cites-verified-evidence`'s `about` read a stuck resolution's own transaction
   and no other. For a `resolve_stuck` whose resolution hands the value on, it now also accepts a statement about the
-  linked order the decision named, no segment, through a transaction first bound to that linked order and to no
-  segment. It reads no maker beyond the row's own (a provider's `result`, not the operator's): a confirmation needs
-  another maker's statement than the report's, so holding the arm to the holding account's maker would make a
-  confirmation impossible; that the record is the holder's own stays `holding-withdrawal-rests-on-its-record`'s and
-  Core's. Two valid cases (`--a-hand-ons-wallet-answer-about-its-linked-order`,
-  `--a-hand-ons-linked-order-through-another-makers-statement`) and three invalid ones, each breaking one rule
-  (`--a-hand-on-through-another-order`, `--a-hand-on-through-a-segment-of-its-linked-order`,
-  `--a-hand-on-through-a-transaction-bound-to-another-order`). No shape changes; no consumer changes. (REQ-ORD-1,
-  REQ-AUZ-4, DEC-4, DEC-20, T-020-26)
+  linked order the decision named, no segment, through the transaction of this effect's own withdrawal: first bound
+  to that linked order and to no segment by the operator's own `operation` question, appended after the effect and
+  before its result, so a late answer of an earlier effect's withdrawal, which the log holds failed, is no evidence of
+  another's. Its `maker` reads by kind: a report of a hand-on rests on the holding account's own statement (its maker
+  the resolution's `by`), since a mover could otherwise report a failure on an unrelated maker's word and have it
+  confirmed on the holder's own `succeeded`, and a new decision would pay again; a confirmation and a decline read no
+  maker beyond the row's, since they need another maker's party than the report's. Two valid cases
+  (`--a-hand-ons-report-on-the-holding-accounts-own-answer`, `--a-hand-ons-confirmation-on-another-makers-statement`)
+  and eight invalid ones, each breaking one rule (`--a-hand-on-reported-on-another-makers-statement`, `maker`;
+  `--a-hand-on-through-another-order`, `--a-hand-on-through-a-segment-of-its-linked-order`,
+  `--a-hand-on-through-a-transaction-bound-to-another-order`, `--a-hand-on-through-another-effects-transaction`,
+  `--a-hand-on-through-a-question-after-its-result`, `--a-hand-on-through-a-transaction-bound-by-no-operator-question`, `--a-hand-on-through-a-statement-naming-no-order`, each
+  `about`). No shape changes; no consumer changes. (REQ-ORD-1, REQ-AUZ-4, DEC-4, DEC-20, T-020-26)
