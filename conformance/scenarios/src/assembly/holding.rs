@@ -3,10 +3,10 @@
 //! when it carries out a stuck order's hand-on ([`rutent_core_orch::stuck::Delivering::handing_on`]); and the
 //! hand-on and the start of the linked order's route, written once the move is done.
 //!
-//! The mover asks the holding account's wallet through [`HeldWallets`], which runs it on the same platform the
-//! mover's other calls go to, one call at a time: the platform sits in a `RefCell` shared by [`Shared`], which is
+//! The mover asks the holding account's wallet through `HeldWallets`, which runs it on the same platform the
+//! mover's other calls go to, one call at a time: the platform sits in a `RefCell` shared by `Shared`, which is
 //! what the mover's `modules` is, and by the wallets. The log the mover reads the linked order's acceptance and
-//! decision record from is [`LogHandle`], the log's own handle and never a copy of its entries, so what it reads is
+//! decision record from is `LogHandle`, the log's own handle and never a copy of its entries, so what it reads is
 //! what the log holds when the wallet is about to be asked (`T-020-17`'s review).
 
 use std::cell::RefCell;
