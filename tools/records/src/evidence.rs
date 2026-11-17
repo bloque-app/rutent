@@ -447,10 +447,58 @@ impl Results {
     }
 }
 
+/// The directories the root manifest's `[workspace]` table `exclude`s, as paths under the root with no trailing
+/// slash. Only the `exclude` key of the `[workspace]` table itself counts (not another table's, not a comment's);
+/// the list may span lines. A manifest that is missing or has no list excludes nothing.
+fn excluded_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(text) = std::fs::read_to_string(root.join("Cargo.toml")) else {
+        return Vec::new();
+    };
+    let mut in_workspace = false;
+    let mut list = String::new();
+    let mut open = false;
+    for line in text.lines() {
+        let line = match line.find('#') {
+            // A `#` inside a quoted path is not a comment; no path here has one, and one that did only ever
+            // makes the list read short, so a crate counts as run (the side that fails closed for the table).
+            Some(at) => &line[..at],
+            None => line,
+        }
+        .trim();
+        if open {
+            list.push_str(line);
+            open = !line.contains(']');
+        } else if line.starts_with('[') {
+            in_workspace = line == "[workspace]";
+        } else if in_workspace
+            && let Some(rest) = line.strip_prefix("exclude")
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+        {
+            list.push_str(rest.trim());
+            open = !rest.contains(']');
+        }
+    }
+    let mut out = Vec::new();
+    let mut rest = list.as_str();
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else { break };
+        let path = after[..end].trim_end_matches('/').trim_start_matches("./");
+        if !path.is_empty() {
+            out.push(std::path::PathBuf::from(path));
+        }
+        rest = &after[end + 1..];
+    }
+    out
+}
+
 /// Every `.rs` file under `root` that the root workspace's `cargo test` can run: the walk of the tag check, less
-/// `experiments/` and every directory that is a workspace of its own (a `Cargo.toml` with `[workspace]`: the module
-/// guests, the VOS twin, the wallet guest), whose tests the root run never reaches and so cannot vouch for.
+/// `experiments/`, every directory the root manifest `exclude`s, and every directory that is a workspace of its own
+/// (a `Cargo.toml` with `[workspace]`: the module guests, the VOS twin, the wallet guest), whose tests the root run
+/// never reaches and so cannot vouch for. An excluded directory is matched by its whole path under the root, so a
+/// member crate of the same name elsewhere is walked.
 pub fn find_member_rust_files(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let excluded = excluded_dirs(root);
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -466,7 +514,10 @@ pub fn find_member_rust_files(root: &std::path::Path) -> std::io::Result<Vec<std
                 let skipped = name == "target"
                     || name == "experiments"
                     || name.starts_with('.')
-                    || own_workspace;
+                    || own_workspace
+                    || path
+                        .strip_prefix(root)
+                        .is_ok_and(|under| excluded.iter().any(|dir| dir == under));
                 if !skipped {
                     stack.push(path);
                 }

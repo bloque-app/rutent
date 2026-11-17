@@ -745,3 +745,40 @@ first two were written passing, the code being there):
 | the agent's `Authorise` scope | all three (a step of the agent's order is refused, so the order never runs) |
 | the agent listed in `Registers` | all three (a step of the agent's order is refused, so the order never runs) |
 | the order's amount differing between agent and person | none, by design (above) |
+
+## T-024-16: two reads of `rutent-records` made exact
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tag check** (`tools/records/src/tags.rs`): `scan_tests` now finds a test attribute anywhere in a line's code (strings
+and `//` comments cut out first), so `mod t { #[test] fn x() {} }`, `#[allow(..)] #[test] fn x`, `#[cfg(test)] mod t {
+#[test] fn x }` and two tests on one line are found, each once per attribute, as the multi-line form already was. The
+module path is read from the braces as the text is walked (one stack entry per `{`, the segment before it saying
+whether it opens a `mod`, with leading attributes ignored), so a test on the line that opens its module is in that
+module. A line is an "attribute line" (what may stand between a tag and its test) only when nothing but attributes is
+on it: otherwise `// verifies: A` above `#[test] fn a() {}` would also tag the `#[test] fn b() {}` under it.
+
+**Table scan** (`tools/records/src/evidence.rs`): `find_member_rust_files` also skips every directory the root
+manifest's `[workspace]` table `exclude`s (single-line or multi-line list, a trailing `/` or `./` ignored, comments cut),
+matched by the whole path under the root. Defaults that fail closed: only the `[workspace]` table's own `exclude` counts
+(another table's does not); a name match elsewhere does not skip a member of the same name; a list the reader cannot
+parse reads short, so a crate counts as run, never the other way. The tag check's walk (`find_rust_files`) is
+unchanged: an excluded crate's tests still need their tags.
+
+**Tests**: `test whose attribute follows other code on its line is found and needs its tag` and `tests of an excluded
+crate still need their tags` (`tests/records.rs`), `crate the root manifest excludes is not counted as run by the
+table` (`tests/evidence.rs`). The repository still has no untagged test under the stricter read, and no tag needed
+changing.
+
+**Rule-off table** (each switched off alone, restored):
+
+| Switched off | Red |
+|---|---|
+| the whole same-line read (`tags.rs` as at `d4006ba4`) | the same-line test |
+| an attribute line is any line starting `#[` | the same-line test (the tag leaks to the next test) |
+| strings and comments cut from the code read | the same-line test, `inline modules are part of a unit tests path`, `the real workspace has no untagged test` |
+| the module stack | the same-line test, `inline modules are part of a unit tests path` |
+| the manifest's `exclude` list | `crate the root manifest excludes is not counted as run by the table` |
+| exclusion matched by directory name, not whole path | the same table test |
+| `exclude` read from any `[workspace*]` table | the same table test |
+| the tag check's walk skipping excluded crates | `tests of an excluded crate still need their tags` |
