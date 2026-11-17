@@ -5,7 +5,7 @@
 //!
 //! - a [`General`] handle on the log, which implements [`Log`] alone: it writes no decision entry and, since its
 //!   entries reach the log unverified, attributes no statement (`T-022-01`);
-//! - an [`Operator`], whose `raise` takes a [`Raise`](rutent_contracts::core_internal::Raise), a difference and the
+//! - an [`Operator`], whose `raise` takes a [`Raise`], a difference and the
 //!   entries it rests on, and answers only whether it was delivered;
 //! - a [`Clock`], which reads the time.
 //!
@@ -224,6 +224,7 @@ mod tests {
     use super::timestamp;
 
     /// A time round-trips through the contract's own parse of a timestamp.
+    // verifies: REQ-AUD-1
     #[test]
     fn a_clock_reading_is_a_timestamp_of_the_same_second() {
         for text in [
