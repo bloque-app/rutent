@@ -33,3 +33,5 @@ serde = { version = "1.0.229", features = ["derive"] }
 [dev-dependencies]
 # Real Ed25519 keys and signed advertisements for the log's attribution tests (`T-022-01`).
 rutent-conformance = { path = "../../conformance", features = ["signing"] }
+# The contract's schemas validate what the checkpointer issues (`T-022-07`).
+jsonschema = { version = "0.60.2", default-features = false }

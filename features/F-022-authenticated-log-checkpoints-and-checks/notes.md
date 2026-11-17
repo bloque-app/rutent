@@ -1046,3 +1046,79 @@ the two changed `T-022-02` tests and `--operator-key` held.
 
   Not run against the scenario test (each run is about 80 s): its figures are the runs' own and its checks overlap
   the above. A first cut of three structure mutations did not compile (missing doc, moved closure) and was redone.
+
+## T-022-07
+
+- **What is built.** The checkpointer issues, the checkpoint store keeps and the checker reads the contract's own
+  types: `rutent_contracts::core_internal::Checkpoint` (`urn:rutent:core-internal:checkpoint`) and
+  `CheckpointOpening` (`urn:rutent:core-internal:checkpoint-opening`), re-exported by `core-audit`'s `checkpoint`
+  module as `Checkpoint` and `Opening`, with `CheckpointShape`, `CheckpointOpeningShape`, `CheckpointSignature`,
+  `Tick`, `Salt` and `SignatureValue`. The crate's own `Checkpoint`, `Opening`, `CHECKPOINT_SHAPE` and
+  `OPENING_SHAPE` are gone: no local copy of a shape. Edits: `src/checkpoint/mod.rs`, `src/checkpoint/checker.rs`,
+  doc of `src/bin/audit-check.rs` (no code: it reads lines through `Checker`, which now reads the contract's shapes),
+  `tests/checkpoints.rs`, and `Cargo.toml` (`jsonschema` as a dev-dependency, as `core-orch` has it) with `Cargo.lock`.
+  Nothing under `contracts/`.
+- **Signing.** The signature is still the log's key's over the RFC 8785 canonical JSON of the checkpoint without
+  `signature.value` (`signing_input`), which is what the contract's description says. The contract's
+  `SignatureValue` can't hold the empty string the old code signed with, so the unsigned value carries a placeholder
+  of the right shape; `signing_input` leaves it out, so what is signed is the same.
+- **Default: a clean switch, old files are not read.** No deployment holds a checkpoint store or an `audit-check`
+  input in `urn:rutent:core-audit:*` yet (pre-production), so there is no reader for them. A store holding such a record
+  is refused on open (`NOT_ITS_CHECKPOINTS`, as for any record that isn't one), a checkpoint in the old shape is
+  `Finding::NotACheckpoint`, and an old opening is no opening (`NoOpening`). Fails closed; reversible by adding a
+  reader, which no row asks for.
+- **Default: the commitment's domain is unchanged** (`rutent:core-audit:checkpoint:v1`). The contract leaves
+  computing the commitment to `core-audit` ("SHA-256 over a domain, ...") and names no domain; the domain is not
+  a shape.
+- **Default: the store record `Kept` and the cursor stay `core-audit`'s own.** They are the store's records, not
+  published and not read outside the crate; only the two members of `Kept` are the contract's shapes.
+- **A stricter reading than before, by the contract's types.** A checkpoint or opening is now refused for a member
+  more or fewer, a tick that isn't 16 lower-case hexadecimal digits, a salt that isn't 32 bytes in the canonical
+  encoding, a signature value not in its canonical encoding, and another `shape`. The one visible change to a
+  `T-022-04` test: `a_checkpoint_off_its_tick_and_an_opening_off_its_log_or_salt_open_nothing` built an opening with a
+  16-byte salt and expected `DoesNotHold`; the contract's opening can't hold one, so the checker reads it as no
+  opening and the test now expects `NoOpening` (still red, as before: nothing opens the checkpoint). The tests'
+  builders (`forged`, the re-signing of an edited checkpoint) build the contract's types; no assertion else changed.
+- **The rewrite is still detected.** `DoesNotHold` for a history rewritten before the last checkpoint is unchanged
+  and is exercised by the `T-022-04` tests (`rewrite_with_full_operator_access_is_detected_by_the_checker`, the tool
+  test) and again on the fixture-derived bytes below.
+- **Tests** (`tests/checkpoints.rs`, written first and seen red on assertions): the four of the row, plus one for
+  the default.
+  - `checkpoint_issued_is_valid_against_the_contracts_schema`: three periods, busy and idle; each published checkpoint
+    validates against `checkpoint.schema.json` (with the schemas it refers to registered, offline), is bytes of the
+    contract's type that serialise back to the same bytes, and is the one the store holds.
+  - `opening_issued_is_valid_against_the_contracts_schema`: the same for the openings, as handed over and as stored.
+  - `checker_reads_the_contracts_checkpoint_and_opening_fixtures`: the contract's opening fixture byte for byte, and
+    its checkpoint fixture with only the commitment, the log's key and the signature a static file can't hold set
+    (everything else, tick 42, the time and the log's name, is the fixture's), over a 110-entry history on the
+    schedule the fixture implies, is clean; the three invalid checkpoint fixtures, signed by the log's key so that only
+    their shape refuses them, are `NotACheckpoint`; the fixture opening without its salt is `NoOpening`; `audit-check`
+    exits 0 on the same bytes and 1 with `DoesNotHold` on a history rewritten after.
+  - `checkpoints_of_busy_and_idle_periods_still_cant_be_told_apart`: on the contract's shape, the same length, the same
+    six members, schema-valid, for a busy run and an idle one. (`T-022-04`'s own test of the same property still runs
+    unchanged.)
+  - `a_checkpoint_in_the_old_shape_is_no_checkpoint_and_its_store_is_refused`: the default above.
+- **Rule-off table** (each switched off once, `cargo test -p rutent-core-audit --test checkpoints`, tree restored;
+  none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | the checkpoint published with a `size` member | `checkpoint_issued_is_valid_against_the_contracts_schema`, `checkpoints_of_busy_and_idle_periods_still_cant_be_told_apart`, and five `T-022-04` tests that read what is published |
+  | the opening handed to the checker with an extra member | `opening_issued_is_valid_against_the_contracts_schema`, and two `T-022-04` tests |
+  | the checker reads a checkpoint leniently (drops `size` and `salt`, forces the `shape`) | `checker_reads_the_contracts_checkpoint_and_opening_fixtures`, `a_checkpoint_in_the_old_shape_is_no_checkpoint_and_its_store_is_refused` |
+  | the store's read-back skips a record that isn't the contract's | `a_checkpoint_in_the_old_shape_is_no_checkpoint_and_its_store_is_refused` |
+
+  A first cut of the fixtures test used the invalid fixtures as they are, whose signature is a placeholder, so the
+  lenient reader still refused them on the signature and the test stayed green; they are re-signed now, which is what
+  made the rule-off red.
+- **Gaps.**
+  - The contract's schema and fixtures can't say that the commitment opens, or that the signature is the log's: a
+    static fixture holds a placeholder signature and commitment, so the test derives them (above). Owner: none; it is
+    the nature of a fixture, and the derived test is the check.
+  - A party reading a checkpoint outside rutent's crates with the schema alone cannot recompute the commitment, which
+    needs the opening (by design, `REQ-AUD-14`); the domain the commitment is hashed under is `core-audit`'s and is
+    not in the contract. If an outside checker is to recompute commitments independently of `core-audit`, the
+    domain and the byte layout need a place in the contract's README. Owner: `T-025-05`'s review to decide whether it
+    is a finding; not needed by any row.
+  - `contracts/core-internal/README.md` still says `T-022-07` "moves `core-audit` off" the old URNs; it is now true,
+    and is the contracts' own file, so unedited here (`DEC-20`). Owner: the next contract round (`T-020-30`).

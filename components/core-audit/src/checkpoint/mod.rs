@@ -6,6 +6,14 @@
 //!   the log moved: a short, fixed-size, signed commitment to the log's root, salted afresh each time, with no raw
 //!   size and no root in it. What it commits to, and the salt, are its [`Opening`], which stays in core-audit's own
 //!   checkpoint store (outside the log, ADR-0005) and goes to the checker with the history.
+//! - **The shapes are the contract's** (`T-022-07`): a checkpoint is `urn:rutent:core-internal:checkpoint` and its
+//!   opening `urn:rutent:core-internal:checkpoint-opening`, the types `rutent-contracts` gives them, re-exported here
+//!   as [`Checkpoint`] and [`Opening`]; there is no copy of either in this crate. What the checkpointer issues, the
+//!   store keeps and the checker reads are values of those types, so a party reading a checkpoint outside rutent's
+//!   crates, with the contract's schema, and the checker agree on its bytes. Computing and opening the commitment,
+//!   and the domain it is hashed under, stay core-audit's. A store or a file in the earlier shapes
+//!   (`urn:rutent:core-audit:checkpoint`) is not read: no deployment holds one yet, and a record that isn't the
+//!   contract's is refused ([`NOT_ITS_CHECKPOINTS`]) or taken for no checkpoint (`Finding::NotACheckpoint`).
 //! - [`Checker`] is the check, run by a party outside the operator, or by the operator itself as its own review
 //!   (`REQ-AUD-3`): from the history's records, the checkpoints it holds as they were published, and their openings,
 //!   and nothing else. It needs no [`AuditLog`], no evidence store and no key but the log's
@@ -25,8 +33,12 @@ use std::rc::Rc;
 use ed25519_dalek::{Signer as _, SigningKey};
 use rutent_contracts::core_internal::Violation;
 use rutent_contracts::core_internal::calls::{AppendFailure, KeptStatements};
+pub use rutent_contracts::core_internal::{
+    CHECKPOINT_OPENING_SHAPE, CHECKPOINT_SHAPE, Checkpoint, CheckpointOpening as Opening,
+    CheckpointOpeningShape, CheckpointShape, CheckpointSignature, Salt, SignatureValue, Tick,
+};
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{PublicKey, SafeInteger, signing_input};
+use rutent_contracts::provider_role::{PublicKey, SafeInteger, SignatureScheme, signing_input};
 use rutent_contracts::router_api::{Id, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -36,14 +48,7 @@ pub use checker::{Checker, Finding, Report, ReviewError, read_lines, split_kept}
 use crate::log::kept::{base64url, from_base64url};
 use crate::log::merkle::Hash;
 use crate::log::{AuditLog, Store, StoreError, digest};
-use crate::receipts::ReceiptSignature;
 use crate::receipts::receipt::timestamp;
-
-/// A checkpoint's `shape`.
-pub const CHECKPOINT_SHAPE: &str = "urn:rutent:core-audit:checkpoint";
-
-/// An opening's `shape`.
-pub const OPENING_SHAPE: &str = "urn:rutent:core-audit:checkpoint-opening";
 
 /// The domain a commitment is hashed under, so no other SHA-256 of the same parts reads as one.
 const DOMAIN: &[u8] = b"rutent:core-audit:checkpoint:v1";
@@ -105,44 +110,8 @@ impl Schedule {
     }
 }
 
-/// What the operator publishes for one tick: fixed in size, and nothing but a commitment. It holds no size, no
-/// root, no count and no salt (`REQ-AUD-14`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Checkpoint {
-    /// Always [`CHECKPOINT_SHAPE`].
-    pub shape: String,
-    /// The log.
-    pub log: Id,
-    /// The tick, as 16 lower-case hexadecimal digits, so a checkpoint's size never tells how far along the schedule
-    /// it is.
-    pub tick: String,
-    /// When the tick fell on the schedule, to the second: the schedule's time, never the time of writing.
-    pub at: Timestamp,
-    /// SHA-256 of the domain, the log, the tick, the salt, the size and the root.
-    pub commitment: Digest,
-    /// The log's signature.
-    pub signature: ReceiptSignature,
-}
-
-/// What a checkpoint commits to, and the salt: kept in the checkpoint store, and handed to the checker with the
-/// history. It is not published.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Opening {
-    /// Always [`OPENING_SHAPE`].
-    pub shape: String,
-    /// The log.
-    pub log: Id,
-    /// The tick, as the checkpoint has it.
-    pub tick: String,
-    /// The salt, 32 fresh bytes, base64url without padding.
-    pub salt: String,
-    /// The number of entries the log held, whose root the checkpoint commits to.
-    pub size: SafeInteger,
-}
-
-/// A record of the checkpoint store: a checkpoint as published, and its opening.
+/// A record of the checkpoint store: a checkpoint as published, and its opening, each of the shape the contract gives
+/// it (`urn:rutent:core-internal:checkpoint` and `:checkpoint-opening`, `T-022-07`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Kept {
@@ -168,6 +137,11 @@ pub const NO_SUCH_CHECKPOINT: &str =
 /// A tick as 16 lower-case hexadecimal digits.
 pub fn tick_text(tick: u64) -> String {
     format!("{tick:016x}")
+}
+
+/// A tick as the contract's [`Tick`].
+fn tick_value(tick: u64) -> Tick {
+    Tick::new(tick_text(tick)).expect("sixteen hexadecimal digits are a tick")
 }
 
 /// The tick a text of 16 lower-case hexadecimal digits names.
@@ -267,7 +241,7 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         let through = checkpointer
             .kept
             .last()
-            .and_then(|k| tick_of(&k.opening.tick));
+            .and_then(|k| tick_of(k.opening.tick.as_str()));
         let records: Vec<Vec<u8>> = checkpointer
             .log
             .borrow()
@@ -322,10 +296,9 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
             let tick = checker.read_checkpoint(&published).ok_or_else(refused)?.0;
             let next = kept
                 .last()
-                .map_or(0, |k| tick_of(&k.opening.tick).unwrap_or(0) + 1);
+                .map_or(0, |k| tick_of(k.opening.tick.as_str()).unwrap_or(0) + 1);
             if record.opening.tick != record.checkpoint.tick
                 || record.opening.log != log
-                || record.opening.shape != OPENING_SHAPE
                 || tick != next
             {
                 return Err(refused());
@@ -351,7 +324,7 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         for kept in self.kept.iter().skip(from).take(MOST_PER_RUN as usize) {
             ran.published
                 .push(serde_json::to_vec(&kept.checkpoint).expect("a checkpoint is JSON"));
-            ran.through = tick_of(&kept.opening.tick);
+            ran.through = tick_of(kept.opening.tick.as_str());
         }
         ran
     }
@@ -380,7 +353,7 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         let next = self
             .kept
             .last()
-            .map_or(0, |k| tick_of(&k.opening.tick).map_or(0, |t| t + 1));
+            .map_or(0, |k| tick_of(k.opening.tick.as_str()).map_or(0, |t| t + 1));
         let last = due.min(next.saturating_add(MOST_PER_RUN - 1));
         for tick in next..=last {
             if let Err(failure) = self.issue(tick) {
@@ -424,28 +397,31 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
         };
         let at = self.schedule.at(tick).ok_or(AppendFailure::Unavailable)?;
         let mut checkpoint = Checkpoint {
-            shape: CHECKPOINT_SHAPE.to_owned(),
+            shape: CheckpointShape::Checkpoint,
             log: log.clone(),
-            tick: tick_text(tick),
+            tick: tick_value(tick),
             at,
             commitment: commitment(&log, tick, &salt, size as u64, &root),
-            signature: ReceiptSignature {
-                scheme: "ed25519".to_owned(),
+            signature: CheckpointSignature {
+                scheme: SignatureScheme::Ed25519,
                 key: self.public.clone(),
-                value: String::new(),
+                // Any value of the shape: the signing input leaves `signature.value` out.
+                value: SignatureValue::new("A".repeat(86)).expect("a signature's shape"),
             },
         };
         let unsigned = serde_json::to_vec(&checkpoint).map_err(|_| AppendFailure::Unavailable)?;
         let input = signing_input(&unsigned).map_err(|_| AppendFailure::Unavailable)?;
-        checkpoint.signature.value = base64url(&self.key.sign(&input).to_bytes());
+        checkpoint.signature.value =
+            SignatureValue::new(base64url(&self.key.sign(&input).to_bytes()))
+                .ok_or(AppendFailure::Unavailable)?;
         let published = serde_json::to_vec(&checkpoint).map_err(|_| AppendFailure::Unavailable)?;
         let kept = Kept {
             checkpoint,
             opening: Opening {
-                shape: OPENING_SHAPE.to_owned(),
+                shape: CheckpointOpeningShape::CheckpointOpening,
                 log,
-                tick: tick_text(tick),
-                salt: base64url(&salt),
+                tick: tick_value(tick),
+                salt: Salt::new(base64url(&salt)).ok_or(AppendFailure::Unavailable)?,
                 size: SafeInteger::try_from(size as u64).expect("a log of fewer than 2^53 entries"),
             },
         };
@@ -461,5 +437,5 @@ impl<S: Store, K: KeptStatements, C: Store> Checkpointer<S, K, C> {
 
 /// The salt an opening holds, decoded, where it is 32 bytes.
 pub(crate) fn salt_of(opening: &Opening) -> Option<Vec<u8>> {
-    from_base64url(&opening.salt).filter(|s| s.len() == 32)
+    from_base64url(opening.salt.as_str()).filter(|s| s.len() == 32)
 }

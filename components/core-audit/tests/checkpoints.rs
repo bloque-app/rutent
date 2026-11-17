@@ -14,20 +14,20 @@ use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
 use rutent_contracts::core_internal::{Entry, Violation};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
-    Deployment, JUDGEMENT_SHAPE, PublicKey, SafeInteger, VERSION, signing_input,
+    Deployment, JUDGEMENT_SHAPE, PublicKey, SafeInteger, SignatureScheme, VERSION, signing_input,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::checkpoint::{
-    CHECKPOINT_SHAPE, Checker, Checkpoint, Checkpointer, Finding, HISTORY_FAILS_ITS_CHECKPOINTS,
-    KEY_OF_THE_OPERATOR, Kept, MOST_PER_RUN, NOT_ITS_CHECKPOINTS, OPENING_SHAPE, Opening, Ran,
-    Schedule, commitment, read_lines, split_kept, tick_text,
+    Checker, Checkpoint, CheckpointOpeningShape, CheckpointShape, CheckpointSignature,
+    Checkpointer, Finding, HISTORY_FAILS_ITS_CHECKPOINTS, KEY_OF_THE_OPERATOR, Kept, MOST_PER_RUN,
+    NOT_ITS_CHECKPOINTS, Opening, Ran, Salt, Schedule, SignatureValue, Tick, commitment,
+    read_lines, split_kept, tick_text,
 };
 use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::log::merkle::{self, Hash};
 use rutent_core_audit::log::{
     AuditLog, Clock, FileStore, KeptInMemory, MemoryStore, Settings, Store, StoreError, record,
 };
-use rutent_core_audit::receipts::ReceiptSignature;
 use serde_json::{Value, json};
 
 // --- The deployment ----------------------------------------------------------------------------------------------
@@ -319,6 +319,20 @@ fn later_time(v: &mut Value) {
     v["when"]["at"] = "2026-11-06T00:00:09Z".into();
 }
 
+/// A signature value of the contract's shape, which the signing input leaves out.
+fn placeholder() -> SignatureValue {
+    SignatureValue::new("A".repeat(86)).unwrap()
+}
+
+/// `checkpoint` signed by `key`, over the signing input of its bytes.
+fn sign(checkpoint: &mut Checkpoint, key: &SigningKey) {
+    let unsigned = serde_json::to_vec(&*checkpoint).unwrap();
+    checkpoint.signature.value = SignatureValue::new(base64url(
+        &key.sign(&signing_input(&unsigned).unwrap()).to_bytes(),
+    ))
+    .unwrap();
+}
+
 /// The checkpoint a signer with `key` publishes for `tick`, committing to `size` entries whose root is `root`, under
 /// `salt`, and its opening: what an operator holding the log's key can make.
 fn forged(
@@ -331,25 +345,23 @@ fn forged(
 ) -> (Vec<u8>, Vec<u8>) {
     let public = public_key(key);
     let mut checkpoint = Checkpoint {
-        shape: CHECKPOINT_SHAPE.to_owned(),
+        shape: CheckpointShape::Checkpoint,
         log: id(log),
-        tick: tick_text(tick),
+        tick: Tick::new(tick_text(tick)).unwrap(),
         at: schedule().at(tick).unwrap(),
         commitment: commitment(&id(log), tick, &[salt; 32], size, root),
-        signature: ReceiptSignature {
-            scheme: "ed25519".to_owned(),
+        signature: CheckpointSignature {
+            scheme: SignatureScheme::Ed25519,
             key: public,
-            value: String::new(),
+            value: placeholder(),
         },
     };
-    let unsigned = serde_json::to_vec(&checkpoint).unwrap();
-    checkpoint.signature.value =
-        base64url(&key.sign(&signing_input(&unsigned).unwrap()).to_bytes());
+    sign(&mut checkpoint, key);
     let opening = Opening {
-        shape: OPENING_SHAPE.to_owned(),
+        shape: CheckpointOpeningShape::CheckpointOpening,
         log: id(log),
-        tick: tick_text(tick),
-        salt: base64url(&[salt; 32]),
+        tick: Tick::new(tick_text(tick)).unwrap(),
+        salt: Salt::new(base64url(&[salt; 32])).unwrap(),
         size: SafeInteger::try_from(size).unwrap(),
     };
     (
@@ -489,7 +501,7 @@ fn checkpoints_of_busy_and_idle_periods_cant_be_told_apart() {
         for (p, k) in rig.published.iter().zip(rig.checkpointer.kept()) {
             let text = String::from_utf8_lossy(p);
             assert!(!text.contains(&empty));
-            assert!(!text.contains(&k.opening.salt));
+            assert!(!text.contains(k.opening.salt.as_str()));
         }
     }
     // Each opens, for the one who holds the history and the openings.
@@ -1130,9 +1142,7 @@ fn a_checkpoint_off_its_tick_and_an_opening_off_its_log_or_salt_open_nothing() {
     // Re-signed with the log's key, dated an hour late.
     let mut late: Checkpoint = serde_json::from_slice(&c).unwrap();
     late.at = schedule().at(1).unwrap();
-    late.signature.value = String::new();
-    let unsigned = serde_json::to_vec(&late).unwrap();
-    late.signature.value = base64url(&key.sign(&signing_input(&unsigned).unwrap()).to_bytes());
+    sign(&mut late, &key);
     let report = checker().check(
         &records,
         &[serde_json::to_vec(&late).unwrap()],
@@ -1156,22 +1166,23 @@ fn a_checkpoint_off_its_tick_and_an_opening_off_its_log_or_salt_open_nothing() {
     );
     assert_eq!(report.findings, [Finding::NoOpening { tick: 0 }]);
 
-    // A 16-byte salt, whose commitment is made over it faithfully.
+    // A 16-byte salt, whose commitment is made over it faithfully. The contract's opening holds a salt of 32 bytes,
+    // so what names a short one is no opening: nothing opens the checkpoint (`T-022-07`, which read it as one that
+    // opens nothing).
     let salt = [7u8; 16];
     let mut short: Checkpoint = serde_json::from_slice(&c).unwrap();
     short.commitment = commitment(&id(LOG), 0, &salt, 3, &root);
-    short.signature.value = String::new();
-    let unsigned = serde_json::to_vec(&short).unwrap();
-    short.signature.value = base64url(&key.sign(&signing_input(&unsigned).unwrap()).to_bytes());
-    let mut opening: Opening = serde_json::from_slice(&o).unwrap();
-    opening.salt = base64url(&salt);
+    sign(&mut short, &key);
+    let mut opening: Value = serde_json::from_slice(&o).unwrap();
+    opening["salt"] = base64url(&salt).into();
+    assert!(serde_json::from_value::<Opening>(opening.clone()).is_err());
     let report = checker().check(
         &records,
         &[serde_json::to_vec(&short).unwrap()],
         &[serde_json::to_vec(&opening).unwrap()],
         Some(0),
     );
-    assert_eq!(report.findings, [Finding::DoesNotHold { tick: 0 }]);
+    assert_eq!(report.findings, [Finding::NoOpening { tick: 0 }]);
 }
 
 /// A commitment binds the log, the tick, the salt, the size and the root, each: changing any one gives another. An
@@ -1228,4 +1239,354 @@ fn every_prefix_root_the_checker_computes_is_the_logs() {
             "{size}"
         );
     }
+}
+
+// --- The contract's shapes (`T-022-07`) --------------------------------------------------------------------------
+
+/// The core-internal contract's directory.
+fn contract_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/core-internal")
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(path).unwrap_or_else(|e| panic!("{path:?}: {e}")))
+        .unwrap()
+}
+
+/// A validator for the contract's shape `shape`, with the schemas it refers to registered by `$id`, so every `$ref`
+/// resolves offline.
+fn validator(shape: &str) -> jsonschema::Validator {
+    let contracts = contract_dir().join("..");
+    let mut schemas: Vec<(String, Value)> = Vec::new();
+    for contract in [
+        "core-internal",
+        "provider-role",
+        "module-interface",
+        "router-api",
+        "state-machine",
+    ] {
+        let dir = contracts.join(contract).join("schemas");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.to_string_lossy().ends_with(".schema.json") {
+                let schema = read_json(&path);
+                schemas.push((schema["$id"].as_str().unwrap().to_owned(), schema));
+            }
+        }
+    }
+    let mut registry = jsonschema::Registry::new();
+    for (id, schema) in schemas {
+        registry = registry.add(id, schema).unwrap();
+    }
+    let registry = registry.prepare().unwrap();
+    let own = read_json(
+        &contract_dir()
+            .join("schemas")
+            .join(format!("{shape}.schema.json")),
+    );
+    jsonschema::options()
+        .offline()
+        .with_registry(&registry)
+        .build(&own)
+        .unwrap()
+}
+
+/// What `validator` finds wrong with `bytes`.
+fn schema_errors(shape: &str, bytes: &[u8]) -> Vec<String> {
+    let value: Value = serde_json::from_slice(bytes).unwrap();
+    validator(shape)
+        .iter_errors(&value)
+        .map(|e| format!("{e} at {}", e.instance_path()))
+        .collect()
+}
+
+/// Every checkpoint a checkpointer publishes, a busy period's and an idle one's, is the contract's checkpoint: valid
+/// against its schema, and bytes of the contract's own type, which writes them as they are.
+// verifies: REQ-AUD-14
+#[test]
+fn checkpoint_issued_is_valid_against_the_contracts_schema() {
+    let mut rig = Rig::new("shape-checkpoint");
+    for (tick, volume) in [(0, 0), (1, 4), (2, 0)] {
+        rig.add(volume);
+        rig.tick(tick);
+    }
+    assert_eq!(rig.published.len(), 3);
+    for (tick, bytes) in rig.published.iter().enumerate() {
+        assert_eq!(schema_errors("checkpoint", bytes), Vec::<String>::new());
+        let value: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(value["shape"], "urn:rutent:core-internal:checkpoint");
+        let typed: rutent_contracts::core_internal::Checkpoint =
+            serde_json::from_slice(bytes).unwrap();
+        assert_eq!(&serde_json::to_vec(&typed).unwrap(), bytes, "tick {tick}");
+    }
+    // What the checkpoint store keeps for the checker's side is the same bytes.
+    let (published, _) = split_kept(&lines(&rig.dir.checkpoints()));
+    assert_eq!(published, rig.published);
+}
+
+/// Every opening a checkpointer keeps, and hands the checker, is the contract's opening.
+// verifies: REQ-AUD-14
+#[test]
+fn opening_issued_is_valid_against_the_contracts_schema() {
+    let mut rig = Rig::new("shape-opening");
+    for (tick, volume) in [(0, 2), (1, 0)] {
+        rig.add(volume);
+        rig.tick(tick);
+    }
+    let handed = rig.openings();
+    let (_, from_the_store) = split_kept(&lines(&rig.dir.checkpoints()));
+    assert_eq!(handed.len(), 2);
+    assert_eq!(handed, from_the_store);
+    for bytes in &handed {
+        assert_eq!(
+            schema_errors("checkpoint-opening", bytes),
+            Vec::<String>::new()
+        );
+        let value: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            value["shape"],
+            "urn:rutent:core-internal:checkpoint-opening"
+        );
+        let typed: rutent_contracts::core_internal::CheckpointOpening =
+            serde_json::from_slice(bytes).unwrap();
+        assert_eq!(&serde_json::to_vec(&typed).unwrap(), bytes);
+    }
+}
+
+fn fixture(kind: &str, name: &str) -> Value {
+    read_json(
+        &contract_dir()
+            .join("fixtures")
+            .join(kind)
+            .join(format!("{name}.json")),
+    )
+}
+
+/// The contract's checkpoint fixture with the three members no fixture can hold right: its commitment to `root`'s
+/// history, and the log's key and signature. Every other member, and the whole opening, are the fixture's.
+fn fixture_checkpoint(root: &Hash) -> Vec<u8> {
+    let opening = fixture("valid", "checkpoint-opening-of-a-tick");
+    let salt =
+        rutent_core_audit::log::kept::from_base64url(opening["salt"].as_str().unwrap()).unwrap();
+    let mut value = fixture("valid", "checkpoint-of-a-tick");
+    let size = opening["size"].as_u64().unwrap();
+    let tick = u64::from_str_radix(value["tick"].as_str().unwrap(), 16).unwrap();
+    value["commitment"] =
+        serde_json::to_value(commitment(&id(LOG), tick, &salt, size, root)).unwrap();
+    value["signature"]["key"] = the_logs_key().as_str().into();
+    let placeholder = serde_json::to_vec(&value).unwrap();
+    value["signature"]["value"] = base64url(
+        &log_key()
+            .sign(&signing_input(&placeholder).unwrap())
+            .to_bytes(),
+    )
+    .into();
+    serde_json::to_vec(&value).unwrap()
+}
+
+/// The checker reads the contract's own fixtures: the opening as it is, and the checkpoint with only the commitment
+/// and signature a static file can't hold; a checkpoint of the contract's invalid fixtures, one carrying a size, one
+/// a salt, one whose tick tells its size, is none, and an opening with no salt opens nothing. `audit-check` accepts
+/// the same bytes.
+// verifies: REQ-AUD-10
+#[test]
+fn checker_reads_the_contracts_checkpoint_and_opening_fixtures() {
+    let opening = fixture("valid", "checkpoint-opening-of-a-tick");
+    let at = fixture("valid", "checkpoint-of-a-tick")["at"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(opening["size"], 110);
+    // The schedule the fixture is on: tick 42 falls at its time, an hour to the tick.
+    let first = Timestamp::new("2026-11-08T15:00:00Z").unwrap();
+    let schedule = Schedule::new(&first, EVERY).unwrap();
+    assert_eq!(schedule.at(42).unwrap().as_str(), at);
+    let checker = Checker::new(the_logs_key(), id(LOG), schedule).from(42);
+
+    let mut rig = Rig::new("shape-fixtures");
+    rig.add(110);
+    let records = rig.records();
+    let root = rig.root();
+    let checkpoint = fixture_checkpoint(&root);
+    let opening_bytes = serde_json::to_vec(&opening).unwrap();
+    let report = checker.check(
+        &records,
+        std::slice::from_ref(&checkpoint),
+        std::slice::from_ref(&opening_bytes),
+        Some(42),
+    );
+    assert!(report.is_clean(), "{:?}", report.findings);
+
+    // The contract's invalid fixtures are no checkpoint, and the one without its salt is no opening.
+    for name in [
+        "checkpoint-carrying-its-size",
+        "checkpoint-carrying-its-salt",
+        "checkpoint-whose-tick-tells-its-size",
+    ] {
+        // Signed by the log's key all the same, so only its shape refuses it.
+        let mut value = fixture("invalid", name);
+        value["signature"]["key"] = the_logs_key().as_str().into();
+        let unsigned = serde_json::to_vec(&value).unwrap();
+        value["signature"]["value"] = base64url(
+            &log_key()
+                .sign(&signing_input(&unsigned).unwrap())
+                .to_bytes(),
+        )
+        .into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let report = checker.check(
+            &records,
+            &[bytes],
+            std::slice::from_ref(&opening_bytes),
+            None,
+        );
+        assert_eq!(
+            report.findings,
+            [Finding::NotACheckpoint { position: 0 }],
+            "{name}"
+        );
+    }
+    let saltless =
+        serde_json::to_vec(&fixture("invalid", "checkpoint-opening-without-its-salt")).unwrap();
+    let report = checker.check(
+        &records,
+        std::slice::from_ref(&checkpoint),
+        &[saltless],
+        Some(42),
+    );
+    assert_eq!(report.findings, [Finding::NoOpening { tick: 42 }]);
+
+    // The tool reads the same bytes, from files.
+    let outside = TempDir::new("shape-fixtures-outside");
+    let write = |name: &str, lines: &[Vec<u8>]| -> PathBuf {
+        let mut out = lines.join(&b'\n');
+        out.push(b'\n');
+        let path = outside.0.join(name);
+        std::fs::write(&path, out).unwrap();
+        path
+    };
+    let (history, checkpoints, openings) = (
+        write("history", &records),
+        write("checkpoints", &[checkpoint]),
+        write("openings", &[opening_bytes]),
+    );
+    let run = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_audit-check"))
+            .env_clear()
+            .current_dir(&outside.0)
+            .args(["--history"])
+            .arg(&history)
+            .arg("--checkpoints")
+            .arg(&checkpoints)
+            .arg("--openings")
+            .arg(&openings)
+            .args(["--key", the_logs_key().as_str(), "--log", LOG])
+            .args(["--first", first.as_str(), "--every", &EVERY.to_string()])
+            .args(["--from", "42", "--through", "42"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let honest = run(&[]);
+    assert_eq!(honest.status.code(), Some(0), "{honest:?}");
+    // Asked about a history that isn't the one committed to, it finds the rewrite.
+    rewrite(&rig.dir.history(), 3, later_time);
+    let rewritten = write("rewritten", &lines(&rig.dir.history()));
+    let found = std::process::Command::new(env!("CARGO_BIN_EXE_audit-check"))
+        .env_clear()
+        .current_dir(&outside.0)
+        .arg("--history")
+        .arg(&rewritten)
+        .arg("--checkpoints")
+        .arg(&checkpoints)
+        .arg("--openings")
+        .arg(&openings)
+        .args(["--key", the_logs_key().as_str(), "--log", LOG])
+        .args(["--first", first.as_str(), "--every", &EVERY.to_string()])
+        .args(["--from", "42", "--through", "42"])
+        .output()
+        .unwrap();
+    assert_eq!(found.status.code(), Some(1), "{found:?}");
+    assert!(String::from_utf8_lossy(&found.stdout).contains("DoesNotHold"));
+}
+
+/// On the contract's shape the checkpoints of a busy period and an idle one are still alike to an observer: each is
+/// valid against the one schema, the same size and the same six members, and holds neither a size, a root, a salt
+/// nor a count.
+// verifies: AC-37, REQ-AUD-14
+#[test]
+fn checkpoints_of_busy_and_idle_periods_still_cant_be_told_apart() {
+    let mut busy = Rig::new("shape-busy");
+    let mut idle = Rig::new("shape-idle");
+    for (tick, volume) in [(0, 0), (1, 30), (2, 1), (3, 0)] {
+        busy.add(volume);
+        busy.tick(tick);
+        idle.tick(tick);
+    }
+    assert_eq!(busy.published.len(), 4);
+    for (tick, (b, i)) in busy.published.iter().zip(&idle.published).enumerate() {
+        assert_eq!(b.len(), i.len(), "tick {tick}");
+        for bytes in [b, i] {
+            assert_eq!(schema_errors("checkpoint", bytes), Vec::<String>::new());
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let mut names: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            names.sort_unstable();
+            assert_eq!(
+                names,
+                ["at", "commitment", "log", "shape", "signature", "tick"]
+            );
+        }
+    }
+}
+
+/// A checkpoint store written in core-audit's own earlier shapes, which no deployment holds yet, is not read: the
+/// checkpointer refuses to open on it, and the checker takes an old-shaped checkpoint for none.
+// verifies: REQ-AUD-14
+#[test]
+fn a_checkpoint_in_the_old_shape_is_no_checkpoint_and_its_store_is_refused() {
+    let mut rig = Rig::new("shape-old");
+    rig.add(2);
+    rig.tick(0);
+    let current: Value = serde_json::from_slice(&rig.published[0]).unwrap();
+    let mut old = current.clone();
+    old["shape"] = "urn:rutent:core-audit:checkpoint".into();
+    let unsigned = serde_json::to_vec(&old).unwrap();
+    old["signature"]["value"] = base64url(
+        &log_key()
+            .sign(&signing_input(&unsigned).unwrap())
+            .to_bytes(),
+    )
+    .into();
+    let old = serde_json::to_vec(&old).unwrap();
+    let report = checker().check(
+        &rig.records(),
+        std::slice::from_ref(&old),
+        &rig.openings(),
+        Some(0),
+    );
+    assert!(
+        report
+            .findings
+            .contains(&Finding::NotACheckpoint { position: 0 })
+    );
+
+    let mut opening: Value = serde_json::from_slice(&rig.openings()[0]).unwrap();
+    opening["shape"] = "urn:rutent:core-audit:checkpoint-opening".into();
+    let record = serde_json::to_vec(&json!({
+        "checkpoint": serde_json::from_slice::<Value>(&old).unwrap(),
+        "opening": opening,
+    }))
+    .unwrap();
+    let mut store = MemoryStore::default();
+    store.append(&record).unwrap();
+    let refused = Checkpointer::new(Rc::clone(&rig.log), store, log_key(), schedule());
+    assert_eq!(
+        refused.err(),
+        Some(AppendFailure::Refused(Violation(NOT_ITS_CHECKPOINTS)))
+    );
 }
