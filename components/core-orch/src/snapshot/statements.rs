@@ -243,8 +243,9 @@ fn find_nested(value: &Value, path: &mut Vec<PathStep>, found: &mut Vec<Vec<Path
 /// from the kept bytes (core-internal's `attribute`): orchestration never attributes a statement, and the log's
 /// general handle refuses one it did. Its `about` is the one handed in, with the transaction the bytes sign where
 /// they name one, since the log verifies a statement naming a transaction only about that transaction. The maker
-/// acts for its publisher, or for the operator where the operator publishes it; a verifier's judgement is made in
-/// the verifier's role.
+/// acts for its publisher, or for the operator where the operator publishes it, in the provider's role either way:
+/// a module the operator publishes is a provider, and the log records a statement only in a role its maker holds
+/// (core-internal's `attribute`); a verifier's judgement is made in the verifier's role.
 pub fn record_refused(
     evidence: &mut dyn Evidence,
     log: &mut dyn OrchestrationLog,
@@ -257,15 +258,15 @@ pub fn record_refused(
         serde_json::from_slice(&refused.bytes).map_err(|_| RecordError::Unrecordable)?;
     let received_at = clock.now().timestamp().ok_or(RecordError::Unrecordable)?;
     let acts = Id::new(claimed.maker.as_str()).ok_or(RecordError::Unrecordable)?;
-    let (party, role) = match catalogue.publishers().publisher(acts.as_str()) {
-        Some(Publisher::Operator) => (Id::new("operator"), Role::Operator),
-        Some(Publisher::Party(publisher)) => (Id::new(publisher), Role::Provider),
-        None => (Some(acts.clone()), Role::Provider),
+    let party = match catalogue.publishers().publisher(acts.as_str()) {
+        Some(Publisher::Operator) => Id::new("operator"),
+        Some(Publisher::Party(publisher)) => Id::new(publisher),
+        None => Some(acts.clone()),
     };
     let role = if claimed.shape == JUDGEMENT_SHAPE {
         Role::Verifier
     } else {
-        role
+        Role::Provider
     };
     let maker = Actor {
         party: party.ok_or(RecordError::Unrecordable)?,

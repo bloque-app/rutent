@@ -3621,7 +3621,13 @@ router-api), a `DEC-20` path, and only the consumer lines that compiling needs (
   11. *Late status and a later inner node*: `Action::AskStatus {order, segment, provider}`, decided and taken as an
      effect, row `status-is-asked-of-the-segments-provider`. `reversal-rests-on-its-evidence` reads the reserve at
      the segment's from-node (its `reserve` reading) instead of the order's origin reserve for the failed provider's
-     own word: at the first node they are the same reserve, so no existing case moved.
+     own word. Corrected on review: this widens admission and closes no fail-open. The base row already refused the
+     origin reserve's word at a node not its own, through `reserve`; the change admits one case more, the provider
+     that delivered to a later inner node failing out of it and vouching for itself as that node's reserve
+     (`REQ-ORD-3`'s second sentence), which a split order's later part needs. At the first node the two readings are
+     one reserve, and no admitted history moved; `--the-origin-reserves-own-word-at-a-later-inner-node` was refused
+     before too, its field now `whose` where it was `reserve`. A reversible reading, on the owner's form (ADR-0008's
+     open question).
   12. *`decision-is-for-its-caller`*: row (none to point to) on `decide`.
   13. *Role check*: `attribute` refuses (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`) a statement whose bytes bear its
      claim out in a role its maker doesn't hold: the operator's maker as `operator`, any other as `provider` or
@@ -3714,3 +3720,58 @@ router-api), a `DEC-20` path, and only the consumer lines that compiling needs (
   | `What::PartEvidence` rests on statements, at least one | the fixture tests, `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid` |
   | `attribute`'s role a maker holds | `the_log_not_the_writer_attributes_a_stated_entry`, `verified_statement_recorded_in_a_role_its_maker_does_not_hold_is_refused` |
   | schema: a summary's `ended`, a try from 1; a mismatch's `segment`; a decline's `report`; a holding record's `node`; a part's evidence's `part`; a status ask's `segment`; an unanswered operation's `transaction`; an opening's `salt`; a checkpoint's closed properties, its tick's pattern | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` and each item's named test |
+
+### T-020-21, the review of `457ecc62`
+
+The review (Opus, fresh): changes, no blocker. Each item, as built on this branch:
+
+1. *A stuck part's evidence tied to its own part* (should-fix). `part-evidence-rests-on-statements`'s `about` now
+   holds each statement to the part's own resolution: about the order and the transaction a `resolve_stuck` effect
+   whose decide step names the part goes under, no segment, first bound to the order alone (`about_the_resolution`,
+   as an outcome's evidence about a stuck resolution is). The reviewer's probes, the evidence named for p1 or for a
+   part with no resolution on p3's result under `tx-d3`, are refused cases (`--another-part`,
+   `--a-part-with-no-resolution`). **Default, reversible**: a bare statement (grade 4) rests on the provider the
+   resolution names to move the value (`resolution.by`), a new field `provider`, as a segment's rests on its
+   provider's (`--provider` refused, `--the-moving-providers-word` admitted).
+2. *Item 11's write-up corrected* (above, the CHANGELOG and the README): a widening, not a closed fail-open. The
+   reviewer's cases as fixtures: D, the node's reserve failing out of it on its own word, is
+   `--at-a-later-inner-node-its-reserves-own-word` (admitted, the round's own); A, the node's reserve confirming
+   another's failure, `--at-a-later-inner-node-the-nodes-reserve-on-anothers-failure` (admitted); B, another failed
+   provider's own word there, `--at-a-later-inner-node-the-failed-providers-own-word` (refused, `whose`).
+3. *Rows for the gaps*: `T-021-09` (policy's answer to `decline_outcome`, which flips `core-authz`'s guard back,
+   and its rule for `ask_status`; wave 26, before `T-020-20` and `T-020-27`, which now wait on it and move to wave
+   27 with `T-020-25` and `T-020-28`); `T-020-30` (the next contract round: gap 3, a stuck resolution's evidence
+   entry required, gap 7, `T-022-05`'s report tolerance by increment and gross or net, and, at the coordinator's word,
+   `T-022-06`'s review's role on a measure record, per provider and per verifier; wave 28; `T-020-31` is left for
+   `T-022-06`'s author's measure-caller row). `T-024-10` and
+   `T-025-05` wait on both, in wave 29.
+4. *An operator's module's role* (should-fix). `core-orch`'s `snapshot::record_refused` claimed a module the
+   operator publishes in the operator's role, which the round's `attribute` refuses once the module's key verifies
+   it. SPEC has a module as a provider (`REQ-MDL-1`; the catalogue's `Publisher::Operator` is "a module it
+   publishes"), and every other writer claims it so, so the writer changed: the provider's role, for the operator's
+   party. Test `operators_module_statement_is_claimed_in_the_providers_role` (`core-orch`'s
+   `tests/snapshot_statements.rs`), and the contract's attribution case
+   `refused--a-module-the-operator-publishes-in-the-operators-role`.
+
+Low items, each done: the round's entry in `contracts/CHANGELOG.md`; `entry_at`'s doc comment restored above it,
+`receipt_of`'s its own; a charge marked `no_formula` names a `maximum` of `0` (`Raise::check`, invalid fixture
+`raise-of-a-charge-marked-with-no-formula-naming-a-maximum`), and an unmarked charge in another asset stays admitted
+until `T-020-29` writes the mark (`T-020-29`'s gap); a public end's mismatch is at its movement's network
+(`Rust`, invalid fixture `verified-entry-of-a-public-mismatch-at-another-network`) and of a segment that isn't a
+part's final deposit (`public-mismatch-rests-on-the-providers-result`'s `non_final`, case `--non_final`); that its
+node is the segment's planned public end stays Core's to hold (`T-020-22`), named in the README; the README says
+`earlier` is never required and a checker links one deposit's arrivals by its notices' signed transaction.
+
+- **Order of work.** The review's fixes came before their fixtures this time; each new rule was switched off once
+  and a test went red (below).
+- **Gaps, updated.** 1 and 2 are `T-021-09`'s, 3 and 7 `T-020-30`'s. 4, 5 and 6 stand as written.
+- **Rule-offs of the review round:**
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `part-evidence-rests-on-statements`'s `provider` (grade 4 on the moving provider's word) | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | its `about` on the part's own resolution transaction | the same two |
+  | `public-mismatch-rests-on-the-providers-result`'s `non_final` | `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid`, the citation table's |
+  | a public mismatch at its movement's network (`What::check`) | the fixture tests, the mismatch test |
+  | a marked charge's maximum of nothing (`Raise::check`) | the fixture tests, the no-formula test |
+  | `record_refused` claiming an operator's module as a provider | `operators_module_statement_is_claimed_in_the_providers_role` |

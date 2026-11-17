@@ -219,6 +219,10 @@ pub static CLOSING_RELATIONS: [Relation; 4] = [
                 "about",
                 "a mismatch's provider result is about its order and segment",
             ),
+            (
+                "non_final",
+                "a public end's mismatch is recorded for a segment that isn't a part's final deposit, which closes on a public record alone",
+            ),
         ],
         // What the provider said it moved is its own verified result about the segment: the log holds its salted
         // commitment, so that the figures the mismatch states are the result's is for whoever holds the kept bytes.
@@ -236,6 +240,9 @@ pub static CLOSING_RELATIONS: [Relation; 4] = [
                     s.about.as_ref().is_some_and(|a| {
                         a.order.as_ref() == Some(order) && a.segment.as_ref() == Some(segment)
                     }),
+                    // A part's final deposit is held to a public record (`final-deposit-closes-on-a-public-record`):
+                    // a contradiction there settles nothing, so it is no non-final end's mismatch.
+                    !final_deposit(order.as_str(), segment.as_str(), h),
                 ],
             ),
             _ => Match::NotTarget,

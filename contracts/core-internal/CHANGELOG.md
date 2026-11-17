@@ -754,8 +754,9 @@
   3. A mismatch at a non-final public end, `public_mismatch {order, segment, node, movement, found: wrong_destination
      | wrong_asset | wrong_amount, moved, stated, rests_on}`, and its raise, `difference: public_end {order, segment,
      found, moved, stated}` (`PublicFigures`: destination, asset, amount); the Rust types hold the figure `found`
-     names to differ, and `public-mismatch-rests-on-the-providers-result` holds `rests_on` to the segment's
-     provider's verified result about it (`T-020-22`). (REQ-ORD-33, REQ-AUD-1, ADR-0009)
+     names to differ and the mismatch to its movement's network, and `public-mismatch-rests-on-the-providers-result`
+     holds `rests_on` to the segment's provider's verified result about it, on a segment that isn't a part's final
+     deposit (`T-020-22`). (REQ-ORD-33, REQ-AUD-1, ADR-0009)
   4. Two shapes for a checkpoint and its opening, `checkpoint` (`shape`, `log`, `tick` as 16 hexadecimal digits,
      `at`, `commitment`, `signature`) and `checkpoint-opening` (`shape`, `log`, `tick`, `salt`, `size`), so a party
      outside rutent's crates has a schema; a checkpoint carrying a size or a salt is invalid (`T-022-04`'s hand-off;
@@ -784,19 +785,23 @@
   11. `Action::AskStatus {order, segment, provider}`, asking a provider for a late status, decided and taken as an
      effect, held to the segment's provider by `status-is-asked-of-the-segments-provider`; and
      `reversal-rests-on-its-evidence` reads the reserve at the segment's from-node, not the order's origin reserve,
-     for the failed provider's own word, so a reversal at a later inner node rests on that node's reserve and the
-     origin reserve's word no longer counts at a node not its own (`T-020-12`'s gaps; `T-020-27`). (REQ-ORD-1,
-     REQ-ORD-3, INV-4)
+     for the failed provider's own word. That widens admission in one case only: the provider that delivered to a
+     later inner node fails out of it and vouches for itself as that node's reserve, as `REQ-ORD-3`'s second
+     sentence allows; the origin reserve's word at a node not its own was refused before too (on `reserve`, now on
+     `whose`), and no admitted history moved. A reversible reading, on the owner's form as ADR-0008's open question
+     (`T-020-12`'s gaps; `T-020-27`). (REQ-ORD-1, REQ-ORD-3, INV-4)
   12. `decision-is-for-its-caller`: a `decide` entry whose actor isn't its request's caller is refused (`T-022-02`'s
      probe). (REQ-AUZ-1)
   13. `attribute` records a verified statement only in a role its maker holds, the operator's maker as the
      operator and any other as a provider or a verifier, and refuses one whose bytes bear its claim out in another
-     (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`; `T-022-02`'s probe). (REQ-AUD-2)
+     (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`; `T-022-02`'s probe). A module the operator publishes is a provider, so
+     core-orch's `record_refused` claims it in the provider's role, not the operator's. (REQ-AUD-2)
   14. A charge's `no_formula: for_this_asset`, the mark of a fee in an asset no formula covers, beside its
-     `maximum` of nothing; `no-formula-marks-a-charge-in-another-asset` holds it to a charge in another asset than its
-     segment's `from` (`T-020-14`'s closed gap 3; `T-020-29`). (REQ-QTE-5)
+     `maximum` of nothing, which `Raise::check` holds to `0`; `no-formula-marks-a-charge-in-another-asset` holds it
+     to a charge in another asset than its segment's `from` (`T-020-14`'s closed gap 3; `T-020-29`). (REQ-QTE-5)
   15. A stuck part's evidence, `part_evidence {evidence, order, part, grade, whose, rests_on}`, of a part and no
-     segment; `part-evidence-rests-on-statements` holds it to statements about its order and no segment, and
+     segment; `part-evidence-rests-on-statements` holds it to statements about its own part's resolution, through the
+     transaction that part's `resolve_stuck` names, a bare statement to the provider the resolution names, and
      `stuck-resolved-cites-its-parts-evidence` refuses a `stuck_resolved` citing another order's or part's evidence,
      or a segment's (`T-020-16`'s gap 1; `T-020-20`). (REQ-ORD-39, REQ-AUZ-4)
   16. `answer-follows-its-question` holds a reserve's `arrival-answer` to the `arrival-question` Core asked under its

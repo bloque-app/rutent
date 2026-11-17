@@ -2919,10 +2919,18 @@ pub static RELATIONS: [Relation; 106] = [
                 "a stuck part's evidence graded as signed, or as its maker's word, rests on verified statements",
             ),
             (
+                "provider",
+                "a stuck part's evidence graded as its maker's word rests on its resolution's moving provider's statement",
+            ),
+            (
                 "about",
-                "a stuck part's evidence rests on statements about its order and no segment, through a transaction bound to the order alone",
+                "a stuck part's evidence rests on statements about its own part's resolution: its order and the transaction its resolve_stuck effect names, no segment",
             ),
         ],
+        // Its own part's, through the resolution's own transaction, as an outcome's evidence about a stuck
+        // resolution is (`about_the_resolution`): a statement about another part's resolution of the order, or about
+        // a part with no resolution, evidences nothing here. A bare statement (4) is the word of the provider the
+        // decide step named to move the value (`resolution.by`), as a segment's is its provider's.
         cites: |e, _| match &e.what {
             What::PartEvidence { rests_on, .. } => rests_on
                 .iter()
@@ -2932,22 +2940,28 @@ pub static RELATIONS: [Relation; 106] = [
             _ => none(),
         },
         answers: |e, _, t, h| match (&e.what, stated(t)) {
-            (What::PartEvidence { order, grade, .. }, Some(s)) => judge(
-                true,
-                &[
-                    matches!(s.attribution, Attribution::Verified { .. })
-                        || *grade == EvidenceGrade::PublicRecord,
-                    // A resolution moves the part's value under its own transaction, bound to the order and no
-                    // segment (`stuck-resolution-transaction-is-unbound-or-its-orders`).
-                    s.about.as_ref().is_some_and(|a| {
-                        a.order.as_ref() == Some(order)
-                            && a.segment.is_none()
-                            && a.transaction
-                                .as_ref()
-                                .is_none_or(|x| binding_of(x, h) == Some((order, None)))
-                    }),
-                ],
-            ),
+            (
+                What::PartEvidence {
+                    order, part, grade, ..
+                },
+                Some(s),
+            ) => {
+                let resolutions = part_resolutions(order, part, h);
+                judge(
+                    true,
+                    &[
+                        matches!(s.attribution, Attribution::Verified { .. })
+                            || *grade == EvidenceGrade::PublicRecord,
+                        *grade != EvidenceGrade::Statement
+                            || resolutions.iter().any(|(_, by)| *by == maker_provider(s)),
+                        // A resolution moves the part's value under its own transaction, bound to the order and no
+                        // segment (`stuck-resolution-transaction-is-unbound-or-its-orders`).
+                        resolutions
+                            .iter()
+                            .any(|(transaction, _)| about_the_resolution(s, order, transaction, h)),
+                    ],
+                )
+            }
             _ => Match::NotTarget,
         },
     },
@@ -4996,7 +5010,27 @@ fn resolution_transaction(entry: &VerifiedEntry) -> Option<(&Id, &Id, (&Id, &Id)
     }
 }
 
-/// The entry of `history` at `receipt`, where one is.
+/// Each `resolve_stuck` effect of `order` in `history` whose decide step names `part`: the transaction it goes under
+/// and the provider its resolution names to move the value.
+fn part_resolutions<'a>(order: &Id, part: &Id, history: &'a History) -> Vec<(&'a Id, &'a Id)> {
+    history
+        .iter()
+        .filter_map(|(_, e)| match verified(e).and_then(effect_action)?.0 {
+            Action::ResolveStuck {
+                order: o,
+                carries_out,
+                resolution: Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. },
+                transaction,
+            } if o == order
+                && decided_part(o.as_str(), carries_out, history) == Some(part.as_str()) =>
+            {
+                Some((transaction, by))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// The receipt `entry` holds in `history`.
 fn receipt_of<'a>(entry: &Entry, history: &'a History) -> Option<&'a Receipt> {
     position(entry, history).map(|at| &history[at].0)
@@ -5031,6 +5065,7 @@ fn planned<'a>(
     }
 }
 
+/// The entry of `history` at `receipt`, where one is.
 fn entry_at<'a>(receipt: &Receipt, history: &'a History) -> Option<&'a Entry> {
     history.iter().find(|(r, _)| r == receipt).map(|(_, e)| e)
 }

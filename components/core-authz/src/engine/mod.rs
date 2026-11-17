@@ -2494,7 +2494,7 @@ mod tests {
         ("StuckOrders", true),
         // A policy trait core-internal's `T-020-21` round added, which no row of policy's has built yet: marked
         // unbuilt here so this guard stays green, and owed back to `true` with the engine's `decline_outcome`
-        // (core-internal's README, its hand-offs). Until then nothing implements it and no report is declined.
+        // (`T-021-09`). Until then nothing implements it and no report is declined.
         ("OutcomeDeclines", false),
         ("PersonQuestions", true),
         ("Comparisons", false),

@@ -292,6 +292,17 @@ impl Raise {
                 "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
             ));
         }
+        if let Difference::Charge {
+            no_formula: Some(_),
+            maximum,
+            ..
+        } = &self.difference
+            && maximum.as_str() != "0"
+        {
+            return Err(Violation(
+                "a charge marked as having no formula names a maximum of nothing",
+            ));
+        }
         let same = match &self.difference {
             Difference::Reports { sent, received, .. } => sent == received,
             Difference::ReportsNotComparable { sent, received, .. } => sent.asset == received.asset,
@@ -461,11 +472,18 @@ impl What {
                 "a stuck part's evidence rests on stated entries, at least one, each once",
             ),
             What::PublicMismatch {
+                node,
+                movement,
                 found,
                 moved,
                 stated,
                 ..
             } => {
+                if node.network != movement.network.as_str() {
+                    return Err(Violation(
+                        "a public end's mismatch is at the network its movement is on",
+                    ));
+                }
                 if found.differs(moved, stated) {
                     Ok(())
                 } else {

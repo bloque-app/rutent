@@ -78,7 +78,15 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 42] = [
+const RUST_RULES: [(&str, &str); 44] = [
+    (
+        "verified-entry-of-a-public-mismatch-at-another-network",
+        "a public end's mismatch is at the network its movement is on",
+    ),
+    (
+        "raise-of-a-charge-marked-with-no-formula-naming-a-maximum",
+        "a charge marked as having no formula names a maximum of nothing",
+    ),
     (
         "verified-entry-of-a-public-mismatch-whose-figures-agree",
         "a public end's mismatch names a figure the network and the provider differ on",
@@ -2912,12 +2920,15 @@ fn mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid() {
     assert_accepted_by_both("verified-entry-of-a-public-mismatch-of-a-wrong-destination");
     assert_rejected("verified-entry-of-a-public-mismatch-without-its-segment");
     assert_rejected("verified-entry-of-a-public-mismatch-whose-figures-agree");
+    assert_rejected("verified-entry-of-a-public-mismatch-at-another-network");
     // Raised to the operator as a difference and nothing that can move value (ADR-0009).
     assert_accepted_by_both("raise-of-a-wrong-amount-at-a-public-end");
     assert_rejected("raise-of-a-public-end-whose-figures-agree");
     // What the provider said is its verified result about the segment.
     assert_case("world--public_mismatch");
     assert_case_refused("public-mismatch-rests-on-the-providers-result--maker");
+    // A part's final deposit closes on a public record: a contradiction there is no non-final end's mismatch.
+    assert_case_refused("public-mismatch-rests-on-the-providers-result--non_final");
 }
 
 // verifies: REQ-AUD-14
@@ -3020,7 +3031,16 @@ fn final_deposit_settled_on_a_statement_alone_is_refused_by_the_log() {
 // verifies: REQ-ORD-3
 #[test]
 fn reversal_at_a_later_inner_node_rests_on_that_nodes_confirming_party() {
+    // The node's reserve, the provider that delivered there, confirms another's failure out of it (as before), and
+    // its own failure out of it on its own word, labelled a statement (REQ-ORD-3's second sentence; the widening).
+    assert_case(
+        "reversal-rests-on-its-evidence--at-a-later-inner-node-the-nodes-reserve-on-anothers-failure",
+    );
     assert_case("reversal-rests-on-its-evidence--at-a-later-inner-node-its-reserves-own-word");
+    // No other failed provider's own word counts there, the order's origin reserve's included.
+    assert_case_refused(
+        "reversal-rests-on-its-evidence--at-a-later-inner-node-the-failed-providers-own-word",
+    );
     assert_case_refused(
         "reversal-rests-on-its-evidence--the-origin-reserves-own-word-at-a-later-inner-node",
     );
@@ -3088,6 +3108,7 @@ fn verified_statement_recorded_in_a_role_its_maker_does_not_hold_is_refused() {
 #[test]
 fn charge_raise_marked_as_having_no_formula_whose_fee_is_in_the_segments_own_asset_is_refused() {
     assert_accepted_by_both("raise-of-a-charge-in-an-asset-no-formula-covers");
+    assert_rejected("raise-of-a-charge-marked-with-no-formula-naming-a-maximum");
     assert_case("no-formula-marks-a-charge-in-another-asset--in-another-asset");
     assert_case_refused("no-formula-marks-a-charge-in-another-asset--asset");
     assert_case_refused("no-formula-marks-a-charge-in-another-asset--missing");
@@ -3100,7 +3121,16 @@ fn evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid() {
     assert_rejected("verified-entry-of-a-stuck-parts-evidence-without-its-part");
     assert_rejected("verified-entry-of-a-stuck-parts-evidence-resting-on-nothing");
     assert_case("world--part_evidence");
-    assert_case_refused("part-evidence-rests-on-statements--about");
+    assert_case("part-evidence-rests-on-statements--the-moving-providers-word");
+    // Its own part's, through its resolution's own transaction: not another part's, nor a part with no resolution.
+    for name in [
+        "part-evidence-rests-on-statements--about",
+        "part-evidence-rests-on-statements--another-part",
+        "part-evidence-rests-on-statements--a-part-with-no-resolution",
+        "part-evidence-rests-on-statements--provider",
+    ] {
+        assert_case_refused(name);
+    }
 }
 
 // verifies: REQ-AUZ-4, REQ-ORD-39
