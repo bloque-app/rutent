@@ -389,6 +389,21 @@ fn test_whose_attribute_follows_other_code_on_its_line_is_found_and_needs_its_ta
         "#[allow(dead_code)] #[test] fn fine() {}",
     ]);
     assert!(tagged.is_empty(), "{tagged:?}");
+    // An attribute line with a trailing comment, or a `]` inside a string, is still an attribute line.
+    let through = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[allow(dead_code)] // why",
+        "#[test]",
+        "fn a() {}",
+    ]);
+    assert!(through.is_empty(), "{through:?}");
+    let bracket = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[should_panic(expected = \"a]b\")]",
+        "#[test]",
+        "fn b() {}",
+    ]);
+    assert!(bracket.is_empty(), "{bracket:?}");
     // The module of a test on the line that opens its module is that module.
     let modules = |source: &str| scan_tests("a.rs", source).remove(0).module;
     assert_eq!(modules("mod t { #[test] fn x() {} }"), ["t"]);

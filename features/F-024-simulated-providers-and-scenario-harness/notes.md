@@ -760,15 +760,20 @@ on it: otherwise `// verifies: A` above `#[test] fn a() {}` would also tag the `
 
 **Table scan** (`tools/records/src/evidence.rs`): `find_member_rust_files` also skips every directory the root
 manifest's `[workspace]` table `exclude`s (single-line or multi-line list, a trailing `/` or `./` ignored, comments cut),
-matched by the whole path under the root. Defaults that fail closed: only the `[workspace]` table's own `exclude` counts
-(another table's does not); a name match elsewhere does not skip a member of the same name; a list the reader cannot
-parse reads short, so a crate counts as run, never the other way. The tag check's walk (`find_rust_files`) is
-unchanged: an excluded crate's tests still need their tags.
+matched by the whole path under the root; basic and literal strings are both read. Defaults: only the `[workspace]`
+table's own `exclude` counts (another table's does not); a name match elsewhere does not skip a member of the same
+name; and an `exclude` the reader cannot fully parse (the inline form `workspace = { .. }`, a dotted `workspace.`
+key, a `[workspace.exclude]` table, a value that is not an array of single-line strings, an escape, a list never
+closed) is an `InvalidData` error from the walk, so the table's run fails loud rather than counting an excluded
+crate as run. The tag check's walk (`find_rust_files`) is unchanged: an excluded crate's tests still need their tags.
 
 **Tests**: `test whose attribute follows other code on its line is found and needs its tag` and `tests of an excluded
 crate still need their tags` (`tests/records.rs`), `crate the root manifest excludes is not counted as run by the
 table` (`tests/evidence.rs`). The repository still has no untagged test under the stricter read, and no tag needed
 changing.
+
+**Known noise, left**: block comments (`/* #[test] */`) and raw strings with an inner quote can still read as a
+spurious test. That demands a tag nobody needs; it never hides a test.
 
 **Rule-off table** (each switched off alone, restored):
 
@@ -782,3 +787,6 @@ changing.
 | exclusion matched by directory name, not whole path | the same table test |
 | `exclude` read from any `[workspace*]` table | the same table test |
 | the tag check's walk skipping excluded crates | `tests of an excluded crate still need their tags` |
+| `after_attributes` reading the raw line (a trailing comment, a `]` in a string) | the same-line test, in its two new cases |
+| the parse errors (an unreadable `exclude` read as none) | `a root manifest exclude the reader cannot parse is an error not silence` |
+| literal strings and a `#` inside a quoted path | `crate the root manifest excludes is not counted as run by the table` |

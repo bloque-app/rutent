@@ -658,7 +658,7 @@ fn crate_the_root_manifest_excludes_is_not_counted_as_run_by_the_table() {
     // Two ways of writing the list, and an `exclude` key of another table, which excludes nothing.
     write(
         "Cargo.toml",
-        "[workspace]\nmembers = [\"crates/a\", \"crates/f\"]\n# exclude = [\"crates/a\"]\nexclude = [\n    \"fixtures/f\", # a fixture\n    \"other/g/\",\n]\n\n[workspace.metadata]\nexclude = [\"crates/a\"]\n",
+        "[workspace]\nmembers = [\"crates/a\", \"crates/f\"]\n# exclude = [\"crates/a\"]\nexclude = [\n    \"fixtures/f\", # a fixture\n    \"other/g/\",\n    'lit/h', # a literal string\n    \"hash/#h\",\n]\n\n[workspace.metadata]\nexclude = [\"crates/a\"]\n",
     );
     for krate in [
         "crates/a",
@@ -667,6 +667,8 @@ fn crate_the_root_manifest_excludes_is_not_counted_as_run_by_the_table() {
         "fixtures/fx",
         "other/g",
         "other/g/inner",
+        "lit/h",
+        "hash/#h",
     ] {
         // None of them holds a `[workspace]` line of its own.
         write(&format!("{krate}/Cargo.toml"), "[package]\nname = \"c\"\n");
@@ -686,6 +688,35 @@ fn crate_the_root_manifest_excludes_is_not_counted_as_run_by_the_table() {
             "fixtures/fx/tests/t.rs"
         ]
     );
+}
+
+// verifies: DEC-21
+#[test]
+fn a_root_manifest_exclude_the_reader_cannot_parse_is_an_error_not_silence() {
+    let dir = std::env::temp_dir().join(format!("rutent-evidence-unread-{}", std::process::id()));
+    for (label, manifest) in [
+        (
+            "inline table",
+            "workspace = { members = [], exclude = [\"x\"] }\n",
+        ),
+        ("dotted key", "workspace.exclude = [\"x\"]\n"),
+        ("not an array", "[workspace]\nexclude = \"x\"\n"),
+        ("not strings", "[workspace]\nexclude = [x]\n"),
+        ("escape", "[workspace]\nexclude = [\"a\\\\b\"]\n"),
+        (
+            "multi-line string",
+            "[workspace]\nexclude = [\"\"\"x\"\"\"]\n",
+        ),
+        ("never closed", "[workspace]\nexclude = [\"x\"\n"),
+    ] {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("c/tests")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(dir.join("c/tests/t.rs"), "").unwrap();
+        let found = rutent_records::evidence::find_member_rust_files(&dir);
+        assert!(found.is_err(), "{label}: read as {found:?}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 // verifies: DEC-17

@@ -20,7 +20,8 @@ pub struct TestCase {
     pub tag: Option<Vec<String>>,
 }
 
-/// The text of a line after its leading attributes (`#[..]`, balanced on the line); the whole line when it opens
+/// The text of a line's code (strings and comments already cut, see [`code_of`]) after its leading attributes
+/// (`#[..]`, balanced on the line); the whole line when it opens
 /// with none, and an empty text when an attribute runs on past the line's end.
 fn after_attributes(line: &str) -> &str {
     let mut rest = line.trim_start();
@@ -51,7 +52,8 @@ fn after_attributes(line: &str) -> &str {
 /// A line of attributes alone, or a doc comment: what may stand between a tag and its test. A line that holds
 /// code after its attributes (`#[test] fn a() {}`) is a test or an item of its own, and ends the search.
 fn is_attribute(line: &str) -> bool {
-    line.starts_with("///") || (line.starts_with("#[") && after_attributes(line).is_empty())
+    line.starts_with("///")
+        || (line.starts_with("#[") && after_attributes(&code_of(line)).trim().is_empty())
 }
 
 /// The words of a `// verifies:` comment block ending just above line index `at`, attributes and doc comments
