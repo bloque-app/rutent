@@ -665,4 +665,20 @@ moved after the quote) and `set_check_bound` (deployment settings). No simulator
   `f-013/route-calls-stepped-clock` changes it; re-run alone when the machine is quiet.
 - The customer's session lasts about a quarter hour of Core's clock, which bounds how many slow orders one scenario runs.
 
-**Rule-off table.** See the end of this section (filled when the runs finished).
+**Rule-off table** (each rule switched off in `components/` or `contracts/` for one run, with the other scenarios'
+rules off in the same run where each red names its own cause, and restored; the tests were green first). The three
+ignored tests, and `AC-5`'s late delivery, could not be run; `AC-8` was green with the journal fix applied locally.
+
+| Scenario | Switched off | Red |
+|---|---|---|
+| `AC-42` | the floor check at a settled segment (`segments/mod.rs`, `holds_floor`) | the deposit is handed over after the short withdrawal |
+| `AC-12` | the router's `BelowFloor` drop | the recalculation is refused by Core's own check instead of waiting |
+| `AC-40` | the rule that places a part with no route at a failed final deposit's node (`after_no_route`) | stuck, not waiting for the customer |
+| `AC-5` | the stuck clock's twice (`over_time`, four times) | not stuck past twice the p99 |
+| `AC-7` | the state machine's end only before the first segment settles (`after_end_requested`) | the order past its first segment ends |
+| `AC-9` | the destination check on a return (`makers.contains`) | another provider's report is recorded as the return |
+| `AC-41` | the operator among an order's receivers (`receivers_of`) | `AC-41`, and the operator's half of `AC-7` and `AC-9` |
+| `AC-4`, `AC-6`, `AC-8` | switched off in the same run, but the tests are ignored | not shown; owners above |
+
+`AC-6`'s second rule is held by two layers (Core's `SameParty`/`SameLogin` and policy's `one_actor`): both off together
+is what the table would switch off; neither alone turns the scenario red.
