@@ -486,7 +486,25 @@ impl Modules for Platform {
 /// tests show it.
 struct PublicDeposit;
 
+thread_local! {
+    /// What the segments told the grading, on this test's thread: the number of receipts each `recorded` call
+    /// handed it, and how many times it was asked to raise (`T-020-22`).
+    static TOLD: RefCell<(Vec<usize>, usize)> = const { RefCell::new((Vec::new(), 0)) };
+}
+
 impl Grading for PublicDeposit {
+    fn recorded(&mut self, _: &ToGrade<'_>, receipts: &[Receipt]) {
+        TOLD.with(|t| t.borrow_mut().0.push(receipts.len()));
+    }
+
+    fn raise(
+        &mut self,
+        _: rutent_core_orch::segments::RaiseDesk<'_>,
+    ) -> Result<(), rutent_contracts::core_internal::calls::AppendFailure> {
+        TOLD.with(|t| t.borrow_mut().1 += 1);
+        Ok(())
+    }
+
     fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
         // The withdrawal into `ledger-in`, a private node: its public movement into the node, graded a public
         // record, naming the node and resting on the reserve's result, as `closing::Evidenced` records it, so the log
@@ -2373,6 +2391,31 @@ fn return_after_complete_is_recorded_and_the_order_stays_complete() {
         .unwrap();
     assert_eq!(again, after, "recorded once");
     assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// The segments tell the grading the receipts of the entries it answered for each segment that settles, one entry
+/// each here, and ask it to raise on every run of the part, so a raise it couldn't record is recorded when it can
+/// (`T-020-22`).
+// verifies: REQ-ORD-9
+#[test]
+fn the_grading_is_told_what_it_answered_and_asked_to_raise_on_every_run() {
+    TOLD.with(|t| *t.borrow_mut() = (Vec::new(), 0));
+    let mut world = World::over(Platform::settling());
+    let ran = world.ran();
+    assert_eq!(ran.len(), 3, "{ran:?}");
+    let (told, asked) = TOLD.with(|t| t.borrow().clone());
+    assert_eq!(
+        told,
+        [1, 1, 1],
+        "each settled segment's receipts, one entry each"
+    );
+    assert!(asked >= 1, "asked to raise on the run");
+    let again = TOLD.with(|t| t.borrow().1);
+    world.ran();
+    assert!(
+        TOLD.with(|t| t.borrow().1) > again,
+        "asked on every run, also where nothing is handed over"
+    );
 }
 
 /// The order ended before its first segment settled; the origin reserve's approval arrives after. It is kept as the

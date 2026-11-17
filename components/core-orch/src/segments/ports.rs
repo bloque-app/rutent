@@ -7,6 +7,7 @@
 //! entry points holds them to a decision (`REQ-AUZ-1`). Neither is named after a platform method the scan watches,
 //! and the one implementation for [`Platform`] passes its effect on to nothing: holding it is the rule.
 
+use rutent_contracts::core_internal::calls::{AppendFailure, Log, Operator};
 use rutent_contracts::core_internal::{
     Actor, Effect, Entry, Outcome, Receipt, RouteEnd, TimeSource, VerifiedEntry, VerifiedKind,
     What, When,
@@ -23,6 +24,9 @@ use rutent_prov::module::types::{Events, Handled};
 use rutent_prov::proxy::{CredentialProxy, Resolver, RouteNotNamed, Use};
 
 use rutent_evidence::{Refusal as EvidenceRefusal, Unmatched};
+
+use crate::rounds::Fresh;
+use crate::snapshot::Clock;
 
 /// What a provider's module gave back for one operation Core carried out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +267,41 @@ pub trait Grading {
         let _ = deposit;
         true
     }
+
+    /// The receipts of the entries `Graded::Settles` answered for `settled`, in the order it answered them, once the
+    /// segments appended them: what a grading that raises a difference to cite one of its entries needs (`T-020-22`).
+    /// Called again, with the same receipts, where the segment's settling is run again.
+    fn recorded(&mut self, settled: &ToGrade<'_>, receipts: &[Receipt]) {
+        let _ = (settled, receipts);
+    }
+
+    /// Raises to the operator what the grading found that it raises, and records each raise: a difference and nothing
+    /// that can move value (`REQ-ORD-9`, ADR-0009). Called on every run of a part, so a raise whose record the log
+    /// couldn't take is recorded when it can, and none is raised twice.
+    ///
+    /// # Errors
+    ///
+    /// If the log refused or couldn't take a raise's entry; the raise made is kept and its entry appended as built on
+    /// the next call.
+    fn raise(&mut self, desk: RaiseDesk<'_>) -> Result<(), AppendFailure> {
+        let _ = desk;
+        Ok(())
+    }
+}
+
+/// What a grading reaches to raise a difference: the log, Core's clock, a source of fresh identifiers, the
+/// operator's channel and Core's actor, who records the raise.
+pub struct RaiseDesk<'a> {
+    /// The log, through orchestration's handle.
+    pub log: &'a mut dyn Log,
+    /// Core's clock.
+    pub clock: &'a dyn Clock,
+    /// Fresh identifiers, for each raise.
+    pub fresh: &'a mut dyn Fresh,
+    /// The operator's channel.
+    pub operator: &'a mut dyn Operator,
+    /// Core's actor, who records the raise.
+    pub core: &'a Actor,
 }
 
 /// A stand-in that settles a segment on the provider's result alone, graded as its statement (grade 4), resting on

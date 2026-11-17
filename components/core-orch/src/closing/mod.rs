@@ -53,6 +53,9 @@
 
 use std::collections::BTreeMap;
 
+mod public_end;
+
+use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
     Actor, Entry, FeeTo, MismatchKind, Outcome, PublicMovement, Receipt, ReplayFound,
     ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
@@ -72,7 +75,7 @@ use rutent_evidence::{
 };
 use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey};
 
-use crate::segments::{Graded, Grading, Short, ToGrade};
+use crate::segments::{Graded, Grading, RaiseDesk, Short, ToGrade};
 use crate::snapshot::RouteRefusal;
 
 /// A segment's movement on a public network, as that network ties it to the segment's transaction.
@@ -169,6 +172,8 @@ struct Taker {
 pub struct Closing {
     relied: BTreeMap<(String, String), Vec<Taker>>,
     seen: BTreeMap<(String, String), Seen>,
+    /// The mismatches at non-final public ends found and not raised and recorded yet (`T-020-22`).
+    unraised: public_end::Unraised,
 }
 
 impl Closing {
@@ -182,6 +187,7 @@ impl Closing {
     /// evidence `segment_settled` cites and the result's stated entry it rests on.
     pub fn recorded(history: &[(Receipt, Entry)]) -> Self {
         let mut closing = Self::new();
+        closing.unraised = public_end::Unraised::rebuilt(history);
         let verified = |e: &Entry| match e {
             Entry::Verified(v) => Some(v.what.clone()),
             Entry::Stated(_) => None,
@@ -241,6 +247,13 @@ impl Closing {
             }
         }
         closing
+    }
+
+    /// The raises of a non-final public end's mismatch the log refused, each with its order, segment and why: a refusal
+    /// is deterministic and the raise advisory, so the part runs on and the refusal stays readable here
+    /// (`T-020-22`).
+    pub fn refused_raises(&self) -> &[(Id, Id, rutent_contracts::core_internal::Violation)] {
+        self.unraised.refused()
     }
 
     /// The order and segment that first took the public movement `movement` on `network`, if one did.
@@ -440,6 +453,16 @@ impl Grading for Evidenced<'_> {
             NodeRef::Inner(_) => false,
         }
     }
+
+    fn recorded(&mut self, settled: &ToGrade<'_>, receipts: &[Receipt]) {
+        self.closing
+            .unraised
+            .bind(settled.order, settled.segment, receipts);
+    }
+
+    fn raise(&mut self, desk: RaiseDesk<'_>) -> Result<(), AppendFailure> {
+        self.closing.unraised.raise(desk)
+    }
 }
 
 /// A settled segment's settlement, as its result states it.
@@ -530,6 +553,20 @@ fn public_movement(
 /// The segment's own public movement, checked: its network, its id, and the check `CMP-EVIDENCE` made.
 type Checked = (String, MovementId, Check);
 
+/// A non-final segment's public record that contradicts what its provider said, as far as it could be read: what is
+/// recorded of it, each part `None` where it can't be written as the log's shape.
+struct Contradicted {
+    found: rutent_contracts::core_internal::PublicEndMismatch,
+    /// The segment's planned public end on the movement's network.
+    node: Option<rutent_contracts::provider_role::OuterNode>,
+    network: String,
+    movement: MovementId,
+    /// What the network moved.
+    moved: Option<rutent_contracts::core_internal::PublicFigures>,
+    /// What the provider said it moved.
+    stated: Option<rutent_contracts::core_internal::PublicFigures>,
+}
+
 impl Evidenced<'_> {
     /// Whether `node` is declared private by its publisher: an inner node, or a rail with no public record of its
     /// own (`REQ-ORD-33`, `REQ-CAT-22`).
@@ -575,6 +612,8 @@ impl Evidenced<'_> {
         let to_destination = last && !into_private_rail;
         let mut why = None;
         let mut movement: Option<Checked> = None;
+        // What a non-final segment's public record contradicts of what its provider said (`T-020-22`).
+        let mut contradicted: Option<Contradicted> = None;
         if let Some(side) = side {
             let network = node_name(&side.node).to_owned();
             let moved = self.records.movement(&network, settled.transaction);
@@ -601,6 +640,22 @@ impl Evidenced<'_> {
                         },
                     };
                     why = verify_movement(&net, &moved.id, &expected).err();
+                    // A part's final deposit is held to a public record, so its contradiction settles nothing and
+                    // is no mismatch; any other segment settles on its provider's word, and the contradiction is
+                    // recorded and raised.
+                    if !last
+                        && let Some(found) = public_end::found(why)
+                        && let Status::Final(record) = net.status(&moved.id)
+                    {
+                        contradicted = Some(Contradicted {
+                            found,
+                            node: public_end::planned_end(operation, &network),
+                            network: network.clone(),
+                            movement: moved.id.clone(),
+                            moved: public_end::network_figures(&record),
+                            stated: public_end::stated_figures(&expected),
+                        });
+                    }
                     let check = public_record_check(&net, &moved.id, &expected);
                     if check.movement().is_some() {
                         movement = Some((network, moved.id, check));
@@ -856,6 +911,33 @@ impl Evidenced<'_> {
             }
         }
 
+        // A non-final segment's public record that contradicts its provider: recorded as a mismatch, resting on the
+        // provider's result, and raised once the segments have appended it (`REQ-ORD-33`). The segment settles on
+        // the grade it earned above, as it would had the network said nothing.
+        let mismatch = match contradicted {
+            Some(c) => {
+                let (Some(node), Some(moved), Some(stated)) = (c.node, c.moved, c.stated) else {
+                    return Err(Short::Unreadable);
+                };
+                entries.push(verified(
+                    settled.core,
+                    What::PublicMismatch {
+                        order: settled.order.clone(),
+                        segment: settled.segment.clone(),
+                        node,
+                        movement: public_movement(&c.network, &c.movement, None)?,
+                        found: c.found,
+                        moved: moved.clone(),
+                        stated: stated.clone(),
+                        rests_on: settled.result.clone(),
+                    },
+                    settled,
+                ));
+                Some(((c.found, moved, stated), entries.len() - 1))
+            }
+            None => None,
+        };
+
         // What it took, kept only now that it settles: every movement its records name, as the log takes them.
         if let Some((network, movement, _)) = &movement {
             self.closing
@@ -863,6 +945,13 @@ impl Evidenced<'_> {
         }
         for (network, movement, inner) in &node_takes {
             self.closing.take(network, movement, inner, true);
+        }
+        if let Some((figures, index)) = mismatch {
+            self.closing.unraised.expect(
+                (settled.order.clone(), settled.segment.clone()),
+                figures,
+                index,
+            );
         }
         self.closing.seen.insert(
             key,
