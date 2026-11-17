@@ -355,7 +355,7 @@ Built in `components/core-orch/src/notice/summary.rs` (and the hooks in `mod.rs`
 - **Once.** A notice is queued when delivered or abandoned (`queue_summary`), unless the log's summary is known or it
   is queued. The entry is built once and handed again unchanged while the log can't take it now (`Unavailable`,
   three tries a pass, the rest kept for the next), so a retried append is one entry. A summary another run wrote
-  first closes the one queued. A refusal drops the summary and counts as `refused`.
+  first closes the one queued. A refusal for a rule broken is kept in `refused()`; a conflict with another summary of the notice is dropped.
 - **A raise's summary cites a real raise.** The check records a raise after the channel sent it, so the summary waits
   (`waiting`) until the log holds the raise's entry, learned from the log, and is never handed to the log before.
   A raise delivered on a later try, with a `failed` entry, reads delivered through its summary.
@@ -366,7 +366,7 @@ Built in `components/core-orch/src/notice/summary.rs` (and the hooks in `mod.rs`
   as the log's summary is: a notice is delivered if either says so. Reading, reversible default.
 
 Defaults (reversible, fail closed):
-- A summary the log can't take now waits for the next pass; one it refuses is dropped and counted.
+- A summary the log can't take now waits for the next pass; one it refuses for a rule broken is kept in `refused()`, not retried.
 - A notice the ledger shows delivered or past its bound before this row, with no summary, is not summarised (no
   migration; nothing is in production).
 - A summary's `to` for a raise is the deployment's operator.
@@ -376,6 +376,13 @@ Gaps:
   has no shape for them. Owner `F-024` to decide whether they need one (a contract round if so).
 - A restart lists abandoned notices from the log each time; the assembly escalates each once (`F-024`) and must not
   re-escalate one it escalated before.
+- A summary the log refused for a rule broken (or that couldn't be built) is kept, with its `Violation` and entry, in
+  `Notices::refused()`, never retried; a mere conflict (the log already holds another summary of the notice) is
+  dropped silently, since the notice is summarised. Duty, owner `F-024`: surface each `refused()` item to the operator,
+  since nothing else says the notice has no summary. Held by `a_refused_summary_stays_visible` and
+  `a_summary_refused_for_a_conflict_is_not_among_the_refused`.
+- A check's `Channel` send doesn't call `learn`, so after a restart the assembly (`F-024`) must call `notify` (or
+  `summarise`, which learns) before the checks run; otherwise a raise already summarised as delivered is sent again.
 - `F-024` calls `summarise` on its schedule and backs `Notices::resuming` with a ledger for the tries only.
 
 Rule-offs, each alone, `core-orch`'s notice tests run:
@@ -392,6 +399,8 @@ Rule-offs, each alone, `core-orch`'s notice tests run:
 | a notice already summarised is not queued again | `restart_sends_only_the_notices_the_log_shows_neither_delivered_nor_abandoned` |
 | a summary the log holds closes the one queued | `another_runs_summary_closes_the_one_queued` |
 | the summary names the last try | `abandoned_notice_leaves_its_summary_entry_and_is_sent_no_more`, `delivered_notice_leaves_one_summary_entry`, `raise_abandoned_reads_so_and_is_not_tried_again_after_a_restart`, `raise_delivered_after_a_failed_first_try_no_longer_reads_failed`, `restart_sends_only_the_notices_the_log_shows_neither_delivered_nor_abandoned` |
+| a refusal for a rule broken is kept in `refused()` | `a_refused_summary_stays_visible` |
+| a conflict refusal is told from a rule broken | `a_summary_refused_for_a_conflict_is_not_among_the_refused` |
 | a raise's summary outranks its failed entry | `raise_abandoned_reads_so_and_is_not_tried_again_after_a_restart`, `raise_delivered_after_a_failed_first_try_no_longer_reads_failed` |
 
 No rule-off applies to `REQ-AUD-6`'s shape: the contract's type fixes it, so only the scan holds it. The `send`

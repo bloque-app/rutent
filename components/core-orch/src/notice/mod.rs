@@ -86,7 +86,7 @@ use crate::snapshot::Clock;
 
 pub use delivery::{Attempt, BOUND, Key, Ledger, Retried, Volatile};
 pub use inbox::{Inbox, NotTaken, Taken, Verifier};
-pub use summary::{RaiseReading, Summarised, raise_reading};
+pub use summary::{RaiseReading, Refused, Summarised, raise_reading};
 pub use watch::{INTERVAL, Path, SILENCE, Tick, Watch};
 pub use wire::{
     About, AheadSeen, At, Change, DOMAIN, Notice, NoticeKey, PartState, Receiver, View,
@@ -196,6 +196,8 @@ pub struct Notices {
     raises: summary::Raises,
     /// Summaries of notices that ended and aren't in the log yet.
     pending: Vec<summary::Pending>,
+    /// Summaries the log refused for a rule broken.
+    refused: Vec<Refused>,
     /// How many entries were read for summaries and raises.
     learned: usize,
 }
@@ -221,6 +223,7 @@ impl Notices {
             ended: HashMap::new(),
             raises: summary::Raises::new(),
             pending: Vec::new(),
+            refused: Vec::new(),
             learned: 0,
         }
     }

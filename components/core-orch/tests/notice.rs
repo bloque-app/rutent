@@ -18,7 +18,7 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Afterwards, Charge, Decision, DeploymentOperator, Entry, OrderRefusalClass,
     PermissionChange, Raise, ReadAnswer, ReadCheck, ReadOutcome, Reads as Read, Receipt,
-    RefusalClass, Role, Through, What, Work, admit_entry, state_machine_takes,
+    RefusalClass, Role, Through, Violation, What, Work, admit_entry, state_machine_takes,
 };
 use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::router_api::{Id, Timestamp};
@@ -2315,6 +2315,8 @@ fn late_or_replayed_answer_does_not_hide_a_cut() {
 struct Journal {
     entries: Vec<(Receipt, Entry)>,
     down: bool,
+    /// A rule the log answers every append with as broken, whatever the entry.
+    breaks: Option<&'static str>,
 }
 
 impl Journal {
@@ -2322,6 +2324,7 @@ impl Journal {
         Journal {
             entries: entries.to_vec(),
             down: false,
+            breaks: None,
         }
     }
 
@@ -2348,6 +2351,9 @@ impl Log for Journal {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         if self.down {
             return Err(AppendFailure::Unavailable);
+        }
+        if let Some(rule) = self.breaks {
+            return Err(AppendFailure::Refused(Violation(rule)));
         }
         let entry = entry.entry().clone();
         if let Some((receipt, _)) = self.entries.iter().find(|(_, held)| held == &entry) {
@@ -2845,4 +2851,83 @@ fn another_runs_summary_closes_the_one_queued() {
     assert_eq!(journal.summaries().len(), 2);
     assert!(journal.summaries().iter().all(|s| s["last_try"] == 1));
     held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A summary the log refuses for a rule broken stays visible, with the rule and the entry, and is not retried; the
+/// pass counts it. The notice's own state is unchanged: it was delivered.
+// verifies: REQ-ORD-20
+#[test]
+fn a_refused_summary_stays_visible() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut journal = Journal::over(&log[..2]);
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut wire), 2);
+
+    journal.breaks = Some("a rule of the log's");
+    let pass = summarised(&mut n, &mut journal);
+    assert_eq!(
+        pass,
+        Summarised {
+            written: 0,
+            waiting: 0,
+            refused: 2
+        }
+    );
+    assert_eq!(n.refused().len(), 2);
+    assert!(
+        n.refused()
+            .iter()
+            .all(|r| r.violation == Violation("a rule of the log's") && r.entry.is_some())
+    );
+    assert!(
+        n.refused()
+            .iter()
+            .any(|r| matches!(&r.key, Key::Order { to, .. } if to == &operator()))
+    );
+
+    // Never retried: the log, once it takes entries, is handed none of them again.
+    journal.breaks = None;
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(n.refused().len(), 2);
+    assert!(journal.summaries().is_empty());
+}
+
+/// A refusal that is only a conflict, the log already holding another summary of the notice, is no loss: it is not
+/// among the refused, and is not counted. The summary stands in the log.
+// verifies: REQ-ORD-20
+#[test]
+fn a_summary_refused_for_a_conflict_is_not_among_the_refused() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let mut key = TestKey::new();
+    let mut journal = Journal::over(&log[..2]);
+    let stale = journal.entries.clone();
+    let mut first = notices();
+    let mut second = notices();
+
+    let mut down = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    assert_eq!(notified(&mut second, &journal, &mut key, &mut down), 2);
+    let mut up = Wire::default();
+    assert_eq!(notified(&mut first, &journal, &mut key, &mut up), 2);
+    assert_eq!(second.retry(&mut up).delivered, 2);
+    assert_eq!(summarised(&mut first, &mut journal).written, 2);
+
+    // The second run reads the log as it was before the first's summaries, so it hands its own (a second try).
+    let pass = second
+        .summarise(&stale, &core_actor(), &At(NOW), &mut journal)
+        .expect("summarised");
+    assert_eq!(
+        pass,
+        Summarised {
+            written: 0,
+            waiting: 0,
+            refused: 0
+        }
+    );
+    assert!(second.refused().is_empty());
+    assert_eq!(journal.summaries().len(), 2);
+    assert!(journal.summaries().iter().all(|s| s["last_try"] == 1));
 }

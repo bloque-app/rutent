@@ -23,8 +23,8 @@ use std::collections::HashSet;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
 use rutent_contracts::core_internal::{
-    Actor, Count, Entry, NoticeEnd, NoticeOf, NoticeReceiver, Outcome, Receipt, TimeSource,
-    VerifiedEntry, VerifiedKind, What, When,
+    Actor, Count, Entry, NoticeEnd, NoticeOf, NoticeReceiver, Outcome, RELATIONS, Receipt,
+    TimeSource, VerifiedEntry, VerifiedKind, Violation, What, When,
 };
 use rutent_contracts::router_api::Id;
 
@@ -62,10 +62,35 @@ pub struct Summarised {
     pub written: usize,
     /// Summaries kept for a later pass: the log couldn't take them now, or a raise's entry isn't in it yet.
     pub waiting: usize,
-    /// Summaries the log refused, and that are dropped: the log holds another summary of the notice, or the entry
-    /// breaks a rule of the log's.
+    /// Summaries kept in [`Notices::refused`] this pass: the log refused them, or none could be built, for a reason
+    /// other than the log already holding another summary of the notice (that one is dropped, nothing is lost).
     pub refused: usize,
 }
+
+/// A summary the log refused, or that couldn't be built, for a reason that is no mere conflict with another summary of
+/// the notice: a rule broken. It is kept for the assembly (`F-024`) to surface to the operator, since nothing else
+/// says the notice has no summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The notice.
+    pub key: Key,
+    /// The rule broken.
+    pub violation: Violation,
+    /// The entry the log refused, where one was built.
+    pub entry: Option<GeneralEntry>,
+}
+
+/// Whether `violation` is the log's `one-summary-per-notice`: it already holds another summary of the notice.
+fn is_conflict(violation: &Violation) -> bool {
+    RELATIONS
+        .iter()
+        .find(|row| row.name == "one-summary-per-notice")
+        .is_some_and(|row| row.refusal == violation.0)
+}
+
+/// The refusal of a summary no entry can be built for.
+const NOT_BUILT: Violation =
+    Violation("a notice's summary can be built: ids and a last try of 1 or more");
 
 /// How the log reads a raise: its own entry, which is written once and never updated, and the summary of its
 /// notice, which closes it.
@@ -79,8 +104,9 @@ pub enum RaiseReading {
     Abandoned,
 }
 
-/// How `recorded`, the log from its first entry, reads the raise `raise`: `None` where the log holds no such raise. A
-/// summary of the raise's notice outranks the raise's own entry, which is never updated.
+/// How `recorded`, the log from its first entry, reads the raise `raise`: `None` where the log holds neither the raise
+/// nor a summary of its notice (a summary alone is read, as `Delivered` or `Abandoned`). A summary of the raise's
+/// notice outranks the raise's own entry, which is never updated.
 pub fn raise_reading(recorded: &[(Receipt, Entry)], raise: &Id) -> Option<RaiseReading> {
     let mut reading = None;
     for (_, entry) in recorded {
@@ -172,6 +198,12 @@ impl Notices {
         self.learned = self.learned.max(recorded.len());
     }
 
+    /// The summaries the log refused for a rule broken, in the order they were refused, and never retried: the
+    /// assembly surfaces each to the operator.
+    pub fn refused(&self) -> &[Refused] {
+        &self.refused
+    }
+
     /// Writes the summary of each notice that ended (delivered, or abandoned for good) and has none in the log, as
     /// Core, `who`, at `clock`'s now, through the general handle. A summary the log can't take now is kept for the
     /// next pass; a raise's waits for its entry. Once written a summary is never written again, in this run or after
@@ -198,6 +230,11 @@ impl Notices {
             }
             if held.entry.is_none() {
                 let Some(entry) = self.build(&held, who, &at) else {
+                    self.refused.push(Refused {
+                        key: held.key,
+                        violation: NOT_BUILT,
+                        entry: None,
+                    });
                     done.refused += 1;
                     continue;
                 };
@@ -214,7 +251,20 @@ impl Notices {
                     done.waiting += 1;
                     self.pending.push(held);
                 }
-                Err(_) => done.refused += 1,
+                // The log holds another summary of the notice: it is summarised, and nothing is lost.
+                Err(AppendFailure::Refused(violation)) if is_conflict(&violation) => {
+                    self.ended
+                        .entry(held.key.clone())
+                        .or_insert((held.end, held.last_try));
+                }
+                Err(AppendFailure::Refused(violation)) => {
+                    self.refused.push(Refused {
+                        key: held.key,
+                        violation,
+                        entry: Some(entry),
+                    });
+                    done.refused += 1;
+                }
             }
         }
         Ok(done)
