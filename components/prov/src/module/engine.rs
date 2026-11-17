@@ -8,7 +8,7 @@ use wasmtime::{Config, Engine, OptLevel, Strategy, WasmFeatures};
 pub const FORMAT: &str = "wasm-component";
 
 /// The runtime and its pinned version (item `exp2-wasm-runtime`).
-pub const WASMTIME_VERSION: &str = "48.0.8";
+pub const WASMTIME_VERSION: &str = "48.0.9";
 
 /// The binding's own version, which names, with the runtime and the target, what made a release's machine code
 /// (`build.platform_version`). It changed with `T-013-02`'s engine settings, which change the machine code.

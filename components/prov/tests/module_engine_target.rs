@@ -182,3 +182,49 @@ fn assert_refused_for_gc(error: &wasmtime::Error) {
         "refused for another reason: {text}"
     );
 }
+
+/// The version `Cargo.lock` locks for `name`, which must be locked exactly once.
+fn locked_version(lock: &str, name: &str) -> String {
+    let header = format!("name = \"{name}\"\nversion = \"");
+    let mut found = lock.match_indices(&header).map(|(at, _)| {
+        let rest = &lock[at + header.len()..];
+        rest[..rest.find('"').expect("a closing quote")].to_owned()
+    });
+    let version = found
+        .next()
+        .unwrap_or_else(|| panic!("{name} is not in Cargo.lock"));
+    assert!(found.next().is_none(), "{name} is locked at two versions");
+    version
+}
+
+// verifies: THR-85, DEC-27
+#[test]
+fn pinned_runtime_is_the_patched_release() {
+    // `T-025-06`: 48.0.9 fixes the six advisories of 2026-11-16 whose ranges include 48.0.8 (`F-025`'s notes). The
+    // constant the platform version names, the exact requirement and the locked version are one version.
+    const PATCHED: &str = "48.0.9";
+    assert_eq!(engine::WASMTIME_VERSION, PATCHED);
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("the manifest");
+    let requirement = manifest
+        .lines()
+        .find(|line| line.starts_with("wasmtime = "))
+        .expect("the wasmtime dependency");
+    assert!(
+        requirement.contains(&format!("version = \"={PATCHED}\"")),
+        "the requirement is not an exact {PATCHED}: {requirement}"
+    );
+    let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
+        .expect("the lock");
+    assert_eq!(locked_version(&lock, "wasmtime"), PATCHED);
+    // The whole closure moves with it.
+    for krate in [
+        "wasmtime-environ",
+        "wasmtime-internal-cranelift",
+        "wasmtime-internal-core",
+        "pulley-interpreter",
+    ] {
+        assert_eq!(locked_version(&lock, krate), PATCHED, "{krate}");
+    }
+    assert!(engine::platform_version().contains(&format!("wasmtime-{PATCHED}.")));
+}

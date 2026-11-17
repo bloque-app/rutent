@@ -197,3 +197,56 @@ metadata format can't let the flag assertions pass on nothing.
   builds**, not from a run of x86-64 machine code on an x86-64 CPU. A CI run on x86-64 Linux, where the build's own
   target is x86-64 too, is the other half; it was not seen from this arm64 machine. Owner: `T-025-02`'s Linux job.
 - **`F-025`'s other rows** (`T-025-02` to `T-025-05`) are not read here; `T-025-04` restates `THR-85` with this reading.
+
+## T-025-06
+
+The Wasmtime pin bumped from 48.0.8 to 48.0.9 (`components/prov/Cargo.toml`, `Cargo.lock`, `engine::WASMTIME_VERSION`,
+`licences/RECORD`), and the advisories read again at this row's commit, on 2026-11-17.
+
+- **The bump.** `wasmtime =48.0.9` (the exact requirement), through the lock: the fourteen crates of Wasmtime's own
+  release set (`wasmtime`, `wasmtime-environ`, `wasmtime-internal-*`, `pulley-*`) move to 48.0.9 and the thirteen
+  `cranelift-*` crates to 0.135.9, the Cranelift release that goes with it; the test-only dev-dependency
+  `cranelift-codegen =0.135.9` moves with them, as `T-025-01` has it follow the runtime's own. No other package changes
+  version. `cargo update` also re-pointed four Windows-only edges (`errno`, `rustix`, `tempfile`, `winapi-util`) from
+  `windows-sys 0.61.2` to `0.52.0`, both of which are in the lock; those four were put back by hand, so the lock's diff
+  is the version and checksum lines only (`cargo metadata --locked` accepts it).
+- **What 48.0.9's release changes.** The release is three commits from 48.0.8: the eight fixes of its notes, and the version
+  numbers. No default and no compiler setting changes. The only code-generation change is in `bounds_checks.rs`, on paths
+  that only GC object accesses take (`BoundsCheck::StaticObjectField` and the object-end case), which this engine never
+  makes (no GC). `BINDING_VERSION` stays `0.3.0`: the platform version already names the runtime's version, which is what
+  changes the machine code's header, and nothing the binding sets changed. If CI's `engine_from` guard (compatibility
+  hash) trips on the bump, that is the reason to bump the binding to `0.3.1`.
+- **The digests.** The sixteen stand-ins' machine-code digests are not in the repository: `ci` derives them in
+  `a_derivation_records_its_cpu_and_one_digest_for_each_part_and_tells_a_changed_part` (the file records the CPU, the
+  platform version and one digest for each part) and the `rederive` job compares them with a re-derivation on a CPU of
+  another vendor (`B-11`, `G-04`). Nothing is stored to change. They are re-derived by CI at this commit, and are
+  expected to differ from 48.0.8's, since Wasmtime writes its own version into the machine code. **Not re-derived
+  here**: this machine is arm64 macOS, which has no `/proc/cpuinfo` and cannot be a cross-vendor run. The run ids of
+  `ci` and of a `rederive` run that landed on another vendor than the reference's are to be added here by the
+  orchestrator when they exist; a skipped `rederive` run doesn't count (see `T-013-05`'s review round).
+- **The advisories read again, 2026-11-17.** GitHub's advisory API for `bytecodealliance/wasmtime` (state `published`):
+  still 94, the newest published on 2026-11-16; none is dated after 48.0.9's release (crates.io, 2026-11-16) or on
+  2026-11-17. The six that included 48.0.8 (`GHSA-43j2-gcp4-m22g`, `GHSA-wvgq-g5hf-6gm6`, `GHSA-rc4p-x33f-vpr2`,
+  `GHSA-2674-w29h-wqvj`, `GHSA-hj27-mpw9-ff4c`, `GHSA-xrvr-8678-5wp8`) are in 48.0.9's release notes as fixed; the
+  release's other two (`GHSA-5m8g-xhq4-4h93` and `GHSA-f8mm-ggr3-89wh`, in `wasmtime-wasi` and `wasmtime-wasi-http`) are
+  of crates not in the closure. So **no advisory names 48.0.9 in its range.** RustSec's `advisory-db` (commit of
+  2026-11-17 10:14 UTC): its newest `crates/wasmtime` entries are of 2026-10-30; the advisories of 2026-11-16 are
+  still not in it, so `cargo audit` stays silent on 48.0.8 and on 48.0.9 alike, and GitHub's side is the one that
+  shows them. The web pages were not fetched: the API is the same source as `security/advisories`.
+- **Two of the six name a missing cargo feature** (`GHSA-rc4p-x33f-vpr2`: abort in builds without `gc`;
+  `GHSA-2674-w29h-wqvj`: abort in builds without `threads`), and this engine has neither feature. `T-025-01`'s verdict
+  stands: the abort needs a guest that uses GC or threads, and `engine_leaves_off_the_proposals_...` holds that the
+  engine refuses both. The fix makes the question moot.
+- **The test, `pinned_runtime_is_the_patched_release`** (`components/prov/tests/module_engine_target.rs`, `THR-85`,
+  `DEC-27`): `engine::WASMTIME_VERSION`, the exact requirement in `components/prov/Cargo.toml` and the locked versions of
+  `wasmtime`, `wasmtime-environ`, `wasmtime-internal-cranelift`, `wasmtime-internal-core` and `pulley-interpreter` are
+  48.0.9. It is red with the constant at 48.0.8 (see the rule-off table). `engines_compile_target_enables_no_avx_feature`
+  and the other module suites are unchanged.
+- **`licences/RECORD`.** The `dependency licence record` job reads every `Cargo.lock` of the repository, and one record
+  serves them all, with one line per name and version. The experiment's own lock
+  (`experiments/2026-11-07-module-format/wasm-binding`) still locks the 48.0.8 and 0.135.8 sets, as the record of what
+  `EXP-2` scored, so the 27 old lines stay and the 27 lines of the new versions are added beside them (same licences,
+  same decisions, `licence-llvm-exception`). The root lock holds only the new ones now; `components/prov/module-guests`
+  holds none of these crates.
+- **Rule-off.** `pinned_runtime_is_the_patched_release` with `WASMTIME_VERSION` left at `48.0.8`: red on the first
+  assertion. Restoring it: green.
