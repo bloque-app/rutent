@@ -46,6 +46,13 @@ pub struct HandedOnStart {
     pub first_segment: Id,
     /// The proof of the withdrawal.
     pub record: WithdrawalRecord,
+    /// The transaction the wallet ran the withdrawal under, `{provider}-withdrawal-{n}`: its own, not the one a
+    /// decision named (`T-020-26`).
+    pub transaction: String,
+    /// The wallet's signed answer to the withdrawal, as the platform passed it on (a signed result, as bytes): the
+    /// holding account's own statement of it, which the host keeps as the holder's stated entry and a report and a
+    /// confirmation of the hand-on's outcome name (`REQ-ORD-1`, `T-020-26`).
+    pub answer: Vec<u8>,
 }
 
 /// Why a route handed on could not start. Nothing moved, and the account is as it was.
@@ -95,10 +102,12 @@ impl WalletHolding {
         asset: &str,
         order: &str,
         amount: &str,
-    ) -> Result<WithdrawalRecord, StartError> {
+    ) -> Result<(WithdrawalRecord, String, Vec<u8>), StartError> {
         let node = self.node().to_owned();
-        let (next, settled, transaction) =
+        let (next, settled, transaction, signed) =
             self.movement(platform, operator, false, &node, asset, order, amount)?;
+        // An answer that can't be kept whole is no record: the withdrawal's outcome is then the host's to find out.
+        let answer = serde_json::to_vec(&signed).map_err(|_| StartError::NoRecord)?;
         let reference = proof_of_withdrawal(&self.provider, &transaction, &settled.evidence)?;
         let units = settled
             .amount_out
@@ -113,7 +122,7 @@ impl WalletHolding {
             reference,
         };
         self.ledger = next;
-        Ok(record)
+        Ok((record, transaction, answer))
     }
 }
 
@@ -145,7 +154,7 @@ impl Holdings {
             // The value is not there in this asset: the route does not start where the value sits.
             return Err(StartError::ValueNotAtStart(node.clone()));
         }
-        let record = account.withdraw_with_record(
+        let (record, transaction, answer) = account.withdraw_with_record(
             platform,
             operator,
             &first.from.asset.id,
@@ -157,6 +166,8 @@ impl Holdings {
             node: node.clone(),
             first_segment: first.segment_id.clone(),
             record,
+            transaction,
+            answer,
         })
     }
 }

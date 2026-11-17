@@ -3149,3 +3149,28 @@ fn arrival_answer_with_no_arrival_question_before_it_is_refused() {
     );
     assert_case_refused("answer-follows-its-question--an-arrival-answer-after-an-operation");
 }
+
+// --- T-020-26: a hand-on's outcome rests on the holding account's own answer -----------------------------------
+
+// verifies: REQ-ORD-1, REQ-AUZ-4
+#[test]
+fn hand_on_outcome_report_rests_on_a_statement_about_its_linked_order() {
+    let row = "outcome-confirmation-cites-verified-evidence";
+    // The wallet's answer about the linked order the decision named, through the transaction the operator's question
+    // bound to it, is evidence of the hand-on's outcome: the wallet's own, and another maker's for a confirmation.
+    assert_case(&format!(
+        "{row}--a-hand-ons-wallet-answer-about-its-linked-order"
+    ));
+    assert_case(&format!(
+        "{row}--a-hand-ons-linked-order-through-another-makers-statement"
+    ));
+    // Each rule alone: another order's statement, a segment of the linked order's, a transaction first bound to
+    // another order.
+    for name in [
+        "a-hand-on-through-another-order",
+        "a-hand-on-through-a-segment-of-its-linked-order",
+        "a-hand-on-through-a-transaction-bound-to-another-order",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+}

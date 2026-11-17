@@ -23,15 +23,18 @@ use rutent_contracts::state_machine::{OrderState, PartPlan, SourceKind};
 use rutent_core_orch::hand_on::{Basis, HandOn, HandOnError, HandedOn, Handing, Unproven};
 use rutent_core_orch::recalc::Recalculation;
 use rutent_core_orch::segments::{NoProxy, Ran, SegmentOutcome, SegmentsError};
+use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
-    AcceptedRoute, Deciding, HandingOn, LinkedRoutes, LogRead, Moved, Mover, Moving, NoRouteLeft,
-    OperatorSigns, ResolveError, Resolved, Show, Stuck, Withdrawals,
+    AcceptedRoute, Carrying, Confirming, Deciding, HandingOn, LinkedRoutes, LogRead, Moved, Mover,
+    Moving, NoRouteLeft, NotTaken, OperatorSigns, ResolveError, Resolved, Show, Stated, Stuck,
+    Withdrawals,
 };
 use rutent_prov::holding::wallet::{
     HandedOnStart, Operator as WalletOperator, StartError, WalletError, WithdrawalRecord,
 };
 use segments_support::handing::{
     from_the_ledger, hand_parts, linked_record, linked_route, prove, recorded_with_receipts,
+    wallet_answer, wallet_succeeded,
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
@@ -66,6 +69,9 @@ enum Script {
     Answers(StartError),
     /// It builds a statement of another amount than it was asked for.
     Tampers,
+    /// It withdraws and records it, but its signed answer says something else than its record does: this changes
+    /// the answer's outcome.
+    AnswersOtherwise(fn(&mut serde_json::Value)),
 }
 
 /// A node's holding account as `Holdings::start_handed_on` drives it, with what it was shown and handed.
@@ -82,6 +88,9 @@ struct Wallet {
     shown: usize,
     /// A clock the wallet makes unreadable once it was handed the statement.
     breaks_clock: Option<std::rc::Rc<TestClock>>,
+    /// A log that stops attributing statements once the wallet was handed the statement: its answer is recorded
+    /// unattributed.
+    unattributes: Option<std::rc::Rc<std::cell::RefCell<TestLog>>>,
     /// The statements the wallet was handed.
     handed: Vec<Statement<ProviderOperation>>,
 }
@@ -100,6 +109,7 @@ impl Wallet {
             sent: 0,
             shown: 0,
             breaks_clock: None,
+            unattributes: None,
             handed: Vec::new(),
         }
     }
@@ -161,6 +171,9 @@ impl Withdrawals for Wallet {
         if let Some(clock) = &self.breaks_clock {
             clock.set(300_000_000_000);
         }
+        if let Some(log) = &self.unattributes {
+            log.borrow_mut().stop_attributing();
+        }
         let mut record = WithdrawalRecord {
             by: RESERVE.to_owned(),
             node: node.clone(),
@@ -169,16 +182,24 @@ impl Withdrawals for Wallet {
             amount: amount.parse().unwrap(),
             reference: format!("{RESERVE}-withdrawal-{transaction}"),
         };
+        let mut outcome = wallet_succeeded(RESERVE, &transaction, amount);
+        if let Script::AnswersOtherwise(change) = &self.script {
+            change(&mut outcome);
+        }
         match &self.script {
-            Script::Pays | Script::Tampers => {}
+            Script::Pays | Script::Tampers | Script::AnswersOtherwise(_) => {}
             Script::PaysRecorded(change) => change(&mut record),
             Script::Answers(error) => return Err(error.clone()),
         }
+        // The wallet's own signed answer, as the plain wallet's is: a withdrawal result under its own transaction.
+        let answer = wallet_answer(RESERVE, &transaction, self.made_at.as_str(), outcome);
         Ok(HandedOnStart {
             reserve: RESERVE.to_owned(),
             node: node.clone(),
             first_segment: first.segment_id.clone(),
             record,
+            transaction,
+            answer,
         })
     }
 }
@@ -500,9 +521,16 @@ fn operators_hand_on_is_carried_out_by_the_holding_accounts_withdrawal_for_the_l
     // transaction.
     let transaction = sent["transaction"].as_str().unwrap().to_owned();
     let asked = stated_about(&core, LINKED);
-    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(
+        asked.len(),
+        2,
+        "the question, then the holding account's answer: {asked:?}"
+    );
     assert_eq!(asked[0].1.as_deref(), Some(transaction.as_str()));
     assert_eq!(asked[0].2, rutent_contracts::provider_role::OPERATION_SHAPE);
+    // The holding account's own signed answer, kept as its stated entry under its own transaction (`T-020-26`).
+    assert_eq!(asked[1].1.as_deref(), Some(transaction.as_str()));
+    assert_eq!(asked[1].2, rutent_contracts::provider_role::RESULT_SHAPE);
     let result_at = core
         .log
         .borrow()
@@ -512,7 +540,8 @@ fn operators_hand_on_is_carried_out_by_the_holding_accounts_withdrawal_for_the_l
             matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect: r } if *r == effect))
         })
         .expect("the effect's result");
-    assert!(asked[0].0 < result_at, "the question precedes the result");
+    assert!(asked[0].0 < asked[1].0, "the question precedes the answer");
+    assert!(asked[1].0 < result_at, "the answer precedes the result");
 
     // The withdrawal done is what the hand-on takes its route and its proof from.
     let withdrawn = mover.withdrawn(&effect).expect("the withdrawal is done");
@@ -523,6 +552,10 @@ fn operators_hand_on_is_carried_out_by_the_holding_accounts_withdrawal_for_the_l
         AMOUNT.parse::<u128>().unwrap()
     );
     assert!(withdrawn.question.is_some());
+    assert!(
+        withdrawn.statement.is_some(),
+        "the holding account's answer is on record"
+    );
     let (plan, record) = (withdrawn.route.plan.clone(), withdrawn.start.record.clone());
     let mut hand_on = HandOn::new();
     operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
@@ -999,8 +1032,8 @@ fn hand_on_is_carried_out_once() {
     assert_eq!(wallet.handed.len(), 1, "the wallet is handed it once");
     assert_eq!(
         stated_about(&core, LINKED).len(),
-        1,
-        "the question is one entry"
+        2,
+        "the question and the answer are one entry each"
     );
     assert_eq!(count(&core, is_hand_on_effect), 1);
     assert!(mover.withdrawn(&effect).is_some());
@@ -1435,4 +1468,527 @@ fn a_call_that_stopped_after_the_wallet_was_asked_never_asks_it_again() {
         "the wallet is handed one statement in all"
     );
     assert_ne!(resolved, Some(Resolved::Failed));
+}
+
+// The holding account's stated answer as a known outcome (`T-020-26`) -----------------------------------------
+
+/// The wallet's transaction for the move: its own, `{provider}-withdrawal-{n}`, not the one the decision named.
+fn wallets_transaction() -> String {
+    format!("{RESERVE}-withdrawal-1")
+}
+
+/// `maker`'s later signed answer under the wallet's transaction, made now.
+fn later_answer(core: &Core, maker: &str, outcome: serde_json::Value) -> Vec<u8> {
+    wallet_answer(
+        maker,
+        &wallets_transaction(),
+        core.clock.now().timestamp().unwrap().as_str(),
+        outcome,
+    )
+}
+
+/// Takes `bytes` as evidence of the hand-on `effect`'s outcome.
+fn take(
+    core: &mut Core,
+    world: &mut World,
+    mover: &mut Mover,
+    effect: &Receipt,
+    bytes: &[u8],
+) -> Result<Stated, NotTaken> {
+    let (order, part, actor) = (id(ORDER), id(PART), segments_support::core());
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    on_platform(
+        core,
+        &world.catalogue,
+        &mut watched,
+        mover,
+        |parts, delivering| {
+            delivering.statement(
+                parts,
+                &Carrying {
+                    order: &order,
+                    part: &part,
+                    core: &actor,
+                    again: false,
+                },
+                effect,
+                bytes,
+            )
+        },
+    )
+}
+
+/// A hand-on the wallet was handed and answered in an error: its outcome is unknown, the part held.
+fn left_unknown() -> (
+    World,
+    Core,
+    Stuck,
+    Mover,
+    PermitsEveryStep,
+    Decided,
+    Receipt,
+    Wallet,
+) {
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(
+        &core,
+        Script::Answers(StartError::Wallet(WalletError::NotSucceeded)),
+    );
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Unknown);
+    assert_eq!(wallet.handed.len(), 1);
+    assert!(mover.withdrawn(&effect).is_none());
+    still_held(&core);
+    (
+        world,
+        core,
+        stuck,
+        mover,
+        policy,
+        carries_out,
+        effect,
+        wallet,
+    )
+}
+
+/// A hand-on whose wallet was handed the statement and answered in an error is left unknown, and nothing more is
+/// done for it. The holding account's own later signed answer under its own transaction, which Core checks
+/// (attributable, a result, naming the wallet's transaction, a withdrawal result of the amount decided with the
+/// wallet's own record), is taken as the evidence of its outcome and kept once as the holder's stated entry about the
+/// linked order: the mover then gives the withdrawal's start to the hand-on, as it does for one done at once. A
+/// statement of another transaction, one a key never published signed, another amount, a record proving nothing
+/// of this start, and a wallet that was never asked are each not taken.
+// verifies: REQ-ORD-1
+#[test]
+fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated_answer() {
+    let (mut world, mut core, mut stuck, mut mover, mut policy, carries_out, effect, wallet) =
+        left_unknown();
+    let transaction = wallets_transaction();
+    let amount = AMOUNT;
+    let before = stated_about(&core, LINKED).len();
+    // Not taken.
+    let other = wallet_answer(
+        RESERVE,
+        "sim-reserve-a-withdrawal-9",
+        core.clock.now().timestamp().unwrap().as_str(),
+        wallet_succeeded(RESERVE, "sim-reserve-a-withdrawal-9", amount),
+    );
+    assert_eq!(
+        take(&mut core, &mut world, &mut mover, &effect, &other),
+        Err(NotTaken::OfAnotherTransaction)
+    );
+    let mut forged: serde_json::Value = serde_json::from_slice(&later_answer(
+        &core,
+        RESERVE,
+        wallet_succeeded(RESERVE, &transaction, amount),
+    ))
+    .unwrap();
+    forged["signature"]["value"] = rutent_conformance::signing::base64url(&[7u8; 64]).into();
+    assert_eq!(
+        take(
+            &mut core,
+            &mut world,
+            &mut mover,
+            &effect,
+            &serde_json::to_vec(&forged).unwrap()
+        ),
+        Err(NotTaken::Unattributable)
+    );
+    let short = later_answer(&core, RESERVE, wallet_succeeded(RESERVE, &transaction, "1"));
+    assert_eq!(
+        take(&mut core, &mut world, &mut mover, &effect, &short),
+        Err(NotTaken::NotCounted),
+        "another amount than the part held"
+    );
+    let no_record = later_answer(
+        &core,
+        RESERVE,
+        serde_json::json!({
+            "status": "succeeded", "amount_in": amount, "amount_out": amount,
+            "fee": { "asset": "COP", "amount": "0" },
+            "evidence": [{ "grade": 4, "reference": "elsewhere", "by": RESERVE }],
+        }),
+    );
+    assert_eq!(
+        stated_about(&core, LINKED).len(),
+        before,
+        "nothing was kept"
+    );
+    // A success with no record of the wallet's own is its word and no more: kept, saying nothing the move can rest
+    // on, so nothing is started on it.
+    let said_nothing = take(&mut core, &mut world, &mut mover, &effect, &no_record)
+        .expect("kept as the holder's word");
+    assert_eq!(said_nothing.outcome, Some(Resolved::Unknown));
+    let before = stated_about(&core, LINKED).len();
+    assert!(mover.withdrawn(&effect).is_none());
+    // Taken: the holding account's own answer, once however often it is tried.
+    let bytes = later_answer(
+        &core,
+        RESERVE,
+        wallet_succeeded(RESERVE, &transaction, amount),
+    );
+    let stated = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
+    assert_eq!(stated.outcome, Some(Resolved::Done));
+    let again = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken again");
+    assert_eq!(again, stated, "a statement tried again is one entry");
+    let kept = stated_about(&core, LINKED);
+    assert_eq!(kept.len(), before + 1);
+    assert_eq!(kept[before].1.as_deref(), Some(transaction.as_str()));
+    assert_eq!(
+        kept[before].2,
+        rutent_contracts::provider_role::RESULT_SHAPE
+    );
+    // The start the answer proves is the hand-on's, with the answer's receipt for the record to cite.
+    let withdrawn = mover.withdrawn(&effect).expect("known done");
+    assert_eq!(withdrawn.statement, Some(&stated.receipt));
+    assert_eq!(
+        withdrawn.start.record.reference,
+        format!("{RESERVE}-withdrawal-{transaction}")
+    );
+    assert_eq!(withdrawn.start.transaction, transaction);
+    assert_eq!(withdrawn.route, &accepted(&core));
+    // The part is held until the outcome is confirmed, and the wallet was handed the statement once.
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    assert_eq!(wallet.handed.len(), 1);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry up to the answer");
+    // Reported by the mover on the holder's answer and confirmed by another party on another maker's, through the
+    // log: the answer is the evidence a hand-on's outcome rests on, though it names the wallet's own transaction.
+    let (order, actor) = (id(ORDER), segments_support::core());
+    let (bob, carol) = (staff("desk-b", "bob"), staff("desk-c", "carol"));
+    let reported = on_parts(&mut core, |parts| {
+        stuck.known_outcome(
+            parts,
+            &mut policy,
+            Moving {
+                order: &order,
+                carries_out: &carries_out,
+                mover: &bob,
+                core: &actor,
+            },
+            Resolved::Done,
+            &stated.receipt,
+        )
+    })
+    .expect("reported");
+    let Moved::AwaitsConfirmation { report } = reported else {
+        panic!("awaits its confirmation: {reported:?}");
+    };
+    let bytes = later_answer(
+        &core,
+        OTHER_RESERVE,
+        wallet_succeeded(OTHER_RESERVE, &transaction, amount),
+    );
+    let others = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("another maker's");
+    let confirmed = on_parts(&mut core, |parts| {
+        stuck.confirm_outcome(
+            parts,
+            &mut policy,
+            Confirming {
+                order: &order,
+                carries_out: &carries_out,
+                confirmer: &carol,
+                outcome: Resolved::Done,
+                report,
+                reported_with: &stated.receipt,
+                evidence: &others.receipt,
+                core: &actor,
+            },
+        )
+    })
+    .expect("confirmed");
+    assert!(matches!(
+        confirmed,
+        Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        }
+    ));
+    // Done and confirmed, the hand-on takes its route and its record from the answer, and the linked order starts.
+    let withdrawn = mover.withdrawn(&effect).expect("known done");
+    let (plan, record, statement) = (
+        withdrawn.route.plan.clone(),
+        withdrawn.start.record.clone(),
+        withdrawn.statement.cloned().unwrap(),
+    );
+    let mut hand_on = HandOn::new();
+    operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
+    segments_support::handing::prove_citing(
+        &mut core,
+        &mut hand_on,
+        &id(LINKED),
+        &record,
+        &statement,
+    )
+    .expect("the answer's record proves the start");
+    let linked = linked_route(&mut world, &core.clock, LINKED);
+    let ran = run_linked(&mut core, &mut world, &linked).expect("the linked route runs");
+    assert!(settled(&ran), "{ran:?}");
+    core.admitted(&world.catalogue)
+        .expect("the log admits the whole history, the outcome known through the holder's answer");
+}
+
+/// A wallet that was never handed the statement answered nothing: a statement named for its hand-on is taken for no
+/// move, whoever made it.
+// verifies: REQ-ORD-1
+#[test]
+fn a_statement_for_a_hand_on_the_wallet_was_never_asked_is_taken_for_no_move() {
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    // A route the mover refuses before asking the wallet anything.
+    let mut route = accepted(&core);
+    route.order = id("ord-3");
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &Routes(Some(route)),
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Failed);
+    let bytes = later_answer(
+        &core,
+        RESERVE,
+        wallet_succeeded(RESERVE, &wallets_transaction(), AMOUNT),
+    );
+    assert_eq!(
+        take(&mut core, &mut world, &mut mover, &effect, &bytes),
+        Err(NotTaken::NoMove)
+    );
+    assert!(mover.withdrawn(&effect).is_none());
+}
+
+/// A hand-on's failure stated by the holding account alone frees nothing: the mover takes the wallet's own statement
+/// that it failed as evidence and says what it states (`Failed`), but the part stays held, its outcome unknown and
+/// no new decision possible, until another party, with another maker's statement, confirms it (`THR-70`: a wallet
+/// that paid could say it failed). The confirmation, by another actor of another party than the mover, frees it.
+// verifies: REQ-ORD-1, REQ-AUZ-4
+#[test]
+fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_partys_confirmation()
+ {
+    let (mut world, mut core, mut stuck, mut mover, mut policy, carries_out, effect, _wallet) =
+        left_unknown();
+    let (alice, bob, carol) = (
+        staff("desk-a", "alice"),
+        staff("desk-b", "bob"),
+        staff("desk-c", "carol"),
+    );
+    let transaction = wallets_transaction();
+    let failed = serde_json::json!({
+        "status": "failed",
+        "evidence": [{ "grade": 4, "reference": format!("{RESERVE}-failed-{transaction}"), "by": RESERVE }],
+    });
+    let bytes = later_answer(&core, RESERVE, failed);
+    let holders = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
+    assert_eq!(holders.outcome, Some(Resolved::Failed));
+    assert!(
+        mover.withdrawn(&effect).is_none(),
+        "a failure starts nothing"
+    );
+    // Held: the part is stuck and no new decision is taken while the outcome is unknown.
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    let (order, part, actor) = (id(ORDER), id(PART), segments_support::core());
+    let evidence = vec![digest(&"ab".repeat(32))];
+    let resolution = hand_on_resolution();
+    let again = on_parts(&mut core, |parts| {
+        stuck.decide(
+            parts,
+            &mut policy,
+            Deciding {
+                order: &order,
+                part: &part,
+                decider: &alice,
+                resolution: &resolution,
+                evidence: &evidence,
+            },
+        )
+    });
+    assert_eq!(again.map(|_| ()), Err(ResolveError::OutcomeUnknown));
+    // The mover reports it on the holder's own statement: nothing is freed by that.
+    let reported = on_parts(&mut core, |parts| {
+        stuck.known_outcome(
+            parts,
+            &mut policy,
+            Moving {
+                order: &order,
+                carries_out: &carries_out,
+                mover: &bob,
+                core: &actor,
+            },
+            Resolved::Failed,
+            &holders.receipt,
+        )
+    })
+    .expect("reported");
+    let Moved::AwaitsConfirmation { report } = reported else {
+        panic!("awaits its confirmation: {reported:?}");
+    };
+    assert!(
+        stuck.is_stuck(&id(ORDER), &id(PART)),
+        "a report frees nothing"
+    );
+    // Another party's confirmation, on another maker's statement, frees it.
+    let bytes = later_answer(
+        &core,
+        OTHER_RESERVE,
+        serde_json::json!({ "status": "failed" }),
+    );
+    let others = take(&mut core, &mut world, &mut mover, &effect, &bytes)
+        .expect("another maker's statement");
+    assert_eq!(
+        others.outcome, None,
+        "it bears out nothing of the move itself"
+    );
+    let confirmed = on_parts(&mut core, |parts| {
+        stuck.confirm_outcome(
+            parts,
+            &mut policy,
+            Confirming {
+                order: &order,
+                carries_out: &carries_out,
+                confirmer: &carol,
+                outcome: Resolved::Failed,
+                report,
+                reported_with: &holders.receipt,
+                evidence: &others.receipt,
+                core: &actor,
+            },
+        )
+    })
+    .expect("confirmed");
+    assert!(matches!(
+        confirmed,
+        Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            ..
+        }
+    ));
+    assert!(mover.withdrawn(&effect).is_none());
+    assert!(
+        stuck.is_stuck(&id(ORDER), &id(PART)),
+        "freed to a new decision, still stuck"
+    );
+    let decided_again = on_parts(&mut core, |parts| {
+        stuck.decide(
+            parts,
+            &mut policy,
+            Deciding {
+                order: &order,
+                part: &part,
+                decider: &alice,
+                resolution: &resolution,
+                evidence: &evidence,
+            },
+        )
+    });
+    assert!(decided_again.is_ok(), "{decided_again:?}");
+    core.admitted(&world.catalogue)
+        .expect("the log admits the report and the confirmation on the wallet's own answer");
+}
+
+/// A wallet whose signed answer doesn't bear out its own record is not taken as having started the route: the record
+/// says it paid, and the answer, which is what the log keeps, says another amount, another record, or that it failed.
+/// The outcome is unknown and nothing starts on it, whatever the record says.
+// verifies: REQ-ORD-40, REQ-ORD-1
+#[test]
+fn hand_on_whose_answer_does_not_bear_out_its_record_is_left_unknown() {
+    type Other = fn(&mut serde_json::Value);
+    let cases: [(&str, Other); 4] = [
+        ("another amount", |o| {
+            o["amount_in"] = "1".into();
+            o["amount_out"] = "1".into();
+        }),
+        ("an unbalanced answer", |o| o["amount_out"] = "1".into()),
+        ("another record", |o| {
+            o["evidence"][0]["reference"] = "elsewhere".into();
+        }),
+        ("a failure", |o| {
+            *o = serde_json::json!({
+                "status": "failed",
+                "evidence": [{ "grade": 4, "reference": "x", "by": RESERVE }],
+            });
+        }),
+    ];
+    for (why, change) in cases {
+        let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+        let mut mover = Mover::new();
+        let mut policy = PermitsEveryStep::new(&core.log);
+        let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+        let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+        let mut wallet = Wallet::of(&core, Script::AnswersOtherwise(change));
+        let routes = Routes(Some(accepted(&core)));
+        let moved = move_it(
+            &mut core,
+            &mut world,
+            &mut stuck,
+            &mut mover,
+            &mut policy,
+            &carries_out,
+            &bob,
+            &mut wallet,
+            &routes,
+        );
+        let (effect, resolved) = carried_out(moved);
+        assert_eq!(resolved, Resolved::Unknown, "{why}");
+        assert!(mover.withdrawn(&effect).is_none(), "{why}");
+        assert_eq!(wallet.handed.len(), 1, "{why}: asked once");
+        still_held(&core);
+    }
+}
+
+/// A wallet's answer that the log recorded unattributed, its key unknown to the log, is no record a start can rest on:
+/// the log would refuse the `holding_withdrawal` citing it. The move is left unknown, the answer kept, and nothing
+/// starts.
+// verifies: REQ-ORD-40, REQ-AUD-2
+#[test]
+fn hand_on_whose_answer_the_log_could_not_attribute_is_left_unknown() {
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    wallet.unattributes = Some(std::rc::Rc::clone(&core.log));
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Unknown);
+    assert!(mover.withdrawn(&effect).is_none());
+    assert_eq!(stated_about(&core, LINKED).len(), 2, "the answer is kept");
+    still_held(&core);
 }

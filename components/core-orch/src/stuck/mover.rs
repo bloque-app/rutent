@@ -44,12 +44,15 @@ use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, GeneralEnt
 use rutent_contracts::core_internal::{About, Action, Actor, Effect, Outcome, Receipt, Resolution};
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
-    Deposit, NodeRef, Operation as ProviderOperation, Refusal, Statement, Terms,
+    Deposit, NodeRef, Operation as ProviderOperation, Refusal, ReserveMovementOutcome, ResultBody,
+    Statement, Terms,
 };
 use rutent_contracts::router_api::{Id, PolicyBounds, PositiveAmount, Timestamp};
 use rutent_contracts::state_machine::{OperationKind, SegmentState};
 use rutent_prov::catalogue::Catalogue;
-use rutent_prov::holding::wallet::{HandedOnStart, StartError, WalletError};
+use rutent_prov::holding::wallet::{
+    HandedOnStart, StartError, WalletError, WithdrawalRecord, proof_of_withdrawal,
+};
 use rutent_prov::module::types::Events;
 
 use super::handing::{AcceptedRoute, HandingOn};
@@ -131,9 +134,26 @@ struct HandFlight {
     asked: bool,
     verdict: Option<Resolved>,
     start: Option<HandedOnStart>,
+    /// What the wallet was shown: its own transaction, which the question was recorded under, and the operator's
+    /// signed statement.
+    shown: Option<Shown>,
+    /// The wallet's signed answer, kept as the holder's stated entry about the linked order ([`Mover::statements`],
+    /// by these bytes), and the receipt of that entry once the log recorded it attributed.
+    answer: Option<Vec<u8>>,
+    statement: Option<Receipt>,
+    /// The start the holding account's stated answer proved, taken as a known outcome ([`Delivering::statement`]):
+    /// what [`Mover::withdrawn`] gives for a withdrawal left unknown, once its answer is on record attributed.
+    known: Option<(HandedOnStart, Receipt)>,
     /// What the platform and the proxy handed over, each item once, in the order taken.
     drains: Vec<Step>,
     uncarried: bool,
+}
+
+/// What a holding account's wallet was shown for a hand-on: the transaction it names its own withdrawal by, which is
+/// not the one the decision named, and the operator's signed statement of it.
+#[derive(Debug, Clone)]
+struct Shown {
+    transaction: Id,
 }
 
 /// A part's value withdrawn from its holding account for a linked order's route, and so ready to be handed on
@@ -148,6 +168,9 @@ pub struct Withdrawn<'a> {
     pub start: &'a HandedOnStart,
     /// The receipt of the operator's question the wallet answered, which the log holds attributed.
     pub question: Option<&'a Receipt>,
+    /// The receipt of the holding account's own stated answer, which the log holds attributed: what the
+    /// `holding_withdrawal` cites as its record ([`crate::hand_on::Start::statement`], `REQ-ORD-40`).
+    pub statement: Option<&'a Receipt>,
 }
 
 /// The production [`Resolutions`]' state: each move it carried out or is carrying out, by its effect's receipt, and
@@ -221,14 +244,19 @@ impl Mover {
         let Some(Kept::Hand(flight)) = self.kept.get(&key(effect)) else {
             return None;
         };
-        if flight.verdict != Some(Resolved::Done) {
-            return None;
-        }
+        // Done on the holding account's own record, kept as its stated answer; or left unknown and later known done
+        // on that answer ([`Delivering::statement`]). Never on a start the log holds no answer for.
+        let (start, statement) = match (&flight.verdict, &flight.known) {
+            (Some(Resolved::Done), _) => (flight.start.as_ref()?, flight.statement.as_ref()?),
+            (_, Some((start, statement))) => (start, statement),
+            _ => return None,
+        };
         Some(Withdrawn {
             linked: &flight.linked,
             route: &flight.route,
-            start: flight.start.as_ref()?,
+            start,
             question: flight.question.as_ref().and_then(|q| q.receipt.as_ref()),
+            statement: Some(statement),
         })
     }
 }
@@ -345,8 +373,10 @@ impl Delivering<'_> {
         effect: &Receipt,
         bytes: &[u8],
     ) -> Result<Stated, NotTaken> {
-        let Some(Kept::Flight(flight)) = self.mover.kept.get(&key(effect)) else {
-            return Err(NotTaken::NoMove);
+        let flight = match self.mover.kept.get(&key(effect)) {
+            Some(Kept::Flight(flight)) => flight,
+            Some(Kept::Hand(_)) => return self.hand_statement(parts, carrying, effect, bytes),
+            _ => return Err(NotTaken::NoMove),
         };
         let (provider, transaction) = (flight.provider.clone(), flight.transaction.clone());
         let (operation, terms, units) = (
@@ -918,6 +948,10 @@ impl Delivering<'_> {
             asked: false,
             verdict: None,
             start: None,
+            shown: None,
+            answer: None,
+            statement: None,
+            known: None,
             drains: Vec::new(),
             uncarried: false,
         })
@@ -970,6 +1004,7 @@ impl Delivering<'_> {
             let asset = first.from.asset.id.clone();
             let (mut sent, mut unavailable) = (false, false);
             let mut question: Option<Step> = None;
+            let mut shown: Option<Shown> = None;
             let mut asked = |statement: &Statement<ProviderOperation>| -> bool {
                 // What the operator signed is what was decided: the holding account's own withdrawal, in full.
                 let ProviderOperation::Withdrawal(w) = &statement.statement else {
@@ -1020,6 +1055,9 @@ impl Delivering<'_> {
                     Ok(_) => {
                         sent = true;
                         question = Some(step);
+                        shown = Some(Shown {
+                            transaction: Id::new(&w.transaction).unwrap_or_else(|| linked.clone()),
+                        });
                         true
                     }
                     Err(AppendFailure::Unavailable) => {
@@ -1039,8 +1077,22 @@ impl Delivering<'_> {
             if let Some(step) = question {
                 flight.question = Some(step);
             }
+            flight.shown = shown;
             match answered {
                 Ok(start) if sent => {
+                    // The record proves the start, and the wallet's own signed answer, which the host keeps as the
+                    // holder's stated entry about the linked order, says the same of the wallet's own transaction.
+                    let transaction = flight.shown.as_ref().map(|s| s.transaction.clone());
+                    let said = transaction.as_ref().and_then(|t| {
+                        said(
+                            &start.answer,
+                            &flight.provider,
+                            t,
+                            &node,
+                            &first,
+                            carrying.order,
+                        )
+                    });
                     let proven = proves_start(
                         &start.record,
                         &flight.provider,
@@ -1051,11 +1103,17 @@ impl Delivering<'_> {
                     .is_ok()
                         && start.reserve == flight.provider.as_str()
                         && start.node == node
-                        && start.first_segment == first.segment_id;
-                    flight.verdict = Some(if proven {
+                        && start.first_segment == first.segment_id
+                        && transaction.as_ref().map(Id::as_str) == Some(start.transaction.as_str())
+                        && said == Some(Said::Withdrew(start.record.clone()));
+                    // Core keeps the wallet's answer whatever it says: it is the holder's word, for a report and a
+                    // confirmation of the outcome to name. One that can't be kept leaves the outcome unknown.
+                    let kept = self.keep_answer(parts, effect, flight, &start);
+                    flight.verdict = Some(if proven && kept {
                         Resolved::Done
                     } else {
-                        // The wallet says it paid out, in a record that proves nothing of this start.
+                        // The wallet says it paid out, in a record that proves nothing of this start, or in an
+                        // answer Core can't keep.
                         Resolved::Unknown
                     });
                     flight.start = Some(start);
@@ -1104,6 +1162,23 @@ impl Delivering<'_> {
         for step in &mut flight.drains {
             step.append(parts.log)?;
         }
+        // The holder's answer reaches the log before the effect's result, and only one recorded attributed, the
+        // wallet's own word under its own key, backs a done: one the log can't tie to the wallet is no record.
+        if let Some(bytes) = flight.answer.clone()
+            && let Some(step) = self
+                .mover
+                .statements
+                .get_mut(&(key(&effect.receipt), bytes))
+        {
+            let receipt = step.append_stated(parts.log)?;
+            if is_receipt_of(&receipt, &step.entry) {
+                if flight.verdict == Some(Resolved::Done) {
+                    flight.verdict = Some(Resolved::Unknown);
+                }
+            } else {
+                flight.statement = Some(receipt);
+            }
+        }
         let verdict = flight.verdict.unwrap_or(Resolved::Unknown);
         Ok(if flight.uncarried && verdict != Resolved::Failed {
             Resolved::Unknown
@@ -1111,6 +1186,228 @@ impl Delivering<'_> {
             verdict
         })
     }
+
+    /// Builds the holding account's own answer as its stated entry about the linked order and the wallet's own
+    /// transaction, once, for the effect `effect`: the record the linked order's start rests on
+    /// (`holding-withdrawal-rests-on-its-record`) and what a hand-on's outcome is reported on. False where it can't
+    /// be built, so no done rests on it.
+    fn keep_answer(
+        &mut self,
+        parts: &Parts<'_>,
+        effect: &Effect,
+        flight: &mut HandFlight,
+        start: &HandedOnStart,
+    ) -> bool {
+        let (Some(transaction), Ok(at)) = (Id::new(&start.transaction), now(parts)) else {
+            return false;
+        };
+        let about = About {
+            order: Some(flight.linked.clone()),
+            segment: None,
+            transaction: Some(transaction),
+        };
+        let slot = (key(&effect.receipt), start.answer.clone());
+        if !self.mover.statements.contains_key(&slot) {
+            let Ok(entry) = stated_entry(
+                &mut *self.ports.evidence,
+                &at,
+                &start.answer,
+                maker(self.ports.catalogue, &start.answer),
+                Some(about),
+            ) else {
+                return false;
+            };
+            let Ok(entry) = GeneralEntry::try_from(entry) else {
+                return false;
+            };
+            self.mover.statements.insert(slot, Step::new(entry));
+        }
+        flight.answer = Some(start.answer.clone());
+        true
+    }
+
+    /// Takes a statement about the wallet's own withdrawal as evidence of a hand-on's outcome (`REQ-ORD-1`,
+    /// `T-020-26`), as [`Delivering::statement`] takes a deliver's: attributable, a result, naming the transaction
+    /// the wallet ran the withdrawal under (which the question was recorded under, not the one the decision named),
+    /// and, where the holding account made it, judged against the withdrawal Core asked for. Kept once as the
+    /// maker's stated entry about the linked order, and nothing is handed to the platform. Its outcome is the holding
+    /// account's own word: `Done` only for a record that proves the start; its failure, or one it can't say, frees
+    /// nothing until another party confirms it.
+    fn hand_statement(
+        &mut self,
+        parts: &mut Parts<'_>,
+        carrying: &Carrying<'_>,
+        effect: &Receipt,
+        bytes: &[u8],
+    ) -> Result<Stated, NotTaken> {
+        let Some(Kept::Hand(flight)) = self.mover.kept.get(&key(effect)) else {
+            return Err(NotTaken::NoMove);
+        };
+        // A wallet that was never handed the statement was asked nothing: no answer of its is a move's.
+        let Some(shown) = flight.shown.clone() else {
+            return Err(NotTaken::NoMove);
+        };
+        let (provider, linked) = (flight.provider.clone(), flight.linked.clone());
+        let Some(first) = flight.route.plan.first().and_then(|p| p.segments.first()) else {
+            return Err(NotTaken::NoMove);
+        };
+        let (first, amount) = (first.clone(), flight.amount.clone());
+        let NodeRef::Inner(node) = first.from.node.clone() else {
+            return Err(NotTaken::NoMove);
+        };
+        let at = parts.clock.now().floor();
+        self.ports
+            .catalogue
+            .verify_statement(bytes, at)
+            .map_err(|_| NotTaken::Unattributable)?;
+        let body: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| NotTaken::Unreadable)?;
+        if body["shape"] != rutent_contracts::provider_role::RESULT_SHAPE {
+            return Err(NotTaken::Unreadable);
+        }
+        match body["statement"]["transaction"].as_str() {
+            Some(named) if named == shown.transaction.as_str() => {}
+            Some(_) => return Err(NotTaken::OfAnotherTransaction),
+            None => return Err(NotTaken::Unreadable),
+        }
+        let mut proved: Option<WithdrawalRecord> = None;
+        let outcome = if body["maker"] == provider.as_str() {
+            Some(
+                match said(
+                    bytes,
+                    &provider,
+                    &shown.transaction,
+                    &node,
+                    &first,
+                    carrying.order,
+                ) {
+                    Some(Said::Withdrew(record)) => {
+                        // A record that says it succeeded and proves nothing of this start bears out nothing.
+                        proves_start(&record, &provider, &first, carrying.order, amount.amount())
+                            .map_err(|_| NotTaken::NotCounted)?;
+                        proved = Some(record);
+                        Resolved::Done
+                    }
+                    Some(Said::Failed) => Resolved::Failed,
+                    Some(Said::Unknown) => Resolved::Unknown,
+                    None => return Err(NotTaken::NotCounted),
+                },
+            )
+        } else {
+            None
+        };
+        let slot = (key(effect), bytes.to_vec());
+        if !self.mover.statements.contains_key(&slot) {
+            let about = About {
+                order: Some(linked),
+                segment: None,
+                transaction: Some(shown.transaction.clone()),
+            };
+            let entry = stated_entry(
+                self.ports.evidence,
+                &now(parts)?,
+                bytes,
+                maker(self.ports.catalogue, bytes),
+                Some(about),
+            )
+            .map_err(|why| match why {
+                Unappended::Append(failure) => NotTaken::Append(failure),
+                Unappended::Unrecordable => NotTaken::Unreadable,
+            })?;
+            let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+            self.mover.statements.insert(slot.clone(), Step::new(entry));
+        }
+        let step = self
+            .mover
+            .statements
+            .get_mut(&slot)
+            .ok_or(NotTaken::NoMove)?;
+        let receipt = step.append_stated(parts.log)?;
+        // A statement the log recorded unattributed rests on no key: it is evidence of nothing.
+        if is_receipt_of(&receipt, &step.entry) {
+            return Err(NotTaken::Unattributable);
+        }
+        if let (Some(record), Some(Kept::Hand(flight))) =
+            (proved, self.mover.kept.get_mut(&key(effect)))
+        {
+            flight.known = Some((
+                HandedOnStart {
+                    reserve: provider.as_str().to_owned(),
+                    node,
+                    first_segment: first.segment_id.clone(),
+                    record,
+                    transaction: shown.transaction.as_str().to_owned(),
+                    answer: bytes.to_vec(),
+                },
+                receipt.clone(),
+            ));
+        }
+        Ok(Stated { receipt, outcome })
+    }
+}
+
+/// What a holding account's own signed answer says of the withdrawal asked of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Said {
+    /// It succeeded, for the whole amount asked, with the wallet's own record of it.
+    Withdrew(WithdrawalRecord),
+    /// The wallet says it failed or refused finally.
+    Failed,
+    /// It says it can't tell, or says something that isn't an outcome of the withdrawal.
+    Unknown,
+}
+
+/// What `bytes`, a signed result, says of the withdrawal under `transaction` at `node` for `order`: `None` where it
+/// isn't the `provider`'s own result of that withdrawal.
+fn said(
+    bytes: &[u8],
+    provider: &Id,
+    transaction: &Id,
+    node: &str,
+    first: &rutent_contracts::state_machine::SegmentPlan,
+    order: &Id,
+) -> Option<Said> {
+    let signed: Statement<ResultBody> = serde_json::from_slice(bytes).ok()?;
+    if signed.maker != provider.as_str() {
+        return None;
+    }
+    let ResultBody::Withdrawal(result) = signed.statement else {
+        return None;
+    };
+    if result.transaction != transaction.as_str() {
+        return None;
+    }
+    Some(match result.outcome {
+        ReserveMovementOutcome::Succeeded(settled) => {
+            let reference =
+                proof_of_withdrawal(provider.as_str(), transaction.as_str(), &settled.evidence)
+                    .ok();
+            let moved = settled.amount_out.parse::<u128>().ok();
+            match (reference, moved) {
+                (Some(reference), Some(amount)) if settled.amount_in == settled.amount_out => {
+                    Said::Withdrew(WithdrawalRecord {
+                        by: provider.as_str().to_owned(),
+                        node: node.to_owned(),
+                        asset: first.from.asset.id.clone(),
+                        order: order.as_str().to_owned(),
+                        amount,
+                        reference,
+                    })
+                }
+                _ => Said::Unknown,
+            }
+        }
+        ReserveMovementOutcome::Failed(_) => Said::Failed,
+        ReserveMovementOutcome::Refused(refused)
+            if matches!(
+                refused.refusal,
+                Refusal::Final(_) | Refusal::LiftsAtKnownTime(_)
+            ) =>
+        {
+            Said::Failed
+        }
+        _ => Said::Unknown,
+    })
 }
 
 #[cfg(test)]

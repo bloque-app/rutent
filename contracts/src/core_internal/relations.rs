@@ -1401,7 +1401,7 @@ pub static RELATIONS: [Relation; 106] = [
             ),
             (
                 "about",
-                "an outcome's evidence is about its move's own order and part: a move_value's own segment, a stuck resolution's own transaction",
+                "an outcome's evidence is about its move's own order and part: a move_value's own segment, a stuck resolution's own transaction, a hand-on's linked order through the holding account's own transaction",
             ),
             ("after", "an outcome's evidence follows its move in the log"),
             (
@@ -5150,10 +5150,35 @@ fn evidence_about(statement: &StatedEntry, effect: &VerifiedEntry, history: &His
             about_the_segment(statement, order, segment, history)
         }
         Some(Action::ResolveStuck {
-            order, transaction, ..
-        }) => about_the_resolution(statement, order, transaction, history),
+            order,
+            transaction,
+            resolution,
+            ..
+        }) => {
+            about_the_resolution(statement, order, transaction, history)
+                // A hand-on is moved by the holding account's own withdrawal for the linked order, under the
+                // wallet's own transaction, which the operator's question binds to the linked order (`T-020-26`).
+                || matches!(resolution, Resolution::HandOn { linked_order, .. }
+                    if about_the_linked_order(statement, linked_order, history))
+        }
         _ => false,
     }
+}
+
+/// Whether `statement` is about the linked order a hand-on's decision named, through a transaction first bound to
+/// that order and to no segment (`binding_of`): the withdrawal the holding account ran for it, under its own
+/// transaction, which the operator's question bound before any answer.
+fn about_the_linked_order(statement: &StatedEntry, linked: &Id, history: &History) -> bool {
+    let Some(about) = &statement.about else {
+        return false;
+    };
+    about.order.as_ref() == Some(linked)
+        && about.segment.is_none()
+        && about
+            .transaction
+            .as_ref()
+            .and_then(|t| binding_of(t, history))
+            .is_some_and(|(order, segment)| order == linked && segment.is_none())
 }
 
 /// Whether `statement` is about a stuck resolution of `order` through its own `transaction`: it names the order and

@@ -807,3 +807,18 @@
   16. `answer-follows-its-question` holds a reserve's `arrival-answer` to the `arrival-question` Core asked under its
      transaction, as a `result` to its `operation` (`T-020-18`'s hand-off). (REQ-ORD-1, REQ-ORD-23)
   Twenty-eight schemas, 106 relations and 4 closing ones, three stated. (DEC-4, DEC-20, T-020-21)
+- Folded into 1.0.0 before its release: a hand-on's outcome rests on the holding account's own answer (`T-020-26`).
+  The holding account's wallet names its own withdrawal's transaction, which the operator's question binds to the
+  linked order (`holding-withdrawal-rests-on-its-record` needs the record about the linked order), never the one the
+  decision named, so no statement of the wallet could be the evidence a report or a confirmation of the hand-on's
+  outcome cites: `outcome-confirmation-cites-verified-evidence`'s `about` read a stuck resolution's own transaction
+  and no other. For a `resolve_stuck` whose resolution hands the value on, it now also accepts a statement about the
+  linked order the decision named, no segment, through a transaction first bound to that linked order and to no
+  segment. It reads no maker beyond the row's own (a provider's `result`, not the operator's): a confirmation needs
+  another maker's statement than the report's, so holding the arm to the holding account's maker would make a
+  confirmation impossible; that the record is the holder's own stays `holding-withdrawal-rests-on-its-record`'s and
+  Core's. Two valid cases (`--a-hand-ons-wallet-answer-about-its-linked-order`,
+  `--a-hand-ons-linked-order-through-another-makers-statement`) and three invalid ones, each breaking one rule
+  (`--a-hand-on-through-another-order`, `--a-hand-on-through-a-segment-of-its-linked-order`,
+  `--a-hand-on-through-a-transaction-bound-to-another-order`). No shape changes; no consumer changes. (REQ-ORD-1,
+  REQ-AUZ-4, DEC-4, DEC-20, T-020-26)

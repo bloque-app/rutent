@@ -1815,9 +1815,22 @@ impl Core {
     /// verification in `Signatures`; the operator's statements are verified under the real key the deployment's
     /// placeholder `operator_key` stands for, the simulated providers' convention.
     pub fn admitted(&self, catalogue: &Catalogue) -> Result<Vec<Entry>, (usize, String)> {
+        self.admitted_skipping(catalogue, None)
+    }
+
+    /// [`Core::admitted`] with the entry at `skip` left out of what the log is shown, the others keeping the receipts
+    /// they were handed: what the log makes of a history that lacks that one record (`T-020-26`).
+    pub fn admitted_skipping(
+        &self,
+        catalogue: &Catalogue,
+        skip: Option<usize>,
+    ) -> Result<Vec<Entry>, (usize, String)> {
         let log = self.log.borrow();
         let mut history: Vec<(Receipt, Entry)> = Vec::new();
         for (i, (appended, through)) in log.entries.iter().enumerate() {
+            if skip == Some(i) {
+                continue;
+            }
             let entry = match appended {
                 Entry::Stated(claim) => {
                     let mut sources = Sources {
