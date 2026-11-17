@@ -677,6 +677,7 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   `store_dribbling_its_answer_is_cut_off_at_the_deadline`) and in `tests/egress.rs`
   (`lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`,
   `a_lookup_whose_resolver_panics_gives_its_place_back`,
-  `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline`). `proxy/https.rs`'s `left` and
+  `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline`) and in `src/proxy/tests/deadline.rs`
+  (`store_whose_name_lookup_hangs_is_unavailable_at_the_deadline`). `proxy/https.rs`'s `left` and
   `egress/resolve.rs` read `Instant::now()`, so no platform clock reaches them; the row gives them `T-013-08`'s
   `OperationClock`.
