@@ -12,7 +12,9 @@ use std::rc::Rc;
 
 use ed25519_dalek::{Signer, SigningKey, Verifier as _, VerifyingKey};
 use proptest::prelude::*;
-use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Delivery, GeneralEntry, Log, Operator, Reads,
+};
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Afterwards, Charge, Decision, DeploymentOperator, Entry, OrderRefusalClass,
     PermissionChange, Raise, ReadAnswer, ReadCheck, ReadOutcome, Reads as Read, Receipt,
@@ -23,8 +25,8 @@ use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, OrderState, RecordedInput, StateMachine};
 use rutent_core_orch::notice::{
     About, AheadCharge, Attempt, BOUND, Channel, CurrentError, Inbox, Key, Ledger, NotTaken,
-    NoticeError, NoticeKey, Notices, Path, Receiver, Retried, SILENCE, Taken, Transport, Verifier,
-    Watch, signing_input,
+    NoticeError, NoticeKey, Notices, Path, RaiseReading, Receiver, Retried, SILENCE, Summarised,
+    Taken, Transport, Verifier, Watch, raise_reading, signing_input,
 };
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::snapshot::{Clock, Reading};
@@ -2304,4 +2306,543 @@ fn late_or_replayed_answer_does_not_hide_a_cut() {
             .path,
         Path::Cut { .. }
     ));
+}
+
+// --- The summary entry (T-023-03) ---------------------------------------------------------------------------------
+
+/// The log as a test keeps it: every entry it takes is held to core-internal's `admit_entry` on the general path, an
+/// equal entry again is taken once, and while `down` it takes nothing. It starts from entries a test built.
+struct Journal {
+    entries: Vec<(Receipt, Entry)>,
+    down: bool,
+}
+
+impl Journal {
+    fn over(entries: &[(Receipt, Entry)]) -> Self {
+        Journal {
+            entries: entries.to_vec(),
+            down: false,
+        }
+    }
+
+    /// The `what` of every notice summary the log holds, in order.
+    fn summaries(&self) -> Vec<Value> {
+        self.entries
+            .iter()
+            .map(|(_, e)| serde_json::to_value(e).expect("json"))
+            .filter(|e| e["what"]["call"] == "notice_summary")
+            .map(|e| e["what"].clone())
+            .collect()
+    }
+
+    /// An entry the test builds, held to the log's checks too, but taken whatever `down` says.
+    fn record(&mut self, entry: Entry) {
+        let down = std::mem::replace(&mut self.down, false);
+        let entry = GeneralEntry::try_from(entry).expect("a general entry");
+        self.append(&entry).expect("taken");
+        self.down = down;
+    }
+}
+
+impl Log for Journal {
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.down {
+            return Err(AppendFailure::Unavailable);
+        }
+        let entry = entry.entry().clone();
+        if let Some((receipt, _)) = self.entries.iter().find(|(_, held)| held == &entry) {
+            return Ok(receipt.clone());
+        }
+        let operator = DeploymentOperator {
+            maker: id("operator-maker"),
+            party: id(OPERATOR),
+        };
+        admit_entry(&self.entries, &entry, Through::General, &operator)
+            .map_err(AppendFailure::Refused)?;
+        let receipt = receipt(
+            "log-main",
+            self.entries.len(),
+            &serde_json::to_value(&entry).expect("json"),
+        );
+        self.entries.push((receipt.clone(), entry));
+        Ok(receipt)
+    }
+}
+
+fn core_actor() -> Actor {
+    Actor {
+        party: id("rutent"),
+        acts: id("core-orch"),
+        role: Role::Core,
+        kind: ActorKind::Component,
+    }
+}
+
+/// One pass of summarising, over the log as it stands.
+fn summarised(n: &mut Notices, journal: &mut Journal) -> Summarised {
+    let recorded = journal.entries.clone();
+    n.summarise(&recorded, &core_actor(), &At(NOW), journal)
+        .expect("summarised")
+}
+
+/// `notify` over the log as it stands.
+fn notified(n: &mut Notices, journal: &Journal, key: &mut TestKey, wire: &mut Wire) -> usize {
+    n.notify(&journal.entries, key, wire).expect("notified")
+}
+
+/// Takes the next entries of `log` into `journal` until the notices read a change of them, and answers how many
+/// notices that sent.
+fn grow(
+    n: &mut Notices,
+    journal: &mut Journal,
+    log: &[(Receipt, Entry)],
+    key: &mut TestKey,
+    wire: &mut Wire,
+) -> usize {
+    let taken = |j: &Journal| {
+        j.entries
+            .iter()
+            .filter(|(_, e)| !matches!(e, Entry::Verified(v) if matches!(v.what, What::NoticeSummary { .. })))
+            .count()
+    };
+    while taken(journal) < log.len() {
+        let next = log[taken(journal)].clone();
+        journal.entries.push(next);
+        let sent = notified(n, journal, key, wire);
+        if sent > 0 {
+            return sent;
+        }
+    }
+    0
+}
+
+/// What a summary of an order's change says, as the log holds it.
+fn order_summary(to: &Receiver, order: &str, sequence: u64, last_try: u64, ended: &str) -> Value {
+    json!({
+        "call": "notice_summary",
+        "to": {"party": to.party, "role": to.role},
+        "of": {"kind": "order", "order": order, "sequence": sequence},
+        "last_try": last_try,
+        "ended": ended
+    })
+}
+
+fn raise_summary(raise: &Raise, last_try: u64, ended: &str) -> Value {
+    json!({
+        "call": "notice_summary",
+        "to": {"party": OPERATOR, "role": "operator"},
+        "of": {"kind": "raise", "raise": raise.raise},
+        "last_try": last_try,
+        "ended": ended
+    })
+}
+
+/// The log's entry of `raise`, citing the first two entries of `log`, with this outcome.
+fn raise_entry(raise: &Raise, log: &[(Receipt, Entry)], outcome: &str) -> Entry {
+    let mut raise = raise.clone();
+    raise.cites = vec![log[0].0.clone(), log[1].0.clone()];
+    serde_json::from_value(json!({
+        "kind": "verified",
+        "who": core(),
+        "what": {"call": "raise", "raise": raise},
+        "when": {"at": time(40), "source": "core_clock"},
+        "outcome": {"status": outcome}
+    }))
+    .expect("a verified entry")
+}
+
+fn p99_raise() -> Raise {
+    serde_json::from_str(include_str!(
+        "../../../contracts/core-internal/fixtures/valid/raise-of-a-change-in-a-providers-p99.json"
+    ))
+    .expect("a raise")
+}
+
+fn sorted(mut summaries: Vec<Value>) -> Vec<String> {
+    let mut texts: Vec<String> = summaries.drain(..).map(|s| s.to_string()).collect();
+    texts.sort();
+    texts
+}
+
+/// Each notice delivered leaves one summary entry in the log: its receiver's party and role, the order and the
+/// change's sequence, the number of the try that took it, and the outcome, and nothing else: no sealed notice, no
+/// signature, no state, no amount (`REQ-AUD-6`). A second pass writes none, and a notice delivered on a later try
+/// names that try.
+// verifies: REQ-ORD-20
+#[test]
+fn delivered_notice_leaves_one_summary_entry() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut journal = Journal::over(&log[..4]);
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut wire), 6);
+
+    let pass = summarised(&mut n, &mut journal);
+    assert_eq!(
+        pass,
+        Summarised {
+            written: 6,
+            waiting: 0,
+            refused: 0
+        }
+    );
+    let mut expected = Vec::new();
+    for sequence in 1..=3 {
+        for to in [customer(ALICE), operator()] {
+            expected.push(order_summary(&to, "ord-1", sequence, 1, "delivered"));
+        }
+    }
+    assert_eq!(sorted(journal.summaries()), sorted(expected));
+    for what in journal.summaries() {
+        let keys: Vec<_> = what
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(keys.len(), 5, "call, to, of, last_try, ended: {keys:?}");
+    }
+    for (_, entry) in &journal.entries {
+        let text = serde_json::to_string(entry).expect("json");
+        if text.contains("notice_summary") {
+            for forbidden in ["signature", "view", "state", "amount", "deployment-1"] {
+                assert!(
+                    !text.contains(forbidden),
+                    "a summary holds {forbidden}: {text}"
+                );
+            }
+        }
+    }
+
+    // Once each: another pass writes nothing, and the log holds six.
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(journal.summaries().len(), 6);
+
+    // A notice delivered on its third try says so.
+    wire.down = true;
+    assert_eq!(grow(&mut n, &mut journal, &log, &mut key, &mut wire), 2);
+    n.retry(&mut wire);
+    wire.down = false;
+    assert_eq!(n.retry(&mut wire).delivered, 2);
+    assert_eq!(summarised(&mut n, &mut journal).written, 2);
+    let last: Vec<_> = journal.summaries().split_off(6);
+    assert_eq!(last.len(), 2);
+    assert!(
+        last.iter()
+            .all(|s| s["last_try"] == 3 && s["ended"] == "delivered")
+    );
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A notice that used its bound leaves its summary entry, abandoned, naming the last try, and is sent no more.
+// verifies: REQ-ORD-20
+#[test]
+fn abandoned_notice_leaves_its_summary_entry_and_is_sent_no_more() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut journal = Journal::over(&log[..2]);
+    let mut n = notices();
+    wire.down = true;
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut wire), 2);
+    for _ in 1..BOUND - 1 {
+        n.retry(&mut wire);
+    }
+    assert_eq!(
+        summarised(&mut n, &mut journal).written,
+        0,
+        "a notice still being tried has no summary"
+    );
+    assert_eq!(n.retry(&mut wire).abandoned, 2);
+
+    assert_eq!(summarised(&mut n, &mut journal).written, 2);
+    let bound = u64::from(BOUND);
+    assert_eq!(
+        sorted(journal.summaries()),
+        sorted(vec![
+            order_summary(&customer(ALICE), "ord-1", 1, bound, "abandoned"),
+            order_summary(&operator(), "ord-1", 1, bound, "abandoned"),
+        ])
+    );
+
+    // Sent no more, whatever the transport does after, and no second summary of it.
+    wire.down = false;
+    let tried = wire.tried;
+    assert_eq!(n.retry(&mut wire), Retried::default());
+    assert_eq!(wire.tried, tried);
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(journal.summaries().len(), 2);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// After a restart the notices are built afresh from the log alone, with no ledger: what the log's summaries show
+/// delivered is not sent again, what they show abandoned is not tried again and is listed for the assembly, and a
+/// notice with no summary is sent.
+// verifies: REQ-ORD-20
+#[test]
+fn restart_sends_only_the_notices_the_log_shows_neither_delivered_nor_abandoned() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    held_to_the_log(&log, &unbuilt_refusals());
+    let mut key = TestKey::new();
+    let mut before = Wire::default();
+    let mut journal = Journal::over(&log[..3]);
+    let mut n = notices();
+
+    // Delivered: sequences 1 and 2. Abandoned: sequence 3. Neither: sequence 4, tried once.
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut before), 4);
+    before.down = true;
+    assert_eq!(grow(&mut n, &mut journal, &log, &mut key, &mut before), 2);
+    for _ in 1..BOUND {
+        n.retry(&mut before);
+    }
+    assert_eq!(n.abandoned().len(), 2);
+    assert_eq!(grow(&mut n, &mut journal, &log, &mut key, &mut before), 2);
+    assert_eq!(n.undelivered().len(), 2);
+    assert_eq!(summarised(&mut n, &mut journal).written, 6);
+    drop(n);
+
+    // The restart: no ledger, only the log.
+    let mut after = Wire::default();
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut after), 2);
+    for (_, bytes) in &after.sent {
+        assert_eq!(said(bytes)["about"]["sequence"], 4);
+    }
+    assert_eq!(after.sent.len(), 2);
+    assert_eq!(n.abandoned().len(), 2, "the abandoned are listed");
+    assert!(n.abandoned().iter().all(|u| u.attempts == BOUND));
+    assert!(n.undelivered().is_empty());
+
+    // What the log shows abandoned stays abandoned under a larger bound: the summary, not the bound, says so.
+    let mut wider = Wire::default();
+    let mut n = notices().bounded(BOUND + 3);
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut wider), 2);
+    assert_eq!(n.abandoned().len(), 2);
+    assert!(
+        wider
+            .sent
+            .iter()
+            .all(|(_, b)| said(b)["about"]["sequence"] == 4)
+    );
+    let mut n = notices();
+    let mut after = Wire::default();
+    notified(&mut n, &journal, &mut key, &mut after);
+
+    // And nothing summarised again: the sequence 4 notices were delivered now, once each.
+    assert_eq!(summarised(&mut n, &mut journal).written, 2);
+    assert_eq!(journal.summaries().len(), 8);
+    let mut third = Wire::default();
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut third), 0);
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A raise the path refused is recorded as failed, and the log never updates that entry. Delivered on a later try,
+/// the raise reads delivered through its summary, which cites the raise's own entry, and a restart doesn't send it
+/// again.
+// verifies: REQ-ORD-7
+#[test]
+fn raise_delivered_after_a_failed_first_try_no_longer_reads_failed() {
+    let raise = p99_raise();
+    let base = receipted(log_of(&[("ord-1", ALICE)]));
+    let mut journal = Journal::over(&base);
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    wire.down = true;
+    assert_eq!(
+        Channel {
+            notices: &mut n,
+            key: &mut key,
+            transport: &mut wire
+        }
+        .raise(&raise),
+        Delivery::Undelivered
+    );
+    journal.record(raise_entry(&raise, &base, "failed"));
+    assert_eq!(
+        raise_reading(&journal.entries, &raise.raise),
+        Some(RaiseReading::Undelivered)
+    );
+
+    wire.down = false;
+    assert_eq!(n.retry(&mut wire).delivered, 1);
+    assert_eq!(
+        raise_reading(&journal.entries, &raise.raise),
+        Some(RaiseReading::Undelivered),
+        "still failed until its summary is written"
+    );
+    assert_eq!(summarised(&mut n, &mut journal).written, 1);
+    assert_eq!(
+        journal.summaries(),
+        vec![raise_summary(&raise, 2, "delivered")]
+    );
+    assert_eq!(
+        raise_reading(&journal.entries, &raise.raise),
+        Some(RaiseReading::Delivered)
+    );
+
+    // A restart over the log alone doesn't send it again.
+    let mut after = Wire::default();
+    let mut n = notices();
+    notified(&mut n, &journal, &mut key, &mut after);
+    assert_eq!(raise_notices(&after), 0);
+    assert!(n.abandoned().is_empty());
+    assert!(n.undelivered().is_empty());
+    let raises = |j: &Journal| {
+        j.summaries()
+            .iter()
+            .filter(|s| s["of"]["kind"] == "raise")
+            .count()
+    };
+    summarised(&mut n, &mut journal);
+    assert_eq!(raises(&journal), 1, "the raise is summarised once");
+    assert_eq!(raise_reading(&journal.entries, &id("raise-unknown")), None);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A raise abandoned reads so, from its summary, and is not tried again after a restart, which lists it.
+// verifies: REQ-ORD-7
+#[test]
+fn raise_abandoned_reads_so_and_is_not_tried_again_after_a_restart() {
+    let raise = p99_raise();
+    let base = receipted(log_of(&[("ord-1", ALICE)]));
+    let mut journal = Journal::over(&base);
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    wire.down = true;
+    Channel {
+        notices: &mut n,
+        key: &mut key,
+        transport: &mut wire,
+    }
+    .raise(&raise);
+    journal.record(raise_entry(&raise, &base, "failed"));
+    for _ in 1..BOUND {
+        n.retry(&mut wire);
+    }
+    assert_eq!(summarised(&mut n, &mut journal).written, 1);
+    assert_eq!(
+        raise_reading(&journal.entries, &raise.raise),
+        Some(RaiseReading::Abandoned)
+    );
+    assert_eq!(
+        journal.summaries(),
+        vec![raise_summary(&raise, u64::from(BOUND), "abandoned")]
+    );
+
+    let mut after = Wire::default();
+    let mut n = notices();
+    notified(&mut n, &journal, &mut key, &mut after);
+    assert_eq!(raise_notices(&after), 0, "no try after a restart");
+    assert_eq!(n.abandoned().len(), 1);
+}
+
+/// A raise's summary cites a raise of the log: until the raise's entry is there (the check records it after the
+/// raise is sent), the summary waits, and the log is never handed one that names no raise.
+// verifies: REQ-ORD-7
+#[test]
+fn raise_summary_waits_for_its_raise_entry() {
+    let raise = p99_raise();
+    let base = receipted(log_of(&[("ord-1", ALICE)]));
+    let mut journal = Journal::over(&base);
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    assert_eq!(
+        Channel {
+            notices: &mut n,
+            key: &mut key,
+            transport: &mut wire
+        }
+        .raise(&raise),
+        Delivery::Delivered
+    );
+    let pass = summarised(&mut n, &mut journal);
+    assert_eq!(
+        pass,
+        Summarised {
+            written: 0,
+            waiting: 1,
+            refused: 0
+        }
+    );
+    assert!(journal.summaries().is_empty());
+
+    journal.record(raise_entry(&raise, &base, "done"));
+    assert_eq!(summarised(&mut n, &mut journal).written, 1);
+    assert_eq!(
+        journal.summaries(),
+        vec![raise_summary(&raise, 1, "delivered")]
+    );
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A notice is summarised once, whatever happens to the log or the process: a log that can't take the entry now
+/// keeps it for the next pass, which writes it once; a restart that reads the summary writes no second.
+// verifies: REQ-ORD-20
+#[test]
+fn a_notice_is_summarised_once_across_a_busy_log_and_a_restart() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut journal = Journal::over(&log[..2]);
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut wire), 2);
+
+    journal.down = true;
+    let busy = summarised(&mut n, &mut journal);
+    assert_eq!(
+        busy,
+        Summarised {
+            written: 0,
+            waiting: 2,
+            refused: 0
+        }
+    );
+    journal.down = false;
+    assert_eq!(summarised(&mut n, &mut journal).written, 2);
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(journal.summaries().len(), 2);
+
+    // A fresh run that read the summaries writes none; one that hands the same notices again is told they are done.
+    let mut again = Wire::default();
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut again), 0);
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(journal.summaries().len(), 2);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// Two runs over one log (a restart that overlaps its predecessor) deliver the same notice, the second on a later
+/// try: the first's summary is the log's, and the second, which learns of it, writes none of its own.
+// verifies: REQ-ORD-20
+#[test]
+fn another_runs_summary_closes_the_one_queued() {
+    let log = receipted(log_of(&[("ord-1", ALICE)]));
+    let mut key = TestKey::new();
+    let mut journal = Journal::over(&log[..2]);
+    let mut first = notices();
+    let mut second = notices();
+
+    let mut down = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    assert_eq!(notified(&mut second, &journal, &mut key, &mut down), 2);
+    let mut up = Wire::default();
+    assert_eq!(notified(&mut first, &journal, &mut key, &mut up), 2);
+    assert_eq!(second.retry(&mut up).delivered, 2);
+
+    assert_eq!(summarised(&mut first, &mut journal).written, 2);
+    let pass = summarised(&mut second, &mut journal);
+    assert_eq!(
+        pass,
+        Summarised {
+            written: 0,
+            waiting: 0,
+            refused: 0
+        }
+    );
+    assert_eq!(journal.summaries().len(), 2);
+    assert!(journal.summaries().iter().all(|s| s["last_try"] == 1));
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
 }
