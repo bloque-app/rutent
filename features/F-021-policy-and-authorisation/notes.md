@@ -1418,3 +1418,70 @@ Branch `f-021/t-021-08-unreachable-record`, from `m3` at `b8c416e0`. Edits `comp
   |---|---|
   | an unreachable order record is not known (read as no record again) | `unreachable_order_record_gives_not_known_and_nothing_moves` |
   | a record the source says nothing of stays a refusal | not switched off: it is the behaviour before this row, held by `order_record_the_source_knows_nothing_of_is_refused_as_anothers` |
+
+## T-021-09
+
+Branch `f-021/t-021-09-decline-and-status-policy`, from `m3` at `4b306ca9`. Edits `components/core-authz/` only
+(`stuck/`, `roles/`, `parties/`, the engine's `Asked` and its tests).
+
+- **What changed.**
+  1. `OutcomeDeclines::decline_outcome` is built on every `Engine`, as `confirm_outcome` is: one consultation
+     (`Asked::DeclineOutcome`), then the log's rules on policy's handle, then the entry is recorded, then the answer
+     is given. The fixed rule asks the decliner's login for a permission of its own, `Permission::DeclineOutcome`
+     (confirming alone doesn't give it), and holds it to a party that is none of the order's. The log's rules are the
+     confirmation's (`second_word_check`, shared): the report cited is a permitted one of the same effect and order,
+     its reporter is not the decliner's accountable actor (same login, same party, either chain reaching the other's
+     party, or chains meeting below the operator), the decliner is, or reaches, no party of the order, and it is not
+     the desk of the provider holding the funds. An agent declines within `Scope::DeclineOutcome`. `core-authz`'s
+     guard now holds `OutcomeDeclines` (`true`).
+  2. `Action::AskStatus` is asked by an operator's login the register lists for `Permission::AskStatus`, or by one of
+     Core's own actors listed for `CarryOnward`, as `ask_reversal` is. Customer, provider, verifier, regulator and
+     checker are refused before the deployment's policy is asked; an unknown role fails closed (the match has no
+     catch-all).
+- **Rulings.** A failed outcome on a stuck order frees it only once someone of another party confirms it (2026-11-14):
+  a decline settles and frees nothing, and policy lets only another party decline. Core is its own party
+  (2026-11-16): Core never counts as the operator's, so its decline needs its own listing like any actor. The operator
+  may deliver, return to origin or hand on (2026-11-16) concerns the decide step, untouched here.
+- **Defaults, reversible, each failing closed.**
+  - a permission apart from `ConfirmOutcome` for declining (a login that may confirm may not decline until the
+    register lists it);
+  - the decline's actors, customer and holder checks are the confirmation's, one reading (`second_word_check`);
+  - the late-status ask has its own operator permission, `AskStatus`, not `AskReversal`; Core's goes through
+    `CarryOnward`, as the reversal's does;
+  - an operator holding every permission but `AskStatus` is refused; so is one holding `AskReversal`.
+- **Gaps, with owners.**
+  1. `conformance/scenarios/src/assembly/policy.rs`'s `PolicySide` does not forward `decline_outcome` yet (an `F-024`
+     file; `T-020-20` needs it to call policy through the assembly). Owner: the lead, with `T-024-14` or a row of
+     `F-024`'s; no edit made here.
+  2. The deployment's register must list `DeclineOutcome` and `AskStatus` for its logins: configuration, owner
+     `F-021`'s register docs / the deployment.
+  3. Policy doesn't read whether a report is already settled: a decline after a confirmation, a second decline, a
+     confirmation after a decline. These rest on the contract rows `outcome-decline-rests-on-its-report` and
+     `outcome-confirmation-rests-on-its-report`; the log's refusal comes back as `Err(AppendFailure::Refused)`.
+     `T-020-20` must treat that `Err` as a refusal, not a crash. Owner: `T-020-20`.
+  4. `CarryOnward` now also carries Core's status ask: any provider, any order, bound to the segment's provider only
+     by the log's `status-is-asked-of-the-segments-provider`. A widening of that permission, for the register's docs
+     and the deployment's listing of Core's logins. Owner: the deployment and F-021's register docs.
+- **Red first.** The five named tests and the guard were written before the code. Against a stub that refused every
+  decline and an `AskStatus` role arm of `None`, `decline of an outcome report ...is permitted and recorded first`,
+  `decline by the reporters own party or login is refused` (answered `not_permitted` for `same_actor`), `decline by an
+  actor whose acts for chain reaches ...`, `late status asked by core ...is permitted` failed on assertions; the guard
+  failed on `the table holds every policy call` once flipped to `true`. `late status asked by a customer or a
+  provider is refused` passes against the stub (the behaviour before the row) and is held by its rule-off.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, each file restored):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the decline's permission | `decline_is_held_to_its_permission_its_customer_and_holder_checks_and_its_report` |
+  | the fixed not-the-order-party rule, on the decline, on `confirm_outcome` and on `decide_stuck` (the review's probe: the order's record names a party its acceptances don't) | `decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused` for each; the confirm and decide switch-offs also turn `neither_the_customer_nor_the_holders_desk_resolves_its_order` red. Before the probe, T-021-06's two had the same gap |
+  | reporter and decliner one actor | `decline_by_the_reporters_own_party_or_login_is_refused`, `decline_by_an_actor_whose_acts_for_chain_reaches_the_reporters_party_is_refused` (and the confirmation's two) |
+  | the customer along its chain (log) | `decline_is_held_to_...` (the holding company case), `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
+  | the holder's desk either way | `decline_is_held_to_...`, `neither_the_customer_nor_the_holders_desk_resolves_its_order` |
+  | the report is of the same order | `decline_is_held_to_...`, `step_with_nothing_permitted_behind_it_is_refused` |
+  | every log rule on the decline | the three decline tests above and `the_unbuilt_engine_permits_nothing_on_any_call_and_records_first` |
+  | the decline's agent scope (mapped to confirm's) | `decline_is_held_to_...` |
+  | the engine guard marks `OutcomeDeclines` unbuilt | `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` |
+  | ask_status: Core refused | `late_status_asked_by_core_for_a_segment_is_permitted`, `authenticated_caller_is_still_decided_by_policy`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | ask_status: operator refused | `late_status_asked_by_core_for_a_segment_is_permitted`, `authenticated_caller_is_still_decided_by_policy` |
+  | ask_status: customer, provider and others permitted | `late_status_asked_by_a_customer_or_a_provider_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | ask_status: operator needs no permission | `late_status_asked_by_core_for_a_segment_is_permitted`, `late_status_asked_by_a_customer_or_a_provider_is_refused` |

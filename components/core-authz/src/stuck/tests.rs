@@ -195,6 +195,7 @@ impl Register {
             Permission::DecideStuck,
             Permission::MoveStuck,
             Permission::ConfirmOutcome,
+            Permission::DeclineOutcome,
         ] {
             self.permissions.push((actor.acts.clone(), permission));
         }
@@ -203,6 +204,7 @@ impl Register {
             Scope::MoveStuck,
             Scope::ReportOutcome,
             Scope::ConfirmOutcome,
+            Scope::DeclineOutcome,
         ] {
             self.scopes
                 .push((actor.party.clone(), actor.acts.clone(), scope));
@@ -377,6 +379,21 @@ fn confirmation_by(request: &Value, confirmer: &Actor, request_id: &str) -> Outc
     confirmation.confirmer = confirmer.clone();
     confirmation.request = id(request_id);
     confirmation
+}
+
+/// The world's decline of `op-login-5`'s report of its resolution's outcome, by `decliner`, as `request_id`.
+fn decline_by(request: &Value, decliner: &Actor, request_id: &str) -> OutcomeDecline {
+    let mut decline: OutcomeDecline = serde_json::from_value(request.clone()).unwrap();
+    decline.decliner = decliner.clone();
+    decline.request = id(request_id);
+    decline
+}
+
+/// `receipt`, at another index of the log: one the log holds nothing at.
+fn at_index(receipt: &Receipt, index: u64) -> Receipt {
+    let mut value = serde_json::to_value(receipt).unwrap();
+    value["index"] = json!(index);
+    serde_json::from_value(value).unwrap()
 }
 
 /// `alice`'s decision of the world's stuck order, permitted.
@@ -1170,4 +1187,232 @@ fn core_never_decides_or_moves() {
             .outcome,
         not_permitted
     );
+}
+
+/// A mover's report is declined by an actor of another party and login than its reporter, on its own evidence, and the
+/// decline is recorded on policy's handle, permitted, before it is answered: the answer names the decision the entry
+/// holds. The decliner is `alice`, on the operator's other desk, whose chain meets the reporter's only at the
+/// operator (`T-021-09`, as a confirmation is decided).
+// verifies: REQ-AUZ-4
+#[test]
+fn decline_of_an_outcome_report_by_another_party_and_login_is_permitted_and_recorded_first() {
+    let (mut policy, request) = engine("decline", Register::of_the_world());
+    let held = policy.log.entries.len();
+    let decline = decline_by(&request, &alice(), "req-decline");
+    let declined = policy.decline_outcome(&decline).unwrap();
+    assert!(declined.permit().is_some(), "{declined:?}");
+    assert_eq!(policy.log.entries.len(), held + 1, "one entry, no more");
+    let (_, Entry::Verified(entry)) = policy.log.entries.last().unwrap() else {
+        panic!("a verified entry");
+    };
+    assert_eq!(entry.outcome, Outcome::Permitted {});
+    assert_eq!(entry.who, alice());
+    assert!(matches!(
+        &entry.what,
+        What::DeclineOutcome { request: r, decision } if r == &decline && decision == &declined.decision
+    ));
+    assert_eq!(entry.check(), Ok(()));
+}
+
+/// A decline by the reporter's own party or login is refused as the same actor, and the refusal is recorded: the
+/// reporter itself, another login of its desk, and its own login stating another party.
+// verifies: REQ-AUZ-4
+#[test]
+fn decline_by_the_reporters_own_party_or_login_is_refused() {
+    for decliner in [
+        bob(),
+        person("operator-desk-b", "op-login-9"),
+        person("operator-desk-x", "op-login-5"),
+    ] {
+        let register = Register::of_the_world().with(&decliner);
+        let (mut policy, request) = engine("decline", register);
+        let declined = policy
+            .decline_outcome(&decline_by(&request, &decliner, "req-decline"))
+            .unwrap();
+        assert_eq!(
+            declined.outcome,
+            refuse(RefusalClass::SameActor),
+            "{decliner:?}"
+        );
+        assert_eq!(
+            policy.log.last().0,
+            refused(RefusalClass::SameActor),
+            "recorded"
+        );
+    }
+}
+
+/// A decline by an actor whose `ActsFor` chain reaches the reporter's party, one whose party the reporter's chain
+/// reaches, and one whose chain meets the reporter's below the operator are each refused; the operator's staff on
+/// sibling desks, whose chains meet only at the operator, may decline.
+// verifies: REQ-AUZ-4
+#[test]
+fn decline_by_an_actor_whose_acts_for_chain_reaches_the_reporters_party_is_refused() {
+    let ask = |register: Register, decliner: &Actor| {
+        let (mut policy, request) = engine("decline", register);
+        policy
+            .decline_outcome(&decline_by(&request, decliner, "req-decline"))
+            .unwrap()
+            .outcome
+    };
+    for decliner in [
+        person("desk-b-night", "night-1"),
+        person(OPERATOR, "op-login-2"),
+        person("desk-b-twin", "twin-1"),
+    ] {
+        let mut register = Register::of_the_world().with(&decliner);
+        register.link("desk-b-night", "operator-desk-b");
+        register.link("operator-desk-b", "division-b");
+        register.link("desk-b-twin", "division-b");
+        register.link("division-b", OPERATOR);
+        assert_eq!(
+            ask(register, &decliner),
+            refuse(RefusalClass::SameActor),
+            "{decliner:?}"
+        );
+    }
+    for sibling in [alice(), person("operator-desk-c", "carol")] {
+        let mut register = Register::of_the_world().with(&sibling);
+        register.link("operator-desk-c", OPERATOR);
+        assert!(
+            matches!(ask(register, &sibling), Answer::Permit {}),
+            "{sibling:?}"
+        );
+    }
+}
+
+/// What the fixed rule and the log hold a decline to besides its actors: the permission to decline, a permission of
+/// its own that confirming alone doesn't give; the order's customer and the desk of the provider holding the funds
+/// never decline; the report cited is one the log holds as permitted, of the same move and order; an agent declines
+/// only within its scope; a log that can't be read and a register out of reach decline nothing. Each is refused and
+/// recorded, the unreached register's as not known.
+// verifies: REQ-AUZ-4, REQ-AUZ-1
+#[test]
+fn decline_is_held_to_its_permission_its_customer_and_holder_checks_and_its_report() {
+    let not_permitted = refuse(RefusalClass::NotPermitted);
+    let ask = |register: Register, decliner: &Actor| {
+        let (mut policy, request) = engine("decline", register);
+        policy
+            .decline_outcome(&decline_by(&request, decliner, "req-decline"))
+            .unwrap()
+            .outcome
+    };
+    // Confirming is not declining: a login holding every other permission of the steps is refused.
+    let mut confirms_only = Register::of_the_world();
+    confirms_only
+        .permissions
+        .retain(|(a, p)| !(a == &alice().acts && *p == Permission::DeclineOutcome));
+    assert_eq!(ask(confirms_only, &alice()), not_permitted);
+    // An unlisted login, though its party is the operator's.
+    let stranger = person("operator-desk-a", "op-unlisted");
+    assert_eq!(
+        ask(Register::of_the_world(), &stranger),
+        refuse(RefusalClass::MissingInput)
+    );
+    // The order's customer and a provider's desk, listed and holding the permission.
+    let customer = Actor {
+        role: Role::Customer,
+        ..person("cust-1", "cust-1")
+    };
+    assert_eq!(
+        ask(Register::of_the_world().with(&customer), &customer),
+        not_permitted
+    );
+    // The customer's holding company, which no acceptance names and the fixed rule can't see: its customer's chain
+    // reaches its party, so the log's rule refuses it.
+    let holding = person("cust-holding", "holding-1");
+    let mut register = Register::of_the_world().with(&holding);
+    register.link("cust-1", "cust-holding");
+    assert_eq!(ask(register, &holding), not_permitted);
+    let holder = person("bank-co", "bank-co-desk");
+    let mut register = Register::of_the_world().with(&holder);
+    register.list("bank-co-desk", "bank-co", ActorKind::Person);
+    assert_eq!(ask(register, &holder), not_permitted);
+    // An agent outside its scope.
+    let bot = agent("operator-desk-a", "alice-bot");
+    let mut register = Register::of_the_world().with(&bot);
+    register.link("operator-desk-a", OPERATOR);
+    register
+        .scopes
+        .retain(|(_, a, s)| !(a == &bot.acts && *s == Scope::DeclineOutcome));
+    assert_ne!(ask(register, &bot), Answer::Permit {});
+
+    // A report the log doesn't hold as permitted of this move and order.
+    let (mut policy, request) = engine("decline", Register::of_the_world());
+    let mut decline = decline_by(&request, &alice(), "req-decline");
+    let mut never = decline.clone();
+    never.report = at_index(&never.report, 1_000);
+    assert_eq!(
+        policy.decline_outcome(&never).unwrap().outcome,
+        not_permitted
+    );
+    let mut elsewhere = decline.clone();
+    elsewhere.request = id("req-elsewhere");
+    elsewhere.order = id("ord-2");
+    assert_eq!(
+        policy.decline_outcome(&elsewhere).unwrap().outcome,
+        not_permitted
+    );
+    decline.effect = at_index(&decline.effect, 1_999);
+    decline.request = id("req-other-effect");
+    assert_eq!(
+        policy.decline_outcome(&decline).unwrap().outcome,
+        not_permitted
+    );
+
+    // A log that can't be read, and a register of chains out of reach.
+    let (mut policy, request) = engine("decline", Register::of_the_world());
+    policy.log.unreadable = true;
+    assert_eq!(
+        policy
+            .decline_outcome(&decline_by(&request, &alice(), "req-decline"))
+            .unwrap()
+            .outcome,
+        refuse(RefusalClass::MissingInput)
+    );
+    let mut register = Register::of_the_world();
+    register.chains_unreachable = true;
+    let (mut policy, request) = engine("decline", register);
+    let unreached = policy
+        .decline_outcome(&decline_by(&request, &alice(), "req-decline"))
+        .unwrap();
+    assert!(unreached.permit().is_none(), "{unreached:?}");
+    assert!(matches!(
+        policy.log.last().0,
+        Outcome::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        }
+    ));
+}
+
+/// The order's record names a party the log's acceptances don't: a decider, a confirmer or a decliner acting for it is
+/// refused by the fixed rule alone, since the log's chain rule reads acceptances only. The record names `alice`'s own
+/// desk as a party of `ord-1`.
+// verifies: REQ-AUZ-4
+#[test]
+fn decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused() {
+    let named = || {
+        let mut register = Register::of_the_world();
+        register.order_parties.push((id("ord-1"), alice().party));
+        register
+    };
+    let not_permitted = refuse(RefusalClass::NotPermitted);
+
+    let (mut policy, request) = engine("decline", named());
+    let decline = decline_by(&request, &alice(), "req-decline");
+    assert_eq!(
+        policy.decline_outcome(&decline).unwrap().outcome,
+        not_permitted
+    );
+
+    let (mut policy, request) = engine("settled_es", named());
+    let confirmation = confirmation_by(&request, &alice(), "req-confirm");
+    assert_eq!(
+        policy.confirm_outcome(&confirmation).unwrap().outcome,
+        not_permitted
+    );
+
+    let (mut policy, request) = engine("sd", named());
+    let decide = decision_by(&request, &alice(), "req-decide");
+    assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
 }

@@ -115,6 +115,12 @@ pub enum Permission {
     /// An operator's login asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`). Core's own
     /// actors ask it through [`Permission::CarryOnward`].
     AskReversal,
+    /// An operator's login asking a segment's provider for its late status (`REQ-ORD-1`, `T-021-09`). Core's own
+    /// actors ask it through [`Permission::CarryOnward`].
+    AskStatus,
+    /// An actor declining a mover's report of a move's outcome, on its own evidence: the confirming actor's other
+    /// word, a permission apart from confirming (`REQ-AUZ-4`, ADR-0011, `T-021-09`). Asked by `T-021-09`'s rule.
+    DeclineOutcome,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
@@ -173,9 +179,22 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
                 // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
                 Action::EraseStatement { .. } => None,
-                // Asking a segment's provider for a late status (core-internal's `T-020-21` round): no rule lets
-                // anyone ask it yet, so policy refuses it, failing closed, until `T-021-09` adds one.
-                Action::AskStatus { .. } => None,
+                // Asking a segment's provider for a late status (core-internal's `T-020-21` round, `T-021-09`), as
+                // a reversal is asked: an operator's login the register lists for it, a permission of its own, or
+                // one of Core's own actors carrying the order on. Nobody else, and an unknown role fails closed.
+                // That the provider is the one its segment's move went to the log holds
+                // (`status-is-asked-of-the-segments-provider`).
+                Action::AskStatus { .. } => match caller.role {
+                    Role::Operator => {
+                        operator_holds(caller, Permission::AskStatus).map(Needs::from)
+                    }
+                    Role::Core => Some(vec![listed(caller, Permission::CarryOnward)].into()),
+                    Role::Customer
+                    | Role::Provider
+                    | Role::Verifier
+                    | Role::Regulator
+                    | Role::Checker => None,
+                },
                 // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds
@@ -354,6 +373,7 @@ fn actors_named<'a>(asked: Asked<'a>) -> Vec<&'a Actor> {
         Asked::MoveStuck(r) => vec![&r.mover],
         Asked::ReportOutcome(r) => vec![&r.reporter],
         Asked::ConfirmOutcome(c) => vec![&c.confirmer],
+        Asked::DeclineOutcome(d) => vec![&d.decliner],
         Asked::OpenSession(r) => vec![&r.requester],
         Asked::CheckRead(c) => vec![&c.reader],
         Asked::GrantPermission(c) | Asked::RevokePermission(c) => vec![&c.by, &c.grantee],

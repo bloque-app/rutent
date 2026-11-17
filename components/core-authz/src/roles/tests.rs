@@ -1305,6 +1305,114 @@ fn reversal_is_asked_only_by_the_operator_or_cores_carrier() {
     );
 }
 
+/// A late status asked of a segment's provider, as `caller` asks it.
+fn status_asked(caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
+    request.request = id(&format!("req-status-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request.action = Action::AskStatus {
+        order: id("ord-17"),
+        segment: id("seg-2"),
+        provider: id("bridge-pay"),
+    };
+    request
+}
+
+/// Core's own actor carrying the order on asks a segment's provider where it stands, and so does an operator's
+/// login the register lists for it, each recorded with its actor; Core's other actors and the operator without the
+/// permission are not permitted by it (`T-021-09`, as `ask_reversal` is asked).
+// verifies: REQ-ORD-1
+#[test]
+fn late_status_asked_by_core_for_a_segment_is_permitted() {
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::AskStatus])
+            .and_holding(&core(), &[Permission::CarryOnward]),
+    );
+    for caller in [core(), operator()] {
+        let decision = policy.decide(&status_asked(&caller)).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+        assert_eq!(
+            policy.log().entry_of(&decision).who,
+            caller,
+            "recorded with its actor"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 2,
+        "each reached the deployment's policy"
+    );
+
+    // Unlisted: Core's login without its listing, and the operator's login without the permission to ask it.
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(
+            &operator(),
+            &[Permission::AskReversal, Permission::CarryOnward],
+        ),
+    );
+    for caller in [operator(), core()] {
+        assert_eq!(
+            policy.decide(&status_asked(&caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+}
+
+/// Nobody else asks a late status: the customer, the provider itself, a verifier, a regulator and a checker are
+/// refused before the deployment's policy is asked, whatever the register lists for them, and the operator holding
+/// every other permission is too.
+// verifies: REQ-AUZ-1
+#[test]
+fn late_status_asked_by_a_customer_or_a_provider_is_refused() {
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::AskReversal,
+        Permission::DeclineOutcome,
+    ]);
+    let customer = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let provider = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    let mut register = Register::holding(&operator(), &every_other)
+        .and_holding(&customer, &every_other)
+        .and_holding(&provider, &every_other);
+    let others = [
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+    ];
+    for other in &others {
+        register = register.and_holding(other, &[Permission::AskStatus, Permission::CarryOnward]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    for caller in [operator(), customer, provider].iter().chain(&others) {
+        assert_eq!(
+            policy.decide(&status_asked(caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+}
+
 /// The showing of fault the accepting tests' log holds: fx-desk's failed result of `p1-s2`, under `tx-f2`.
 fn the_showing() -> rutent_contracts::core_internal::ShowingNamed {
     serde_json::from_value(json!({
