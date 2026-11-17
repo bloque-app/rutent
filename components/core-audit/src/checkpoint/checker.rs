@@ -9,10 +9,7 @@ use rutent_contracts::router_api::Id;
 use rutent_prov::catalogue::verify_envelope;
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    CHECKPOINT_SHAPE, Checkpoint, Kept, OPENING_SHAPE, Opening, Schedule, commitment, salt_of,
-    tick_of,
-};
+use super::{Checkpoint, Kept, Opening, Schedule, commitment, salt_of, tick_of};
 use crate::log::merkle::{self, Hash, leaf_hash};
 use crate::log::{Store, StoreError, record};
 
@@ -118,24 +115,23 @@ impl Checker {
     }
 
     /// Reads `bytes` as a checkpoint of this log, signed by its key, on its schedule: its tick and it. `None` for
-    /// anything else.
+    /// anything else, which includes anything that isn't the contract's checkpoint: a member more or fewer, a tick
+    /// that isn't 16 hexadecimal digits, another `shape` (`T-022-07`).
     pub(crate) fn read_checkpoint(&self, bytes: &[u8]) -> Option<(u64, Checkpoint)> {
         let checkpoint: Checkpoint = serde_json::from_slice(bytes).ok()?;
-        let tick = tick_of(&checkpoint.tick)?;
-        let holds = checkpoint.shape == CHECKPOINT_SHAPE
-            && checkpoint.log == self.log
+        let tick = tick_of(checkpoint.tick.as_str())?;
+        let holds = checkpoint.log == self.log
             && self.schedule.at(tick).as_ref() == Some(&checkpoint.at)
-            && checkpoint.signature.scheme == "ed25519"
             && checkpoint.signature.key == self.key
-            && verify_envelope(&self.key, &checkpoint.signature.value, bytes).is_ok();
+            && verify_envelope(&self.key, checkpoint.signature.value.as_str(), bytes).is_ok();
         holds.then_some((tick, checkpoint))
     }
 
-    /// Reads `bytes` as an opening of this log's.
+    /// Reads `bytes` as an opening of this log's: the contract's opening, salt and size included.
     fn read_opening(&self, bytes: &[u8]) -> Option<(u64, Opening)> {
         let opening: Opening = serde_json::from_slice(bytes).ok()?;
-        (opening.shape == OPENING_SHAPE && opening.log == self.log)
-            .then(|| tick_of(&opening.tick).map(|tick| (tick, opening)))
+        (opening.log == self.log)
+            .then(|| tick_of(opening.tick.as_str()).map(|tick| (tick, opening)))
             .flatten()
     }
 

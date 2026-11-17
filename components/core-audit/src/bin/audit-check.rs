@@ -12,6 +12,10 @@
 //!             [--evidence DIR --deployment NAME --operator-key PUBLIC_KEY]
 //! ```
 //!
+//! A checkpoint and an opening are the core-internal contract's shapes (`urn:rutent:core-internal:checkpoint` and
+//! `:checkpoint-opening`, `T-022-07`), which a party outside rutent's crates can read with the contract's schemas; one
+//! in any other shape is no checkpoint, or no opening.
+//!
 //! `--history` is the log's file, a record to a line; `--checkpoints` the checkpoints as the checker received each
 //! when it was published, a checkpoint to a line, kept by the checker apart from the operator; `--openings` the
 //! openings the operator hands over, one to a line. The schedule is `--first`, the time of tick 0, and `--every`,
