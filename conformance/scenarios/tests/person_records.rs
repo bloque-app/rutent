@@ -89,8 +89,7 @@ fn reserves_proof_in_anothers_name_is_refused() {
 /// what the order's actor may do there is the reserve's to say (`REQ-CPL-9`). Over the segments kit, whose caller is
 /// Core and whose customer is a person: no agent acts in this test. Core passes the reserve nothing of the actor's
 /// kind on this path, so the outcome is the same function of the reserve's answer whoever acts for the customer; the
-/// order run end to end by the customer's agent is `F-024`'s scenario to add (its harness can't script a reserve's
-/// `waits_on_person` yet).
+/// order run end to end by the customer's agent, and by a person, is `presence.rs` (`T-024-11`).
 // verifies: REQ-CPL-9
 #[test]
 fn presence_demanded_of_an_agent_is_reported_as_the_reserves_outcome() {

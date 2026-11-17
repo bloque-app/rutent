@@ -500,7 +500,7 @@ fn verified_at<'a>(entries: &'a [(Receipt, Entry)], at: &Receipt) -> Option<&'a 
 /// The commitment the entry recorded at `at` erases, where it is the `done` result of an `erase_statement` effect
 /// whose permit is a permitting `decide` of that same action: the log's decision to erase it (`REQ-AUD-13`,
 /// `REQ-AUZ-1`). The log admitted each step on the one before; the store reads them again from its own log.
-fn decided_erasure<'a>(
+pub fn decided_erasure<'a>(
     entries: &'a [(Receipt, Entry)],
     at: &Receipt,
 ) -> Result<&'a Digest, AppendFailure> {

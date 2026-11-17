@@ -20,13 +20,14 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     Actor, Attribution, Decision, Entry, PermissionChange, ReadAnswer, ReadCheck, Receipt,
-    StatedEntry,
+    StatedEntry, Violation,
 };
 use rutent_contracts::provider_role::{Deployment, TERMS_SHAPE, VERSION, signing_input};
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::log::merkle::sha256;
 use rutent_core_audit::log::{
-    AuditLog, Clock, General, MemoryStore, Settings, Store, digest, record,
+    AuditLog, Clock, General, KEPT_STATEMENT_CONTRADICTS, MemoryStore, Settings, Store, digest,
+    read_history, record,
 };
 use rutent_core_audit::receipts::{EvidenceStore, Keeper, LogsRead, bearing_out};
 use rutent_core_audit::statements::{
@@ -459,9 +460,10 @@ fn signature_is_kept_with_the_bytes_it_signed() {
 
 /// A statement whose signature fails, whatever the reason, is logged unverified: signed by another key under the
 /// provider's key's name, altered after signing, its signature garbled, or naming a maker the claim doesn't. Only the
-/// genuine statement is attributed (`EXP-1`'s `G-09`). The log checks it on append; a stated entry marked `verified`
-/// that a log's store holds with nothing kept to bear it out is found by [`unproven`], which the log's opening doesn't
-/// do, and what is found is the checker's to raise.
+/// genuine statement is attributed (`EXP-1`'s `G-09`). The log checks it on append, and again on opening since
+/// `T-022-08`, which refuses a store holding a stated entry marked `verified` that its kept statement contradicts; a
+/// reader of the history without the log's register finds each with [`unproven`], and what is found is the checker's
+/// to raise.
 // verifies: REQ-AUD-2
 #[test]
 fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
@@ -584,11 +586,18 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
     }
     let unkept = forged_entry(&bank, &nothing_kept, &statements_key("us-bank"));
     store.append(&record(&unkept).unwrap()).unwrap();
+    // Since `T-022-08` the log re-attributes on opening, so it refuses this store; `unproven` reads the history as a
+    // reader holding the log's file does, without opening the log.
     let settings = Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR));
-    let reopened = AuditLog::open(settings, store, run.kept())
-        .expect("the log opens: it re-attributes nothing on opening (`T-022-01`)");
+    assert_eq!(
+        AuditLog::open(settings, store.clone(), run.kept()).err(),
+        Some(AppendFailure::Refused(Violation(
+            KEPT_STATEMENT_CONTRADICTS
+        ))),
+        "the log re-attributes on opening (`T-022-08`)"
+    );
     let before = run.entries().len();
-    let entries = reopened.entries();
+    let entries = &read_history(&id(LOG), &store.records().unwrap());
     assert_eq!(entries.len(), before + 4);
     let mut kept = run.kept();
     let found = unproven(entries, &mut kept, &deployment()).unwrap();
@@ -828,11 +837,23 @@ fn unproven_holds_the_deployment_and_the_transaction_the_append_does() {
             .append(&record(&marked(&kept.commitment)).unwrap())
             .unwrap();
     }
+    // Since `T-022-08` the log refuses to open on these; `unproven` reads the history without opening the log.
     let settings = Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR));
-    let reopened = AuditLog::open(settings, store, run.kept()).unwrap();
+    assert_eq!(
+        AuditLog::open(settings, store.clone(), run.kept()).err(),
+        Some(AppendFailure::Refused(Violation(
+            KEPT_STATEMENT_CONTRADICTS
+        ))),
+        "the log re-attributes on opening (`T-022-08`)"
+    );
     let before = run.entries().len() as u64;
     let mut kept = run.kept();
-    let found = unproven(reopened.entries(), &mut kept, &deployment()).unwrap();
+    let found = unproven(
+        &read_history(&id(LOG), &store.records().unwrap()),
+        &mut kept,
+        &deployment(),
+    )
+    .unwrap();
     let places: Vec<u64> = found.found.iter().map(|(r, _)| r.index.get()).collect();
     assert_eq!(places, vec![before, before + 1, before + 2], "{found:?}");
     assert!(found.unread.is_empty());

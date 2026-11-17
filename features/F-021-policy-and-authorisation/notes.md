@@ -1249,7 +1249,8 @@ Approved, with one medium finding fixed before the merge, and two lows in these 
     agent. A bounded attempt through the assembly stopped on its harness: it can script a reserve's silence
     (`Fault::Silence`) but not its `waits_on_person`, and `Core::fleet()` lends the fleet only shared. Gap, owner
     `F-024`: a `Fault` that scripts a reserve's act, and an order requested, quoted and accepted by the customer's
-    agent, listed and scoped in `Registers`, run to the reserve's demand.
+    agent, listed and scoped in `Registers`, run to the reserve's demand. Closed by `T-024-11`
+    (`conformance/scenarios/tests/presence.rs`; `F-024`'s notes).
   - `REQ-CPL-11`, a third-party payer: an order paid by `payer-ref-9` and carrying a personal detail of the payer
     (`payer.name`), run through the assembly: the payer appears only in the acceptance's `parties.payer`, by
     reference, and the detail in no entry. Over the segments kit, whose evidence store can be read, the same detail
