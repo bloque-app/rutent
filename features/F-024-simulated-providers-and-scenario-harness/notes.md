@@ -649,16 +649,14 @@ moved after the quote) and `set_check_bound` (deployment settings). No simulator
 - **`AC-4` and `AC-6` are written and `#[ignore]`d.** The reversal journal's receipt rule (`T-020-12`) is fixed on
   `m3-next` and `AC-8` and `AC-5`'s late delivery now run. What still blocks the two: the simulated world binds no
   private node to its publisher, so a failed exchange's own answer completes nothing (`FailedProvidersOwn`) and the
-  reserve's confirmation is refused as the same publisher's. Owner: `T-024-14` (publishers emit records naming their node), unless
-  that row turns out to be a different one. The "other party" half of `AC-4` has no simulated route at all: a private
+  reserve's confirmation is refused as the same publisher's. Owner: `T-024-14`, whose row now says so (the simulated world binds each
+  private node to its publisher, the two `#[ignore]`s come off, and the rule-offs run). The "other party" half of `AC-4` has no simulated route at all: a private
   node is its publisher's alone, so no other publisher's provider starts where the origin reserve's node is; it is held
   in `components/core-orch/tests/reversal.rs`. Drop the `#[ignore]` when the node is bound. Evidence-table rows `AC-4`
   and `AC-6` stay unverified until then.
 - **`AC-40`'s second half** (customer's new destination, hand-on to a linked order) runs on the kit only
   (`tests/hand_on.rs`): the assembly doesn't wire `hand_on`. Owner: a later `F-024` row.
-- **Load flake, known.** `execution_support::given` gives the fleet a real 2 s deadline (`sim/fleet.rs`); under load a quote
-  can come back `NoRouteRightNow`, and `AC-5`'s `Behaviour::late` waits that real deadline. The stepped-clock fix on
-  `f-013/route-calls-stepped-clock` changes it; re-run alone when the machine is quiet.
+- **`AC-5`'s `Behaviour::late`** waits the fleet's real deadline; the order is accepted before it is scripted, so the quote's calls don't run under it. The stale-guest builds behind the earlier `NoRouteRightNow` flake are fixed on `m3-next`.
 - The customer's session lasts about a quarter hour of Core's clock, which bounds how many slow orders one scenario runs.
 
 **Rule-off table** (each rule switched off in `components/` or `contracts/` for one run, with other scenarios' rules off in
@@ -677,7 +675,9 @@ the same run where each red names its own cause, and restored; the tests were gr
 | `AC-41` | the operator among an order's receivers (`receivers_of`) | `AC-41`, and the operator's half of `AC-7` and `AC-9` |
 
 `AC-6`'s second rule is held by two layers (Core's `SameParty`/`SameLogin` and policy's `one_actor`): both off together
-is what the table would switch off; neither alone turns the scenario red. (Untested: `AC-6` is ignored.)
+is what the table would switch off; neither alone turns the scenario red. (Untested: `AC-6` is ignored.) Once un-ignored it is rule-offed in both layers together, then each alone. Both people hold both permissions, so
+the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameActor` from policy once Core's is off), not a missing permission.
+
 ## Owed rows (plan/m3-owed-rows-2)
 
 - **`T-024-15`** owns the stand-in reserve's arrival-notice test, `stand in reserve signs an arrival notice that

@@ -86,7 +86,7 @@ fn segment_state(core: &Core, order: &Id, segment: &Id) -> SegmentState {
 
 // verifies: AC-4
 #[test]
-#[ignore = "blocked: components/core-orch/src/reversal/journal.rs rejects the audit log's receipt for a verified stated entry, and the simulated world binds no private node to its publisher; see F-024 notes, T-024-06"]
+#[ignore = "blocked: the simulated world binds no private node to its publisher, so a failed exchange's reversal never completes (T-024-14); see F-024 notes, T-024-06"]
 fn true_undo_is_shown_back_at_the_origin_by_another_party() {
     let (mut core, order, withdrawal, exchange) = exchange_failed("AC-4");
     assert_eq!(
@@ -226,8 +226,11 @@ fn staff_of_the_operator(core: &Core) -> (Actor, Actor) {
     }
     core.registers().list(&alice);
     core.registers().list(&bob);
-    core.registers().permit(&alice, Permission::DecideStuck);
-    core.registers().permit(&bob, Permission::MoveStuck);
+    // Each holds both permissions, so only the two-actor rule can keep the one that decided from moving.
+    for person in [&alice, &bob] {
+        core.registers().permit(person, Permission::DecideStuck);
+        core.registers().permit(person, Permission::MoveStuck);
+    }
     (alice, bob)
 }
 
@@ -247,7 +250,7 @@ fn kept_about(core: &Core, order: &Id) -> rutent_contracts::module_interface::Di
 
 // verifies: AC-6
 #[test]
-#[ignore = "blocked: components/core-orch/src/reversal/journal.rs rejects the audit log's receipt for a verified stated entry, and the simulated world binds no private node to its publisher; see F-024 notes, T-024-06"]
+#[ignore = "blocked: the simulated world binds no private node to its publisher, so a failed exchange's reversal never completes (T-024-14); see F-024 notes, T-024-06"]
 fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     let (mut core, order, exchange) = stuck_with_no_route("AC-6");
     // Stuck, with nothing rolled back: the withdrawal is settled and the value rests at the reserve's ledger.
@@ -323,14 +326,22 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
         decision: decision.decision.clone(),
     };
 
-    // It is not moved by the one that decided, nor by Core: nothing moves.
-    for mover in [alice.clone(), kit::core()] {
-        let moved = core.move_stuck(&order, &decided, &mover);
-        assert!(
-            !matches!(moved, Ok(Moved::CarriedOut { .. })),
-            "{mover:?}: {moved:?}"
-        );
-    }
+    // It is not moved by the one that decided, though alice holds the permission to move: Core's own rule refuses her as
+    // the decider's party. Core isn't the operator's, and policy refuses it the move. Nothing moves.
+    assert!(
+        matches!(
+            core.move_stuck(&order, &decided, &alice),
+            Err(StepError::Resolve(ResolveError::SameParty))
+        ),
+        "the decider's own party"
+    );
+    assert!(
+        matches!(
+            core.move_stuck(&order, &decided, &kit::core()),
+            Ok(Moved::NotPermitted(_))
+        ),
+        "Core is its own party"
+    );
     assert_eq!(effects(&core), 0, "no value moved");
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
 

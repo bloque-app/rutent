@@ -27,6 +27,14 @@ fn handled(core: &Core) -> usize {
     core.fleet().platform.operations_received(RESERVE)
 }
 
+/// How many acceptances of `order` the log holds: how many times the customer was asked.
+fn acceptances(core: &Core, order: &rutent_contracts::router_api::Id) -> usize {
+    entries(core)
+        .iter()
+        .filter(|v| matches!(&v.what, What::Acceptance { order: o, .. } if o == order))
+        .count()
+}
+
 /// How many moves of value the log holds: what Core handed to a provider.
 fn effects(core: &Core) -> usize {
     entries(core)
@@ -288,7 +296,8 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
     );
 
     // Recalculation to the same destination comes first: the next deposit goes to the authorisation's own
-    // destination, in its to asset, and settles.
+    // destination, in its to asset, and settles, with no new yes asked of the customer.
+    assert_eq!(acceptances(&core, &order), 1);
     let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
         panic!("a route to the same destination was found");
     };
@@ -334,6 +343,11 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
     let recorded = core
         .record_no_route(&order, &outcome)
         .expect("no route recorded");
+    assert_eq!(
+        acceptances(&core, &order),
+        1,
+        "waiting asks no acceptance either"
+    );
     assert_eq!(recorded.state, OrderState::WaitingForCustomer);
     assert!(
         !core.is_stuck(&order, &core.part_of(&order).expect("a part")),
@@ -413,12 +427,13 @@ fn stuck_by_silence() -> (
     }
     // The next order's deposit is taken by the provider, which then stops answering.
     core.faults.operation_takes = 0;
-    core.world()
-        .script_for(RESERVE, "deposit", Behaviour::late());
-    let (order, ran) = run(
+    let order = accepted(
         &mut core,
         within("req-silent", &session, AMOUNT, RESERVE, OTHER),
     );
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::late());
+    let ran = core.run(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert!(matches!(
         segments[0].outcome,
