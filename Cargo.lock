@@ -1547,9 +1547,12 @@ version = "0.0.0"
 name = "rutent-prov"
 version = "0.0.0"
 dependencies = [
+ "cranelift-codegen",
  "ed25519-dalek",
  "jsonschema",
  "libc",
+ "object",
+ "postcard",
  "rcgen",
  "rustls",
  "rustls-pki-types",
@@ -1558,6 +1561,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "target-lexicon",
  "wasmtime",
 ]
 
