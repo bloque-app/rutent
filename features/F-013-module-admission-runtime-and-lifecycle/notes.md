@@ -851,6 +851,19 @@ In `components/prov/tests/module_limits.rs`:
   operating system's time still, as in production; a runner that takes 10 s to start a process fails them, which is
   the deadline doing its job.
 
+### Follow-up (T-013-08): stepped clock in every cross-module call test
+
+`route_calls.rs::call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router` failed once in a full
+workspace run under load, and passed alone and in 10 later runs. It ran on the real `Monotonic` clock, so spawning
+the wasm children of p-r1, p-r2 and p-z could pass the 10 s `OPERATION_DEADLINE`, and the call was then refused on
+its deadline instead of as `NotNamedByRoute`. Its binding now has a `SteppedClock`, with the assertions unchanged.
+The same class was closed in every other test that makes a cross-module call on a platform with no operation clock:
+`module_calls.rs` (4 tests), `module_limits.rs` (4 tests), `proxy_calls.rs` (3 tests) and `production_world.rs`
+(4 tests). Not changed, because they are about real time or never start a callee: the single-process tests of
+`module_limits.rs`, `module_lifecycle.rs`, `module_process.rs` and the others, and `egress.rs`, whose deadlines are
+the outward ones. `START_DEADLINE` is still read on the operating system's time (the platform hands it to the
+spawn directly); a start that passes it fails the install, not the assertion.
+
 ### Defaults (T-013-08)
 
 - The clock is `Monotonic` unless a test sets another. `STEPPED_POLL` 2 ms; `STEPPED_WAIT_CAP` 60 s.

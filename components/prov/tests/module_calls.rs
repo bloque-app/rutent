@@ -32,6 +32,8 @@ fn a_cross_module_call_is_judged_by_the_kind_of_the_operation_forwarded_not_the_
  {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let callee = format!("callee-{language}");
         // The callee handles withdrawals, so a withdrawal forwarded to it would be delivered and handled.
         install(
@@ -219,6 +221,8 @@ fn call_with_too_little_deadline_left_is_refused() {
 fn binding_records_a_call_its_callee_never_answered_as_undelivered() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let callees: [(String, Vec<Probe>, Output); 2] = [
             (
                 format!("trapping-{language}"),
@@ -322,6 +326,8 @@ fn reference(handled: &Handled) -> String {
 fn caller_is_told_each_cross_module_outcome_as_it_is_recorded() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let answering = format!("answering-{language}");
         let trapping = format!("trapping-{language}");
         install(
@@ -389,6 +395,8 @@ fn caller_is_told_each_cross_module_outcome_as_it_is_recorded() {
 fn caller_that_traps_after_a_cross_module_call_has_an_unknown_outcome() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
         install(
             &mut binding,

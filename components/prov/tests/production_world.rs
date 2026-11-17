@@ -543,6 +543,10 @@ fn tls_check_against_a_wrong_name_or_no_certificate_is_refused_end_to_end() {
 fn secret_is_answered_only_inside_the_outside_request_in_flight_on_the_running_platform() {
     let pki = tls::Pki::new();
     let mut running = Running::new(&pki, tls::MappedDialer::default());
+    // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+    running
+        .platform
+        .set_operation_clock(Arc::new(SteppedClock::new()));
     running
         .secrets
         .holds(RESERVE, "admin.key", Ok("canary-admin"));
@@ -682,6 +686,10 @@ fn secret_is_answered_only_inside_the_outside_request_in_flight_on_the_running_p
 fn call_back_into_a_running_provider_leaves_its_request_in_flight_in_the_proxy() {
     let pki = tls::Pki::new();
     let mut running = Running::new(&pki, tls::MappedDialer::default());
+    // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+    running
+        .platform
+        .set_operation_clock(Arc::new(SteppedClock::new()));
     running.secrets.holds(RESERVE, "own.key", Ok("reserve-own"));
     running.secrets.holds(RAMP, "own.key", Ok("ramp-own"));
     running.install(
@@ -823,6 +831,10 @@ fn call_with_no_route_records_its_own_reason_and_a_valid_record() {
 fn result_is_passed_on_only_signed_with_the_declared_statement_key() {
     let pki = tls::Pki::new();
     let mut running = Running::new(&pki, tls::MappedDialer::default());
+    // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+    running
+        .platform
+        .set_operation_clock(Arc::new(SteppedClock::new()));
     running.install(&release(RESERVE, &[]), Vec::new());
     let declared = public_key(&statements_key(RESERVE));
 
@@ -877,6 +889,10 @@ fn key_store_outage_refuses_the_operation_before_anything_of_it_runs() {
     let server = tls::TlsServer::serve(pki.server_for(&api(RESERVE)));
     let dialer = tls::MappedDialer::default().with("185.12.64.40", &server);
     let mut running = Running::new(&pki, dialer);
+    // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+    running
+        .platform
+        .set_operation_clock(Arc::new(SteppedClock::new()));
     running.names.then(&api(RESERVE), &["185.12.64.40"]);
     running.install(
         &release(RESERVE, &[RAMP]),
