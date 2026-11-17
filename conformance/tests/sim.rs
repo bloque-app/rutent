@@ -427,3 +427,72 @@ fn a_public_network_records_what_entered_and_what_arrives() {
         );
     }
 }
+
+/// Value moved into or within a private node is on no public network (`T-024-04`): the publisher's book records it,
+/// so an operation whose network its provider declares private makes no movement, and the same operation on a
+/// public network makes one.
+// verifies: REQ-MOD-4
+#[test]
+fn a_movement_into_a_private_node_is_made_on_no_public_network() {
+    let result = |kind: &str| -> Value {
+        json!({ "kind": kind, "transaction": "tx", "outcome": {
+            "status": "succeeded", "amount_in": "1000000", "amount_out": "1000000",
+            "fee": { "asset": "X", "amount": "0" }, "evidence": [{ "reference": "tx" }] } })
+    };
+    let ad = |role, name: &str| {
+        Spec::of(role, name)
+            .make(&context())
+            .advertisement()
+            .into_statement()
+            .statement
+    };
+    let transfer = operation(
+        &context(),
+        json!({
+            "kind": "transfer", "transaction": "tx-t", "provider": "sim-ramp",
+            "origin": "polygon", "destination": "bsc", "asset": "USDC",
+            "direction": "exact_in", "amount": "1000000", "dry_run": false, "inputs": {},
+        }),
+    );
+    let deposit = operation(
+        &context(),
+        json!({
+            "kind": "deposit", "transaction": "tx-d", "provider": "sim-reserve",
+            "origin": "sim-reserve-ledger", "destination": { "network": "sim-reserve-bank" },
+            "asset": "COP", "amount": "1000000", "dry_run": false,
+            "inputs": { "beneficiary.bank_account": "acct-1" },
+        }),
+    );
+    // Each operation, its result, the advertisement of its provider, and the network it lands on.
+    let cases = [
+        (
+            conversion("tx-c", "2000000", false).statement,
+            result("conversion"),
+            ad(Role::Exchange, "sim-exchange"),
+            "polygon",
+        ),
+        (
+            transfer.statement,
+            result("transfer"),
+            ad(Role::Ramp, "sim-ramp"),
+            "bsc",
+        ),
+        (
+            deposit.statement,
+            result("deposit"),
+            ad(Role::Reserve, "sim-reserve"),
+            "sim-reserve-bank",
+        ),
+    ];
+    for (operation, result, public, network) in cases {
+        let made = movements_made(&operation, &result, Some(&public));
+        assert_eq!(made.len(), 1, "on the public network {network}");
+        assert_eq!(made[0].network, network);
+        let mut private = public.clone();
+        private.private_nodes = vec![network.to_owned()];
+        assert!(
+            movements_made(&operation, &result, Some(&private)).is_empty(),
+            "no movement on {network} once its provider declares it private"
+        );
+    }
+}

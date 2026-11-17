@@ -7,8 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_conformance::role::SuiteContext;
-use rutent_conformance::sim::{Entry as BookEntry, Role, Spec, recorded_segments, transaction_of};
+use rutent_conformance::sim::{Entry as BookEntry, Spec, recorded_segments, transaction_of};
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::closing::{Books, Moved, PublicRecords};
 use rutent_evidence::replay::RecordedSegment;
@@ -33,20 +32,21 @@ pub(crate) struct Readings {
     read: Rc<RefCell<Read>>,
     /// Each network a provider's tuples are on.
     networks: Rc<Vec<String>>,
-    /// Each reserve, whose private ledger is its book.
-    reserves: Rc<Vec<String>>,
+    /// Each provider that moves value, whose journal is its book and whose private node, where it has one, its
+    /// publisher records the segments it serves in.
+    movers: Rc<Vec<Spec>>,
 }
 
 impl Readings {
     /// Readings of the networks and books of `installed`.
     pub(crate) fn of(installed: &[Installed]) -> Self {
         let mut networks = Vec::new();
-        let mut reserves = Vec::new();
+        let mut movers = Vec::new();
         for one in installed {
             // The networks the fleet serves for the provider's tuples, as it serves them.
             networks.extend(crate::sim::fleet::networks_of(&one.spec));
-            if one.spec.role == Role::Reserve {
-                reserves.push(one.spec.provider.clone());
+            if one.spec.role.moves_value() {
+                movers.push(one.spec.clone());
             }
         }
         networks.sort();
@@ -54,7 +54,7 @@ impl Readings {
         Readings {
             read: Rc::default(),
             networks: Rc::new(networks),
-            reserves: Rc::new(reserves),
+            movers: Rc::new(movers),
         }
     }
 
@@ -91,9 +91,11 @@ impl Readings {
                 seen.push((id, m.destination, m.amount));
             }
         }
-        for reserve in self.reserves.iter() {
-            read.books
-                .insert(reserve.clone(), world.journal(reserve).to_vec());
+        for mover in self.movers.iter() {
+            read.books.insert(
+                mover.provider.clone(),
+                world.journal(&mover.provider).to_vec(),
+            );
         }
     }
 }
@@ -148,34 +150,43 @@ impl PublicRecords for Readings {
     }
 }
 
-/// Each reserve's ledger, as its publisher records the segments inside it: its book's entries for the transactions
-/// asked, read as `rutent_conformance::sim::recorded_segments` reads a book.
+/// Each private node, as its publisher records the segments inside it (`REQ-ORD-41`): the entries of the books of every
+/// provider that serves in it, for the transactions asked, in the order the transactions are asked, each read as
+/// `rutent_conformance::sim::recorded_segments` reads a book.
 impl Books for Readings {
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Vec<RecordedSegment>> {
-        let reserve = node.strip_suffix("-ledger")?;
         let read = self.read.borrow();
-        let book: Vec<BookEntry> = read
-            .books
-            .get(reserve)?
-            .iter()
-            .filter(|e| {
-                transaction_of(&e.operation.statement)
-                    .is_some_and(|tx| transactions.iter().any(|t| t.as_str() == tx))
-            })
-            .cloned()
-            .collect();
-        let spec = Spec::of(Role::Reserve, reserve);
-        let segments: Vec<RecordedSegment> =
-            recorded_segments(&spec, &SuiteContext::default(), &book)
-                .into_iter()
-                .map(|s| RecordedSegment {
-                    asset_in: s.asset_in,
-                    amount_in: s.amount_in,
-                    asset_out: s.asset_out,
-                    amount_out: s.amount_out,
-                    fee: s.fee,
-                })
-                .collect();
+        let context = crate::assembly::context();
+        let mut segments = Vec::new();
+        for transaction in transactions {
+            for spec in self.movers.iter() {
+                if !spec.private_nodes().iter().any(|n| n == node) {
+                    continue;
+                }
+                let Some(book) = read.books.get(&spec.provider) else {
+                    continue;
+                };
+                let entries: Vec<BookEntry> = book
+                    .iter()
+                    .filter(|e| {
+                        transaction_of(&e.operation.statement)
+                            .is_some_and(|tx| tx == transaction.as_str())
+                    })
+                    .cloned()
+                    .collect();
+                segments.extend(
+                    recorded_segments(spec, &context, &entries)
+                        .into_iter()
+                        .map(|s| RecordedSegment {
+                            asset_in: s.asset_in,
+                            amount_in: s.amount_in,
+                            asset_out: s.asset_out,
+                            amount_out: s.amount_out,
+                            fee: s.fee,
+                        }),
+                );
+            }
+        }
         (!segments.is_empty()).then_some(segments)
     }
 }

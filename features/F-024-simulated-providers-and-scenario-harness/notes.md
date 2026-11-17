@@ -363,6 +363,65 @@ The router's `FeeAboveAmount` cut alone leaves `route_with_no_positive_arrival_i
 route is also dropped by the route's own arithmetic, so the test holds the outcome (nothing offered, nothing asked) and
 the price rule above holds its cause.
 
+## T-024-04: execution and closing scenarios
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/`): `execution.rs` (`AC-28`, `AC-32`, `AC-10`, `AC-11`, `AC-31`) over the base
+reserve, and `execution_routes.rs` (`AC-1`, `AC-2`'s full route, `AC-30`, `AC-26`, `AC-27`) over the joined providers,
+with `execution_support/` for the world. Each drives Core's own `request`, `quote`, `accept` and `run`, or its `arrive`
+and `file`. Each carries exactly the `AC-*` of its plan bracket.
+
+**Added to the simulator** (`conformance/` only; existing names and scenarios unchanged). `Shape` gains `publisher`,
+`node`, `public_node`, `outer`, `asset`, `to_asset`, `deposit_input` and `internal_steps`, and the exchange and the
+ramp are shaped by name as the reserve is (`Exchange::shaped`, `Ramp::shaped`, a fee and the seconds a ramp quotes).
+Two groups, by name (`sim::shape_of`):
+- `sim-join-in` (reserve, COP), `sim-join-exchange` (COP to USD), `sim-join-ramp` / `-quick` (5 000, 30 s) / `-steps`
+  (internal steps), `sim-join-out` (reserve, USD): one publisher shares the private node `sim-join-ledger`, the ramp
+  leaves it onto the public node `sim-join-chain`, and `sim-join-out` is a reserve whose inner node is that public node.
+- `sim-chain-in` (reserve, on-chain `sim-chain-a`), `sim-chain-ramp-b`, `sim-chain-ramp-c`, `sim-chain-out-c`,
+  `sim-chain-out-b` (USDC): no exchange, no local money; the reserves at the destination deposit to an address.
+`Spec::networks`, `public_nodes` and `private_nodes` say what each provider's module declares and what the operator
+lists; a conversion or transfer into a private node posts no public movement. A deposit's destination reads
+`beneficiary.address` where there is no bank account. `RoleHarness::internal_steps` and `Simulated::internal_steps`
+let a test read a module's internal steps back from its own journal.
+
+**Added to the assembly:** public nodes on the operator's list with a wallet the operator publishes
+(`kit::join`); prices for exchanges and ramps (`kit::prices_of`), an exchange's with its rate of one; the operator's
+slippage limit on each exchange tuple (`kit::bounds_for`, `REQ-QTE-9`); `Books` reading every provider that serves in a
+private node, in route order; `Core::exposures` (a view); `Core::report_price` (`assembly/price.rs`).
+
+**Defaults taken.**
+- `AC-1`'s "three providers" is read as a route over three kinds of provider: a reserve, an exchange and a ramp, with
+  the reserve the value is deposited in (four providers, four segments).
+- The executed price is reported by the assembly (`Core::report_price`): F-020's notes name "closing, `T-020-09`, or the
+  assembly", closing doesn't, and nothing in Core's segments does. `F-030`'s assembly must call it where an order completes.
+- `AC-28`'s "a transfer inside the reserve's book can't close" is a ledger-to-ledger request, which gets no route.
+- `AC-31`: "shared" is the network tying the second order's movement to the first's (`Fault::OnePaymentForTwo`); the
+  second order's records name the reserve as whose word, and its final deposit doesn't close.
+- `AC-10`: "nothing counts against the operator" is the arrival adding no input, no value held and no stuck order.
+- `AC-11`/`AC-26`: the reserve files as its own actor, listed in the deployment's register of actors (a deployment
+  setting, `Registers::list`), its party the reserve (`files_at`).
+- `AC-2`: the choice round confirms each route's own amounts, so a record can't be decided again under the other
+  objective; each record is decided again from itself, and the other route is dropped as `outranked` or `unconfirmed`.
+- `AC-30`: the refusal half is the catalogue's own check of a tuple (`check_tuple`, `Grant::new`) on the joined
+  exchange's and ramp's grant terms; Core's catalogue can't be handed a malformed tuple through an advertisement.
+
+**Gaps, with owners.** None blocks a scenario. `Core::report_price` is the assembly's (`F-030`); the slippage limits and
+the public-node list are deployment settings the assembly holds (`F-030`); `AC-31` is shown on the network's tying, not
+on a provider that states one payment for two orders itself (`T-024-06`, `T-024-08`).
+
+**Rule-off table** (each switched off alone, with a hard timeout, restored; the tests were green first):
+
+| Switched off | Red |
+|---|---|
+| public nodes on the operator's list | all five route tests |
+| the deposit's address fallback | `AC-27`, `AC-26`, `AC-2` |
+| `Books` reading every provider | the `AC-2` test (the faster route's replay) |
+| the executed price's amounts | `AC-1` (and `AC-2`) |
+| an exchange's rate / the slippage limits | every joined route (no price for the exchange, `NoPrice`), seen on the way |
+| conversions and transfers into a private node posting no movement | none: the movement went to a host nobody serves and was dropped; no test holds it |
+
 ## The toolchain is pinned (`T-020-11d`)
 
 The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.98.0 with clippy, rustfmt and the
