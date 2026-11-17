@@ -111,6 +111,7 @@ pub struct TlsServer {
     pub address: SocketAddr,
     accepted: Arc<AtomicUsize>,
     handshakes: Arc<AtomicUsize>,
+    stalls_ended: Arc<AtomicUsize>,
     bytes: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<String>>>,
 }
@@ -152,6 +153,7 @@ impl TlsServer {
         let address = listener.local_addr().expect("its address");
         let accepted = Arc::new(AtomicUsize::new(0));
         let handshakes = Arc::new(AtomicUsize::new(0));
+        let stalls_ended = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let mut answer = format!("HTTP/1.0 {status}\r\nContent-Length: 2\r\n");
@@ -159,9 +161,10 @@ impl TlsServer {
             answer.push_str(&format!("{name}: {value}\r\n"));
         }
         answer.push_str("\r\nok");
-        let (count, shook, read, kept) = (
+        let (count, shook, stalled, read, kept) = (
             accepted.clone(),
             handshakes.clone(),
+            stalls_ended.clone(),
             bytes.clone(),
             requests.clone(),
         );
@@ -188,6 +191,7 @@ impl TlsServer {
                 shook.fetch_add(1, Ordering::SeqCst);
                 if dribble == Some(Duration::ZERO) {
                     std::thread::sleep(Duration::from_secs(20));
+                    stalled.fetch_add(1, Ordering::SeqCst);
                     continue;
                 }
                 let Some(request) = read_request(&mut tls, &read) else {
@@ -214,6 +218,7 @@ impl TlsServer {
             address,
             accepted,
             handshakes,
+            stalls_ended,
             bytes,
             requests,
         }
@@ -227,6 +232,12 @@ impl TlsServer {
     /// How many handshakes completed.
     pub fn handshakes(&self) -> usize {
         self.handshakes.load(Ordering::SeqCst)
+    }
+
+    /// How many stalls ended, of a server that stalls after the handshake: a stall ends by its own 20 s, so a
+    /// peer that gave up before then saw none end.
+    pub fn stalls_ended(&self) -> usize {
+        self.stalls_ended.load(Ordering::SeqCst)
     }
 
     /// How many bytes of application data it read: none, if no handshake completed.
@@ -309,6 +320,7 @@ pub struct Silent {
     /// The loopback address it listens on.
     pub address: SocketAddr,
     accepted: Arc<AtomicUsize>,
+    let_go: Arc<AtomicUsize>,
 }
 
 impl Silent {
@@ -317,23 +329,35 @@ impl Silent {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let address = listener.local_addr().expect("its address");
         let accepted = Arc::new(AtomicUsize::new(0));
-        let count = accepted.clone();
+        let let_go = Arc::new(AtomicUsize::new(0));
+        let (count, ended) = (accepted.clone(), let_go.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 count.fetch_add(1, Ordering::SeqCst);
+                let ended = ended.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs(20));
+                    ended.fetch_add(1, Ordering::SeqCst);
                     drop(stream);
                 });
             }
         });
-        Silent { address, accepted }
+        Silent {
+            address,
+            accepted,
+            let_go,
+        }
     }
 
     /// How many connections it accepted.
     pub fn accepted(&self) -> usize {
         self.accepted.load(Ordering::SeqCst)
+    }
+
+    /// How many connections it ended by its own 20 s: none, if the peer gave up before then.
+    pub fn let_go(&self) -> usize {
+        self.let_go.load(Ordering::SeqCst)
     }
 }
 
