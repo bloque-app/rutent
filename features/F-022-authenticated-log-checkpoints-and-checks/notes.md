@@ -885,3 +885,78 @@ evidence.
 
   The first batch ran without `--no-fail-fast`, so R6 and R7 stopped at `tests/log.rs`; both were run again with it,
   as the table shows. None hung.
+
+### The review of `bfe5144d` (`T-022-08`)
+
+CHANGES: one should-fix and one low, each done. The log's refusal path, the register as it stood before each entry,
+the two changed `T-022-02` tests and `--operator-key` held.
+
+- **Tampering passed as a lawful erasure (should-fix).** Both the opening and the tool took any statement the store
+  didn't keep for an erasure. The reviewer's probes: (1) a forged `verified` entry whose kept statement was then
+  deleted opened, and the tool exited 0 with only an `unread` line; (2) a forged entry beside a hand-made empty
+  `erased/<commitment>`, its contradicting statement still filed, did the same (default 6 failed open). An erasure is
+  two things the history and the store both hold: the history's decided erasure of the commitment (the `done` result
+  of a permitted `erase_statement` effect, which the bound store erases on) and the store's mark. Anything short of
+  both is now refused or found.
+  - **The opening** (`log/mod.rs`). A `verified` entry whose statement isn't kept is held, once the whole store is
+    read back (an erasure is decided after the entry it erases), to the decided erasures the history holds
+    (`log::decided_erasures`). With none for its commitment it is gone, not erased, and the opening is refused:
+    `Refused(STATEMENT_GONE_WITHOUT_ITS_ERASURE)`, named by `NotOpened::Gone { entry }`. The log's own read
+    (`KeptStatements`) can't see the store's marks; the bound store holds those to the history when it is bound
+    (`MARK_WITHOUT_ITS_ERASURE`). Probe 2 is refused the same way on the opening: the evidence store, opening, removes
+    the bytes behind a mark (`DirectoryShelf::load`), so the log finds nothing kept and no decided erasure.
+  - **The tool** (`audit-check --evidence`, `KeptOnDisk::erasures`). Each stated entry whose statement isn't filed is
+    erased only where the history holds a decided erasure of it and the store marks it (printed `erased: entry N's
+    ...`, no finding). Otherwise it is a finding, exit 1: `StatementLost { index }` (neither filed nor marked; a
+    decided erasure whose mark is gone included), `MarkWithoutItsErasure { commitment }` (a mark with no decided
+    erasure), `MarkedYetFiled { commitment }` (a mark whose bytes are still filed). Erased and lost are now apart in
+    the output. Lost is read over every stated entry, as the bound store's `missing` is, not only the verified ones.
+  - **One reading of an erasure, not two.** `receipts::store::decided_erasure` was private; it is now `pub`, a
+    one-word change in `T-022-03`'s file, so the log and the tool read a decided erasure exactly as the bound store
+    does before it erases.
+- **Defaults this round** (reversible, failing closed; they replace default 1's erasure half and default 6):
+  8. **The opening refuses a gone statement** rather than opening and telling the operator. `REQ-AUD-13` and `AC-36`
+     ask that history still check after an erasure; a statement gone with no erasure is no erasure, so neither asks
+     the log to open on it, and `REQ-AUD-2` holds a verified attribution to bytes that bear it out. Only `verified`
+     entries are held: an unverified entry's bytes gone are the bound store's report (`BoundStore::missing`), as
+     before, which no `T-022-03` test changes.
+  9. **A mark whose bytes are still filed is a finding** (default 6 replaced). The reader can't tell an erasure cut
+     short between its mark and the removal from a mark made by hand; either way the bytes are filed, so
+     `KeptOnDisk` answers them and `unproven` holds the entry to them.
+  10. **A decided erasure whose statement is still filed and unmarked** (an erasure decided and not yet carried out,
+     which binding carries out) is no finding and no erasure: the bytes are there and the entry is held to them.
+- **The low.** `store still opens after a trusted provider's grant is revoked later`: a done `revoke_grant` after the
+  provider's verified quote; the store reopens with the same entries and root, the quote still verified, since it is
+  held to the register as it stood before it.
+- **Tests this round.** Open: `store whose verified entry's statement is gone with no erasure is refused on opening`
+  (an honest entry's statement removed by hand; probe 1; probe 2). Tool: `audit check with the evidence reports a
+  statement gone with no erasure as a finding` (probe 1, probe 2, a mark made by hand over removed bytes), and the
+  erased test now removes a real erasure's mark too and finds it lost. They were written with the fix, not before it:
+  against `bfe5144d` they wouldn't compile (`NotOpened::Gone`, `STATEMENT_GONE_WITHOUT_ITS_ERASURE`), so their red is
+  their rule-offs below.
+- **Opening cost, added.** Only where a `verified` entry's statement isn't kept: one walk of the history per `done`
+  result to find the decided erasures (`decided_erasure` looks each step up by receipt), so O(r x n) for r done
+  results, paid once per opening.
+- **Gaps added.**
+  5. The opening doesn't run `admit_entry` over what it reads back, so someone with full access to the log's file who
+     forges a whole erasure path (a permitting `decide`, its effect and its `done` result) beside a forged entry, and
+     a mark, is taken for an erasure by the opening and the tool alike. A rewrite before the last checkpoint is the
+     outside checker's (`DoesNotHold`); after it, nothing here sees it until the next tick. Re-admitting the history
+     on opening is a cost and design call for `F-022` (with `T-025-05`, which reads this diff).
+  6. Gap 4 above (default 6 untested) is closed: default 6 is replaced by default 9, which probe 2 tests.
+- **Rule-off table for this round** (each switched off once from `41f207b8`, the four test binaries run with
+  `--no-fail-fast` under the lock and a 400 s alarm, the tree restored from git):
+
+  | Switched off | Red |
+  |---|---|
+  | N1: a gone statement taken as erased on opening (no check) | gone-is-refused-on-opening |
+  | N2: decided erasures ignored on opening (every gone statement refused) | erased-still-opens |
+  | N3: a lost statement no finding in the tool | the tool's gone test (probe 1 exits 0), the tool's erased test (its mark-removed case exits 0) |
+  | N4: a mark with no decided erasure not reported | the tool's gone test (probe 2, and the hand-made mark over removed bytes) |
+  | N5: a mark whose bytes are still filed not reported | the tool's gone test (probe 2) |
+  | N6: erased by the mark alone | the tool's gone test (the hand-made mark prints `erased:`) |
+  | N7: erased by the decision alone | the tool's erased test (its mark-removed case prints `erased:`), the tool's gone test (the hand-made mark over removed bytes reads as lost) |
+  | N8: a statement filed behind a mark not answered (default 6 back) | the tool's gone test (probe 2: no `NotBorneOut`, no `MarkedYetFiled`) |
+
+  None hung. This round's patches of `R2`, `R3`, `R4`, `R6` and `R9` no longer match the tree (`Box`, the gone push);
+  those rule-offs ran against `80352c46` and the rules they switch off are unchanged in substance.
