@@ -4,7 +4,9 @@
 //! back from that log (`REQ-AUD-7`); a regulator reads the trail by the permission the operator grants through
 //! policy, and each read is recorded (`REQ-AUD-12`).
 //!
-//! Orchestration has no caller of `Measures` yet, so the test plays its part, and only that: for each segment Core's
+//! **`each_measure_is_computed_from_simulated_runs` is a counting test over records written as orchestration will
+//! write them, not an end-to-end one.** Orchestration has no caller of `Measures` yet (`T-020-31` adds it, and its
+//! end-to-end scenario replaces the hand-written feed below), so the test plays its part, and only that: for each segment Core's
 //! own run accounted for, it writes the record that segment's outcome gives (the quote the route's operation priced
 //! against the amount the segment settled with, a failure, a refusal), citing the receipt of that segment's own
 //! effect, through the one door the assembly gives (`Core::measure_writer`). Every figure it writes is the run's;
@@ -223,12 +225,12 @@ fn each_measure_is_computed_from_simulated_runs() {
     drys.push(dry);
     let failed = ran(&mut core, &session, "bulk-failed", |core| {
         core.world()
-            .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Fail));
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Fail));
     });
     record(&core, &failed, dry);
 
-    // The first operation of the third order fails at the reserve; the reserve says no to the fourth's dry run,
-    // then refuses its final deposit.
+    // The third order's final deposit fails at the reserve; the reserve says no to the fourth's dry run, then
+    // refuses its final deposit.
     core.world()
         .script_dry_run(RESERVE, "withdrawal", Behaviour::act(Act::Refuse));
     let dry = dry_run(&mut core, &session);
@@ -255,9 +257,27 @@ fn each_measure_is_computed_from_simulated_runs() {
         want.quotes >= 3 && want.below >= 1,
         "the runs settled, one of them short: {want:?} {outcomes:?}"
     );
-    // The reserve's `Act::Fail` takes no effect through the assembled Core (a gap in F-024's simulated world, in
-    // the notes), so a failure is whatever the runs came to, and the refusal is the one that is planned.
-    assert!(want.refusals >= 1, "one was refused: {want:?} {outcomes:?}");
+    // The failed and the refused orders really ended so, asserted on the runs themselves: a run with no failure
+    // can't pass for one that had it.
+    assert!(
+        matches!(
+            failed.segments.last().unwrap().outcome,
+            SegmentOutcome::Failed
+        ),
+        "the third order's deposit failed: {outcomes:?}"
+    );
+    assert!(
+        matches!(
+            refused.segments.last().unwrap().outcome,
+            SegmentOutcome::Refused(_)
+        ),
+        "the fourth order's deposit was refused: {outcomes:?}"
+    );
+    assert_eq!(
+        (want.failures, want.refusals),
+        (1, 1),
+        "{want:?} {outcomes:?}"
+    );
 
     // The measures are read from the log Core's own run left.
     let report = {
@@ -329,12 +349,14 @@ fn each_measure_is_computed_from_simulated_runs() {
     // Rates of no: the one refused dry run among four answers.
     assert_eq!((reserve.answers.yes, reserve.answers.no), (3, 1));
     assert_eq!(reserve.answers.rate_of_no().per_million(), Some(250_000));
-    // Reversals: no run of the assembled Core reverses anything in M3, and the measure counts what the log holds.
+    // Reversals: no run of the assembled Core reverses anything in M3 (T-020-31 records them), so the count is
+    // asserted to be 0 explicitly, and it is the log's own.
     let reversals = core
         .inputs()
         .iter()
         .filter(|i| matches!(i.observed, Observed::ReversalCompleted { .. }))
         .count() as u64;
+    assert_eq!(reversals, 0, "no run reverses anything yet");
     assert_eq!(reserve.reversals, reversals);
 
     // Over a window that holds none of it, nothing is counted; and what was counted came from the log: every

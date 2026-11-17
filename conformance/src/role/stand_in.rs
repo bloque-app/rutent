@@ -418,6 +418,8 @@ pub struct Reserve {
     results: BTreeMap<String, Statement<ResultBody>>,
     pending: BTreeMap<String, ReserveMovementOutcome>,
     unknown_next: bool,
+    /// The next real movement fails, with evidence, having moved nothing (`force_failure`).
+    fail_next: bool,
     shape: Shape,
     faults: BTreeSet<Fault>,
 }
@@ -542,6 +544,7 @@ impl Reserve {
             results: BTreeMap::new(),
             pending: BTreeMap::new(),
             unknown_next: false,
+            fail_next: false,
             shape: Shape::default(),
             faults: BTreeSet::new(),
         }
@@ -684,6 +687,17 @@ impl Reserve {
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::AmountChanges],
                 settlement_seconds: seconds(self.shape.settles_in.unwrap_or(86_400)),
+            });
+        }
+        if std::mem::take(&mut self.fail_next) {
+            // Failed before anything moved: the book is untouched.
+            return ReserveMovementOutcome::Failed(Failure {
+                evidence: evidence(
+                    self.shape.grade.unwrap_or(EvidenceGrade::SignedByProvider),
+                    &self.name,
+                    transaction,
+                ),
+                fault: None,
             });
         }
         let taken = self.shape.fee + self.shape.extra_charge;
@@ -871,6 +885,11 @@ impl Typed for Reserve {
 impl RoleHarness for Reserve {
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
+        true
+    }
+
+    fn force_failure(&mut self) -> bool {
+        self.fail_next = true;
         true
     }
 

@@ -806,20 +806,27 @@ CHANGES: one should-fix and five lows, each done.
   3. A read that is not of the trail is refused by `read_trail` before policy is asked.
   4. Anything unrecorded or answered for another request releases nothing.
   5. Quotes are compared in the asset's own unit, per asset; nothing is summed across assets or providers.
-  6. Provider and verifier are one key (the record carries one `provider` id).
+  6. Provider and verifier are one key (the record carries one `provider` id), so a party in both roles merges; a test
+     shows it. A role field on `MeasureRecord` is for the next core-internal round, `T-020-30`.
 - **Gaps, with owners.**
-  1. Orchestration has no caller of `Measures::measure`, so no run records any measure by itself: `F-020`
-     (orchestration) owns calling it. The scenario test plays that part, writing records from each segment's own
+  1. Orchestration has no caller of `Measures::measure`, so no run records any measure by itself: `T-020-31` (new
+     `F-020` row, `PLAN.md`) owns calling it, with the end-to-end scenario. Until then `each_measure_is_computed_from_simulated_runs`
+     is a **counting test over records written as orchestration will write them**, not an end-to-end one; its header
+     says so, and it asserts the failure, refusal and reversal counts explicitly. The scenario test plays that part, writing records from each segment's own
      accounting and receipts, through `Core::measure_writer`.
-  2. That door is a new file `conformance/scenarios/src/assembly/measures.rs` (and its `pub mod` line), since the
-     assembly keeps the log's handle private. It is `F-024`'s file: `T-024-02`'s owner should accept or move it.
-  3. In the assembled Core `Act::Fail` at the reserve took no effect on a withdrawal or a deposit (the order settled);
-     `Act::Refuse` works. So no failed segment is produced by a run, and the live test counts failures as the runs
-     came to (0) while the failure measure is exercised on the real log in `core-audit`'s tests: `F-024`
-     (`T-024-01`, the simulated providers' `force_failure` hook).
-  4. No run reverses anything in M3, so the reversals count over a run is 0 (it is counted from `Input` entries and
-     held to the measure); positive counts are `core-audit`'s unit test: `F-020` (reversal rows).
-  5. Failures carry no market figure in M3 (the contract says so), so all count as `no_figure`.
+  2. That door is a new file `conformance/scenarios/src/assembly/measures.rs` (and its `pub mod` line in
+     `assembly/mod.rs`), since the assembly keeps the log's handle private. Both are `F-024`'s to accept or move; the
+     lead accepts them for now. It reaches only a `General` handle on the log and Core's clock.
+  3. Closed in the review round. `Act::Fail` had no effect on a reserve because the stand-in `Reserve`
+     (`conformance/src/role/stand_in.rs`) had no `force_failure` hook: the harness default answered `false`, the sim
+     armed nothing, and the order settled (exchange and ramp had the hook, which is why `sim_providers.rs` worked).
+     `Reserve` now has `fail_next`, taken in `movement` after the dry-run branch and before the book is touched, so a
+     scripted failure fails with evidence having moved nothing. The bulk run's third order fails at its final
+     deposit and is accounted `Failed`; the test asserts it.
+  4. No run reverses anything in M3, so the reversals count over a run is 0, asserted explicitly; positive counts are
+     `core-audit`'s unit test. `T-020-31` (new, `PLAN.md`) records completed reversals.
+  5. Failures carry no market figure in M3 (the contract says so), so all count as `no_figure`. No row feeds a market
+     figure: the first row that gives a part one owns it (none in this plan); `T-020-31` records `market` absent.
   6. Quote and executed amounts and the dry-run said/outcome reach the log only inside a `MeasureRecord`: the log's
      other entries don't hold them (they are in kept statements), so measures can't be derived from the rest of the log
      without evidence access: `F-020` for the feed.

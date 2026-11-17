@@ -327,6 +327,37 @@ fn report_of(log: &Shared, over: &Window) -> Report {
     report(log, over)
 }
 
+/// A party that is both a provider and a verifier is one key: its quotes and its answers land in one entry of the
+/// report and aren't told apart by role. The record carries one `provider` id and no role, so the limit is visible
+/// here (a role field is `T-020-30`'s to list, the next `core-internal` round).
+// verifies: REQ-AUD-7
+#[test]
+fn a_party_in_both_roles_is_one_key_in_the_report() {
+    let log = bare();
+    let cite = citable(&log, 0);
+    let mut write = writer(&log);
+    write
+        .measure(&record(
+            "both",
+            "2026-11-02T00:00:00Z",
+            quote("10", "9", "COP", 2),
+            &cite,
+        ))
+        .unwrap();
+    write
+        .measure(&record("both", "2026-11-03T00:00:00Z", answer("no"), &cite))
+        .unwrap();
+    let report = report(&log, &november());
+    assert_eq!(report.providers.len(), 1, "one key for the party");
+    let both = &report.providers["both"];
+    assert_eq!(
+        both.quotes[&("COP".to_owned(), 2)].quotes,
+        1,
+        "as a provider"
+    );
+    assert_eq!(both.answers.no, 1, "as a verifier, in the same entry");
+}
+
 /// A window reads a time by the instant, its fraction to the nanosecond, not by its text, and is half open.
 // verifies: REQ-AUD-7
 #[test]
@@ -898,7 +929,7 @@ fn reach_of(code: &str) -> Vec<String> {
         }
     }
     // A capability, imported or named in place.
-    if code.contains("calls::") {
+    if code.contains("calls::") || words(code, "calls").next().is_some() {
         found.push("names the contract's calls".to_owned());
     }
     for capability in [
@@ -991,8 +1022,31 @@ fn measure_modules_reach_nothing_that_moves_value() {
             "{file} has child modules at {children}"
         );
     }
+    // The writer and the trail's reader have capabilities by design, but no child module hides in them or beside
+    // them, and no file is pulled in by a path.
+    for file in ["record", "trail"] {
+        let code = flat_code(
+            &std::fs::read_to_string(format!("{manifest}/src/measures/{file}.rs")).unwrap(),
+        );
+        assert!(
+            words(&code, "mod").next().is_none(),
+            "{file} declares a module"
+        );
+        for forbidden in ["include!", "include_str!", "#[path", "extern crate"] {
+            assert!(!code.contains(forbidden), "{file} holds {forbidden:?}");
+        }
+        let children = format!("{manifest}/src/measures/{file}");
+        assert!(
+            !std::path::Path::new(&children).exists(),
+            "{file} has child modules at {children}"
+        );
+    }
     // The reader itself is red on the ways round it, and on the plain ones.
     for (dodge, sneak) in [
+        (
+            "calls renamed",
+            "use rutent_contracts::core_internal::calls as c;",
+        ),
         ("a pub use", "pub use super::super::log::General as Sneak;"),
         ("a pub(crate) use", "pub(crate) use crate::log::General;"),
         (
