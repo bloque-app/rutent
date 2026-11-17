@@ -1210,6 +1210,24 @@ fn at_rest(
     Ok((at, settled, amount))
 }
 
+/// Where `part` of `order` holds its value, and how much of it, as Core's own records of the order's settled segments
+/// say (`T-020-17`): what the production mover holds a hand-on's route to before the holding account is asked
+/// anything.
+pub(crate) fn resting(
+    segments: &Segments,
+    order: &Id,
+    part: &Id,
+) -> Option<(Endpoint, PositiveAmount)> {
+    let followed = segments.order(order)?;
+    let part = followed
+        .parts
+        .iter()
+        .find(|p| p.part_id.as_str() == part.as_str())?;
+    at_rest(segments, order, part)
+        .ok()
+        .map(|(at, _, amount)| (at, amount))
+}
+
 /// Whether `recorded`, the log's entries, holds `input` already, by its record id.
 fn in_the_log(recorded: &[(Receipt, Entry)], input: &RecordedInput) -> bool {
     recorded.iter().any(|(_, e)| {

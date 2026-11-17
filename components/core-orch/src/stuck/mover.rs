@@ -46,14 +46,17 @@ use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
     Deposit, NodeRef, Operation as ProviderOperation, Refusal, Statement, Terms,
 };
-use rutent_contracts::router_api::{Id, PolicyBounds, Timestamp};
-use rutent_contracts::state_machine::SegmentState;
+use rutent_contracts::router_api::{Id, PolicyBounds, PositiveAmount, Timestamp};
+use rutent_contracts::state_machine::{OperationKind, SegmentState};
 use rutent_prov::catalogue::Catalogue;
+use rutent_prov::holding::wallet::{HandedOnStart, StartError, WalletError};
 use rutent_prov::module::types::Events;
 
+use super::handing::{AcceptedRoute, HandingOn};
 use super::is_receipt_of;
 use super::journal::{Step, built};
 use super::{Carrying, Parts, Resolutions, Resolved};
+use crate::hand_on::{proves_start, resting};
 use crate::rounds::OperatorKey;
 use crate::segments::{
     Answered, Counted, Drained, Modules, Unappended, Units, Uses, drain_entries, judge, maker,
@@ -111,6 +114,40 @@ enum Kept {
     /// A re-entry for an effect this mover holds no record of: what its predecessor handed over is unknown.
     Lost,
     Flight(Box<Flight>),
+    /// A hand-on's withdrawal from the holding account.
+    Hand(Box<HandFlight>),
+}
+
+/// One hand-on's withdrawal, from its route held to the records until its outcome is answered (`T-020-17`).
+#[derive(Debug, Clone)]
+struct HandFlight {
+    provider: Id,
+    linked: Id,
+    amount: PositiveAmount,
+    route: AcceptedRoute,
+    /// The operator's question the log recorded attributed, which the wallet was handed.
+    question: Option<Step>,
+    /// Whether the wallet was handed the operator's statement: from then it may hold the withdrawal.
+    asked: bool,
+    verdict: Option<Resolved>,
+    start: Option<HandedOnStart>,
+    /// What the platform and the proxy handed over, each item once, in the order taken.
+    drains: Vec<Step>,
+    uncarried: bool,
+}
+
+/// A part's value withdrawn from its holding account for a linked order's route, and so ready to be handed on
+/// ([`crate::hand_on::HandOn::hand_on`], then [`crate::hand_on::HandOn::prove_start`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Withdrawn<'a> {
+    /// The linked order.
+    pub linked: &'a Id,
+    /// The route the withdrawal was made for: the one the hand-on is to take, so the two never part.
+    pub route: &'a AcceptedRoute,
+    /// The holding account's own record of the withdrawal.
+    pub start: &'a HandedOnStart,
+    /// The receipt of the operator's question the wallet answered, which the log holds attributed.
+    pub question: Option<&'a Receipt>,
 }
 
 /// The production [`Resolutions`]' state: each move it carried out or is carrying out, by its effect's receipt, and
@@ -167,9 +204,32 @@ impl Mover {
         Self::default()
     }
 
-    /// The mover over `ports`, for one call of [`super::Stuck::carry_out`].
+    /// The mover over `ports`, for one call of [`super::Stuck::carry_out`]. It carries out a `deliver`; a hand-on
+    /// needs [`Delivering::handing_on`], and fails without it.
     pub fn on<'a>(&'a mut self, ports: Ports<'a>) -> Delivering<'a> {
-        Delivering { mover: self, ports }
+        Delivering {
+            mover: self,
+            ports,
+            hand: None,
+        }
+    }
+
+    /// The withdrawal made for the hand-on `effect` carried out, once it is done (`T-020-17`): what the hand-on
+    /// takes its route from, and what proves the linked order's start. `None` for anything else, and for a
+    /// withdrawal whose outcome is unknown.
+    pub fn withdrawn(&self, effect: &Receipt) -> Option<Withdrawn<'_>> {
+        let Some(Kept::Hand(flight)) = self.kept.get(&key(effect)) else {
+            return None;
+        };
+        if flight.verdict != Some(Resolved::Done) {
+            return None;
+        }
+        Some(Withdrawn {
+            linked: &flight.linked,
+            route: &flight.route,
+            start: flight.start.as_ref()?,
+            question: flight.question.as_ref().and_then(|q| q.receipt.as_ref()),
+        })
     }
 }
 
@@ -177,6 +237,16 @@ impl Mover {
 pub struct Delivering<'a> {
     mover: &'a mut Mover,
     ports: Ports<'a>,
+    hand: Option<HandingOn<'a>>,
+}
+
+impl<'a> Delivering<'a> {
+    /// Gives the mover what a hand-on needs: the holding accounts and the linked orders' accepted routes. Without
+    /// them every hand-on fails, with nothing handed over.
+    pub fn handing_on(mut self, hand: HandingOn<'a>) -> Self {
+        self.hand = Some(hand);
+        self
+    }
 }
 
 /// Whether the platform's refusal proves that nothing of the operation was passed out. Anything else, and any refusal
@@ -465,7 +535,8 @@ impl Delivering<'_> {
 
     /// Keeps one drain whole, as the steps of its items, once.
     fn keep(
-        flight: &mut Flight,
+        drains: &mut Vec<Step>,
+        uncarried: &mut bool,
         parts: &mut Parts<'_>,
         core: &Actor,
         raw: Drained,
@@ -482,12 +553,10 @@ impl Delivering<'_> {
         match whats {
             Ok(whats) => {
                 for what in whats {
-                    flight
-                        .drains
-                        .push(Step::new(built(core, what, &at, Outcome::Observed {})?));
+                    drains.push(Step::new(built(core, what, &at, Outcome::Observed {})?));
                 }
             }
-            Err(()) => flight.uncarried = true,
+            Err(()) => *uncarried = true,
         }
         Ok(())
     }
@@ -497,6 +566,7 @@ impl Resolutions for Delivering<'_> {
     fn may_have_handed_over(&self, effect: &Receipt) -> bool {
         match self.mover.kept.get(&key(effect)) {
             Some(Kept::Flight(flight)) => flight.carried,
+            Some(Kept::Hand(flight)) => flight.asked,
             Some(Kept::Refused) => false,
             Some(Kept::Lost) | None => true,
         }
@@ -508,6 +578,13 @@ impl Resolutions for Delivering<'_> {
         carrying: &Carrying<'_>,
         effect: &Effect,
     ) -> Result<Resolved, AppendFailure> {
+        if let Action::ResolveStuck {
+            resolution: Resolution::HandOn { .. },
+            ..
+        } = &effect.action
+        {
+            return self.resolve_hand_on(parts, carrying, effect);
+        }
         let at = key(&effect.receipt);
         let kept = match self.mover.kept.remove(&at) {
             Some(kept) => kept,
@@ -524,7 +601,7 @@ impl Resolutions for Delivering<'_> {
                 self.mover.kept.insert(at, Kept::Refused);
                 Ok(Resolved::Failed)
             }
-            Kept::Lost => {
+            Kept::Lost | Kept::Hand(_) => {
                 self.mover.kept.insert(at, Kept::Lost);
                 Ok(Resolved::Unknown)
             }
@@ -597,8 +674,15 @@ impl Delivering<'_> {
             let events: Events = self.ports.modules.take_events();
             let uses = self.ports.uses.take_uses();
             flight.answered = Some(answered);
-            Self::keep(flight, parts, carrying.core, Drained::Events(events))?;
-            Self::keep(flight, parts, carrying.core, Drained::Uses(uses))?;
+            let (drains, uncarried) = (&mut flight.drains, &mut flight.uncarried);
+            Self::keep(
+                drains,
+                uncarried,
+                parts,
+                carrying.core,
+                Drained::Events(events),
+            )?;
+            Self::keep(drains, uncarried, parts, carrying.core, Drained::Uses(uses))?;
         }
         if flight.verdict.is_none() {
             let (verdict, ends) = self.judge(parts, carrying, flight)?;
@@ -608,7 +692,14 @@ impl Delivering<'_> {
                 let record = self.ports.modules.end_segment(&identifier);
                 self.ports.modules.end_calls(&identifier);
                 if let Some(record) = record {
-                    Self::keep(flight, parts, carrying.core, Drained::Record(record))?;
+                    let (drains, uncarried) = (&mut flight.drains, &mut flight.uncarried);
+                    Self::keep(
+                        drains,
+                        uncarried,
+                        parts,
+                        carrying.core,
+                        Drained::Record(record),
+                    )?;
                 }
             }
         }
@@ -695,6 +786,298 @@ impl Delivering<'_> {
             // The provider's own word that it doesn't know, that it waits on the person, a refusal of another
             // kind, or an answer that doesn't count: the value may have moved, so the part is held.
             _ => (Resolved::Unknown, false),
+        })
+    }
+}
+
+impl Delivering<'_> {
+    /// Carries out a hand-on (`T-020-17`): the holding account's withdrawal for the linked order, over the linked
+    /// order's accepted route, in this order, each step once:
+    /// 1. the route is held to Core's own records: the linked order's own accepted route, one part, starting at the
+    ///    inner node where Core's records say the part's value rests, in its asset, with no withdrawal before it, of
+    ///    an order Core doesn't follow; the node's holding account is the provider the decision names, and the value
+    ///    is all of what the part holds. Anything else fails, with the wallet asked nothing;
+    /// 2. the operator's statement of the withdrawal is checked against what was decided, and recorded as the
+    ///    operator's question about the linked order and the wallet's transaction, **attributed**, before the wallet
+    ///    is handed it; one the log can't record attributed is never handed over;
+    /// 3. the wallet is asked, once, through [`super::Withdrawals`];
+    /// 4. what the platform and the proxy handed over is kept, and appended;
+    /// 5. the answer: `Done` only for the holding account's own record of the withdrawal, which proves the start
+    ///    ([`proves_start`]); `Failed` only where Core itself saw that nothing passed out (the route refused, the
+    ///    question not recorded, the platform's refusal proving it); `Unknown` for everything else, the wallet's own
+    ///    word that it failed included.
+    fn resolve_hand_on(
+        &mut self,
+        parts: &mut Parts<'_>,
+        carrying: &Carrying<'_>,
+        effect: &Effect,
+    ) -> Result<Resolved, AppendFailure> {
+        let at = key(&effect.receipt);
+        let kept = match self.mover.kept.remove(&at) {
+            Some(kept) => kept,
+            // Acted on already, and this mover knows nothing of it: the wallet may have been handed the
+            // withdrawal, so it is never handed over again, and the outcome is unknown.
+            None if carrying.again => Kept::Lost,
+            None => match self.plan_hand(parts, carrying, effect) {
+                Some(flight) => Kept::Hand(Box::new(flight)),
+                None => Kept::Refused,
+            },
+        };
+        match kept {
+            Kept::Refused => {
+                self.mover.kept.insert(at, Kept::Refused);
+                Ok(Resolved::Failed)
+            }
+            Kept::Hand(mut flight) => {
+                let result = self.withdraw(parts, carrying, effect, &mut flight);
+                self.mover.kept.insert(at, Kept::Hand(flight));
+                result
+            }
+            other => {
+                // A deliver's flight under a hand-on's effect can't be; and a lost move stays lost.
+                self.mover.kept.insert(at, Kept::Lost);
+                let _ = other;
+                Ok(Resolved::Unknown)
+            }
+        }
+    }
+
+    /// Holds the hand-on to Core's records before the wallet is asked anything; `None` where it can't be asked.
+    fn plan_hand(
+        &self,
+        parts: &Parts<'_>,
+        carrying: &Carrying<'_>,
+        effect: &Effect,
+    ) -> Option<HandFlight> {
+        let hand = self.hand.as_ref()?;
+        let Action::ResolveStuck {
+            resolution:
+                Resolution::HandOn {
+                    by,
+                    linked_order,
+                    asset,
+                    amount,
+                },
+            ..
+        } = &effect.action
+        else {
+            return None;
+        };
+        // All of what the part holds, where Core's own records say it rests, in the asset decided.
+        let (at, held) = resting(parts.segments, carrying.order, carrying.part)?;
+        if at.asset != *asset || held != *amount {
+            return None;
+        }
+        let NodeRef::Inner(node) = &at.node else {
+            return None;
+        };
+        // The linked order's own accepted route, an order Core doesn't follow yet: one part, starting where the
+        // value sits with no withdrawal.
+        if parts.segments.order(linked_order).is_some() {
+            return None;
+        }
+        let route = hand.routes.accepted(linked_order)?;
+        if route.order != *linked_order {
+            return None;
+        }
+        let [only] = route.plan.as_slice() else {
+            return None;
+        };
+        let first = only.segments.first()?;
+        if first.kind == OperationKind::Withdrawal || first.from != at {
+            return None;
+        }
+        // The node's holding account is the provider the decision names.
+        if hand.withdrawals.holder(node).as_deref() != Some(by.as_str()) {
+            return None;
+        }
+        Some(HandFlight {
+            provider: by.clone(),
+            linked: linked_order.clone(),
+            amount: amount.clone(),
+            route,
+            question: None,
+            asked: false,
+            verdict: None,
+            start: None,
+            drains: Vec::new(),
+            uncarried: false,
+        })
+    }
+
+    /// Takes the withdrawal on from where it stopped: asks the wallet once, keeps what came back, appends it.
+    fn withdraw(
+        &mut self,
+        parts: &mut Parts<'_>,
+        carrying: &Carrying<'_>,
+        effect: &Effect,
+        flight: &mut HandFlight,
+    ) -> Result<Resolved, AppendFailure> {
+        // The withdrawal rests on the effect the log admitted on a permit: nothing is asked without it.
+        debug_assert!(matches!(effect.action, Action::ResolveStuck { .. }));
+        if flight.verdict.is_none() {
+            let Some(hand) = self.hand.as_mut() else {
+                // Nothing to ask the wallet through now: where it was asked, what it did is unknown.
+                flight.verdict = Some(if flight.asked {
+                    Resolved::Unknown
+                } else {
+                    Resolved::Failed
+                });
+                return Ok(flight.verdict.unwrap_or(Resolved::Unknown));
+            };
+            let Some(first) = flight
+                .route
+                .plan
+                .first()
+                .and_then(|part| part.segments.first())
+                .cloned()
+            else {
+                flight.verdict = Some(Resolved::Failed);
+                return Ok(Resolved::Failed);
+            };
+            let NodeRef::Inner(node) = first.from.node.clone() else {
+                flight.verdict = Some(Resolved::Failed);
+                return Ok(Resolved::Failed);
+            };
+            let amount = flight.amount.amount().as_str().to_owned();
+            let order = carrying.order.as_str().to_owned();
+            let (provider, linked) = (flight.provider.clone(), flight.linked.clone());
+            let asset = first.from.asset.id.clone();
+            let (mut sent, mut unavailable) = (false, false);
+            let mut question: Option<Step> = None;
+            let mut asked = |statement: &Statement<ProviderOperation>| -> bool {
+                // What the operator signed is what was decided: the holding account's own withdrawal, in full.
+                let ProviderOperation::Withdrawal(w) = &statement.statement else {
+                    return false;
+                };
+                let exact = w.provider == provider.as_str()
+                    && w.destination == node
+                    && w.asset == asset
+                    && w.amount == amount
+                    && !w.dry_run;
+                let (Some(transaction), Ok(bytes), Ok(at)) = (
+                    Id::new(&w.transaction),
+                    serde_json::to_vec(statement),
+                    now(parts),
+                ) else {
+                    return false;
+                };
+                if !exact {
+                    return false;
+                }
+                let about = About {
+                    order: Some(linked.clone()),
+                    segment: None,
+                    transaction: Some(transaction),
+                };
+                let entry = match stated_entry(
+                    &mut *self.ports.evidence,
+                    &at,
+                    &bytes,
+                    self.ports.operator.clone(),
+                    Some(about),
+                ) {
+                    Ok(entry) => entry,
+                    Err(Unappended::Append(AppendFailure::Unavailable)) => {
+                        unavailable = true;
+                        return false;
+                    }
+                    Err(_) => return false,
+                };
+                let Ok(entry) = GeneralEntry::try_from(entry) else {
+                    return false;
+                };
+                let mut step = Step::new(entry);
+                match step.append_stated(parts.log) {
+                    // One that is the digest of the entry as built was recorded unattributed, its signing key
+                    // unknown to the log: no question the log can tie to the operator.
+                    Ok(receipt) if is_receipt_of(&receipt, &step.entry) => false,
+                    Ok(_) => {
+                        sent = true;
+                        question = Some(step);
+                        true
+                    }
+                    Err(AppendFailure::Unavailable) => {
+                        unavailable = true;
+                        false
+                    }
+                    Err(_) => false,
+                }
+            };
+            let answered = hand.withdrawals.withdraw(
+                &flight.route.plan[0].segments,
+                &order,
+                &amount,
+                &mut asked,
+            );
+            flight.asked = sent;
+            if let Some(step) = question {
+                flight.question = Some(step);
+            }
+            if sent {
+                // Everything that came back is kept before any step that can fail.
+                let events: Events = self.ports.modules.take_events();
+                let uses = self.ports.uses.take_uses();
+                let (drains, uncarried) = (&mut flight.drains, &mut flight.uncarried);
+                Self::keep(
+                    drains,
+                    uncarried,
+                    parts,
+                    carrying.core,
+                    Drained::Events(events),
+                )?;
+                Self::keep(drains, uncarried, parts, carrying.core, Drained::Uses(uses))?;
+            }
+            match answered {
+                Ok(start) if sent => {
+                    let proven = proves_start(
+                        &start.record,
+                        &flight.provider,
+                        &first,
+                        carrying.order,
+                        flight.amount.amount(),
+                    )
+                    .is_ok()
+                        && start.reserve == flight.provider.as_str()
+                        && start.node == node
+                        && start.first_segment == first.segment_id;
+                    flight.verdict = Some(if proven {
+                        Resolved::Done
+                    } else {
+                        // The wallet says it paid out, in a record that proves nothing of this start.
+                        Resolved::Unknown
+                    });
+                    flight.start = Some(start);
+                }
+                // The account paid out and the operator's question was never recorded: Core can't vouch for it.
+                Ok(_) => flight.verdict = Some(Resolved::Unknown),
+                Err(_) if !sent => {
+                    if unavailable {
+                        // The log couldn't take the question now: nothing was handed over, and the withdrawal is
+                        // asked again on the next call.
+                        return Err(AppendFailure::Unavailable);
+                    }
+                    // The route refused, or the question not recorded: nothing passed out, as Core itself saw.
+                    flight.verdict = Some(Resolved::Failed);
+                }
+                // Failed only where the platform's own refusal proves that nothing passed out; the wallet's word
+                // that it failed, and every other refusal, may hide a withdrawal.
+                Err(StartError::Wallet(WalletError::NotAnswered(refusal)))
+                    if nothing_passed_out(refusal) =>
+                {
+                    flight.verdict = Some(Resolved::Failed);
+                }
+                Err(_) => flight.verdict = Some(Resolved::Unknown),
+            }
+        }
+        for step in &mut flight.drains {
+            step.append(parts.log)?;
+        }
+        let verdict = flight.verdict.unwrap_or(Resolved::Unknown);
+        Ok(if flight.uncarried && verdict != Resolved::Failed {
+            Resolved::Unknown
+        } else {
+            verdict
         })
     }
 }
