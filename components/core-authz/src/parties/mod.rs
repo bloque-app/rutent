@@ -114,6 +114,8 @@ pub enum Scope {
     ReportOutcome,
     /// Confirming a move's outcome reported by another (`confirm_outcome`).
     ConfirmOutcome,
+    /// Declining a move's outcome report (`decline_outcome`).
+    DeclineOutcome,
     /// Opening a session (`open_session`).
     OpenSession,
     /// Reading (`check_read`).
@@ -147,6 +149,7 @@ impl Scope {
             Asked::MoveStuck(_) => Scope::MoveStuck,
             Asked::ReportOutcome(_) => Scope::ReportOutcome,
             Asked::ConfirmOutcome(_) => Scope::ConfirmOutcome,
+            Asked::DeclineOutcome(_) => Scope::DeclineOutcome,
             Asked::OpenSession(_) => Scope::OpenSession,
             Asked::CheckRead(_) => Scope::CheckRead,
             Asked::GrantPermission(_) => Scope::GrantPermission,

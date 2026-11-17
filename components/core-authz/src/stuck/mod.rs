@@ -1,6 +1,7 @@
 //! Resolving a stuck order: decide and move as separate permissions, their actors compared at the accountable party.
 //!
-//! Declared by `T-020-01`; `T-021-06` owns it, and only its owning row edits it (`PLAN.md` §4.4).
+//! Declared by `T-020-01`; `T-021-06` owns it, and only its owning row edits it (`PLAN.md` §4.4); `T-021-09` added the
+//! decline.
 //!
 //! # Two steps, two actors
 //!
@@ -9,7 +10,9 @@
 //! goes under and the evidence it relied on ([`StuckOrders::decide_stuck`]); another moves the value that decision
 //! named ([`StuckOrders::move_stuck`]), and only that move's permit backs the `resolve_stuck` effect. A move whose
 //! outcome comes back unknown settles on two actors' word too: its mover reports it
-//! ([`StuckOrders::report_outcome`]) and another confirms the report ([`StuckOrders::confirm_outcome`]). Each call
+//! ([`StuckOrders::report_outcome`]) and another confirms the report ([`StuckOrders::confirm_outcome`]) or declines
+//! it on its own evidence ([`OutcomeDeclines::decline_outcome`], `T-021-09`, decided as a confirmation is, under a
+//! permission of its own, [`Permission::DeclineOutcome`]). Each call
 //! reaches the engine's one consultation, the fixed rules first and then the deployment's policy, and its answer is
 //! recorded before it is given.
 //!
@@ -73,16 +76,23 @@
 //!   move's funds either way, the move's own provider for a segment's `move_value`, the resolution's for a
 //!   `resolve_stuck`, refused.
 //!
+//! - **The decline.** The confirmation's rules but for the outcome, which a decline has none of: the report it cites is
+//!   a permitted one of the same move and order, its decliner is another accountable actor than the reporter, no
+//!   party of the order and not the holder's desk. A decline permitted lets a new report stand (the contract's
+//!   `one-report-per-effect`); it settles and frees nothing.
+//!
 //! A log that can't be read refuses as missing an input; a register of chains out of reach leaves the answer not
 //! known. That a read is of the very log the handle appends to, whole, is the assembly's word, as `T-021-04`'s and
 //! `T-021-05`'s reads are: every rule here looks a step up and refuses where it isn't found, so a stale read fails
 //! closed, and only a read of another log that names another decider could mislead it.
 
-use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, StuckOrders};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, OutcomeDeclines, PolicyLog, StuckOrders,
+};
 use rutent_contracts::core_internal::{
-    Action, Actor, Answer, Decision, Entry, NotKnownCause, Outcome, OutcomeConfirmation,
-    OutcomeReport, Receipt, RefusalClass, Resolution, Role, StuckDecide, StuckMove, VerifiedEntry,
-    What,
+    Action, Actor, Answer, Decision, Entry, MoveOutcome, NotKnownCause, Outcome,
+    OutcomeConfirmation, OutcomeDecline, OutcomeReport, Receipt, RefusalClass, Resolution, Role,
+    StuckDecide, StuckMove, VerifiedEntry, What,
 };
 use rutent_contracts::router_api::Id;
 
@@ -237,6 +247,13 @@ fn rules_of(asked: Asked<'_>) -> Option<Rules> {
             all: vec![
                 listed(&c.confirmer, Permission::ConfirmOutcome),
                 not_of(&c.order, &c.confirmer),
+            ],
+            any: Vec::new(),
+        }),
+        Asked::DeclineOutcome(d) => Some(Rules {
+            all: vec![
+                listed(&d.decliner, Permission::DeclineOutcome),
+                not_of(&d.order, &d.decliner),
             ],
             any: Vec::new(),
         }),
@@ -507,17 +524,51 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     /// reporter isn't its confirmer's accountable actor; its confirmer is, or reaches, no party of the order; and it
     /// isn't the desk of the provider holding the move's funds.
     fn confirm_check(&mut self, request: &OutcomeConfirmation) -> Check {
+        self.second_word_check(
+            &request.report,
+            &request.effect,
+            &request.order,
+            Some(request.outcome),
+            &request.confirmer,
+        )
+    }
+
+    /// The decline's rules, read from the log, the confirmation's but for the outcome, which a decline has none of: it
+    /// cites a permitted report of its move and order, whose reporter isn't its decliner's accountable actor; its
+    /// decliner is, or reaches, no party of the order; and it isn't the desk of the provider holding the move's funds.
+    fn decline_check(&mut self, request: &OutcomeDecline) -> Check {
+        self.second_word_check(
+            &request.report,
+            &request.effect,
+            &request.order,
+            None,
+            &request.decliner,
+        )
+    }
+
+    /// What a second actor's word on a report, its confirmation or its decline, is held to in the log: the report is
+    /// a permitted one of the same move and order (and `outcome`, where the word names one), its reporter isn't
+    /// `second`'s accountable actor, `second` is, or reaches, no party of the order, and it isn't the desk of the
+    /// provider holding the move's funds, either way.
+    fn second_word_check(
+        &mut self,
+        report: &Receipt,
+        effect: &Receipt,
+        order: &Id,
+        outcome: Option<MoveOutcome>,
+        second: &Actor,
+    ) -> Check {
         let Ok(entries) = self.log.receipted() else {
             return Check::Refuse(RefusalClass::MissingInput);
         };
-        let reporter = match permitted_at(&entries, &request.report) {
+        let reporter = match permitted_at(&entries, report) {
             Some(What::ReportOutcome {
-                request: report, ..
-            }) if report.effect == request.effect
-                && report.order == request.order
-                && report.outcome == request.outcome =>
+                request: reported, ..
+            }) if &reported.effect == effect
+                && &reported.order == order
+                && outcome.is_none_or(|o| reported.outcome == o) =>
             {
-                report.reporter.clone()
+                reported.reporter.clone()
             }
             _ => return Check::Refuse(RefusalClass::NotPermitted),
         };
@@ -525,7 +576,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
             Entry::Verified(VerifiedEntry {
                 what: What::Effect { action, .. },
                 ..
-            }) if receipt == &request.effect => match action {
+            }) if receipt == effect => match action {
                 Action::MoveValue { provider, .. } => Some(provider.clone()),
                 Action::ResolveStuck { resolution, .. } => Some(holder_of(resolution).clone()),
                 _ => None,
@@ -536,9 +587,31 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
             return Check::Refuse(RefusalClass::NotPermitted);
         };
         first!(
-            self.one_actor(&reporter, &request.confirmer),
-            self.not_the_customer(&entries, &request.confirmer, &request.order),
-            self.of_party_either_way(&request.confirmer, &holder, RefusalClass::NotPermitted),
+            self.one_actor(&reporter, second),
+            self.not_the_customer(&entries, second, order),
+            self.of_party_either_way(second, &holder, RefusalClass::NotPermitted),
+        )
+    }
+}
+
+impl<L: PolicyLog + Receipted, P: Policy, S: Sources> OutcomeDeclines for Engine<L, P, S> {
+    fn decline_outcome(&mut self, request: &OutcomeDecline) -> Result<Decision, AppendFailure> {
+        let consulted = self.consult(Asked::DeclineOutcome(request));
+        let check = match consulted {
+            Answer::Refuse { .. } => Check::Clear,
+            _ => self.decline_check(request),
+        };
+        let what = |decision| What::DeclineOutcome {
+            request: request.clone(),
+            decision,
+        };
+        let answer = held(consulted, check);
+        self.answer(
+            &request.request,
+            &request.decliner,
+            what,
+            &request.at,
+            answer,
         )
     }
 }

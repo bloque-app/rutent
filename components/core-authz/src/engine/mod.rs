@@ -75,6 +75,9 @@ pub enum Asked<'a> {
     ReportOutcome(&'a rutent_contracts::core_internal::OutcomeReport),
     /// The confirmation of a move's outcome by an actor of another party and login (`REQ-AUZ-4`, ADR-0011).
     ConfirmOutcome(&'a rutent_contracts::core_internal::OutcomeConfirmation),
+    /// The decline of a mover's report of a move's outcome, by an actor of another party and login than the reporter
+    /// (`REQ-AUZ-4`, ADR-0011).
+    DeclineOutcome(&'a rutent_contracts::core_internal::OutcomeDecline),
     /// A session (`REQ-CAT-3`).
     OpenSession(&'a SessionRequest),
     /// A read (`REQ-AUZ-7`).
@@ -100,6 +103,7 @@ impl Asked<'_> {
             Asked::MoveStuck(r) => &r.mover,
             Asked::ReportOutcome(r) => &r.reporter,
             Asked::ConfirmOutcome(c) => &c.confirmer,
+            Asked::DeclineOutcome(d) => &d.decliner,
             Asked::OpenSession(r) => &r.requester,
             Asked::CheckRead(c) => &c.reader,
             Asked::GrantPermission(c) | Asked::RevokePermission(c) => &c.by,
@@ -773,7 +777,8 @@ mod tests {
     use crate::funds::{ReadFailure, Recorded};
     use crate::roles::Permission;
     use rutent_contracts::core_internal::calls::{
-        Authorisations, Charges, GeneralEntry, Log, PersonQuestions, Reads, Sessions, StuckOrders,
+        Authorisations, Charges, GeneralEntry, Log, OutcomeDeclines, PersonQuestions, Reads,
+        Sessions, StuckOrders,
     };
     use rutent_contracts::core_internal::{
         Action, ActorKind, CatalogueChange, ChargeOutcome, Entry, Permit, PersonOutcome, RELATIONS,
@@ -1206,6 +1211,12 @@ mod tests {
             segment: id("seg-2"),
             provider: id("bridge-pay"),
         });
+        // And asking it for its late status (`T-021-09`).
+        actions.push(Action::AskStatus {
+            order: id("ord-17"),
+            segment: id("seg-2"),
+            provider: id("bridge-pay"),
+        });
         for action in &actions {
             match action {
                 Action::MoveValue { .. }
@@ -1215,8 +1226,8 @@ mod tests {
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
                 Action::AskReversal { .. } => {}
-                // Not yet in policy's tables, as `erase_statement` isn't: core-internal's `T-020-21` round added it.
-                Action::AskStatus { .. } => unreachable!("not yet in policy's tables"),
+                // In policy's tables since `T-021-09`: asked as a reversal is.
+                Action::AskStatus { .. } => {}
                 // Decided and never carried out, so no effect follows to test here: its own tests are `roles`' and
                 // `parties`' (`reversal-carrier-rests-on-its-acceptance`).
                 Action::AcceptFault { .. } => unreachable!("tested apart: it has no effect"),
@@ -1348,6 +1359,10 @@ mod tests {
         let decision = policy.confirm_outcome(&outcome_confirmation()).unwrap();
         assert!(decision.permit().is_none());
         assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
+        // A decline cites a report the log holds as permitted, as a confirmation does: none, so refused (`T-021-09`).
+        let decision = policy.decline_outcome(&outcome_decline()).unwrap();
+        assert!(decision.permit().is_none());
+        assert_eq!(last(&mut policy), refused(RefusalClass::NotPermitted));
 
         // The delegate's session waits on its holder's word, which no source can give.
         policy.set_clock(crate::session::Stopped::at(
@@ -1429,7 +1444,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 14);
+        assert_eq!(actions.len(), 15);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1473,7 +1488,9 @@ mod tests {
             match action {
                 // Its permit holds, and the log goes on to want the authorisation and acceptance it rests on, or, for
                 // a reversal asked, a segment of this log that owes it.
-                Action::MoveValue { .. } | Action::AskReversal { .. } => assert!(
+                Action::MoveValue { .. }
+                | Action::AskReversal { .. }
+                | Action::AskStatus { .. } => assert!(
                     matches!(effect, Err(AppendFailure::Refused(v)) if v.0 != RELATIONS[0].refusal)
                 ),
                 _ => assert!(effect.is_ok(), "{action:?}"),
@@ -1540,7 +1557,9 @@ mod tests {
                 Action::MoveValue { .. } => {
                     matches!(caller.role, Role::Customer | Role::Core | Role::Operator)
                 }
-                Action::AskReversal { .. } => matches!(caller.role, Role::Core | Role::Operator),
+                Action::AskReversal { .. } | Action::AskStatus { .. } => {
+                    matches!(caller.role, Role::Core | Role::Operator)
+                }
                 _ => caller.role == Role::Operator,
             };
             if reaches {
@@ -1557,8 +1576,8 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 14 + 2 * 3 + 3,
-            "the operator on every action, the user and Core on a move, Core on a reversal asked"
+            3 * 15 + 2 * 3 + 3 + 3,
+            "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy
             .policy
@@ -2211,6 +2230,12 @@ mod tests {
         serde_json::from_value(entry["what"]["request"].clone()).unwrap()
     }
 
+    /// The request of the fixture's outcome decline, as its entry holds it.
+    fn outcome_decline() -> rutent_contracts::core_internal::OutcomeDecline {
+        let entry: serde_json::Value = fixture!("verified-entry-of-an-outcome-report-declined");
+        serde_json::from_value(entry["what"]["request"].clone()).unwrap()
+    }
+
     /// The policy call a decision entry records.
     fn call_of(what: &What) -> &'static str {
         match what {
@@ -2220,6 +2245,7 @@ mod tests {
             What::StuckMove { .. } => "move_stuck",
             What::ReportOutcome { .. } => "report_outcome",
             What::ConfirmOutcome { .. } => "confirm_outcome",
+            What::DeclineOutcome { .. } => "decline_outcome",
             What::OpenSession { .. } => "open_session",
             What::CheckRead { .. } => "check_read",
             What::GrantPermission { .. } => "grant_permission",
@@ -2371,6 +2397,39 @@ mod tests {
                 }),
             ),
             (
+                // The world's decline of that report, by an actor of another party and login than its reporter: it
+                // holds the permission to decline, and neither it nor the reporter reaches the other's party; it
+                // reaches neither a party of the order nor the provider holding the funds.
+                "decline_outcome",
+                Call::Built(|e| {
+                    let decline: rutent_contracts::core_internal::OutcomeDecline =
+                        serde_json::from_value(world_before(e, "decline")).unwrap();
+                    let decliner = &decline.decliner;
+                    let reporter = actor(
+                        "operator-desk-b",
+                        "op-login-5",
+                        Role::Operator,
+                        ActorKind::Person,
+                    );
+                    let yes = vec![holds(decliner, Permission::DeclineOutcome)];
+                    let no = [
+                        party_of(&decline.order, decliner),
+                        reaching(&reporter, "operator"),
+                        reaching(decliner, "operator-desk-b"),
+                        meeting(&reporter, decliner),
+                        reaching(decliner, "cust-1"),
+                        reached("cust-1", &decliner.party),
+                        met(decliner, "cust-1"),
+                        reaching(decliner, "bank-co"),
+                        reached("bank-co", &decliner.party),
+                        met(decliner, "bank-co"),
+                    ];
+                    say(e, yes, no);
+                    e.decline_outcome(&decline)
+                        .is_ok_and(|d| d.permit().is_some())
+                }),
+            ),
+            (
                 // The holder's own session, which needs only the account's record to say it holds the account.
                 "open_session",
                 Call::Built(|e| {
@@ -2492,10 +2551,8 @@ mod tests {
         ("Reads", true),
         ("Charges", true),
         ("StuckOrders", true),
-        // A policy trait core-internal's `T-020-21` round added, which no row of policy's has built yet: marked
-        // unbuilt here so this guard stays green, and owed back to `true` with the engine's `decline_outcome`
-        // (`T-021-09`). Until then nothing implements it and no report is declined.
-        ("OutcomeDeclines", false),
+        // core-internal's `T-020-21` round added it, and `T-021-09` built it: the engine's `decline_outcome`.
+        ("OutcomeDeclines", true),
         ("PersonQuestions", true),
         ("Comparisons", false),
         ("Measures", false),
@@ -2682,7 +2739,8 @@ mod tests {
         ));
         let _ = engine.report_outcome(&outcome_report());
         let _ = engine.confirm_outcome(&outcome_confirmation());
-        assert_eq!(engine.log.0.len(), 12, "every call appended its entry");
+        let _ = engine.decline_outcome(&outcome_decline());
+        assert_eq!(engine.log.0.len(), 13, "every call appended its entry");
         for entry in &engine.log.0 {
             assert!(rutent_contracts::core_internal::calls::is_decision(
                 &entry.entry().what
@@ -2715,6 +2773,6 @@ mod tests {
             Err(AppendFailure::Refused(v))
                 if v.0 != rutent_contracts::core_internal::calls::RECORD_ON_THE_POLICY_HANDLE
         ));
-        assert_eq!(engine.log.0.len(), 12, "nothing more reached the handle");
+        assert_eq!(engine.log.0.len(), 13, "nothing more reached the handle");
     }
 }
