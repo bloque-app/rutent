@@ -3607,3 +3607,56 @@ fn notice_the_store_keeps_nothing_behind_is_refused() {
     assert!(matches!(taken, Ok(Arrived::NoOrder { .. })), "{taken:?}");
     assert_admitted(&env);
 }
+
+/// A forged notice parked by a silent reserve, under a reference with other figures, doesn't wedge the reserve's genuine
+/// notice of that credit: the later notice replaces it, and once the reserve says yes the genuine one is held, with one
+/// arrival recorded. An arrival already recorded under the reference stands against other figures.
+// verifies: REQ-ORD-14, REQ-AUD-2
+#[test]
+fn a_parked_forged_notice_does_not_wedge_the_genuine_one() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&order)]);
+    providers.silent = true;
+    let forged = reported(sign(
+        envelope(
+            &deployment(),
+            NOTICE_SHAPE,
+            RESERVE,
+            START,
+            Credit::new(1000, 0).body(),
+        ),
+        &statements_key(RESERVE, 7),
+    ));
+    let parked = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &forged).unwrap();
+    assert!(matches!(parked, Arrived::Waiting { .. }), "{parked:?}");
+    // The genuine notice of the credit states other figures than the forgery did.
+    let genuine = Credit::new(999, 0).report();
+    let waiting = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &genuine);
+    assert!(
+        matches!(waiting, Ok(Arrived::Waiting { .. })),
+        "{waiting:?}"
+    );
+    providers.silent = false;
+    let held = arrive(&mut env, &mut providers, &mut arrivals, &mut open, &genuine).unwrap();
+    assert!(
+        matches!(held, Arrived::Held { order: ref o, .. } if o == &order),
+        "{held:?}"
+    );
+    assert_eq!(arrival_entries(&env).len(), 1);
+    // Recorded, it stands: other figures under the reference are refused.
+    assert_eq!(
+        arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut open,
+            &Credit::new(1000, 0).report()
+        ),
+        Err(ArrivalError::OtherFigures)
+    );
+    assert_eq!(arrival_entries(&env).len(), 1);
+    assert_admitted(&env);
+}

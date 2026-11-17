@@ -215,7 +215,8 @@ pub enum ArrivalError {
     Unrecordable,
     /// The bytes aren't the reserve's own arrival notice: not of provider-role's notice shape, a body that isn't the
     /// contract's `ArrivalNotice`, another maker, a figure that is no amount or identifier, or bytes the evidence
-    /// store keeps other than as received. Nothing was kept or appended.
+    /// store keeps other than as received. Nothing was appended (the bytes may be kept before the read-back refuses
+    /// them).
     NotItsNotice,
     /// The notice was reported before with other figures: one notice is one arrival.
     OtherFigures,
@@ -477,18 +478,28 @@ impl Arrivals {
         // notice signs, whatever bytes carry it (`one-order-per-deposit`). Two notices of one credit are one arrival;
         // the same reference with other figures is refused, as is anything `check_one_credit` doesn't take as one
         // credit.
-        let at = match self
+        let mut existing = self
             .notices
             .iter()
-            .position(|n| n.credit.reserve == credit.reserve && n.transaction == transaction)
-        {
-            Some(at) => {
-                match check_one_credit(&self.notices[at].credit.statement, &credit.statement) {
-                    Ok(Credits::One) => at,
-                    Ok(Credits::Two) => return Err(ArrivalError::NotItsNotice),
-                    Err(_) => return Err(ArrivalError::OtherFigures),
+            .position(|n| n.credit.reserve == credit.reserve && n.transaction == transaction);
+        if let Some(at) = existing {
+            let held = &self.notices[at];
+            match check_one_credit(&held.credit.statement, &credit.statement) {
+                Ok(Credits::One) => {}
+                Ok(Credits::Two) => return Err(ArrivalError::NotItsNotice),
+                // Other figures under the reference. A notice with no outcome yet holds nothing the log took as an
+                // arrival, and may be a forgery parked by a silent reserve, so it must not wedge the genuine notice
+                // of the credit: the later one replaces it, and the log's attribution decides which survives. One
+                // whose arrival is recorded stands.
+                Err(_) if held.outcome.is_none() && !matches!(held.arrival, Some((_, Some(_)))) => {
+                    self.notices.remove(at);
+                    existing = None;
                 }
+                Err(_) => return Err(ArrivalError::OtherFigures),
             }
+        }
+        let at = match existing {
+            Some(at) => at,
             None => {
                 let maker =
                     confirm::reserve_maker(desk.parts.catalogue, desk.operator, &credit.reserve);

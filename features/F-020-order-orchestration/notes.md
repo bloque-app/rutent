@@ -3277,7 +3277,7 @@ test (`tests/arrival.rs`) and, as the compiler forced, three F-024 test-support 
 - **The shape is required positively.** `read_notice` reads the bytes as `Statement<ArrivalNotice>` (the envelope and
   the body both `deny_unknown_fields`), calls `check_shape` (the notice's `$id`), requires the maker to be the reserve
   the report names, the transaction, account and holder to be identifiers and the amount a positive decimal integer.
-  Anything else is `NotItsNotice` before anything is kept or appended. The probe list (`signed hold or arrival answer
+  Anything else is `NotItsNotice` before anything is kept or appended; the read-back refusal (next bullet) comes after the keep, so there the bytes may be kept and nothing is appended. The probe list (`signed hold or arrival answer
   is not taken for an arrival notice`): a hold, an arrival answer, an arrival question; a hold's and an answer's body
   under the notice's shape; the notice's body under a result's and a hold's shape; a body without its holder, with an
   extra field, with an amount of zero, a negative one, a fraction or a JSON number, or with an empty transaction;
@@ -3297,6 +3297,11 @@ test (`tests/arrival.rs`) and, as the compiler forced, three F-024 test-support 
   known to the forged notice: the reserve's genuine notice of the same credit, sent after it, read as the same arrival
   and was refused for ever. Now a refused notice or arrival append forgets the notice, so the genuine one is taken
   anew. Nothing was ever recorded as an arrival.
+- **A parked notice is replaceable** (review of `976f9fef`). A forged notice parked by a silent reserve (`Waiting`,
+  no outcome) wedged the genuine notice of the credit when their figures differed (`OtherFigures` on every try). Now a
+  later notice of the same reserve and reference with other figures replaces one with no outcome and no recorded
+  arrival, and the log's attribution decides which survives; an arrival recorded under the reference stands.
+  Test: `a_parked_forged_notice_does_not_wedge_the_genuine_one`.
 - **`arrival.earlier`** (`T-020-21` item 6): a filing's arrival, which holds the deposit against the order the filing
   opened, names the arrival that met no order (`filing.rs`). The arrivals `arrive` writes name none: a deposit's first
   arrival has no earlier, and the notice outcome is kept, so `arrive` never writes a second.
@@ -3349,6 +3354,7 @@ test (`tests/arrival.rs`) and, as the compiler forced, three F-024 test-support 
   | a deposit known by its transaction (never matched) | six, `two_notices_of_one_credit_are_one_arrival` among them |
   | the read back of the kept statement | `notice_the_store_keeps_nothing_behind_is_refused` |
   | a refused notice forgets its reference | `notice_the_log_could_not_attribute_to_its_reserve_creates_no_arrival` |
+  | a parked notice replaceable by other figures | `a_parked_forged_notice_does_not_wedge_the_genuine_one` |
   | `earlier` set by the filing | `deposit_filed_again_against_another_order_names_its_earlier_arrival` |
   | the log's `verified` on `arrival-names-its-notice` (contracts, restored) | `notice_the_log_could_not_attribute_to_its_reserve_creates_no_arrival` |
   | that and the report's `verified` in `arrival-rests-on-the-reserves-report` | the same and `unattributed_arrival_still_creates_no_order` |
