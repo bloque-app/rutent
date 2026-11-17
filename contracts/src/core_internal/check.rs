@@ -279,8 +279,23 @@ impl Raise {
             &self.cites,
             "a raise cites the entries it rests on, at least one, each once",
         )?;
+        if let Difference::HoldingNotComparable {
+            word,
+            asset,
+            reason,
+            ..
+        } = &self.difference
+            && (word.is_some() != (*reason != HoldingIncomparable::NoReading)
+                || asset.is_some() != (*reason != HoldingIncomparable::NoReading))
+        {
+            return Err(Violation(
+                "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+            ));
+        }
         let same = match &self.difference {
             Difference::Reports { sent, received, .. } => sent == received,
+            Difference::ReportsNotComparable { sent, received, .. } => sent.asset == received.asset,
+            Difference::HoldingNotComparable { .. } => false,
             Difference::SettlementTime {
                 before_seconds,
                 now_seconds,
@@ -293,7 +308,7 @@ impl Raise {
         };
         if same {
             return Err(Violation(
-                "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+                "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units",
             ));
         }
         Ok(())

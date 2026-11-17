@@ -73,7 +73,7 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 39] = [
+const RUST_RULES: [(&str, &str); 40] = [
     (
         "verified-entry-of-an-effect-accepting-a-fault",
         "a customer's acceptance of fault is a decision, and takes no effect",
@@ -199,6 +199,10 @@ const RUST_RULES: [(&str, &str); 39] = [
         "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
     ),
     (
+        "raise-of-reports-not-comparable-in-one-asset",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+    ),
+    (
         "report-pair-of-one-party-reporting-both",
         "a segment's two reports are by two different parties",
     ),
@@ -241,7 +245,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 87] = [
+const SCHEMA_RULES: [SchemaRule; 91] = [
     (
         "raise-of-a-charge-without-its-result",
         &[("/difference", "required")],
@@ -501,6 +505,26 @@ const SCHEMA_RULES: [SchemaRule; 87] = [
         "raise-carrying-an-order-state-change",
         &[("", "additionalProperties")],
         "unknown field `order_state`",
+    ),
+    (
+        "raise-of-an-unread-account-naming-a-word",
+        &[("/difference", "not")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-holding-not-comparable-without-its-word",
+        &[("/difference", "required")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-an-unread-account-naming-an-asset",
+        &[("/difference", "not")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-holding-not-comparable-without-its-asset",
+        &[("/difference", "required")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
     ),
     (
         "raise-citing-nothing",

@@ -548,3 +548,230 @@ signature is verified under that same key).
   `operator_commands_entry_names_its_operator` and `one_party_with_several_roles_is_recorded_per_role`. None hung.
   Added: `attribute`'s `made_at` check off -> `statement_whose_signature_doesnt_verify...`; `unproven`'s deployment
   check off, and its transaction check off -> `unproven_holds_the_deployment_and_the_transaction_the_append_does`.
+
+## T-022-05
+
+- **Layout.** `components/core-audit/src/compare/`: three pure comparisons, `report` (`compare_reports`), `holding`
+  (`check_holding`) and `evidenced` (`value_evidenced_against_balances`), and the detectors, `detect::Compare`, which
+  records and raises. `log::Unbuilt` keeps its `Comparisons` impl (the assembly's stub still builds on it).
+- **No reach to anything that moves value, structurally.** (1) The pure modules import only data types of
+  `rutent-contracts` and their siblings; they take `&` references and return a verdict, so they hold no handle, no
+  channel, no clock and no mutable state. A test reads their source and holds that: only `rutent_contracts::` and
+  `super::` imports, none of `Log`, `Operator`, `Clock`, `calls::`, `&mut`, cells, `dyn`, `Box`, `unsafe`, `static`,
+  `std::fs/net/process/env/time`, `crate::`, and the three functions coerce to plain `fn` pointers on `&` arguments.
+  (2) `Compare<L, O, C>` is the only thing with effects, and its type is its reach: a `log::General<L>` (implements
+  `Log` alone: no decision entry, no statement attributed), an `Operator` (whose `raise` takes a `Raise`, a
+  difference and receipts, and answers only a `Delivery`) and a `Clock`. (3) `core-audit` depends on neither
+  `core-orch` nor `core-authz` (`DEC-2`), which a test reads from the manifest. ADR-0009's placement in
+  `CMP-CORE-AUDIT` rests on these.
+- **Order of steps.** A report pair: record the pair (`report_pair`, observed), compare, and where the amounts
+  differ, deliver the raise and record it (`raise`, `done` or `failed` by the delivery, as the contract says). The
+  answer is the pair's receipt in every case. A holding reading: record the check without its balance
+  (`holding_check`), compare, raise. A raise cites the pair's (or check's) entry, and for a pair the two statements.
+  A raise whose record can't be appended answers `Unavailable`, so orchestration appends the comparison again (the
+  pair's and check's entries are idempotent); the operator may then see the raise twice. A comparison whose own
+  record is refused or unavailable compares nothing.
+- **Raise id and time.** The id is `raise-` and SHA-256 of the cites, time and difference; the time is the clock's,
+  to the second (`compare::detect`'s civil-date conversion, since no formatter existed). The same difference at the
+  same second is one raise id.
+- **Defaults taken** (all fail closed or reversible):
+  1. Reports are compared **exactly**. ADR-0009 ties a tolerance to the provider's declared increments
+     (`REQ-CAT-11`) and its gross or net convention; `ReportPair` carries neither, so no tolerance is applied and a
+     rounding gap is raised rather than hidden.
+  2. Two reports of different assets (id or decimals) are `NotComparable(AssetsDiffer)`, even if the amounts match.
+  3. A holding account's per-order sum past 78 digits is `NotComparable(SumPastTheBound)`.
+  4. `INV-1`'s "value evidenced at nodes" is an input, `Evidenced { account, order, asset, amount }`, summed per
+     account across orders and compared with each reading's balance by the same rule as `REQ-AUD-15`; a difference
+     is a `Difference::Holding` carrying the balance's `word`. Evidence in another asset than the account's is
+     `NotComparable(EvidencedInAnotherAsset)`; evidence at an account with no reading is `NotComparable(NoReading)`.
+  5. A `NotComparable` verdict records the pair or check and raises nothing.
+  6. The `core-audit` actor is a parameter (`Compare::core_audit(party)` builds the fixtures'
+     `rutent`/`core-audit`/`core`/`component`).
+- **Gaps, with owners.**
+  1. `Difference` has no shape for a pair or reading that can't be compared (asset or unit differs, sum past the
+     bound, evidence unread). Such a case is silent today. The contract author (`core-internal`, `T-020-21`'s
+     round) needs a `Difference` variant, e.g. `NotComparable { subject, reason }`, to raise it.
+  2. `Comparisons` has no method for the `INV-1` check, so it is `Compare::evidenced_against_balances`, an inherent
+     method. Who reads the log into `Evidenced` is the assembly's (`T-024-02`, `T-024-08`); the log's records
+     don't name a value resting at a node, so the feed is not built here.
+  3. The ranking of raised mismatches by value and age (ADR-0009 consequences) is left to construction and not
+     built: it is `F-023`'s (the operator's channel), `T-023-02`.
+  4. Tolerance by increment and gross/net convention (default 1) needs `Report` to carry them, or the caller to
+     pass the tuple's terms: the contract author (`core-internal`, `T-020-21`'s round), with `F-020` supplying them.
+  5. A balance of a private node is its publisher's word and nothing more; `Word::Publisher` is read from the
+     reading, set by orchestration. That a reading's `word` is true to its node (public node, `Checked`) is
+     orchestration's (`T-020-26`).
+- **Tests.** The report test runs on the real log replaying the contract's world up to its pair, so every entry
+  written is admitted by the citation table (`sent-report-is-its-partys-statement`, `raise-cites-entries-of-the-log`);
+  the holding tests run on the real log standing alone. The row's tests were written after the code in this session
+  and then attacked by the rule-offs below, not seen red first; the property tests are seeded xorshift (400 cases
+  each, a failing case names its seed, each outcome asserted to be drawn).
+- **Rule-off table** (each switched off once, `compare` tests run, tree restored):
+
+  | Switched off | Red |
+  |---|---|
+  | `compare_reports` always `Match` | pure-function, report-raises |
+  | its asset check | pure-function |
+  | sent and received swapped in the difference | pure-function, report-raises |
+  | the operator not called | report-raises, both holding tests, `INV-1` |
+  | an undelivered raise recorded `done` | report-raises |
+  | the raise not recorded | report-raises, short/over, `INV-1` |
+  | a pair raised though it matches | report-raises |
+  | the pair not recorded | report-raises |
+  | short and over swapped | short/over, private-node, `INV-1` |
+  | the balance's word dropped from the difference | private-node, `INV-1` |
+  | over ignored | short/over, `INV-1` |
+  | a holding difference never raised | short/over, private-node |
+  | the check entry's word wrong | private-node |
+  | only the first evidence item summed | `INV-1` |
+  | evidence's asset not checked | `INV-1` |
+  | unread accounts dropped | `INV-1` |
+  | `INV-1` differences not raised | `INV-1` |
+  | a pure module importing `crate::log` | structure test |
+  | a `&mut` in a pure module | structure test |
+
+  None hung.
+
+### The review's fix round (`T-022-05`, after `3db31459`)
+
+The review found CHANGES: a comparison that couldn't be made was silent, so `REQ-ORD-9`, `REQ-AUD-15` and `INV-1`
+failed open. This round needed a contract change, made under that rule's lift for exactly this case.
+
+- **The contract (`core-internal` 1.0.0, folded in before its release, no bump: it is unreleased against
+  `develop`).** Two kinds of `Difference`, each with its schema `$def` in `raise.schema.json` and an arm of
+  `Raise::check`:
+  - `reports_not_comparable { order, segment, sent: {amount, asset}, received: {amount, asset} }` (`Reported`): two
+    reports in two assets, or one asset in two units (`THR-107`), each figure as its party stated it. `Raise::check`
+    refuses one whose two assets are one (`raise-of-reports-not-comparable-in-one-asset`), and accepts equal amounts
+    where the assets differ (`raise-of-reports-of-one-amount-in-two-units`). Chosen over an optional
+    `received_asset` on `reports`, which would have let `reports` carry equal amounts and weakened its rule.
+  - `holding_not_comparable { account, word?, asset?, reason }`, `reason` one of `evidenced_in_another_asset`,
+    `no_reading`, `sum_past_the_bound` (`HoldingIncomparable`). `word` and `asset` (the account's, as its balance
+    was read) are present exactly when a balance was read, so never for `no_reading`, where there is no balance
+    whose word or asset they could be; the schema (`if`/`then`/`else`) and `Raise::check` both hold it. The asset is
+    in the raise because `holding_check` names none (added on re-review).
+  - Five valid fixtures (reports in two units and in two assets among them), five invalid (one Rust rule, four
+    schema rules); README's rule, shape and record tables and the changelog. `Raise::check`'s refusal text gained "two reports in two assets or units"; it still contains the
+    old text, so existing tests matching it hold.
+  - The other users of `Difference` in the workspace: the only exhaustive match is `Raise::check`; the rest
+    (`relations.rs`, `core-orch`'s charge and stuck raises, the scenarios' tests) use `let ... else`, `matches!` or a
+    `_` arm, so nothing else changed and no behaviour was added there.
+- **The checks raise each.** `ReportsVerdict::NotComparable` and `HoldingVerdict::NotComparable` now carry the
+  contract's difference, and `Compare` raises on `Differs` and `NotComparable` alike, records the raise, and changes
+  nothing else. The local `Incomparable` enum is gone. `INV-1`: `Evidenced` carries `evidence`, the receipt of the
+  log's entry that evidences the value, so a raise about an account cites what it rests on; an account read cites its
+  check and those entries, an unread one those entries alone (no check is recorded for it: there is no reading).
+- **Defaults taken this round** (fail closed, reversible):
+  7. A balance is compared with the held or evidenced amounts by walking them against it, never forming the sum,
+     so a sum past 78 digits whose short is one an amount states is that `short` (held `[10^78-1, 1]` against
+     `10^78-1` is short by 1). Only a short past what an amount states is raised as `holding_not_comparable` with
+     `reason: sum_past_the_bound`, the balance's word and the account's asset, never as a `short` with a `by` that
+     would understate it. An over is never past the bound, being at most the balance. (The first cut of this round
+     called every such sum past every balance by more than an amount states; the re-review showed it wrong.)
+  8. A raise for `INV-1` cites the check (where read) and every distinct evidence receipt at the account, in the
+     evidence's order.
+  9. A deterministic refusal of a raise's record is answered `AppendFailure::Refused`, which no caller retries;
+     only an unavailable log is `Unavailable`. The contract allows it (`Refused` is the variant for a broken rule),
+     but see gap 6. In `INV-1`'s check over many accounts a refusal (of a check's record or a raise's) doesn't stop
+     the accounts after it: each is still compared, checked and raised, and the first refusal is answered at the
+     end; an unavailable log stops the run, and the caller runs it again (added on re-review, which found the first
+     refusal stopping every account after it, the fail-open class this row closes).
+  10. `Receipt` is allowed in a pure module (`Evidenced` holds one): it is a plain value with no method reaching the
+      log. The structure test no longer forbids it.
+- Defaults 2 and 5 above are replaced: different assets or units are raised, and a `NotComparable` verdict is raised.
+  Gap 1 above is closed.
+- **Gaps added, with owners.**
+  6. `AppendFailure`'s doc says nothing was appended; a comparison answered `Refused` because its raise's record was
+     refused has appended its own record (the pair or check) first, and the operator's channel was already handed the
+     raise. In `INV-1`'s check over many accounts it is more: the answer `Refused` follows a run in which every other
+     account was checked, raised and recorded, so the log and the operator hold all of that, and only the refused
+     record is missing; the answer doesn't say which account it was (the operator saw its raise, and the log holds its
+     check). A comparison-specific answer, or a note on `Comparisons` that the comparison's records stand and naming
+     the refused one, is the contract author's (`core-internal`), with the caller's handling `F-020`'s, which has no
+     caller of `Comparisons` yet. A check's record refused with no evidence to cite leaves its raise with nothing to
+     rest on, which `Raise::check` refuses before delivery: that account is not raised, and its refusal is the one
+     answered if it came first.
+  7. Closed on re-review: `holding_check` names no asset, so `holding_not_comparable` now carries the account's
+     asset where a balance was read. For `no_reading` no account asset is known; the evidence's asset is the feed's
+     (`T-024-02`), in the entries the raise cites. The other asset of `evidenced_in_another_asset` isn't in the raise
+     either; if the operator's channel (`F-023`, `T-023-02`) needs it, that is a contract change.
+- **The structure test, hardened.** Every `use` is read whole up to its `;`, `pub`, `pub(crate)` or private and
+  wherever it stands; `super::` reaches only the pure siblings (`report`, `holding`, `evidenced`), so neither
+  `super::super`, `super::detect` nor `mod.rs`'s re-exports pass; a path written in place is read too; no crate named
+  `rutent_*` but `rutent_contracts` may appear (prov, stm, router, evidence, core); `extern crate`, `include!` and
+  `#[path` are refused. The test holds its own reader to the review's three dodges and eight more.
+- **The purity generator** draws, for reports apart, another asset (`EURC`) or the same code in other decimals
+  (`THR-107`'s unit case), and asserts the unit case was drawn more than ten times in 400.
+- **Tests first.** Contract: the seven fixtures and their table rows were added first and seen red on the fixture
+  test's assertions (unknown kinds); then the shapes with `Raise::check`'s two arms switched off, seen red on the two
+  rules; then the arms. `core-audit`: the behaviour tests (each not-comparable case raises, the refusal answer) were
+  written first; the pure layer's verdict payload had to change for them to compile, so it was put in first with the
+  detector untouched, and they were seen red on their assertions (nothing raised, `Unavailable` answered); then the
+  detector. The hardened structure test was seen red on the current tree (`use super::Incomparable`, an item of
+  `mod.rs`, not a pure sibling) before the pure layer dropped it. The generator change adds no code: its red is the
+  rule-off of comparing the asset's id alone.
+- **Rule-off table for this round** (each switched off once from the committed tree, the named tests run under a
+  300 s alarm, the tree restored from git; none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | `Raise::check`'s `reports_not_comparable` arm (`=> false`) | contract fixture test (`raise-of-reports-not-comparable-in-one-asset` accepted by Rust) |
+  | `Raise::check`'s word rule | contract fixture tests (`raise-of-an-unread-account-naming-a-word`, `raise-of-a-holding-not-comparable-without-its-word` accepted by Rust) |
+  | the schema's word rule (`if`/`then`/`else`) | contract fixture test (both word fixtures' schema errors) |
+  | a report pair that can't be compared not raised | report-raises |
+  | a holding that can't be compared not raised | short/over (sum past the bound), `INV-1` |
+  | unread accounts not raised in `INV-1` | `INV-1` |
+  | the evidence's receipts not cited | `INV-1` |
+  | a refused raise record answered `Unavailable` (the old mapping) | `INV-1` (the refusal case) |
+  | reports compared by the asset's code alone | pure-function (the unit case; the old generator drew only `EURC`, which differs by code, so it would have stayed green), report-raises |
+  | evidence compared by the asset's code alone | `INV-1` |
+  | a sum past the bound read as a match | short/over |
+  | the balance's word dropped from a holding that can't be compared | short/over, `INV-1` (`Raise::check` refuses the raise) |
+  | `pub use super::super::log::General` in `holding.rs` | structure test |
+  | a multi-line `use ...::{ calls::Operator as X }` in `holding.rs` | structure test |
+  | an inline `rutent_prov::...` path in a body in `holding.rs` | structure test |
+  | `use super::detect::Compare` in `report.rs` | structure test |
+
+  The first two rows were one run (both arms off), each fixture's failure naming its arm. The structure test also
+  holds its reader to these dodges and eight more in its own body, and was red on the tree before this round (`use
+  super::Incomparable`). A first cut of the reader split `super::holding::{a, b}` on every comma and refused it: a
+  bug of the test, fixed to read a braced group by its top-level items, with a case holding it.
+
+### The re-review of `032378d1` (`T-022-05`)
+
+CHANGES: one should-fix and five lows, each done.
+
+- **A refused raise stopped the accounts after it (should-fix).** `evidenced_against_balances` returned at the first
+  refused record, so a later account that differed was never checked or raised. It now keeps going, and answers the
+  first refusal at the end (default 9, gap 6); the reviewer's probe is a case of the `INV-1` test.
+- **A short past the bound.** `judge` walks the amounts against the balance instead of summing them (default 7), so
+  held `[10^78-1, 1]` against `10^78-1` is short by 1, as is evidence summed the same way.
+- **The account's asset** is in `holding_not_comparable` where a balance was read (gap 7 closed): schema, check,
+  fixtures (`raise-of-an-unread-account-naming-an-asset`, `raise-of-a-holding-not-comparable-without-its-asset`).
+- **A valid fixture of reports in two assets**, `raise-of-reports-in-two-assets`, beside the units one.
+- **The reader:** no space is left round `::`, `.` or before `(`; capabilities (`calls::`, `Log`, `Operator`,
+  `Clock`, `Comparisons`) are refused anywhere in the code, not only in a `use`; a `mod` declaration, in a file of its
+  own or inline, is refused, and so is a directory of child modules beside a pure module. Its self-check gains the
+  re-review's three dodges and three more.
+- **The stale comment** in the holding test now says the past-the-bound case is raised.
+- **Tests first.** Contract: the new and changed fixtures and their rows were red on the fixture test's assertions
+  (`asset` unexpected); then the shapes with `Raise::check`'s asset clause absent, red on the two asset fixtures
+  alone; then the clause. `core-audit`: the asset had to be plumbed through for the tests to compile, and with only
+  that, the tests were red on their assertions: the reader's self-check (spaces round separators), the short past the
+  bound in both the holding and `INV-1` tests. The `INV-1` test stopped at its earlier past-the-bound case, so the
+  refusal case's own red is its rule-off (N1).
+- **Rule-off table for the re-review** (from `ecb979d4`, each once, 300 s alarm, tree restored; none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | N1: the first refused raise stops the accounts after it | `INV-1` ("hold-y's over is raised after hold-x's refusal") |
+  | N2: a sum past the bound always read as past it (the old sum) | short/over, `INV-1` |
+  | N3: the account's asset dropped from a holding that can't be compared | short/over, `INV-1` (`Raise::check` refuses the raise) |
+  | N4: the schema's asset rule (back to the word alone) | contract fixture test |
+  | `Raise::check`'s asset clause | contract fixture test (the two asset fixtures accepted by Rust; the stage before the clause) |
+  | N5: the reader keeps spaces round separators | structure test (its self-check) |
+  | N6: capabilities checked inside a `use` only | structure test |
+  | N7: a module declaration allowed | structure test |
+  | N8: `super :: detect :: …` in `holding.rs` | structure test |
+  | N9: an inline `calls::Operator` bound and `o . raise (r)` in `holding.rs` | structure test |
+  | N10: `mod sneak;` in `holding.rs`, with `holding/sneak.rs` reaching `crate::compare::detect` | structure test |

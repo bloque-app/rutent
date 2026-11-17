@@ -729,3 +729,15 @@
   notice; core-orch's `NOT_A_NOTICE` deny list
   stays `T-020-19`'s, and the log now refuses anything it lets through. (DEC-4, DEC-20, REQ-ORD-23, REQ-ORD-14,
   REQ-AUD-2, T-020-18)
+- Folded into 1.0.0 before its release: a comparison that can't be made is raised (`T-022-05`'s review, item 1).
+  `Difference` had no shape for two reports in two assets, or one asset in two units, which `THR-107` names, nor for
+  a holding account whose balance can't be set against the value held or evidenced there, so the checks dropped
+  them in silence and `REQ-ORD-9`, `REQ-AUD-15` and `INV-1` failed open. Two new kinds: `reports_not_comparable`,
+  naming the order, the segment and each party's figure as it stated it (`Reported`: amount and asset), which
+  `Raise::check` refuses where the two assets are one; and `holding_not_comparable`, naming the account, why
+  (`HoldingIncomparable`: `evidenced_in_another_asset`, `no_reading`, or `sum_past_the_bound`, value held or
+  evidenced past the balance by more than an amount states) and the balance's `word` and the account's `asset`
+  exactly when a balance was read, since the check's entry names no asset; the schema and `Raise::check` both hold
+  that. `Raise::check`'s rule names the new case. Five valid fixtures (reports in two units and in two assets) and
+  five invalid ones. Outside `contracts/`, `core-audit`'s `compare` raises each. (DEC-4, DEC-20, REQ-ORD-9,
+  REQ-AUD-15, INV-1, THR-107, T-022-05)
