@@ -78,6 +78,7 @@
 //! it, and the part stays held, failing closed, until a follow-up row lets a report be withdrawn (`T-020-20`). A
 //! segment's move confirmed done isn't taken. The hand-on's mover is `T-020-17`'s.
 //!
+mod handing;
 mod journal;
 mod mover;
 mod timing;
@@ -110,9 +111,12 @@ use crate::rounds::{Fresh, Issued};
 use crate::segments::{Confirmed, Segments, SegmentsError, StatusError};
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
+pub use handing::{
+    AcceptedRoute, HandingOn, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
+};
 pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
-pub use mover::{Delivering, Mover, NotTaken, Ports, Stated};
+pub use mover::{Delivering, Mover, NotTaken, Ports, Stated, Withdrawn};
 pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
 

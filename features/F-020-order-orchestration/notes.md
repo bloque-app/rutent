@@ -3564,6 +3564,92 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
   6. The confirmer's evidence must be another maker's statement: this row takes it through `statement` with
      `outcome: None`; a second provider's status path is not built.
 
+## T-020-17
+
+Branch `f-020/t-020-17-hand-on`, from `m3` at `b77fa932`. Edits `components/core-orch/src/stuck/` (`mover.rs`, the new
+`handing.rs`), one `pub(crate)` seam in `hand_on/mod.rs` (`resting`), and the kit (`segments_support/resolving.rs`,
+the new `tests/stuck_hand_on.rs`). No contract, manifest or `DEC-20` path.
+
+- **The arm** (`Delivering::resolve_hand_on`). `resolve` dispatches on the resolution; a `HandOn` goes to the
+  withdrawal, a `Deliver` as before. Policy is asked nothing more. Steps, each once: (1) the route is held to Core's
+  own records before the wallet is asked anything: the linked order's own accepted route (`LinkedRoutes::accepted`),
+  one part, starting at the inner node where `hand_on::resting` says the part's value rests, in its asset, with no
+  withdrawal first, of an order Core doesn't follow, the node's holding account the provider the decision names,
+  all of what the part holds; (2) the operator's signed withdrawal statement is shown to the mover before the wallet
+  is handed it (`Withdrawals::withdraw`'s `asked`), checked against what was decided, and recorded as the operator's
+  question about the linked order and the wallet's transaction, attributed; (3) the wallet is asked once; (4) what
+  the platform and proxy handed over is kept and appended; (5) the answer.
+- **Answer.** `Done` only for the holding account's own record, held by `proves_start` to the decided provider, node,
+  asset, order and amount and to the route's first segment. `Failed` only where Core saw nothing pass out: the route
+  refused, the question not recorded attributed, the statement not the one decided, a platform refusal on
+  `nothing_passed_out`. `Unknown` for everything else once the wallet was handed the statement: the wallet's own
+  failure, `DuplicateTransaction`, `OutcomeUnknown`, a wrong result, no record, a record proving nothing of this start.
+  A re-entry with no record of the effect answers `Unknown` and hands over nothing.
+- **Ports.** `Withdrawals` (holder of a node; withdraw with the show-first rule), `LinkedRoutes`, `HandingOn`,
+  `Delivering::handing_on`; without them a hand-on fails. `Wallets` is `Withdrawals` over `Holdings` and the platform:
+  a statement the mover refuses is replaced by a reversal, which no plain wallet handles, so the platform refuses it
+  as not handled before running anything. `OperatorSigns` is the operator key as the wallet's `Operator`.
+  `Mover::withdrawn(effect)` gives, once done, the route, the record and the question's receipt: the hand-on takes
+  its plan from it and `prove_start` its record.
+- **Tests** (`tests/stuck_hand_on.rs`, nine, each ending or replaying through `admit_entry` where a history is built):
+  the five named, plus no-memory re-entry, wallet failures classified, question attributed and exact, and no ports.
+  The holding account is a stand-in driven through the same rule as `Holdings::start_handed_on`.
+- **Rule-off** (each alone, file run, restored; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | arm stubbed to `Failed` | six of nine |
+  | route starts where the value rests | `hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused` |
+  | route is the linked order's | the same |
+  | holder is the decided provider | the same |
+  | one part only | the same |
+  | no withdrawal first | the same |
+  | question must be attributed | `hand_on_question_must_be_recorded_attributed_and_be_the_withdrawal_decided` |
+  | statement is the decided withdrawal | the same |
+  | `Done` only on a proving record | `hand_on_with_an_unproven_start_is_refused` |
+  | only the proven refusals are `Failed` / the platform's refusal list | `a_wallets_failure_or_a_refusal_that_could_follow_a_hand_over_is_unknown_not_failed` |
+  | no memory means `Lost` | `hand_on_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again` |
+  | linked order not already followed; all of what the part holds | none red: `hand_on`'s `AlreadyOpened` and decide's `within` hold them first |
+
+- **Review round (of `e4065786`).**
+  1. *Blocker, fixed.* The mover now holds the linked order to what the log records before the wallet is asked:
+     `hand_on::linked_accepted` (the checks `build_hand_on` made, now one function both call) runs in `plan_hand` over
+     the log's entries (`LogRead`, `HandingOn::log`): the decision record is in the log, the acceptance is the
+     customer's own, of the linked order, keeps the original requester, and the plan fits its yeses; the route's first
+     segment is the decided provider's. `AcceptedRoute` gains `acceptance`. A linked order accepted on an automatic
+     deposit is refused with the wallet shown nothing (`hand_on_to_a_linked_order_the_customer_did_not_accept_is_refused_before_the_wallet_is_asked`).
+  2. *Re-ask, fixed.* The verdict is set from the wallet's answer before anything that can fail; a drain that can't
+     be kept makes the outcome `Unknown` (`uncarried`), never an error to retry; and a flight that was asked with no
+     verdict answers `Unknown` without calling the wallet. Test `a_call_that_stopped_after_the_wallet_was_asked_never_asks_it_again`
+     (the clock made unreadable once the wallet was handed the statement).
+  3. *Green rule-offs, pinned.* `hand_on_to_a_linked_order_core_already_follows_is_refused_before_the_wallet_is_asked`
+     and `a_hand_on_resolved_directly_for_less_than_the_part_holds_is_refused` (a direct `Resolutions::resolve`, past `within`).
+  4. *Owners.* `PLAN.md`'s `T-020-26` row now carries the known-outcome path for an unknown hand-on (with the one
+     prov seam: the wallet's signed answer and transaction on `HandedOnStart`), the assembly calling `handing_on`, and
+     the real plain wallet's scenario, with named tests. `T-024-06`'s row is not edited.
+  5. The `Effect` parameter of `withdraw` is read only by a `debug_assert!`, for `core-authz`'s entry-point scan;
+     said in a comment.
+
+  Rule-off of the round (each alone, file restored): the acceptance and decision-record check red on the customer's-acceptance
+  test and the route-refused test; the already-followed guard red on its test; the whole-value check red on the
+  direct-resolve test. Still green, each defence in depth: the first segment's provider (the acceptance's yeses refuse a
+  plan from another reserve first), the re-ask guard and the drain rule (the verdict is set before either can matter).
+
+- **Defaults** (reversible, fail closed): one-part linked orders only; a hand-on only where the node's holder is the
+  operator's plain wallet (`Holdings`), so a private node's holder fails closed; the route comes from the assembly's
+  `LinkedRoutes`, Core's log holds only its decision record's id and acceptance; the question is about the linked
+  order, as `holding-withdrawal-rests-on-its-record` needs.
+- **Gaps, with owners.**
+  1. The wallet's signed answer isn't handed out by `start_handed_on` (`HandedOnStart` carries the record, not the
+     statement), so the `holding_withdrawal`'s statement receipt can't be written from the mover's result, and an
+     `Unknown` hand-on has no known-outcome path (`Mover::statement` answers `NoMove`): `T-020-26`, with a prov seam
+     (the row now names it).
+  2. The real plain wallet isn't run in these tests (the kit's reserves' nodes are private, the wallet's binaries are
+     prov's build): `T-020-26`'s scenario runs it with the assembled Core; the `Wallets` adapter's refusal path is untested.
+  3. `HandOn::hand_on` isn't held to the plan the mover withdrew for; the assembly passes `Withdrawn::route`: `T-020-26`.
+  4. The assembly doesn't call `handing_on` yet: `T-020-26` (its row now names it; `T-024-06` is not edited).
+  5. A private node's holder (a provider's module) isn't driven: `T-020-26`.
+
 ## Owners added by `plan/m3-owed-rows-2`
 
 | Gap, and the note it is in | Owner |
