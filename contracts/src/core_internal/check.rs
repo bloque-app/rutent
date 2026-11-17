@@ -279,12 +279,12 @@ impl Raise {
             &self.cites,
             "a raise cites the entries it rests on, at least one, each once",
         )?;
-        if let Difference::HoldingNotComparable { word, reason, .. } = &self.difference {
-            if word.is_some() == (*reason == HoldingIncomparable::NoReading) {
-                return Err(Violation(
-                    "a holding that can't be compared names its balance's word exactly when a balance was read",
-                ));
-            }
+        if let Difference::HoldingNotComparable { word, reason, .. } = &self.difference
+            && word.is_some() == (*reason == HoldingIncomparable::NoReading)
+        {
+            return Err(Violation(
+                "a holding that can't be compared names its balance's word exactly when a balance was read",
+            ));
         }
         let same = match &self.difference {
             Difference::Reports { sent, received, .. } => sent == received,
