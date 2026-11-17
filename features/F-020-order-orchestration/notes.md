@@ -3413,7 +3413,7 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
 
 | Gap, and the note it is in | Owner |
 |---|---|
-| `relayed_by: None` at five sites of core-orch (`T-022-02`'s finding 2) | `T-020-28`, wave 27, after `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-27` |
+| `relayed_by: None` at five sites of core-orch (`T-022-02`'s finding 2) | `T-020-28`, wave 26, after `T-020-23` and `T-020-24` (dependencies) and, run in turn, `T-020-19`, `T-020-25` and `T-020-27` |
 | `decision-is-for-its-caller`, the role check in `attribute()`, a "no formula in this asset" marker on a charge raise (`T-020-14`'s closed gap 3; `T-020-21` the shape, `T-020-29` the writer), `What::Evidence` without a segment (`T-020-16`'s gap 1), and `answer-follows-its-question` for the arrival shapes (`T-020-18`'s hand-off) | `T-020-21`; the evidence entry for `stuck_resolved` is written by `T-020-20` (3) |
 | `NOT_A_NOTICE` replaced by a positive check of `ARRIVAL_NOTICE_SHAPE`, and the seeded deposit's per-credit reference (`T-020-18`'s hand-offs) | `T-020-19` |
 | `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |

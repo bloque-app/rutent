@@ -527,7 +527,7 @@ signature is verified under that same key).
   2. `core-orch` writes `relayed_by: None` at five sites (`snapshot/statements.rs:320`, `reversal/journal.rs:142`,
      `segments/journal.rs:109`, `arrival/journal.rs:93`, `rounds/journal.rs:76`), whatever `Kept::restates` says.
      Ruling: `F-020`'s, with `T-024-02` (the assembly may route statements through `Statements`). Row: `T-020-28`
-     (wave 27).
+     (wave 26).
   3. A `decide` entry whose `who` is not the request's `caller` is admitted (probed), and a stated entry's `role` is
      the writer's label that no relation reads (probed: a verified provider statement claimed in the customer's role
      is recorded so). Ruling: both go to `T-020-21` as contract relations; its row now lists them, (12) `decision-is-for-its-caller`
