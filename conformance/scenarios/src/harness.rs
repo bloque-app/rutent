@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
-use rutent_conformance::sim::{Behaviour, Role, Spec};
+use rutent_conformance::sim::{Act, Behaviour, Role, Spec};
 use rutent_contracts::core_internal::{Destination, Entry, Parties, What};
 use rutent_contracts::provider_role::OuterNode;
 use rutent_contracts::router_api::Id;
@@ -107,6 +107,15 @@ pub enum Fault {
         /// The provider.
         provider: String,
         /// The operation's kind, such as `deposit`.
+        kind: String,
+    },
+    /// `provider` answers its next operation of `kind` that isn't a dry run by demanding that the person be present:
+    /// a refusal of the class `waits_on_person`, in place of [`Fault::Silence`]'s silence (`REQ-CPL-9`). It is the
+    /// reserve's act, scripted on the simulated world; nothing in Core is told of it.
+    WaitsOnPerson {
+        /// The provider.
+        provider: String,
+        /// The operation's kind, such as `withdrawal`.
         kind: String,
     },
     /// From now on, the destination's network ties each deposit to the first movement to its account of its amount:
@@ -447,21 +456,7 @@ fn take(
                 }
             }
         }
-        Step::Plant(fault) => match fault {
-            Fault::CrashAfterRecord { call, nth } => {
-                core.disk.plant(Crash::AfterRecord { call, nth: *nth })
-            }
-            Fault::CrashBeforeEffect(n) => core.faults.crash_before_effect = Some(*n),
-            Fault::SwapBeforeEffect(n) => core.faults.swap_before_effect = Some(*n),
-            Fault::Deliver(delivery) => core.feed.deliver(*delivery),
-            Fault::DeliverTwice => core.faults.deliver_twice = true,
-            Fault::Silence { provider, kind } => {
-                core.fleet
-                    .world()
-                    .script_for(provider, kind, Behaviour::silent());
-            }
-            Fault::OnePaymentForTwo => core.tie_payments_by_destination(),
-        },
+        Step::Plant(fault) => plant(core, fault),
         Step::Advance(seconds) => core.clock.advance(*seconds),
         Step::Swap => {
             core.flush()?;
@@ -473,6 +468,33 @@ fn take(
         Step::Restart => {}
     }
     Ok(())
+}
+
+/// Plants `fault` in `core`: what a [`Step::Plant`] does, for a test that drives Core's own calls and plants the
+/// fault between them.
+pub fn plant(core: &mut Core, fault: &Fault) {
+    match fault {
+        Fault::CrashAfterRecord { call, nth } => {
+            core.disk.plant(Crash::AfterRecord { call, nth: *nth });
+        }
+        Fault::CrashBeforeEffect(n) => core.faults.crash_before_effect = Some(*n),
+        Fault::SwapBeforeEffect(n) => core.faults.swap_before_effect = Some(*n),
+        Fault::Deliver(delivery) => core.feed.deliver(*delivery),
+        Fault::DeliverTwice => core.faults.deliver_twice = true,
+        Fault::Silence { provider, kind } => {
+            core.fleet
+                .world()
+                .script_for(provider, kind, Behaviour::silent());
+        }
+        Fault::WaitsOnPerson { provider, kind } => {
+            core.fleet.world().script_for(
+                provider,
+                kind,
+                Behaviour::act(Act::RefuseWaitingOnThePerson),
+            );
+        }
+        Fault::OnePaymentForTwo => core.tie_payments_by_destination(),
+    }
 }
 
 /// What a run left, as read once its steps ended or Core crashed: the log as it reads back from the disk, the
