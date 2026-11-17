@@ -134,7 +134,7 @@ published in 2026, in order of their dates:
 | `GHSA-43j2-gcp4-m22g` (no CVE) | not yet in RustSec | 2026-11-16 | medium | Stale GC heap base pointer in compiled code lets a Wasm guest abort the host pro... | >=50.0.0, <=50.0.1; >=49.0.0, <=49.0.5; >=47.0.0, <=48.0.8 | 50.0.2; 49.0.6; 48.0.9 | range includes 48.0.8, fixed in 48.0.9; **not exploitable here**: needs the GC proposal, which the engine turns off (`WasmFeatures::GC` is not in `FEATURES`) and the `gc` cargo feature is off; the advisory names that as the case that is not affected |
 | `GHSA-wvgq-g5hf-6gm6` (no CVE) | not yet in RustSec | 2026-11-16 | low | Process abort when a GC heap's reservation isn't a multiple of the page size | >=50.0.0, <=50.0.1; >=49.0.0, <=49.0.5; >=47.0.0, <=48.0.8 | 50.0.2; 49.0.6; 48.0.9 | range includes 48.0.8, fixed in 48.0.9; **not exploitable here**: needs the GC proposal on and a GC heap that cannot move with a reservation that is not a page multiple; GC is off, and the engine's memory reservation (16 MiB) is a page multiple |
 | `GHSA-hj27-mpw9-ff4c` (no CVE) | not yet in RustSec | 2026-11-16 | low | Panic in Caller::get_module_export when a host function isn't called from WebAss... | <36.0.21; >=37.0.0, <48.0.9; >=49.0.0, <49.0.6; >=50.0.0, <50.0.2 | 36.0.21; 48.0.9; 49.0.6; 50.0.2 | range includes 48.0.8, fixed in 48.0.9; **not affected**: it needs a host function that calls `Caller::get_module_export`, and the engine has none (no host function does; the parts are components, which the advisory says are not affected) |
-| `GHSA-rc4p-x33f-vpr2` (no CVE) | not yet in RustSec | 2026-11-16 | low | Abort in Wasmtime builds without the gc cargo feature | >=50.0.0, <=50.0.1; >=49.0.0, <=49.0.5; >=47.0.0, <=48.0.8 | 50.0.2; 49.0.6; 48.0.9 | range includes 48.0.8, fixed in 48.0.9; the build is the affected kind (default features off, no `gc`), so the exploit depends on the GC proposal being on, whose function subtyping reaches the stubbed builtin. The engine turns it off (all features off, then exactly `FEATURES`), the advisory's own workaround (`wasm_gc(false)`); `a part declaring a function subtype is refused at compile` shows it. **Not exploitable here** |
+| `GHSA-rc4p-x33f-vpr2` (no CVE) | not yet in RustSec | 2026-11-16 | low | Abort in Wasmtime builds without the gc cargo feature | >=50.0.0, <=50.0.1; >=49.0.0, <=49.0.5; >=47.0.0, <=48.0.8 | 50.0.2; 49.0.6; 48.0.9 | range includes 48.0.8, fixed in 48.0.9; the build is the affected kind (default features off, no `gc`), so the exploit depends on the GC proposal being on, whose function subtyping reaches the stubbed builtin. The engine turns it off (all features off, then exactly `FEATURES`), the advisory's own workaround (`wasm_gc(false)`); `engine_leaves_off_the_proposals_the_runtime_advisories_of_2026_11_16_need` shows it. **Not exploitable here** |
 | `GHSA-f8mm-ggr3-89wh` (no CVE) | not yet in RustSec | 2026-11-16 | medium | wasmtime-wasi-http: Empty Body Writes can result in Unbound Heap Usage with HTTP... | <36.0.21; >=37.0.0, <48.0.9; >=49.0.0, <49.0.6; >=50.0.0, <50.0.2 | 36.0.21; 48.0.9; 49.0.6; 50.0.2 | not affected: `wasmtime-wasi-http` is not in the closure (no WASI) |
 | `GHSA-2674-w29h-wqvj` (no CVE) | not yet in RustSec | 2026-11-16 | low | Abort in Wasmtime builds without the threads cargo feature | >= 39.0.0, < 48.0.9; >=49.0.0, <49.0.6; >=50.0.0, <50.0.2 | 48.0.9; 49.0.6; 50.0.2 | range includes 48.0.8, fixed in 48.0.9; the build is the affected kind (no `threads` cargo feature), and it needs the threads proposal turned on through `Config::wasm_features`. `FEATURES` doesn't hold `THREADS`. **Not exploitable here** |
 
@@ -165,8 +165,15 @@ and first failed to compile; the red runs below are the assertion failures).
 | The explicit target not set (`config.target(..)` removed from `config_for`), so Cranelift reads the compiling CPU | `engines_compile_target_enables_no_avx_feature` | red: `aarch64-apple-darwin: CPU flags on beyond the triple's baseline: ["has_lse", "has_pauth", "has_fp16", "has_dotprod", "has_i8mm", "sign_return_address", "sign_return_address_with_bkey"]` (an Apple M-series host; on an x86-64 CPU with AVX the same step turns on `has_avx`, `has_avx2` and the rest, which the `avx` assertion names) |
 | Unedited | `engines_compile_target_enables_no_avx_feature` | green, also for the two x86-64 targets made on this arm64 host |
 
-The second test has no rule-off of its own: its assertions are the `FEATURES` constant and a refused `sub` type, and
-`FEATURES` is the engine's own list.
+The second test, `engine_leaves_off_the_proposals_the_runtime_advisories_of_2026_11_16_need`:
+
+| Rule switched off | Result |
+|---|---|
+| `WasmFeatures::GC` added to `FEATURES` | red: the assertion that the engine's features hold no `gc` fails |
+| Unedited | green: a core module and a component whose core module declare a non-final function type are both refused with wasmparser's "gc proposal must be enabled to use subtypes" (checked by message, so another refusal fails the test), and the same two with a final type are compiled |
+
+The header parse also asserts that the CPU flags and the shared flags it read are not empty, so a change of Wasmtime's
+metadata format can't let the flag assertions pass on nothing.
 
 ### Defaults taken
 

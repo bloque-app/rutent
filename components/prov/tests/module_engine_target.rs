@@ -48,6 +48,11 @@ fn header(engine: &wasmtime::Engine) -> Header {
     // A version byte, a length byte, the version string, then the `postcard` metadata.
     let at = 2 + usize::from(data[1]);
     let (header, _) = postcard::take_from_bytes::<Header>(&data[at..]).expect("the metadata");
+    // A format change that left these empty would let every flag assertion pass on nothing.
+    assert!(
+        !header.isa_flags.is_empty() && !header.shared_flags.is_empty(),
+        "the header names no CPU flags: its format changed"
+    );
     header
 }
 
@@ -145,7 +150,35 @@ fn engine_leaves_off_the_proposals_the_runtime_advisories_of_2026_11_16_need() {
     engine
         .precompile_module(&final_type)
         .expect("a module with a final function type is compiled");
-    engine
+    let refused = engine
         .precompile_module(&sub_type)
         .expect_err("a module declaring a non-final function type is refused: GC is off");
+    assert_refused_for_gc(&refused);
+
+    // Providers ship components: the same type inside a component's core module is refused the same way, and the
+    // same component with a final type is compiled.
+    let component = |core: &[u8]| {
+        let mut bytes = vec![0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
+        bytes.push(0x01); // the core module section
+        bytes.push(u8::try_from(core.len()).expect("a short module"));
+        bytes.extend_from_slice(core);
+        bytes
+    };
+    engine
+        .precompile_component(&component(&final_type))
+        .expect("a component with a final function type is compiled");
+    let refused = engine
+        .precompile_component(&component(&sub_type))
+        .expect_err("a component whose core module declares a non-final function type is refused");
+    assert_refused_for_gc(&refused);
+}
+
+/// The refusal is the GC proposal's (a sub type is its form), not any other error: wasmparser's message for a `sub`
+/// type with the proposal off.
+fn assert_refused_for_gc(error: &wasmtime::Error) {
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("gc proposal must be enabled to use subtypes"),
+        "refused for another reason: {text}"
+    );
 }
