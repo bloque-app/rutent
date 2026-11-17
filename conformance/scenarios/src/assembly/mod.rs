@@ -251,9 +251,18 @@ impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
         self.platform.world.set_clock(self.clock.instant());
+        let asked = std::time::Instant::now();
         match self.platform.handle(provider.as_str(), &operation) {
             Handled::Answered(result) => serde_json::to_vec(&*result).ok(),
-            Handled::Refused(_) => None,
+            Handled::Refused(why) => {
+                // A refused question is no answer, and Core only sees that; a failing scenario prints why.
+                eprintln!(
+                    "{provider:?} refused a question ({why:?}) after {:?}; its stderr: {:?}",
+                    asked.elapsed(),
+                    self.platform.stderrs()
+                );
+                None
+            }
         }
     }
 }

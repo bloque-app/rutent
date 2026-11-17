@@ -877,6 +877,15 @@ the clock alone did not make them pass:
   since a start is the machine's work, cannot be stepped, and no scenario is about start-up time.
 Edited: `components/prov/src/module/platform.rs` (F-013's) and `fleet.rs` and `world.rs` (F-024's); no scenario test file.
 
+Review of that fix found `execution_routes` failing 5 of 5 once more, at load 15 to 20, with `NoRouteRightNow`. It was
+not reproduced afterwards: 5 of 5 passed 15 times in a row under 8 to 16 busy loops (load average to 57), in both build
+lanes and after cleaning rutent's crates as the lock does, and the whole `rutent-scenarios` crate passed under 12 busy
+loops and, earlier, 3 times under 8. The remaining real-time reads (`children.rs` `receive_until` and `spawn`, 120 s
+compile, `START_DEADLINE` now 120 s on a fleet, egress and proxy timeouts of 5 s and 10 s) were read for a path a stepped
+clock leaves to chance, and none was found. So that the next failure explains itself, a scenario's platform now prints,
+when a provider's question is refused, the refusal reason, how long it took and the children's stderr
+(`assembly/mod.rs`, `Asking::ask`). Open: the cause of the reviewer's one failure is unknown.
+
 ### Defaults (T-013-08)
 
 - The clock is `Monotonic` unless a test sets another. `STEPPED_POLL` 2 ms; `STEPPED_WAIT_CAP` 60 s.
