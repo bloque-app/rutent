@@ -884,7 +884,14 @@ deterministically: `execution_routes` passed on `f013i`; the guests were then re
 in `<target>/rutent-sim-guests/<key>`, where the key is a hash of the paths and bytes of the guests' sources
 (`module-guests`, the WIT, `conformance/src`, `contracts/src`), so two trees never share a build and a file's age
 decides nothing; the newest three other builds are kept and older ones, and the loose files of the earlier layout, are
-removed. `RUTENT_SIM_GUESTS` still overrides it. CI, with one checkout, was never affected.
+removed. `RUTENT_SIM_GUESTS` still overrides it.
+Review of that fix added: builds are taken one at a time under a lock directory in the target (they share cargo's
+intermediate `sim-guests-build`, which another key's build could overwrite between `cargo build` and `componentize`),
+each is made in `<key>.tmp-<pid>` and renamed into place whole, a build's use is its `built` marker's time and only
+builds unused for more than a day are removed (a running test may still read an old one), and the key also covers
+`conformance/Cargo.toml`, `contracts/Cargo.toml` and `rust-toolchain.toml`. The prov tests' two platform builders
+(`module_support/mod.rs`, `signed.rs`) get the same 120 s start deadline as the fleet, for `holding_handed_on`'s
+"the wallet runs" under load. CI, with one checkout, was never affected.
 
 ### Defaults (T-013-08)
 

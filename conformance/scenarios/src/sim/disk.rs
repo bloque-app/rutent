@@ -1,14 +1,14 @@
 //! Finding what a platform needs on disk: the admitting compiler and a provider's process, which are `rutent-prov`'s
 //! two executables, and the simulated providers' components, which `module-guests/sim/build.sh` builds.
 //!
-//! Both are built the first time they are asked for, into the build directory the running test is in, and again when
-//! a source they come from is newer. The simulated providers' build takes its own build directory beneath it, so it
+//! Both are built the first time they are asked for, into the build directory the running test is in, in a directory named
+//! by a hash of the sources they come from. The simulated providers' build takes its own build directory beneath it, so it
 //! never waits on the one that is running the test.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use rutent_prov::module::children::Paths;
 
@@ -74,7 +74,8 @@ pub fn paths() -> Paths {
         .clone()
 }
 
-/// A key for the sources `roots` hold: a hash of every file's path, relative to its root, and bytes, in order. Two
+/// A key for the sources `roots`, directories or files, hold: a hash of every file's path, relative to its root, and
+/// bytes, in order. Two
 /// trees with the same sources have the same key and two that differ have different ones, whatever their files'
 /// modification times and wherever they are checked out.
 fn key_of(roots: &[PathBuf]) -> String {
@@ -97,10 +98,18 @@ fn key_of(roots: &[PathBuf]) -> String {
     let mut whole = Vec::new();
     for (n, root) in roots.iter().enumerate() {
         let mut found = Vec::new();
-        files(root, &mut found);
+        if root.is_file() {
+            found.push(root.clone());
+        } else {
+            files(root, &mut found);
+        }
         found.sort();
         for path in found {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let relative = if root.is_file() {
+                root.file_name().map(PathBuf::from).unwrap_or_default()
+            } else {
+                path.strip_prefix(root).unwrap_or(&path).to_path_buf()
+            };
             let bytes = std::fs::read(&path).unwrap_or_default();
             whole.extend_from_slice(
                 format!("{n}:{}:{}\n", relative.display(), bytes.len()).as_bytes(),
@@ -111,36 +120,72 @@ fn key_of(roots: &[PathBuf]) -> String {
     sha256(&whole)[..24].to_owned()
 }
 
-/// How many other builds of the simulated providers are kept beside the one in use: a build directory is shared by
-/// every worktree that builds into it, and each of them has its own.
-const KEPT_BUILDS: usize = 3;
+/// How long a build of the simulated providers may go unused before it is removed. A build directory is shared by
+/// every worktree that runs tests in it, and each of them has its own build.
+const UNUSED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Removes all but the newest [`KEPT_BUILDS`] builds under `parent` besides `current`, and what an earlier layout
-/// left loose in `parent`.
+/// Removes the builds under `parent`, besides `current`, that have not been used for [`UNUSED_FOR`] (a build's last
+/// use is its `built` marker's time, touched each time it is taken), unfinished ones left by a build that died, and
+/// what an earlier layout left loose in `parent`.
 fn prune(parent: &Path, current: &Path) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
-    let mut builds = Vec::new();
+    let now = SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
         if path == current {
             continue;
         }
-        if path.is_dir() {
-            let time = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            builds.push((time, path));
-        } else {
-            let _ = std::fs::remove_file(&path);
+        if !path.is_dir() {
+            if path.extension().is_none_or(|e| e != "lock") {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        let used = std::fs::metadata(path.join("built"))
+            .or_else(|_| entry.metadata())
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if now.duration_since(used).is_ok_and(|age| age > UNUSED_FOR) {
+            let _ = std::fs::remove_dir_all(path);
         }
     }
-    builds.sort();
-    let surplus = builds.len().saturating_sub(KEPT_BUILDS);
-    for (_, path) in builds.into_iter().take(surplus) {
-        let _ = std::fs::remove_dir_all(path);
+}
+
+/// Holds the lock on building the simulated providers in a build directory, so that two builds never run together:
+/// they share cargo's intermediate output, and one would overwrite the other's between its two steps. A directory
+/// made, with its owner's process id in it; one whose owner has gone is taken over.
+struct BuildLock(PathBuf);
+
+impl BuildLock {
+    fn take(path: PathBuf) -> Self {
+        let started = std::time::Instant::now();
+        loop {
+            if std::fs::create_dir(&path).is_ok() {
+                let _ = std::fs::write(path.join("pid"), std::process::id().to_string());
+                return Self(path);
+            }
+            let owner = std::fs::read_to_string(path.join("pid")).ok();
+            let gone = owner.as_deref().map(str::trim).is_some_and(|pid| {
+                Command::new("kill")
+                    .args(["-0", pid])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| !s.success())
+            });
+            if gone || started.elapsed() > Duration::from_secs(30 * 60) {
+                let _ = std::fs::remove_dir_all(&path);
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -165,7 +210,8 @@ pub fn guests() -> PathBuf {
 
 /// The simulated providers, built into a directory named by a hash of the sources they are built from, so a build
 /// is never taken for another tree's: the build directory is shared by every worktree that runs tests in it, and a
-/// marker's age says nothing of what it was built from.
+/// marker's age says nothing of what it was built from. Builds are taken one at a time, and each is made in a
+/// directory of its own and moved into place whole, so a reader never sees one half written.
 fn built_guests() -> PathBuf {
     let (target, _) = build_directories();
     let root = root();
@@ -174,22 +220,37 @@ fn built_guests() -> PathBuf {
         module_guests.clone(),
         root.join("components/prov/src/module/wit"),
         root.join("conformance/src"),
+        root.join("conformance/Cargo.toml"),
         root.join("contracts/src"),
+        root.join("contracts/Cargo.toml"),
+        root.join("rust-toolchain.toml"),
     ]);
     let builds = target.join("rutent-sim-guests");
     let out = builds.join(&key);
-    if !out.join("built").exists() {
-        let status = Command::new(module_guests.join("sim/build.sh"))
-            .arg(&out)
-            .env("CARGO_TARGET_DIR", target.join("sim-guests-build"))
-            .status()
-            .expect("components/prov/module-guests/sim/build.sh runs");
-        assert!(
-            status.success(),
-            "the simulated providers' build failed: {status}"
-        );
+    std::fs::create_dir_all(&builds).expect("a directory for the simulated providers");
+    {
+        let _lock = BuildLock::take(target.join("rutent-sim-guests.lock"));
+        if !out.join("built").exists() {
+            let unfinished = builds.join(format!("{key}.tmp-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&unfinished);
+            let status = Command::new(module_guests.join("sim/build.sh"))
+                .arg(&unfinished)
+                .env("CARGO_TARGET_DIR", target.join("sim-guests-build"))
+                .status()
+                .expect("components/prov/module-guests/sim/build.sh runs");
+            assert!(
+                status.success(),
+                "the simulated providers' build failed: {status}"
+            );
+            let _ = std::fs::remove_dir_all(&out);
+            std::fs::rename(&unfinished, &out).expect("the build is moved into place");
+        }
+        // Its use, for what removes builds nobody uses.
+        if let Ok(marker) = std::fs::File::options().write(true).open(out.join("built")) {
+            let _ = marker.set_modified(SystemTime::now());
+        }
+        prune(&builds, &out);
     }
-    prune(&builds, &out);
     out
 }
 
@@ -219,6 +280,11 @@ mod tests {
         assert_eq!(key("a"), key("b"), "the same sources, another place");
         assert_ne!(key("a"), key("c"), "another byte");
         assert_ne!(key("a"), key("d"), "another path");
+        assert_ne!(
+            key_of(&[base.join("a"), base.join("a/x.rs")]),
+            key("a"),
+            "a file is part of the key too"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

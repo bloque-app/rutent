@@ -76,6 +76,9 @@ impl Signed {
         platform.set_output_limit(4096);
         // Upgrades run at once here; the lifecycle's tests stage their own.
         platform.set_staging(None);
+        // Starting a process is the machine's work, which a stepped clock can't move: on a loaded machine it can pass
+        // the 10 s a production start is given, and no test here is about start-up time (`T-013-08`).
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
         // The platform signs each result with the provider's statements key, which the world holds: these tests'
         // keys, for every provider they admit.
         platform.world.derive_statement_keys(statements_key);
