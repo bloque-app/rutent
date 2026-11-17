@@ -559,8 +559,8 @@ The production assembly is `F-030`'s.
   the later depends on the earlier (`T-020-14` before `T-020-23` and `T-020-24`, `T-020-15` before `T-020-24`,
   `T-020-16` before `T-020-17` before `T-020-20` in `stuck/`); where two share a wave, the lead runs them in turn
   and says so in the feature's notes: `stuck/` and `segments/` in wave 26 (`T-020-20`, then `T-020-25`, then
-  `T-020-27`); `T-020-28`, in wave 27, follows `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-27`, whose directories it also edits; `T-022-08` before `T-022-07` in `audit-check` (waves 25 and 26), and `T-024-13` before `T-024-15` in the
-  stand-in reserve (both wave 25). Five also edit `F-024`'s files or a `DEC-20` path, and each commit body says so: `T-020-14` swaps the
+  `T-020-27`); `T-020-28`, in wave 27, follows `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-27`, whose directories it also edits; `T-022-08` before `T-022-07` in `audit-check` (waves 25 and 26), and `T-024-13` (wave 25) before `T-024-15` (wave 26) in the
+  stand-in reserve. Five also edit `F-024`'s files or a `DEC-20` path, and each commit body says so: `T-020-14` swaps the
   assembly's charge check for Core's own; `T-020-15` and `T-020-16` add a check to `conformance/scenarios/`;
   `T-020-19` makes the assembly's arrival port hand
   Core the signed notice and edits the seeded deposit; `T-020-21` and `T-020-18` edit `contracts/`, and `T-020-21` also one
@@ -957,10 +957,10 @@ flowchart LR
     GR["T-024-13 gross scenario"]
     TR["T-025-04 threat re-check"]
     NA["T-022-08 audit-check evidence"]
-    NS["T-024-15 stand-in notice"]
     NO["T-014-06, T-024-16 owed rows"]
   end
   subgraph W26["Wave 26"]
+    NS["T-024-15 stand-in notice"]
     AL["T-020-19 arrival link"]
     SR2["T-020-20, T-020-22, T-020-25 to T-020-27, T-020-29 writers of the new shapes"]
     AD["T-022-07, T-023-03 adopters, T-024-14 consumer"]
@@ -1003,8 +1003,8 @@ flowchart LR
 | 22 | `T-020-09`, `T-020-10`, `T-024-02` |
 | 23 | `T-020-11`, `T-020-12`, `T-020-13`, `T-024-03`, `T-024-04`, `T-024-05`, `T-024-07` |
 | 24 | `T-011-07`, `T-020-14`, `T-020-15`, `T-020-16`, `T-020-18`, `T-021-08`, `T-024-06`, `T-024-08`, `T-024-11`, `T-025-03` |
-| 25 | `T-014-06`, `T-020-17`, `T-020-21`, `T-020-23`, `T-020-24`, `T-022-08`, `T-024-13`, `T-024-15`, `T-024-16`, `T-025-04` |
-| 26 | `T-020-19`, `T-020-20`, `T-020-22`, `T-020-25`, `T-020-26`, `T-020-27`, `T-020-29`, `T-022-07`, `T-023-03`, `T-024-12`, `T-024-14` |
+| 25 | `T-014-06`, `T-020-17`, `T-020-21`, `T-020-23`, `T-020-24`, `T-022-08`, `T-024-13`, `T-024-16`, `T-025-04` |
+| 26 | `T-020-19`, `T-020-20`, `T-020-22`, `T-020-25`, `T-020-26`, `T-020-27`, `T-020-29`, `T-022-07`, `T-023-03`, `T-024-12`, `T-024-14`, `T-024-15` |
 | 27 | `T-020-28`, `T-024-10`, `T-025-05` |
 
 **Critical path:** `T-020-01` → `T-020-02` → `T-020-05` → `T-020-06` → `T-020-08` → `T-020-10` → `T-020-11` →
@@ -1019,7 +1019,7 @@ platform is the longest chain, so `F-020` takes the first build slot in each wav
 two contract edits in turn: provider-role's arrival notice (`T-020-18`, wave 24) and then `core-internal`'s round
 (`T-020-21`, wave 25), run in turn so one review and one click cover both; no schema of the second depends on the first. The rows
 that write, adopt or use those shapes (`T-020-19`, `T-020-20`, `T-020-22`, `T-020-25` to `T-020-27`,
-`T-022-07`, `T-023-03`, `T-024-14`) follow in wave 26. Of these, `T-020-20`, `T-020-25` and `T-020-27` share `stuck/`, `segments/` and `reversal/`, so their order is fixed: `T-020-20`, then `T-020-25`, then `T-020-27`, each merged into the milestone branch before the next starts; `T-020-28`, which sets `relayed_by` in the same directories and in `arrival/`, depends on them and on `T-020-19`, so it runs in wave 27, and `T-024-10` and `T-025-05` start once it has merged; `T-020-29` (the charge raise's no-formula marker) follows `T-020-21` in wave 26. Four more rows added for owed work run in wave 25, each independent of the rest save the two orders named: `T-014-06` (the proxy's and egress's wall-clock tests on `T-013-08`'s stepped clock), `T-022-08` (the log's opening and `audit-check`, before `T-022-07` in wave 26 edits the same tool), `T-024-15` (the stand-in reserve's arrival notice, after `T-024-13` in the same file) and `T-024-16` (the records tool's two reads). The security review
+`T-022-07`, `T-023-03`, `T-024-14`) follow in wave 26. Of these, `T-020-20`, `T-020-25` and `T-020-27` share `stuck/`, `segments/` and `reversal/`, so their order is fixed: `T-020-20`, then `T-020-25`, then `T-020-27`, each merged into the milestone branch before the next starts; `T-020-28`, which sets `relayed_by` in the same directories and in `arrival/`, depends on them and on `T-020-19`, so it runs in wave 27, and `T-024-10` and `T-025-05` start once it has merged; `T-020-29` (the charge raise's no-formula marker) follows `T-020-21` in wave 26. Four more rows added for owed work run in waves 25 and 26, each independent of the rest save the two orders named: `T-014-06` (the proxy's and egress's wall-clock tests on `T-013-08`'s stepped clock), `T-022-08` (the log's opening and `audit-check`, before `T-022-07` in wave 26 edits the same tool), `T-024-15` (the stand-in reserve's arrival notice, wave 26, after `T-024-13` in the same file) and `T-024-16` (the records tool's two reads). The security review
 (`T-025-05`) and the exit run in wave 27, after the last row that edits a workflow or a `DEC-20` path, so the review's
 diff holds every `M3` edit of `.github/workflows/` and of the contracts; `T-024-10` only turns on a strict step that
 `T-024-09` added.

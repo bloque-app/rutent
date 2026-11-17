@@ -559,7 +559,7 @@ real file says `off` or `on` when `T-024-10` flips it.
 - **`T-024-15`** owns the stand-in reserve's arrival-notice test, `stand in reserve signs an arrival notice that
   passes the role suite`, which `T-020-18`'s row named and nobody wrote (`conformance/src/role/stand_in.rs`,
   `suite.rs`). The test moved from that row's list to this one; issue #150, `T-020-18`'s, stays open until it
-  lands. Wave 25, after `T-024-13`, which edits the same stand-in.
+  lands. Wave 26, after `T-024-13`, which edits the same stand-in.
 - **`T-024-16`** owns `T-024-09`'s two low gaps in `tools/records/`: a test whose attribute is not first on its
   line is not found by the tag check, and a fixture crate the root manifest excludes but that has no `[workspace]`
   line of its own would be counted as run by the evidence table.
