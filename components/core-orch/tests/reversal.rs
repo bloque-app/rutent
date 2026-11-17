@@ -194,6 +194,7 @@ struct KeptLog {
 struct Attributing {
     store: Rc<RefCell<Vec<Vec<u8>>>>,
     catalogue: Catalogue,
+    operator_known: bool,
 }
 
 impl Attributing {
@@ -201,6 +202,7 @@ impl Attributing {
         Sources {
             store: &self.store,
             catalogue: &self.catalogue,
+            operator_known: self.operator_known,
         }
     }
 }
@@ -905,7 +907,7 @@ impl World {
             .map(|(i, e)| (receipt_of(i, e), e.clone()))
             .collect();
         assert!(reversals.follow(&id(ORDER), &history));
-        World {
+        let world = World {
             catalogue: catalogue(&record, publishers, ledger_of),
             clock,
             log,
@@ -926,7 +928,8 @@ impl World {
             stuck: Stuck::new(),
             core: core(),
             operator: operator(),
-        }
+        };
+        world.attributing()
     }
 
     /// The world over a log that records as the audit log does: it attributes a stated entry from its kept bytes, so
@@ -935,6 +938,7 @@ impl World {
         self.log.attribution = Some(Attributing {
             store: Rc::clone(&self.store.0),
             catalogue: self.catalogue.clone(),
+            operator_known: true,
         });
         self
     }
@@ -1278,6 +1282,8 @@ impl World {
 struct Sources<'a> {
     store: &'a Rc<RefCell<Vec<Vec<u8>>>>,
     catalogue: &'a Catalogue,
+    /// Whether the log knows the operator's key and party; where not, it records Core's statements unattributed.
+    operator_known: bool,
 }
 
 impl<'a> Sources<'a> {
@@ -1285,6 +1291,7 @@ impl<'a> Sources<'a> {
         Sources {
             store: &world.store.0,
             catalogue: &world.catalogue,
+            operator_known: true,
         }
     }
 }
@@ -1315,7 +1322,7 @@ impl StatementKeys for Sources<'_> {
 
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure> {
         if *maker == operator().acts {
-            return Ok(Some(operator().party));
+            return Ok(self.operator_known.then(|| operator().party));
         }
         Ok(
             match self.catalogue.publishers().publisher(maker.as_str()) {
@@ -2860,6 +2867,9 @@ impl World {
 #[test]
 fn a_charge_is_raised_on_its_result_and_the_terms_that_bound_its_segment() {
     let mut world = World::over(Platform::settling());
+    // This test cites the statements it kept by the receipts of the entries as handed in; a log that records them
+    // attributed would answer others, and no reversal question is asked here.
+    world.log.attribution = None;
     let mut terms = Terms::new();
     // Stated before the segment starts, one second before the clock the order runs at: binds from then.
     world.clock.0.set(Reading::at(NOW - 100));
@@ -3073,7 +3083,7 @@ fn recorded_verified(world: &World, from: usize) -> usize {
 // verifies: REQ-ORD-3, REQ-ORD-11
 #[test]
 fn a_reversal_is_asked_over_a_log_that_attributes_its_statements() {
-    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail));
     assert_eq!(world.ran()[1], SegmentOutcome::Failed);
     let mark = world.log.len();
     let asked = world.ask("p1-s2").expect("the log took the question");
@@ -3102,7 +3112,7 @@ fn a_reversal_is_asked_over_a_log_that_attributes_its_statements() {
 // verifies: REQ-ORD-3
 #[test]
 fn a_reversal_is_confirmed_over_a_log_that_attributes_its_statements() {
-    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail));
     assert_eq!(world.ran()[1], SegmentOutcome::Failed);
     let mark = world.log.len();
     let mut reserve = Answering::confirming();
@@ -3133,7 +3143,7 @@ fn a_reversal_is_confirmed_over_a_log_that_attributes_its_statements() {
 // verifies: REQ-STM-6, REQ-ORD-31
 #[test]
 fn a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements() {
-    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail));
     assert_eq!(world.ran()[1], SegmentOutcome::Failed);
     let mark = world.log.len();
     let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
@@ -3156,7 +3166,7 @@ fn a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements()
     assert_eq!(recorded_verified(&world, mark), 1);
     assert_eq!(world.admitted_from(mark), Ok(1));
 
-    let mut world = World::over(Platform::settling()).attributing();
+    let mut world = World::over(Platform::settling());
     assert_eq!(world.ran().len(), 3);
     let mark = world.log.len();
     let returned = result(
@@ -3197,7 +3207,7 @@ fn a_verified_entrys_receipt_is_still_its_own_digest() {
 // verifies: INV-8
 #[test]
 fn a_refusal_of_the_log_is_never_swallowed() {
-    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail));
     assert_eq!(world.ran()[1], SegmentOutcome::Failed);
     world.log.refusing = true;
     let mark = world.log.len();
@@ -3213,4 +3223,35 @@ fn a_refusal_of_the_log_is_never_swallowed() {
         )),
         "nothing of Core's is recorded"
     );
+}
+
+/// Core's own question is never backed by a record the log made unattributed: where the log can't tie it to the
+/// operator, its receipt is the digest of the entry as built, and nothing is handed over. The ask records no effect;
+/// the confirmation asks no reserve; each is refused again on a retry.
+// verifies: INV-7
+#[test]
+fn a_question_the_log_leaves_unattributed_backs_no_move() {
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail));
+    assert_eq!(world.ran()[1], SegmentOutcome::Failed);
+    world.log.attribution.as_mut().unwrap().operator_known = false;
+    let mark = world.log.len();
+    for _ in 0..2 {
+        assert!(matches!(
+            world.ask("p1-s2"),
+            Err(ReversalError::Append(AppendFailure::Refused(_)))
+        ));
+    }
+    assert!(
+        !world
+            .whats_from(mark)
+            .iter()
+            .any(|w| matches!(w, What::Effect { .. })),
+        "no effect, so nothing is carried out"
+    );
+    let mut reserve = Answering::confirming();
+    assert!(matches!(
+        world.confirm(&mut reserve, "p1-s2"),
+        Err(ReversalError::Append(AppendFailure::Refused(_)))
+    ));
+    assert!(reserve.asked.is_empty(), "no reserve is asked");
 }

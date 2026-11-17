@@ -3615,7 +3615,15 @@ receipt must still be its own digest (an answer for another entry is no answer a
 `admit_entry` is the gate for a statement: a question recorded unattributed cannot be cited by the effect that follows
 it, and the log refuses that effect.
 
-**Tests.** The file's `World` took a log that attributes (`World::attributing`): on a stated entry it runs
+**Core's own questions are guarded** (the review of `08ec786b`). Taking any receipt for a stated entry would let a
+question the log recorded **un**attributed go through: its receipt is the digest of the entry as built, the log can't
+tie it to the operator, and `admit_entry` refuses the provider's answer after the value moved. `Step::append_question`
+(used for `ask_reversal`'s operation and the confirm question, nothing else) refuses such a receipt before anything
+is handed over, as `stuck/mover.rs` does for its question, and refuses again on a retry, the log answering its equal
+entry with the same receipt. Answers and late words stay unguarded: an unattributed provider's answer is legitimate.
+
+**Tests.** The file's `World` is built over a log that attributes (`World::attributing`; the charge test opts out, as it
+cites the statements it kept by the receipts of the entries as handed in): on a stated entry it runs
 core-internal's `attribute` over the evidence store's kept bytes and the catalogue's keys, as `AuditLog` does, records
 the entry attributed, and answers an equal entry with its own receipt; the receipt it answers is of the entry
 recorded. It is not `AuditLog` itself: the audit log's key register is fed only by granted advertisements recorded in
@@ -3631,6 +3639,7 @@ one-line local fix of this function.
 | `append` takes the log's receipt for a stated entry (switched back to the receipt rule's check for every entry; before the fix, the same: `Append(Unavailable)`) | `a_reversal_is_asked_over_a_log_that_attributes_its_statements`, `a_reversal_is_confirmed_over_a_log_that_attributes_its_statements`, `a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements` |
 | a verified entry's receipt must be its own digest (check removed) | `a_verified_entrys_receipt_is_still_its_own_digest` |
 | a refusal is returned, never retried or swallowed (turned into a retry) | `a_refusal_of_the_log_is_never_swallowed` |
+| a question recorded unattributed backs no move (`append_question`'s digest check off) | `a_question_the_log_leaves_unattributed_backs_no_move` |
 
 Run once per rule, under a hard timeout, nothing hung. The three journals of the list that check no receipt
 (`quote`, `arrival`, `rounds`, `segments`, `snapshot`) and `stuck`'s, which handles its statements by `append_stated`,
