@@ -894,12 +894,12 @@ fn reach_of(code: &str) -> Vec<String> {
         let rest = &code[at..];
         if rest.starts_with("super::super") {
             found.push("names super::super".to_owned());
-        } else if let Some(tree) = rest.strip_prefix("super::") {
-            if !tree.starts_with('{') {
-                let head: String = tree.chars().take_while(|c| ident(*c)).collect();
-                if !PURE.contains(&head.as_str()) {
-                    found.push(format!("names super::{head}, not a pure sibling"));
-                }
+        } else if let Some(tree) = rest.strip_prefix("super::")
+            && !tree.starts_with('{')
+        {
+            let head: String = tree.chars().take_while(|c| ident(*c)).collect();
+            if !PURE.contains(&head.as_str()) {
+                found.push(format!("names super::{head}, not a pure sibling"));
             }
         }
     }
