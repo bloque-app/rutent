@@ -224,6 +224,9 @@ The Wasmtime pin bumped from 48.0.8 to 48.0.9 (`components/prov/Cargo.toml`, `Ca
   here**: this machine is arm64 macOS, which has no `/proc/cpuinfo` and cannot be a cross-vendor run. The run ids of
   `ci` and of a `rederive` run that landed on another vendor than the reference's are to be added here by the
   orchestrator when they exist; a skipped `rederive` run doesn't count (see `T-013-05`'s review round).
+  **Recorded:** the PR's CI run 44134656776 at `0f523b38`: `ci` job 134220782586 (success, the binding's
+  compatibility hash unchanged, `BINDING_VERSION` stays `0.3.0`) and `rederive` job 134247456427 (success, re-derived on
+  GenuineIntel against a reference made on AuthenticAMD; reference artifact 14353433711).
 - **The advisories read again, 2026-11-17.** GitHub's advisory API for `bytecodealliance/wasmtime` (state `published`):
   still 94, the newest published on 2026-11-16; none is dated after 48.0.9's release (crates.io, 2026-11-16) or on
   2026-11-17. The six that included 48.0.8 (`GHSA-43j2-gcp4-m22g`, `GHSA-wvgq-g5hf-6gm6`, `GHSA-rc4p-x33f-vpr2`,
