@@ -2,18 +2,25 @@
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::{Attribution, Receipt, ShownAs, StatedEntry};
-use rutent_contracts::module_interface::Digest;
+use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, KeptStatements, Log};
+use rutent_contracts::core_internal::{
+    About, Attribution, Entry, Receipt, ShownAs, StatedEntry, What,
+};
+use rutent_contracts::module_interface::{Digest, DigestAlgorithm};
 use rutent_contracts::provider_role::{
     HOLD_SHAPE, HeldFor, Hold, RedemptionRefused, Statement, check_redemption,
 };
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, HeldQuote, Id, Timestamp, Violation,
 };
-use rutent_prov::catalogue::Instant;
+use rutent_prov::catalogue::{Catalogue, Instant};
 use rutent_router::quote::{self, HeldQuoteRefused, HoldRefused, Label};
 
+use super::journal;
 use super::shown::{NotShown, Shown, show};
+use super::terms::{Recorded, from_base64url};
+use crate::segments::{self, Unappended};
+use crate::snapshot::Clock;
 
 /// One quote a reserve holds.
 ///
@@ -36,6 +43,9 @@ pub struct Held {
     pub transaction: Id,
     /// The receipt of the hold's stated entry, which an acceptance redeeming it cites (`What::Acceptance.held`).
     pub hold: Receipt,
+    /// The commitment the hold's stated entry names its bytes by: what the statement kept behind it is held to
+    /// before the hold is redeemed.
+    commitment: Digest,
     /// The reserve's signed hold, as it made it: it names the order, or the session, that may redeem it.
     signed: Statement<Hold>,
     /// The quote held, with its validity: the one stated, capped at the earliest expiry of the figures its route
@@ -43,8 +53,6 @@ pub struct Held {
     quote: HeldQuote,
     /// What it shows: always a quote, never the price (`REQ-QTE-7`).
     pub shown: Shown,
-    /// The order that redeemed it, once one has: no other does (`hold-is-redeemed-by-one-order`).
-    redeemed_by: Option<Id>,
 }
 
 impl Held {
@@ -56,6 +64,16 @@ impl Held {
     /// What the hold is for: the order, or the session, that may redeem it.
     pub fn held_for(&self) -> &HeldFor {
         &self.signed.statement.held_for
+    }
+
+    /// The decision record whose chosen candidate is held, by its id.
+    pub fn record(&self) -> &Id {
+        self.quote.record.record_id()
+    }
+
+    /// The candidate held: the record's chosen one.
+    pub fn candidate(&self) -> Option<&Id> {
+        self.quote.record.chosen().map(|c| &c.candidate_id)
     }
 }
 
@@ -87,6 +105,14 @@ pub enum HoldError {
     NotForThisOrder(RedemptionRefused),
     /// Another order redeemed it already: a hold is redeemed for one order (`hold-is-redeemed-by-one-order`).
     RedeemedByAnother,
+    /// It is not a hold of the quote the acceptance is of: another decision record, or another candidate of it.
+    NotThisQuote,
+    /// The evidence store keeps nothing behind the hold's entry's commitment, or what it keeps does not hash to that
+    /// commitment, or is not the signed hold Core holds: the entry rests on other bytes, so the hold rests on
+    /// nothing the log holds (`REQ-AUD-2`).
+    NotWhatIsKept,
+    /// The evidence store could not be read now: nothing is redeemed on a hold that could not be held to its bytes.
+    KeptUnavailable(AppendFailure),
     /// It is past its validity, or holds nothing chosen: it starts nothing.
     Redeem(HeldQuoteRefused),
 }
@@ -101,6 +127,60 @@ pub struct Redeemed<'a> {
     pub shown: &'a Shown,
     /// The receipt of the hold's stated entry.
     pub hold: &'a Receipt,
+}
+
+/// The quote an acceptance is of, by the decision record and the candidate the customer was shown: a hold is
+/// redeemed only for a quote it holds.
+#[derive(Debug, Clone, Copy)]
+pub struct AcceptedQuote<'a> {
+    /// The decision record that chose the route.
+    pub record: &'a Id,
+    /// The candidate chosen.
+    pub candidate: &'a Id,
+}
+
+/// A redemption asked: every field is what the caller verified, never a word a customer gave.
+#[derive(Debug, Clone, Copy)]
+pub struct Redemption<'a> {
+    /// The hold's transaction, which the acceptance names it by.
+    pub transaction: &'a Id,
+    /// The reserve redeeming it: the order's origin reserve.
+    pub reserve: &'a Id,
+    /// The order the acceptance is of.
+    pub order: &'a Id,
+    /// The session the acceptance is given in, the one the caller verified for it.
+    pub session: Option<&'a Id>,
+    /// The quote the acceptance is of.
+    pub quote: AcceptedQuote<'a>,
+    /// When it is redeemed, by Core's clock.
+    pub now: &'a Timestamp,
+}
+
+/// What taking a reserve's signed hold reaches.
+pub struct HoldDesk<'a> {
+    /// The evidence store, which keeps the bytes before their entry is appended.
+    pub evidence: &'a mut dyn Evidence,
+    /// The log, through orchestration's handle.
+    pub log: &'a mut dyn Log,
+    /// The log's recorded entries.
+    pub recorded: &'a dyn Recorded,
+    /// Core's clock, which stamps when the hold was received.
+    pub clock: &'a dyn Clock,
+    /// The catalogue, which names the party a provider states for.
+    pub catalogue: &'a Catalogue,
+}
+
+/// Why a reserve's hold wasn't taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TakeHoldError {
+    /// The bytes aren't a reserve's signed hold in an envelope.
+    Unreadable,
+    /// The evidence store or the log refused or failed.
+    Append(AppendFailure),
+    /// The log holds no entry at the receipt it answered.
+    NotRecorded,
+    /// The hold isn't kept: why.
+    NotHeld(HoldError),
 }
 
 /// A reserve's signed hold, and the stated entry that holds it in the log.
@@ -135,12 +215,16 @@ pub struct RecordedAs<'a> {
 /// refused ([`HeldQuote::check_hold`]). It is redeemed only by the reserve that holds it, for the order, or an
 /// order accepted in the session, its signed hold names, and by one order.
 ///
-/// What isn't built is the caller that accepts an order on a held quote: intake accepts a quote it offered and
-/// redeems no hold, so `What::Acceptance.held` is `None` until it does, and the receipt [`Redeemed::hold`] is what it
-/// will cite.
+/// Intake redeems the hold an acceptance names (`Intake::accept_holding`), and cites the receipt [`Redeemed::hold`] as
+/// the acceptance's `held`. The holds themselves stay in memory, the deployment's to keep across a restart (`F-030`);
+/// which order redeemed which is rebuilt from the log ([`Holds::recorded`]).
 #[derive(Debug, Clone, Default)]
 pub struct Holds {
     held: BTreeMap<String, Held>,
+    /// The order that redeemed each hold, by the hold's transaction, once one has: no other does
+    /// (`hold-is-redeemed-by-one-order`). Kept apart from the holds so it is rebuilt from the log's acceptances alone
+    /// ([`Holds::recorded`]): after a restart a hold kept again meets the order that redeemed it.
+    redeemed: BTreeMap<String, Id>,
 }
 
 /// `valid_until`, or the earliest expiry where that is sooner, to the whole second below it.
@@ -222,12 +306,69 @@ impl Holds {
                 reserve,
                 transaction,
                 hold: signed.receipt.clone(),
+                commitment: signed.stated.commitment.clone(),
                 signed: statement.clone(),
                 quote: held,
                 shown,
-                redeemed_by: None,
             });
         Ok(entry)
+    }
+
+    /// Takes a reserve's signed hold, `bytes` as they arrived: keeps them in the evidence store, appends them as a stated
+    /// entry about the hold's own transaction and no order (the log attributes it), reads the entry back as the log
+    /// recorded it, and holds the quote `record`, recorded as `recorded`, chose on it ([`Holds::hold`]). A hold of
+    /// which the stated entry is not about its own transaction is refused there. The statement kept behind the
+    /// entry's commitment is held to it when the hold is redeemed ([`Holds::redeem`]), never taken on the caller's
+    /// word.
+    ///
+    /// Nothing in Core hands a reserve's hold to this call yet: no module delivers them (`T-020-15`'s notes).
+    ///
+    /// # Errors
+    ///
+    /// If the bytes aren't a hold, the log or the store refused or failed, or the hold isn't kept.
+    pub fn take(
+        &mut self,
+        desk: HoldDesk<'_>,
+        bytes: &[u8],
+        recorded: RecordedAs<'_>,
+        record: DecisionRecord,
+        valid_until: Timestamp,
+    ) -> Result<&Held, TakeHoldError> {
+        let statement: Statement<Hold> =
+            serde_json::from_slice(bytes).map_err(|_| TakeHoldError::Unreadable)?;
+        let transaction =
+            Id::new(statement.statement.transaction.as_str()).ok_or(TakeHoldError::Unreadable)?;
+        let received_at = journal::now(desk.clock).map_err(TakeHoldError::Append)?;
+        let entry = segments::journal::stated_entry(
+            desk.evidence,
+            &received_at,
+            bytes,
+            segments::maker(desk.catalogue, bytes),
+            Some(About {
+                order: None,
+                segment: None,
+                transaction: Some(transaction),
+            }),
+        )
+        .map_err(|why| match why {
+            Unappended::Unrecordable => TakeHoldError::Unreadable,
+            Unappended::Append(failure) => TakeHoldError::Append(failure),
+        })?;
+        let receipt = journal::built_stated(desk.log, entry).map_err(TakeHoldError::Append)?;
+        let Some(Entry::Stated(stated)) = desk.recorded.entry(&receipt) else {
+            return Err(TakeHoldError::NotRecorded);
+        };
+        self.hold(
+            Signed {
+                hold: &statement,
+                stated: &stated,
+                receipt: &receipt,
+            },
+            recorded,
+            record,
+            valid_until,
+        )
+        .map_err(TakeHoldError::NotHeld)
     }
 
     /// The quote held under the hold's `transaction`.
@@ -235,38 +376,91 @@ impl Holds {
         self.held.get(transaction.as_str())
     }
 
-    /// The route of the quote held under the hold's `transaction`, to start at `now` by `reserve` for `order`,
-    /// accepted in `session` where it was, and what it showed: refused to anyone but the reserve that holds it, for
-    /// an order its signed hold doesn't name (or a session the order wasn't accepted in), after another order
-    /// redeemed it, and past its validity; at its validity still usable (`REQ-QTE-15`). The same order redeems it
-    /// again. The hold stays until dropped.
+    /// The order that redeemed the hold under `transaction`, if one did.
+    pub fn redeemed_by(&self, transaction: &Id) -> Option<&Id> {
+        self.redeemed.get(transaction.as_str())
+    }
+
+    /// Which order redeemed which hold, rebuilt from the log's `history`, as after a restart: each acceptance that
+    /// cites a hold's stated entry binds that hold's transaction, the one its entry is about, to the acceptance's order,
+    /// the first acceptance to do so. The holds themselves are kept again by the deployment (`F-030`), and meet
+    /// the order that redeemed them, so a restarted Core does not leave the refusal of a second order to the log.
+    pub fn recorded(history: &[(Receipt, Entry)]) -> Self {
+        let mut holds = Self::new();
+        for (_, entry) in history {
+            let Entry::Verified(verified) = entry else {
+                continue;
+            };
+            let What::Acceptance {
+                order,
+                held: Some(held),
+                ..
+            } = &verified.what
+            else {
+                continue;
+            };
+            let transaction = history.iter().find_map(|(receipt, e)| match e {
+                Entry::Stated(s) if receipt == held => s.about.as_ref()?.transaction.clone(),
+                _ => None,
+            });
+            if let Some(transaction) = transaction {
+                holds
+                    .redeemed
+                    .entry(transaction.as_str().to_owned())
+                    .or_insert_with(|| order.clone());
+            }
+        }
+        holds
+    }
+
+    /// The route of the quote held under the hold's transaction, to start at `redemption.now` by the reserve for the
+    /// order, accepted in the session where it was, and what it showed. Refused, in this order: for no such hold;
+    /// to anyone but the reserve that holds it; for an order its signed hold doesn't name, or a session the order
+    /// wasn't accepted in; after another order redeemed it; for a quote it is not a hold of; when the statement
+    /// kept behind its entry's commitment is not the hold Core holds (`kept` reads it); and past its validity, at
+    /// which it is still usable (`REQ-QTE-15`). The same order redeems it again. The hold stays until dropped.
+    ///
+    /// Nothing is redeemed unless every check passes.
     pub fn redeem(
         &mut self,
-        transaction: &Id,
-        reserve: &Id,
-        order: &Id,
-        session: Option<&Id>,
-        now: &Timestamp,
+        redemption: Redemption<'_>,
+        kept: &mut dyn KeptStatements,
     ) -> Result<Redeemed<'_>, HoldError> {
+        let Redemption {
+            transaction,
+            reserve,
+            order,
+            session,
+            quote,
+            now,
+        } = redemption;
         let held = self
             .held
-            .get_mut(transaction.as_str())
+            .get(transaction.as_str())
             .ok_or(HoldError::NoSuchHold)?;
         if &held.reserve != reserve {
             return Err(HoldError::NotTheHolder);
         }
         check_redemption(&held.signed, order.as_str(), session.map(Id::as_str))
             .map_err(HoldError::NotForThisOrder)?;
-        if held
-            .redeemed_by
-            .as_ref()
+        if self
+            .redeemed
+            .get(transaction.as_str())
             .is_some_and(|first| first != order)
         {
             return Err(HoldError::RedeemedByAnother);
         }
+        if held.record() != quote.record || held.candidate() != Some(quote.candidate) {
+            return Err(HoldError::NotThisQuote);
+        }
+        is_what_is_kept(held, kept)?;
         quote::redeem(&held.quote, now).map_err(HoldError::Redeem)?;
-        held.redeemed_by = Some(order.clone());
-        let held = &*held;
+        self.redeemed
+            .insert(transaction.as_str().to_owned(), order.clone());
+        let held = self
+            .held
+            .get(transaction.as_str())
+            .ok_or(HoldError::NoSuchHold)?;
         let candidate = quote::redeem(&held.quote, now).map_err(HoldError::Redeem)?;
         Ok(Redeemed {
             candidate,
@@ -278,5 +472,32 @@ impl Holds {
     /// Drops the hold under `transaction`, with no effect beyond it; false if none was kept.
     pub fn drop_hold(&mut self, transaction: &Id) -> bool {
         self.held.remove(transaction.as_str()).is_some()
+    }
+}
+
+/// Whether the statement kept behind `held`'s entry's commitment is the hold Core holds: the evidence store answers
+/// under that commitment, SHA-256 of its salt followed by its bytes is that commitment, and the bytes read as the
+/// signed hold Core was handed. The log holds only the commitment, so only whoever holds the kept bytes can tell
+/// (`REQ-AUD-2`): `Holds::hold` checks the entry's shape, attribution, maker and times, never this.
+fn is_what_is_kept(held: &Held, kept: &mut dyn KeptStatements) -> Result<(), HoldError> {
+    let found = kept
+        .kept(&held.commitment)
+        .map_err(HoldError::KeptUnavailable)?
+        .ok_or(HoldError::NotWhatIsKept)?;
+    let (Some(salt), Some(bytes)) = (
+        from_base64url(found.salt.as_str()),
+        from_base64url(found.bytes.as_str()),
+    ) else {
+        return Err(HoldError::NotWhatIsKept);
+    };
+    let committed = rutent_prov::module::wire::sha256(&[salt, bytes.clone()].concat());
+    let same = found.commitment == held.commitment
+        && held.commitment.algorithm == DigestAlgorithm::Sha256
+        && held.commitment.value.as_str() == committed
+        && serde_json::from_slice::<Statement<Hold>>(&bytes).is_ok_and(|k| k == held.signed);
+    if same {
+        Ok(())
+    } else {
+        Err(HoldError::NotWhatIsKept)
     }
 }

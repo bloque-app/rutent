@@ -57,7 +57,7 @@ impl Transport for Wire {
 }
 
 /// The log's recorded entries, read by receipt.
-struct Log<'a>(&'a [(Receipt, Entry)]);
+pub(super) struct Log<'a>(pub(super) &'a [(Receipt, Entry)]);
 
 impl Recorded for Log<'_> {
     fn entry(&self, receipt: &Receipt) -> Option<Entry> {

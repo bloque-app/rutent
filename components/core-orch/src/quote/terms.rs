@@ -251,7 +251,7 @@ impl Terms {
 }
 
 /// The bytes base64url text without padding writes, or `None` where it isn't such text.
-fn from_base64url(text: &str) -> Option<Vec<u8>> {
+pub(super) fn from_base64url(text: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
     for c in text.bytes() {
