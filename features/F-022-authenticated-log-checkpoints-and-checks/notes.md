@@ -544,3 +544,86 @@ signature is verified under that same key).
   `operator_commands_entry_names_its_operator` and `one_party_with_several_roles_is_recorded_per_role`. None hung.
   Added: `attribute`'s `made_at` check off -> `statement_whose_signature_doesnt_verify...`; `unproven`'s deployment
   check off, and its transaction check off -> `unproven_holds_the_deployment_and_the_transaction_the_append_does`.
+
+## T-022-05
+
+- **Layout.** `components/core-audit/src/compare/`: three pure comparisons, `report` (`compare_reports`), `holding`
+  (`check_holding`) and `evidenced` (`value_evidenced_against_balances`), and the detectors, `detect::Compare`, which
+  records and raises. `log::Unbuilt` keeps its `Comparisons` impl (the assembly's stub still builds on it).
+- **No reach to anything that moves value, structurally.** (1) The pure modules import only data types of
+  `rutent-contracts` and their siblings; they take `&` references and return a verdict, so they hold no handle, no
+  channel, no clock and no mutable state. A test reads their source and holds that: only `rutent_contracts::` and
+  `super::` imports, none of `Log`, `Operator`, `Clock`, `calls::`, `&mut`, cells, `dyn`, `Box`, `unsafe`, `static`,
+  `std::fs/net/process/env/time`, `crate::`, and the three functions coerce to plain `fn` pointers on `&` arguments.
+  (2) `Compare<L, O, C>` is the only thing with effects, and its type is its reach: a `log::General<L>` (implements
+  `Log` alone: no decision entry, no statement attributed), an `Operator` (whose `raise` takes a `Raise`, a
+  difference and receipts, and answers only a `Delivery`) and a `Clock`. (3) `core-audit` depends on neither
+  `core-orch` nor `core-authz` (`DEC-2`), which a test reads from the manifest. ADR-0009's placement in
+  `CMP-CORE-AUDIT` rests on these.
+- **Order of steps.** A report pair: record the pair (`report_pair`, observed), compare, and where the amounts
+  differ, deliver the raise and record it (`raise`, `done` or `failed` by the delivery, as the contract says). The
+  answer is the pair's receipt in every case. A holding reading: record the check without its balance
+  (`holding_check`), compare, raise. A raise cites the pair's (or check's) entry, and for a pair the two statements.
+  A raise whose record can't be appended answers `Unavailable`, so orchestration appends the comparison again (the
+  pair's and check's entries are idempotent); the operator may then see the raise twice. A comparison whose own
+  record is refused or unavailable compares nothing.
+- **Raise id and time.** The id is `raise-` and SHA-256 of the cites, time and difference; the time is the clock's,
+  to the second (`compare::detect`'s civil-date conversion, since no formatter existed). The same difference at the
+  same second is one raise id.
+- **Defaults taken** (all fail closed or reversible):
+  1. Reports are compared **exactly**. ADR-0009 ties a tolerance to the provider's declared increments
+     (`REQ-CAT-11`) and its gross or net convention; `ReportPair` carries neither, so no tolerance is applied and a
+     rounding gap is raised rather than hidden.
+  2. Two reports of different assets (id or decimals) are `NotComparable(AssetsDiffer)`, even if the amounts match.
+  3. A holding account's per-order sum past 78 digits is `NotComparable(SumPastTheBound)`.
+  4. `INV-1`'s "value evidenced at nodes" is an input, `Evidenced { account, order, asset, amount }`, summed per
+     account across orders and compared with each reading's balance by the same rule as `REQ-AUD-15`; a difference
+     is a `Difference::Holding` carrying the balance's `word`. Evidence in another asset than the account's is
+     `NotComparable(EvidencedInAnotherAsset)`; evidence at an account with no reading is `NotComparable(NoReading)`.
+  5. A `NotComparable` verdict records the pair or check and raises nothing.
+  6. The `core-audit` actor is a parameter (`Compare::core_audit(party)` builds the fixtures'
+     `rutent`/`core-audit`/`core`/`component`).
+- **Gaps, with owners.**
+  1. `Difference` has no shape for a pair or reading that can't be compared (asset or unit differs, sum past the
+     bound, evidence unread). Such a case is silent today. The contract author (`core-internal`, `T-020-21`'s
+     round) needs a `Difference` variant, e.g. `NotComparable { subject, reason }`, to raise it.
+  2. `Comparisons` has no method for the `INV-1` check, so it is `Compare::evidenced_against_balances`, an inherent
+     method. Who reads the log into `Evidenced` is the assembly's (`T-024-02`, `T-024-08`); the log's records
+     don't name a value resting at a node, so the feed is not built here.
+  3. The ranking of raised mismatches by value and age (ADR-0009 consequences) is left to construction and not
+     built: it is `F-023`'s (the operator's channel), `T-023-02`.
+  4. Tolerance by increment and gross/net convention (default 1) needs `Report` to carry them, or the caller to
+     pass the tuple's terms: the contract author (`core-internal`, `T-020-21`'s round), with `F-020` supplying them.
+  5. A balance of a private node is its publisher's word and nothing more; `Word::Publisher` is read from the
+     reading, set by orchestration. That a reading's `word` is true to its node (public node, `Checked`) is
+     orchestration's (`T-020-26`).
+- **Tests.** The report test runs on the real log replaying the contract's world up to its pair, so every entry
+  written is admitted by the citation table (`sent-report-is-its-partys-statement`, `raise-cites-entries-of-the-log`);
+  the holding tests run on the real log standing alone. The row's tests were written after the code in this session
+  and then attacked by the rule-offs below, not seen red first; the property tests are seeded xorshift (400 cases
+  each, a failing case names its seed, each outcome asserted to be drawn).
+- **Rule-off table** (each switched off once, `compare` tests run, tree restored):
+
+  | Switched off | Red |
+  |---|---|
+  | `compare_reports` always `Match` | pure-function, report-raises |
+  | its asset check | pure-function |
+  | sent and received swapped in the difference | pure-function, report-raises |
+  | the operator not called | report-raises, both holding tests, `INV-1` |
+  | an undelivered raise recorded `done` | report-raises |
+  | the raise not recorded | report-raises, short/over, `INV-1` |
+  | a pair raised though it matches | report-raises |
+  | the pair not recorded | report-raises |
+  | short and over swapped | short/over, private-node, `INV-1` |
+  | the balance's word dropped from the difference | private-node, `INV-1` |
+  | over ignored | short/over, `INV-1` |
+  | a holding difference never raised | short/over, private-node |
+  | the check entry's word wrong | private-node |
+  | only the first evidence item summed | `INV-1` |
+  | evidence's asset not checked | `INV-1` |
+  | unread accounts dropped | `INV-1` |
+  | `INV-1` differences not raised | `INV-1` |
+  | a pure module importing `crate::log` | structure test |
+  | a `&mut` in a pure module | structure test |
+
+  None hung.
