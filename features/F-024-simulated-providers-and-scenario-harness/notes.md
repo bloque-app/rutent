@@ -612,3 +612,57 @@ real file says `off` or `on` when `T-024-10` flips it.
 - `AC-2`'s full route across a reserve, an exchange and a ramp is `T-024-04`'s: the simulated providers that join
   the reserves are added there (see the world paragraph of `T-024-03`).
 - `T-024-10` and `T-025-05` now run in wave 27, after all of them.
+
+## T-024-06: failure, stuck, reversal and ending scenarios
+
+Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/`, each carrying exactly the `AC-*` of its plan bracket): `failure.rs` (`AC-42`,
+`AC-12`, `AC-40`, `AC-5`), `ending.rs` (`AC-7`, `AC-8`, `AC-9`, `AC-41`) and `reversing.rs` (`AC-4`, `AC-6`), with
+`failure_support/` beside `execution_support/`. Each drives Core's own `request`, `quote`, `accept` and `run`, and the
+methods below, over the simulated providers.
+
+**Added to the assembly** (`conformance/scenarios/src/assembly/lifecycle.rs`, nothing in `components/`): Core's own
+records of what goes wrong (`Recalculations`, `Stuck`, `Reversals`, `Notices`) held beside the segments, with `recalculate`,
+`run_recalculated`, `watch`, `record_no_route`, `decide_stuck`, `carry_out_stuck`, `owe_reversal`, `ask_reversal`,
+`confirm_reversal`, `end`, `returned`, `late_delivery`, `notify` and `notices_to`; `Core::run` split into `run_live`;
+`Faults::operation_takes` (a segment takes seconds of Core's clock, so p99 has a history); `reprice_deposits` (a price that
+moved after the quote) and `set_check_bound` (deployment settings). No simulator change was needed.
+
+**Defaults taken.**
+- `AC-5`: "stops answering" is the provider that took the deposit and never answered (`Behaviour::late`), so its outcome
+  is unknown and its value held; the p99 is a real history of twenty settled orders at 10 s an operation. "The operator
+  is warned" is the operator's notice of the `stuck_declared` change; "the provider can see it" is `seen_by_provider`.
+  A late delivery is the provider's answer asked again under its own transaction, kept by `Reversals::later`.
+- `AC-12`: the reserve's price moves after the quote (`reprice_deposits`), so the only route from the ledger falls below
+  the floor.
+- `AC-40`: the recalculation to the same destination is the same reserve again; with its dry run refused, the order
+  waits. After `no_route` Core's recalculations answer `NoRouteLeft` (routed no more) where the kit's answered `Held`;
+  both mean no route starts. The customer's new destination and the hand-on are not run here (below).
+- `AC-7`: the second half runs on an order whose deposit was refused (first segment settled, order open) and on a complete one.
+- `AC-9`: the destination's report is a signed deposit result that says the payment came back.
+- `AC-41`: the expected changes are the inputs the state machine applies to the order, replayed from the log.
+- Policy's stuck rules are the real engine's; the resolution's move is `failure_support::Moves`, a stand-in for the
+  production mover (`T-020-16`, in review, not merged).
+
+**Gaps, with owners.**
+- **`AC-4`, `AC-6`, `AC-8` are written and `#[ignore]`d.** (1) A real bug in `components/core-orch/src/reversal/journal.rs`
+  (`T-020-12`; the owner of `reversal/`, `T-020-27`'s file): `append` accepts a receipt only if its digest is the entry as
+  built, but the audit log records a stated entry as it attributes it, so a question or answer about an order, segment and
+  transaction (verified on the operator's key) comes back with another digest and every `ask`/`confirm` fails
+  `Append(Unavailable)` on the real log. Fix: take the log's receipt as `segments/journal.rs::append_general` does. With
+  that one line, applied locally and reverted, `AC-8` passed. (2) For `AC-4`/`AC-6` the simulated world binds no private
+  node to its publisher: a failed exchange's own answer completes only inside a node the log binds (evidence naming the
+  node), and the reserve's confirmation is refused as the same publisher's, so the reversal never completes
+  (`FailedProvidersOwn`). Owner: `T-024-14` (publishers emit records naming their node) or a simulator row. The
+  "other party" half of `AC-4` has no simulated route at all: a private node is its publisher's alone, so no other
+  publisher's provider starts where the origin reserve's node is; it is held in `components/core-orch/tests/reversal.rs`.
+  Drop the `#[ignore]` when both land. Evidence-table rows `AC-4`, `AC-6`, `AC-8` stay unverified until then.
+- **`AC-40`'s second half** (customer's new destination, hand-on to a linked order) runs on the kit only
+  (`tests/hand_on.rs`): the assembly doesn't wire `hand_on`. Owner: a later `F-024` row.
+- **Load flake, known.** `execution_support::given` gives the fleet a real 2 s deadline (`sim/fleet.rs`); under load a quote
+  can come back `NoRouteRightNow`, and `AC-5`'s `Behaviour::late` waits that real deadline. The stepped-clock fix on
+  `f-013/route-calls-stepped-clock` changes it; re-run alone when the machine is quiet.
+- The customer's session lasts about a quarter hour of Core's clock, which bounds how many slow orders one scenario runs.
+
+**Rule-off table.** See the end of this section (filled when the runs finished).

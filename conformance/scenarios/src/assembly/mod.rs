@@ -46,6 +46,7 @@ mod arrivals;
 pub mod charges;
 pub mod durable;
 mod grading;
+pub mod lifecycle;
 pub mod machine;
 pub mod policy;
 pub mod price;
@@ -276,6 +277,9 @@ pub struct Faults {
     pub carried: usize,
     /// Why a planted swap failed, if it did.
     pub swap_failed: Option<rutent_contracts::state_machine::host::HostError>,
+    /// How many seconds Core's clock moves on while each operation is carried out (`T-024-06`): what a provider's
+    /// segment takes, so the settlements Core learns its p99 from have a duration.
+    pub operation_takes: u64,
 }
 
 /// The platform, as the segments carry an operation out: at Core's clock, with the faults planted at it.
@@ -331,6 +335,9 @@ impl Modules for Running<'_> {
         self.platform.world.set_clock(self.clock.instant());
         let first = Modules::carry_out(self.platform, effect, provider, operation);
         self.readings.refresh(&self.platform.world);
+        if self.faults.operation_takes > 0 {
+            self.clock.advance(self.faults.operation_takes);
+        }
         if !self.faults.deliver_twice {
             return first;
         }
@@ -466,6 +473,8 @@ pub struct Core {
     closing: rutent_core_orch::closing::Closing,
     readings: grading::Readings,
     issued: Issued,
+    /// What goes wrong with an order and how it ends (`T-024-06`).
+    pub(crate) life: lifecycle::Lifecycle,
     exposures: Exposures,
     /// The prices reported, once per order (`T-024-04`).
     reported: rutent_core_orch::quote::Prices,
@@ -506,6 +515,12 @@ pub enum StepError {
     Arrival(rutent_core_orch::arrival::ArrivalError),
     /// The order is in no state that step can take.
     NotNow(&'static str),
+    /// A recalculation couldn't be tried (`T-024-06`).
+    Recalc(rutent_core_orch::recalc::RecalcError),
+    /// The stuck record refused or stopped (`T-024-06`).
+    Stuck(rutent_core_orch::stuck::StuckError),
+    /// A reversal or an ending was refused or stopped (`T-024-06`).
+    Reversal(rutent_core_orch::reversal::ReversalError),
 }
 
 impl From<rutent_core_orch::arrival::ArrivalError> for StepError {
@@ -735,6 +750,7 @@ impl Core {
             closing: rutent_core_orch::closing::Closing::new(),
             readings: grading::Readings::default(),
             issued: Issued::new(),
+            life: lifecycle::Lifecycle::new(),
             exposures: Exposures::new(),
             reported: rutent_core_orch::quote::Prices::new(),
             releases: Releases::new(),
@@ -1483,49 +1499,54 @@ impl Core {
                 inputs: &started.inputs,
                 floor: started.floor.as_ref(),
             };
-            let readings = self.readings.clone();
-            readings.refresh(&self.fleet.platform.world);
-            let mut running = Running {
-                platform: &mut self.fleet.platform,
-                clock: &self.clock,
-                faults: &mut self.faults,
-                feed: &mut self.feed,
-                log: &self.log,
-                swap_to: self.swap_to.as_deref_mut(),
-                readings: &readings,
-            };
-            let mut grading = rutent_core_orch::closing::Evidenced {
-                catalogue: &self.catalogue,
-                records: &readings,
-                books: &readings,
-                closing: &mut self.closing,
-            };
-            let mut decisions = self.policy.clone();
-            let mut channel = rutent_core_orch::notice::Channel {
-                notices: &mut self.notices,
-                key: &mut self.notice_signer,
-                transport: &mut self.wire,
-            };
-            let mut parts = SegmentParts {
-                clock: &self.clock,
-                catalogue: &self.catalogue,
-                log: &mut self.general,
-                evidence: &mut self.keeper,
-                decisions: &mut decisions,
-                modules: &mut running,
-                uses: &mut NoProxy,
-                grading: &mut grading,
-                operator_key: &mut self.signer,
-                fresh: &mut self.fresh,
-                issued: &self.issued,
-                exposures: &mut self.exposures,
-                channel: &mut channel,
-            };
-            let result = self.segments.run_part(&mut parts, &live);
-            self.feed()?;
-            ran.push(result?);
+            ran.push(self.run_live(&live)?);
         }
         Ok(ran)
+    }
+
+    /// Runs one part as `live` says, each segment after the one before settles.
+    pub(crate) fn run_live(&mut self, live: &Live<'_>) -> Result<Ran, StepError> {
+        let readings = self.readings.clone();
+        readings.refresh(&self.fleet.platform.world);
+        let mut running = Running {
+            platform: &mut self.fleet.platform,
+            clock: &self.clock,
+            faults: &mut self.faults,
+            feed: &mut self.feed,
+            log: &self.log,
+            swap_to: self.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut grading = rutent_core_orch::closing::Evidenced {
+            catalogue: &self.catalogue,
+            records: &readings,
+            books: &readings,
+            closing: &mut self.closing,
+        };
+        let mut decisions = self.policy.clone();
+        let mut channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
+        let mut parts = SegmentParts {
+            clock: &self.clock,
+            catalogue: &self.catalogue,
+            log: &mut self.general,
+            evidence: &mut self.keeper,
+            decisions: &mut decisions,
+            modules: &mut running,
+            uses: &mut NoProxy,
+            grading: &mut grading,
+            operator_key: &mut self.signer,
+            fresh: &mut self.fresh,
+            issued: &self.issued,
+            exposures: &mut self.exposures,
+            channel: &mut channel,
+        };
+        let result = self.segments.run_part(&mut parts, live);
+        self.feed()?;
+        Ok(result?)
     }
 
     /// `reader`'s read of `order`'s state and age, checked by policy.
