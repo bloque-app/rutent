@@ -74,29 +74,74 @@ pub fn paths() -> Paths {
         .clone()
 }
 
-/// The newest modification time of any file under `dir`.
-fn newest(dir: &Path) -> SystemTime {
-    let mut newest = SystemTime::UNIX_EPOCH;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return newest;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let time = if path.is_dir() {
-            newest_of(&path)
-        } else {
-            entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH)
+/// A key for the sources `roots` hold: a hash of every file's path, relative to its root, and bytes, in order. Two
+/// trees with the same sources have the same key and two that differ have different ones, whatever their files'
+/// modification times and wherever they are checked out.
+fn key_of(roots: &[PathBuf]) -> String {
+    use rutent_prov::module::wire::sha256;
+
+    fn files(dir: &Path, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
         };
-        newest = newest.max(time);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files(&path, found);
+            } else {
+                found.push(path);
+            }
+        }
     }
-    newest
+
+    let mut whole = Vec::new();
+    for (n, root) in roots.iter().enumerate() {
+        let mut found = Vec::new();
+        files(root, &mut found);
+        found.sort();
+        for path in found {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let bytes = std::fs::read(&path).unwrap_or_default();
+            whole.extend_from_slice(
+                format!("{n}:{}:{}\n", relative.display(), bytes.len()).as_bytes(),
+            );
+            whole.extend_from_slice(&bytes);
+        }
+    }
+    sha256(&whole)[..24].to_owned()
 }
 
-fn newest_of(dir: &Path) -> SystemTime {
-    newest(dir)
+/// How many other builds of the simulated providers are kept beside the one in use: a build directory is shared by
+/// every worktree that builds into it, and each of them has its own.
+const KEPT_BUILDS: usize = 3;
+
+/// Removes all but the newest [`KEPT_BUILDS`] builds under `parent` besides `current`, and what an earlier layout
+/// left loose in `parent`.
+fn prune(parent: &Path, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut builds = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        if path.is_dir() {
+            let time = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            builds.push((time, path));
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    builds.sort();
+    let surplus = builds.len().saturating_sub(KEPT_BUILDS);
+    for (_, path) in builds.into_iter().take(surplus) {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 /// The directory holding `sim-{role}-sandboxed.wasm` for each role and `sim-outside.wasm`: `RUTENT_SIM_GUESTS` if
@@ -118,25 +163,22 @@ pub fn guests() -> PathBuf {
     .clone()
 }
 
+/// The simulated providers, built into a directory named by a hash of the sources they are built from, so a build
+/// is never taken for another tree's: the build directory is shared by every worktree that runs tests in it, and a
+/// marker's age says nothing of what it was built from.
 fn built_guests() -> PathBuf {
     let (target, _) = build_directories();
     let root = root();
     let module_guests = root.join("components/prov/module-guests");
-    let out = target.join("rutent-sim-guests");
-    let built = out.join("built");
-    let sources = [
-        newest(&module_guests),
-        newest(&root.join("components/prov/src/module/wit")),
-        newest(&root.join("conformance/src")),
-        newest(&root.join("contracts/src")),
-    ]
-    .into_iter()
-    .max()
-    .expect("a time");
-    let current = std::fs::metadata(&built)
-        .and_then(|m| m.modified())
-        .is_ok_and(|built| built >= sources);
-    if !current {
+    let key = key_of(&[
+        module_guests.clone(),
+        root.join("components/prov/src/module/wit"),
+        root.join("conformance/src"),
+        root.join("contracts/src"),
+    ]);
+    let builds = target.join("rutent-sim-guests");
+    let out = builds.join(&key);
+    if !out.join("built").exists() {
         let status = Command::new(module_guests.join("sim/build.sh"))
             .arg(&out)
             .env("CARGO_TARGET_DIR", target.join("sim-guests-build"))
@@ -147,6 +189,7 @@ fn built_guests() -> PathBuf {
             "the simulated providers' build failed: {status}"
         );
     }
+    prune(&builds, &out);
     out
 }
 
@@ -154,7 +197,30 @@ fn built_guests() -> PathBuf {
 mod tests {
     use std::path::Path;
 
-    use super::profile_of;
+    use super::{key_of, profile_of};
+
+    /// A build of the simulated providers is named by what it is built from, not by a file's age: the same sources
+    /// give the same key wherever they are and whenever they were written, and any change of a path or a byte gives
+    /// another.
+    // verifies: DEC-18
+    #[test]
+    fn guests_key_follows_the_sources_and_not_their_age_or_place() {
+        let base = std::env::temp_dir().join(format!("rutent-guests-key-{}", std::process::id()));
+        let write = |dir: &str, name: &str, text: &str| {
+            let path = base.join(dir).join(name);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a directory");
+            std::fs::write(path, text).expect("a file");
+        };
+        write("a", "x.rs", "one");
+        write("b", "x.rs", "one");
+        write("c", "x.rs", "two");
+        write("d", "y.rs", "one");
+        let key = |dir: &str| key_of(&[base.join(dir)]);
+        assert_eq!(key("a"), key("b"), "the same sources, another place");
+        assert_ne!(key("a"), key("c"), "another byte");
+        assert_ne!(key("a"), key("d"), "another path");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// The profile is found under both of cargo's layouts, whatever the directories above the build directory are
     /// called.

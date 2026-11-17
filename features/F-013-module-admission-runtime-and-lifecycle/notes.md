@@ -864,27 +864,27 @@ The same class was closed in every other test that makes a cross-module call on 
 the outward ones. `START_DEADLINE` is still read on the operating system's time (the platform hands it to the
 spawn directly); a start that passes it fails the install, not the assertion.
 
-The same flaw was in the scenarios' fleet. `conformance/scenarios/src/sim/fleet.rs` (`Fleet::with_context`) built its
-platform on the real clock, so under load (load average 12 to 17, and 8 busy loops) the five tests of
-`execution_routes.rs` failed deterministically with `CantProceed { class: NoRouteRightNow }` where a quote was
-expected: the simulated providers' calls passed their real deadlines, or their starts passed `START_DEADLINE`, and the
-router got no answer. Two changes, confirmed together under the 8-loop load (5 of 5 failed before, 5 of 5 pass after);
-the clock alone did not make them pass:
-- Every `Fleet` platform runs on a `ScenarioClock` that stands still. A scenario that scripts a `silent` or `late`
-  provider is about a real deadline passing, so queueing that behaviour (`SimWorld::script`, `script_for`,
-  `script_dry_run`, `otherwise`) makes the clock follow the operating system's time from then on, without a jump.
-- `Platform::set_start_deadline` (new, default `START_DEADLINE`, 10 s, so production is unchanged); a `Fleet` sets 120 s,
-  since a start is the machine's work, cannot be stepped, and no scenario is about start-up time.
-Edited: `components/prov/src/module/platform.rs` (F-013's) and `fleet.rs` and `world.rs` (F-024's); no scenario test file.
+The scenarios' fleet had the same flaw in principle, and it is fixed as defence, but it was not why `execution_routes`
+failed. `Fleet::with_context` built its platform on the real clock, so under load a simulated provider's call could pass
+its real deadline, or its start `START_DEADLINE`. Every `Fleet` platform now runs on a `ScenarioClock` that stands still
+(a scenario that scripts a `silent` or `late` provider is about a real deadline passing, so queueing that behaviour makes
+the clock follow the operating system's time from then on, without a jump), and `Platform::set_start_deadline` (new,
+default `START_DEADLINE`, so production is unchanged) is set to 120 s on a fleet, since a start is the machine's work
+and no scenario is about start-up time. Edited: `module/platform.rs` (F-013's), `fleet.rs` and `world.rs` (F-024's).
 
-Review of that fix found `execution_routes` failing 5 of 5 once more, at load 15 to 20, with `NoRouteRightNow`. It was
-not reproduced afterwards: 5 of 5 passed 15 times in a row under 8 to 16 busy loops (load average to 57), in both build
-lanes and after cleaning rutent's crates as the lock does, and the whole `rutent-scenarios` crate passed under 12 busy
-loops and, earlier, 3 times under 8. The remaining real-time reads (`children.rs` `receive_until` and `spawn`, 120 s
-compile, `START_DEADLINE` now 120 s on a fleet, egress and proxy timeouts of 5 s and 10 s) were read for a path a stepped
-clock leaves to chance, and none was found. So that the next failure explains itself, a scenario's platform now prints,
-when a provider's question is refused, the refusal reason, how long it took and the children's stderr
-(`assembly/mod.rs`, `Asking::ask`). Open: the cause of the reviewer's one failure is unknown.
+The real cause of the five `execution_routes` failures (`CantProceed { class: NoRouteRightNow }` where a quote is
+expected, within 8 to 20 s, and only while other worktrees were building, which is why load seemed to matter) was the
+shared simulated-provider build. `conformance/scenarios/src/sim/disk.rs::built_guests` built the guests into
+`<target>/rutent-sim-guests` and rebuilt them only when the `built` marker was older than the newest file of the
+current worktree's sources. Every worktree in a build lane shares one target directory, so a worktree on an older base
+whose files had just been edited rebuilt the guests from its own sources and left the marker newest; the next worktree
+saw a marker newer than its sources and ran on guests without the simulated providers `T-024-04` added. Confirmed
+deterministically: `execution_routes` passed on `f013i`; the guests were then rebuilt from a scratch checkout of
+`b8c416e0` into the same directory; the same test run again from `f013i` failed 5 of 5 in 13 s. Fixed: the build is now
+in `<target>/rutent-sim-guests/<key>`, where the key is a hash of the paths and bytes of the guests' sources
+(`module-guests`, the WIT, `conformance/src`, `contracts/src`), so two trees never share a build and a file's age
+decides nothing; the newest three other builds are kept and older ones, and the loose files of the earlier layout, are
+removed. `RUTENT_SIM_GUESTS` still overrides it. CI, with one checkout, was never affected.
 
 ### Defaults (T-013-08)
 
