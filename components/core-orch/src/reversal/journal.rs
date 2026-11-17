@@ -1,6 +1,11 @@
 //! The one place reversals and endings reach the log: orchestration's handle, each entry built once as a
 //! `GeneralEntry` and appended again unchanged while the log can't take it now, so a retried append is one entry
-//! (`INV-8`). A receipt is taken only where it is this entry's, by the receipt rule (`crate::stuck::is_receipt_of`).
+//! (`INV-8`). A receipt for a verified entry is taken only where it is this entry's, by the receipt rule
+//! (`crate::stuck::is_receipt_of`); a receipt for a stated entry is the log's, since the log attributes a statement and
+//! records it so, and its receipt is of the entry it recorded (`REQ-AUD-2`), not of the one handed in: the receipt rule
+//! can't hold it, and refusing the log's receipt left every reversal, once the log attributed Core's question, with
+//! `Unavailable`. What the log answers is still the log's to gate: its `admit_entry` refuses an entry whose citations
+//! it can't bear out, and a refusal is never retried nor swallowed.
 //!
 //! - **A stated entry** (a provider's statement, Core's question, a reserve's answer) is appended as its claimed
 //!   maker's, unverified: attributing it is the log's. Its bytes go to the evidence store when it is built.
@@ -145,19 +150,26 @@ pub(super) fn stated(
     Ok(GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?)
 }
 
-/// Appends an entry built already, trying again while the log can't take it now or answers with a receipt that
-/// isn't this entry's. A refusal is never retried.
+/// Appends an entry built already, trying again while the log can't take it now, or, for a verified entry, answers
+/// with a receipt that isn't this entry's. A stated entry's receipt is taken as the log gives it. A refusal is never
+/// retried.
 fn append(log: &mut dyn Log, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+    let stated = matches!(entry.entry(), Entry::Stated(_));
     let mut last = AppendFailure::Unavailable;
     for _ in 0..APPEND_TRIES {
         match log.append(entry) {
-            Ok(receipt) if is_receipt_of(&receipt, entry) => return Ok(receipt),
+            Ok(receipt) if stated || is_receipt_of(&receipt, entry) => return Ok(receipt),
             Ok(_) | Err(AppendFailure::Unavailable) => last = AppendFailure::Unavailable,
             Err(refused) => return Err(refused),
         }
     }
     Err(last)
 }
+
+/// The refusal of a question of Core's that the log recorded unattributed.
+const UNATTRIBUTED_QUESTION: Violation = Violation(
+    "a question of Core's is recorded attributed to the operator before anything is handed over",
+);
 
 /// An entry built once, and its receipt once the log took it.
 #[derive(Debug, Clone)]
@@ -180,6 +192,24 @@ impl Step {
             return Ok(receipt.clone());
         }
         let receipt = append(log, &self.entry)?;
+        self.receipt = Some(receipt.clone());
+        Ok(receipt)
+    }
+
+    /// Appends Core's own question to a provider, once. The log attributes a statement, so a receipt for it is the
+    /// log's, and one that is the digest of the entry as built says the log recorded it unattributed, its signing key
+    /// unknown to it: a question the log can't tie to the operator, which `admit_entry` would refuse the answer to
+    /// after the value moved. It backs nothing: refused here, before anything is handed over, and again on every
+    /// retry, since the log answers its equal entry with the same receipt. Answers and late words aren't guarded: an
+    /// unattributed provider's answer is legitimate.
+    pub(super) fn append_question(&mut self, log: &mut dyn Log) -> Result<Receipt, AppendFailure> {
+        if let Some(receipt) = &self.receipt {
+            return Ok(receipt.clone());
+        }
+        let receipt = append(log, &self.entry)?;
+        if is_receipt_of(&receipt, &self.entry) {
+            return Err(AppendFailure::Refused(UNATTRIBUTED_QUESTION));
+        }
         self.receipt = Some(receipt.clone());
         Ok(receipt)
     }
