@@ -833,6 +833,12 @@ impl Core {
         self.readings.tie_by_destination();
     }
 
+    /// From now on, `provider`'s record of the segments inside its node is altered after it was signed, as a forger
+    /// would: a fault the scenarios plant (`T-024-14`). Core's books refuse it, so the replay finds nothing recorded.
+    pub fn forge_record_of(&mut self, provider: &str) {
+        self.readings.forge(provider);
+    }
+
     /// The log.
     pub fn log(&self) -> std::cell::Ref<'_, CoreLog> {
         self.log.borrow()

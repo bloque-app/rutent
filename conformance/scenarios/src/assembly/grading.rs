@@ -4,7 +4,7 @@
 //! world lives inside the platform, which the segments hold as their modules, so the readings are a copy, refreshed.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use rutent_conformance::signing::verify;
@@ -28,6 +28,8 @@ struct Read {
     seen: BTreeMap<String, Vec<(MovementId, String, String)>>,
     /// The planted fault: a deposit tied to the first movement to its destination of its amount.
     ties: bool,
+    /// The providers whose record is altered after it was signed: a planted fault.
+    forged: BTreeSet<String>,
 }
 
 /// The simulated networks and the reserves' books, as Core last read them.
@@ -74,6 +76,11 @@ impl Readings {
     /// network, rather than by its transaction: as a reserve paying two orders with one payment would have it.
     pub(crate) fn tie_by_destination(&self) {
         self.read.borrow_mut().ties = true;
+    }
+
+    /// From now on, `provider`'s record is altered after it was signed.
+    pub(crate) fn forge(&self, provider: &str) {
+        self.read.borrow_mut().forged.insert(provider.to_owned());
     }
 
     /// Whether the planted fault ties movements by destination and amount.
@@ -171,7 +178,14 @@ impl Readings {
         let spec = self.movers.iter().find(|s| s.provider == provider)?;
         let record = {
             let read = self.read.borrow();
-            publishers_record(spec, &crate::assembly::context(), read.books.get(provider)?)?
+            let mut record =
+                publishers_record(spec, &crate::assembly::context(), read.books.get(provider)?)?;
+            if read.forged.contains(provider)
+                && let Some(first) = record.statement.segments.first_mut()
+            {
+                first.amount_out.push('0');
+            }
+            record
         };
         accepted(&record, self.advertisements.get(provider)?).then_some(record)
     }
@@ -195,6 +209,7 @@ impl Books for Readings {
         let records = self.published_in(node);
         let mut segments = Vec::new();
         for transaction in transactions {
+            let before = segments.len();
             for record in &records {
                 segments.extend(
                     record
@@ -210,6 +225,11 @@ impl Books for Readings {
                             fee: s.fee.clone(),
                         }),
                 );
+            }
+            // Every transaction asked ran inside the node, so one with no accepted segment is a record refused or
+            // never made: nothing recorded for the node, never the rest of it passed off as all of it.
+            if segments.len() == before {
+                return None;
             }
         }
         (!segments.is_empty()).then_some(segments)

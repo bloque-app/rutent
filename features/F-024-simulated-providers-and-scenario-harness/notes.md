@@ -433,7 +433,9 @@ those statements, for each provider serving in the node, and no longer rebuilds 
 A record counts only if its key is one its maker's advertisement lists for statements, it verifies under it and
 `check_inner_segments` holds it to that advertisement (maker, publisher, node declared); otherwise it is no record
 (`NothingRecorded`, fails closed). No figure is refused: a record that doesn't add up still reaches the replay.
-`Behaviour::misrecording` scripts one: the publisher records another amount out than the segment gave. Views for tests:
+A transaction the closing asks about that has no accepted segment, because its provider's record was refused, makes the
+whole node's reading `None`, so the closing records `NothingRecorded` and the rest of the node is never passed off as all
+of it. `Core::forge_record_of` plants a record altered after it was signed. `Behaviour::misrecording` scripts one: the publisher records another amount out than the segment gave. Views for tests:
 `Core::publishers_records(node)`, `Core::books_for(node, transactions)`.
 
 **Tests** (`tests/publishers_record.rs`, and unit tests in `grading.rs`): the three the row names. Each asserts the
@@ -446,7 +448,8 @@ records' content (maker, publisher, node, label, transaction, assets, amounts, f
 - A route across two private nodes **cannot be run on the platform**: the router joins segments by exactly equal
   endpoints (`Outer(n)` is not `Inner(n)`), a reserve enters a private node from an outer node, and a ramp, the only
   segment leaving a node for a public one, ends at an inner node. So the mismatch "at the second of two nodes" is shown
-  on the platform at one node (a scripted mismatch is recorded in the log's `replay` against the node), and across two
+  on the platform at **one** node only (a scripted mismatch is recorded in the log's `replay` against the node; the
+  test's name says "second of two nodes" because the plan's row does), and across two
   nodes as `CMP-EVIDENCE`'s replay over what the assembly's books read of two reserves' nodes. Owner of a platform
   route across two nodes: `T-024-05` (it needs the router or the catalogue to join an outer node to an inner one,
   which is not a conformance change).
@@ -455,15 +458,16 @@ records' content (maker, publisher, node, label, transaction, assets, amounts, f
   the body is one forward to the engine, as its neighbours.
 
 **Gaps, with owners.**
-- **Binding a private node to its publisher is not conformance's to make** (`T-024-06`'s `AC-4`, `AC-6`). The log binds
+- **Binding a private node to its publisher is not conformance's to make** (`T-024-06`'s `AC-4`, `AC-6`). Owner:
+  `T-020-32`, a new row in wave 29, which also lifts `T-024-06`'s two `#[ignore]`s; `T-020-30` makes `rests_on` a list. The log binds
   a node (`Reversals::follow`) from an `evidence` whose movement names the node, or a `replay` naming it, resting on a
   stated entry about the order that states for the publisher. Core never appends the publisher's record as a stated
   entry, and a `replay`'s `rests_on` is the exit segment's result, and no replay exists where value stays inside. The
   shape needed in `components/core-orch/src/closing/`: `Books` returns the signed `Statement<InnerSegments>` with the
   segments; closing appends it as a stated entry about the order (attribution verified, party the publisher) and
   cites its receipt where it binds the node (an `evidence` naming the node, or `replay`'s `rests_on` carrying each
-  record's receipt: a contract change to `What::Replay` of one receipt to a list, which is also `REQ-AUD-9`). Owner: a
-  new `F-020` row after `T-020-26`; `T-020-18`'s hand-off of the receipts is the same work. The simulator already
+  record's receipt: a contract change to `What::Replay` of one receipt to a list, which is also `REQ-AUD-9`). Owner:
+  `T-020-32` (with `T-020-30` for the list); `T-020-18`'s hand-off of the receipts is the same work. The simulator already
   emits what that row reads. Un-ignoring `AC-4` and `AC-6` needs that row, and `T-024-06` merged into `m3`.
 - **`REQ-AUD-9`'s receipts on `replay`** (`T-020-18`'s hand-off to this row): the same row; needs `components/`.
 
@@ -476,6 +480,7 @@ records' content (maker, publisher, node, label, transaction, assets, amounts, f
 | the node filter of the records read | `publisher's emitted record is read by the assembly's books` |
 | the transaction filter of the books | all three |
 | the books read nothing | all three |
+| a transaction without an accepted segment makes the node's reading `None` | `record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_recorded` |
 | a record's transactions (empty) | all three |
 | the signature check on a record | `a_record_changed_after_it_was_signed_is_not_read` |
 | the listed-key check | `a_record_signed_with_a_key_its_maker_does_not_list_is_not_read` |

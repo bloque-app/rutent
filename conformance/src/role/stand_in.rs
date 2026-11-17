@@ -63,7 +63,7 @@ const MADE_AT: &str = "2026-11-06T15:04:05Z";
 
 /// When the stand-ins make their statements.
 #[cfg(feature = "signing")]
-pub fn made_at() -> &'static str {
+pub(crate) fn made_at() -> &'static str {
     MADE_AT
 }
 /// Until when stand-ins' quotes and judgements hold, and when a lifting refusal lifts.

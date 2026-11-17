@@ -299,6 +299,9 @@ fn replayed(
     )
 }
 
+//
+// The platform's part runs one node: a route across two can't run on the platform (the module's doc). The second node's
+// part is the replay of two reserves' nodes over what the assembly's books read of both.
 // verifies: REQ-ORD-41, DEC-24
 #[test]
 fn mismatching_record_is_replayed_and_recorded_at_the_second_of_two_private_nodes() {
@@ -430,4 +433,29 @@ fn record_of_a_route_ending_inside_the_node_is_labelled_the_publishers_word() {
         &net,
     );
     assert_eq!(replay, Replay::PublishersWord);
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_recorded() {
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.forge_record_of(IN);
+    let (order, segments) = joined(&mut core, &session);
+    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    // The first provider's record is refused, so the two others' segments are not the node's whole record.
+    assert_eq!(
+        core.publishers_records(NODE)
+            .iter()
+            .map(|r| r.maker.as_str())
+            .collect::<Vec<_>>(),
+        [EXCHANGE, QUICK]
+    );
+    assert_eq!(core.books_for(NODE, &asked), None);
+    let found = replays(&core, &order);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        matches!(&found[0].2, ReplayFound::NothingRecorded { nodes } if nodes.iter().map(|n| n.as_str()).eq([NODE])),
+        "recorded as nothing recorded for the node: {:?}",
+        found[0].2
+    );
 }
