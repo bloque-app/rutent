@@ -3574,3 +3574,64 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
 | `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |
 | `Terms::take` has no production caller (`T-020-14`, gap 1) | `M4`, `F-030` and `F-031`, in the same table |
 | The stand-in reserve's arrival-notice test (`T-020-18`'s hand-off to `F-024`) | `T-024-15` |
+
+## Journal receipts come from the log (`f-020/journal-receipts-from-the-log`)
+
+**The bug.** `reversal/journal.rs::append` took a receipt only where its digest was the SHA-256 of the entry as Core
+built it (`is_receipt_of`). The audit log attributes a stated entry from its kept bytes before it records it
+(`AuditLog::append_through`, step 2): an entry Core handed in unverified, and the log could bear out, is recorded
+`verified`, so its receipt is of the entry recorded, not of the one handed in. In the assembled Core every reversal
+step that appended a statement the log could attribute (Core's own question to the failed provider, its question to
+the origin reserve, the providers' signed answers and late words) got a receipt the check refused, was tried three
+times and ended `Append(Unavailable)`: ask, confirm and every later step. The kit's log hid it, since it answers the
+receipt rule's digest; `T-024-06` found it with the real log, and `T-020-16` had met the same class in `stuck/` and
+added `Step::append_stated`.
+
+**The journals, one verdict each** (every append of core-orch's journals, and whether it can be handed a stated entry
+the log re-attributes, and checks the receipt against the entry as built):
+
+| Append | Stated entry? | Checks the receipt against the entry as built? | Verdict |
+|---|---|---|---|
+| `quote/journal.rs:64` (`Step::append`) | yes (the quote's statements) | no: takes the log's receipt | fine |
+| `quote/journal.rs:90` (`built_stated`) | yes | no | fine |
+| `reversal/journal.rs:150` (`append`) and `:178` (`Step::append`) | yes (questions, answers, late words, a return's statement) and verified | **yes, for both** | **affected, fixed** |
+| `arrival/journal.rs:100` | yes | no | fine |
+| `rounds/journal.rs:45` (`append_stated`), `:97`, `:130` | yes, and verified records | no | fine |
+| `segments/journal.rs:31` and `:38` (`append_general`) | yes | no: the model the fix follows | fine |
+| `snapshot/journal.rs:15` | yes (a refused statement's stated entry) | no | fine |
+| `stuck/journal.rs:55` (`append`) and `:84` (`Step::append`) | no: only `built()`'s verified entries reach them | yes, and rightly | fine: verified entries only |
+| `stuck/journal.rs:98` (`append_stated`) | yes | no (`T-020-16`) | fine |
+
+Also read, outside the list: `hand_on/mod.rs:406` checks the receipt too, but its steps are verified entries only
+(`T-020-17`'s file; not touched), `recalc/mod.rs:809` and `intake/record.rs:45` take the log's receipt. `stuck/mover.rs`
+:557 deliberately compares an attributed question's receipt with the entry as built, to find a question the log
+recorded **un**attributed; that is a check of the attribution, not a receipt rule, and stays.
+
+**The fix.** `reversal/journal.rs::append` takes the log's receipt for a stated entry, as `segments/journal.rs::
+append_general` does, and holds a verified entry to the receipt rule as before. One function serves both
+(`Step::append` goes through it), so there is no second copy. What the check protected stays: a verified entry's
+receipt must still be its own digest (an answer for another entry is no answer and is tried again, then
+`Unavailable`), and a refusal, a statement's included, is returned at once and never retried or swallowed. The log's
+`admit_entry` is the gate for a statement: a question recorded unattributed cannot be cited by the effect that follows
+it, and the log refuses that effect.
+
+**Tests.** The file's `World` took a log that attributes (`World::attributing`): on a stated entry it runs
+core-internal's `attribute` over the evidence store's kept bytes and the catalogue's keys, as `AuditLog` does, records
+the entry attributed, and answers an equal entry with its own receipt; the receipt it answers is of the entry
+recorded. It is not `AuditLog` itself: the audit log's key register is fed only by granted advertisements recorded in
+it, and the `World`'s policy writes its decisions raw, so the audit log's `admit_entry` is not run on append: every
+test replays it over what the log holds (`admitted_from`), as the others of this file do. Core's assembly doesn't hold
+a reversal yet (`T-024-06` wires it): its own test with the audit log itself is that row's `AC-8`, which passed with a
+one-line local fix of this function.
+
+**Rule-off table.**
+
+| Rule switched off | Tests that go red |
+|---|---|
+| `append` takes the log's receipt for a stated entry (switched back to the receipt rule's check for every entry; before the fix, the same: `Append(Unavailable)`) | `a_reversal_is_asked_over_a_log_that_attributes_its_statements`, `a_reversal_is_confirmed_over_a_log_that_attributes_its_statements`, `a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements` |
+| a verified entry's receipt must be its own digest (check removed) | `a_verified_entrys_receipt_is_still_its_own_digest` |
+| a refusal is returned, never retried or swallowed (turned into a retry) | `a_refusal_of_the_log_is_never_swallowed` |
+
+Run once per rule, under a hard timeout, nothing hung. The three journals of the list that check no receipt
+(`quote`, `arrival`, `rounds`, `segments`, `snapshot`) and `stuck`'s, which handles its statements by `append_stated`,
+have no rule of this kind to switch off: no test is added to them.

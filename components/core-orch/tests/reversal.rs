@@ -17,10 +17,10 @@ use rutent_contracts::core_internal::calls::{
     Operator, Reads, Signatures, StatementKeys, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Afterwards, Answer, Decision, DecisionRequest, DeploymentOperator,
-    Destination, Difference, Effect, Entry, KeptStatement, PermissionChange, ReadAnswer, ReadCheck,
-    ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, ShowingNamed, SignedWith, Through, What,
-    admit_entry, attribute,
+    Action, Actor, ActorKind, Afterwards, Answer, Attribution, Decision, DecisionRequest,
+    DeploymentOperator, Destination, Difference, Effect, Entry, KeptStatement, PermissionChange,
+    ReadAnswer, ReadCheck, ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, ShowingNamed,
+    SignedWith, Through, What, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -137,8 +137,9 @@ impl Fresh for Ids {
 }
 
 /// The evidence store: each statement's bytes, under a commitment of its place.
+/// The evidence store's bytes, shared with the log when it attributes (`World::attributing`).
 #[derive(Default)]
-struct Store(Vec<Vec<u8>>);
+struct Store(Rc<RefCell<Vec<Vec<u8>>>>);
 
 fn commitment(place: usize) -> Digest {
     serde_json::from_value(
@@ -149,9 +150,9 @@ fn commitment(place: usize) -> Digest {
 
 impl Evidence for Store {
     fn keep(&mut self, bytes: &[u8]) -> Result<Kept, AppendFailure> {
-        self.0.push(bytes.to_vec());
+        self.0.borrow_mut().push(bytes.to_vec());
         Ok(Kept {
-            commitment: commitment(self.0.len() - 1),
+            commitment: commitment(self.0.borrow().len() - 1),
             restates: None,
         })
     }
@@ -182,6 +183,26 @@ struct KeptLog {
     entries: Entries,
     down: bool,
     refusing: bool,
+    /// While set, the log answers every append with the receipt of another entry.
+    misreceipting: bool,
+    /// Where set, the log records as the audit log does (`World::attributing`).
+    attribution: Option<Attributing>,
+}
+
+/// What the log reads to attribute a statement, as `core-audit`'s log does (`AuditLog::append_through`): the evidence
+/// store's bytes and the catalogue's keys and publishers.
+struct Attributing {
+    store: Rc<RefCell<Vec<Vec<u8>>>>,
+    catalogue: Catalogue,
+}
+
+impl Attributing {
+    fn sources(&self) -> Sources<'_> {
+        Sources {
+            store: &self.store,
+            catalogue: &self.catalogue,
+        }
+    }
 }
 
 impl KeptLog {
@@ -213,7 +234,39 @@ impl Log for KeptLog {
                 rutent_contracts::core_internal::Violation("the log refuses it"),
             ));
         }
-        Ok(push(&self.entries, entry.entry().clone()))
+        if self.misreceipting {
+            let at = self.entries.borrow().len();
+            self.entries.borrow_mut().push(entry.entry().clone());
+            return Ok(receipt_of(at, &input_entry()));
+        }
+        let Some(real) = &self.attribution else {
+            return Ok(push(&self.entries, entry.entry().clone()));
+        };
+        // The audit log's steps that change what it answers: it attributes a stated entry from its kept bytes (the
+        // entry it records is not the one handed in), and an equal entry already held answers with its own receipt.
+        // Its `admit_entry` is not run here: the policy this world stands in for writes its decisions raw, so
+        // `World::admitted_from` replays it over what is recorded, as every test of this file does.
+        let history: Vec<(Receipt, Entry)> = self
+            .entries
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (receipt_of(i, e), e.clone()))
+            .collect();
+        let recorded = match entry.entry() {
+            Entry::Stated(claim) => Entry::Stated(attribute(
+                claim,
+                &history,
+                &mut real.sources(),
+                &mut real.sources(),
+                &real.sources(),
+            )?),
+            other => other.clone(),
+        };
+        if let Some(i) = history.iter().position(|(_, e)| *e == recorded) {
+            return Ok(history[i].0.clone());
+        }
+        Ok(push(&self.entries, recorded))
     }
 }
 
@@ -876,6 +929,16 @@ impl World {
         }
     }
 
+    /// The world over a log that records as the audit log does: it attributes a stated entry from its kept bytes, so
+    /// the entry it records, and its receipt, are not the entry Core handed it.
+    fn attributing(mut self) -> Self {
+        self.log.attribution = Some(Attributing {
+            store: Rc::clone(&self.store.0),
+            catalogue: self.catalogue.clone(),
+        });
+        self
+    }
+
     /// Runs the order's part through the segments.
     fn run(&mut self) -> Result<Ran, SegmentsError> {
         let (order, part, auth, origin) = (id(ORDER), id(PART), id("auth-1"), id(RESERVE));
@@ -948,11 +1011,14 @@ impl World {
         let mut history: Vec<(Receipt, Entry)> = Vec::new();
         for (i, appended) in self.log.entries().iter().enumerate() {
             let entry = match appended {
-                Entry::Stated(claim) => {
-                    let mut sources = Sources(self);
-                    let mut keys = Sources(self);
+                Entry::Stated(claim)
+                    if matches!(claim.attribution, Attribution::Unverified { .. })
+                        && self.log.attribution.is_none() =>
+                {
+                    let mut sources = Sources::of(self);
+                    let mut keys = Sources::of(self);
                     Entry::Stated(
-                        attribute(claim, &history, &mut sources, &mut keys, &Sources(self))
+                        attribute(claim, &history, &mut sources, &mut keys, &Sources::of(self))
                             .expect("attributed"),
                     )
                 }
@@ -1175,11 +1241,14 @@ impl World {
         // Policy's decisions are policy's to admit, on its own handle: its engine's tests hold them.
         for (i, appended) in self.log.entries().iter().enumerate() {
             let entry = match appended {
-                Entry::Stated(claim) => {
-                    let mut sources = Sources(self);
-                    let mut keys = Sources(self);
+                Entry::Stated(claim)
+                    if matches!(claim.attribution, Attribution::Unverified { .. })
+                        && self.log.attribution.is_none() =>
+                {
+                    let mut sources = Sources::of(self);
+                    let mut keys = Sources::of(self);
                     Entry::Stated(
-                        attribute(claim, &history, &mut sources, &mut keys, &Sources(self))
+                        attribute(claim, &history, &mut sources, &mut keys, &Sources::of(self))
                             .map_err(|e| (i, format!("{e:?}")))?,
                     )
                 }
@@ -1206,16 +1275,29 @@ impl World {
 
 /// What the log reads to attribute a statement: the store's bytes, the catalogue's keys and publishers, and the
 /// operator's key for Core's questions.
-struct Sources<'a>(&'a World);
+struct Sources<'a> {
+    store: &'a Rc<RefCell<Vec<Vec<u8>>>>,
+    catalogue: &'a Catalogue,
+}
+
+impl<'a> Sources<'a> {
+    fn of(world: &'a World) -> Self {
+        Sources {
+            store: &world.store.0,
+            catalogue: &world.catalogue,
+        }
+    }
+}
 
 impl KeptStatements for Sources<'_> {
     fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        let place = (0..self.0.store.0.len()).find(|i| &commitment(*i) == wanted);
+        let bytes = self.store.borrow();
+        let place = (0..bytes.len()).find(|i| &commitment(*i) == wanted);
         Ok(place.map(|i| {
             serde_json::from_value(json!({
                 "commitment": wanted,
                 "salt": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "bytes": snapshot_support::base64url(&self.0.store.0[i]),
+                "bytes": snapshot_support::base64url(&bytes[i]),
             }))
             .unwrap()
         }))
@@ -1236,7 +1318,7 @@ impl StatementKeys for Sources<'_> {
             return Ok(Some(operator().party));
         }
         Ok(
-            match self.0.catalogue.publishers().publisher(maker.as_str()) {
+            match self.catalogue.publishers().publisher(maker.as_str()) {
                 Some(Publisher::Operator) => Some(operator().party),
                 Some(Publisher::Party(party)) => Id::new(party),
                 None => None,
@@ -1262,8 +1344,7 @@ impl Signatures for Sources<'_> {
             snapshot_support::sign_value(&mut again, &key);
             return again == value && signing_input(received).is_ok();
         }
-        self.0
-            .catalogue
+        self.catalogue
             .verify_statement(received, Instant(NOW))
             .is_ok()
     }
@@ -2042,7 +2123,7 @@ fn malformed_answer_drops_its_question_and_is_asked_again() {
 #[test]
 fn partial_evidence_of_an_undone_start_is_kept() {
     let mut world = completed();
-    let (mark, kept_bytes) = (world.log.len(), world.store.0.len());
+    let (mark, kept_bytes) = (world.log.len(), world.store.0.borrow().len());
     let (order, part, s1) = (id(ORDER), id(PART), id("p1-s1"));
     let (withdrawal_tx, _) = world.segments.sent(&order, &s1).unwrap();
     let withdrawal_tx = withdrawal_tx.as_str().to_owned();
@@ -2084,7 +2165,7 @@ fn partial_evidence_of_an_undone_start_is_kept() {
         .collect();
     assert_eq!(stated.len(), 2, "each piece is kept once");
     assert_eq!(
-        world.store.0.len(),
+        world.store.0.borrow().len(),
         kept_bytes + 2,
         "each piece's bytes are kept once"
     );
@@ -2961,4 +3042,175 @@ fn a_charge_in_another_asset_is_raised_and_never_passed() {
         Ok(Checked::Within)
     );
     assert_eq!(channel.raised.len(), 1);
+}
+
+// Over a log that attributes, as the audit log does (`F-020` notes, "journal receipts from the log") ---------------
+
+/// The statements of `log` from `from` on, each the entry the log recorded: its writer handed it in unverified, and
+/// the log attributed it from its kept bytes, so its receipt is of the entry recorded, not of the one handed in.
+fn recorded_verified(world: &World, from: usize) -> usize {
+    let stated: Vec<_> = world.log.entries()[from..]
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Stated(s) => Some(s.clone()),
+            Entry::Verified(_) => None,
+        })
+        .collect();
+    assert!(!stated.is_empty(), "a statement is recorded");
+    for s in &stated {
+        assert!(
+            matches!(s.attribution, Attribution::Verified { .. }),
+            "the log attributes {}: {s:?}",
+            s.what.statement.as_str()
+        );
+    }
+    stated.len()
+}
+
+/// The failed exchange's reversal is asked over a log that attributes a statement: Core's question, signed by the
+/// operator, is recorded verified, so its receipt is not the digest of the entry as built. The ask takes the log's
+/// receipt, records the effect and its result, and the log admits every entry.
+// verifies: REQ-ORD-3, REQ-ORD-11
+#[test]
+fn a_reversal_is_asked_over_a_log_that_attributes_its_statements() {
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    assert_eq!(world.ran()[1], SegmentOutcome::Failed);
+    let mark = world.log.len();
+    let asked = world.ask("p1-s2").expect("the log took the question");
+    assert_eq!(asked.why, Some(NotCounted::FailedProvidersOwn));
+    assert!(recorded_verified(&world, mark) >= 1);
+    let whats = world.whats_from(mark);
+    assert!(whats.iter().any(|w| matches!(
+        w,
+        What::Effect {
+            action: rutent_contracts::core_internal::Action::AskReversal { .. },
+            ..
+        }
+    )));
+    assert!(
+        whats
+            .iter()
+            .any(|w| matches!(w, What::Result { effect } if *effect == asked.effect))
+    );
+    assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// The origin reserve is asked whether the credit arrived, over the same log: Core's question and the reserve's
+/// signed answer are recorded attributed, and the reversal completes as the reserve's word. Asking again records
+/// nothing more, the log answering an equal entry with its own receipt.
+// verifies: REQ-ORD-3
+#[test]
+fn a_reversal_is_confirmed_over_a_log_that_attributes_its_statements() {
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    assert_eq!(world.ran()[1], SegmentOutcome::Failed);
+    let mark = world.log.len();
+    let mut reserve = Answering::confirming();
+    let done = match world
+        .confirm(&mut reserve, "p1-s2")
+        .expect("the log took it")
+    {
+        Confirmation::Completed(done) => done,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(done.whose, id(RESERVE));
+    assert!(
+        recorded_verified(&world, mark) >= 2,
+        "the question and the answer"
+    );
+    assert_eq!(world.state_of("p1-s2"), SegmentState::ReversalComplete);
+    let appended = world.log.len();
+    assert_eq!(
+        world.confirm(&mut reserve, "p1-s2").unwrap(),
+        Confirmation::Completed(done)
+    );
+    assert_eq!(world.log.len(), appended, "nothing is recorded twice");
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// The steps after a reversal is asked, over the same log: the provider's late word is kept as its statement, once;
+/// and the complete order's return is its statement and the `afterwards` citing it.
+// verifies: REQ-STM-6, REQ-ORD-31
+#[test]
+fn a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements() {
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    assert_eq!(world.ran()[1], SegmentOutcome::Failed);
+    let mark = world.log.len();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let late = result(
+        EXCHANGE,
+        "conversion",
+        tx.as_str(),
+        json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+            "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
+    );
+    let first = world
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .expect("the log took the late word");
+    let again = world
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .unwrap();
+    assert_eq!(first, again, "kept once");
+    assert_eq!(world.log.len(), mark + 1);
+    assert_eq!(recorded_verified(&world, mark), 1);
+    assert_eq!(world.admitted_from(mark), Ok(1));
+
+    let mut world = World::over(Platform::settling()).attributing();
+    assert_eq!(world.ran().len(), 3);
+    let mark = world.log.len();
+    let returned = result(
+        WALLET,
+        "deposit",
+        "tx-returned",
+        json!({ "status": "failed", "evidence": piece("polygon") }),
+    );
+    world
+        .with(|r, p, _| r.returned(p, &order, &returned))
+        .expect("the log took the return");
+    // The return names no transaction, so the log leaves it unverified, recorded as handed in: its receipt is the
+    // digest of the entry as built, which the journal takes all the same.
+    assert!(
+        world
+            .whats_from(mark)
+            .iter()
+            .any(|w| matches!(w, What::Afterwards { .. }))
+    );
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// What the check protected stays: a log that answers a verified entry with another entry's receipt gives no answer,
+/// so the ask, which can't rest on a record the log didn't take, ends unavailable. A statement's receipt is the log's
+/// to give, so the question is taken however it is answered, and the effect that cites it is what is refused.
+// verifies: INV-8
+#[test]
+fn a_verified_entrys_receipt_is_still_its_own_digest() {
+    let mut world = exchange_failed();
+    world.log.misreceipting = true;
+    assert_eq!(
+        world.ask("p1-s2").map(|_| ()),
+        Err(ReversalError::Append(AppendFailure::Unavailable))
+    );
+}
+
+/// A refusal of the log is never swallowed, a statement's included: the ask ends refused, and nothing is retried.
+// verifies: INV-8
+#[test]
+fn a_refusal_of_the_log_is_never_swallowed() {
+    let mut world = World::over(Platform::settling().with(EXCHANGE, Act::Fail)).attributing();
+    assert_eq!(world.ran()[1], SegmentOutcome::Failed);
+    world.log.refusing = true;
+    let mark = world.log.len();
+    assert!(matches!(
+        world.ask("p1-s2"),
+        Err(ReversalError::Append(AppendFailure::Refused(_)))
+    ));
+    // Only policy's decision, which it records on its own handle, is new: no question, no effect.
+    assert!(
+        world.log.entries()[mark..].iter().all(|e| matches!(
+            e,
+            Entry::Verified(v) if is_decision(&v.what)
+        )),
+        "nothing of Core's is recorded"
+    );
 }
