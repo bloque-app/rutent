@@ -520,13 +520,6 @@ fn stuck_by_silence() -> (
 #[test]
 fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_moves_nothing_twice()
  {
-    let (core, order, _) = stuck_by_silence();
-    assert!(core.is_stuck(&order, &core.part_of(&order).expect("a part")));
-}
-
-// verifies: AC-5
-#[test]
-fn a_late_delivery_moves_nothing_twice() {
     use rutent_core_orch::stuck::HISTORY;
 
     let (mut core, order, deposit) = stuck_by_silence();

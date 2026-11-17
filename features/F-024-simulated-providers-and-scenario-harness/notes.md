@@ -522,7 +522,7 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 - A scope file with no `strict:` line reads off, and the table reports it.
 - With no results file nothing counts as passed, and the table says `no-results`.
-- A review (`review:F-0NN`) counts only if the feature's notes exist; a check counts only if it is one of the three
+- A review (`review:F-0NN`) counts only if the feature's notes exist; a check counts only if it is one of the two
   named. **The tool does not run those checks**; the documentation, boundary and licence checks are CI steps of their
   own, and an inspection row is "verified" by naming them, as the row says.
 - A `deferred` row needs one `DEC-`, `ASM-` or `F-` identifier the plan or the specification defines. It does not
@@ -642,22 +642,18 @@ moved after the quote) and `set_check_bound` (deployment settings). No simulator
 - `AC-7`: the second half runs on an order whose deposit was refused (first segment settled, order open) and on a complete one.
 - `AC-9`: the destination's report is a signed deposit result that says the payment came back.
 - `AC-41`: the expected changes are the inputs the state machine applies to the order, replayed from the log.
-- Policy's stuck rules are the real engine's; the resolution's move is `failure_support::Moves`, a stand-in for the
-  production mover (`T-020-16`, in review, not merged).
+- Policy's stuck rules are the real engine's and the resolution's move is Core's own mover (`T-020-16`, merged).
+- `AC-5`'s late delivery is folded into the plan-named test, so the name's promise holds.
 
 **Gaps, with owners.**
-- **`AC-4`, `AC-6`, `AC-8` are written and `#[ignore]`d.** (1) A real bug in `components/core-orch/src/reversal/journal.rs`
-  (`T-020-12`; the owner of `reversal/`, `T-020-27`'s file): `append` accepts a receipt only if its digest is the entry as
-  built, but the audit log records a stated entry as it attributes it, so a question or answer about an order, segment and
-  transaction (verified on the operator's key) comes back with another digest and every `ask`/`confirm` fails
-  `Append(Unavailable)` on the real log. Fix: take the log's receipt as `segments/journal.rs::append_general` does. With
-  that one line, applied locally and reverted, `AC-8` passed. (2) For `AC-4`/`AC-6` the simulated world binds no private
-  node to its publisher: a failed exchange's own answer completes only inside a node the log binds (evidence naming the
-  node), and the reserve's confirmation is refused as the same publisher's, so the reversal never completes
-  (`FailedProvidersOwn`). Owner: `T-024-14` (publishers emit records naming their node) or a simulator row. The
-  "other party" half of `AC-4` has no simulated route at all: a private node is its publisher's alone, so no other
-  publisher's provider starts where the origin reserve's node is; it is held in `components/core-orch/tests/reversal.rs`.
-  Drop the `#[ignore]` when both land. Evidence-table rows `AC-4`, `AC-6`, `AC-8` stay unverified until then.
+- **`AC-4` and `AC-6` are written and `#[ignore]`d.** The reversal journal's receipt rule (`T-020-12`) is fixed on
+  `m3-next` and `AC-8` and `AC-5`'s late delivery now run. What still blocks the two: the simulated world binds no
+  private node to its publisher, so a failed exchange's own answer completes nothing (`FailedProvidersOwn`) and the
+  reserve's confirmation is refused as the same publisher's. Owner: `T-024-14` (publishers emit records naming their node), unless
+  that row turns out to be a different one. The "other party" half of `AC-4` has no simulated route at all: a private
+  node is its publisher's alone, so no other publisher's provider starts where the origin reserve's node is; it is held
+  in `components/core-orch/tests/reversal.rs`. Drop the `#[ignore]` when the node is bound. Evidence-table rows `AC-4`
+  and `AC-6` stay unverified until then.
 - **`AC-40`'s second half** (customer's new destination, hand-on to a linked order) runs on the kit only
   (`tests/hand_on.rs`): the assembly doesn't wire `hand_on`. Owner: a later `F-024` row.
 - **Load flake, known.** `execution_support::given` gives the fleet a real 2 s deadline (`sim/fleet.rs`); under load a quote
@@ -665,23 +661,23 @@ moved after the quote) and `set_check_bound` (deployment settings). No simulator
   `f-013/route-calls-stepped-clock` changes it; re-run alone when the machine is quiet.
 - The customer's session lasts about a quarter hour of Core's clock, which bounds how many slow orders one scenario runs.
 
-**Rule-off table** (each rule switched off in `components/` or `contracts/` for one run, with the other scenarios'
-rules off in the same run where each red names its own cause, and restored; the tests were green first). The three
-ignored tests, and `AC-5`'s late delivery, could not be run; `AC-8` was green with the journal fix applied locally.
+**Rule-off table** (each rule switched off in `components/` or `contracts/` for one run, with other scenarios' rules off in
+the same run where each red names its own cause, and restored; the tests were green first). `AC-4` and `AC-6` could not be run.
 
 | Scenario | Switched off | Red |
 |---|---|---|
 | `AC-42` | the floor check at a settled segment (`segments/mod.rs`, `holds_floor`) | the deposit is handed over after the short withdrawal |
 | `AC-12` | the router's `BelowFloor` drop | the recalculation is refused by Core's own check instead of waiting |
-| `AC-40` | the rule that places a part with no route at a failed final deposit's node (`after_no_route`) | stuck, not waiting for the customer |
+| `AC-40` | the rule that places a part with no route at a failed deposit's node (`after_no_route`) | stuck, not waiting for the customer |
 | `AC-5` | the stuck clock's twice (`over_time`, four times) | not stuck past twice the p99 |
+| `AC-5` (late half) | recording the late statement (`Reversals::later` appends nothing) | the late delivery is not kept |
 | `AC-7` | the state machine's end only before the first segment settles (`after_end_requested`) | the order past its first segment ends |
+| `AC-8` | the state machine's failing a part whose start is proven undone | the order stays complete |
 | `AC-9` | the destination check on a return (`makers.contains`) | another provider's report is recorded as the return |
 | `AC-41` | the operator among an order's receivers (`receivers_of`) | `AC-41`, and the operator's half of `AC-7` and `AC-9` |
-| `AC-4`, `AC-6`, `AC-8` | switched off in the same run, but the tests are ignored | not shown; owners above |
 
 `AC-6`'s second rule is held by two layers (Core's `SameParty`/`SameLogin` and policy's `one_actor`): both off together
-is what the table would switch off; neither alone turns the scenario red.
+is what the table would switch off; neither alone turns the scenario red. (Untested: `AC-6` is ignored.)
 ## Owed rows (plan/m3-owed-rows-2)
 
 - **`T-024-15`** owns the stand-in reserve's arrival-notice test, `stand in reserve signs an arrival notice that
