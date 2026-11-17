@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, KeptStatements, Log};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
-    Entry, OrderRefusalClass, PartYes, Parties, Receipt, Role, ShownAs, What,
+    Entry, OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -705,7 +705,22 @@ impl Intake {
                         wait: Wait::PolicyNotKnown,
                     };
                     return Ok(kept.told());
+                } else if matches!(
+                    decision.outcome,
+                    Answer::Refuse {
+                        class: RefusalClass::OutsideAuthorisation
+                    }
+                ) {
+                    // A refusal about the order, not the login: a route the authorisation doesn't cover has nothing
+                    // to wait for, so the order ends with that refusal's class shown, and nothing starts
+                    // (`REQ-AUZ-3`, `REQ-ORD-18`).
+                    return ended(
+                        desk,
+                        kept,
+                        class::refused(RefusalClass::OutsideAuthorisation),
+                    );
                 } else {
+                    // A refusal about the login: the order stays as it was, for the login that accepted or another.
                     return Err(IntakeError::OtherActor);
                 }
             }

@@ -945,6 +945,72 @@ fn another_login_of_the_requesters_party_carries_on_a_logged_acceptance() {
     assert_admitted(&env);
 }
 
+// verifies: REQ-AUZ-3, REQ-ORD-18
+#[test]
+fn carry_on_refused_as_outside_the_authorisation_ends_the_order_with_that_class() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    // Login A accepts: the acceptance is logged, and policy can't decide.
+    env.policy.answer = Answer::NotKnown {
+        cause: NotKnownCause::PolicyUnreachable,
+    };
+    env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    assert_eq!(env.acceptances().len(), 1);
+
+    // Login B of the same party is refused as outside the authorisation: a route it doesn't cover has nothing to
+    // wait for, so the order ends with that class shown, and nothing starts.
+    env.policy.answer = Answer::Refuse {
+        class: RefusalClass::OutsideAuthorisation,
+    };
+    let ended = Status::CantProceed {
+        class: OrderRefusalClass::RefusedByPolicy,
+    };
+    let told = env.accept(&mut sim, &order, &agent(), &digest).unwrap();
+    assert_eq!(status_of(&told), &ended);
+    assert_eq!(env.refusals().len(), 1);
+    assert!(env.started().is_empty());
+    assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+
+    // It stays ended for either login, whatever policy says now.
+    env.policy.answer = Answer::Permit {};
+    for by in [customer(), agent()] {
+        let again = env.accept(&mut sim, &order, &by, &digest).unwrap();
+        assert_eq!(status_of(&again), &ended, "{by:?}");
+    }
+    assert!(env.started().is_empty());
+    assert_eq!(env.refusals().len(), 1);
+}
+
+// verifies: REQ-AUZ-7
+#[test]
+fn stranger_is_still_refused_alike_for_a_real_order_and_a_missing_one() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.policy.answer = Answer::NotKnown {
+        cause: NotKnownCause::PolicyUnreachable,
+    };
+    env.accept(&mut sim, &order, &customer(), &digest).unwrap();
+    let stranger = Actor {
+        party: id("stranger"),
+        ..customer()
+    };
+    // Policy would refuse the carry-on as outside the authorisation: a stranger is not asked, and ends nothing.
+    env.policy.answer = Answer::Refuse {
+        class: RefusalClass::OutsideAuthorisation,
+    };
+    let asked = env.policy.asked.len();
+    let missing = id("no-such-order");
+    let real = env.accept(&mut sim, &order, &stranger, &digest);
+    let absent = env.accept(&mut sim, &missing, &stranger, &digest);
+    assert_eq!(real, Err(IntakeError::NoSuchOrder));
+    assert_eq!(real, absent);
+    assert_eq!(env.policy.asked.len(), asked, "policy is not asked");
+    assert!(env.refusals().is_empty(), "nothing ends");
+}
+
 // verifies: REQ-AUZ-8, REQ-OPS-5
 #[test]
 fn actor_stating_another_kind_is_not_the_requester() {

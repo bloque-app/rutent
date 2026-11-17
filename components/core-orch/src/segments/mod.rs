@@ -95,8 +95,8 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     About, Action, Actor, ActorKind, Answer, CatalogueChange, DecisionRequest, Effect, Entry,
-    OrderRefusalClass, Outcome, Permit, ReadAnswer, ReadCheck, ReadOutcome, Receipt, Role,
-    RouteEnd, VerifiedEntry, What,
+    OrderRefusalClass, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, RouteEnd,
+    VerifiedEntry, What,
 };
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -408,8 +408,6 @@ pub struct Status {
 /// Why an order's state wasn't read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusError {
-    /// Policy refused the read, and recorded it.
-    Refused(ReadAnswer),
     /// Policy couldn't record the check, so it answered nothing.
     Append(AppendFailure),
     /// Core tracks no such order.

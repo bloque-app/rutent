@@ -3931,3 +3931,35 @@ one-line local fix of this function.
 Run once per rule, under a hard timeout, nothing hung. The three journals of the list that check no receipt
 (`quote`, `arrival`, `rounds`, `segments`, `snapshot`) and `stuck`'s, which handles its statements by `append_stated`,
 have no rule of this kind to switch off: no test is added to them.
+
+## T-020-24
+
+Branch `f-020/t-020-24-integration-items`, from `m3` at `7ac373aa`.
+
+- **Intake ends the order on a carry-on refused as `OutsideAuthorisation`.** Where another login of the requester's
+  party carries on a logged acceptance and policy refuses its authorisation as `OutsideAuthorisation`, the order
+  ends: its `order_refusal` is recorded, of the class policy's refusal gives (`refused_by_policy`), nothing starts and
+  the customer is told that class (`REQ-AUZ-3`, `REQ-ORD-18`). Every other refusal of that login still answers
+  `IntakeError::OtherActor` and leaves the order as it was, as `T-020-03` ruled; the same-actor carry-on already
+  ended on any refusal. A stranger is not asked: `kept_for` answers `NoSuchOrder` before policy, alike for a real
+  order and a missing one (`REQ-AUZ-7`), and the test holds it with policy set to refuse as outside the
+  authorisation.
+- **`StatusError::Refused` is gone**, with the `ReadAnswer` import it needed. Nothing built it since `T-020-08`.
+- **Core reads the customer's `AcceptFault` decision from its own history.** `Accepting::Customer` carries only `by`.
+  `Reversals::follow` keeps, per order, each permitted `decide` of an `accept_fault` for it with the receipt it has in
+  the log, and `accept_fault` carries the reversal on the latest of those whose caller is `by` and whose request names
+  this order, segment and the showing's transaction and commitment. No such decision is `NotAnAcceptance`, a refused
+  one included (`NotPermitted` stays for `ask`). The carrier cites that receipt. The caller's copy of a decision is
+  no longer an input, so a stale or made-up one carries nothing and blocks nothing (`REQ-ORD-11`).
+- **Defaults (reversible, fail closed).**
+  - The decision is found as of the last `follow`: the assembly follows the order from the log before it accepts a
+    fault, as it already does as the log grows. A decision the log holds but `follow` has not seen is no acceptance.
+  - Where the log holds several matching permitted decisions, the latest is cited.
+  - A refused decision reads as `NotAnAcceptance`, not `NotPermitted`: Core no longer holds policy's answer.
+- **Gaps.**
+  - The assembly (`F-024`) must call `Reversals::follow` before `accept_fault`; `Accepting::Customer` lost its
+    `request` and `decision` fields, so its call sites change (the tests' were updated).
+- **Rule off**, each once, its test red: the carry-on's `OutsideAuthorisation` branch; a stranger told another
+  refusal than `NoSuchOrder`; `follow` keeping decides whatever their outcome (the log's refusal then carries);
+  and the same with the first matching decide taken (the earlier refused decision then is cited).
+

@@ -1099,8 +1099,8 @@ impl World {
         commitment: Option<Digest>,
     ) -> Result<Carrier, ReversalError> {
         let request = self.acceptance_request(by, commitment);
-        let decision = self.policy.decide(&request).expect("policy decides");
-        self.accept_decided(by, &request, &decision)
+        self.policy.decide(&request).expect("policy decides");
+        self.accept_decided(by)
     }
 
     /// `by` asking policy to accept the last showing of the exchange's fault for `p1-s2`, a second after the Core
@@ -1149,25 +1149,32 @@ impl World {
         }
     }
 
-    /// Core accepting the fault for `by` on `decision`, policy's answer to `request`.
-    fn accept_decided(
-        &mut self,
-        by: &Actor,
-        request: &DecisionRequest,
-        decision: &Decision,
-    ) -> Result<Carrier, ReversalError> {
+    /// The exchange's failed result naming the customer at fault, shown to Core for `p1-s2`.
+    fn show_customers_fault(&mut self) {
         let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
-        self.with(|r, p, _| {
-            r.accept_fault(
-                p,
-                at(&order, &part, &s2),
-                Accepting::Customer {
-                    by,
-                    request,
-                    decision,
-                },
-            )
-        })
+        let tx = self
+            .segments
+            .sent(&order, &s2)
+            .unwrap()
+            .0
+            .as_str()
+            .to_owned();
+        let shown = result(
+            EXCHANGE,
+            "conversion",
+            &tx,
+            json!({ "status": "failed", "fault": "customer", "evidence": piece(EXCHANGE) }),
+        );
+        self.with(|r, p, _| r.show_fault(p, at(&order, &part, &s2), &shown))
+            .unwrap();
+    }
+
+    /// Core accepting the fault for `by`, reading policy's decision from the log as it follows it now.
+    fn accept_decided(&mut self, by: &Actor) -> Result<Carrier, ReversalError> {
+        let history = self.history();
+        assert!(self.reversals.follow(&id(ORDER), &history));
+        let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+        self.with(|r, p, _| r.accept_fault(p, at(&order, &part, &s2), Accepting::Customer { by }))
     }
 
     /// Asks the failed provider of `segment` to reverse it, policy deciding and the platform carrying it out.
@@ -1964,6 +1971,15 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         world.accept_as_customer(&stranger),
         Err(ReversalError::NotTheParty)
     );
+    // Before any decision of its own showing is in the log: the one naming another showing is no acceptance.
+    let other: Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "ab".repeat(32) }))
+            .unwrap();
+    assert_eq!(
+        world.accept_as_customer_naming(&customer(), Some(other)),
+        Err(ReversalError::NotAnAcceptance),
+        "an acceptance naming another showing than the provider's"
+    );
     // An acceptance the log couldn't take changes no carrier.
     world.log.down = true;
     assert_eq!(
@@ -1974,14 +1990,6 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
     assert_eq!(
         world.reversals.carrier(&order, &s2),
         Some(&Carrier::Provider(id(EXCHANGE)))
-    );
-    let other: Digest =
-        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "ab".repeat(32) }))
-            .unwrap();
-    assert_eq!(
-        world.accept_as_customer_naming(&customer(), Some(other)),
-        Err(ReversalError::NotAnAcceptance),
-        "an acceptance naming another showing than the provider's"
     );
     let mark_customer = world.log.len();
     assert_eq!(world.accept_as_customer(&customer()), Ok(Carrier::Customer));
@@ -2595,10 +2603,10 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
 
     // Policy refused it.
     world.policy.refusing = true;
-    assert!(matches!(
+    assert_eq!(
         world.accept_as_customer(&customer()),
-        Err(ReversalError::NotPermitted(_))
-    ));
+        Err(ReversalError::NotAnAcceptance)
+    );
     world.policy.refusing = false;
     still_the_providers(&world);
 
@@ -2609,26 +2617,27 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
         ..customer()
     };
     let theirs = world.acceptance_request(&stranger, None);
-    let theirs_decided = world.policy.decide(&theirs).unwrap();
+    world.policy.decide(&theirs).unwrap();
     assert_eq!(
-        world.accept_decided(&customer(), &theirs, &theirs_decided),
+        world.accept_decided(&customer()),
         Err(ReversalError::NotAnAcceptance),
         "a request of another caller's"
     );
     let ours = world.acceptance_request(&customer(), None);
     assert_eq!(
-        world.accept_decided(&customer(), &ours, &theirs_decided),
+        world.accept_decided(&customer()),
         Err(ReversalError::NotAnAcceptance),
-        "a decision answering another request"
+        "no decision of its own request is in the log: the one there is another's"
     );
+    let _ = ours;
     // Another action, or another segment's acceptance.
     let mut elsewhere = world.acceptance_request(&customer(), None);
     if let Action::AcceptFault { segment, .. } = &mut elsewhere.action {
         *segment = id("p1-s3");
     }
-    let elsewhere_decided = world.policy.decide(&elsewhere).unwrap();
+    world.policy.decide(&elsewhere).unwrap();
     assert_eq!(
-        world.accept_decided(&customer(), &elsewhere, &elsewhere_decided),
+        world.accept_decided(&customer()),
         Err(ReversalError::NotAnAcceptance),
         "another segment's"
     );
@@ -2652,9 +2661,9 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
     ] {
         let mut request = world.acceptance_request(&customer(), None);
         change(&mut request.action);
-        let decided = world.policy.decide(&request).unwrap();
+        world.policy.decide(&request).unwrap();
         assert_eq!(
-            world.accept_decided(&customer(), &request, &decided),
+            world.accept_decided(&customer()),
             Err(ReversalError::NotAnAcceptance),
             "{what}"
         );
@@ -2665,9 +2674,9 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
         segment: id("p1-s2"),
         provider: id(EXCHANGE),
     };
-    let another_decided = world.policy.decide(&another).unwrap();
+    world.policy.decide(&another).unwrap();
     assert_eq!(
-        world.accept_decided(&customer(), &another, &another_decided),
+        world.accept_decided(&customer()),
         Err(ReversalError::NotAnAcceptance),
         "another action"
     );
@@ -2677,10 +2686,7 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
     let mark = world.log.len();
     let request = world.acceptance_request(&customer(), None);
     let decision = world.policy.decide(&request).unwrap();
-    assert_eq!(
-        world.accept_decided(&customer(), &request, &decision),
-        Ok(Carrier::Customer)
-    );
+    assert_eq!(world.accept_decided(&customer()), Ok(Carrier::Customer));
     assert!(world.whats_from(mark).iter().any(|w| matches!(
         w,
         What::ReversalCarrier { carrier: rutent_contracts::core_internal::Carrier::Customer,
@@ -2691,6 +2697,64 @@ fn customers_acceptance_is_policys_permitted_decision_and_the_carrier_cites_it()
     assert_eq!(
         world.reversals.carrier(&order, &s2),
         Some(&Carrier::Customer)
+    );
+}
+
+/// The customer's `accept_fault` decision is read from Core's own log: the permitted decide of the request for the
+/// order, segment and showing, and nothing the caller holds. A refused decision of an earlier request, still held
+/// by the caller, carries nothing and blocks nothing: Core follows the log, so what it holds is what it decides on.
+// verifies: REQ-ORD-11
+#[test]
+fn customers_acceptance_of_a_fault_is_read_from_the_log_and_not_from_the_callers_copy() {
+    let (order, s2) = (id(ORDER), id("p1-s2"));
+    let mut world = exchange_failed();
+    world.show_customers_fault();
+    // A refused decision of an earlier request, which the caller still holds.
+    world.policy.refusing = true;
+    let stale_request = world.acceptance_request(&customer(), None);
+    world.policy.decide(&stale_request).unwrap();
+    world.policy.refusing = false;
+    // The customer's own request, which the log holds as permitted.
+    let request = world.acceptance_request(&customer(), None);
+    let decision = world.policy.decide(&request).unwrap();
+    let mark = world.log.len();
+    assert_eq!(
+        world.accept_decided(&customer()),
+        Ok(Carrier::Customer),
+        "the log's permitted decision carries it, not the earlier refused one"
+    );
+    assert!(world.whats_from(mark).iter().any(|w| matches!(
+        w,
+        What::ReversalCarrier { accepted_with: Some(act), .. } if *act == decision.receipt
+    )));
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Customer)
+    );
+}
+
+/// A decision the log doesn't hold as permitted doesn't carry the reversal, whatever a caller holds or says: here
+/// the log holds a refusal of the customer's request.
+// verifies: REQ-ORD-11
+#[test]
+fn callers_decision_that_the_log_does_not_hold_as_permitted_does_not_carry_the_reversal() {
+    let (order, s2) = (id(ORDER), id("p1-s2"));
+    let mut world = exchange_failed();
+    world.show_customers_fault();
+    world.policy.refusing = true;
+    let request = world.acceptance_request(&customer(), None);
+    world.policy.decide(&request).unwrap();
+    world.policy.refusing = false;
+    let mark = world.log.len();
+    assert_eq!(
+        world.accept_decided(&customer()),
+        Err(ReversalError::NotAnAcceptance)
+    );
+    assert_eq!(world.log.len(), mark, "nothing is appended");
+    assert_eq!(
+        world.reversals.carrier(&order, &s2),
+        Some(&Carrier::Provider(id(EXCHANGE)))
     );
 }
 
