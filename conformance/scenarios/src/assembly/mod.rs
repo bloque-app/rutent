@@ -900,6 +900,13 @@ impl Core {
         self.catalogue.set_evidence_floor(tuple, floor);
     }
 
+    /// Sets the operator's own fee (`REQ-QTE-2`), the formula the bounds of every route decided from now on carry: a
+    /// deployment setting of the policy, which the kit's bounds leave at nothing (`T-024-13`). A route already
+    /// decided keeps the formula its record ran under.
+    pub fn set_operator_fee(&mut self, fee: rutent_contracts::router_api::FeeFormula) {
+        self.bounds.operator_fee = fee;
+    }
+
     /// The holder's delegate asks `reserve` whether the account's balance covers `amount`, in `session`: a balance
     /// check outside any order, so it counts against the account's bound (`REQ-CAT-3`, `REQ-CAT-4`). It goes through
     /// Core's catalogue, which logs it and counts it, then to the reserve through the platform, and the answer is

@@ -274,6 +274,9 @@ impl Spec {
 /// rate (`REQ-QTE-10`).
 pub const SLOW_SECONDS: u64 = 4 * 86_400;
 
+/// What the gross reserves charge on each movement, quoted ([`shape_of`]).
+pub const GROSS_FEE: u128 = 5_000;
+
 /// The shape the simulated reserve named `provider` takes (`T-024-03`): the default for any name but these, which a
 /// scenario that needs reserves alike in what they serve and unlike in what they charge, how fast they settle and
 /// how well they evidence it, installs by name. The guests build a provider from its name alone, as they seed its keys
@@ -284,6 +287,9 @@ pub const SLOW_SECONDS: u64 = 4 * 86_400;
 /// - `sim-reserve-slow` declares four days to settle ([`SLOW_SECONDS`]).
 /// - `sim-reserve-charging` charges 7 on each movement beyond what it quoted.
 /// - `sim-reserve-dear` charges 6 000 000 on each movement, quoted.
+/// - `sim-reserve-gross` charges [`GROSS_FEE`] on each movement, quoted, and reports gross (`T-024-13`): it states
+///   giving out what it took in, its charge within it, so what arrives is that less the charge.
+/// - `sim-reserve-gross-charging` is that, charging 7 beyond what it quoted.
 ///
 /// Two groups of providers that reach one another's nodes (`T-024-04`), each of one publisher where it has a private
 /// node (a private node is its publisher's alone) and its public nodes on the operator's list. The first is a route
@@ -395,6 +401,17 @@ pub fn shape_of(provider: &str) -> Shape {
             fee: 6_000_000,
             ..Shape::default()
         },
+        "sim-reserve-gross" => Shape {
+            fee: GROSS_FEE,
+            gross: true,
+            ..Shape::default()
+        },
+        "sim-reserve-gross-charging" => Shape {
+            fee: GROSS_FEE,
+            extra_charge: 7,
+            gross: true,
+            ..Shape::default()
+        },
         _ => Shape::default(),
     }
 }
@@ -477,6 +494,10 @@ pub struct Behaviour {
     /// Moves value on no public network, though it says it did: its movements are never sent, so the network
     /// records none.
     pub unrecorded: bool,
+    /// Moves value on a public network with its charge on the wrong side (`T-024-13`): a withdrawal's movement is
+    /// recorded at what reached the ledger, net of the charge, instead of what entered; a deposit's or a transfer's at
+    /// the `amount_out` it states, its charge within, instead of what arrives. The result it gives is unchanged.
+    pub charge_misplaced: bool,
 }
 
 impl Behaviour {
@@ -732,7 +753,7 @@ impl Simulated {
         deliver(&mut body, behaviour.delivery);
         // A repeat that changed nothing sends no movement again: a network that reorged the first would take it
         // as a new one in another block.
-        let movements = if behaviour.unrecorded || !changed {
+        let mut movements = if behaviour.unrecorded || !changed {
             Vec::new()
         } else {
             movements_made(
@@ -741,6 +762,9 @@ impl Simulated {
                 Some(&self.provider.advertisement().into_statement().statement),
             )
         };
+        if behaviour.charge_misplaced {
+            misplace_the_charge(&operation.statement, &body, &mut movements);
+        }
         let leaked = armed && !consumed;
         let entry = changed.then(|| Entry {
             operation: operation.clone(),
@@ -818,6 +842,30 @@ fn real_movement(operation: &Operation) -> bool {
             | Operation::Conversion(_)
     ) && !kind_of(operation).1
         || matches!(operation, Operation::Reversal(_))
+}
+
+/// Records a one-piece movement with its charge on the wrong side ([`Behaviour::charge_misplaced`]): what a
+/// withdrawal took in less its charge, or what a deposit or a transfer states giving out, its charge within it.
+fn misplace_the_charge(operation: &Operation, result: &Value, movements: &mut [Movement]) {
+    let [moved] = movements else {
+        return;
+    };
+    let outcome = &result["outcome"];
+    let number = |name: &str| outcome[name].as_str().and_then(|a| a.parse::<u128>().ok());
+    let wrong = match operation {
+        Operation::Withdrawal(_) => number("amount_in")
+            .zip(
+                outcome["fee"]["amount"]
+                    .as_str()
+                    .and_then(|a| a.parse::<u128>().ok()),
+            )
+            .map(|(entered, fee)| entered.saturating_sub(fee)),
+        Operation::Deposit(_) | Operation::Transfer(_) => number("amount_out"),
+        _ => None,
+    };
+    if let Some(wrong) = wrong {
+        moved.amount = wrong.to_string();
+    }
 }
 
 /// Applies a delivery to a result's JSON: only a succeeded outcome delivers anything.
