@@ -422,6 +422,66 @@ on a provider that states one payment for two orders itself (`T-024-06`, `T-024-
 | an exchange's rate / the slippage limits | every joined route (no price for the exchange, `NoPrice`), seen on the way |
 | conversions and transfers into a private node posting no movement | none: the movement went to a host nobody serves and was dropped; no test holds it |
 
+## T-024-14: simulated publishers emit the inner-segment record, and the assembly's books read it
+
+**Built** (`conformance/` only). `rutent_conformance::sim::publishers_record` makes, from a provider's book, the
+`inner-segments` statement `T-020-18` added: made by the provider, stating for its publisher (`Spec::publisher`),
+naming its private node, each segment it ran there with its transaction, asset and amount in and out and fee,
+labelled `publishers_word`, signed with the statements key its advertisement lists (behind the `signing` feature, as
+the guests don't compile it). The assembly's `Readings` (`assembly/grading.rs`) is the books: `Books::recorded` reads
+those statements, for each provider serving in the node, and no longer rebuilds the segments from the journal.
+A record counts only if its key is one its maker's advertisement lists for statements, it verifies under it and
+`check_inner_segments` holds it to that advertisement (maker, publisher, node declared); otherwise it is no record
+(`NothingRecorded`, fails closed). No figure is refused: a record that doesn't add up still reaches the replay.
+`Behaviour::misrecording` scripts one: the publisher records another amount out than the segment gave. Views for tests:
+`Core::publishers_records(node)`, `Core::books_for(node, transactions)`.
+
+**Tests** (`tests/publishers_record.rs`, and unit tests in `grading.rs`): the three the row names. Each asserts the
+records' content (maker, publisher, node, label, transaction, assets, amounts, fee), not that one exists.
+
+**Defaults taken** (reversible).
+- The reader holds a record to the advertisement the installed provider carries, the one its catalogue joined; the
+  assembly's catalogue isn't consulted.
+- The record states what the book says now, as of Core's last reading; it is made on each read, not stored.
+- A route across two private nodes **cannot be run on the platform**: the router joins segments by exactly equal
+  endpoints (`Outer(n)` is not `Inner(n)`), a reserve enters a private node from an outer node, and a ramp, the only
+  segment leaving a node for a public one, ends at an inner node. So the mismatch "at the second of two nodes" is shown
+  on the platform at one node (a scripted mismatch is recorded in the log's `replay` against the node), and across two
+  nodes as `CMP-EVIDENCE`'s replay over what the assembly's books read of two reserves' nodes. Owner of a platform
+  route across two nodes: `T-024-05` (it needs the router or the catalogue to join an outer node to an inner one,
+  which is not a conformance change).
+- `PolicySide` answers `OutcomeDeclines::decline_outcome` with `AppendFailure::Unavailable`, recording nothing, because
+  the engine has no `decline_outcome` on this base (`T-021-09` builds it). It is for `T-020-20`; when `T-021-09` merges
+  the body is one forward to the engine, as its neighbours.
+
+**Gaps, with owners.**
+- **Binding a private node to its publisher is not conformance's to make** (`T-024-06`'s `AC-4`, `AC-6`). The log binds
+  a node (`Reversals::follow`) from an `evidence` whose movement names the node, or a `replay` naming it, resting on a
+  stated entry about the order that states for the publisher. Core never appends the publisher's record as a stated
+  entry, and a `replay`'s `rests_on` is the exit segment's result, and no replay exists where value stays inside. The
+  shape needed in `components/core-orch/src/closing/`: `Books` returns the signed `Statement<InnerSegments>` with the
+  segments; closing appends it as a stated entry about the order (attribution verified, party the publisher) and
+  cites its receipt where it binds the node (an `evidence` naming the node, or `replay`'s `rests_on` carrying each
+  record's receipt: a contract change to `What::Replay` of one receipt to a list, which is also `REQ-AUD-9`). Owner: a
+  new `F-020` row after `T-020-26`; `T-020-18`'s hand-off of the receipts is the same work. The simulator already
+  emits what that row reads. Un-ignoring `AC-4` and `AC-6` needs that row, and `T-024-06` merged into `m3`.
+- **`REQ-AUD-9`'s receipts on `replay`** (`T-020-18`'s hand-off to this row): the same row; needs `components/`.
+
+**Rule-off table** (each switched off alone, restored, tests green first).
+
+| Switched off | Red |
+|---|---|
+| the record's publisher (the provider named in place of it) | all three tests (the record fails its advertisement and is no record) |
+| `Behaviour::misrecording` | `mismatching record is replayed and recorded at the second of two private nodes` |
+| the node filter of the records read | `publisher's emitted record is read by the assembly's books` |
+| the transaction filter of the books | all three |
+| the books read nothing | all three |
+| a record's transactions (empty) | all three |
+| the signature check on a record | `a_record_changed_after_it_was_signed_is_not_read` |
+| the listed-key check | `a_record_signed_with_a_key_its_maker_does_not_list_is_not_read` |
+| `check_inner_segments` | `a_record_of_another_publisher_or_another_node_is_not_read` |
+| the label (`publishers_word`) | not switchable here: one value, `T-020-18`'s contract rule-off |
+
 ## The toolchain is pinned (`T-020-11d`)
 
 The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.98.0 with clippy, rustfmt and the

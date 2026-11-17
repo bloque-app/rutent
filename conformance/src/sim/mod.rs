@@ -39,7 +39,14 @@ use crate::role::stand_in::{Exchange, Identity, Ramp, Reserve, Verifier, refusal
 
 pub use crate::role::stand_in::Shape;
 use crate::role::{Received, RoleHarness, RoleProvider, SuiteContext};
+#[cfg(feature = "signing")]
+use crate::role::{placeholder_key, placeholder_signature};
 use rutent_contracts::provider_role::{Advertisement, Operation, Statement};
+#[cfg(feature = "signing")]
+use rutent_contracts::provider_role::{
+    INNER_SEGMENTS_SHAPE, InnerSegment as RecordedInner, InnerSegments, Signature, SignatureScheme,
+    Standing,
+};
 
 /// The state key under which the platform's world keeps a simulated provider's journal: the JSON array of its
 /// [`Entry`]. It is a shared key, readable by the provider's outside part for any transaction.
@@ -477,6 +484,10 @@ pub struct Behaviour {
     /// Moves value on no public network, though it says it did: its movements are never sent, so the network
     /// records none.
     pub unrecorded: bool,
+    /// Records, in its publisher's books, this amount out for the segment, though it delivered another: the
+    /// publisher's record disagrees with what the segment did, and a replay finds the difference (`REQ-ORD-41`,
+    /// `AC-35`). The result and the movement are as the segment did them.
+    pub misrecorded_out: Option<String>,
 }
 
 impl Behaviour {
@@ -516,6 +527,14 @@ impl Behaviour {
     pub fn late() -> Self {
         Self {
             late: true,
+            ..Self::default()
+        }
+    }
+
+    /// Recording `amount_out` as what the segment delivered, in its publisher's books.
+    pub fn misrecording(amount_out: &str) -> Self {
+        Self {
+            misrecorded_out: Some(amount_out.to_owned()),
             ..Self::default()
         }
     }
@@ -960,6 +979,8 @@ pub fn movements_made(
 /// the asset and amount in and out, and the fee.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InnerSegment {
+    /// The transaction the segment ran under.
+    pub transaction: String,
     /// The asset that came in.
     pub asset_in: String,
     /// How much came in.
@@ -998,14 +1019,73 @@ pub fn recorded_segments(
             _ => (text(&operation["asset"]), text(&operation["asset"])),
         };
         recorded.push(InnerSegment {
+            transaction: text(&operation["transaction"]),
             asset_in,
             amount_in: text(&outcome["amount_in"]),
             asset_out,
-            amount_out: text(&outcome["amount_out"]),
+            amount_out: entry
+                .behaviour
+                .misrecorded_out
+                .clone()
+                .unwrap_or_else(|| text(&outcome["amount_out"])),
             fee: text(&outcome["fee"]["amount"]),
         });
     }
     recorded
+}
+
+/// The record a provider's publisher keeps of the segments `journal` holds, as the publisher's own signed statement
+/// (`REQ-ORD-41`, `REQ-ORD-3`; provider-role's `inner-segments`): made by `spec`'s provider, which a publisher holds
+/// no key to do itself, stating for `spec.publisher()` about the private node the provider serves in, each segment
+/// that ran inside it with its transaction, asset and amount in and out and fee, labelled the publisher's word. It is
+/// signed with the statements key the provider's advertisement lists. `None` where the provider serves in no private
+/// node, or ran no segment inside it.
+///
+/// The record states what the books say, whatever they say: no figure is refused here, as the contract refuses none.
+#[cfg(feature = "signing")]
+pub fn publishers_record(
+    spec: &Spec,
+    context: &SuiteContext,
+    journal: &[Entry],
+) -> Option<Statement<InnerSegments>> {
+    let node = spec.private_nodes().into_iter().next()?;
+    let segments: Vec<RecordedInner> = recorded_segments(spec, context, journal)
+        .into_iter()
+        .map(|s| RecordedInner {
+            transaction: s.transaction,
+            asset_in: s.asset_in,
+            amount_in: s.amount_in,
+            asset_out: s.asset_out,
+            amount_out: s.amount_out,
+            fee: s.fee,
+        })
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    let key = placeholder_key(spec.seed());
+    let record = Statement {
+        deployment: context.deployment.clone(),
+        protocol_version: context.protocol_version.clone(),
+        shape: INNER_SEGMENTS_SHAPE.to_owned(),
+        maker: spec.provider.clone(),
+        made_at: crate::role::stand_in::made_at().to_owned(),
+        signature: Signature {
+            scheme: SignatureScheme::Ed25519,
+            key,
+            value: placeholder_signature(),
+        },
+        statement: InnerSegments {
+            node,
+            publisher: spec.publisher(),
+            standing: Standing::PublishersWord,
+            segments,
+        },
+    };
+    Some(crate::signing::sign_statement(
+        &record,
+        &crate::signing::real(record.signature.key.as_str()),
+    ))
 }
 
 /// The transaction an operation names, if it names one.
