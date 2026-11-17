@@ -4332,3 +4332,21 @@ Branch `f-020/t-020-20-stuck-report-correction`, from `m3` at `ea6c290c`. Edits 
   6. `contracts/core-internal/README.md`'s hand-off on `stuck-resolved-cites-its-parts-evidence` (a citation of none is
      admitted until `T-020-20` writes one) is now stale in its second half: the writer exists. A `DEC-20` path; the
      round that tightens the row (`T-020-30`) brings it up to date.
+
+### T-020-20, the review of `258475fb`: changes
+
+- **S1, fixed.** `segment_confirmed` held only (order, segment), so a retry by another confirmer skipped policy
+  (`THR-70`). It now stores the confirmer, the report version and the evidence receipt with the permit, and a retry skips
+  policy only on an exact match; any other is asked of policy. `probe_retry_by_another_confirmer_skips_policy` is in
+  `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once` (another confirmer, and bob with
+  other evidence, are refused by policy; bob's own retry is not asked). The stuck-resolution path has no such bypass:
+  once policy permits, `motion.resolved` is set, so no further confirmation is open to anyone
+  (`confirmation_whose_result_the_log_could_not_take_is_not_open_to_another_confirmer`).
+- **S2, fixed.** `Stated`'s fields are private (accessors `receipt()`, `outcome()`); only Core's readers build one. The
+  kit builds its own through `Stated::for_tests`, behind the `test-support` feature, enabled by the scenarios'
+  dev-dependency only. A `compile_fail` doctest shows outside code can't build one by hand.
+- **Low 3, 4, added.** The late settlement keeps the hold (asserted in the done test); a segment decline after a permitted
+  confirmation is refused (`NoDecision`, in the retry test).
+- **Rule-off** (each alone, switched in code and removed): the permit bound to its confirmer, version and evidence: red on
+  the retry test; the decline refused after a permit: red on the same test; `if !on.late` around the release: red on
+  `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`. The seal is held by the doctest.

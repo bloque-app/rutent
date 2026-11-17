@@ -650,7 +650,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
     );
     let bytes = serde_json::to_vec(&late).unwrap();
     let stated = take(&mut core, &mut world, &mut mover, &bytes).expect("taken");
-    assert_eq!(stated.outcome, Some(Resolved::Done));
+    assert_eq!(stated.outcome(), Some(Resolved::Done));
     let again = take(&mut core, &mut world, &mut mover, &bytes).expect("taken again");
     assert_eq!(again, stated, "a statement tried again is one entry");
     let another = result_without_a_question(&mut core, OTHER_RESERVE, transaction.as_str());
@@ -768,11 +768,8 @@ fn report_and_confirm(
                 confirmer,
                 outcome,
                 report,
-                reported_with: &evidence.0.receipt,
-                evidence: &rutent_core_orch::stuck::Stated {
-                    receipt: evidence.1.clone(),
-                    outcome: None,
-                },
+                reported_with: evidence.0.receipt(),
+                evidence: &Stated::for_tests(evidence.1.clone(), None),
                 core: &actor,
             },
         )
@@ -1089,7 +1086,7 @@ fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_i
     )
     .expect("taken");
     drop(watched);
-    assert_eq!(stated.outcome, Some(Resolved::Failed));
+    assert_eq!(stated.outcome(), Some(Resolved::Failed));
     let another = result_without_a_question(&mut core, OTHER_RESERVE, transaction.as_str());
     let confirmed = report_and_confirm(
         &mut core,
@@ -1700,7 +1697,7 @@ impl Refused {
     fn failed(&mut self) -> Stated {
         let bytes = restated(&self.core, &self.transaction);
         let stated = self.took(&bytes);
-        assert_eq!(stated.outcome, Some(Resolved::Failed));
+        assert_eq!(stated.outcome(), Some(Resolved::Failed));
         stated
     }
 
@@ -1708,20 +1705,16 @@ impl Refused {
     fn settled(&mut self) -> Stated {
         let bytes = answer_settled(&self.core, &self.transaction);
         let stated = self.took(&bytes);
-        assert_eq!(stated.outcome, Some(Resolved::Done));
+        assert_eq!(stated.outcome(), Some(Resolved::Done));
         stated
     }
 
     /// Another maker's statement about the order and the transaction: it states nothing of the move.
     fn others(&mut self) -> Stated {
-        Stated {
-            receipt: result_without_a_question(
-                &mut self.core,
-                OTHER_RESERVE,
-                self.transaction.as_str(),
-            ),
-            outcome: None,
-        }
+        Stated::for_tests(
+            result_without_a_question(&mut self.core, OTHER_RESERVE, self.transaction.as_str()),
+            None,
+        )
     }
 
     fn moving<T>(
@@ -1784,7 +1777,7 @@ impl Refused {
                     confirmer: who,
                     outcome: report.0,
                     report: report.1,
-                    reported_with: &report.2.receipt,
+                    reported_with: report.2.receipt(),
                     evidence,
                     core: &actor,
                 },
@@ -1809,7 +1802,7 @@ impl Refused {
                     decliner: who,
                     outcome: report.0,
                     report: report.1,
-                    reported_with: &report.2.receipt,
+                    reported_with: report.2.receipt(),
                     evidence,
                 },
             )
@@ -2292,7 +2285,7 @@ fn stuck_resolved_cites_an_evidence_entry_the_log_holds() {
     assert_eq!(whose.as_str(), RESERVE);
     assert_eq!(
         rests_on,
-        &vec![settled.receipt.clone()],
+        &vec![settled.receipt().clone()],
         "on the statement the confirmed report named, not the confirmer's"
     );
     m.admitted();
@@ -2370,4 +2363,42 @@ fn decline_or_confirmation_the_log_refuses_is_a_refusal_that_changes_nothing() {
     );
     m.held();
     m.admitted();
+}
+
+/// A confirmation policy permitted whose result the log couldn't take is the confirmer's alone: the move is no longer
+/// open to another confirmation, so no other actor is carried on the permit (`THR-70`), and the log holds one
+/// confirmation.
+// verifies: REQ-AUZ-4
+#[test]
+fn confirmation_whose_result_the_log_could_not_take_is_not_open_to_another_confirmer() {
+    use segments_support::{Fault, On};
+    let mut m = refused_move();
+    let (bob, carol, dave) = (
+        staff(BOB.0, BOB.1),
+        staff("desk-c", "carol"),
+        staff("desk-d", "dave"),
+    );
+    let failed = m.failed();
+    assert_eq!(
+        m.report(&bob, Resolved::Failed, &failed),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    let others = m.others();
+    for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
+        m.core
+            .log
+            .borrow_mut()
+            .faults
+            .push_back((On::LaterResult, Fault::Unavailable));
+    }
+    assert!(matches!(
+        m.confirm(&carol, (Resolved::Failed, 1, &failed), &others),
+        Err(ResolveError::Append(_))
+    ));
+    assert_eq!(m.decisions(), (1, 1, 0));
+    assert_eq!(
+        m.confirm(&dave, (Resolved::Failed, 1, &failed), &others),
+        Err(ResolveError::NoDecision)
+    );
+    assert_eq!(m.decisions(), (1, 1, 0), "policy is asked nothing more");
 }

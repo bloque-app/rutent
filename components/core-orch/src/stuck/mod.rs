@@ -790,7 +790,15 @@ pub struct Stuck {
     segment_history: BTreeMap<(String, String), (u64, Vec<Report>)>,
     /// The segment moves whose confirmation policy permitted, whose outcome the segments haven't recorded yet: a
     /// retried confirmation goes on to record it and asks policy nothing more.
-    segment_confirmed: BTreeSet<(String, String)>,
+    segment_confirmed: BTreeMap<(String, String), Permitted>,
+}
+
+/// A confirmation policy permitted, bound to who it permitted: a retry skips policy only for exactly this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Permitted {
+    confirmer: Actor,
+    version: u64,
+    evidence: Receipt,
 }
 
 /// A part's `stuck_resolved`, built once, with the evidence entry it cites where Core holds a statement the done rests
@@ -1510,7 +1518,7 @@ impl Stuck {
             Resolved::Unknown => return Err(ResolveError::OutcomeUnknown),
         };
         states(evidence, outcome)?;
-        if made_again(&motion.declined, outcome, &evidence.receipt) {
+        if made_again(&motion.declined, outcome, evidence.receipt()) {
             return Err(ResolveError::ReportDeclined);
         }
         let effect = motion
@@ -1519,7 +1527,7 @@ impl Stuck {
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         // Evidence older than the move can't say what it came to (`outcome-confirmation-cites-verified-evidence`).
-        if !follows(&evidence.receipt, &effect) {
+        if !follows(evidence.receipt(), &effect) {
             return Err(ResolveError::NoEvidence);
         }
         let version = motion
@@ -1532,7 +1540,7 @@ impl Stuck {
             effect,
             outcome: reported,
             reporter: moving.mover.clone(),
-            evidence: evidence.receipt.clone(),
+            evidence: evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.report_outcome(&request)?;
@@ -1546,7 +1554,7 @@ impl Stuck {
         motion.reports = version;
         motion.reported = Some(Report {
             outcome,
-            evidence: evidence.receipt.clone(),
+            evidence: evidence.receipt().clone(),
             version,
             receipt: decision.receipt,
         });
@@ -1605,7 +1613,7 @@ impl Stuck {
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
-        on_its_own_statement(&confirming.evidence.receipt, &report.evidence, &effect)?;
+        on_its_own_statement(confirming.evidence.receipt(), &report.evidence, &effect)?;
         let request = OutcomeConfirmation {
             request: parts.fresh.id(),
             order: confirming.order.clone(),
@@ -1616,7 +1624,7 @@ impl Stuck {
             },
             report: report.receipt.clone(),
             confirmer: confirming.confirmer.clone(),
-            confirmed_with: confirming.evidence.receipt.clone(),
+            confirmed_with: confirming.evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.confirm_outcome(&request)?;
@@ -1682,14 +1690,14 @@ impl Stuck {
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
-        on_its_own_statement(&declining.evidence.receipt, &report.evidence, &effect)?;
+        on_its_own_statement(declining.evidence.receipt(), &report.evidence, &effect)?;
         let request = OutcomeDecline {
             request: parts.fresh.id(),
             order: declining.order.clone(),
             effect,
             report: report.receipt.clone(),
             decliner: declining.decliner.clone(),
-            declined_with: declining.evidence.receipt.clone(),
+            declined_with: declining.evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.decline_outcome(&request)?;
@@ -1748,10 +1756,10 @@ impl Stuck {
         };
         states(evidence, outcome)?;
         let (made, declined) = self.segment_history.get(&at).cloned().unwrap_or_default();
-        if made_again(&declined, outcome, &evidence.receipt) {
+        if made_again(&declined, outcome, evidence.receipt()) {
             return Err(ResolveError::ReportDeclined);
         }
-        if !follows(&evidence.receipt, &unknown.effect) {
+        if !follows(evidence.receipt(), &unknown.effect) {
             return Err(ResolveError::NoEvidence);
         }
         let version = made.checked_add(1).ok_or(ResolveError::ReportsExhausted)?;
@@ -1761,7 +1769,7 @@ impl Stuck {
             effect: unknown.effect,
             outcome: reported,
             reporter: reporting.reporter.clone(),
-            evidence: evidence.receipt.clone(),
+            evidence: evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.report_outcome(&request)?;
@@ -1778,7 +1786,7 @@ impl Stuck {
                 reporting.reporter.clone(),
                 Report {
                     outcome,
-                    evidence: evidence.receipt.clone(),
+                    evidence: evidence.receipt().clone(),
                     version,
                     receipt: decision.receipt,
                 },
@@ -1856,7 +1864,7 @@ impl Stuck {
         }
         bears_out(confirming.evidence, report.outcome)?;
         on_its_own_statement(
-            &confirming.evidence.receipt,
+            confirming.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
         )?;
@@ -1878,7 +1886,12 @@ impl Stuck {
                 )
                 .map_err(ResolveError::Ungraded)?;
         }
-        if !self.segment_confirmed.contains(&at) {
+        let permitted = Permitted {
+            confirmer: confirming.confirmer.clone(),
+            version: report.version,
+            evidence: confirming.evidence.receipt().clone(),
+        };
+        if self.segment_confirmed.get(&at) != Some(&permitted) {
             let request = OutcomeConfirmation {
                 request: parts.fresh.id(),
                 order: confirming.order.clone(),
@@ -1889,7 +1902,7 @@ impl Stuck {
                 },
                 report: report.receipt.clone(),
                 confirmer: confirming.confirmer.clone(),
-                confirmed_with: confirming.evidence.receipt.clone(),
+                confirmed_with: confirming.evidence.receipt().clone(),
                 at: now(parts.clock)?,
             };
             let decision = policy.confirm_outcome(&request)?;
@@ -1900,7 +1913,7 @@ impl Stuck {
                 return Ok(Moved::NotPermitted(decision.outcome));
             }
             // Permitted and on the log: a retry goes on to record the outcome and asks policy nothing more.
-            self.segment_confirmed.insert(at.clone());
+            self.segment_confirmed.insert(at.clone(), permitted);
         }
         let result = match outcome {
             Resolved::Done => {
@@ -1965,7 +1978,7 @@ impl Stuck {
             .get(&at)
             .cloned()
             .ok_or(ResolveError::NoDecision)?;
-        if self.segment_confirmed.contains(&at) {
+        if self.segment_confirmed.contains_key(&at) {
             return Err(ResolveError::NoDecision);
         }
         let unknown = parts
@@ -1979,7 +1992,7 @@ impl Stuck {
             return Err(ResolveError::NotTheReport);
         }
         on_its_own_statement(
-            &declining.evidence.receipt,
+            declining.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
         )?;
@@ -1989,7 +2002,7 @@ impl Stuck {
             effect: unknown.effect,
             report: report.receipt.clone(),
             decliner: declining.decliner.clone(),
-            declined_with: declining.evidence.receipt.clone(),
+            declined_with: declining.evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.decline_outcome(&request)?;
@@ -2746,7 +2759,7 @@ fn follows(evidence: &Receipt, effect: &Receipt) -> bool {
 /// A report rests on a statement stating the outcome it reports: one that states another, or none of the move's own
 /// (another maker's), backs no report (`REQ-ORD-1`).
 fn states(evidence: &Stated, claimed: Resolved) -> Result<(), ResolveError> {
-    if evidence.outcome == Some(claimed) {
+    if evidence.outcome() == Some(claimed) {
         Ok(())
     } else {
         Err(ResolveError::EvidenceStatesAnother)
@@ -2756,7 +2769,7 @@ fn states(evidence: &Stated, claimed: Resolved) -> Result<(), ResolveError> {
 /// A confirmation's evidence bears the outcome out: a statement that states another outcome is refused, and one that
 /// states none (another maker's) backs the outcome the report named.
 fn bears_out(evidence: &Stated, claimed: Resolved) -> Result<(), ResolveError> {
-    match evidence.outcome {
+    match evidence.outcome() {
         Some(stated) if stated != claimed => Err(ResolveError::EvidenceStatesAnother),
         _ => Ok(()),
     }

@@ -1634,7 +1634,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     // on, so nothing is started on it.
     let said_nothing = take(&mut core, &mut world, &mut mover, &effect, &no_record)
         .expect("kept as the holder's word");
-    assert_eq!(said_nothing.outcome, Some(Resolved::Unknown));
+    assert_eq!(said_nothing.outcome(), Some(Resolved::Unknown));
     let before = stated_about(&core, LINKED).len();
     assert!(mover.withdrawn(&effect).is_none());
     // Taken: the holding account's own answer, once however often it is tried.
@@ -1644,7 +1644,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
         wallet_succeeded(RESERVE, &transaction, amount),
     );
     let stated = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
-    assert_eq!(stated.outcome, Some(Resolved::Done));
+    assert_eq!(stated.outcome(), Some(Resolved::Done));
     let again = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken again");
     assert_eq!(again, stated, "a statement tried again is one entry");
     let kept = stated_about(&core, LINKED);
@@ -1656,7 +1656,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     );
     // The start the answer proves is the hand-on's, with the answer's receipt for the record to cite.
     let withdrawn = mover.withdrawn(&effect).expect("known done");
-    assert_eq!(withdrawn.statement, Some(&stated.receipt));
+    assert_eq!(withdrawn.statement, Some(stated.receipt()));
     assert_eq!(
         withdrawn.start.record.reference,
         format!("{RESERVE}-withdrawal-{transaction}")
@@ -1706,7 +1706,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
                 confirmer: &carol,
                 outcome: Resolved::Done,
                 report,
-                reported_with: &stated.receipt,
+                reported_with: stated.receipt(),
                 evidence: &others,
                 core: &actor,
             },
@@ -1805,7 +1805,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     });
     let bytes = later_answer(&core, RESERVE, failed);
     let holders = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
-    assert_eq!(holders.outcome, Some(Resolved::Failed));
+    assert_eq!(holders.outcome(), Some(Resolved::Failed));
     assert!(
         mover.withdrawn(&effect).is_none(),
         "a failure starts nothing"
@@ -1861,7 +1861,8 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     let others = take(&mut core, &mut world, &mut mover, &effect, &bytes)
         .expect("another maker's statement");
     assert_eq!(
-        others.outcome, None,
+        others.outcome(),
+        None,
         "it bears out nothing of the move itself"
     );
     let confirmed = on_parts(&mut core, |parts| {
@@ -1874,7 +1875,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 confirmer: &carol,
                 outcome: Resolved::Failed,
                 report,
-                reported_with: &holders.receipt,
+                reported_with: holders.receipt(),
                 evidence: &others,
                 core: &actor,
             },
@@ -2017,6 +2018,6 @@ fn a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure() {
         }),
     );
     let stated = take(&mut core, &mut world, &mut mover, &effect, &failed).expect("taken");
-    assert_eq!(stated.outcome, Some(Resolved::Failed));
+    assert_eq!(stated.outcome(), Some(Resolved::Failed));
     assert!(mover.withdrawn(&effect).is_none());
 }

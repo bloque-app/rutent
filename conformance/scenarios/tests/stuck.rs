@@ -2226,10 +2226,7 @@ fn known_outcome(
                 core: &actor,
             },
             outcome,
-            &Stated {
-                receipt: evidence.clone(),
-                outcome: Some(outcome),
-            },
+            &Stated::for_tests(evidence.clone(), Some(outcome)),
         )
     })
 }
@@ -2259,10 +2256,7 @@ fn confirm_outcome(
                 outcome: report.0,
                 report: report.1,
                 reported_with: report.2,
-                evidence: &Stated {
-                    receipt: evidence.clone(),
-                    outcome: None,
-                },
+                evidence: &Stated::for_tests(evidence.clone(), None),
                 core: &actor,
             },
         )
@@ -2898,10 +2892,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
                 core: &actor,
             },
             Resolved::Done,
-            &Stated {
-                receipt: result.clone(),
-                outcome: Some(Resolved::Done),
-            },
+            &Stated::for_tests(result.clone(), Some(Resolved::Done)),
         )
     });
     assert!(
@@ -2950,10 +2941,7 @@ fn report_segment(
                 reporter,
             },
             outcome,
-            &Stated {
-                receipt: evidence.clone(),
-                outcome: Some(outcome),
-            },
+            &Stated::for_tests(evidence.clone(), Some(outcome)),
         )
     })
 }
@@ -2984,10 +2972,7 @@ fn confirm_segment(
                 outcome: report.0,
                 report: 1,
                 reported_with: report.1,
-                evidence: &Stated {
-                    receipt: evidence.clone(),
-                    outcome: None,
-                },
+                evidence: &Stated::for_tests(evidence.clone(), None),
                 core: &actor,
             },
         )
@@ -3633,10 +3618,7 @@ impl Silent {
             Some(WITHDRAWAL),
             self.unknown.transaction.as_str(),
         );
-        Stated {
-            receipt: other,
-            outcome: None,
-        }
+        Stated::for_tests(other, None)
     }
 
     fn report(&mut self, outcome: Resolved, evidence: &Stated) -> Result<Moved, ResolveError> {
@@ -3678,7 +3660,7 @@ impl Silent {
                     decliner: who,
                     outcome: report.0,
                     report: report.1,
-                    reported_with: &report.2.receipt,
+                    reported_with: report.2.receipt(),
                     evidence,
                 },
             )
@@ -3709,7 +3691,7 @@ impl Silent {
                     confirmer: who,
                     outcome: report.0,
                     report: report.1,
-                    reported_with: &report.2.receipt,
+                    reported_with: report.2.receipt(),
                     evidence,
                     core: &actor,
                 },
@@ -3748,7 +3730,7 @@ impl Silent {
                         confirmer: who,
                         outcome: report.0,
                         report: report.1,
-                        reported_with: &report.2.receipt,
+                        reported_with: report.2.receipt(),
                         evidence,
                         core: &actor,
                     },
@@ -3799,24 +3781,24 @@ fn declined_report_of_a_silent_move_is_followed_by_a_new_one_that_stands_until_i
     let mut m = silent_withdrawal();
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let (first, second) = (
-        Stated {
-            receipt: results_after_the_move(
+        Stated::for_tests(
+            results_after_the_move(
                 &mut m.core,
                 Some(WITHDRAWAL),
                 m.unknown.transaction.as_str(),
             )
             .0,
-            outcome: Some(Resolved::Failed),
-        },
-        Stated {
-            receipt: results_after_the_move(
+            Some(Resolved::Failed),
+        ),
+        Stated::for_tests(
+            results_after_the_move(
                 &mut m.core,
                 Some(WITHDRAWAL),
                 m.unknown.transaction.as_str(),
             )
             .0,
-            outcome: Some(Resolved::Failed),
-        },
+            Some(Resolved::Failed),
+        ),
     );
     let (others, more) = (m.others(), m.others());
     assert_eq!(
@@ -3893,10 +3875,10 @@ fn declined_report_of_a_silent_move_is_followed_by_a_new_one_that_stands_until_i
 fn silent_move_reported_on_evidence_stating_another_outcome_is_refused() {
     let mut m = silent_withdrawal();
     let cannot_tell = m.word(None);
-    assert_eq!(cannot_tell.outcome, Some(Resolved::Unknown));
+    assert_eq!(cannot_tell.outcome(), Some(Resolved::Unknown));
     m.core.clock.advance(1);
     let settled = m.word(Some(settled_withdrawal_outcome()));
-    assert_eq!(settled.outcome, Some(Resolved::Done));
+    assert_eq!(settled.outcome(), Some(Resolved::Done));
     let others = m.others();
     let asked = m.policy.asked;
     for (outcome, evidence) in [
@@ -3942,7 +3924,7 @@ fn segments_move_confirmed_done_is_graded_and_then_settles_the_segment() {
     let mut m = silent_withdrawal();
     let bob = staff("desk-b", "bob");
     let settled = m.word(Some(settled_withdrawal_outcome()));
-    assert_eq!(settled.outcome, Some(Resolved::Done));
+    assert_eq!(settled.outcome(), Some(Resolved::Done));
     let others = m.others();
     assert_eq!(
         m.report(Resolved::Done, &settled),
@@ -3955,7 +3937,18 @@ fn segments_move_confirmed_done_is_graded_and_then_settles_the_segment() {
         Err(ResolveError::DoneNeedsEvidence)
     );
     assert_eq!(m.decisions(), (1, 0, 0));
+    let held = m.core.exposures.in_flight(&id(RESERVE), &cop_unit());
+    assert_eq!(
+        held,
+        Amount::new(AMOUNT).unwrap(),
+        "the move's value is held"
+    );
     let confirmed = m.confirm_done(&bob, (Resolved::Done, 1, &settled), &others, &mut Recorded);
+    assert_eq!(
+        m.core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        held,
+        "a late settlement keeps the hold, which the part's resolution releases"
+    );
     assert!(
         matches!(
             confirmed,
@@ -4041,15 +4034,15 @@ fn segments_move_confirmed_done_with_no_graded_evidence_settles_nothing() {
     m.admitted();
     // A done on a statement Core never took as the segment's own late result settles nothing.
     let mut n = silent_withdrawal();
-    let forged = Stated {
-        receipt: results_after_the_move(
+    let forged = Stated::for_tests(
+        results_after_the_move(
             &mut n.core,
             Some(WITHDRAWAL),
             n.unknown.transaction.as_str(),
         )
         .0,
-        outcome: Some(Resolved::Done),
-    };
+        Some(Resolved::Done),
+    );
     let others = n.others();
     assert_eq!(
         n.report(Resolved::Done, &forged),
@@ -4096,6 +4089,36 @@ fn segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed
         results_of(&m.core, &m.unknown.effect),
         vec![Outcome::Unanswered {}]
     );
+    // The permit is bob's: a retry by another confirmer, from a third desk, is asked of policy (which here refuses
+    // it), never carried on the permit bob's confirmation got; nor can the report be declined once confirmed.
+    let carol = staff("desk-c", "carol");
+    m.policy.log_refuses_outcomes = true;
+    assert!(matches!(
+        m.confirm_done(
+            &carol,
+            (Resolved::Done, 1, &settled),
+            &others,
+            &mut Recorded
+        ),
+        Err(ResolveError::Append(
+            rutent_contracts::core_internal::calls::AppendFailure::Refused(_)
+        ))
+    ));
+    assert_eq!(
+        m.decline(&carol, (Resolved::Done, 1, &settled), &others),
+        Err(ResolveError::NoDecision),
+        "a report whose confirmation was permitted is declined no more"
+    );
+    assert_eq!(m.decisions(), (1, 1, 0));
+    // Nor another's evidence under bob's name.
+    let more = m.others();
+    assert!(matches!(
+        m.confirm_done(&bob, (Resolved::Done, 1, &settled), &more, &mut Recorded),
+        Err(ResolveError::Append(
+            rutent_contracts::core_internal::calls::AppendFailure::Refused(_)
+        ))
+    ));
+    // Bob's own retry, on the same report and evidence, needs no second permit.
     assert!(matches!(
         m.confirm_done(&bob, (Resolved::Done, 1, &settled), &others, &mut Recorded),
         Ok(Moved::CarriedOut {
@@ -4103,6 +4126,7 @@ fn segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed
             ..
         })
     ));
+    m.policy.log_refuses_outcomes = false;
     assert_eq!(m.decisions(), (1, 1, 0), "confirmed once");
     assert_eq!(
         results_of(&m.core, &m.unknown.effect),

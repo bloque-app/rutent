@@ -187,16 +187,42 @@ pub struct Mover {
     statements: BTreeMap<(String, Vec<u8>), Step>,
 }
 
-/// A provider's statement, taken as evidence of a move's outcome.
+/// A provider's statement, taken as evidence of a move's outcome. Only Core's own readers make one
+/// ([`Delivering::statement`], [`crate::segments::Segments::late_statement`]): its fields are private, so no caller
+/// states an outcome the statement doesn't.
+///
+/// ```compile_fail
+/// use rutent_core_orch::stuck::{Resolved, Stated};
+/// fn forged(receipt: rutent_contracts::core_internal::Receipt) -> Stated {
+///     Stated { receipt, outcome: Some(Resolved::Failed) }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stated {
-    /// The receipt of its stated entry, the evidence a report or a confirmation of the outcome names.
-    pub receipt: Receipt,
+    receipt: Receipt,
     /// What it says of the move, where it is the move's own provider's statement of the move's own deposit: `Done` for
     /// a result that counts and says it settled, `Failed` for one that counts and says it failed or refused finally,
     /// `Unknown` for one that says it doesn't know. `None` of another provider's statement, which bears out
     /// nothing of the move itself, and only backs a confirmation as another maker's.
-    pub outcome: Option<Resolved>,
+    outcome: Option<Resolved>,
+}
+
+impl Stated {
+    /// The receipt of its stated entry, the evidence a report or a confirmation of the outcome names.
+    pub fn receipt(&self) -> &Receipt {
+        &self.receipt
+    }
+
+    /// What it says of the move (see the type's docs).
+    pub fn outcome(&self) -> Option<Resolved> {
+        self.outcome
+    }
+
+    /// A statement as a test states it, for the test kit's own evidence: with the `test-support` feature only.
+    #[cfg(feature = "test-support")]
+    pub fn for_tests(receipt: Receipt, outcome: Option<Resolved>) -> Self {
+        Stated { receipt, outcome }
+    }
 }
 
 impl From<&crate::segments::Late> for Stated {

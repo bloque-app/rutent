@@ -8,6 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Lets the test kit make a `stuck::Stated` of its own; never enabled by a build of the assembly.
+test-support = []
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-router = { path = "../router" }
