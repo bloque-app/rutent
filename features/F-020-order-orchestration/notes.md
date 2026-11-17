@@ -3408,3 +3408,62 @@ Branch `f-020/t-020-14-charge-check`, from `m3` at `34c700e`.
   `segments_support`'s test log routes one reserve that can't charge above its price. Still without a test of its own:
   the refusal of a store that keeps nothing (the `Nothing` read is refused by `ok_or`, which no single switch-off
   isolates from the compare).
+
+## T-020-15: signed holds wired into intake
+
+- **Design.** An acceptance may name the hold of the quote it accepts (`Intake::accept_holding`; `accept` is
+  `accept_holding(.., None)`). Intake redeems it through `Holds::redeem`, once the destination checks pass and just
+  before the acceptance is built, and cites the receipt of the hold's stated entry as `What::Acceptance.held`. `redeem`
+  now takes a `Redemption` (every field intake verified: the request's origin reserve, the order, the session the
+  reserve's yes was asked in (`offered.session`, the same value the acceptance records), the quote's decision record
+  and candidate, Core's clock) and the log's read of the evidence store (`KeptStatements`). It refuses, in order: no
+  such hold; another reserve than the holder; another order or session (`check_redemption`); another order having
+  redeemed it; a hold of another quote (`NotThisQuote`); a kept statement that is not the hold (`NotWhatIsKept`:
+  nothing kept, SHA-256 of salt and bytes not equal to the entry's commitment, or bytes that don't read as the signed
+  hold Core holds); past validity. Nothing is redeemed unless every check passes.
+- **`redeemed_by` rebuilt.** It moved out of `Held` into `Holds.redeemed` (hold transaction to order), and
+  `Holds::recorded(history)` rebuilds it from the log's acceptances (an acceptance's `held` receipt names a stated entry
+  whose `about.transaction` is the hold), as `Closing::recorded` does. A hold kept again after a restart meets the
+  order that redeemed it, so the log's `hold-is-redeemed-by-one-order` is not what refuses the second order.
+- **Also added.** `Holds::take` (the hold's own taking, as `Terms::take`: keep, append as a stated entry about the
+  transaction, read back, `hold`); the assembly's `Core::state_hold`, `accept_holding`, `holds_rebuilt_from_log`, and
+  the Desk's `holds` and `kept` fields (`conformance/scenarios/src/assembly/`, an F-024 file, edited for this row as
+  the plan says).
+- **Defaults (reversible, fail closed).**
+  1. The acceptance **names** the hold (a transaction id); intake never picks one by matching the quote.
+  2. A hold that isn't redeemed refuses the acceptance (`IntakeError::Hold`), the order stays quoted; it is never
+     accepted without the hold. The destination's check, resolved first, is already in the log by then.
+  3. A hold is redeemed only for the quote it holds (same decision record id and candidate). So two orders can
+     only meet on one hold if the second names a hold of the first's quote: it is refused as `RedeemedByAnother`,
+     checked before `NotThisQuote` so that the one-order rule is seen on its own.
+  4. The commitment is recomputed (salt then bytes, SHA-256), stronger than `Terms::take`'s equality.
+  5. A redemption is not released if the acceptance is then refused by the log: the hold stays bound to that order
+     (rebuilt state after a restart would show it unbound).
+- **Gaps.**
+  1. No module delivers a reserve's signed hold: `Holds::take` has no production caller (`F-013`/`F-030`).
+  2. The held quotes themselves are in memory; keeping them across a restart is `F-030`'s (a reading: only
+     `redeemed_by` is rebuilt here).
+  3. A session hold made before an order exists can't be redeemed through intake: an order's quote is a record of its
+     own routing, and a hold of another record is `NotThisQuote`. Owner: a new `F-020` row if the product wants
+     pre-order holds (needs a way to route on a held record).
+  4. `intake_support`'s evidence store now makes real salted commitments (so a kept hold can be held to one).
+- **Tests.** `components/core-orch/tests/intake_holds.rs` (six named plus two more: no hold named, and another quote's
+  or no hold) and `conformance/scenarios/tests/holds.rs` (the assembled Core's acceptance names the receipt; one order
+  only, also after `holds_rebuilt_from_log`). `tests/quote.rs` redeem calls go through the new signature.
+- **Rule-off, each red** (`intake_holds` and `quote` run; a rule switched off alone, file restored):
+
+  | Rule switched off | Red |
+  |---|---|
+  | SHA-256 of salt and bytes equals the commitment | `hold_whose_kept_statement_does_not_match_its_entrys_commitment_is_not_redeemed` |
+  | kept bytes read as the signed hold Core holds | the same |
+  | one order per hold | `a_hold_is_redeemed_by_one_order_only`, `redemption_is_rebuilt_from_the_log_when_core_is_reopened` |
+  | hold is for this order or session | `hold_redeemed_in_another_session_than_the_one_it_was_made_for_is_refused` |
+  | hold is of the quote accepted | `a_hold_of_another_quote_or_none_kept_is_not_redeemed` |
+  | session is the one intake verified (none passed) | four, among them the session test |
+  | validity (Core's clock replaced by an old time) | six (crude: it also breaks every redemption) |
+  | `Holds::recorded` reads nothing | `redemption_is_rebuilt_from_the_log_when_core_is_reopened` |
+  | the acceptance cites the receipt | three, among them `accepting_a_quote_held_by_a_reserve_redeems_the_hold_into_the_acceptance` |
+
+  Not isolated by a single switch-off: the store keeping nothing (`ok_or`, covered by the forgetting store in the kept
+  test but the same refusal as the others), and "an acceptance naming no hold redeems none" (`None => None`; the test
+  asserts the outcome, no mutation of it was tried).

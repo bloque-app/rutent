@@ -463,6 +463,9 @@ pub struct Core {
     kept: LogsRead,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
+    /// The quotes reserves hold, which an acceptance may redeem (`T-020-15`); which order redeemed which is rebuilt
+    /// from the log whenever Core is put together on a disk (`Holds::recorded`).
+    holds: rutent_core_orch::quote::Holds,
     readings: grading::Readings,
     issued: Issued,
     exposures: Exposures,
@@ -730,6 +733,7 @@ impl Core {
             wire: charges::Wire::default(),
             kept,
             closing: rutent_core_orch::closing::Closing::new(),
+            holds: rutent_core_orch::quote::Holds::new(),
             readings: grading::Readings::default(),
             issued: Issued::new(),
             exposures: Exposures::new(),
@@ -757,6 +761,7 @@ impl Core {
             core.readings.tie_by_destination();
         }
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
+        core.holds = rutent_core_orch::quote::Holds::recorded(core.log.borrow().entries());
         if reopened {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
             core.relist()?;
@@ -1257,6 +1262,8 @@ impl Core {
             prices: &self.prices,
             core: &core,
             operator: &operator,
+            holds: &mut self.holds,
+            kept: &mut self.kept,
         };
         call(&mut self.intake, &mut desk)
     }
@@ -1300,7 +1307,80 @@ impl Core {
         order: &Id,
         digest: &rutent_contracts::module_interface::Digest,
     ) -> Result<Told, StepError> {
-        let told = self.with_desk(|intake, desk| intake.accept(desk, order, by, digest, None))?;
+        self.accept_holding(by, order, digest, None)
+    }
+
+    /// The quotes reserves hold: where a scenario keeps a reserve's signed hold (`Holds::hold`) for an acceptance
+    /// to name.
+    pub fn holds(&mut self) -> &mut rutent_core_orch::quote::Holds {
+        &mut self.holds
+    }
+
+    /// Core's holds lost and rebuilt from the log, as a restart leaves them (`Holds::recorded`): no quote is held, and
+    /// which order redeemed which hold is what the log's acceptances say.
+    pub fn holds_rebuilt_from_log(&mut self) {
+        self.holds = rutent_core_orch::quote::Holds::recorded(self.log.borrow().entries());
+    }
+
+    /// Takes a reserve's signed hold, `bytes` as they arrived, of the quote `record` chose (recorded in the log as
+    /// `recorded_id` and `recorded_digest`), held until `valid_until` (`Holds::take`): kept, appended as a stated
+    /// entry about its own transaction and held for an acceptance to name. It answers the receipt of the hold's entry.
+    /// Nothing delivers a reserve's hold to Core yet; a scenario hands it here (`T-020-15`).
+    ///
+    /// # Errors
+    ///
+    /// If the bytes aren't a hold, the log refused them, or the hold isn't kept.
+    pub fn state_hold(
+        &mut self,
+        bytes: &[u8],
+        recorded_id: &Id,
+        recorded_digest: &rutent_contracts::module_interface::Digest,
+        record: DecisionRecord,
+        valid_until: rutent_contracts::router_api::Timestamp,
+    ) -> Result<Receipt, rutent_core_orch::quote::TakeHoldError> {
+        // The log's own record of the entry the call appended is read back from the log as it stands after.
+        struct Now<'a>(&'a RefCell<CoreLog>);
+        impl rutent_core_orch::quote::Recorded for Now<'_> {
+            fn entry(&self, receipt: &Receipt) -> Option<Entry> {
+                rutent_core_orch::quote::Recorded::entry(
+                    &charges::Log(self.0.borrow().entries()),
+                    receipt,
+                )
+            }
+        }
+        let log = Rc::clone(&self.log);
+        let recorded = Now(&log);
+        let desk = rutent_core_orch::quote::HoldDesk {
+            evidence: &mut self.keeper,
+            log: &mut self.general,
+            recorded: &recorded,
+            clock: &self.clock,
+            catalogue: &self.catalogue,
+        };
+        self.holds
+            .take(
+                desk,
+                bytes,
+                rutent_core_orch::quote::RecordedAs {
+                    id: recorded_id,
+                    digest: recorded_digest,
+                },
+                record,
+                valid_until,
+            )
+            .map(|held| held.hold.clone())
+    }
+
+    /// [`Core::accept`], naming `hold`, the transaction of a reserve's hold of the quote shown (`T-020-15`).
+    pub fn accept_holding(
+        &mut self,
+        by: &Actor,
+        order: &Id,
+        digest: &rutent_contracts::module_interface::Digest,
+        hold: Option<&Id>,
+    ) -> Result<Told, StepError> {
+        let told = self
+            .with_desk(|intake, desk| intake.accept_holding(desk, order, by, digest, None, hold))?;
         if let Some(start) = self.intake.start(order).cloned()
             && !self.started.contains_key(order.as_str())
         {

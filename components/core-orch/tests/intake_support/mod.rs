@@ -28,6 +28,7 @@ use rutent_core_orch::intake::{
     Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRequest, Resolution,
     SessionRegister, Status, Told,
 };
+use rutent_core_orch::quote::Holds;
 use rutent_core_orch::rounds::{Fresh, Issued, Parts, Providers};
 use rutent_core_orch::snapshot::{Clock, Exposures, Price, Releases};
 use rutent_prov::catalogue::{Catalogue, CheckBound, Instant, Publisher};
@@ -327,9 +328,18 @@ pub struct Store {
     pub restates_next: Option<usize>,
 }
 
-fn commitment(place: usize) -> Digest {
-    serde_json::from_value(json!({ "algorithm": "sha-256", "value": format!("{place:064x}") }))
-        .unwrap()
+/// The salt a statement kept at `place` is kept beside: 32 bytes, different for each place.
+fn salt_of(place: usize) -> [u8; 32] {
+    let mut salt = [0u8; 32];
+    salt[24..].copy_from_slice(&(place as u64).to_be_bytes());
+    salt
+}
+
+/// The commitment of the statement kept at `place`, as the evidence store makes it: SHA-256 of its salt followed by
+/// its bytes, so a stated entry's commitment is one a kept statement is held to.
+fn commitment(place: usize, bytes: &[u8]) -> Digest {
+    let value = rutent_prov::module::wire::sha256(&[salt_of(place).as_slice(), bytes].concat());
+    serde_json::from_value(json!({ "algorithm": "sha-256", "value": value })).unwrap()
 }
 
 impl Evidence for Store {
@@ -344,13 +354,34 @@ impl Evidence for Store {
         }
         self.kept.push(received.to_vec());
         Ok(Kept {
-            commitment: commitment(self.kept.len() - 1),
-            restates: self.restates_next.take().map(commitment),
+            commitment: commitment(self.kept.len() - 1, received),
+            restates: self
+                .restates_next
+                .take()
+                .map(|place| commitment(place, &self.kept[place])),
         })
     }
 
     fn fetch(&mut self, _check: &ReadCheck) -> Result<Fetched, AppendFailure> {
         Ok(Fetched::Erased)
+    }
+}
+
+/// The operator's key, keeping what it was asked to sign: the signing input of each statement Core signed, whose
+/// envelope shows the statement (the decision records, which only their digest reaches the log).
+pub struct RecordingKey {
+    pub inner: TestKey,
+    pub signed: Vec<Vec<u8>>,
+}
+
+impl rutent_core_orch::rounds::OperatorKey for RecordingKey {
+    fn key(&self) -> rutent_contracts::provider_role::PublicKey {
+        rutent_core_orch::rounds::OperatorKey::key(&self.inner)
+    }
+
+    fn sign(&mut self, input: &[u8]) -> Option<[u8; 64]> {
+        self.signed.push(input.to_vec());
+        rutent_core_orch::rounds::OperatorKey::sign(&mut self.inner, input)
     }
 }
 
@@ -371,7 +402,7 @@ pub struct Env {
     pub sessions: Sessions,
     pub bound: Bound,
     pub people: People,
-    pub key: TestKey,
+    pub key: RecordingKey,
     pub ids: Ids,
     pub issued: Issued,
     pub policy: Policy,
@@ -379,6 +410,8 @@ pub struct Env {
     pub bounds: PolicyBounds,
     pub prices: Vec<Price>,
     pub intake: Intake,
+    pub holds: Holds,
+    pub kept: SharedKept,
 }
 
 impl Env {
@@ -416,6 +449,7 @@ impl Env {
                 expires_at: Timestamp::new(Instant(SESSION_ENDS).rfc3339().unwrap()).unwrap(),
             },
         );
+        let store_for_kept = store.clone();
         let env = Self {
             catalogue,
             clock: clock.clone(),
@@ -430,7 +464,10 @@ impl Env {
             sessions,
             bound: Bound::of(100),
             people: People::default(),
-            key: TestKey(operator_key()),
+            key: RecordingKey {
+                inner: TestKey(operator_key()),
+                signed: Vec::new(),
+            },
             ids: Ids::default(),
             issued: Issued::new(),
             policy: Policy {
@@ -444,6 +481,13 @@ impl Env {
             bounds: no_ceilings(),
             prices: prices(&[RESERVE]),
             intake: Intake::new(),
+            holds: Holds::new(),
+            kept: SharedKept {
+                store: store_for_kept,
+                forgets: false,
+                alters: false,
+                asked: 0,
+            },
         };
         env.session_opened(&customer().party);
         env
@@ -525,6 +569,8 @@ impl Env {
             prices: &self.prices,
             core: &core,
             operator: &operator,
+            holds: &mut self.holds,
+            kept: &mut self.kept,
         };
         call(&mut self.intake, &mut desk)
     }
@@ -609,6 +655,16 @@ impl Env {
         (order, told)
     }
 
+    /// The log's entries as the log keeps them, each with its receipt: what Core reads back when it is reopened.
+    pub fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.admitted()
+            .expect("the log admits what it holds")
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| (log_receipt(i), entry))
+            .collect()
+    }
+
     /// Every acceptance recorded.
     pub fn acceptances(&self) -> Vec<VerifiedEntry> {
         self.book
@@ -665,6 +721,50 @@ pub fn refusal(class: RefusalClass) -> Answer {
 
 // The log's own reading ---------------------------------------------------------------------------------------------
 
+/// The statement kept under `wanted`, as the evidence store's read for the log answers it.
+fn kept_under(store: &Store, wanted: &Digest) -> Option<KeptStatement> {
+    kept_as(store, wanted, false)
+}
+
+/// [`kept_under`], with one byte more than was kept where `altered`.
+fn kept_as(store: &Store, wanted: &Digest, altered: bool) -> Option<KeptStatement> {
+    let place = (0..store.kept.len()).find(|i| &commitment(*i, &store.kept[*i]) == wanted)?;
+    let mut bytes = store.kept[place].clone();
+    if altered {
+        bytes.push(b' ');
+    }
+    Some(
+        serde_json::from_value(json!({
+            "commitment": wanted,
+            "salt": base64url(&salt_of(place)),
+            "bytes": base64url(&bytes),
+        }))
+        .unwrap(),
+    )
+}
+
+/// The log's own read of the store, as intake reaches it for a hold's kept statement. A test sets how it misreads.
+pub struct SharedKept {
+    pub store: Rc<RefCell<Store>>,
+    /// Answers that it keeps nothing under any commitment.
+    pub forgets: bool,
+    /// Answers other bytes than it kept, under the same commitment and salt.
+    pub alters: bool,
+    /// How many times it was asked.
+    pub asked: usize,
+}
+
+impl KeptStatements for SharedKept {
+    fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        self.asked += 1;
+        if self.forgets {
+            return Ok(None);
+        }
+        let kept = kept_as(&self.store.borrow(), wanted, self.alters);
+        Ok(kept)
+    }
+}
+
 struct Sources<'a> {
     catalogue: &'a Catalogue,
     store: &'a Store,
@@ -673,15 +773,7 @@ struct Sources<'a> {
 
 impl KeptStatements for Sources<'_> {
     fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        let place = (0..self.store.kept.len()).find(|i| &commitment(*i) == wanted);
-        Ok(place.map(|i| {
-            serde_json::from_value(json!({
-                "commitment": wanted,
-                "salt": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "bytes": base64url(&self.store.kept[i]),
-            }))
-            .unwrap()
-        }))
+        Ok(kept_under(self.store, wanted))
     }
 }
 

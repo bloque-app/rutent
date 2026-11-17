@@ -16,11 +16,11 @@ use quote_support::{
 };
 use rounds_support::customer;
 use rutent_contracts::core_internal::calls::GeneralEntry;
-use rutent_contracts::core_internal::calls::{Evidence, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, KeptStatements, Log};
 use rutent_contracts::core_internal::{
-    About, Actor, ActorKind, Attribution, Entry, OrderRefusalClass, Receipt, Role, ShapeId,
-    ShownAs, SignedWith, StatedEntry, StatedKind, StatedOutcome, StatedStatus, StatedTimeSource,
-    StatedWhat, StatedWhen, What,
+    About, Actor, ActorKind, Attribution, Entry, KeptStatement, OrderRefusalClass, Receipt, Role,
+    ShapeId, ShownAs, SignedWith, StatedEntry, StatedKind, StatedOutcome, StatedStatus,
+    StatedTimeSource, StatedWhat, StatedWhen, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -30,8 +30,9 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Amount, DecisionRecord, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
-    ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms, PriceError, Priced,
-    Prices, RecordedAs, Signed, SlowSegment, Terms, digest, executed, show,
+    AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms,
+    PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, Signed, SlowSegment, Terms,
+    digest, executed, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};
@@ -1049,8 +1050,7 @@ fn held_quote_past_its_validity_starts_nothing() {
     assert_eq!(held.transaction, id("hold-1"));
 
     let transaction = id("hold-1");
-    let redeemed = holds
-        .redeem(&transaction, &reserve, &order, None, &until)
+    let redeemed = redeem(&mut holds, &hold, &reserve, &order, None, &until)
         .expect("at its validity, it is still usable");
     assert_eq!(redeemed.candidate, &candidate);
     assert_eq!(redeemed.shown.shown_as, ShownAs::Quote);
@@ -1059,15 +1059,15 @@ fn held_quote_past_its_validity_starts_nothing() {
         "the acceptance that redeems it cites its entry"
     );
     assert_eq!(
-        holds
-            .redeem(
-                &transaction,
-                &reserve,
-                &order,
-                None,
-                &at("2026-11-06T15:03:01Z")
-            )
-            .map(|r| r.candidate.clone()),
+        redeem(
+            &mut holds,
+            &hold,
+            &reserve,
+            &order,
+            None,
+            &at("2026-11-06T15:03:01Z")
+        )
+        .map(|r| r.candidate.clone()),
         Err(HoldError::Redeem(HeldQuoteRefused::PastValidity {
             valid_until: until.clone()
         })),
@@ -1205,8 +1205,9 @@ fn held_quote_past_its_validity_starts_nothing() {
         "dropped, with no effect beyond the hold"
     );
     assert!(matches!(
-        holds.redeem(
-            &transaction,
+        redeem(
+            &mut holds,
+            &hold,
             &reserve,
             &order,
             None,
@@ -1265,21 +1266,21 @@ fn long_hold_is_capped_at_its_figures_validity() {
         )
         .expect("held, capped");
     assert_eq!(*held.valid_until(), at("2026-11-06T15:03:40Z"));
-    let transaction = id("hold-long");
     assert!(
-        holds
-            .redeem(
-                &transaction,
-                &reserve,
-                &order,
-                None,
-                &at("2026-11-06T15:03:40Z")
-            )
-            .is_ok()
+        redeem(
+            &mut holds,
+            &hold,
+            &reserve,
+            &order,
+            None,
+            &at("2026-11-06T15:03:40Z")
+        )
+        .is_ok()
     );
     assert!(matches!(
-        holds.redeem(
-            &transaction,
+        redeem(
+            &mut holds,
+            &hold,
             &reserve,
             &order,
             None,
@@ -1320,14 +1321,27 @@ fn held_quote_is_redeemed_only_by_its_reserve_for_its_order() {
             at("2026-11-06T15:03:00Z"),
         )
         .expect("held");
-    let one = id("hold-1");
-    assert!(holds.redeem(&one, &reserve, &order, None, &now).is_ok());
+    assert!(redeem(&mut holds, &for_an_order, &reserve, &order, None, &now).is_ok());
     assert!(matches!(
-        holds.redeem(&one, &id("p-other"), &order, None, &now),
+        redeem(
+            &mut holds,
+            &for_an_order,
+            &id("p-other"),
+            &order,
+            None,
+            &now
+        ),
         Err(HoldError::NotTheHolder)
     ));
     assert!(matches!(
-        holds.redeem(&one, &reserve, &id("order-other"), None, &now),
+        redeem(
+            &mut holds,
+            &for_an_order,
+            &reserve,
+            &id("order-other"),
+            None,
+            &now
+        ),
         Err(HoldError::NotForThisOrder(
             RedemptionRefused::ForAnotherOrder
         ))
@@ -1349,33 +1363,58 @@ fn held_quote_is_redeemed_only_by_its_reserve_for_its_order() {
             at("2026-11-06T15:03:00Z"),
         )
         .expect("held");
-    let two = id("hold-2");
     let session = id("sess-9");
     assert!(matches!(
-        holds.redeem(&two, &reserve, &order, None, &now),
+        redeem(&mut holds, &for_a_session, &reserve, &order, None, &now),
         Err(HoldError::NotForThisOrder(
             RedemptionRefused::ForAnotherSession
         ))
     ));
     assert!(matches!(
-        holds.redeem(&two, &reserve, &order, Some(&id("sess-1")), &now),
+        redeem(
+            &mut holds,
+            &for_a_session,
+            &reserve,
+            &order,
+            Some(&id("sess-1")),
+            &now
+        ),
         Err(HoldError::NotForThisOrder(
             RedemptionRefused::ForAnotherSession
         ))
     ));
     assert!(
-        holds
-            .redeem(&two, &reserve, &order, Some(&session), &now)
-            .is_ok()
+        redeem(
+            &mut holds,
+            &for_a_session,
+            &reserve,
+            &order,
+            Some(&session),
+            &now
+        )
+        .is_ok()
     );
     assert!(matches!(
-        holds.redeem(&two, &reserve, &id("order-second"), Some(&session), &now),
+        redeem(
+            &mut holds,
+            &for_a_session,
+            &reserve,
+            &id("order-second"),
+            Some(&session),
+            &now
+        ),
         Err(HoldError::RedeemedByAnother)
     ));
     assert!(
-        holds
-            .redeem(&two, &reserve, &order, Some(&session), &now)
-            .is_ok(),
+        redeem(
+            &mut holds,
+            &for_a_session,
+            &reserve,
+            &order,
+            Some(&session),
+            &now
+        )
+        .is_ok(),
         "the same order again"
     );
 }
@@ -1484,6 +1523,53 @@ struct SignedHold {
     receipt: Receipt,
     record_id: Id,
     record_digest: Digest,
+    candidate: Id,
+    /// The hold's bytes as the reserve signed them, and the salt the store kept them beside.
+    bytes: Vec<u8>,
+}
+
+/// The evidence store's read, of the one hold it kept.
+impl KeptStatements for SignedHold {
+    fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
+        Ok((wanted == &self.stated.commitment).then(|| {
+            serde_json::from_value(json!({
+                "commitment": wanted,
+                "salt": snapshot_support::base64url(&HOLD_SALT),
+                "bytes": snapshot_support::base64url(&self.bytes),
+            }))
+            .unwrap()
+        }))
+    }
+}
+
+/// The salt every hold of these tests is kept beside.
+const HOLD_SALT: [u8; 32] = [7; 32];
+
+/// Redeems `hold` of `holds` for `order` (in `session`) at `now`, as the quote it was made for is accepted, its
+/// bytes read from the store as the store keeps them.
+fn redeem<'a>(
+    holds: &'a mut Holds,
+    hold: &SignedHold,
+    reserve: &Id,
+    order: &Id,
+    session: Option<&Id>,
+    now: &Timestamp,
+) -> Result<Redeemed<'a>, HoldError> {
+    let transaction = id(&hold.statement.statement.transaction);
+    holds.redeem(
+        Redemption {
+            transaction: &transaction,
+            reserve,
+            order,
+            session,
+            quote: AcceptedQuote {
+                record: &hold.record_id,
+                candidate: &hold.candidate,
+            },
+            now,
+        },
+        &mut hold.clone(),
+    )
 }
 
 impl SignedHold {
@@ -1529,22 +1615,30 @@ fn hold_of(
         envelope(&deployment(), HOLD_SHAPE, reserve, 1_900, body),
         &statements_key(reserve, 1),
     );
+    let mut stated = stated_entry(
+        HOLD_SHAPE,
+        reserve,
+        1_900,
+        2_000,
+        Some(About {
+            order: None,
+            segment: None,
+            transaction: Some(id(transaction)),
+        }),
+    );
+    stated.commitment = serde_json::from_value(json!({
+        "algorithm": "sha-256",
+        "value": rutent_prov::module::wire::sha256(&[HOLD_SALT.as_slice(), &bytes].concat()),
+    }))
+    .unwrap();
     SignedHold {
         statement: serde_json::from_slice(&bytes).expect("a hold statement"),
-        stated: stated_entry(
-            HOLD_SHAPE,
-            reserve,
-            1_900,
-            2_000,
-            Some(About {
-                order: None,
-                segment: None,
-                transaction: Some(id(transaction)),
-            }),
-        ),
+        stated,
         receipt: receipt(7),
         record_id: record.record_id().clone(),
         record_digest,
+        candidate: chosen(record).candidate_id.clone(),
+        bytes,
     }
 }
 
