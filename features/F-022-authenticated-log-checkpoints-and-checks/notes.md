@@ -521,16 +521,20 @@ signature is verified under that same key).
 - **Findings and the coordinator's rulings (not fixed here; outside this row's files).**
   1. `AuditLog::open` re-attributes nothing: a store holding entries marked `verified` that no kept statement
      bears out opens fine (tested), so on the reopen path `G-09` rests on `unproven` being run by a checker with
-     evidence access. Ruling: re-attribution on opening goes to a new row, `T-022-08`; until it lands the residual
-     goes to `T-025-05`.
+     evidence access. Ruling: re-attribution on opening goes to a new row, `T-022-08` (wave 25, before `T-022-07` edits
+     `audit-check`; it also gives `audit-check` an optional `--evidence DIR` read); until it lands the residual goes
+     to `T-025-05`, which reads that row's diff.
   2. `core-orch` writes `relayed_by: None` at five sites (`snapshot/statements.rs:320`, `reversal/journal.rs:142`,
      `segments/journal.rs:109`, `arrival/journal.rs:93`, `rounds/journal.rs:76`), whatever `Kept::restates` says.
-     Ruling: `F-020`'s, with `T-024-02` (the assembly may route statements through `Statements`).
+     Ruling: `F-020`'s, with `T-024-02` (the assembly may route statements through `Statements`). Row: `T-020-28`
+     (wave 26).
   3. A `decide` entry whose `who` is not the request's `caller` is admitted (probed), and a stated entry's `role` is
      the writer's label that no relation reads (probed: a verified provider statement claimed in the customer's role
-     is recorded so). Ruling: both go to `T-020-21` as contract relations.
+     is recorded so). Ruling: both go to `T-020-21` as contract relations; its row now lists them, (12) `decision-is-for-its-caller`
+     and (13) the role check in `attribute()`.
   4. A maker's resend of its own statement and a relay's copy passed off as the maker's with the same presenter
-     identity read alike; only `Presented::presented_by` tells them apart. Ruling: a residual for `T-025-05`.
+     identity read alike; only `Presented::presented_by` tells them apart. Ruling: a residual for `T-025-05`, whose
+     row now lists it, with the checkpoint store's unsigned cursor records (`T-022-04`).
 - **`unproven` holds what the append does** (after approval): the envelope's `deployment` is the one given (the
   deployment's own, a new argument) and the entry's `about.transaction` is the body's transaction (none where the
   body names none, and a statement about an order or segment names one), beside commitment, maker, shape, time, key
