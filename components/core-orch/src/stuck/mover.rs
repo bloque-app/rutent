@@ -199,6 +199,21 @@ pub struct Stated {
     pub outcome: Option<Resolved>,
 }
 
+impl From<&crate::segments::Late> for Stated {
+    fn from(late: &crate::segments::Late) -> Self {
+        use crate::segments::Says;
+        Stated {
+            receipt: late.receipt.clone(),
+            outcome: match late.says {
+                Says::Settled => Some(Resolved::Done),
+                Says::Failed => Some(Resolved::Failed),
+                Says::Unknown => Some(Resolved::Unknown),
+                Says::Nothing => None,
+            },
+        }
+    }
+}
+
 /// Why a statement wasn't taken as evidence of a move's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotTaken {
@@ -456,6 +471,11 @@ impl Delivering<'_> {
             .get_mut(&slot)
             .ok_or(NotTaken::NoMove)?;
         let receipt = step.append_stated(parts.log)?;
+        // A statement the log recorded unattributed rests on no key: it is evidence of nothing, and no entry of the
+        // log's may rest on it.
+        if is_receipt_of(&receipt, &step.entry) {
+            return Err(NotTaken::Unattributable);
+        }
         Ok(Stated { receipt, outcome })
     }
 
@@ -599,6 +619,21 @@ impl Delivering<'_> {
 }
 
 impl Resolutions for Delivering<'_> {
+    /// The provider's own answer to the move, as the log holds it attributed, once the move is done on it: the
+    /// evidence the part's `stuck_resolved` rests on (`REQ-ORD-39`). A move that was never answered, or whose
+    /// answer the log recorded unattributed (its key unknown to it), has none.
+    fn evidence_of(&self, effect: &Receipt) -> Option<Receipt> {
+        let Some(Kept::Flight(flight)) = self.mover.kept.get(&key(effect)) else {
+            return None;
+        };
+        if flight.verdict != Some(Resolved::Done) || flight.uncarried {
+            return None;
+        }
+        let answer = flight.answer.as_ref()?;
+        let receipt = answer.receipt.as_ref()?;
+        (!is_receipt_of(receipt, &answer.entry)).then(|| receipt.clone())
+    }
+
     fn may_have_handed_over(&self, effect: &Receipt) -> bool {
         match self.mover.kept.get(&key(effect)) {
             Some(Kept::Flight(flight)) => flight.carried,

@@ -1683,7 +1683,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
                 core: &actor,
             },
             Resolved::Done,
-            &stated.receipt,
+            &stated,
         )
     })
     .expect("reported");
@@ -1707,7 +1707,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
                 outcome: Resolved::Done,
                 report,
                 reported_with: &stated.receipt,
-                evidence: &others.receipt,
+                evidence: &others,
                 core: &actor,
             },
         )
@@ -1841,7 +1841,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 core: &actor,
             },
             Resolved::Failed,
-            &holders.receipt,
+            &holders,
         )
     })
     .expect("reported");
@@ -1875,7 +1875,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 outcome: Resolved::Failed,
                 report,
                 reported_with: &holders.receipt,
-                evidence: &others.receipt,
+                evidence: &others,
                 core: &actor,
             },
         )
