@@ -3054,6 +3054,111 @@ fn a_charge_in_another_asset_is_raised_and_never_passed() {
     assert_eq!(channel.raised.len(), 1);
 }
 
+/// A charge stated in another asset than the segment's is raised marked as having no formula (`no_formula`), beside
+/// the maximum of nothing the contract holds it to: the raise says a formula no more allows nothing but that none
+/// covers the asset. The raise goes through the real log, whose check admits the mark only for an asset other than the
+/// planned segment's own.
+// verifies: REQ-QTE-5
+#[test]
+fn charge_in_another_asset_than_the_segments_is_raised_marked_as_having_no_formula() {
+    let mut world = World::over(Platform::settling());
+    world.ran();
+    let mut charges = Charges::new();
+    let mut channel = Channel {
+        raised: Vec::new(),
+        deliver: true,
+    };
+    let terms = Terms::new();
+    let other = rutent_contracts::provider_role::Denomination {
+        id: "EURC".to_owned(),
+        decimals: 6,
+    };
+    let mut foreign = charged_on(&world, "100", "5000");
+    foreign.charged_in = Some(other.clone());
+    let mark = world.log.len();
+    let Ok(Checked::Flagged(flagged)) = world.charge(&mut charges, &terms, &mut channel, &foreign)
+    else {
+        panic!("a charge in another asset is raised");
+    };
+    let Difference::Charge {
+        maximum,
+        asset,
+        no_formula,
+        ..
+    } = &flagged.raise.difference
+    else {
+        panic!("a charge difference");
+    };
+    assert_eq!(
+        no_formula,
+        &Some(rutent_contracts::core_internal::NoFormula::ForThisAsset),
+        "it says no formula covers the asset"
+    );
+    assert_eq!(
+        maximum.as_str(),
+        "0",
+        "beside the maximum the contract holds it to"
+    );
+    assert_eq!(asset, &other);
+    assert_eq!(channel.raised.len(), 1);
+    assert_eq!(
+        &channel.raised[0].difference, &flagged.raise.difference,
+        "the operator was told the same"
+    );
+    // The log admits the marked raise: the segment's plan counts in another `from` asset.
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
+/// A charge in the segment's own asset is held to its formula and is never marked: not where its asset is not stated,
+/// and not where it is stated as the segment's own, above the formula or within it.
+// verifies: REQ-QTE-5, AC-14
+#[test]
+fn charge_in_the_segments_own_asset_is_not_marked() {
+    let mut world = World::over(Platform::settling());
+    world.ran();
+    let mut charges = Charges::new();
+    let mut channel = Channel {
+        raised: Vec::new(),
+        deliver: true,
+    };
+    let terms = Terms::new();
+    let own = wallet_tuple().from.asset;
+    let mark = world.log.len();
+
+    // Above the formula, its asset not stated.
+    let unstated = charged_on(&world, "6000", "5000");
+    let Ok(Checked::Flagged(a)) = world.charge(&mut charges, &terms, &mut channel, &unstated)
+    else {
+        panic!("a charge above its formula is raised");
+    };
+    // Above the formula, stated as the segment's own asset.
+    let mut stated = charged_on(&world, "6000", "5000");
+    stated.segment = id("p1-s1");
+    stated.provider = id(RESERVE);
+    stated.tuple = snapshot_support::deposit_tuple(RESERVE);
+    stated.result = world.result_of("p1-s1");
+    stated.started_at = world.started_at("p1-s1");
+    stated.charged_in = Some(own.clone());
+    let Ok(Checked::Flagged(b)) = world.charge(&mut charges, &terms, &mut channel, &stated) else {
+        panic!("a charge above its formula is raised");
+    };
+    for raise in [&a.raise, &b.raise] {
+        let Difference::Charge {
+            maximum,
+            asset,
+            no_formula,
+            ..
+        } = &raise.difference
+        else {
+            panic!("a charge difference");
+        };
+        assert_eq!(no_formula, &None, "a formula covers it: nothing to mark");
+        assert_eq!(maximum.as_str(), "5000", "the formula's own maximum");
+        assert_eq!(asset, &own);
+    }
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+}
+
 // Over a log that attributes, as the audit log does (`F-020` notes, "journal receipts from the log") ---------------
 
 /// The statements of `log` from `from` on, each the entry the log recorded: its writer handed it in unverified, and

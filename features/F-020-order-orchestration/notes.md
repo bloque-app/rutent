@@ -3931,3 +3931,36 @@ one-line local fix of this function.
 Run once per rule, under a hard timeout, nothing hung. The three journals of the list that check no receipt
 (`quote`, `arrival`, `rounds`, `segments`, `snapshot`) and `stuck`'s, which handles its statements by `append_stated`,
 have no rule of this kind to switch off: no test is added to them.
+
+## T-020-29: the charge raise says when a fee is in an asset no formula covers
+
+Branch `f-020/t-020-29-no-formula-marker`, from `m3` at `7ac373aa`.
+
+- **The writer.** `Charges::check` (`quote/charge.rs`) sets `Difference::Charge.no_formula` to `for_this_asset` exactly
+  where it raises a charge whose `charged_in` is some other asset than its tuple's `from` asset, the one branch that
+  already raised against a `maximum` of `0` with no terms. Every other raise leaves it absent: a charge held to a
+  formula, including one whose `charged_in` is stated as the segment's own asset (which goes through the formula, as
+  before). A charge of nothing in another asset still raises nothing.
+- **Tests** (`components/core-orch/tests/reversal.rs`, beside `T-020-14`'s, which pass unchanged):
+  `charge_in_another_asset_than_the_segments_is_raised_marked_as_having_no_formula` [`REQ-QTE-5`] and
+  `charge_in_the_segments_own_asset_is_not_marked` [`REQ-QTE-5`, `AC-14`]. Each raise goes through the log's
+  `admit_entry` (`admitted_from`), so the contract's `no-formula-marks-a-charge-in-another-asset` row admits the
+  marked raise (the plan's `from` asset differs from EURC) and `Raise::check` holds `maximum` at `0` beside it. The
+  second test covers the own-asset charge unstated and stated, both above the formula, naming the formula's own maximum.
+- **Red first.** Before the change the first test failed on its assertion (`left: None`, `right: Some(ForThisAsset)`);
+  the second passed from the start, as a guard against over-marking, and was watched red by the rule-off below. A first
+  version of the second test was refused by the log for a test artefact (a charge of the exchange's segment named the
+  wallet as provider, so the result's maker was not the provider); the test now uses the reserve's own segment, as
+  `T-020-14`'s does. No Core bug.
+- **Defaults** (reversible, fail closed): the mark is set from `charged_in` against the tuple's `from` asset in Core, not
+  inferred from `maximum == 0`; a charge in another asset raises with no terms named, as `T-020-14` already did.
+- **Gaps.** The simulated providers cannot state a fee in their segment's out asset, so no conformance scenario runs a
+  marked raise through the assembled Core; the case is held by `core-orch`'s `World` and the log's replay. Owner: the
+  sim is `T-024-14`'s (edits `conformance/src/sim`); a scenario is `F-024`'s to add once the sim can.
+
+| Rule switched off | Tests that go red |
+|---|---|
+| the mark is not set on a charge in another asset (`no_formula: None`) | `charge_in_another_asset_than_the_segments_is_raised_marked_as_having_no_formula` |
+| the mark is set on every raise, the own-asset ones too | `charge_in_the_segments_own_asset_is_not_marked`, and `T-020-14`'s `a_charge_is_raised_on_its_result_and_the_terms_that_bound_its_segment` (the log refuses the mark on an own-asset charge) |
+
+Each run once, nothing hung.
