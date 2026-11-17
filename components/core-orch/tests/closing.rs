@@ -8,9 +8,11 @@ mod snapshot_support;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, GeneralEntry, Operator};
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Attribution, DeploymentOperator, Destination, Entry, FeeTo, MismatchKind,
-    PublicMovement, Receipt, ReplayFound, Role, RouteEnd, Through, What, admit_entry,
+    Actor, ActorKind, Attribution, DeploymentOperator, Destination, Difference, Entry, FeeTo,
+    MismatchKind, Outcome, PublicEndMismatch, PublicFigures, PublicMovement, Raise, Receipt,
+    ReplayFound, Role, RouteEnd, Through, VerifiedEntry, Violation, What, admit_entry,
 };
 use rutent_contracts::provider_role::{
     Advertisement, Denomination, EvidenceGrade, OuterNode, RESULT_SHAPE, Statement,
@@ -19,7 +21,9 @@ use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, Timestamp}
 use rutent_core_orch::closing::{
     Books, Closing, Evidenced, Moved, PublicRecords, Unadmitted, admits,
 };
-use rutent_core_orch::segments::{Graded, Grading, ProvidersWord, Short, ToGrade};
+use rutent_core_orch::rounds::Fresh;
+use rutent_core_orch::segments::{Graded, Grading, ProvidersWord, RaiseDesk, Short, ToGrade};
+use rutent_core_orch::snapshot::{Clock, Reading};
 use rutent_evidence::replay::RecordedSegment;
 use rutent_evidence::{
     Finality, Movement, MovementId, NetworkRules, PublicNetwork, ReorgRule, SimulatedNetwork,
@@ -2510,4 +2514,738 @@ fn a_charged_gross_segment_closes_on_what_the_network_moved_at_each_end() {
         (D.0, D.1),
     ));
     assert!(!d.is_empty());
+}
+
+// --- A non-final public end's mismatch, recorded and raised (`T-020-22`) ----------------------------------------------
+
+/// The network's record of the withdrawal's movement on `co-ach`, `(destination, asset, amount)`, where the network's
+/// own matching ties the movement to `ledger-in-holding`: the matching says where it was meant to go, the record what
+/// it did.
+fn record_of_the_withdrawal(nets: &mut Networks, record: (&str, &str, &str)) {
+    nets.nets.remove("co-ach");
+    nets.moved("co-ach", "tx-w", "ach-77", record.0, record.1, record.2);
+    if let Some(moved) = nets
+        .moved
+        .get_mut(&("co-ach".to_owned(), "tx-w".to_owned()))
+    {
+        moved.destination = "ledger-in-holding".into();
+    }
+}
+
+/// The matching record: where the matching says, the asset and the amount the withdrawal took in.
+const MATCHES: (&str, &str, &str) = ("ledger-in-holding", "COP", W.0);
+
+fn mismatches(whats: &[What]) -> Vec<&What> {
+    whats
+        .iter()
+        .filter(|w| matches!(w, What::PublicMismatch { .. }))
+        .collect()
+}
+
+/// The receipt of the result `segment` of the log's order states.
+fn result_of(log: &Log, segment: &str) -> Receipt {
+    log.entries()
+        .into_iter()
+        .find_map(|(r, e)| match e {
+            Entry::Stated(s) if s.about.as_ref()?.segment.as_ref()?.as_str() == segment => Some(r),
+            _ => None,
+        })
+        .expect("the segment's result is in the log")
+}
+
+/// The receipts of the `count` entries a grading answered, which the log took just before the segment's
+/// `segment_settled`, the last entry of the log.
+fn receipts_of(log: &Log, count: usize) -> Vec<Receipt> {
+    let all = log.entries();
+    all[all.len() - 1 - count..all.len() - 1]
+        .iter()
+        .map(|(r, _)| r.clone())
+        .collect()
+}
+
+impl Part<'_> {
+    /// Tells `grading` the receipts of the entries it answered for the segment at `place`, as the segments do.
+    #[allow(clippy::too_many_arguments)]
+    fn recorded(
+        &self,
+        grading: &mut dyn Grading,
+        place: usize,
+        provider: &str,
+        transaction: &str,
+        bytes: &[u8],
+        amount_out: &str,
+        receipts: &[Receipt],
+    ) {
+        self.with(
+            place,
+            provider,
+            transaction,
+            bytes,
+            (amount_out, amount_out),
+            &no_fee(),
+            &receipt(0),
+            |settled| grading.recorded(settled, receipts),
+        );
+    }
+}
+
+/// The log as orchestration's handle: each entry admitted by the real citation table; the first `down` appends the
+/// log can't take now.
+struct Wire<'a> {
+    log: &'a Log,
+    down: usize,
+}
+
+impl rutent_contracts::core_internal::calls::Log for Wire<'_> {
+    fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.down > 0 {
+            self.down -= 1;
+            return Err(AppendFailure::Unavailable);
+        }
+        self.log
+            .admit(entry.entry().clone())
+            .map_err(|why| AppendFailure::Refused(Violation(Box::leak(why.into_boxed_str()))))
+    }
+}
+
+/// The operator's channel: what reached it, and whether it reaches.
+struct Channel {
+    raised: Vec<Raise>,
+    reaches: bool,
+}
+
+impl Operator for Channel {
+    fn raise(&mut self, raise: &Raise) -> Delivery {
+        self.raised.push(raise.clone());
+        if self.reaches {
+            Delivery::Delivered
+        } else {
+            Delivery::Undelivered
+        }
+    }
+}
+
+struct Counter(u32);
+
+impl Fresh for Counter {
+    fn id(&mut self) -> Id {
+        self.0 += 1;
+        id(&format!("raise-{}", self.0))
+    }
+}
+
+struct Noon;
+
+impl Clock for Noon {
+    fn now(&self) -> Reading {
+        Reading {
+            seconds: 1_794_000_000,
+            nanos: 0,
+        }
+    }
+}
+
+/// What `grading` raises now, over `log`, the first `down` appends of which the log can't take.
+fn raise_now(
+    grading: &mut dyn Grading,
+    log: &Log,
+    channel: &mut Channel,
+    ids: &mut Counter,
+    down: usize,
+) -> Result<(), AppendFailure> {
+    let mut wire = Wire { log, down };
+    let core = actor("rutent-core", Role::Core);
+    grading.raise(RaiseDesk {
+        log: &mut wire,
+        clock: &Noon,
+        fresh: ids,
+        operator: channel,
+        core: &core,
+    })
+}
+
+fn raises_in(log: &Log) -> Vec<(Raise, Outcome)> {
+    log.entries()
+        .into_iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(VerifiedEntry {
+                what: What::Raise { raise },
+                outcome,
+                ..
+            }) => Some((raise, outcome)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn figures(destination: &str, asset: &str, amount: &str) -> PublicFigures {
+    PublicFigures {
+        destination: id(destination),
+        asset: id(asset),
+        amount: Amount::new(amount).unwrap(),
+    }
+}
+
+/// The withdrawal, the first segment of the fixture's route, a non-final one at the public `co-ach`: its network's
+/// record contradicts what its reserve said (the amount). The segment settles on its reserve's signed word as it would
+/// had the record matched, and the contradiction is recorded: its order, segment and node, the movement, the figure
+/// that differs and what each said, resting on the reserve's result. The log admits it. Nothing else is taken: no
+/// movement is held as evidencing the segment.
+// verifies: REQ-ORD-33, REQ-AUD-1
+#[test]
+fn non_final_segment_whose_public_record_contradicts_the_provider_is_recorded_as_a_mismatch_and_still_settles()
+ {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "99000000"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (cites, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    assert_eq!(cites.as_str(), "ev-ord-1-0");
+    assert_eq!(
+        named(&whats),
+        [(
+            "ev-ord-1-0".into(),
+            "p1-s1".into(),
+            EvidenceGrade::SignedByProvider,
+            "reserve-bank-co".into(),
+            None
+        )],
+        "settles on the reserve's signed word, as it does when the network's record says nothing of it"
+    );
+    let found = mismatches(&whats);
+    assert_eq!(found.len(), 1, "one mismatch: {whats:?}");
+    let What::PublicMismatch {
+        order,
+        segment,
+        node,
+        movement,
+        found,
+        moved,
+        stated,
+        rests_on,
+    } = found[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(order.as_str(), "ord-1");
+    assert_eq!(segment.as_str(), "p1-s1");
+    assert_eq!(node.network, "co-ach");
+    assert_eq!(movement, &moved_of("co-ach", "ach-77"));
+    assert_eq!(*found, PublicEndMismatch::WrongAmount);
+    assert_eq!(moved, &figures("ledger-in-holding", "COP", "99000000"));
+    assert_eq!(stated, &figures("ledger-in-holding", "COP", W.0));
+    assert_eq!(rests_on, &result_of(&log, "p1-s1"));
+    assert_eq!(
+        closing.evidences("co-ach", "ach-77"),
+        None,
+        "a movement that contradicts its segment evidences nothing"
+    );
+}
+
+fn moved_of(network: &str, movement: &str) -> PublicMovement {
+    moved(network, movement, None).unwrap()
+}
+
+/// A wrong amount, a wrong destination and a wrong asset are each recorded, naming the figure that differs, in the
+/// order the movement's check reads them: the destination, then the asset, then the amount.
+// verifies: REQ-ORD-33
+#[test]
+fn a_wrong_amount_a_wrong_destination_and_a_wrong_asset_are_each_recorded() {
+    let cases = [
+        (
+            ("elsewhere", "COP", W.0),
+            PublicEndMismatch::WrongDestination,
+        ),
+        (
+            ("ledger-in-holding", "USD", W.0),
+            PublicEndMismatch::WrongAsset,
+        ),
+        (
+            ("ledger-in-holding", "COP", "1"),
+            PublicEndMismatch::WrongAmount,
+        ),
+        // Two figures wrong: the check names the first it reads.
+        (
+            ("elsewhere", "USD", "1"),
+            PublicEndMismatch::WrongDestination,
+        ),
+    ];
+    for (record, expected) in cases {
+        let route = route(None);
+        let (catalogue, mut nets, books) = fixture_world();
+        record_of_the_withdrawal(&mut nets, record);
+        let log = Log::default();
+        let part = Part::new(
+            "ord-1",
+            &route,
+            end("polygon", "acct-9", ("USDC", 6), D.1),
+            &log,
+        );
+        let mut closing = Closing::new();
+        let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+        let (_, whats) = settles(part.grade(
+            &mut grading(&catalogue, &nets, &books, &mut closing),
+            0,
+            "reserve-bank-co",
+            "tx-w",
+            &w,
+            W.1,
+        ));
+        let found = mismatches(&whats);
+        assert_eq!(found.len(), 1, "{record:?}: {whats:?}");
+        let What::PublicMismatch {
+            found,
+            moved,
+            stated,
+            ..
+        } = found[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*found, expected, "{record:?}");
+        assert_eq!(moved, &figures(record.0, record.1, record.2), "{record:?}");
+        assert_eq!(
+            stated,
+            &figures(MATCHES.0, MATCHES.1, MATCHES.2),
+            "{record:?}"
+        );
+    }
+}
+
+/// A non-final segment whose public record matches records no mismatch, and neither does one the network can't yet
+/// say anything of: an unknown movement, a pending one, one on another network.
+// verifies: REQ-ORD-33
+#[test]
+fn non_final_segment_whose_public_record_matches_records_no_mismatch() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, MATCHES);
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    assert!(mismatches(&whats).is_empty(), "{whats:?}");
+    // The network knows no such movement: nothing contradicts, nothing is recorded.
+    let (catalogue, nets, books) = {
+        let (c, mut n, b) = fixture_world();
+        n.moved.insert(
+            ("co-ach".to_owned(), "tx-w2".to_owned()),
+            Moved {
+                id: MovementId::new("ach-unknown").unwrap(),
+                destination: "ledger-in-holding".into(),
+            },
+        );
+        (c, n, b)
+    };
+    let log = Log::default();
+    let part = Part::new(
+        "ord-2",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w2", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut Closing::new()),
+        0,
+        "reserve-bank-co",
+        "tx-w2",
+        &w,
+        W.1,
+    ));
+    assert!(mismatches(&whats).is_empty(), "{whats:?}");
+}
+
+/// A mismatch is raised to the operator as a `public_end` difference citing the mismatch's entry, and recorded, `done`
+/// where it reached the operator and `failed` where it didn't, once however often the grading is asked to raise; it
+/// changes nothing else: the log takes the raise's entry and no other, and the segment's settlement is the same. A
+/// raise whose record the log couldn't take is recorded when it can, never raised twice; after a restart, a mismatch
+/// the log holds with no raise is raised, and one raised is not raised again.
+// verifies: REQ-ORD-9
+#[test]
+fn mismatch_at_a_non_final_end_raises_the_operator_and_changes_nothing_else() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "99000000"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (_, whats) = settles(part.grade(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1));
+    let receipts = receipts_of(&log, whats.len());
+    let at = whats
+        .iter()
+        .position(|w| matches!(w, What::PublicMismatch { .. }))
+        .expect("a mismatch");
+    let (mut channel, mut ids) = (
+        Channel {
+            raised: Vec::new(),
+            reaches: true,
+        },
+        Counter(0),
+    );
+    // Nothing is raised before the segments hand over the receipts of what was recorded.
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert!(channel.raised.is_empty());
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    let before = log.entries().len();
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+    let raise = &channel.raised[0];
+    assert_eq!(
+        raise.difference,
+        Difference::PublicEnd {
+            order: id("ord-1"),
+            segment: id("p1-s1"),
+            found: PublicEndMismatch::WrongAmount,
+            moved: figures("ledger-in-holding", "COP", "99000000"),
+            stated: figures("ledger-in-holding", "COP", W.0),
+        }
+    );
+    assert_eq!(
+        raise.cites,
+        [receipts[at].clone()],
+        "it cites the mismatch's entry"
+    );
+    assert_eq!(
+        raises_in(&log),
+        [(raise.clone(), Outcome::Done {})],
+        "recorded as delivered"
+    );
+    assert_eq!(
+        log.entries().len(),
+        before + 1,
+        "the raise's entry is all the log took: no input, no effect, no state change"
+    );
+    // Once, however often it is asked, and again with the same receipts, as when the segment's settling is run again.
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+    assert_eq!(raises_in(&log).len(), 1);
+
+    // A restart that lost Core's record: the log holds the raise, so the mismatch isn't raised again.
+    let mut rebuilt = Closing::recorded(&log.entries());
+    let mut again = grading(&catalogue, &nets, &books, &mut rebuilt);
+    raise_now(&mut again, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+    assert_eq!(raises_in(&log).len(), 1);
+}
+
+/// A raise that didn't reach the operator is recorded `failed`; one whose record the log couldn't take is recorded
+/// when it can and raised once; and a mismatch the log holds with no raise, after a restart, is raised.
+// verifies: REQ-ORD-9
+#[test]
+fn a_raise_is_recorded_as_it_was_delivered_and_made_once_across_an_unavailable_log_and_a_restart() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "99000000"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (_, whats) = settles(part.grade(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1));
+    let receipts = receipts_of(&log, whats.len());
+    part.recorded(&mut ev, 0, "reserve-bank-co", "tx-w", &w, W.1, &receipts);
+    let (mut channel, mut ids) = (
+        Channel {
+            raised: Vec::new(),
+            reaches: false,
+        },
+        Counter(0),
+    );
+    // The log can't take the raise's entry now: the raise went out, and is kept.
+    let down = rutent_core_orch::segments::APPEND_TRIES;
+    assert_eq!(
+        raise_now(&mut ev, &log, &mut channel, &mut ids, down),
+        Err(AppendFailure::Unavailable)
+    );
+    assert_eq!(channel.raised.len(), 1);
+    assert!(raises_in(&log).is_empty());
+    // Next time the log takes it, as built, and nothing is raised again.
+    raise_now(&mut ev, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1, "never raised twice");
+    let held = raises_in(&log);
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].1,
+        Outcome::Failed {},
+        "it didn't reach the operator"
+    );
+    assert_eq!(held[0].0, channel.raised[0]);
+
+    // A restart between the mismatch's record and its raise: the log holds the mismatch and no raise.
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut closing),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    let receipts = receipts_of(&log, whats.len());
+    let at = whats
+        .iter()
+        .position(|w| matches!(w, What::PublicMismatch { .. }))
+        .unwrap();
+    let mut rebuilt = Closing::recorded(&log.entries());
+    let mut after = grading(&catalogue, &nets, &books, &mut rebuilt);
+    let mut channel = Channel {
+        raised: Vec::new(),
+        reaches: true,
+    };
+    raise_now(&mut after, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(
+        channel.raised.len(),
+        1,
+        "a mismatch with no raise is raised"
+    );
+    assert_eq!(channel.raised[0].cites, [receipts[at].clone()]);
+    raise_now(&mut after, &log, &mut channel, &mut ids, 0).unwrap();
+    assert_eq!(channel.raised.len(), 1);
+    assert_eq!(raises_in(&log).len(), 1);
+}
+
+/// The mismatch is at the segment's planned public end, whichever side of the segment it is: the network a
+/// withdrawal takes the value from, or the one a non-final deposit takes it out to. Core holds this where the log
+/// can't (`T-020-21`'s README item).
+// verifies: REQ-ORD-33
+#[test]
+fn mismatch_node_is_the_segments_planned_public_end() {
+    // From the public side: the withdrawal's `co-ach`, its `to` a private node.
+    let route3 = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    record_of_the_withdrawal(&mut nets, ("ledger-in-holding", "COP", "1"));
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route3,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let (_, whats) = settles(part.grade(
+        &mut grading(&catalogue, &nets, &books, &mut Closing::new()),
+        0,
+        "reserve-bank-co",
+        "tx-w",
+        &w,
+        W.1,
+    ));
+    let What::PublicMismatch { node, movement, .. } = mismatches(&whats)[0] else {
+        unreachable!()
+    };
+    assert_eq!(node.network, "co-ach");
+    assert_eq!(movement.network.as_str(), "co-ach");
+
+    // To the public side: a deposit out to `polygon` that isn't the part's last, a fourth segment following.
+    let mut operations = serde_json::to_value(&route3).unwrap();
+    // It takes the value from `polygon` on and a last deposit ends the route, so each segment starts where the one
+    // before it ended.
+    let onward = json!({
+        "kind": "withdrawal",
+        "provider": "reserve-bank-co",
+        "from": { "node": { "network": "polygon" }, "asset": { "id": "USDC", "decimals": 6 } },
+        "to": { "node": "ledger-in", "asset": { "id": "USDC", "decimals": 6 } },
+        "amount_in": D.1,
+        "fee": { "asset": "USDC", "amount": "0" },
+        "amount_out": D.1,
+        "figures": ["f-w", "f-w-price", "f-confirm-w-100000000"],
+    });
+    let last = operations[2].clone();
+    operations.as_array_mut().unwrap().push(onward);
+    operations.as_array_mut().unwrap().push(last);
+    let route4 = route(Some(operations));
+    let (catalogue, mut nets, books) = fixture_world();
+    nets.moved("polygon", "tx-ord-2-2", "poly-55", "acct-9", "USDC", "1");
+    let log = Log::default();
+    let part = Part::new(
+        "ord-2",
+        &route4,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    part.settle_before(&mut ev, 2);
+    let d = deposit("tx-ord-2-2", json!([piece(3, "book-d", "reserve-wallet")]));
+    let (_, whats) = settles(part.grade(&mut ev, 2, "reserve-wallet", "tx-ord-2-2", &d, D.1));
+    let What::PublicMismatch {
+        node,
+        movement,
+        segment,
+        found,
+        ..
+    } = mismatches(&whats)[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(segment.as_str(), "p1-s3");
+    assert_eq!(node.network, "polygon");
+    assert_eq!(movement.network.as_str(), "polygon");
+    assert_eq!(*found, PublicEndMismatch::WrongAmount);
+}
+
+/// A part's final deposit is held to a public record: its contradiction records no mismatch (it settles nothing, and
+/// the deposit waits, naming why), and nothing is raised.
+// verifies: REQ-ORD-33
+#[test]
+fn final_deposit_whose_public_record_contradicts_its_reserve_records_no_mismatch() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    part.settle_before(&mut ev, 2);
+    nets.moved("polygon", "tx-ord-1-2", "poly-55", "acct-9", "USDC", "1");
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    let d = deposit("tx-ord-1-2", json!([piece(1, "poly-55", "polygon")]));
+    assert_eq!(
+        part.grade(&mut ev, 2, "reserve-wallet", "tx-ord-1-2", &d, D.1),
+        Graded::Waits(Short::NoPublicRecord(Some(
+            rutent_evidence::Unmatched::WrongAmount
+        )))
+    );
+    let mut channel = Channel {
+        raised: Vec::new(),
+        reaches: true,
+    };
+    raise_now(&mut ev, &log, &mut channel, &mut Counter(0), 0).unwrap();
+    assert!(channel.raised.is_empty());
+    assert!(raises_in(&log).is_empty());
+}
+
+/// A part's final deposit settled on the reserve's statement alone is refused, by Core, which waits for the public
+/// record (`Waits`), and by the log, which refuses a settlement a grading wrongly answered.
+// verifies: REQ-ORD-33, AC-32
+#[test]
+fn final_deposit_settled_on_a_statement_alone_is_refused_by_the_log_and_by_core() {
+    let route = route(None);
+    let (catalogue, nets, books) = fixture_world();
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    part.settle_before(&mut ev, 2);
+    // Core: the network knows no movement of the deposit, and the reserve's grade-1 claim is no record.
+    let d = deposit("tx-ord-1-2", json!([piece(1, "poly-55", "reserve-wallet")]));
+    assert!(matches!(
+        part.grade(&mut ev, 2, "reserve-wallet", "tx-ord-1-2", &d, D.1),
+        Graded::Waits(Short::NoPublicRecord(_))
+    ));
+    // The log: a grading that settled it on the reserve's word anyway.
+    struct Word;
+    impl Grading for Word {
+        fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
+            let mut middle = *settled;
+            middle.place = 0;
+            match ProvidersWord.grade(&middle) {
+                Graded::Settles { cites, mut entries } => {
+                    if let Some(Entry::Verified(v)) = entries.first_mut()
+                        && let What::Evidence { segment, .. } = &mut v.what
+                    {
+                        *segment = settled.segment.clone();
+                    }
+                    Graded::Settles { cites, entries }
+                }
+                waits => waits,
+            }
+        }
+    }
+    let (graded, admitted) = part.try_grade(&mut Word, 2, "reserve-wallet", "tx-ord-1-2", &d, D.1);
+    assert!(matches!(graded, Graded::Settles { .. }));
+    assert!(
+        admitted
+            .as_ref()
+            .is_err_and(|why| why.contains("never a statement alone")),
+        "{admitted:?}"
+    );
+}
+
+/// A part's final deposit settled on a public record of its movement and the reserve's statement is admitted: the
+/// cited entry is grade 1, naming the movement, and the reserve's own statement rests on its verified result.
+// verifies: REQ-ORD-33, AC-32
+#[test]
+fn final_deposit_settled_on_a_public_record_and_the_reserves_statement_is_admitted() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    nets.moved("polygon", "tx-ord-1-2", "poly-55", "acct-9", "USDC", D.1);
+    let log = Log::default();
+    let part = Part::new(
+        "ord-1",
+        &route,
+        end("polygon", "acct-9", ("USDC", 6), D.1),
+        &log,
+    );
+    let mut closing = Closing::new();
+    let mut ev = grading(&catalogue, &nets, &books, &mut closing);
+    part.settle_before(&mut ev, 2);
+    let d = deposit("tx-ord-1-2", json!([piece(1, "poly-55", "polygon")]));
+    // `grade` admits every entry and the `segment_settled` after them, or the test fails.
+    let (cites, whats) = settles(part.grade(&mut ev, 2, "reserve-wallet", "tx-ord-1-2", &d, D.1));
+    let evidence = named(&whats);
+    assert_eq!(cites.as_str(), evidence[0].0);
+    assert_eq!(evidence[0].2, EvidenceGrade::PublicRecord);
+    assert_eq!(evidence[0].4, moved("polygon", "poly-55", None));
+    assert_eq!(evidence[1].0, format!("{}.reserve", cites.as_str()));
+    assert_eq!(evidence[1].3, "reserve-wallet");
+    assert!(mismatches(&whats).is_empty());
 }

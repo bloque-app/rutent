@@ -129,7 +129,9 @@ pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
-pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
+pub use ports::{
+    Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade, Uses,
+};
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 
@@ -1153,9 +1155,22 @@ impl Segments {
         // this time: a check or raise that couldn't be recorded before is done now, and one done already is not
         // done again (`REQ-QTE-5`, `T-020-14`).
         let checked = self.check_charges(parts, live);
-        match (ran, checked) {
-            (Err(failure), _) | (Ok(_), Err(failure)) => Err(failure),
-            (Ok(ran), Ok(())) => Ok(ran),
+        // What the grading found that it raises, raised and recorded likewise, and once (`T-020-22`).
+        let raised = parts
+            .grading
+            .raise(RaiseDesk {
+                log: &mut *parts.log,
+                clock: parts.clock,
+                fresh: &mut *parts.fresh,
+                operator: &mut *parts.channel,
+                core: live.core,
+            })
+            .map_err(SegmentsError::Append);
+        match (ran, checked, raised) {
+            (Err(failure), _, _) | (Ok(_), Err(failure), _) | (Ok(_), Ok(()), Err(failure)) => {
+                Err(failure)
+            }
+            (Ok(ran), Ok(()), Ok(())) => Ok(ran),
         }
     }
 
@@ -1893,6 +1908,9 @@ impl Segments {
                     }
                 }
                 let evidence = self.append_graded(parts.log, at)?;
+                // What the grading answered is in the log: its entries' receipts, for a grading that raises on one.
+                let receipts = self.graded_receipts(at)?;
+                parts.grading.recorded(&settled, &receipts);
                 let state_evidence = stm::Id::new(evidence.as_str())
                     .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
                 self.input(
@@ -2172,6 +2190,24 @@ impl Segments {
             .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
         append_all(log, steps)?;
         Ok(cites.clone())
+    }
+
+    /// The receipts of the entries the segment's grading answered, in the order it answered them: all of them, once
+    /// they are appended.
+    fn graded_receipts(&self, at: &(String, String)) -> Result<Vec<Receipt>, SegmentsError> {
+        let (_, steps) = self
+            .flight(at)?
+            .graded
+            .as_ref()
+            .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
+        steps
+            .iter()
+            .map(|s| {
+                s.receipt
+                    .clone()
+                    .ok_or(SegmentsError::Plan("what a grading answered is appended"))
+            })
+            .collect()
     }
 
     /// Appends the segment's fee records, each once.
