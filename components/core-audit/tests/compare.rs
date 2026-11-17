@@ -798,16 +798,29 @@ fn comparison_is_a_pure_function_of_the_two_reports() {
 const PURE: [&str; 3] = ["report", "holding", "evidenced"];
 
 /// `source` without its comment lines, its whitespace folded to single spaces, so a declaration split across lines
-/// reads as one.
+/// reads as one, and none left round a path's `::`, a method's `.` or before a `(`, so `super :: x` and
+/// `o . raise (r)` read as `super::x` and `o.raise(r)`.
 fn flat_code(source: &str) -> String {
-    source
+    let mut flat = source
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join(" ")
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    for (spaced, tight) in [
+        (" ::", "::"),
+        (":: ", "::"),
+        (" .", "."),
+        (". ", "."),
+        (" (", "("),
+    ] {
+        while flat.contains(spaced) {
+            flat = flat.replace(spaced, tight);
+        }
+    }
+    flat
 }
 
 /// Whether `c` can be part of an identifier.
@@ -883,11 +896,19 @@ fn reach_of(code: &str) -> Vec<String> {
                 "imports outside the contracts and its siblings: use {declaration}"
             ));
         }
-        for capability in ["calls::", "Log", "Operator", "Clock"] {
-            if path.contains(capability) {
-                found.push(format!("imports {capability}: use {declaration}"));
-            }
+    }
+    // A capability, imported or named in place.
+    if code.contains("calls::") {
+        found.push("names the contract's calls".to_owned());
+    }
+    for capability in ["Log", "Operator", "Clock", "Comparisons"] {
+        if words(code, capability).next().is_some() {
+            found.push(format!("names {capability}"));
         }
+    }
+    // A child module, in a file of its own or inline, which the reader would not see.
+    if words(code, "mod").next().is_some() {
+        found.push("declares a module".to_owned());
     }
     // A path written in place, outside any `use`.
     for at in words(code, "super") {
@@ -958,6 +979,12 @@ fn comparison_modules_reach_nothing_that_moves_value() {
         let code = flat_code(&std::fs::read_to_string(&path).unwrap());
         let reach = reach_of(&code);
         assert!(reach.is_empty(), "{file}: {}", reach.join("; "));
+        // Nor a directory of child modules beside it.
+        let children = format!("{manifest}/src/compare/{file}");
+        assert!(
+            !std::path::Path::new(&children).exists(),
+            "{file} has child modules at {children}"
+        );
     }
     // The reader reads a sibling's braced group as one sibling.
     assert!(
@@ -992,6 +1019,27 @@ fn comparison_modules_reach_nothing_that_moves_value() {
             "a group reaching past the siblings",
             "use super::{holding::sum, detect::Compare};",
         ),
+        (
+            "spaces round a path's separators",
+            "fn s() -> usize { super :: detect :: NOT_A_GENERAL_ENTRY.len() }",
+        ),
+        (
+            "spaces round crate's",
+            "fn s() { let _ = crate :: log :: x; }",
+        ),
+        (
+            "spaces round std's",
+            "fn s() { let _ = std :: fs :: read(\"x\"); }",
+        ),
+        (
+            "a capability named in place, called with spaces",
+            "fn sneak<O: rutent_contracts::core_internal::calls::Operator>(\n    mut o: O,\n    r: &rutent_contracts::core_internal::Raise,\n) {\n    let _ = o . raise (r);\n}",
+        ),
+        (
+            "a child module",
+            "mod sneak;\nfn s() -> usize { sneak::reach().len() }",
+        ),
+        ("an inline child module", "mod sneak { pub fn x() {} }"),
     ] {
         assert!(
             !reach_of(&flat_code(sneak)).is_empty(),
@@ -1139,7 +1187,41 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
         "{short} {over} {equal}"
     );
 
-    // A sum past what an amount states can't be compared, and raises nothing.
+    // A sum past what an amount states whose difference from the balance an amount does state is that short; an
+    // over never passes the bound, the balance being an amount.
+    let max = "9".repeat(78);
+    let edge = holding(
+        "hold-edge",
+        &max,
+        &[("ord-1", &max), ("ord-2", "1")],
+        "checked",
+    );
+    let HoldingVerdict::Differs(Difference::Holding {
+        direction: Direction::Short,
+        ref by,
+        ..
+    }) = check_holding(&edge)
+    else {
+        panic!("{:?}", check_holding(&edge));
+    };
+    assert_eq!(by.amount().as_str(), "1");
+    let under = holding(
+        "hold-under",
+        &max,
+        &[("ord-1", "1"), ("ord-2", "2")],
+        "checked",
+    );
+    let HoldingVerdict::Differs(Difference::Holding {
+        direction: Direction::Over,
+        ref by,
+        ..
+    }) = check_holding(&under)
+    else {
+        panic!("{:?}", check_holding(&under));
+    };
+    assert_eq!(by.amount().as_str(), format!("{}6", "9".repeat(77)));
+
+    // A short past what an amount states can't be stated: it is raised as not comparable.
     let huge = "9".repeat(78);
     let reading = holding(
         "hold-huge",
@@ -1150,6 +1232,7 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
     let past = Difference::HoldingNotComparable {
         account: id("hold-huge"),
         word: Some(Word::Checked),
+        asset: Some(serde_json::from_value(asset("USDC", 6)).unwrap()),
         reason: HoldingIncomparable::SumPastTheBound,
     };
     assert_eq!(
@@ -1171,7 +1254,7 @@ fn holding_account_short_or_over_raises_the_operator_and_changes_nothing() {
     assert_eq!(
         serde_json::to_value(&raise.difference).unwrap(),
         json!({"kind": "holding_not_comparable", "account": "hold-huge", "word": "checked",
-               "reason": "sum_past_the_bound"})
+               "asset": asset("USDC", 6), "reason": "sum_past_the_bound"})
     );
     assert_eq!(last_raise(&log), Some(raise));
     assert_eq!(&log.borrow().entries()[..before.len()], &before[..]);
@@ -1390,6 +1473,7 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
             HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
                 account: id("hold-a"),
                 word: Some(Word::Checked),
+                asset: Some(usdc.clone()),
                 reason: HoldingIncomparable::EvidencedInAnotherAsset,
             })
         );
@@ -1399,10 +1483,24 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
             HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
                 account: id("hold-unread"),
                 word: None,
+                asset: None,
                 reason: HoldingIncomparable::NoReading,
             })
         );
     }
+    // Evidence summed past what an amount states, its difference from the balance an amount does state.
+    let max = "9".repeat(78);
+    let findings = value_evidenced_against_balances(
+        &[holding("hold-edge", &max, &[], "checked")],
+        &[
+            item_amount("hold-edge", &max),
+            item_amount("hold-edge", "1"),
+        ],
+    );
+    assert!(
+        matches!(&findings[0].verdict, HoldingVerdict::Differs(Difference::Holding { direction: Direction::Short, by, .. }) if by.amount().as_str() == "1"),
+        "{findings:?}"
+    );
 
     // Through the checks: each account that differs or can't be compared is raised, citing its check where it was
     // read and the entries its value is evidenced by, and nothing else changes.
@@ -1469,6 +1567,7 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
         Difference::HoldingNotComparable {
             account: id("hold-4"),
             word: Some(Word::Publisher),
+            asset: Some(serde_json::from_value(asset("USDC", 6)).unwrap()),
             reason: HoldingIncomparable::EvidencedInAnotherAsset,
         }
     );
@@ -1478,6 +1577,7 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
         Difference::HoldingNotComparable {
             account: id("hold-unread"),
             word: None,
+            asset: None,
             reason: HoldingIncomparable::NoReading,
         }
     );
@@ -1500,6 +1600,50 @@ fn value_evidenced_at_nodes_equals_the_holding_accounts_balances() {
         before,
         "the refused raise is not recorded"
     );
+
+    // A raise refused for good doesn't stop the accounts after it (the re-review's probe): each is still compared,
+    // checked and raised, and the first refusal is answered once all are done.
+    let good = compare
+        .holding_reading(&holding("hold-rest-x", "0", &[], "checked"))
+        .unwrap();
+    let (before, raised_before) = (log.borrow().len(), desk.raised().len());
+    let readings = [
+        holding("hold-x", "30", &[], "checked"),
+        holding("hold-y", "30", &[], "checked"),
+    ];
+    let evidence = [
+        Evidenced {
+            evidence: stand_in(9_999),
+            ..item_amount("hold-x", "10")
+        },
+        Evidenced {
+            evidence: good.clone(),
+            ..item_amount("hold-y", "10")
+        },
+    ];
+    let answer = compare.evidenced_against_balances(&readings, &evidence);
+    assert!(
+        matches!(answer, Err(AppendFailure::Refused(_))),
+        "{answer:?}"
+    );
+    assert_eq!(
+        desk.raised().len(),
+        raised_before + 2,
+        "hold-y's over is raised after hold-x's refusal"
+    );
+    assert_eq!(
+        &kinds(&log)[before..],
+        [
+            "holding_check:observed",
+            "holding_check:observed",
+            "raise:done"
+        ]
+    );
+    let after = last_raise(&log).unwrap();
+    assert!(
+        matches!(&after.difference, Difference::Holding { account, direction: Direction::Over, .. } if account == &id("hold-y"))
+    );
+    assert_eq!(after.cites[1], good);
 }
 
 /// A receipt of no entry of any test's log, at `index`: for the pure comparison, which reads no receipt.

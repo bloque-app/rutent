@@ -641,12 +641,13 @@ failed open. This round needed a contract change, made under that rule's lift fo
     refuses one whose two assets are one (`raise-of-reports-not-comparable-in-one-asset`), and accepts equal amounts
     where the assets differ (`raise-of-reports-of-one-amount-in-two-units`). Chosen over an optional
     `received_asset` on `reports`, which would have let `reports` carry equal amounts and weakened its rule.
-  - `holding_not_comparable { account, word?, reason }`, `reason` one of `evidenced_in_another_asset`,
-    `no_reading`, `sum_past_the_bound` (`HoldingIncomparable`). `word` is present exactly when a balance was read,
-    so never for `no_reading`, where there is no balance whose word it could be; the schema (`if`/`then`/`else`) and
-    `Raise::check` both hold it.
-  - Four valid fixtures, three invalid (one Rust rule, two schema rules); README's rule, shape and record tables and
-    the changelog. `Raise::check`'s refusal text gained "two reports in two assets or units"; it still contains the
+  - `holding_not_comparable { account, word?, asset?, reason }`, `reason` one of `evidenced_in_another_asset`,
+    `no_reading`, `sum_past_the_bound` (`HoldingIncomparable`). `word` and `asset` (the account's, as its balance
+    was read) are present exactly when a balance was read, so never for `no_reading`, where there is no balance
+    whose word or asset they could be; the schema (`if`/`then`/`else`) and `Raise::check` both hold it. The asset is
+    in the raise because `holding_check` names none (added on re-review).
+  - Five valid fixtures (reports in two units and in two assets among them), five invalid (one Rust rule, four
+    schema rules); README's rule, shape and record tables and the changelog. `Raise::check`'s refusal text gained "two reports in two assets or units"; it still contains the
     old text, so existing tests matching it hold.
   - The other users of `Difference` in the workspace: the only exhaustive match is `Raise::check`; the rest
     (`relations.rs`, `core-orch`'s charge and stuck raises, the scenarios' tests) use `let ... else`, `matches!` or a
@@ -657,14 +658,20 @@ failed open. This round needed a contract change, made under that rule's lift fo
   log's entry that evidences the value, so a raise about an account cites what it rests on; an account read cites its
   check and those entries, an unread one those entries alone (no check is recorded for it: there is no reading).
 - **Defaults taken this round** (fail closed, reversible):
-  7. A per-order or evidenced sum past 78 digits is past every balance, by more than an amount can state: it is
-     raised as `holding_not_comparable` with `reason: sum_past_the_bound` and the balance's word, never as a
-     `short` with a `by` that would understate it.
+  7. A balance is compared with the held or evidenced amounts by walking them against it, never forming the sum,
+     so a sum past 78 digits whose short is one an amount states is that `short` (held `[10^78-1, 1]` against
+     `10^78-1` is short by 1). Only a short past what an amount states is raised as `holding_not_comparable` with
+     `reason: sum_past_the_bound`, the balance's word and the account's asset, never as a `short` with a `by` that
+     would understate it. An over is never past the bound, being at most the balance. (The first cut of this round
+     called every such sum past every balance by more than an amount states; the re-review showed it wrong.)
   8. A raise for `INV-1` cites the check (where read) and every distinct evidence receipt at the account, in the
      evidence's order.
   9. A deterministic refusal of a raise's record is answered `AppendFailure::Refused`, which no caller retries;
      only an unavailable log is `Unavailable`. The contract allows it (`Refused` is the variant for a broken rule),
-     but see gap 6.
+     but see gap 6. In `INV-1`'s check over many accounts a refusal (of a check's record or a raise's) doesn't stop
+     the accounts after it: each is still compared, checked and raised, and the first refusal is answered at the
+     end; an unavailable log stops the run, and the caller runs it again (added on re-review, which found the first
+     refusal stopping every account after it, the fail-open class this row closes).
   10. `Receipt` is allowed in a pure module (`Evidenced` holds one): it is a plain value with no method reaching the
       log. The structure test no longer forbids it.
 - Defaults 2 and 5 above are replaced: different assets or units are raised, and a `NotComparable` verdict is raised.
@@ -672,11 +679,18 @@ failed open. This round needed a contract change, made under that rule's lift fo
 - **Gaps added, with owners.**
   6. `AppendFailure`'s doc says nothing was appended; a comparison answered `Refused` because its raise's record was
      refused has appended its own record (the pair or check) first, and the operator's channel was already handed the
-     raise. A comparison-specific answer, or a note on `Comparisons` that the comparison's record stands, is the
-     contract author's (`core-internal`), with the caller's handling `F-020`'s, which has no caller of `Comparisons`
-     yet.
-  7. `holding_not_comparable` names no asset; the operator reads the account's asset from its check's entry and the
-     cited evidence. A richer shape, if the operator's channel (`F-023`, `T-023-02`) needs it, is a contract change.
+     raise. In `INV-1`'s check over many accounts it is more: the answer `Refused` follows a run in which every other
+     account was checked, raised and recorded, so the log and the operator hold all of that, and only the refused
+     record is missing; the answer doesn't say which account it was (the operator saw its raise, and the log holds its
+     check). A comparison-specific answer, or a note on `Comparisons` that the comparison's records stand and naming
+     the refused one, is the contract author's (`core-internal`), with the caller's handling `F-020`'s, which has no
+     caller of `Comparisons` yet. A check's record refused with no evidence to cite leaves its raise with nothing to
+     rest on, which `Raise::check` refuses before delivery: that account is not raised, and its refusal is the one
+     answered if it came first.
+  7. Closed on re-review: `holding_check` names no asset, so `holding_not_comparable` now carries the account's
+     asset where a balance was read. For `no_reading` no account asset is known; the evidence's asset is the feed's
+     (`T-024-02`), in the entries the raise cites. The other asset of `evidenced_in_another_asset` isn't in the raise
+     either; if the operator's channel (`F-023`, `T-023-02`) needs it, that is a contract change.
 - **The structure test, hardened.** Every `use` is read whole up to its `;`, `pub`, `pub(crate)` or private and
   wherever it stands; `super::` reaches only the pure siblings (`report`, `holding`, `evidenced`), so neither
   `super::super`, `super::detect` nor `mod.rs`'s re-exports pass; a path written in place is read too; no crate named

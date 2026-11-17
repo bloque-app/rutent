@@ -735,8 +735,9 @@
   them in silence and `REQ-ORD-9`, `REQ-AUD-15` and `INV-1` failed open. Two new kinds: `reports_not_comparable`,
   naming the order, the segment and each party's figure as it stated it (`Reported`: amount and asset), which
   `Raise::check` refuses where the two assets are one; and `holding_not_comparable`, naming the account, why
-  (`HoldingIncomparable`: `evidenced_in_another_asset`, `no_reading`, or `sum_past_the_bound`, a sum past 78 digits
-  being past every balance by more than an amount states) and the balance's `word` exactly when a balance was read,
-  which the schema and `Raise::check` both hold. `Raise::check`'s rule names the new case. Four valid fixtures and
-  three invalid ones. Outside `contracts/`, `core-audit`'s `compare` raises each. (DEC-4, DEC-20, REQ-ORD-9,
+  (`HoldingIncomparable`: `evidenced_in_another_asset`, `no_reading`, or `sum_past_the_bound`, value held or
+  evidenced past the balance by more than an amount states) and the balance's `word` and the account's `asset`
+  exactly when a balance was read, since the check's entry names no asset; the schema and `Raise::check` both hold
+  that. `Raise::check`'s rule names the new case. Five valid fixtures (reports in two units and in two assets) and
+  five invalid ones. Outside `contracts/`, `core-audit`'s `compare` raises each. (DEC-4, DEC-20, REQ-ORD-9,
   REQ-AUD-15, INV-1, THR-107, T-022-05)

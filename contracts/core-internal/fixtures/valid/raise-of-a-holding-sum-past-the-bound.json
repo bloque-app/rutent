@@ -4,6 +4,10 @@
     "kind": "holding_not_comparable",
     "account": "hold-7",
     "word": "checked",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
     "reason": "sum_past_the_bound"
   },
   "cites": [

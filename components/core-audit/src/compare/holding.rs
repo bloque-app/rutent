@@ -21,73 +21,81 @@ pub enum HoldingVerdict {
     NotComparable(Difference),
 }
 
-/// That `account`'s balance, `word`'s where one was read, can't be compared, for `reason`.
+/// That `account`'s balance can't be compared, for `reason`; `read` is the balance's word and the account's asset,
+/// where a balance was read.
 pub fn not_comparable(
     account: &Id,
-    word: Option<Word>,
+    read: Option<(Word, &Denomination)>,
     reason: HoldingIncomparable,
 ) -> HoldingVerdict {
     HoldingVerdict::NotComparable(Difference::HoldingNotComparable {
         account: account.clone(),
-        word,
+        word: read.map(|(word, _)| word),
+        asset: read.map(|(_, asset)| asset.clone()),
         reason,
     })
 }
 
-/// The sum of `amounts`, or `None` where it passes what an amount can state (78 digits).
-pub fn sum<'a>(amounts: impl IntoIterator<Item = &'a Amount>) -> Option<Amount> {
-    amounts
-        .into_iter()
-        .try_fold(Amount::zero(), |total, a| total.checked_add(a))
-}
-
-/// Compares `balance` with `sum` for `account`, in `asset`, the balance being `word`'s: the one comparison every
-/// check of a holding account makes.
-pub fn judge(
+/// Compares `balance` with the sum of `held` for `account`, in `asset`, the balance being `word`'s: the one
+/// comparison every check of a holding account makes. It walks the amounts against the balance and never forms the
+/// sum, so a sum past what an amount states (78 digits) still gives its short where the short is one an amount
+/// states; only a short past that bound can't be stated, and it is raised as not comparable. An over is never past
+/// it, being at most the balance.
+pub fn judge<'a>(
     account: &Id,
     asset: &Denomination,
     word: Word,
     balance: &Amount,
-    sum: &Amount,
+    held: impl IntoIterator<Item = &'a Amount>,
 ) -> HoldingVerdict {
-    let (direction, by) = if balance < sum {
-        (Direction::Short, sum.checked_sub(balance))
-    } else if balance > sum {
-        (Direction::Over, balance.checked_sub(sum))
+    // What of the balance the amounts so far leave, and what they hold past it: one of the two is zero.
+    let (mut left, mut past) = (balance.clone(), Amount::zero());
+    for amount in held {
+        match left.checked_sub(amount) {
+            Some(rest) => left = rest,
+            None => {
+                let beyond = amount
+                    .checked_sub(&left)
+                    .expect("an amount above what is left exceeds it by an amount");
+                left = Amount::zero();
+                match past.checked_add(&beyond) {
+                    Some(total) => past = total,
+                    None => {
+                        return not_comparable(
+                            account,
+                            Some((word, asset)),
+                            HoldingIncomparable::SumPastTheBound,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let (direction, by) = if !past.is_zero() {
+        (Direction::Short, past)
+    } else if !left.is_zero() {
+        (Direction::Over, left)
     } else {
         return HoldingVerdict::Match;
     };
-    match by.and_then(|by| PositiveAmount::new(by.as_str())) {
-        Some(by) => HoldingVerdict::Differs(Difference::Holding {
-            account: account.clone(),
-            direction,
-            by,
-            asset: asset.clone(),
-            word,
-        }),
-        // The two differ, so their difference is above zero and inside what an amount states; were it not, it
-        // can't be stated, and is raised as such.
-        None => not_comparable(account, Some(word), HoldingIncomparable::SumPastTheBound),
-    }
+    HoldingVerdict::Differs(Difference::Holding {
+        account: account.clone(),
+        direction,
+        by: PositiveAmount::new(by.as_str()).expect("a short or an over is above zero"),
+        asset: asset.clone(),
+        word,
+    })
 }
 
 /// Checks a holding account's balance against the sum of what each order holds there. The balance keeps the word it
-/// was read under: a private node's is its publisher's, and a difference says so (`REQ-AUD-15`). A sum past what an
-/// amount can state is past every balance, by more than an amount states: it is raised as not comparable, so it
-/// fails closed and states no `by` it can't know.
+/// was read under: a private node's is its publisher's, and a difference says so (`REQ-AUD-15`). A short past what
+/// an amount can state is raised as not comparable, so it fails closed and states no `by` it can't know.
 pub fn check_holding(reading: &HoldingReading) -> HoldingVerdict {
-    let Some(held) = sum(reading.held_for.iter().map(|h| h.amount.amount())) else {
-        return not_comparable(
-            &reading.account,
-            Some(reading.word),
-            HoldingIncomparable::SumPastTheBound,
-        );
-    };
     judge(
         &reading.account,
         &reading.asset,
         reading.word,
         &reading.balance,
-        &held,
+        reading.held_for.iter().map(|h| h.amount.amount()),
     )
 }

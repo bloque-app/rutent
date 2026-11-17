@@ -1559,8 +1559,9 @@ pub enum HoldingIncomparable {
     EvidencedInAnotherAsset,
     /// Value is evidenced at an account no reading of its balance was given for (`INV-1`).
     NoReading,
-    /// The sum held or evidenced there passes what an amount can state (78 digits), so it is past every balance, by
-    /// more than an amount can state (`REQ-AUD-15`, `INV-1`).
+    /// The value held or evidenced there is past the balance by more than an amount can state (78 digits): a short
+    /// no `by` can state. A sum past the bound whose difference from the balance an amount states is a `holding`
+    /// difference instead (`REQ-AUD-15`, `INV-1`).
     SumPastTheBound,
 }
 
@@ -1618,6 +1619,14 @@ pub enum Difference {
             skip_serializing_if = "Option::is_none"
         )]
         word: Option<Word>,
+        /// The account's asset, in the unit its balance was read in: present exactly when a balance was read, so
+        /// absent for `no_reading`. The log's check entry names no asset, so the raise states it.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        asset: Option<Denomination>,
         /// Why it can't be compared.
         reason: HoldingIncomparable,
     },

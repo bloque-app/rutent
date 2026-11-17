@@ -3,6 +3,10 @@
   "difference": {
     "kind": "holding_not_comparable",
     "account": "hold-7",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
     "reason": "evidenced_in_another_asset"
   },
   "cites": [

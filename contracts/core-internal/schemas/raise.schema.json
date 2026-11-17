@@ -350,7 +350,7 @@
       }
     },
     "difference_holding_not_comparable": {
-      "description": "A holding account's balance can't be compared with the value held or evidenced there (REQ-AUD-15, INV-1). It names whose word the balance was exactly when a balance was read.",
+      "description": "A holding account's balance can't be compared with the value held or evidenced there (REQ-AUD-15, INV-1). It names whose word the balance was, and the account's asset, exactly when a balance was read.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -373,8 +373,12 @@
             "publisher"
           ]
         },
+        "asset": {
+          "description": "The account's asset, in the unit its balance was read in.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
         "reason": {
-          "description": "Why it can't be compared: value evidenced in another asset or unit than the account's, value evidenced at an account with no reading, or a sum past what an amount can state, so past every balance.",
+          "description": "Why it can't be compared: value evidenced in another asset or unit than the account's, value evidenced at an account with no reading, or value held or evidenced past the balance by more than an amount can state.",
           "enum": [
             "evidenced_in_another_asset",
             "no_reading",
@@ -394,14 +398,24 @@
       },
       "then": {
         "not": {
-          "required": [
-            "word"
+          "anyOf": [
+            {
+              "required": [
+                "word"
+              ]
+            },
+            {
+              "required": [
+                "asset"
+              ]
+            }
           ]
         }
       },
       "else": {
         "required": [
-          "word"
+          "word",
+          "asset"
         ]
       }
     }

@@ -144,7 +144,9 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
     /// each account read that differs or can't be compared it records the check and raises the difference, citing
     /// the check and the entries its value is evidenced by; for each account with value evidenced and no reading it
     /// raises that, citing those entries alone, as no check was read. It changes nothing else, and answers the
-    /// receipts of the checks it recorded.
+    /// receipts of the checks it recorded. A record the log refuses doesn't stop the accounts after it: each is still
+    /// checked and raised, and the first refusal is answered once all are done; an unavailable log stops it, and the
+    /// caller runs it again.
     pub fn evidenced_against_balances(
         &mut self,
         readings: &[HoldingReading],
@@ -152,7 +154,7 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
     ) -> Result<Vec<Receipt>, AppendFailure> {
         let at = self.now()?;
         let findings = value_evidenced_against_balances(readings, evidenced);
-        let mut receipts = Vec::new();
+        let (mut receipts, mut refused) = (Vec::new(), None);
         // The findings of the readings come first, in the readings' order, then the unread accounts'.
         for (place, finding) in findings.into_iter().enumerate() {
             let Some(difference) = finding.verdict.into_raise() else {
@@ -160,9 +162,16 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
             };
             let mut cites = Vec::new();
             if let Some(reading) = readings.get(place) {
-                let check = self.record_check(reading, &at)?;
-                cites.push(check.clone());
-                receipts.push(check);
+                match self.record_check(reading, &at) {
+                    Ok(check) => {
+                        cites.push(check.clone());
+                        receipts.push(check);
+                    }
+                    Err(AppendFailure::Refused(violation)) => {
+                        refused.get_or_insert(violation);
+                    }
+                    Err(unavailable) => return Err(unavailable),
+                }
             }
             cites.extend(
                 evidenced
@@ -170,9 +179,18 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
                     .filter(|e| e.account == finding.account)
                     .map(|e| e.evidence.clone()),
             );
-            self.raise(difference, cites, &at)?;
+            match self.raise(difference, cites, &at) {
+                Ok(()) => {}
+                Err(AppendFailure::Refused(violation)) => {
+                    refused.get_or_insert(violation);
+                }
+                Err(unavailable) => return Err(unavailable),
+            }
         }
-        Ok(receipts)
+        match refused {
+            Some(violation) => Err(AppendFailure::Refused(violation)),
+            None => Ok(receipts),
+        }
     }
 }
 

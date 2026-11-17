@@ -8,7 +8,7 @@ use rutent_contracts::core_internal::{HoldingIncomparable, HoldingReading, Recei
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Amount, Id};
 
-use super::holding::{HoldingVerdict, judge, not_comparable, sum};
+use super::holding::{HoldingVerdict, judge, not_comparable};
 
 /// Value an order's evidence puts at a holding account: what the log's records of the order show resting there,
 /// read by whoever feeds the check. It is Core's own figure, apart from what the account says it holds.
@@ -50,24 +50,17 @@ pub fn value_evidenced_against_balances(
         let verdict = if here().any(|e| e.asset != reading.asset) {
             not_comparable(
                 &reading.account,
-                Some(reading.word),
+                Some((reading.word, &reading.asset)),
                 HoldingIncomparable::EvidencedInAnotherAsset,
             )
         } else {
-            match sum(here().map(|e| &e.amount)) {
-                Some(total) => judge(
-                    &reading.account,
-                    &reading.asset,
-                    reading.word,
-                    &reading.balance,
-                    &total,
-                ),
-                None => not_comparable(
-                    &reading.account,
-                    Some(reading.word),
-                    HoldingIncomparable::SumPastTheBound,
-                ),
-            }
+            judge(
+                &reading.account,
+                &reading.asset,
+                reading.word,
+                &reading.balance,
+                here().map(|e| &e.amount),
+            )
         };
         findings.push(Finding {
             account: reading.account.clone(),

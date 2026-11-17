@@ -402,7 +402,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-022-03` | evidence apart from the log, by reference; a party's or checker's copy; an erasure | `Evidence::keep`; `Evidence::fetch` and `check_read` of `reads: evidence`; `erasure` |
 | `T-022-04` | checkpoints | outside the log, in `CMP-CORE-AUDIT`'s own store (ADR-0005) |
 | `T-022-05` | a report pair compared; a holding account checked; a difference raised | `report_pair`; `holding_check`; `raise` |
-| `T-022-05` | two reports that can't be compared, in two assets or one asset in two units (`THR-107`); a holding account that can't be compared, its value evidenced in another asset or unit, at an account with no reading, or summed past what an amount states (`INV-1`) | raise, `difference: reports_not_comparable` (each figure as stated); raise, `difference: holding_not_comparable` (`reason`, and the balance's `word` where one was read) |
+| `T-022-05` | two reports that can't be compared, in two assets or one asset in two units (`THR-107`); a holding account that can't be compared, its value evidenced in another asset or unit, at an account with no reading, or short by more than an amount states (`INV-1`) | raise, `difference: reports_not_comparable` (each figure as stated); raise, `difference: holding_not_comparable` (`reason`, and the balance's `word` and the account's `asset` where one was read, since the check's entry names no asset) |
 | `T-022-06` | the bulk measures; the regulator's read | `measure`; `check_read` with `reads: trail` |
 
 ### The rules, and where each is enforced
@@ -423,7 +423,7 @@ can't state, each checked by the shape's `check`, which every enclosing shape's 
 | `ReportPair` | a segment's two reports are by two different parties |
 | `HoldingReading` | a holding account reading names each order once |
 | `HandedOver` | a segment record's moves lead from the version it began on to the one it runs on, each from the version the one before moved to; a proxy use names its operation exactly when it asked for a secret |
-| `Raise` | its difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units (`reports_not_comparable`); a holding that can't be compared (`holding_not_comparable`) names its balance's word exactly when a balance was read, so never for `no_reading` (the schema states that part too) |
+| `Raise` | its difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units (`reports_not_comparable`); a holding that can't be compared (`holding_not_comparable`) names its balance's word and the account's asset exactly when a balance was read, so never for `no_reading` (the schema states that part too) |
 | `VerifiedEntry` | an entry's outcome is one its call can have: a policy call's `permitted`, `refused` or `not_known`; an effect's `to_take_effect`; a result's `done`, `failed` or `unanswered`; a raise's, a command's and an erasure's `done` or `failed`; any other record's `observed`. A session entry names the session exactly when it was opened, ending after it was asked for and no later than its `until` |
 | `What::Input` | the recorded input holds to the state-machine contract's own `check` |
 | `StatedEntry` | its relay is an actor other than its maker (a sibling of one publisher may relay); its `about` names something |

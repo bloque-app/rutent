@@ -245,7 +245,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 89] = [
+const SCHEMA_RULES: [SchemaRule; 91] = [
     (
         "raise-of-a-charge-without-its-result",
         &[("/difference", "required")],
@@ -509,12 +509,22 @@ const SCHEMA_RULES: [SchemaRule; 89] = [
     (
         "raise-of-an-unread-account-naming-a-word",
         &[("/difference", "not")],
-        "a holding that can't be compared names its balance's word exactly when a balance was read",
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
     ),
     (
         "raise-of-a-holding-not-comparable-without-its-word",
         &[("/difference", "required")],
-        "a holding that can't be compared names its balance's word exactly when a balance was read",
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-an-unread-account-naming-an-asset",
+        &[("/difference", "not")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-holding-not-comparable-without-its-asset",
+        &[("/difference", "required")],
+        "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
     ),
     (
         "raise-citing-nothing",
