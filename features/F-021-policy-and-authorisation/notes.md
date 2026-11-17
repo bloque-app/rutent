@@ -1388,3 +1388,32 @@ probe.
 - The agent's `REQ-CPL-9` scenario is `T-024-11`. The writer of `reliance` entries is `T-020-23` for a reserve's
   judgement and `T-024-12` for the verifier stand-in at the assembly; the production verifier half stays `F-053`'s
   (`M5`, `DEC-16`). Policy's answer to an unreachable order-record source (`funds`) is `T-021-08`.
+
+## T-021-08
+
+Branch `f-021/t-021-08-unreachable-record`, from `m3` at `b8c416e0`. Edits `components/core-authz/src/funds/` only.
+
+- **What changed.** `held_to_the_register` reads an order's parties from the log's acceptance and, where the log holds
+  none, from `Sources::order_record`. Its three replies are now told apart: `Given` supplies the parties, `Missing`
+  (the source says nothing of the order) leaves none and the order is refused `not_permitted` as another's is
+  (`REQ-AUZ-3`), and `Unreachable` answers not known with `VerifierUnreachable`, the cause an unreachable account
+  register already gives, and nothing is recorded as permitted (`REQ-AUZ-5`, `AC-17`). A refusal the consultation made
+  already stands, as this function is reached only with none; a not known from the consultation stays as it is.
+- **Callers.** The only reader of `order_record` is this check. Every caller of `authorise` already treats a not
+  known as "nothing moves, show the cause": the filing (`arrival/filing.rs`, both sites) and intake (both sites)
+  wait with `PolicyNotKnown`, and hand-on returns the decision to its caller. None falls through to an allow: each
+  proceeds only on `decision.permit().is_some()`. No change outside `core-authz` was needed.
+- **Defaults, reversible.** The cause is `VerifierUnreachable`, as the account register's unreachable gives (the
+  contract has no cause of its own for an order record); an order the log holds an acceptance of never asks the record,
+  so its source being out of reach changes nothing there.
+- **Gaps.** None found.
+- **Tests, written first.** The fix landed in the working tree while the first test run waited on the shared lock for
+  about an hour, so the tests were not seen red before it; the rule-off below is the red run. The existing
+  `an_order_filed_before_its_acceptance_is_known_by_its_record` is renamed to the row's third test, and the test
+  source's record becomes a `Reply` so it can be made unreachable.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib funds::`, file restored and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an unreachable order record is not known (read as no record again) | `unreachable_order_record_gives_not_known_and_nothing_moves` |
+  | a record the source says nothing of stays a refusal | not switched off: it is the behaviour before this row, held by `order_record_the_source_knows_nothing_of_is_refused_as_anothers` |

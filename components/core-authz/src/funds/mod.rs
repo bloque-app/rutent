@@ -74,7 +74,8 @@
 //! ruling on the payer gap), so the first authorisation has its payer too. A filing on an automatic deposit asks before
 //! its acceptance is built, so an order the log holds no acceptance of is read from its record, which the filing hands
 //! over as the order opens ([`Sources::order_record`]); there the payer is the holder of the account the value arrived
-//! in. An order neither the log nor a record holds has no requester and no payer, so no one gives it new terms or sets its origin account; such an authorisation is
+//! in. A record out of reach is not known, with the cause every unreachable input gives, and nothing moves on it
+//! (`REQ-AUZ-5`, `T-021-08`). An order neither the log nor a record holds has no requester and no payer, so no one gives it new terms or sets its origin account; such an authorisation is
 //! refused `not_permitted`, as one of another's order is, so a caller can't tell an order that doesn't exist from one
 //! that isn't its own (the coordinator's ruling on `T-023-01`'s question). An account the register knows nothing of
 //! is refused the same way.
@@ -557,10 +558,23 @@ impl<L: PolicyLog + Recorded + Receipted, P, S: Sources> Engine<L, P, S> {
         // An order the log holds no acceptance of yet is known by its record, where the order was filed on an
         // automatic deposit: authorised before it is accepted. An order neither knows has no parties, and is refused
         // as another's is.
-        if parties.is_none()
-            && let Reply::Given(recorded) = self.sources.order_record(&a.order)
-        {
-            parties = Some(recorded);
+        if parties.is_none() {
+            match self.sources.order_record(&a.order) {
+                Reply::Given(recorded) => parties = Some(recorded),
+                // A record the source says nothing of is no record, and the order is refused as another's below.
+                Reply::Missing => {}
+                // A record out of reach is not known, never no record: the order may well be the caller's, and
+                // refusing it would say it is another's (`REQ-AUZ-5`). A refusal the consultation made already
+                // stands (`held_to_the_register` is reached with none), and nothing moves on not known.
+                Reply::Unreachable => {
+                    return match consulted {
+                        Answer::NotKnown { .. } => consulted,
+                        _ => Answer::NotKnown {
+                            cause: NotKnownCause::VerifierUnreachable,
+                        },
+                    };
+                }
+            }
         }
         if let Some(class) = self.authorised.refuses(&mut self.log, a, parties.as_ref()) {
             return held(consulted, Some(class));
