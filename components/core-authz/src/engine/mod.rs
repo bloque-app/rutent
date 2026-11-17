@@ -1215,6 +1215,8 @@ mod tests {
                 // this list when policy's rows add the operator's permission to erase (core-internal's README).
                 Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
                 Action::AskReversal { .. } => {}
+                // Not yet in policy's tables, as `erase_statement` isn't: core-internal's `T-020-21` round added it.
+                Action::AskStatus { .. } => unreachable!("not yet in policy's tables"),
                 // Decided and never carried out, so no effect follows to test here: its own tests are `roles`' and
                 // `parties`' (`reversal-carrier-rests-on-its-acceptance`).
                 Action::AcceptFault { .. } => unreachable!("tested apart: it has no effect"),
@@ -2490,6 +2492,10 @@ mod tests {
         ("Reads", true),
         ("Charges", true),
         ("StuckOrders", true),
+        // A policy trait core-internal's `T-020-21` round added, which no row of policy's has built yet: marked
+        // unbuilt here so this guard stays green, and owed back to `true` with the engine's `decline_outcome`
+        // (`T-021-09`). Until then nothing implements it and no report is declined.
+        ("OutcomeDeclines", false),
         ("PersonQuestions", true),
         ("Comparisons", false),
         ("Measures", false),

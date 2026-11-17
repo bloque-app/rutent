@@ -47,3 +47,10 @@ directory (see `README.md`).
 - The guard expands a use's braces at every depth and reads `super::` from the file's own module, so the host's
   `use super::...` counts as a use of the state machine's module (the round-3 review's low 6). (DEC-4, DEC-20,
   T-020-01)
+- core-internal's next round, folded into its unreleased 1.0.0 (`T-020-21`): a notice's summary, a public end's
+  mismatch and its raise, the checkpoint and checkpoint-opening schemas, a decline of an outcome report on its own
+  call, an arrival's earlier arrival, an operation that ended with no answer, the holding account's record's node
+  and label, a late status asked as a decided action, a stuck part's evidence, a charge no formula covers, and rows
+  for a decision's caller, a statement's role and an arrival answer's question; router-api's `Operation::stated_out`
+  documents its `None`, folded into its unreleased 4.0.0. Each contract's changelog names the changes. (DEC-4,
+  DEC-20, T-020-21)

@@ -1,0 +1,30 @@
+{
+  "raise": "raise-9",
+  "difference": {
+    "kind": "public_end",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "found": "wrong_destination",
+    "moved": {
+      "destination": "acct-ref-9",
+      "asset": "USDC",
+      "amount": "999000000"
+    },
+    "stated": {
+      "destination": "acct-ref-9",
+      "asset": "USDC",
+      "amount": "1000000000"
+    }
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 72,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

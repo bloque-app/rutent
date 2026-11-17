@@ -630,6 +630,11 @@ fn kind(entry: &Entry) -> &'static str {
         What::InputNotTaken { .. } => "input_not_taken",
         What::HoldingWithdrawal { .. } => "holding_withdrawal",
         What::ReversalCarrier { .. } => "reversal_carrier",
+        // Kinds core-internal's `T-020-21` round added, which the world this test reads holds none of.
+        What::DeclineOutcome { .. } => "decline_outcome",
+        What::NoticeSummary { .. } => "notice_summary",
+        What::PublicMismatch { .. } => "public_mismatch",
+        What::PartEvidence { .. } => "part_evidence",
     }
 }
 
@@ -1128,6 +1133,7 @@ fn no_platform_event_handed_to_the_log_is_missing_from_it() {
                 HandedOver::Limit { .. } => "limit",
                 HandedOver::SecretUse { .. } => "secret_use",
                 HandedOver::SegmentRecord { .. } => "segment_record",
+                HandedOver::OperationUnanswered { .. } => "operation_unanswered",
             }),
             _ => None,
         })

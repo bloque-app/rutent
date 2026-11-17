@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:checkpoint-opening",
+  "title": "Checkpoint opening",
+  "description": "What a checkpoint commits to, beside the log's root, and its salt: kept in CMP-CORE-AUDIT's own checkpoint store, outside the log, and handed to the checker with the history, never published (REQ-AUD-14, REQ-AUD-10, ADR-0005). With the history's root at its size, it opens its checkpoint's commitment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "shape",
+    "log",
+    "tick",
+    "salt",
+    "size"
+  ],
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:core-internal:checkpoint-opening"
+    },
+    "log": {
+      "description": "The log.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "tick": {
+      "description": "The tick, as its checkpoint has it.",
+      "$ref": "urn:rutent:core-internal:checkpoint#/$defs/tick"
+    },
+    "salt": {
+      "description": "The salt, 32 fresh bytes, base64url without padding.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "size": {
+      "description": "The number of entries the log held, whose root the checkpoint commits to.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+    }
+  }
+}

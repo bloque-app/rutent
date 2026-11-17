@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:raise",
   "title": "Raise",
-  "description": "A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an order, so a raise only detects (REQ-ORD-9, REQ-AUD-15, ADR-0009). That the difference is a real one (two amounts or times that differ, a charge above its maximum, two reports in two assets or units) is checked by the Rust types.",
+  "description": "A raise to the operator: a difference and the entries it rests on, and nothing that can move value or change an order, so a raise only detects (REQ-ORD-9, REQ-AUD-15, ADR-0009). That the difference is a real one (two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names) is checked by the Rust types.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -48,7 +48,8 @@
             "holding",
             "holding_not_comparable",
             "charge",
-            "settlement_time"
+            "settlement_time",
+            "public_end"
           ]
         }
       },
@@ -142,6 +143,21 @@
           "then": {
             "$ref": "#/$defs/difference_settlement_time"
           }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "public_end"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_public_end"
+          }
         }
       ]
     },
@@ -177,7 +193,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "maximum": {
-          "description": "Its formula's maximum.",
+          "description": "Its formula's maximum; where no_formula is set, no formula's, so nothing is allowed.",
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         },
         "asset": {
@@ -190,6 +206,10 @@
         "terms": {
           "description": "The receipt of the stated entry of the provider's signed terms (urn:rutent:provider-role:terms) whose formula the charge is above, in force at the segment's start: binding from the later of its made_at and its received_at, no later than the segment's move took effect. Absent where the provider stated none by then, so the price its route was priced on bound it.",
           "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "no_formula": {
+          "description": "Set where the charge is stated in an asset no formula covers: a formula carries no asset and counts in the segment's from asset only. Only a charge in another asset than the segment's is so marked, which the log holds (no-formula-marks-a-charge-in-another-asset, REQ-QTE-5). Absent for a charge held to a formula.",
+          "const": "for_this_asset"
         }
       }
     },
@@ -417,6 +437,73 @@
           "word",
           "asset"
         ]
+      }
+    },
+    "difference_public_end": {
+      "description": "A non-final segment's public record contradicts what its provider said it moved (REQ-ORD-33): the difference of a public_mismatch entry, raised and changing nothing else (ADR-0009). That the figure it names differs is checked by the Rust types.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "found",
+        "moved",
+        "stated"
+      ],
+      "properties": {
+        "kind": {
+          "const": "public_end"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "found": {
+          "$ref": "#/$defs/public_end_mismatch"
+        },
+        "moved": {
+          "description": "What the network moved.",
+          "$ref": "#/$defs/public_figures"
+        },
+        "stated": {
+          "description": "What the provider said it moved.",
+          "$ref": "#/$defs/public_figures"
+        }
+      }
+    },
+    "public_end_mismatch": {
+      "description": "Which figure differs, in the order the movement's check reads them: its destination, then its asset, then its amount.",
+      "enum": [
+        "wrong_destination",
+        "wrong_asset",
+        "wrong_amount"
+      ]
+    },
+    "public_figures": {
+      "description": "A movement's figures at a public end, as the network or the provider states them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination",
+        "asset",
+        "amount"
+      ],
+      "properties": {
+        "destination": {
+          "description": "The destination on the network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset, by its id on the network.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
       }
     }
   }

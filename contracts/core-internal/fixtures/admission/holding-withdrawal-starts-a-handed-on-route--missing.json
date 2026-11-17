@@ -4547,6 +4547,7 @@
       "order": "ord-2",
       "handed_on_from": "ord-9",
       "holder": "us-bank",
+      "node": "ledger-in",
       "record": {
         "log": "log-main",
         "index": 189,

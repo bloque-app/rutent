@@ -1223,6 +1223,7 @@ fn seed_arrival(
                     report,
                     notice: Some(notice),
                     part: split.then(|| id(plan.part_id.as_str())),
+                    earlier: None,
                 },
                 Outcome::Observed {},
             ),
