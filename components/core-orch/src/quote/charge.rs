@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Log, Operator};
 use rutent_contracts::core_internal::{
-    Actor, Difference, Entry, Outcome, Raise, Receipt, VerifiedEntry, What,
+    Actor, Difference, Entry, NoFormula, Outcome, Raise, Receipt, VerifiedEntry, What,
 };
 use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Timestamp, TupleKey};
@@ -233,14 +233,22 @@ impl Charges {
             };
             // A charge in another asset than the tuple's formula counts in is bounded by no formula, so any of it is
             // above what nothing allows: it is raised against a maximum of nothing, in the asset it is stated in,
-            // and never passed for want of a formula to hold it to (`REQ-QTE-5`).
+            // and never passed for want of a formula to hold it to (`REQ-QTE-5`). It is marked as having no formula,
+            // so the operator reads a fee no formula covers, not a formula that allows nothing; a charge in the
+            // segment's own asset, which a formula holds, never is.
             let verdict = match &charged.charged_in {
                 Some(other) if other != &charged.tuple.from.asset => {
                     if charged.charged.is_zero() {
                         Ok(())
                     } else {
                         let nothing = Amount::new("0").ok_or(ChargeError::NotTheTuplesProvider)?;
-                        Err((charged.charged.clone(), nothing, other.clone(), None))
+                        Err((
+                            charged.charged.clone(),
+                            nothing,
+                            other.clone(),
+                            None,
+                            Some(NoFormula::ForThisAsset),
+                        ))
                     }
                 }
                 _ => check_charge(formula, &charged.amount_in, &charged.charged).map_err(|flag| {
@@ -249,12 +257,13 @@ impl Charges {
                         flag.bound,
                         charged.tuple.from.asset.clone(),
                         terms.cloned(),
+                        None,
                     )
                 }),
             };
             let kept = match verdict {
                 Ok(()) => Kept::Within,
-                Err((amount, maximum, asset, terms)) => {
+                Err((amount, maximum, asset, terms, no_formula)) => {
                     let raise = Raise {
                         raise: desk.fresh.id(),
                         difference: Difference::Charge {
@@ -266,7 +275,7 @@ impl Charges {
                             asset,
                             result: charged.result.clone(),
                             terms: terms.clone(),
-                            no_formula: None,
+                            no_formula,
                         },
                         cites: std::iter::once(charged.result.clone())
                             .chain(terms)
