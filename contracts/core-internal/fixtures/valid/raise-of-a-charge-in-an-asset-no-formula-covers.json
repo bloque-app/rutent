@@ -1,0 +1,35 @@
+{
+  "raise": "raise-3",
+  "difference": {
+    "kind": "charge",
+    "order": "ord-17",
+    "segment": "seg-3",
+    "provider": "fx-desk",
+    "charged": "60000",
+    "maximum": "0",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "result": {
+      "log": "log-main",
+      "index": 134,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    "no_formula": "for_this_asset"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 134,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

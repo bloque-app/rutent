@@ -3574,3 +3574,143 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
 | `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |
 | `Terms::take` has no production caller (`T-020-14`, gap 1) | `M4`, `F-030` and `F-031`, in the same table |
 | The stand-in reserve's arrival-notice test (`T-020-18`'s hand-off to `F-024`) | `T-024-15` |
+
+## T-020-21: `core-internal`'s next round
+
+Branch `f-020/t-020-21-core-internal-round`, from `m3` at `c99e130a`. Edits `contracts/` (core-internal, and one doc of
+router-api), a `DEC-20` path, and only the consumer lines that compiling needs (named below).
+
+- **Versioning: folded into 1.0.0, no bump** (reversible default). The row asks for one `DEC-4` bump whose changelog
+  names each change. core-internal 1.0.0 is on no `develop` (`git show origin/develop:contracts/CONTRACTS` lists no
+  core-internal), so `PLAN.md` §4.4 and retrospective lesson 7 make folding into the unreleased major the rule, as
+  `T-022-05` did. The changelog's last entry names each item, by number. router-api's doc change folds into its own
+  unreleased 4.0.0 (`develop` has 3.0.0), with a changelog line. The contract guard against `origin/develop` reads
+  core-internal as a new contract.
+- **Item by item** (what was built, or why not):
+  1. *Notice summary*: `What::NoticeSummary {to: NoticeReceiver {party, role}, of: NoticeOf (order {order,
+     sequence} | raise {raise}), last_try: Count, ended: NoticeEnd (delivered | abandoned)}`, observed. Rows
+     `notice-summary-names-its-raise` (exists) and `one-summary-per-notice` (none other).
+  2. *`Operation::stated_out`*: doc only, router-api.
+  3. *Public-end mismatch*: `What::PublicMismatch {order, segment, node: OuterNode, movement, found:
+     PublicEndMismatch, moved, stated: PublicFigures, rests_on}`; the raise's `Difference::PublicEnd {order, segment,
+     found, moved, stated}`; Rust holds the named figure to differ, in both; row
+     `public-mismatch-rests-on-the-providers-result` (closing rows).
+  4. *Checkpoint shapes*: schemas `checkpoint` and `checkpoint-opening`; `Checkpoint`, `CheckpointOpening`, `Tick`,
+     `SignatureValue`, `CheckpointSignature`, the two shape enums and constants.
+  5. *Decline*: `What::DeclineOutcome {request: OutcomeDecline, decision}`, a decision kind (`is_decision`), on its
+     own trait `OutcomeDeclines`; row `outcome-decline-rests-on-its-report`; `one-report-per-effect` lets a new report
+     stand after a decline; `outcome-confirmation-rests-on-its-report` gains `declined`;
+     `outcome-confirmation-cites-verified-evidence` cites the decline's evidence.
+  6. *Earlier arrival*: `What::Arrival.earlier`; row `arrival-names-its-earlier-arrival` (reserve, deposit).
+  7. *Empty shortlist*: **already met** at `c99e130a`: "a shortlist may keep no provider" was folded into 1.0.0
+     (`T-020-01`), with `verified-entry-of-a-shortlist-record-keeping-no-provider` and the admission cases
+     `input-cites-its-decision-record--no-route-on-a-shortlist-keeping-none` (admitted) and
+     `--no-route-on-another-orders-empty-shortlist` (refused). Not built again; the named test runs those fixtures.
+     The writer is `T-020-25`'s.
+  8. *`HandedOver` item*: `HandedOver::OperationUnanswered {provider, transaction, ended_by: Token}`.
+  9. *Holding account's record*: the kind and the relation were **already met** (`holding_withdrawal` and
+     `handed-on-route-starts-on-its-holding-record`, folded in by `T-020-13`'s integration round 2, after the gap was
+     written). What was missing: its `node` (the row's test) and `REQ-ORD-40`'s label at a private node. Built:
+     `node` (required) and `publisher` (optional); `holding-withdrawal-starts-a-handed-on-route` gains `node`,
+     `holding-withdrawal-rests-on-its-record` gains `publisher`. Every fixture holding one was patched to name
+     `ledger-in` (insertions only).
+  10. *Final-deposit relation*: **already met**: `final-deposit-closes-on-a-public-record` (closing rows, `T-020-09`'s
+     review, H2b) holds a part's last deposit to grade 1 naming its movement and a verified statement of the
+     segment's provider. Not built again; the named test runs its cases. That the reserve's statement is a `result`
+     shape the row doesn't read; a verified statement bound to that segment is in practice one (residual, below).
+  11. *Late status and a later inner node*: `Action::AskStatus {order, segment, provider}`, decided and taken as an
+     effect, row `status-is-asked-of-the-segments-provider`. `reversal-rests-on-its-evidence` reads the reserve at
+     the segment's from-node (its `reserve` reading) instead of the order's origin reserve for the failed provider's
+     own word: at the first node they are the same reserve, so no existing case moved.
+  12. *`decision-is-for-its-caller`*: row (none to point to) on `decide`.
+  13. *Role check*: `attribute` refuses (`IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD`) a statement whose bytes bear its
+     claim out in a role its maker doesn't hold: the operator's maker as `operator`, any other as `provider` or
+     `verifier`.
+  14. *No-formula mark*: `Difference::Charge.no_formula: Option<NoFormula>` (`for_this_asset`); row
+     `no-formula-marks-a-charge-in-another-asset`. `maximum` stays required, `0` beside the mark.
+  15. *A stuck part's evidence*: `What::PartEvidence {evidence, order, part, grade, whose, rests_on}`; rows
+     `part-evidence-rests-on-statements` and `stuck-resolved-cites-its-parts-evidence`.
+  16. *Arrival answers*: `answer-follows-its-question` holds an `arrival-answer` to an `arrival-question`.
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0 (above);
+  - the decline on a trait of its own, `OutcomeDeclines`, so no `StuckOrders` implementer changes; nothing
+    implements it yet, so no report is declined and a wrong report holds its part;
+  - `Action::AskStatus` decided by policy, as `ask_reversal` is, so its question is appended before it is sent;
+    policy's role table answers `None` for it, so it is refused, as `erase_statement` is;
+  - `part_evidence` a kind of its own rather than an optional segment on `evidence`, so no reader of a segment's
+    evidence meets one without a segment;
+  - `stuck-resolved-cites-its-parts-evidence` as none other: it refuses a citation of another order's or part's
+    evidence, or of a segment's, and admits one with no entry, since Core appends none before `T-020-20`;
+  - the role a maker holds read from the log alone: the operator's maker, or any other as provider or verifier;
+    a mislabelled genuine statement refused rather than recorded unverified;
+  - the checkpoint shapes carry the contract's `$id`s as their `shape`; the commitment's computation stays
+    `core-audit`'s;
+  - a public end's figures as identifiers and an amount (`PublicFigures`), the destination an `Id` (128 characters,
+    the identifier pattern);
+  - the holding record's `node` the route's first segment's inner node; core-orch's `hand_on` fills it from the
+    linked route it recorded, refusing an outer start (`NotAHandedOnRoute`, unreachable after `proves_start`).
+- **Consumer lines changed to compile** (no behaviour): `core-orch` `arrival/mod.rs`, `arrival/filing.rs`
+  (`earlier: None`), `quote/charge.rs` (`no_formula: None`, as the row says), `hand_on/mod.rs` (`node`,
+  `publisher: None`; `T-020-17` edits the same module: a merge to watch); `core-authz` `roles/mod.rs`
+  (`AskStatus => None`), `parties/mod.rs` (`Scope::AskStatus`), `engine/mod.rs` (a test's exhaustive arm, and
+  its guard's table marking `OutcomeDeclines` unbuilt, `false`, until policy implements it);
+  `core-audit` `tests/log.rs` (two name maps); `conformance/scenarios/tests/segments_support/mod.rs`
+  (`earlier: None`).
+- **Red first.** The fixtures (by a generator in the scratch folder, `f020t/gen.py`) and the nineteen named tests in
+  `contracts/tests/core-internal.rs` came first, against the contract at `c99e130a`: all nineteen failed, on an
+  assertion or a panic reading a fixture, none on a compile error (the tests name fixtures, rows and one constant
+  only). Two of them, for the items already met (7, and the row's `route handed on whose first move rests on no
+  holding account record is refused`), failed only through the `node` the round patched into their histories; their
+  cases were in the table already and pass beside the shape. The shapes, schemas and rows followed.
+- **Histories the log refused, sorted.** After the shapes, `core-authz`'s unit tests went red on two test artefacts,
+  none a Core bug: three of them read `RELATIONS[0]` as the effect row, which the new `decision-is-for-its-caller`
+  had displaced (the row moved after `permit-backs-one-effect`, so `RELATIONS[0]` is the effect row again); and its
+  guard that every policy trait is built met `OutcomeDeclines` (marked unbuilt, above). No workspace history was
+  refused by a new row: Core's `decide` entries name their caller, its statements claim the role their maker holds,
+  and nothing appends an arrival answer, a decline, a part's evidence or a status ask yet.
+- **Gaps, with owners.**
+  1. Policy's answer to `decline_outcome` (`OutcomeDeclines` for the engine, as `confirm_outcome` is, `T-021-06`'s
+     roles): no row owns it; `T-020-20` needs it, and edits only `stuck/`. Owner: the lead, a row of `F-021`'s (or
+     `T-020-20` widened to `core-authz`'s `stuck`), which also flips the engine guard's `OutcomeDeclines` to `true`.
+  2. Policy's rule for `ask_status` (`roles` answers `None`): `T-020-27` needs a permitted ask. Owner: the lead, a
+     policy row (as for `erase_statement`).
+  3. `stuck-resolved-cites-its-parts-evidence` admits a `stuck_resolved` whose evidence has no entry, since Core
+     writes none until `T-020-20`; tightening it to "an entry exists" is a contract change after `T-020-20` lands.
+     Owner: the next `F-020` contract row.
+  4. The holding record's and a reversal's private-node label: the log can't tell a node declared private from the
+     catalogue. Residual, as before (`T-025-05` reads it).
+  5. `final-deposit-closes-on-a-public-record` holds the reserve's statement verified and the segment's, not of
+     `result` shape. A verified statement bound to the segment is in practice its result; residual, noted for
+     `T-020-22`.
+  6. A provider and a verifier are one role class to the log: a provider claiming `verifier` is not caught. Owner:
+     a later round with a catalogue read in `StatementKeys` (none in `M3`).
+  7. `T-022-05`'s gap 4 (a report's tolerance by increment and gross or net) was named for "`T-020-21`'s round" in
+     `F-022`'s notes but isn't in this row's list; not built. Owner: the lead.
+- **Rule-off table** (each switched off alone, `rutent-contracts`' tests run under a 600 s alarm, tree restored; none
+  hung):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `decision-is-for-its-caller` | `decision_whose_actor_is_not_the_requests_caller_is_refused`, the citation table's |
+  | `outcome-decline-rests-on-its-report`, and each of its fields `party`, `login`, `evidence`, `open` | `decline_of_a_report_naming_no_report_is_invalid`, the citation table's |
+  | `one-report-per-effect`'s "a declined report stands no more" | the same two |
+  | `outcome-confirmation-rests-on-its-report`'s `declined` | the same two |
+  | `outcome-confirmation-cites-verified-evidence` citing a decline's evidence | the citation table's |
+  | `stuck-resolved-cites-its-parts-evidence` | `stuck_resolved_citing_an_evidence_entry_that_names_another_part_is_refused`, the citation table's |
+  | `status-is-asked-of-the-segments-provider` | `request_for_a_providers_late_status_without_its_segment_is_invalid`, the citation table's |
+  | `arrival-names-its-earlier-arrival`, and its `reserve`, `deposit` | `arrival_naming_an_earlier_arrival_of_another_reserve_is_invalid`, the citation table's |
+  | `part-evidence-rests-on-statements` | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | its `verified` | the citation table's |
+  | its `about`, the "no segment" conjunct alone | none: the transaction-binding conjunct refuses the case too (kept for an unverified statement naming no transaction) |
+  | its `about`, whole | `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid`, the citation table's |
+  | `notice-summary-names-its-raise`; `one-summary-per-notice` | `notice_summary_entry_without_its_outcome_is_invalid`, the citation table's |
+  | `no-formula-marks-a-charge-in-another-asset`, and its `asset` | `charge_raise_marked_as_having_no_formula_whose_fee_is_in_the_segments_own_asset_is_refused`, the citation table's |
+  | `holding-withdrawal-rests-on-its-record`'s `publisher`; `holding-withdrawal-starts-a-handed-on-route`'s `node` | `holding_account_withdrawal_record_without_its_node_is_invalid`, the citation table's |
+  | `reversal-rests-on-its-evidence` keyed back on the failed provider (not the from-node's reserve) | `reversal_at_a_later_inner_node_rests_on_that_nodes_confirming_party`, the citation table's |
+  | `answer-follows-its-question`'s arrival shapes; an operation taken for an arrival question | `arrival_answer_with_no_arrival_question_before_it_is_refused`, the citation table's |
+  | `public-mismatch-rests-on-the-providers-result`, and its `maker` | `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid`, the citation table's |
+  | its `verified`, `result`, `about` | the citation table's |
+  | `What::PublicMismatch`'s figure differs; a `public_end` raise is real | the fixture tests, `mismatch_record_of_a_non_final_public_end_without_its_segment_is_invalid` |
+  | `What::PartEvidence` rests on statements, at least one | the fixture tests, `evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid` |
+  | `attribute`'s role a maker holds | `the_log_not_the_writer_attributes_a_stated_entry`, `verified_statement_recorded_in_a_role_its_maker_does_not_hold_is_refused` |
+  | schema: a summary's `ended`, a try from 1; a mismatch's `segment`; a decline's `report`; a holding record's `node`; a part's evidence's `part`; a status ask's `segment`; an unanswered operation's `transaction`; an opening's `salt`; a checkpoint's closed properties, its tick's pattern | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` and each item's named test |

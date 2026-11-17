@@ -574,6 +574,7 @@ impl Arrivals {
                 report: cites,
                 notice: Some(noted.commitment.clone()),
                 part,
+                earlier: None,
             };
             noted.arrival = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

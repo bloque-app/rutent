@@ -162,6 +162,11 @@ impl Operation {
     /// [`less_the_charge`](crate::provider_role::less_the_charge)); under `net`, and for an exchange, whose fee is in
     /// its from asset, the answer's `amount_out` as it stands. `tuple` is the tuple figure the operation cites;
     /// `None` where it isn't one, or the charge is above the answer's `amount_out`.
+    ///
+    /// `None` means nothing arrives by the answer: no `amount_out` the operation could state matches it, so it confirms
+    /// nothing, and a candidate through it is dropped as delivering nothing (the router states its fee and `0` out,
+    /// arriving with nothing, or delivering nothing short of the destination). It is never read as the answer's
+    /// `amount_out`.
     pub fn stated_out(&self, tuple: &Figure, answer_out: &str, answer_fee: &Fee) -> Option<String> {
         let terms = match &tuple.value {
             FigureValue::ReserveTuple { tuple } => &tuple.terms,

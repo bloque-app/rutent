@@ -173,6 +173,10 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
                 // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
                 Action::EraseStatement { .. } => None,
+                // Asking a segment's provider for a late status (core-internal's `T-020-21` round): no rule lets
+                // anyone ask it yet, so policy refuses it, failing closed, until policy's rows add one (a hand-off in
+                // core-internal's README).
+                Action::AskStatus { .. } => None,
                 // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds

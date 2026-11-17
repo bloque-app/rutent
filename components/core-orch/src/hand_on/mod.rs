@@ -1073,6 +1073,12 @@ impl HandOn {
         // The log's record of the start, on the holding account's own statement of it: the linked order's first move
         // rests on it (`handed-on-route-starts-on-its-holding-record`), and one statement starts one route
         // (`one-start-per-holding-record`).
+        // The node the route handed on starts at: an inner node, where the holding account holds the value.
+        let node = match &held.first.from.node {
+            rutent_contracts::provider_role::NodeRef::Inner(node) => Id::new(node.as_str()),
+            rutent_contracts::provider_role::NodeRef::Outer(_) => None,
+        }
+        .ok_or(HandOnError::NotAHandedOnRoute)?;
         let mut step = built_what(
             parts,
             start.core,
@@ -1080,7 +1086,9 @@ impl HandOn {
                 order: linked.clone(),
                 handed_on_from: held.from.clone(),
                 holder: held.reserve.clone(),
+                node,
                 record: start.statement.clone(),
+                publisher: None,
             },
         )?;
         let taken = Self::record_start(parts, &mut step, linked);

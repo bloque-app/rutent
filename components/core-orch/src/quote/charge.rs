@@ -266,6 +266,7 @@ impl Charges {
                             asset,
                             result: charged.result.clone(),
                             terms: terms.clone(),
+                            no_formula: None,
                         },
                         cites: std::iter::once(charged.result.clone())
                             .chain(terms)

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:checkpoint",
+  "title": "Checkpoint",
+  "description": "What the operator publishes for one tick of a schedule fixed in advance, whether or not the log moved: a short, fixed-size, signed commitment to the log's history and nothing else, no size, no root, no count and no salt (REQ-AUD-14, ADR-0005). Its signature is the log's own key's, over the RFC 8785 canonical JSON of the checkpoint without signature.value. What it commits to, and the salt, are its opening (urn:rutent:core-internal:checkpoint-opening), never published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "shape",
+    "log",
+    "tick",
+    "at",
+    "commitment",
+    "signature"
+  ],
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:core-internal:checkpoint"
+    },
+    "log": {
+      "description": "The log.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "tick": {
+      "$ref": "#/$defs/tick"
+    },
+    "at": {
+      "description": "When the tick fell on the schedule, to the second: the schedule's time, never the time of writing.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "commitment": {
+      "description": "SHA-256 over a domain, the log, the tick, a fresh salt, the log's size and its root, as CMP-CORE-AUDIT's checkpointer computes it: only an opening's holder can open it.",
+      "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+    },
+    "signature": {
+      "$ref": "#/$defs/signature"
+    }
+  },
+  "$defs": {
+    "tick": {
+      "description": "The tick on the schedule, as 16 lower-case hexadecimal digits, so a checkpoint's size never tells how far along the schedule it is.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "signature": {
+      "description": "The log's signature.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "key",
+        "value"
+      ],
+      "properties": {
+        "scheme": {
+          "description": "Ed25519 (RFC 8032), verified strictly.",
+          "enum": [
+            "ed25519"
+          ]
+        },
+        "key": {
+          "description": "The log's own key, never the operator's statement key.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        },
+        "value": {
+          "description": "The 64-byte signature, base64url without padding, in its one canonical encoding.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+        }
+      }
+    }
+  }
+}

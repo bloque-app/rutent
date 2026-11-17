@@ -16,6 +16,7 @@
         "state_read",
         "limit",
         "secret_use",
+        "operation_unanswered",
         "segment_record"
       ]
     }
@@ -109,6 +110,21 @@
       },
       "then": {
         "$ref": "#/$defs/item_secret_use"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "operation_unanswered"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/item_operation_unanswered"
       }
     },
     {
@@ -569,6 +585,34 @@
         },
         "outcome": {
           "$ref": "#/$defs/use_outcome"
+        }
+      }
+    },
+    "item_operation_unanswered": {
+      "description": "An operation whose module passed something out and then ended with no answer the platform passes on: the platform's own record of it, so an outcome unknown can cite it (REQ-MDL-8, REQ-ORD-1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "transaction",
+        "ended_by"
+      ],
+      "properties": {
+        "kind": {
+          "const": "operation_unanswered"
+        },
+        "provider": {
+          "description": "The provider whose module handled it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The operation's transaction.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "ended_by": {
+          "description": "What ended it, as the platform names it: the reason it would have been refused for had the module passed nothing out. A label to read, which no decision branches on.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/token"
         }
       }
     },
