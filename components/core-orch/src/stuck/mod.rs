@@ -112,7 +112,7 @@ use crate::segments::{Confirmed, Segments, SegmentsError, StatusError};
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
 pub use handing::{
-    AcceptedRoute, HandingOn, LinkedRoutes, OperatorSigns, Show, Wallets, Withdrawals,
+    AcceptedRoute, HandingOn, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
 };
 pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};

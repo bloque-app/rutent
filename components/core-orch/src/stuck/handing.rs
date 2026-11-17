@@ -14,6 +14,7 @@
 
 use std::cell::RefCell;
 
+use rutent_contracts::core_internal::Entry;
 use rutent_contracts::provider_role::{
     OPERATION_SHAPE, Operation as ProviderOperation, Reversal, Signature, SignatureScheme,
     Statement,
@@ -34,6 +35,8 @@ pub struct AcceptedRoute {
     pub order: Id,
     /// The decision record the route was chosen by.
     pub decision_record: Id,
+    /// The customer's acceptance of the linked order, which the log holds.
+    pub acceptance: Id,
     /// The parts' plans.
     pub plan: Vec<PartPlan>,
 }
@@ -42,6 +45,13 @@ pub struct AcceptedRoute {
 pub trait LinkedRoutes {
     /// The route `linked` was accepted on, or `None` where Core holds none.
     fn accepted(&self, linked: &Id) -> Option<AcceptedRoute>;
+}
+
+/// The log's entries, as it holds them: where the linked order's acceptance and decision record, and the original
+/// order's requester, are read from before the holding account is asked anything.
+pub trait LogRead {
+    /// Every entry of the log.
+    fn entries(&self) -> Vec<Entry>;
 }
 
 /// The holding accounts' withdrawals for a route handed on.
@@ -70,6 +80,8 @@ pub struct HandingOn<'a> {
     pub withdrawals: &'a mut dyn Withdrawals,
     /// The linked orders' accepted routes.
     pub routes: &'a dyn LinkedRoutes,
+    /// The log's entries.
+    pub log: &'a dyn LogRead,
 }
 
 /// [`Withdrawals`] over the operator's [`Holdings`] and the platform that runs their wallets.

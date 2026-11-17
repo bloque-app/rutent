@@ -915,42 +915,14 @@ impl HandOn {
         if parts.segments.order(handing.linked).is_some() {
             return Err(HandOnError::AlreadyOpened);
         }
-        // Its route cites a decision record of its own (`input-cites-its-decision-record`).
-        let recorded_route = entries.iter().any(|e| {
-            matches!(e, Entry::Verified(v) if matches!(&v.what,
-                What::DecisionRecord { decision_record, order, .. }
-                    if decision_record == handing.decision_record && order == handing.linked))
-        });
-        if !recorded_route {
-            return Err(HandOnError::NoDecisionRecord);
-        }
-        // Its acceptance is the customer's own, of the linked order, keeping the original customer as requester
-        // (`REQ-ORD-13`, `REQ-ORD-34`), with one yes per part of the plan, in order, each from the reserve its first
-        // segment runs at (`chosen-route-rests-on-its-orders-acceptance`).
-        let accepted = match acceptance_of(&entries, handing.acceptance) {
-            Some(accepted) if accepted.order != handing.linked => {
-                return Err(HandOnError::NotItsAcceptance);
-            }
-            Some(accepted) if accepted.requester != requester => {
-                return Err(HandOnError::NotTheRequester);
-            }
-            Some(accepted) if !accepted.customers_own() => {
-                return Err(HandOnError::NotTheCustomersAcceptance);
-            }
-            Some(accepted) => accepted,
-            None => return Err(HandOnError::NotItsAcceptance),
-        };
-        let fits = accepted.yeses.len() == handing.plan.len()
-            && accepted.yeses.iter().zip(handing.plan).all(|(yes, plan)| {
-                yes.part.as_str() == plan.part_id.as_str()
-                    && plan
-                        .segments
-                        .first()
-                        .is_some_and(|s| s.provider.as_str() == yes.origin_reserve.as_str())
-            });
-        if !fits {
-            return Err(HandOnError::PlanOutsideItsAcceptance);
-        }
+        let accepted = linked_accepted(
+            &entries,
+            requester,
+            handing.linked,
+            handing.decision_record,
+            handing.acceptance,
+            handing.plan,
+        )?;
         let now = now(parts.clock)?;
         let route_chosen = RecordedInput {
             record_id: stm::RecordId::new(parts.fresh.id().as_str())
@@ -1208,6 +1180,58 @@ fn at_rest(
         .and_then(|a| PositiveAmount::new(a.as_str()))
         .ok_or(HandOnError::Unknown)?;
     Ok((at, settled, amount))
+}
+
+/// Holds a linked order's route to what the log records of it, before anything is recorded or moved: its route cites
+/// a decision record of its own (`input-cites-its-decision-record`); its acceptance is the customer's own, of the
+/// linked order, keeping the original customer `requester` (`REQ-ORD-13`, `REQ-ORD-34`), with one yes per part of the
+/// plan, in order, each from the reserve its first segment runs at (`chosen-route-rests-on-its-orders-acceptance`).
+/// The production mover runs it before the holding account is asked anything (`T-020-17`).
+pub(crate) fn linked_accepted<'a>(
+    entries: &'a [Entry],
+    requester: &Id,
+    linked: &Id,
+    record_id: &Id,
+    acceptance: &Id,
+    plan: &[PartPlan],
+) -> Result<Accepted<'a>, HandOnError> {
+    // Its route cites a decision record of its own (`input-cites-its-decision-record`).
+    let recorded_route = entries.iter().any(|e| {
+        matches!(e, Entry::Verified(v) if matches!(&v.what,
+                What::DecisionRecord { decision_record, order, .. }
+                    if decision_record == record_id && order == linked))
+    });
+    if !recorded_route {
+        return Err(HandOnError::NoDecisionRecord);
+    }
+    // Its acceptance is the customer's own, of the linked order, keeping the original customer as requester
+    // (`REQ-ORD-13`, `REQ-ORD-34`), with one yes per part of the plan, in order, each from the reserve its first
+    // segment runs at (`chosen-route-rests-on-its-orders-acceptance`).
+    let accepted = match acceptance_of(entries, acceptance) {
+        Some(accepted) if accepted.order != linked => {
+            return Err(HandOnError::NotItsAcceptance);
+        }
+        Some(accepted) if accepted.requester != requester => {
+            return Err(HandOnError::NotTheRequester);
+        }
+        Some(accepted) if !accepted.customers_own() => {
+            return Err(HandOnError::NotTheCustomersAcceptance);
+        }
+        Some(accepted) => accepted,
+        None => return Err(HandOnError::NotItsAcceptance),
+    };
+    let fits = accepted.yeses.len() == plan.len()
+        && accepted.yeses.iter().zip(plan).all(|(yes, plan)| {
+            yes.part.as_str() == plan.part_id.as_str()
+                && plan
+                    .segments
+                    .first()
+                    .is_some_and(|s| s.provider.as_str() == yes.origin_reserve.as_str())
+        });
+    if !fits {
+        return Err(HandOnError::PlanOutsideItsAcceptance);
+    }
+    Ok(accepted)
 }
 
 /// Where `part` of `order` holds its value, and how much of it, as Core's own records of the order's settled segments

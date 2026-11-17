@@ -24,7 +24,7 @@ use rutent_core_orch::hand_on::{Basis, HandOn, HandOnError, HandedOn, Handing, U
 use rutent_core_orch::recalc::Recalculation;
 use rutent_core_orch::segments::{NoProxy, Ran, SegmentOutcome, SegmentsError};
 use rutent_core_orch::stuck::{
-    AcceptedRoute, Deciding, HandingOn, LinkedRoutes, Moved, Mover, Moving, NoRouteLeft,
+    AcceptedRoute, Deciding, HandingOn, LinkedRoutes, LogRead, Moved, Mover, Moving, NoRouteLeft,
     OperatorSigns, ResolveError, Resolved, Show, Stuck, Withdrawals,
 };
 use rutent_prov::holding::wallet::{
@@ -80,6 +80,8 @@ struct Wallet {
     sent: u64,
     /// How often the mover was shown a statement.
     shown: usize,
+    /// A clock the wallet makes unreadable once it was handed the statement.
+    breaks_clock: Option<std::rc::Rc<TestClock>>,
     /// The statements the wallet was handed.
     handed: Vec<Statement<ProviderOperation>>,
 }
@@ -97,6 +99,7 @@ impl Wallet {
                 .unwrap(),
             sent: 0,
             shown: 0,
+            breaks_clock: None,
             handed: Vec::new(),
         }
     }
@@ -155,6 +158,9 @@ impl Withdrawals for Wallet {
             )));
         }
         self.handed.push(statement);
+        if let Some(clock) = &self.breaks_clock {
+            clock.set(300_000_000_000);
+        }
         let mut record = WithdrawalRecord {
             by: RESERVE.to_owned(),
             node: node.clone(),
@@ -186,10 +192,20 @@ impl LinkedRoutes for Routes {
     }
 }
 
+/// The log's entries, as they stand when the move is asked.
+struct Entries(Vec<Entry>);
+
+impl LogRead for Entries {
+    fn entries(&self) -> Vec<Entry> {
+        self.0.clone()
+    }
+}
+
 fn accepted(core: &Core) -> AcceptedRoute {
     AcceptedRoute {
         order: id(LINKED),
         decision_record: linked_record(LINKED),
+        acceptance: id("acc-ord-2"),
         plan: from_the_ledger(core, SEGMENT),
     }
 }
@@ -299,6 +315,14 @@ fn move_it(
     routes: &Routes,
 ) -> Result<Moved, ResolveError> {
     let (order, actor) = (id(ORDER), segments_support::core());
+    let entries = Entries(
+        core.log
+            .borrow()
+            .entries
+            .iter()
+            .map(|(e, _)| e.clone())
+            .collect(),
+    );
     let mut watched = Watched::new(&mut world.fleet.platform);
     on_platform_handing(
         core,
@@ -308,6 +332,7 @@ fn move_it(
         HandingOn {
             withdrawals: wallet,
             routes,
+            log: &entries,
         },
         &mut NoProxy,
         |parts, delivering| {
@@ -582,7 +607,7 @@ fn settled(ran: &Ran) -> bool {
 #[test]
 fn hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused() {
     type Alter = fn(&Core, &mut AcceptedRoute);
-    let cases: [(&str, Alter); 5] = [
+    let cases: [(&str, Alter); 8] = [
         ("another order's route", |_, r| r.order = id("ord-3")),
         ("a route starting at another node", |_, r| {
             r.plan[0].segments[0].from.node = NodeRef::Inner("elsewhere".into());
@@ -593,6 +618,19 @@ fn hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused() {
         ("a route that starts with a withdrawal", |_, r| {
             r.plan[0].segments[0].kind = rutent_contracts::state_machine::OperationKind::Withdrawal;
         }),
+        ("a route citing no decision record of the log's", |_, r| {
+            r.decision_record = id("dr-unrecorded");
+        }),
+        ("a route naming no acceptance of the log's", |_, r| {
+            r.acceptance = id("acc-unrecorded");
+        }),
+        (
+            "a first segment of another provider than the decision names",
+            |_, r| {
+                r.plan[0].segments[0].provider =
+                    rutent_contracts::state_machine::Id::new(OTHER_RESERVE).unwrap();
+            },
+        ),
         ("a route of two parts", |_, r| {
             let again = r.plan[0].clone();
             r.plan.push(again);
@@ -1171,4 +1209,230 @@ fn a_mover_without_the_hand_on_ports_fails_a_hand_on() {
     let (_, resolved) = carried_out(moved);
     assert_eq!(resolved, Resolved::Failed);
     still_held(&core);
+}
+
+/// The customer's own acceptance of the linked order is what a hand-on rests on, and the operator never chooses where
+/// the money goes (`REQ-ORD-43`, the owner's ruling of 2026-11-16): a linked order accepted on an automatic deposit's
+/// arrival, not by the customer, is refused before the holding account is shown anything, since a withdrawal done
+/// can't be taken back.
+// verifies: REQ-ORD-43, REQ-AUZ-4
+#[test]
+fn hand_on_to_a_linked_order_the_customer_did_not_accept_is_refused_before_the_wallet_is_asked() {
+    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut core = Core::over(&mut world);
+    core.log.borrow_mut().attribute_from_now();
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(1);
+    let _ = core.run_over(&world.catalogue, &mut watched);
+    drop(watched);
+    world
+        .fleet
+        .world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let outcome = Rerouting::of(&core)
+        .recalculate(&mut core, &mut world)
+        .expect("the recalculation runs");
+    let mut stuck = Stuck::new();
+    let (order, part, last) = (id(ORDER), id(PART), core.record.record_id().clone());
+    let actor = segments_support::core();
+    on_parts(&mut core, |parts| {
+        stuck.no_route(
+            parts,
+            NoRouteLeft {
+                order: &order,
+                part: &part,
+                outcome: &outcome,
+                last_record: &last,
+                core: &actor,
+            },
+        )
+    })
+    .expect("recorded");
+    follow(&core, &mut stuck).expect("its ends are Core's");
+    seed_linked_on_a_deposit(
+        &mut core,
+        &Named::another(2),
+        &customer().party,
+        &linked_record(LINKED),
+    );
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (_, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Failed);
+    assert_eq!(wallet.shown, 0, "the wallet is shown nothing");
+    assert!(wallet.handed.is_empty());
+    still_held(&core);
+}
+
+/// A linked order Core follows already is never withdrawn for, by the mover's own guard: `hand_on`'s check runs only
+/// after the withdrawal is done.
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn hand_on_to_a_linked_order_core_already_follows_is_refused_before_the_wallet_is_asked() {
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let named = Named::another(2);
+    let opened = route_chosen_of(&core.record, &named);
+    assert!(core.segments.follow(&*core.clock, &opened));
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (_, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Failed);
+    assert_eq!(wallet.shown, 0);
+    assert!(wallet.handed.is_empty());
+}
+
+/// Called directly, as the assembly may, the mover holds the effect's amount to all of what the part holds itself:
+/// `Stuck`'s own check isn't on that path.
+// verifies: REQ-ORD-43, INV-2
+#[test]
+fn a_hand_on_resolved_directly_for_less_than_the_part_holds_is_refused() {
+    struct Less<'a, 'b>(&'a mut rutent_core_orch::stuck::Delivering<'b>);
+    impl rutent_core_orch::stuck::Resolutions for Less<'_, '_> {
+        fn resolve(
+            &mut self,
+            parts: &mut rutent_core_orch::stuck::Parts<'_>,
+            carrying: &rutent_core_orch::stuck::Carrying<'_>,
+            effect: &rutent_contracts::core_internal::Effect,
+        ) -> Result<Resolved, rutent_contracts::core_internal::calls::AppendFailure> {
+            let mut changed = effect.clone();
+            if let Action::ResolveStuck {
+                resolution: Resolution::HandOn { amount, .. },
+                ..
+            } = &mut changed.action
+            {
+                *amount = PositiveAmount::new("999999").unwrap();
+            }
+            self.0.resolve(parts, carrying, &changed)
+        }
+    }
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    let routes = Routes(Some(accepted(&core)));
+    let entries = Entries(
+        core.log
+            .borrow()
+            .entries
+            .iter()
+            .map(|(e, _)| e.clone())
+            .collect(),
+    );
+    let (order, actor) = (id(ORDER), segments_support::core());
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let moved = on_platform_handing(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        HandingOn {
+            withdrawals: &mut wallet,
+            routes: &routes,
+            log: &entries,
+        },
+        &mut NoProxy,
+        |parts, delivering| {
+            stuck.carry_out(
+                parts,
+                &mut policy,
+                &mut Less(delivering),
+                Moving {
+                    order: &order,
+                    carries_out: &carries_out,
+                    mover: &bob,
+                    core: &actor,
+                },
+            )
+        },
+    );
+    let (_, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Failed);
+    assert_eq!(wallet.shown, 0);
+}
+
+/// A call that was handed the wallet's statement and stopped before its answer was kept never asks the wallet again:
+/// the clock becomes unreadable once the wallet was handed the statement, and however the move is taken on again,
+/// the wallet is handed one statement in all, and the outcome isn't read as done.
+// verifies: INV-8
+#[test]
+fn a_call_that_stopped_after_the_wallet_was_asked_never_asks_it_again() {
+    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide(&mut core, &mut stuck, &mut policy, &alice);
+    let mut wallet = Wallet::of(&core, Script::Pays);
+    wallet.breaks_clock = Some(std::rc::Rc::clone(&core.clock));
+    let routes = Routes(Some(accepted(&core)));
+    let first = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    assert_eq!(wallet.handed.len(), 1);
+    // However it came out, the clock comes back and the move is taken on again.
+    core.clock.set(START);
+    let mut resolved = match first {
+        Ok(Moved::CarriedOut { resolved, .. }) => Some(resolved),
+        _ => None,
+    };
+    for _ in 0..3 {
+        if let Ok(Moved::CarriedOut { resolved: r, .. }) = move_it(
+            &mut core,
+            &mut world,
+            &mut stuck,
+            &mut mover,
+            &mut policy,
+            &carries_out,
+            &bob,
+            &mut wallet,
+            &routes,
+        ) {
+            resolved = Some(r);
+        }
+    }
+    assert_eq!(
+        wallet.handed.len(),
+        1,
+        "the wallet is handed one statement in all"
+    );
+    assert_ne!(resolved, Some(Resolved::Failed));
 }

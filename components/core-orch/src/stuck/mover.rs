@@ -884,9 +884,27 @@ impl Delivering<'_> {
             return None;
         };
         let first = only.segments.first()?;
-        if first.kind == OperationKind::Withdrawal || first.from != at {
+        if first.kind == OperationKind::Withdrawal
+            || first.from != at
+            || first.provider.as_str() != by.as_str()
+        {
             return None;
         }
+        // The customer's own acceptance of the linked order, which the log holds, its decision record in the log,
+        // and the plan within what the acceptance says yes to, as the hand-on holds them: all before the holding
+        // account is asked anything, since a withdrawal done can't be taken back. The operator never chooses where
+        // the money goes (`REQ-ORD-43`).
+        let entries = hand.log.entries();
+        let requester = crate::hand_on::requester_of(&entries, carrying.order)?;
+        crate::hand_on::linked_accepted(
+            &entries,
+            requester,
+            linked_order,
+            &route.decision_record,
+            &route.acceptance,
+            &route.plan,
+        )
+        .ok()?;
         // The node's holding account is the provider the decision names.
         if hand.withdrawals.holder(node).as_deref() != Some(by.as_str()) {
             return None;
@@ -914,7 +932,14 @@ impl Delivering<'_> {
         flight: &mut HandFlight,
     ) -> Result<Resolved, AppendFailure> {
         // The withdrawal rests on the effect the log admitted on a permit: nothing is asked without it.
+        // (This parameter is read only here, and `entry_points`' scan of `core-authz` wants it among the
+        // parameters of a function that asks the wallet.)
         debug_assert!(matches!(effect.action, Action::ResolveStuck { .. }));
+        // A call that handed the wallet the statement and stopped before its answer was kept is never made again:
+        // the wallet may hold the withdrawal.
+        if flight.asked && flight.verdict.is_none() {
+            flight.verdict = Some(Resolved::Unknown);
+        }
         if flight.verdict.is_none() {
             let Some(hand) = self.hand.as_mut() else {
                 // Nothing to ask the wallet through now: where it was asked, what it did is unknown.
@@ -1014,20 +1039,6 @@ impl Delivering<'_> {
             if let Some(step) = question {
                 flight.question = Some(step);
             }
-            if sent {
-                // Everything that came back is kept before any step that can fail.
-                let events: Events = self.ports.modules.take_events();
-                let uses = self.ports.uses.take_uses();
-                let (drains, uncarried) = (&mut flight.drains, &mut flight.uncarried);
-                Self::keep(
-                    drains,
-                    uncarried,
-                    parts,
-                    carrying.core,
-                    Drained::Events(events),
-                )?;
-                Self::keep(drains, uncarried, parts, carrying.core, Drained::Uses(uses))?;
-            }
             match answered {
                 Ok(start) if sent => {
                     let proven = proves_start(
@@ -1068,6 +1079,26 @@ impl Delivering<'_> {
                     flight.verdict = Some(Resolved::Failed);
                 }
                 Err(_) => flight.verdict = Some(Resolved::Unknown),
+            }
+            // What came back is kept once, after the verdict is: a step that can't be taken now leaves the outcome
+            // unknown, never the wallet asked again.
+            if sent {
+                let events: Events = self.ports.modules.take_events();
+                let uses = self.ports.uses.take_uses();
+                let (drains, uncarried) = (&mut flight.drains, &mut flight.uncarried);
+                let kept = Self::keep(
+                    drains,
+                    uncarried,
+                    parts,
+                    carrying.core,
+                    Drained::Events(events),
+                )
+                .and_then(|()| {
+                    Self::keep(drains, uncarried, parts, carrying.core, Drained::Uses(uses))
+                });
+                if kept.is_err() {
+                    flight.uncarried = true;
+                }
             }
         }
         for step in &mut flight.drains {
