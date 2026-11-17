@@ -58,19 +58,24 @@
 //! ledger, so a restart gives no fresh bound); every try is recorded in the [`Ledger`], and a notice that used them is
 //! set apart ([`Notices::abandoned`]). See the `delivery` module's notes.
 //!
+//! **The log's summary of each notice** ([`Notices::summarise`], `T-023-03`). A notice delivered or abandoned for good
+//! is summarised once in the log (`notice_summary`), and a restart reads what ended from those entries, ahead of
+//! anything it sends; see the `summary` module's notes. The ledger keeps the tries in the process.
+//!
 //! **The watch** ([`Watch`], `REQ-ORD-7`). The path that warns the operator has a heartbeat of its own; a path that
 //! answers nothing for [`SILENCE`] seconds is noticed on a second path.
 
 mod delivery;
 mod inbox;
+mod summary;
 mod watch;
 pub mod wire;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
 use rutent_contracts::core_internal::{
-    Actor, Charge, Entry, Outcome, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
+    Actor, Charge, Entry, NoticeEnd, Outcome, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, Observed, RecordedInput, StateMachine};
@@ -81,6 +86,7 @@ use crate::snapshot::Clock;
 
 pub use delivery::{Attempt, BOUND, Key, Ledger, Retried, Volatile};
 pub use inbox::{Inbox, NotTaken, Taken, Verifier};
+pub use summary::{RaiseReading, Refused, Summarised, raise_reading};
 pub use watch::{INTERVAL, Path, SILENCE, Tick, Watch};
 pub use wire::{
     About, AheadSeen, At, Change, DOMAIN, Notice, NoticeKey, PartState, Receiver, View,
@@ -184,6 +190,16 @@ pub struct Notices {
     abandoned: Vec<Undelivered>,
     ledger: Box<dyn Ledger>,
     bound: u32,
+    /// The notices the log's summaries show ended, and the number of their last try: what a restart reads.
+    ended: HashMap<Key, (NoticeEnd, u32)>,
+    /// The raises the log holds.
+    raises: summary::Raises,
+    /// Summaries of notices that ended and aren't in the log yet.
+    pending: Vec<summary::Pending>,
+    /// Summaries the log refused for a rule broken.
+    refused: Vec<Refused>,
+    /// How many entries were read for summaries and raises.
+    learned: usize,
 }
 
 impl Notices {
@@ -204,6 +220,11 @@ impl Notices {
             abandoned: Vec::new(),
             ledger: Box::new(Volatile::default()),
             bound: BOUND,
+            ended: HashMap::new(),
+            raises: summary::Raises::new(),
+            pending: Vec::new(),
+            refused: Vec::new(),
+            learned: 0,
         }
     }
 
@@ -298,6 +319,8 @@ impl Notices {
         transport: &mut dyn Transport,
     ) -> Result<usize, NoticeError> {
         let unread = self.unread(recorded)?;
+        // What the log's summaries show ended is known before anything is sent, so a restart sends none of it again.
+        self.learn(recorded);
         let mut sent = 0;
         for (receipt, entry) in unread {
             if let Some(order) = about(entry)
@@ -310,7 +333,7 @@ impl Notices {
                         order: order.to_owned(),
                         sequence: followed.sequence,
                     };
-                    if self.ledger.delivered(&key) {
+                    if self.is_delivered(&key) {
                         continue;
                     }
                     let notice = Notice {
@@ -394,17 +417,28 @@ impl Notices {
     ) -> Option<bool> {
         let tried = match &key {
             // A raise delivered already is not sent again.
-            Some(key @ Key::Raise { .. }) if self.ledger.delivered(key) => return None,
-            Some(key) => self.ledger.attempts(key),
+            Some(key @ Key::Raise { .. }) if self.is_delivered(key) => return None,
+            Some(key) => match self.ended.get(key) {
+                // What the log shows ended is sent no more: delivered, or given up with its last try.
+                Some((NoticeEnd::Delivered, _)) => return None,
+                Some((NoticeEnd::Abandoned, last)) => *last,
+                None => self.ledger.attempts(key),
+            },
             None => 0,
         };
+        let abandoned = key
+            .as_ref()
+            .is_some_and(|k| matches!(self.ended.get(k), Some((NoticeEnd::Abandoned, _))));
         let held = Undelivered {
             to,
             notice,
             key,
             attempts: tried,
         };
-        if tried >= self.bound {
+        if abandoned || tried >= self.bound {
+            if let Some(key) = &held.key {
+                self.queue_summary(key, tried, NoticeEnd::Abandoned);
+            }
             self.abandoned.push(held);
             return None;
         }
@@ -423,8 +457,15 @@ impl Notices {
                 taken,
             });
         }
-        if !taken {
+        if taken {
+            if let Some(key) = &held.key {
+                self.queue_summary(key, held.attempts, NoticeEnd::Delivered);
+            }
+        } else {
             if held.attempts >= self.bound {
+                if let Some(key) = &held.key {
+                    self.queue_summary(key, held.attempts, NoticeEnd::Abandoned);
+                }
                 self.abandoned.push(held);
             } else {
                 self.undelivered.push(held);
@@ -685,7 +726,7 @@ impl Operator for Channel<'_> {
             .notices
             .send(self.transport, to, Some(key.clone()), sealed);
         // No try was made where it was delivered already, or used its bound before.
-        if taken == Some(true) || (taken.is_none() && self.notices.ledger.delivered(&key)) {
+        if taken == Some(true) || (taken.is_none() && self.notices.is_delivered(&key)) {
             Delivery::Delivered
         } else {
             Delivery::Undelivered
