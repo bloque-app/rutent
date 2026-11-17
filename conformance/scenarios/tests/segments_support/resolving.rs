@@ -357,3 +357,37 @@ pub fn on_platform_signing<T>(
     });
     with(&mut parts, &mut delivering)
 }
+
+/// [`on_platform`], the mover also given what a hand-on needs: the holding accounts and the linked orders' accepted
+/// routes (`T-020-17`).
+pub fn on_platform_handing<'a, T>(
+    core: &'a mut Core,
+    catalogue: &'a rutent_prov::catalogue::Catalogue,
+    modules: &'a mut (dyn rutent_core_orch::segments::Modules + 'a),
+    mover: &'a mut Mover,
+    hand: rutent_core_orch::stuck::HandingOn<'a>,
+    no_proxy: &'a mut rutent_core_orch::segments::NoProxy,
+    with: impl FnOnce(&mut Parts<'_>, &mut Delivering<'_>) -> T,
+) -> T {
+    let mut general = General(Rc::clone(&core.log));
+    let mut parts = Parts {
+        clock: &*core.clock,
+        log: &mut general,
+        fresh: &mut core.ids,
+        issued: &core.issued,
+        segments: &mut core.segments,
+        exposures: &mut core.exposures,
+    };
+    let mut delivering = mover
+        .on(Ports {
+            modules,
+            uses: no_proxy,
+            evidence: &mut core.store,
+            catalogue,
+            operator_key: &mut core.key,
+            bounds: &core.record.bounds,
+            operator: &core.operator,
+        })
+        .handing_on(hand);
+    with(&mut parts, &mut delivering)
+}

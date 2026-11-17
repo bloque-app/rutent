@@ -292,6 +292,17 @@ impl Raise {
                 "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
             ));
         }
+        if let Difference::Charge {
+            no_formula: Some(_),
+            maximum,
+            ..
+        } = &self.difference
+            && maximum.as_str() != "0"
+        {
+            return Err(Violation(
+                "a charge marked as having no formula names a maximum of nothing",
+            ));
+        }
         let same = match &self.difference {
             Difference::Reports { sent, received, .. } => sent == received,
             Difference::ReportsNotComparable { sent, received, .. } => sent.asset == received.asset,
@@ -305,10 +316,16 @@ impl Raise {
                 charged, maximum, ..
             } => charged <= maximum,
             Difference::Holding { .. } => false,
+            Difference::PublicEnd {
+                found,
+                moved,
+                stated,
+                ..
+            } => !found.differs(moved, stated),
         };
         if same {
             return Err(Violation(
-                "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units",
+                "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
             ));
         }
         Ok(())
@@ -325,6 +342,7 @@ impl What {
             | What::StuckMove { .. }
             | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
+            | What::DeclineOutcome { .. }
             | What::OpenSession { .. }
             | What::Charge { .. }
             | What::AskAboutPerson { .. }
@@ -363,7 +381,10 @@ impl What {
             | What::Refiling { .. }
             | What::HoldingWithdrawal { .. }
             | What::ReversalCarrier { .. }
-            | What::InputNotTaken { .. } => matches!(outcome, Outcome::Observed {}),
+            | What::InputNotTaken { .. }
+            | What::NoticeSummary { .. }
+            | What::PublicMismatch { .. }
+            | What::PartEvidence { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
 
@@ -446,6 +467,31 @@ impl What {
                 rests_on,
                 "graded evidence rests on stated entries, at least one, each once",
             ),
+            What::PartEvidence { rests_on, .. } => listed(
+                rests_on,
+                "a stuck part's evidence rests on stated entries, at least one, each once",
+            ),
+            What::PublicMismatch {
+                node,
+                movement,
+                found,
+                moved,
+                stated,
+                ..
+            } => {
+                if node.network != movement.network.as_str() {
+                    return Err(Violation(
+                        "a public end's mismatch is at the network its movement is on",
+                    ));
+                }
+                if found.differs(moved, stated) {
+                    Ok(())
+                } else {
+                    Err(Violation(
+                        "a public end's mismatch names a figure the network and the provider differ on",
+                    ))
+                }
+            }
             What::Arrival {
                 order: Some(_),
                 notice: None,
@@ -506,6 +552,8 @@ impl What {
             | What::Erasure { .. }
             | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
+            | What::DeclineOutcome { .. }
+            | What::NoticeSummary { .. }
             | What::HoldingWithdrawal { .. }
             | What::InputNotTaken { .. } => Ok(()),
             What::ReversalCarrier {

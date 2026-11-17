@@ -471,6 +471,8 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
         // The caller's own count of calls.
         {
             let mut binding = binding("reserve");
+            // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+            binding.set_operation_clock(Arc::new(SteppedClock::new()));
             let (caller, callee) = (format!("caller-{language}"), format!("callee-{language}"));
             install(
                 &mut binding,
@@ -526,6 +528,8 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
         // A provider's budget across the operations it handles inside one top-level operation.
         {
             let mut binding = binding("reserve");
+            // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+            binding.set_operation_clock(Arc::new(SteppedClock::new()));
             let (caller, callee) = (format!("outer-{language}"), format!("inner-{language}"));
             let endpoint = serve_api(&mut binding, &callee);
             install(
@@ -598,6 +602,8 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
         // The depth of a chain of calls.
         {
             let mut binding = binding("reserve");
+            // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+            binding.set_operation_clock(Arc::new(SteppedClock::new()));
             let names = ["first", "second", "third"].map(|n| format!("{n}-{language}"));
             for (i, name) in names.iter().enumerate() {
                 let next = names.get(i + 1);
@@ -654,6 +660,8 @@ fn module_hitting_a_cross_module_limit_leaves_its_caller_and_callee_in_a_known_s
 fn call_refused_by_a_limit_names_its_own_reason() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let (caller, callee) = (format!("counted-{language}"), format!("running-{language}"));
         install(
             &mut binding,
@@ -801,6 +809,8 @@ fn module_repeating_secret_lookups_or_refused_calls_hits_the_limit() {
         // Lookups, of the outside part and of the sandboxed part that has no route to the proxy.
         for part in [PartName::Outside, PartName::Sandboxed] {
             let mut binding = binding("reserve");
+            // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+            binding.set_operation_clock(Arc::new(SteppedClock::new()));
             let provider = format!("looker-{language}-{part:?}").to_lowercase();
             install(
                 &mut binding,
@@ -829,6 +839,8 @@ fn module_repeating_secret_lookups_or_refused_calls_hits_the_limit() {
         }
         // Calls the platform refuses for what the caller declares count like any other.
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let caller = format!("refused-{language}");
         let steps = (0..4)
             .map(|_| Step::CallModule {
@@ -908,6 +920,8 @@ fn an_output_too_large_for_the_frame_is_refused_as_oversized_and_the_process_kee
 fn module_repeating_a_call_to_a_callee_that_is_no_identifier_hits_the_limit() {
     for language in languages() {
         let mut binding = binding("reserve");
+        // On a clock that stands still (`T-013-08`): a callee's start inside the operation can't pass a real deadline.
+        binding.set_operation_clock(Arc::new(SteppedClock::new()));
         let caller = format!("badcall-{language}");
         let steps = (0..4)
             .map(|_| Step::CallModule {

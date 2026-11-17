@@ -52,7 +52,7 @@ pub enum AppendFailure {
 }
 
 /// The kinds of verified entry only policy writes: each policy call's record of its answer (`decide`, `authorise`,
-/// `stuck_decide`, `stuck_move`, `report_outcome`, `confirm_outcome`, `open_session`, `check_read`,
+/// `stuck_decide`, `stuck_move`, `report_outcome`, `confirm_outcome`, `decline_outcome`, `open_session`, `check_read`,
 /// `grant_permission`, `revoke_permission`, `charge`, `ask_about_person`).
 pub fn is_decision(what: &What) -> bool {
     matches!(
@@ -63,6 +63,7 @@ pub fn is_decision(what: &What) -> bool {
             | What::StuckMove { .. }
             | What::ReportOutcome { .. }
             | What::ConfirmOutcome { .. }
+            | What::DeclineOutcome { .. }
             | What::OpenSession { .. }
             | What::CheckRead { .. }
             | What::GrantPermission { .. }
@@ -342,6 +343,19 @@ pub trait StuckOrders {
     fn confirm_outcome(
         &mut self,
         request: &super::types::OutcomeConfirmation,
+    ) -> Result<Decision, AppendFailure>;
+}
+
+/// Declining a mover's report of a move's outcome (`REQ-AUZ-4`, ADR-0011), apart from [`StuckOrders`] so that its
+/// implementers build unchanged until policy's row answers it: until then no implementer offers it, and no report is
+/// declined, failing closed (a wrong report holds its part).
+pub trait OutcomeDeclines {
+    /// The decline of a move's outcome report, citing the report, by an actor of another party and login than the
+    /// reporter, naming its own evidence; permitted, it lets a new report of the same effect stand
+    /// (`outcome-decline-rests-on-its-report`, `one-report-per-effect`). It settles and frees nothing.
+    fn decline_outcome(
+        &mut self,
+        request: &super::types::OutcomeDecline,
     ) -> Result<Decision, AppendFailure>;
 }
 
