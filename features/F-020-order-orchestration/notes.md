@@ -3563,3 +3563,14 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
      is in `Delivering::statement`, and the assembly passes its result. Binding the two is `T-020-20`'s.
   6. The confirmer's evidence must be another maker's statement: this row takes it through `statement` with
      `outcome: None`; a second provider's status path is not built.
+
+## Owners added by `plan/m3-owed-rows-2`
+
+| Gap, and the note it is in | Owner |
+|---|---|
+| `relayed_by: None` at five sites of core-orch (`T-022-02`'s finding 2) | `T-020-28`, wave 26, after `T-020-23` and `T-020-24` (dependencies) and, run in turn, `T-020-19`, `T-020-25` and `T-020-27` |
+| `decision-is-for-its-caller`, the role check in `attribute()`, a "no formula in this asset" marker on a charge raise (`T-020-14`'s closed gap 3; `T-020-21` the shape, `T-020-29` the writer), `What::Evidence` without a segment (`T-020-16`'s gap 1), and `answer-follows-its-question` for the arrival shapes (`T-020-18`'s hand-off) | `T-020-21`; the evidence entry for `stuck_resolved` is written by `T-020-20` (3) |
+| `NOT_A_NOTICE` replaced by a positive check of `ARRIVAL_NOTICE_SHAPE`, and the seeded deposit's per-credit reference (`T-020-18`'s hand-offs) | `T-020-19` |
+| `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |
+| `Terms::take` has no production caller (`T-020-14`, gap 1) | `M4`, `F-030` and `F-031`, in the same table |
+| The stand-in reserve's arrival-notice test (`T-020-18`'s hand-off to `F-024`) | `T-024-15` |
