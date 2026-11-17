@@ -588,15 +588,44 @@ impl Segments {
     /// which the log holds at its receipt. A provider handed that input is recorded as relying on the judgement, in a
     /// `reliance` entry appended before its operation is sent; where the log refuses the entry, nothing is sent
     /// (`REQ-CPL-12`, `T-020-23`). To be declared before the segment that carries the input is handed over: one
-    /// already handed over is [`Rests::TooLate`], since its reliance would be written after the send.
+    /// already handed over is [`Rests::TooLate`], since its reliance would be written after the send. The declaration
+    /// stands for the segments after it.
     pub fn rests_on(&mut self, order: &Id, input: &str, judgement: Judgement) -> Result<(), Rests> {
         let carried = self.flights.iter().any(|((o, _), flight)| {
             o == order.as_str() && flight.carries.iter().any(|name| name == input)
         });
+        // Kept even where it is late, so every segment handed over after it, and the stuck mover's, writes its
+        // reliance; only the one already sent goes without, which the caller is told.
+        self.reliances.rests_on(order, input, judgement)?;
         if carried {
             return Err(Rests::TooLate);
         }
-        self.reliances.rests_on(order, input, judgement)
+        Ok(())
+    }
+
+    /// The judgements the order's `inputs` rest on, each once (`T-020-23`): what the stuck mover consults before it
+    /// sends an input of its own.
+    pub(crate) fn resting<'a>(
+        &self,
+        order: &Id,
+        inputs: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<Judgement> {
+        self.reliances.resting(order, inputs)
+    }
+
+    /// [`Reliances::write`] on this register, for a hand-over that isn't a segment's own.
+    pub(crate) fn write_reliance(
+        &mut self,
+        log: &mut dyn Log,
+        core: &Actor,
+        at: &Timestamp,
+        order: &Id,
+        provider: &Id,
+        judgements: &[Judgement],
+    ) -> Result<(), AppendFailure> {
+        self.reliances
+            .write(log, core, at, order, provider, judgements)
+            .map(|_| ())
     }
 
     /// How many drains wait to be appended, whole or in part.

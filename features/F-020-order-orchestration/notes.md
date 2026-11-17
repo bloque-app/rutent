@@ -4265,6 +4265,15 @@ contract is changed: `What::Reliance` and its relation (`reliance-names-its-judg
   private to `rounds`): the assembly reads it from the log, the stated entry of shape `JUDGEMENT_SHAPE` made by the
   verifier, with the receipt the log gave it (gap 1). A false judgement is the same: the stand-in's wrong yes is a
   stated entry like any other, and the reliance names its maker and the provider that relied on it.
+- **Review round 1.** (1) The stuck mover (`stuck/mover.rs`) fills the tuple's required input with the destination's
+  account and sends it with `carry_out`; it now consults `Segments::resting` when it writes its flight and, before the
+  question and the send, writes the reliance through `Segments::write_reliance`: one the log refuses fails the move
+  (nothing sent, `Resolved::Failed`), one it can't take now is tried again. (2) A declaration refused as `TooLate` is
+  still stored, so later segments and the mover write their reliance; only the segment already sent goes without, and the
+  caller is told. Tests: `stuck delivery of an input resting on a judgement leaves a reliance before the send` and
+  `stuck delivery whose reliance the log refuses sends nothing` (`stuck_mover.rs`), the first of which declares late
+  (`TooLate`) and relies on its being kept. Rule-offs: the mover's write switched off, and the late declaration not
+  stored: both red on both tests. (4) The `REQ-ORD-28` / `REQ-CPL-12` residual below goes on the owner's form.
 - **Review of Core's loss paths** (the row's Done when). Inspected: every place in `components/*/src` that names a cost,
   a bearer or a charge. Core writes no entry or call that debits, bills or charges the operator or a customer for a
   judgement's falsity: a `reliance` names the judge and the relying provider and nothing else, and no other path reads
@@ -4280,10 +4289,11 @@ contract is changed: `What::Reliance` and its relation (`reliance-names-its-judg
   2. The register of what rests on what is in memory, like the flights it serves: a restarted Core declares again and
      appends an equal entry only if its clock reading is the same, which it isn't. Owner: `F-030` (restart), which
      rebuilds `Segments` as a whole.
-  3. Only a segment's operation is covered. A routing question's dry run, a stuck resolution's move (which carries the
-     destination's account alone) and a hand-on's start carry no judgement-backed input today, so no reliance is
-     written there. Owner: `F-053` (`M5`, `DEC-16`), with the production verifier, if a tuple's input comes to rest on a
-     verifier's word on those paths.
+  3. Hand-overs this row does not cover: a routing question's dry run (`rounds/ask.rs::inputs_for` fills the inputs a
+     tuple requires into every question), a reversal's `carry_out` (`reversal/`, which asks the failed provider to
+     reverse), and a hand-on's start. None of them carries a judgement-backed input today, so no reliance is written
+     there. Owner: `F-053` (`M5`, `DEC-16`), with the production verifier, if a tuple's input comes to rest on a
+     verifier's word on those paths. Covered after review: the stuck mover (below).
   4. The real log's row is proved here on the finished history (`Core::admitted`); the scenario log (`TestLog`) refuses
      a reliance only by its guard (`guards_reliance`: the cited entry is a stated entry claimed by the judge). The
      attribution part, a statement the log attributes to no one, is the contract's `--verified` fixture.
