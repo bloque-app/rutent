@@ -3264,6 +3264,108 @@ Branch `f-020/t-020-18-arrival-notice-contract`, from `m3` at `34c700e`. A provi
   shapes and context; each of `check_answer`'s comparisons, the unit included; the record's amounts in and out, fee
   and label; `check_inner_segments`' advertisement, publisher and node; `arrival-names-its-notice`'s shape.
 
+## T-020-19
+
+Branch `f-020/t-020-19-arrival-notice-link`, from `m3` at `d4006ba4`. Edits `components/core-orch/src/arrival/`, its
+test (`tests/arrival.rs`) and, as the compiler forced, three F-024 test-support files of the scenarios
+(`assembly_arrivals.rs`, `execution_support/mod.rs`, `segments_support/mod.rs`, which the commit body names).
+
+- **`Report` is the reserve and its signed notice** (`arrival::Report { reserve, notice }`). The port's figures are
+  gone: node, asset, amount, account and holder are the notice's, which Core reads from the signed bytes and uses for
+  matching, the question, the `arrival` entry and a filing's checks (`read_notice`, `Credit`). `NOT_A_NOTICE` and
+  `NoticeEnvelope` are deleted.
+- **The shape is required positively.** `read_notice` reads the bytes as `Statement<ArrivalNotice>` (the envelope and
+  the body both `deny_unknown_fields`), calls `check_shape` (the notice's `$id`), requires the maker to be the reserve
+  the report names, the transaction, account and holder to be identifiers and the amount a positive decimal integer.
+  Anything else is `NotItsNotice` before anything is kept or appended; the read-back refusal (next bullet) comes after the keep, so there the bytes may be kept and nothing is appended. The probe list (`signed hold or arrival answer
+  is not taken for an arrival notice`): a hold, an arrival answer, an arrival question; a hold's and an answer's body
+  under the notice's shape; the notice's body under a result's and a hold's shape; a body without its holder, with an
+  extra field, with an amount of zero, a negative one, a fraction or a JSON number, or with an empty transaction;
+  another reserve's notice; bytes that are no statement. Each with and without an order open, each leaving the log and
+  the evidence store as they were.
+- **Read back.** After the evidence store keeps the bytes, the log's own read (`Desk::kept`) must give behind the
+  commitment the statement Core read its figures from, or the notice is refused and nothing is appended
+  (`kept_as_read`; semantic equality, so a pretty-printed copy is the same statement).
+- **One credit, one arrival** (`check_one_credit`). A deposit is known by `(reserve, the notice's transaction)`: two
+  notices of one credit, signed at other times or in other bytes, are the first arrival's outcome again, kept and
+  appended once (the second notice is not appended: a default); the same reference with another node, asset, unit,
+  amount, account or holder is `OtherFigures`, nothing kept. Two references are two deposits, each citing its own
+  notice (the contract's own two-claims reading, `T-020-18`).
+- **A notice the log refused holds no reference** (a default, found by the test below). The log cannot be asked
+  whether it attributed a notice, so an arrival whose notice it could not attribute is refused at the arrival's append
+  (`arrival-names-its-notice`, `arrival-rests-on-the-reserves-report`). Kept as it was, that refusal made the deposit
+  known to the forged notice: the reserve's genuine notice of the same credit, sent after it, read as the same arrival
+  and was refused for ever. Now a refused notice or arrival append forgets the notice, so the genuine one is taken
+  anew. Nothing was ever recorded as an arrival.
+- **A parked notice is replaceable** (review of `976f9fef`). A forged notice parked by a silent reserve (`Waiting`,
+  no outcome) wedged the genuine notice of the credit when their figures differed (`OtherFigures` on every try). Now a
+  later notice of the same reserve and reference with other figures replaces one with no outcome and no recorded
+  arrival, and the log's attribution decides which survives; an arrival recorded under the reference stands.
+  Test: `a_parked_forged_notice_does_not_wedge_the_genuine_one`.
+- **`arrival.earlier`** (`T-020-21` item 6): a filing's arrival, which holds the deposit against the order the filing
+  opened, names the arrival that met no order (`filing.rs`). The arrivals `arrive` writes name none: a deposit's first
+  arrival has no earlier, and the notice outcome is kept, so `arrive` never writes a second.
+- **The seeded deposit** (`segments_support::seed_arrival`): the notice's transaction is the reserve's own per-credit
+  reference (`credit-<order>[-<part>]`), no longer the `tx-deposit-<order>` Core's question and the reserve's report
+  go under. No simulated reserve issues a reference yet, so the seed gives each deposit its own (`T-024-14`).
+- **Owner ruling, 2026-11-16** (automatic-deposit providers set the destination from the customer's configured
+  parameters; the operator never chooses it). The notice carries no destination and `Report` names none, so no step of
+  this row lets a notice or a port set one. `Filing::destination` is still the filer's, the operator included, held to
+  resolve to the holder (`T-020-04`'s answer 6); that is *not* the ruling and is a gap (below).
+- **Defaults** (reversible, each failing closed): the second notice of a credit is not appended; the question to the
+  reserve stays a balance verification (the arrival question and answer are not used, below); a refused notice or
+  arrival append forgets the notice; `ArrivalError::NotItsNotice` covers every refusal of the bytes, so no variant is
+  added; the maker is the report's reserve exactly (the id the catalogue knows the reserve by).
+- **Histories the log refused, sorted.** None new: the existing tests' notices carried a body of their own
+  (`kind`, `transaction`, `amount`), refused by the positive check, so their helpers now sign the contract's body; each
+  test function reads as before. The scenarios' three helpers built a `Report` with figures and now build the notice.
+  A first draft of the unattributed test failed on a real Core fault, the sticky forged notice above.
+- **Gaps, with owners.**
+  1. *Core can't read the log's attribution of the notice it appended*, so with an order open the reserve is still
+     sent Core's balance question before the log refuses the arrival of an unattributed notice. Nothing moves, no
+     arrival or order is recorded, and the question is no operation; but it is a question sent on an unverified word.
+     Closing it needs the log's recorded entry by receipt on `Desk` (`quote::Recorded` is the shape), which is
+     `intake/`'s, edited by `T-020-24`. Owner: the lead, a row after `T-020-24`; `Arrivals` would read the notice's
+     entry back and ask only on `Attribution::Verified`.
+  2. *The destination.* The ruling says the operator never chooses it; `Arrivals::file` takes the destination in the
+     `Filing` from either filer and checks only that it resolves to the holder. Enforcing the ruling needs the
+     customer's configured parameters at the reserve, which no port in Core's reach answers (`Destinations::resolve`
+     answers an owner, not a configured destination). Owner: the lead, a row naming the port (an `intake` or
+     `arrival` seam, and `F-021` if policy holds the parameters). Until then the filing is as `T-020-04` left it.
+  3. *The question and its answer are still a balance verification* (`confirm.rs`); `T-020-18`'s hand-off to append
+     each notice an answer carries as its own stated entry and call `check_answer` goes with moving the question to
+     `arrival-question` and `arrival-answer`, which needs the catalogue's balance-check gate (`REQ-CAT-4`) to treat the
+     new question as a check. Owner: the lead, a row of `F-020` with `F-012`.
+  4. *No simulated reserve emits an arrival notice* (`T-020-18`'s `F-024` hand-off; `T-024-14`); the scenarios sign
+     one with the reserve's statements key.
+- **Rule-off table** (each switched off alone, `cargo test -p rutent-core-orch --test arrival`, 150 s alarm, tree
+  restored; none hung):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the notice's shape check (`check_shape`) | `signed_hold_or_arrival_answer_is_not_taken_for_an_arrival_notice` |
+  | the maker is the report's reserve | the same |
+  | the holder read from the notice (the reserve's id in its place) | 32 tests, `arrivals_figures_are_read_from_the_reserves_signed_notice` among them |
+  | the account read from the notice | `arrivals_figures_are_read_from_the_reserves_signed_notice` |
+  | the amount read from the notice (a constant) | six, `arrivals_figures_are_read_from_the_reserves_signed_notice` and `signed_hold_or_arrival_answer_is_not_taken_for_an_arrival_notice` among them |
+  | the node read from the notice | `arrivals_figures_are_read_from_the_reserves_signed_notice` |
+  | the asset read from the notice | the same |
+  | `check_one_credit` (every restatement one credit) | `two_notices_of_one_credit_are_one_arrival`, `one_notice_is_one_arrival_whatever_figures_it_comes_with`, `a_restated_notice_is_the_same_arrival`, `a_deposit_is_known_by_its_transaction_and_every_arrival_names_its_notice` |
+  | a deposit known by its transaction (never matched) | six, `two_notices_of_one_credit_are_one_arrival` among them |
+  | the read back of the kept statement | `notice_the_store_keeps_nothing_behind_is_refused` |
+  | a refused notice forgets its reference | `notice_the_log_could_not_attribute_to_its_reserve_creates_no_arrival` |
+  | a parked notice replaceable by other figures | `a_parked_forged_notice_does_not_wedge_the_genuine_one` |
+  | `earlier` set by the filing | `deposit_filed_again_against_another_order_names_its_earlier_arrival` |
+  | the log's `verified` on `arrival-names-its-notice` (contracts, restored) | `notice_the_log_could_not_attribute_to_its_reserve_creates_no_arrival` |
+  | that and the report's `verified` in `arrival-rests-on-the-reserves-report` | the same and `unattributed_arrival_still_creates_no_order` |
+
+  Two tests were green before the code and are held by their rule-offs alone: `two notices of one credit are one
+  arrival` (the key was already the transaction) and `unattributed arrival still creates no order` (the log already
+  refused). `arrival's figures are read from the reserve's signed notice`, `deposit filed again against another
+  order names its earlier arrival` and `signed hold or arrival answer is not taken for an arrival notice` failed on an
+  assertion first; so did the sticky-notice case of `notice the log could not attribute to its reserve creates no
+  arrival`.
+
 ## Rows added for the gaps the reviews found (`plan/m3-owed-rows`)
 
 Each gap below named "a new `F-020` row" or "no row owns it" now has one. Where a gap sits in another feature's
@@ -3656,7 +3758,7 @@ the new `tests/stuck_hand_on.rs`). No contract, manifest or `DEC-20` path.
 |---|---|
 | `relayed_by: None` at five sites of core-orch (`T-022-02`'s finding 2) | `T-020-28`, wave 26, after `T-020-23` and `T-020-24` (dependencies) and, run in turn, `T-020-19`, `T-020-25` and `T-020-27` |
 | `decision-is-for-its-caller`, the role check in `attribute()`, a "no formula in this asset" marker on a charge raise (`T-020-14`'s closed gap 3; `T-020-21` the shape, `T-020-29` the writer), `What::Evidence` without a segment (`T-020-16`'s gap 1), and `answer-follows-its-question` for the arrival shapes (`T-020-18`'s hand-off) | `T-020-21`; the evidence entry for `stuck_resolved` is written by `T-020-20` (3) |
-| `NOT_A_NOTICE` replaced by a positive check of `ARRIVAL_NOTICE_SHAPE`, and the seeded deposit's per-credit reference (`T-020-18`'s hand-offs) | `T-020-19` |
+| `NOT_A_NOTICE` replaced by a positive check of `ARRIVAL_NOTICE_SHAPE`, and the seeded deposit's per-credit reference (`T-020-18`'s hand-offs) | `T-020-19`, done (its notes) |
 | `Prices::report` has no caller in Core's own completion (`T-020-14`, gap 4): only the assembly calls it (`T-024-04`) | `M4`, `F-030`, in §4.4's inherited table |
 | `Terms::take` has no production caller (`T-020-14`, gap 1) | `M4`, `F-030` and `F-031`, in the same table |
 | The stand-in reserve's arrival-notice test (`T-020-18`'s hand-off to `F-024`) | `T-024-15` |

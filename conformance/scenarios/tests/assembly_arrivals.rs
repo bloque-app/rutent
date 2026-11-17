@@ -7,7 +7,6 @@ use rutent_conformance::signing::{real, sign_value};
 use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::{ArrivalMatch, Parties, What};
 use rutent_contracts::provider_role::{Denomination, KeyPurpose, OuterNode};
-use rutent_contracts::router_api::PositiveAmount;
 use rutent_core_orch::arrival::{ArrivalError, Arrived, Filed, Filing, Report};
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged, StepError, context};
@@ -16,8 +15,7 @@ use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
 use serde_json::json;
 
 /// The shape the scenario gives the reserve's notice: provider-role's arrival notice, the only shape the log takes as a
-/// deposit's notice (`arrival-names-its-notice`). The body is still the scenario's own; `T-020-19` reads it as the
-/// contract's.
+/// deposit's notice (`arrival-names-its-notice`), and the one Core requires (`T-020-19`).
 const NOTICE_SHAPE: &str = rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE;
 
 /// The simulated reserve's statements key, the real one its placeholder stands for.
@@ -52,18 +50,19 @@ fn report(core: &Core, amount: &str) -> Report {
         "maker": RESERVE,
         "made_at": core.clock.timestamp().as_str(),
         "signature": { "scheme": "ed25519", "key": "", "value": "" },
-        "statement": { "kind": "arrival", "transaction": "credit-1", "amount": amount },
+        // provider-role's `ArrivalNotice`: what Core reads the arrival's figures from.
+        "statement": {
+            "transaction": "credit-1",
+            "node": OuterNode { network: node.network },
+            "asset": asset,
+            "amount": amount,
+            "account": context().account,
+            "holder": kit::customer().party,
+        },
     });
     sign_value(&mut notice, &statements_key());
     Report {
         reserve: id(RESERVE),
-        node: OuterNode {
-            network: node.network,
-        },
-        asset,
-        amount: PositiveAmount::new(amount).expect("an amount"),
-        account: id(&context().account),
-        holder: kit::customer().party,
         notice: serde_json::to_vec(&notice).expect("bytes"),
     }
 }

@@ -1185,12 +1185,19 @@ fn seed_arrival(
             panic!("the route starts at an outer node");
         };
         // The deposit's notice: the reserve's own arrival notice, the only shape the log takes as one
-        // (`arrival-names-its-notice`), naming the deposit's transaction, signed with its statements key.
+        // (`arrival-names-its-notice`), signed with its statements key. The transaction it names is the reserve's own
+        // per-credit reference, not the one Core's question and the reserve's report go under (`T-020-19`): no
+        // simulated reserve issues one yet (`T-024-14`), so the seed gives each deposit its own, as a reserve would.
+        let credit = if split {
+            format!("credit-{}-{}", named.order, plan.part_id.as_str())
+        } else {
+            format!("credit-{}", named.order)
+        };
         let mut notice = seed_envelope(
             rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE,
             RESERVE,
             json!({
-                "transaction": transaction,
+                "transaction": credit,
                 "node": node,
                 "asset": first.from.asset,
                 "amount": first.amount_in.amount(),
@@ -1204,7 +1211,7 @@ fn seed_arrival(
             serde_json::to_vec(&notice).unwrap(),
             reserve,
             &order,
-            &transaction,
+            &credit,
         );
         log.take(&notice, Through::General).unwrap();
         let notice = match &notice {
