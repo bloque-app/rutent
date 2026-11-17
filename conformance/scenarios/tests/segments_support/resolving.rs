@@ -321,6 +321,18 @@ pub fn on_platform<T>(
     mover: &mut Mover,
     with: impl FnOnce(&mut Parts<'_>, &mut Delivering<'_>) -> T,
 ) -> T {
+    on_platform_signing(core, catalogue, modules, mover, None, with)
+}
+
+/// [`on_platform`], the operation signed with `key` where one is given, and with Core's operator key otherwise.
+pub fn on_platform_signing<T>(
+    core: &mut Core,
+    catalogue: &rutent_prov::catalogue::Catalogue,
+    modules: &mut dyn rutent_core_orch::segments::Modules,
+    mover: &mut Mover,
+    key: Option<&mut dyn rutent_core_orch::rounds::OperatorKey>,
+    with: impl FnOnce(&mut Parts<'_>, &mut Delivering<'_>) -> T,
+) -> T {
     let mut general = General(Rc::clone(&core.log));
     let mut parts = Parts {
         clock: &*core.clock,
@@ -336,7 +348,10 @@ pub fn on_platform<T>(
         uses: &mut no_proxy,
         evidence: &mut core.store,
         catalogue,
-        operator_key: &mut core.key,
+        operator_key: match key {
+            Some(key) => key,
+            None => &mut core.key,
+        },
         bounds: &core.record.bounds,
         operator: &core.operator,
     });

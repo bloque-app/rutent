@@ -3431,12 +3431,21 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
   a retry never hands the provider the operation again (`INV-8`). Stated steps use `Step::append_stated`: the log
   attributes a statement, so its receipt is of the recorded entry and the receipt rule can't hold it (the kit's log
   hid this; the assembly's real log showed it).
-- **Outcome mapping, defaults (reversible, fail closed).** `Done` only for an answer that counts under `judge` and says
-  settled. `Failed` only where nothing passed out (platform refused before passing anything, begin refused, question
-  refused by the log, no resting node, no advertised deposit tuple, unit differs from the tuple's, more than one
-  required input, a hand-on) or the provider says failed or refuses finally. `Unknown` for everything else: the
-  platform's `OutcomeUnknown`, the provider's own unknown, waits-on-person, any other refusal, an answer that doesn't
-  count, a drain the contract can't carry.
+- **Outcome mapping, defaults (reversible, fail closed; reviewed).** `Done` only for an answer that counts under
+  `judge` and says settled. `Failed` only for what Core itself saw: nothing passed out (a platform refusal on the list
+  that proves it: `Unavailable`, `NotHandled`, `VersionExploited`, the statement-key refusals, and the output refusals
+  that apply only where the module passed nothing out), a begin refused so, the question refused by the log or
+  recorded unattributed, no resting node, no advertised deposit tuple, a unit differing from the tuple's, more than one
+  required input, a hand-on. `Unknown` for everything else, so a part is never freed on a word that may hide a
+  movement: the platform's `OutcomeUnknown`, `DuplicateTransaction` or any refusal not on the list, the provider's own
+  unknown, waits-on-person, **and the provider's own "failed" or final refusal**. A provider's failure frees the part
+  only through `known_outcome` and `confirm_outcome` by another party (the owner's ruling of 2026-11-14): a provider
+  that paid could otherwise say "failed" and be paid twice.
+- **Re-entry** (`Carrying::again`, `Resolutions::may_have_handed_over`). `Stuck` marks an effect acted on at the first
+  call and tells every later call it is a re-entry. A mover holding no record of an effect acted on (a restart) answers
+  `Unknown` and hands over nothing. A mover that knows it handed nothing over lets `Stuck` read the part's ends again
+  (the customer may have replaced them), dropping the move as before if they changed. The question must be recorded
+  attributed (its receipt isn't the digest of the entry as built) before anything is handed over.
 - **Known outcome** (`Delivering::statement`). A provider's later statement for the move's transaction is checked
   (attributable under a published statements key, a result, naming the transaction; the move's own provider's judged
   against the operation Core signed), kept once as a stated entry about the order and transaction, and returned with
@@ -3449,7 +3458,13 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
   `resolution_is_carried_out_only_on_a_move_policy_permitted`,
   `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result`,
   `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append`,
-  `failed_move_leaves_the_value_held_and_the_part_stuck`; each ends by replaying the log through `admit_entry`.
+  `failed_move_leaves_the_value_held_and_the_part_stuck`; after review:
+  `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it`,
+  `move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again`,
+  `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures`,
+  `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over`,
+  `stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination`, and two unit tests in
+  `stuck/mover.rs`; each of the scenario ones ends by replaying the log through `admit_entry`.
   `tests/assembly_stuck.rs`: `stuck_order_of_the_assembled_core_is_resolved_through_the_mover_and_the_real_engine`
   (the assembled Core, the real engine and log: `same_actor` by chain, no permission, and the provider's own desk each
   refused with the reserve handed nothing; the permitted move done once). All were seen red with the mover stubbed to
@@ -3464,10 +3479,22 @@ Branch `f-020/t-020-16-stuck-mover`, from `m3` at `20ed319`. Edits `components/c
   | effect marked acted on once | `resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append` |
   | a refused begin fails the move | `failed_move_leaves_the_value_held_and_the_part_stuck` |
   | the mover's `carried` flag | none red: defence in depth, the kept verdict already stops a second hand-over |
+  | a provider's own failure answers `Failed` (review B1) | `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it` |
+  | any platform refusal read as nothing passed out (B2) | `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures` |
+  | a mover with no record of an acted-on effect carries it out (B2; the platform forgets its begins too) | `move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again` |
+  | the platform's `OutcomeUnknown` answers `Failed` (S1) | `platform_refusals_that_prove_nothing_passed_out_are_the_only_failures` |
+  | the unit check against the tuple (S1) | `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over` |
+  | more than one required input (S1) | `only_a_tuple_whose_inputs_the_account_can_fill_is_asked` (unit test, `cargo test -p rutent-core-orch --lib`) |
+  | the question's receipt must be an attributed one (S2) | `move_the_provider_cant_be_asked_fails_before_anything_is_handed_over` |
+  | the ends re-read when nothing was handed over (S3) | `stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination` |
+
+  The kit's log gained `attribute_from_now` and `stop_attributing`: from then on its receipts for stated entries are of
+  the entry as the real log records it, attributed, which is how the question's check is seen here. The refusal
+  fallback arm of `Answered::Refused` (a refusal not on the list, on the hand-over) has no test of its own.
 
 - **Gaps, with owners.**
   1. `What::Evidence` requires a segment, so `stuck_resolved`'s evidence stays an id of Core's with no entry behind it
-     (a contract shape; the contract author).
+     (a contract shape; owner `T-020-21`).
   2. The mover's state is in memory, as `Stuck`'s and `Segments`' are (`F-030`); after a restart a fresh `Stuck`
      declares nothing and decides nothing, and the log's `part-waits-for-value-in-motion` holds an open effect.
   3. The provider module's own calls are named for no route (`REQ-MDL-21`): a module that needs one would be refused,

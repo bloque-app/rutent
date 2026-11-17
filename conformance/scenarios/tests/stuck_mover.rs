@@ -60,6 +60,8 @@ fn is_hand_over(what: &What) -> bool {
 fn stuck_by_no_route() -> (World, Core, Stuck) {
     let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
     let mut core = Core::over(&mut world);
+    // The log attributes each statement, as the real one does: its receipt is of the entry it recorded.
+    core.log.borrow_mut().attribute_from_now();
     let mut watched = Watched::new(&mut world.fleet.platform);
     watched.refuse_begin = Some(1);
     let ran = core.run_over(&world.catalogue, &mut watched);
@@ -613,6 +615,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
                         order: &order,
                         part: &part,
                         core: &carrying_core,
+                        again: false,
                     },
                     &effect,
                     bytes,
@@ -657,6 +660,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
         &permitted,
         (&bob, &carol),
         (&stated.receipt, &another),
+        Resolved::Done,
     );
     assert!(matches!(
         reported,
@@ -728,6 +732,7 @@ fn report_and_confirm(
         &rutent_contracts::core_internal::Actor,
     ),
     evidence: (&Receipt, &Receipt),
+    outcome: Resolved,
 ) -> Moved {
     let (order, carries_out, actor) = (
         id(&core.named.order),
@@ -744,7 +749,7 @@ fn report_and_confirm(
                 mover: reporter,
                 core: &actor,
             },
-            Resolved::Done,
+            outcome,
             evidence.0,
         )
     })
@@ -760,7 +765,7 @@ fn report_and_confirm(
                 order: &order,
                 carries_out: &carries_out,
                 confirmer,
-                outcome: Resolved::Done,
+                outcome,
                 report,
                 reported_with: evidence.0,
                 evidence: evidence.1,
@@ -911,10 +916,9 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
         .expect("the log admits every entry");
 }
 
-/// A move that fails leaves the value held and the part stuck: the reserve says it failed (nothing moved), or the
-/// platform won't begin the segment (nothing passed out): the effect's result is `failed`, no `stuck_resolved` is
-/// recorded, the part's value is still held and a new decision may be asked and moved, at the same reserve, and
-/// it is, once the platform answers.
+/// A move Core itself saw fail, because the platform won't begin the provider's segment (nothing passed out), leaves
+/// the value held and the part stuck: the effect's result is `failed`, no `stuck_resolved` is recorded, and a new
+/// decision may be asked and moved, once the platform answers.
 // verifies: INV-2
 #[test]
 fn failed_move_leaves_the_value_held_and_the_part_stuck() {
@@ -925,45 +929,8 @@ fn failed_move_leaves_the_value_held_and_the_part_stuck() {
     let held_before = core.exposures.stuck().len();
     assert!(held_before > 0);
 
-    // The reserve says it failed.
-    world
-        .fleet
-        .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
-    let first = decide(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        &alice,
-        &to_origin(AMOUNT),
-    )
-    .expect("asked");
-    let delivered = deliver(
-        &mut core,
-        &mut world,
-        &mut stuck,
-        &mut mover,
-        &mut policy,
-        &decided(&first),
-        &bob,
-    );
-    let Ok(Moved::CarriedOut {
-        effect,
-        resolved: Resolved::Failed,
-        ..
-    }) = delivered.moved.clone()
-    else {
-        panic!("failed: {:?}", delivered.moved);
-    };
-    assert_eq!(results_of(&core, &effect), vec![Outcome::Failed {}]);
-    assert!(resolved_to(&core).is_empty());
-    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
-    assert_eq!(core.exposures.stuck().len(), held_before);
-
-    // The platform won't begin the segment: nothing is handed over, and the move failed.
     let dest = to_destination(&core, AMOUNT);
-    let second = decide(&mut core, &mut stuck, &mut policy, &alice, &dest)
-        .expect("a failed move spends its decision, not the part");
+    let second = decide(&mut core, &mut stuck, &mut policy, &alice, &dest).expect("asked");
     let handled = world.fleet.platform.operations_received(RESERVE);
     let (order, actor) = (id(&core.named.order), segments_support::core());
     let carries_out = decided(&second);
@@ -990,21 +957,21 @@ fn failed_move_leaves_the_value_held_and_the_part_stuck() {
     );
     assert!(watched.carried.is_empty());
     drop(watched);
-    assert!(
-        matches!(
-            moved,
-            Ok(Moved::CarriedOut {
-                resolved: Resolved::Failed,
-                ..
-            })
-        ),
-        "{moved:?}"
-    );
+    let Ok(Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Failed,
+        ..
+    }) = moved
+    else {
+        panic!("failed: {moved:?}");
+    };
+    assert_eq!(results_of(&core, &effect), vec![Outcome::Failed {}]);
     assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
     assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
     assert!(resolved_to(&core).is_empty());
+    assert_eq!(core.exposures.stuck().len(), held_before);
 
-    // A third decision is carried out once the platform answers, and resolves the part.
+    // A new decision is carried out once the platform answers, and resolves the part.
     let dest = to_destination(&core, AMOUNT);
     let third = decide(&mut core, &mut stuck, &mut policy, &alice, &dest).expect("asked again");
     let delivered = deliver(
@@ -1030,4 +997,572 @@ fn failed_move_leaves_the_value_held_and_the_part_stuck() {
     assert_eq!(resolved_to(&core), vec![ResolvedTo::Destination]);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+/// The provider's own word that the move failed (it refuses finally) is its word alone: a provider that paid could say
+/// so to be paid twice. The move answers `Unknown`, its result is `unanswered`, and the part stays held, nothing more
+/// decided for it, until the failure is reported on a statement Core checked and another actor confirms it on another
+/// maker's; only then is the part freed, and a new decision moves it.
+// verifies: REQ-AUZ-4, REQ-ORD-1
+#[test]
+fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob, carol) = (
+        staff("desk-a", "alice"),
+        staff("desk-b", "bob"),
+        staff("desk-c", "carol"),
+    );
+    world
+        .fleet
+        .world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    let delivered = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&first),
+        &bob,
+    );
+    let Ok(Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Unknown,
+        ..
+    }) = delivered.moved.clone()
+    else {
+        panic!("unknown: {:?}", delivered.moved);
+    };
+    assert_eq!(results_of(&core, &effect), vec![Outcome::Unanswered {}]);
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    assert_eq!(
+        decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &alice,
+            &to_origin(AMOUNT)
+        )
+        .map(|_| ()),
+        Err(ResolveError::OutcomeUnknown),
+        "the provider's word frees nothing"
+    );
+    // Reported on the provider's statement, confirmed on another maker's: then the part is free.
+    let transaction = decided_transaction(&core);
+    let bytes = restated(&core, &transaction);
+    let carrying_core = segments_support::core();
+    let (order, part) = (id(&core.named.order), id(PART));
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let stated = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| {
+            delivering.statement(
+                parts,
+                &rutent_core_orch::stuck::Carrying {
+                    order: &order,
+                    part: &part,
+                    core: &carrying_core,
+                    again: false,
+                },
+                &effect,
+                &bytes,
+            )
+        },
+    )
+    .expect("taken");
+    drop(watched);
+    assert_eq!(stated.outcome, Some(Resolved::Failed));
+    let another = result_without_a_question(&mut core, OTHER_RESERVE, transaction.as_str());
+    let confirmed = report_and_confirm(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &first,
+        (&bob, &carol),
+        (&stated.receipt, &another),
+        Resolved::Failed,
+    );
+    assert!(matches!(
+        confirmed,
+        Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            ..
+        }
+    ));
+    assert_eq!(
+        results_of(&core, &effect),
+        vec![Outcome::Unanswered {}, Outcome::Failed {}]
+    );
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    let second = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("freed once another party confirmed");
+    let delivered = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&second),
+        &bob,
+    );
+    assert!(matches!(
+        delivered.moved,
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            ..
+        })
+    ));
+    assert_eq!(
+        world.fleet.platform.operations_received(RESERVE),
+        handled + 2,
+        "one operation for each decision"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The answer the reserve gave, stated again now, signed with its statements key: its statement of how the move went,
+/// made after the move.
+fn restated(core: &Core, transaction: &Id) -> Vec<u8> {
+    let mut answer = core
+        .store
+        .kept
+        .iter()
+        .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        .rev()
+        .find(|v| {
+            v["statement"]["transaction"] == transaction.as_str()
+                && v["shape"] == rutent_contracts::provider_role::RESULT_SHAPE
+        })
+        .expect("the reserve's answer is kept");
+    answer["made_at"] = core.clock.now().timestamp().unwrap().as_str().into();
+    resign(&mut answer, RESERVE);
+    serde_json::to_vec(&answer).unwrap()
+}
+
+/// The operation reached the provider, and then the log couldn't take its hand-over: the first call stops with the
+/// provider holding the operation. Taken on again by a mover with no memory of it (the process restarted, the stuck
+/// record kept), the move is not handed over again and does not read as failed: it is unknown, the part stays held
+/// and the provider has received the operation once.
+// verifies: INV-8
+#[test]
+fn move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::HandOver, Fault::Unavailable));
+    }
+    let first = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    assert!(matches!(first.moved, Err(ResolveError::Append(_))));
+    assert_eq!(
+        world.fleet.platform.operations_received(RESERVE),
+        handled + 1
+    );
+    // The platform restarted too, so it can't say the transaction began already: only the mover's own rule holds.
+    let mut fresh = Mover::new();
+    let (order, actor, by) = (id(&core.named.order), segments_support::core(), &bob);
+    let carries_out = decided(&permitted);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.forgets_begins = true;
+    let moved = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut fresh,
+        |parts, delivering| {
+            stuck.carry_out(
+                parts,
+                &mut policy,
+                delivering,
+                Moving {
+                    order: &order,
+                    carries_out: &carries_out,
+                    mover: by,
+                    core: &actor,
+                },
+            )
+        },
+    );
+    let again = Delivered {
+        moved,
+        carried: watched.carried.clone(),
+    };
+    drop(watched);
+    assert!(again.carried.is_empty(), "never handed over again");
+    assert!(
+        matches!(
+            again.moved,
+            Ok(Moved::CarriedOut {
+                resolved: Resolved::Unknown,
+                ..
+            })
+        ),
+        "{:?}",
+        again.moved
+    );
+    assert_eq!(
+        world.fleet.platform.operations_received(RESERVE),
+        handled + 1
+    );
+    assert!(resolved_to(&core).is_empty());
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    assert_eq!(
+        decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &alice,
+            &to_origin(AMOUNT)
+        )
+        .map(|_| ()),
+        Err(ResolveError::OutcomeUnknown)
+    );
+}
+
+/// What the platform says is read cautiously. A module that passed something out and then gave no answer
+/// (`OutcomeUnknown`), and a platform that says the transaction began already (`DuplicateTransaction`), are the
+/// outcome unknown, never a failure that frees the part; a refusal that proves nothing passed out (`Unavailable`) is
+/// a failure.
+// verifies: INV-2
+#[test]
+fn platform_refusals_that_prove_nothing_passed_out_are_the_only_failures() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    use rutent_contracts::module_interface::PlatformRefusal as Refusal;
+    // The module passed something out and gave no answer.
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let (order, actor) = (id(&core.named.order), segments_support::core());
+    let carries_out = decided(&permitted);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_carry = Some(Refusal::OutcomeUnknown);
+    let moved = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| {
+            stuck.carry_out(
+                parts,
+                &mut policy,
+                delivering,
+                Moving {
+                    order: &order,
+                    carries_out: &carries_out,
+                    mover: &bob,
+                    core: &actor,
+                },
+            )
+        },
+    );
+    drop(watched);
+    assert!(
+        matches!(
+            moved,
+            Ok(Moved::CarriedOut {
+                resolved: Resolved::Unknown,
+                ..
+            })
+        ),
+        "{moved:?}"
+    );
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
+    // A transaction the platform says began already: nothing is handed over, and it isn't a failure either.
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let (order, carries_out) = (id(&core.named.order), decided(&permitted));
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(0);
+    watched.begin_refusal = Refusal::DuplicateTransaction;
+    let moved = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| {
+            stuck.carry_out(
+                parts,
+                &mut policy,
+                delivering,
+                Moving {
+                    order: &order,
+                    carries_out: &carries_out,
+                    mover: &bob,
+                    core: &actor,
+                },
+            )
+        },
+    );
+    assert!(watched.carried.is_empty());
+    drop(watched);
+    assert!(
+        matches!(
+            moved,
+            Ok(Moved::CarriedOut {
+                resolved: Resolved::Unknown,
+                ..
+            })
+        ),
+        "{moved:?}"
+    );
+}
+
+/// A resolution in a unit the provider's tuple doesn't count in, or whose question the log records unattributed, is not
+/// asked of the provider at all: the move fails before anything is handed over, though a decision Core refused could
+/// not reach it (the effect here is forged, as only the mover is under test).
+// verifies: REQ-AUZ-4
+#[test]
+fn move_the_provider_cant_be_asked_fails_before_anything_is_handed_over() {
+    use rutent_contracts::core_internal::Effect;
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let alice = staff("desk-a", "alice");
+    let permitted = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &to_origin(AMOUNT),
+    )
+    .expect("asked");
+    let transaction = decided_transaction(&core);
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    let receipts = [
+        core.log.borrow().receipt_at(0),
+        core.log.borrow().receipt_at(1),
+    ];
+    let effect = |decimals: u8, index: usize| Effect {
+        action: Action::ResolveStuck {
+            order: id(ORDER),
+            carries_out: decided(&permitted),
+            resolution: Resolution::Deliver {
+                by: id(RESERVE),
+                to: origin(),
+                asset: Denomination {
+                    id: "COP".into(),
+                    decimals,
+                },
+                amount: PositiveAmount::new(AMOUNT).unwrap(),
+            },
+            transaction: transaction.clone(),
+        },
+        decision: permitted.permit().expect("a permit"),
+        receipt: receipts[index].clone(),
+    };
+    let (order, part, actor) = (id(ORDER), id(PART), segments_support::core());
+    let carrying = rutent_core_orch::stuck::Carrying {
+        order: &order,
+        part: &part,
+        core: &actor,
+        again: false,
+    };
+    use rutent_core_orch::stuck::Resolutions as _;
+    // Another unit than the tuple counts in.
+    let forged = effect(6, 0);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    let said = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| delivering.resolve(parts, &carrying, &forged),
+    );
+    assert_eq!(said, Ok(Resolved::Failed));
+    // The right unit, but the log records the question unattributed (its key unknown to it): nothing is handed over.
+    core.log.borrow_mut().stop_attributing();
+    let other = effect(2, 1);
+    let said = on_platform(
+        &mut core,
+        &world.catalogue,
+        &mut watched,
+        &mut mover,
+        |parts, delivering| delivering.resolve(parts, &carrying, &other),
+    );
+    assert_eq!(said, Ok(Resolved::Failed));
+    assert!(watched.carried.is_empty());
+    drop(watched);
+    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+}
+
+/// A move that stopped before anything was handed over (the log couldn't take the operator's question) and is taken
+/// on again after the customer replaced the part's destination does not deliver to the old one: its ends are read
+/// again, the move is dropped and its effect is closed `failed`, and the provider is handed nothing.
+// verifies: REQ-AUZ-3, REQ-AUZ-4
+#[test]
+fn stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination() {
+    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let dest = to_destination(&core, AMOUNT);
+    let permitted = decide(&mut core, &mut stuck, &mut policy, &alice, &dest).expect("asked");
+    let handled = world.fleet.platform.operations_received(RESERVE);
+    for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedOperation, Fault::Unavailable));
+    }
+    let first = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    assert!(matches!(first.moved, Err(ResolveError::Append(_))));
+    // The customer authorises the part to another account, and Core follows the order again.
+    authorise_in_the_log(
+        &core,
+        authorised_anew(
+            &core,
+            "auth-p1-new",
+            Some(vec![id(PART)]),
+            rutent_scenarios::kit::customer(),
+            "acct-new",
+            "acct-1",
+        ),
+    );
+    follow(&core, &mut stuck).expect("the part's new destination replaces its ends");
+    let again = deliver(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &decided(&permitted),
+        &bob,
+    );
+    assert_eq!(
+        again.moved.map(|_| ()),
+        Err(ResolveError::ElsewhereThanItsEnds)
+    );
+    assert!(again.carried.is_empty());
+    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert!(resolved_to(&core).is_empty());
+    assert_eq!(open_effects(&core), 0, "the effect is closed");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+fn open_effects(core: &Core) -> usize {
+    let log = core.log.borrow();
+    let receipts: Vec<_> = (0..log.entries.len())
+        .filter(|&i| matches!(&log.entries[i].0, Entry::Verified(v) if is_resolve_stuck(&v.what)))
+        .map(|i| log.receipt_at(i))
+        .collect();
+    receipts
+        .iter()
+        .filter(|r| {
+            !log.verified()
+                .iter()
+                .any(|v| matches!(&v.what, What::Result { effect } if effect == *r))
+        })
+        .count()
+}
+
+fn authorise_in_the_log(core: &Core, entry: Entry) {
+    use rutent_contracts::core_internal::calls::{DecisionEntry, PolicyLog};
+    let Entry::Verified(entry) = entry else {
+        panic!("an authorisation is a verified entry");
+    };
+    PolicyPath(std::rc::Rc::clone(&core.log))
+        .append_decision(&DecisionEntry::try_from(entry).expect("a decision"))
+        .expect("the log takes the customer's authorisation");
+}
+
+fn authorised_anew(
+    core: &Core,
+    authorisation: &str,
+    parts: Option<Vec<Id>>,
+    given_by: rutent_contracts::core_internal::Actor,
+    account: &str,
+    origin_account: &str,
+) -> Entry {
+    let mut first = segments_support::resolving::recorded(core)
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Verified(v)
+                if matches!(v.what, What::Authorise { .. })
+                    && matches!(v.outcome, Outcome::Permitted {}) =>
+            {
+                Some(v)
+            }
+            _ => None,
+        })
+        .expect("the order's authorisation");
+    if let What::Authorise {
+        authorisation: a, ..
+    } = &mut first.what
+    {
+        a.authorisation = id(authorisation);
+        a.parts = parts;
+        a.destination.account = id(account);
+        a.origin_account = Some(id(origin_account));
+        a.given_by = given_by.clone();
+    }
+    first.who = given_by;
+    Entry::Verified(first)
 }

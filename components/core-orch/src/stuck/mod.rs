@@ -447,6 +447,9 @@ pub struct Carrying<'a> {
     pub part: &'a Id,
     /// Core, which writes what the move records.
     pub core: &'a Actor,
+    /// Whether the effect was acted on by an earlier call: this call is a re-entry. A mover that holds no record of
+    /// the effect then cannot know what its predecessor handed over, and must not hand it over again.
+    pub again: bool,
 }
 
 /// What carries a stuck order's resolution out: the value moved as the effect's action names it, by the provider it
@@ -465,6 +468,14 @@ pub trait Resolutions {
         carrying: &Carrying<'_>,
         effect: &Effect,
     ) -> Result<Resolved, AppendFailure>;
+
+    /// Whether a call for `effect` may already have handed the provider the operation. A mover that knows it handed
+    /// nothing says so, and [`Stuck`] then reads the part's ends again before it goes on (the customer may have
+    /// replaced them while the move stalled); the default is that it may have.
+    fn may_have_handed_over(&self, effect: &Receipt) -> bool {
+        let _ = effect;
+        true
+    }
 }
 
 /// No way to carry a resolution out: each fails, so nothing moves and the part's value stays held. The production
@@ -1630,7 +1641,8 @@ impl Stuck {
                     _ => return Err(ResolveError::NoDecision),
                 };
                 let acted = motion.acted;
-                let still = if acted {
+                let handed = acted && resolutions.may_have_handed_over(&receipt);
+                let still = if handed {
                     Ok(())
                 } else {
                     self.unresolved(parts.segments, &order, &part_id)
@@ -1649,6 +1661,7 @@ impl Stuck {
                     // One register of effects acted on, the segments' and the resolutions' (`INV-8`): marked the
                     // first time only, so a mover that stopped is taken on again, not refused as a second act.
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
+                    let again = motion.acted;
                     if !motion.acted {
                         if !parts.segments.act_on(&receipt) {
                             return Err(ResolveError::AlreadyActed(receipt));
@@ -1664,6 +1677,7 @@ impl Stuck {
                         order: &order,
                         part: &part_id,
                         core,
+                        again,
                     };
                     let resolved = resolutions.resolve(parts, &carrying, &effect)?;
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;

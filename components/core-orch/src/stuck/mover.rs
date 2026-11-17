@@ -51,6 +51,7 @@ use rutent_contracts::state_machine::SegmentState;
 use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::types::Events;
 
+use super::is_receipt_of;
 use super::journal::{Step, built};
 use super::{Carrying, Parts, Resolutions, Resolved};
 use crate::rounds::OperatorKey;
@@ -107,6 +108,8 @@ struct Flight {
 #[derive(Debug, Clone)]
 enum Kept {
     Refused,
+    /// A re-entry for an effect this mover holds no record of: what its predecessor handed over is unknown.
+    Lost,
     Flight(Box<Flight>),
 }
 
@@ -174,6 +177,35 @@ impl Mover {
 pub struct Delivering<'a> {
     mover: &'a mut Mover,
     ports: Ports<'a>,
+}
+
+/// Whether the platform's refusal proves that nothing of the operation was passed out. Anything else, and any refusal
+/// added later, doesn't: it is read as the outcome unknown.
+fn nothing_passed_out(refusal: PlatformRefusal) -> bool {
+    matches!(
+        refusal,
+        PlatformRefusal::MalformedOutput
+            | PlatformRefusal::OversizedOutput
+            | PlatformRefusal::LimitReached
+            | PlatformRefusal::Unavailable
+            | PlatformRefusal::NotHandled
+            | PlatformRefusal::VersionExploited
+            | PlatformRefusal::StatementKeyUnavailable
+            | PlatformRefusal::StatementKeyMisconfigured
+    )
+}
+
+/// The inputs a tuple that requires `required` takes, the destination's account filling the one it names; none where
+/// the account can't fill what it requires.
+fn inputs_for(required: &[String], account: &Id) -> Option<BTreeMap<String, String>> {
+    match required {
+        [] => Some(BTreeMap::new()),
+        [only] => Some(BTreeMap::from([(
+            only.clone(),
+            account.as_str().to_owned(),
+        )])),
+        _ => None,
+    }
 }
 
 fn key(receipt: &Receipt) -> String {
@@ -367,10 +399,8 @@ impl Delivering<'_> {
         }
         // The destination's account fills the one input the tuple requires; a tuple that needs more can't be
         // filled from what the decision names.
-        let inputs = match tuple.terms.required_inputs.as_slice() {
-            [] => BTreeMap::new(),
-            [only] => BTreeMap::from([(only.clone(), to.account.as_str().to_owned())]),
-            _ => return Ok(None),
+        let Some(inputs) = inputs_for(&tuple.terms.required_inputs, &to.account) else {
+            return Ok(None);
         };
         let operation = ProviderOperation::Deposit(Deposit {
             transaction: transaction.as_str().to_owned(),
@@ -464,6 +494,14 @@ impl Delivering<'_> {
 }
 
 impl Resolutions for Delivering<'_> {
+    fn may_have_handed_over(&self, effect: &Receipt) -> bool {
+        match self.mover.kept.get(&key(effect)) {
+            Some(Kept::Flight(flight)) => flight.carried,
+            Some(Kept::Refused) => false,
+            Some(Kept::Lost) | None => true,
+        }
+    }
+
     fn resolve(
         &mut self,
         parts: &mut Parts<'_>,
@@ -473,6 +511,9 @@ impl Resolutions for Delivering<'_> {
         let at = key(&effect.receipt);
         let kept = match self.mover.kept.remove(&at) {
             Some(kept) => kept,
+            // Acted on already, and this mover knows nothing of it (a restart, a fresh mover): the provider may hold
+            // the operation, so it is never handed over again, and the outcome is unknown.
+            None if carrying.again => Kept::Lost,
             None => match self.write(parts, carrying, effect)? {
                 Some(flight) => Kept::Flight(Box::new(flight)),
                 None => Kept::Refused,
@@ -482,6 +523,10 @@ impl Resolutions for Delivering<'_> {
             Kept::Refused => {
                 self.mover.kept.insert(at, Kept::Refused);
                 Ok(Resolved::Failed)
+            }
+            Kept::Lost => {
+                self.mover.kept.insert(at, Kept::Lost);
+                Ok(Resolved::Unknown)
             }
             Kept::Flight(mut flight) => {
                 let result = self.advance(parts, carrying, effect, &mut flight);
@@ -505,6 +550,13 @@ impl Delivering<'_> {
         // passed out, so it failed.
         if flight.verdict.is_none() && !flight.carried {
             match flight.question.append_stated(parts.log) {
+                // The log records a statement attributed: its receipt is of the entry it recorded. One that is the
+                // digest of the entry as built was recorded unattributed, its signing key unknown to the log, and
+                // would reach the provider as a question the log can't tie to the operator, leaving the effect
+                // open with no result. It backs no move.
+                Ok(receipt) if is_receipt_of(&receipt, &flight.question.entry) => {
+                    flight.verdict = Some(Resolved::Failed);
+                }
                 Ok(_) => {}
                 Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable),
                 Err(_) => {
@@ -523,8 +575,16 @@ impl Delivering<'_> {
                 .begin_segment(&flight.provider, &identifier)
             {
                 Ok(_) => flight.begun = true,
-                // The platform wouldn't begin it: nothing passed out, so the move failed.
-                Err(_) => flight.verdict = Some(Resolved::Failed),
+                // The platform wouldn't begin it. Failed only for a refusal that proves nothing passed out; a
+                // transaction it says began already (`DuplicateTransaction`) means the operation may be with the
+                // provider.
+                Err(refusal) => {
+                    flight.verdict = Some(if nothing_passed_out(refusal) {
+                        Resolved::Failed
+                    } else {
+                        Resolved::Unknown
+                    });
+                }
             }
         }
         if flight.verdict.is_none() && !flight.carried {
@@ -585,8 +645,11 @@ impl Delivering<'_> {
             Answered::Refused(PlatformRefusal::OutcomeUnknown) => {
                 return Ok((Resolved::Unknown, false));
             }
-            // Refused before the module passed anything out: nothing moved.
-            Answered::Refused(_) => return Ok((Resolved::Failed, true)),
+            // Refused before the module passed anything out: nothing moved, where the refusal says so.
+            Answered::Refused(refusal) if nothing_passed_out(refusal) => {
+                return Ok((Resolved::Failed, true));
+            }
+            Answered::Refused(_) => return Ok((Resolved::Unknown, false)),
             Answered::Bytes(bytes) => bytes,
         };
         let counted = judge(
@@ -622,13 +685,50 @@ impl Delivering<'_> {
         }
         Ok(match counted {
             Ok(Counted::Succeeded { .. }) => (Resolved::Done, true),
+            // The provider's own word that it failed or refused is its word alone: a provider that paid could say so
+            // to be paid twice. The segment ends, but the outcome is unknown until another party confirms it
+            // ([`Stuck::known_outcome`], [`Stuck::confirm_outcome`]).
             Ok(Counted::Failed)
             | Ok(Counted::Refused(Refusal::Final(_) | Refusal::LiftsAtKnownTime(_))) => {
-                (Resolved::Failed, true)
+                (Resolved::Unknown, true)
             }
             // The provider's own word that it doesn't know, that it waits on the person, a refusal of another
             // kind, or an answer that doesn't count: the value may have moved, so the part is held.
             _ => (Resolved::Unknown, false),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tuple that requires no input takes none, one takes the destination's account, and more than one can't be
+    /// filled from what the decision names, so the move fails before anything is asked.
+    // verifies: REQ-AUZ-4
+    #[test]
+    fn only_a_tuple_whose_inputs_the_account_can_fill_is_asked() {
+        let account = Id::new("acct-2").unwrap();
+        assert_eq!(inputs_for(&[], &account), Some(BTreeMap::new()));
+        assert_eq!(
+            inputs_for(&["beneficiary.bank_account".to_owned()], &account),
+            Some(BTreeMap::from([(
+                "beneficiary.bank_account".to_owned(),
+                "acct-2".to_owned()
+            )]))
+        );
+        assert_eq!(
+            inputs_for(&["a".to_owned(), "b".to_owned()], &account),
+            None
+        );
+    }
+
+    /// Only a refusal that proves nothing passed out is read as nothing having moved.
+    // verifies: INV-2
+    #[test]
+    fn only_a_refusal_proving_nothing_passed_out_is_read_as_nothing_moved() {
+        assert!(nothing_passed_out(PlatformRefusal::Unavailable));
+        assert!(!nothing_passed_out(PlatformRefusal::DuplicateTransaction));
+        assert!(!nothing_passed_out(PlatformRefusal::OutcomeUnknown));
     }
 }

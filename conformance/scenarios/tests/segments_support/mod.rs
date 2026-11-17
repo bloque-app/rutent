@@ -222,6 +222,9 @@ impl On {
 /// receipt.
 #[derive(Default)]
 pub struct TestLog {
+    /// The places whose stated entries have a receipt of the entry as the real log records it, attributed, and so not
+    /// the digest of the entry as handed in (`T-020-16`). None by default: this log answers before it attributes.
+    pub attributed: std::ops::Range<usize>,
     pub entries: Vec<(Entry, Through)>,
     pub faults: VecDeque<(On, Fault)>,
 }
@@ -266,7 +269,7 @@ impl TestLog {
                 .enumerate()
                 .find(|(_, (e, _))| On::Effect.matches(e))
                 .expect("an effect to replay");
-            return Ok(receipt(index, &first.0));
+            return Ok(receipt_of(&self.attributed, index, &first.0));
         }
         let index = match self.entries.iter().position(|(e, _)| e == entry) {
             Some(index) => index,
@@ -278,12 +281,22 @@ impl TestLog {
         if fault == Some(Fault::LostAnswer) {
             return Err(AppendFailure::Unavailable);
         }
-        Ok(receipt(index, entry))
+        Ok(receipt_of(&self.attributed, index, entry))
     }
 
     /// The receipt this log gave the entry at `index` (`T-020-10`: an order's history resumed from the log).
+    /// From now, the receipts of stated entries are of the entry as recorded, attributed.
+    pub fn attribute_from_now(&mut self) {
+        self.attributed = self.entries.len()..usize::MAX;
+    }
+
+    /// From now, the log leaves stated entries unattributed: their receipts are of the entry as handed in.
+    pub fn stop_attributing(&mut self) {
+        self.attributed.end = self.entries.len();
+    }
+
     pub fn receipt_at(&self, index: usize) -> Receipt {
-        receipt(index, &self.entries[index].0)
+        receipt_of(&self.attributed, index, &self.entries[index].0)
     }
 
     /// Every verified entry's `what`, with its place.
@@ -325,8 +338,18 @@ impl TestLog {
     }
 }
 
-fn receipt(index: usize, entry: &Entry) -> Receipt {
-    let bytes = canonicalize(&serde_json::to_vec(entry).unwrap()).unwrap();
+fn receipt_of(attributed: &std::ops::Range<usize>, index: usize, entry: &Entry) -> Receipt {
+    let attributed = match entry {
+        Entry::Stated(s) if attributed.contains(&index) => {
+            let mut s = s.clone();
+            s.attribution = rutent_contracts::core_internal::Attribution::Verified {
+                who: s.attribution.maker().clone(),
+            };
+            Entry::Stated(s)
+        }
+        other => other.clone(),
+    };
+    let bytes = canonicalize(&serde_json::to_vec(&attributed).unwrap()).unwrap();
     Receipt {
         log: id("log-1"),
         index: SafeInteger::try_from(index as u64).unwrap(),
@@ -1822,7 +1845,7 @@ impl Core {
             )
             .map_err(|v| (i, v.0.to_owned()))?;
             // The receipt the writer was handed: this log answers before it attributes.
-            history.push((receipt(i, appended), entry));
+            history.push((receipt_of(&log.attributed, i, appended), entry));
         }
         Ok(history.into_iter().map(|(_, e)| e).collect())
     }
@@ -1976,6 +1999,13 @@ pub struct Watched<'a> {
     pub spoil: bool,
     /// The platform refuses to begin the segment at this place in the calls to begin, once.
     pub refuse_begin: Option<usize>,
+    /// The refusal a refused begin answers (`Unavailable` unless a test says otherwise).
+    pub begin_refusal: PlatformRefusal,
+    /// The next operation carried out is handed to the platform, and its answer is replaced by this refusal, once:
+    /// as a module that passed something out and then gave no answer (`T-020-16`).
+    pub refuse_carry: Option<PlatformRefusal>,
+    /// A platform that restarted and remembers no segment: it begins any, and never says a transaction began already.
+    pub forgets_begins: bool,
     begun: usize,
 }
 
@@ -1991,6 +2021,9 @@ impl<'a> Watched<'a> {
             transactions: Rc::new(RefCell::new(Vec::new())),
             spoil: false,
             refuse_begin: None,
+            begin_refusal: PlatformRefusal::Unavailable,
+            refuse_carry: None,
+            forgets_begins: false,
             begun: 0,
         }
     }
@@ -2015,11 +2048,14 @@ impl Modules for Watched<'_> {
         provider: &Id,
         transaction: &Identifier,
     ) -> Result<String, PlatformRefusal> {
+        if self.forgets_begins {
+            return Ok("restarted".to_owned());
+        }
         let place = self.begun;
         self.begun += 1;
         if self.refuse_begin == Some(place) {
             self.refuse_begin = None;
-            return Err(PlatformRefusal::Unavailable);
+            return Err(self.begin_refusal);
         }
         Modules::begin_segment(&mut *self.platform, provider, transaction)
     }
@@ -2050,7 +2086,10 @@ impl Modules for Watched<'_> {
         if let Some(during) = self.during.as_mut() {
             during(&mut *self.platform, operation);
         }
-        let answered = Modules::carry_out(&mut *self.platform, effect, provider, operation);
+        let mut answered = Modules::carry_out(&mut *self.platform, effect, provider, operation);
+        if let Some(refusal) = self.refuse_carry.take() {
+            answered = Answered::Refused(refusal);
+        }
         if let Some((clock, seconds)) = &self.takes {
             clock.advance(*seconds);
         }
