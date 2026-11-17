@@ -775,3 +775,113 @@ CHANGES: one should-fix and five lows, each done.
   | N8: `super :: detect :: …` in `holding.rs` | structure test |
   | N9: an inline `calls::Operator` bound and `o . raise (r)` in `holding.rs` | structure test |
   | N10: `mod sneak;` in `holding.rs`, with `holding/sneak.rs` reaching `crate::compare::detect` | structure test |
+
+## T-022-08
+
+The open path's residual from `T-022-02`'s finding 1 is closed: a store holding a stated entry marked `verified` that
+the statement kept behind it contradicts no longer opens as sound, and `audit-check` can hold the history to the
+evidence.
+
+- **What is built.** `components/core-audit/src/log/mod.rs` (the opening), `src/statements/disk.rs` (`KeptOnDisk`),
+  `src/bin/audit-check.rs`, `tests/reopen.rs`; two tests of `tests/statements.rs` changed (below). Nothing in
+  `contracts/`, `measures/` or `receipts/`.
+- **One attribution, not two.** `attribute_stated` is the log's only attribution of a stated entry: the bytes kept
+  under its commitment held to it (SHA-256 of the salt followed by the bytes), then `core-internal`'s `attribute` over
+  the history and the register before the entry, with `Ed25519Strict`. The append runs it on every stated entry, as
+  before (its answers are unchanged: nothing kept is `STATED_WITHOUT_ITS_KEPT_BYTES`, bytes that don't bear out the
+  commitment `KEPT_BYTES_DIFFER`). The opening runs it again on every stated entry the store marks `verified`, with
+  the entry's attribution turned back into the claim (`claimed_by` = the `who` it names), over the history and the
+  register read back to that entry's place: the same inputs its append had, since neither `Register::record` nor
+  `Keys` reads the clock (only `Register::admits` does, which the opening doesn't run). So the opening holds an entry
+  to every check `unproven` makes (commitment, deployment, maker, shape, time, key, transaction, strict signature)
+  and, from the register, that the key is the maker's at `made_at` and the party the one it states for.
+- **What the opening answers.** The re-attributed entry must equal the entry the store holds, field for field. Where
+  it doesn't (unverified, or verified otherwise), or the kept bytes don't bear out the commitment, the opening is
+  refused: `AuditLog::open` answers `Refused(KEPT_STATEMENT_CONTRADICTS)`, and `AuditLog::open_naming` answers
+  `NotOpened::Contradicted { entry }`, the receipt the entry has at its place, because `AppendFailure` holds a
+  `&'static str` and can't name it. `open_naming` is `core-audit`'s own constructor, no contract shape. Nothing is
+  repaired or dropped: the store isn't written. Where the evidence store keeps nothing under the commitment, the
+  statement was erased since, and the log opens (`REQ-AUD-13`, `AC-36`); the bound store already reports bytes gone
+  with no erasure (`BoundStore::missing`). An entry marked unverified is held to nothing.
+- **`audit-check --evidence DIR --deployment NAME --operator-key KEY`.** `KeptOnDisk` reads the evidence store's
+  directory as `DirectoryShelf` writes it (`kept/<commitment>.json`, `erased/<commitment>`), taking no lock and
+  writing, removing or repairing nothing; each statement is answered as filed, so bytes that don't bear out their
+  commitment reach `unproven` and are found. `read_history` (in `log/`) gives each canonical record its receipt
+  (SHA-256 of the record, at its place, in the log `--log` names), passing over a record that isn't an entry, which
+  the checker already reports. The tool runs `unproven` over it: each finding prints `NotBorneOut { index: N }` and
+  exits 1; each erased (or lost) statement prints apart as `unread: entry N's ...` and changes no exit code; with no
+  finding it prints that every verified entry whose statement is kept is borne out. Without `--evidence` it prints
+  `the evidence was not read: ...` after what it printed before, and its exit codes are as before. The evidence is
+  read whole before anything is printed. It reads no environment and no network.
+- **Tests first.** The eight tests of `tests/reopen.rs` were written first, against stubs (`NotOpened`,
+  `open_naming` that only called the old `open`, `read_history`; the tool ignoring the new flags), and six were red
+  on their assertions: the two refusals (`left: None`), the unreadable store (`left: None`), and the three tool tests
+  (exit 0 where 1 was expected; no "borne out", no "not read" line). Two were green on the old code, as they should
+  be: `store whose verified entries are all borne out opens as before` and `store whose verified entry's statement
+  was erased still opens` hold what the opening already did, and their red is their rule-off (R6, R4).
+- **`T-022-02`'s tests that changed, and why (coordinator's ruling).** Two tests built their history by reopening
+  the log on a store holding forged `verified` entries, which this row now refuses on purpose:
+  `statement_whose_signature_doesnt_verify_is_not_logged_as_attributed` asserted the old behaviour ("the log opens:
+  it re-attributes nothing on opening"), and `unproven_holds_the_deployment_and_the_transaction_the_append_does`
+  opened it only to get receipts. Both now assert the opening is refused (`KEPT_STATEMENT_CONTRADICTS`) and read the
+  history with `read_history` instead; their `unproven` checks are unchanged, places and all. Nothing is weakened:
+  each gained an assertion. Every other test of `T-022-01`, `T-022-02`, `T-022-03` and `T-022-04` passes unchanged.
+- **Defaults taken** (each reversible, each failing closed):
+  1. **Erased is "nothing kept"; unreadable is a failure.** `KeptStatements::kept` answering `Ok(None)` is an erasure
+     (or a loss, which `BoundStore::missing` reports) and the log opens; answering `Err` is a store that can't be
+     read, and the opening fails `Unavailable`: the log doesn't open as sound, and the caller opens it again. A test
+     holds it (`evidence store that can't be read fails the opening`).
+  2. **Bytes that don't bear out the commitment contradict the entry**, and refuse the opening; on append they are
+     refused as before.
+  3. **A statement answered under another commitment than the one asked is nothing kept under it** (as `unproven` and
+     the append already read it): unread, not a contradiction.
+  4. **`--operator-key` is part of the deployment's name.** `unproven` compares a statement's `deployment`, which
+     holds the operator's public key; the tool takes it only to compare, never to verify or sign with. "No key but
+     the log's public one" is read as no key the tool verifies or signs with (coordinator's ruling). Named in the
+     tool's help.
+  5. **An evidence directory the tool can't read is no evidence store** (missing, or missing `kept/` or `erased/`, or
+     a file the store doesn't write, or one filed under another commitment): exit 2, never an erasure.
+  6. **A half-written statement (`.part`) is passed over, and one marked erased whose bytes are still filed is taken as
+     erased**, as the store takes each on its next opening.
+  7. **`--deployment` or `--operator-key` without `--evidence` is an argument error** (exit 2), so no one believes the
+     evidence was read.
+- **What opening costs, and no bound built.** Per stated entry marked `verified`: two reads of the evidence store
+  (the shared step and `attribute` each fetch, as on append; `LogsRead` is a hash lookup in memory) and one strict
+  Ed25519 check, beside the read back the log already made. For a statement by a module the operator publishes,
+  `attribute` also calls `release_statement_keys`, which walks the history's catalogue changes and, for each, the
+  history again for its `done` result: about c x n per such statement (c catalogue changes, n entries), so the opening
+  is O(v + m x c x n) for v verified entries of which m are a published module's. The append already paid the same
+  per statement; the opening pays it all at once. The stale path after a failed write reads back, and so
+  re-attributes, the whole store. The row asks for no bound or cache, so none is built. Gap 2.
+- **Gaps, with owners.**
+  1. `AppendFailure` can't name the entry a refusal is about, so `open` names it only through `open_naming`. If the
+     assembly needs it on the plain path, that is a contract shape: the contract author's (`core-internal`,
+     `T-020-21`'s round), e.g. a `Refused` that carries a receipt.
+  2. Opening cost on a big store (above): `catalogue_changes` and `release_statement_keys` rescan the history per
+     call. An incremental release table, kept as the register is, would make it O(v); that is the contract author's
+     (`core-internal`), and measuring it at production size is the assembly's (`T-024-02`, `F-030`).
+  3. `audit-check` holds no register, so with `--evidence` it can't tell a statement signed by another maker's key in
+     this maker's name (the `unproven` limit, `T-022-02`): `tests/reopen.rs` shows `unproven` clean on it while the
+     opening refuses it. Rebuilding the register from the history and the kept advertisements would close it in the
+     tool; it is `T-022-07`'s or a later row's call (`F-022`), and the checker appointment is `F-033`'s.
+  4. Default 6 (an erased mark with its bytes still filed) has no test of its own: a real erasure leaves no such file
+     but by a crash between mark and removal. `T-025-05` reads this row's diff.
+- **Rule-off table** (each switched off once from `80352c46`, the four test binaries run under the lock with a 400 s
+  alarm, the tree restored from git):
+
+  | Switched off | Red |
+  |---|---|
+  | R1: no re-attribution on opening | both refusal tests, the unreadable store |
+  | R2: the re-attributed entry not compared with the stored one | both refusal tests |
+  | R3: bytes that don't bear out the commitment taken as no loss | refusal test (the swapped-bytes case) |
+  | R4: nothing kept refuses the opening | erased-still-opens |
+  | R5: an evidence store that can't be read taken as erased | the unreadable store |
+  | R6: every re-attributed entry refused | borne-out-opens-as-before, erased-still-opens, both refusal tests (each names the wrong entry), `T-022-01`'s `reopening_refuses_an_advertisement_...` |
+  | R7: the register's key check always passes (`Keys::signs_for`) | the other-maker's-key case of the maker refusal test; ten of `T-022-01`'s tests and `T-022-02`'s `restated_quote_is_detected` (the same check on append) |
+  | R8: the tool not running `unproven` | both tool tests with the evidence |
+  | R9: the tool counting an unread statement as a finding | the tool's erased-statement test |
+  | R10: the "evidence was not read" line dropped | the tool's test without the evidence |
+  | R11: an evidence directory that can't be read taken as empty | the tool's test with the evidence (its exit-2 case) |
+
+  The first batch ran without `--no-fail-fast`, so R6 and R7 stopped at `tests/log.rs`; both were run again with it,
+  as the table shows. None hung.

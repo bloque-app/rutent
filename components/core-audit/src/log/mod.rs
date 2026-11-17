@@ -45,8 +45,8 @@ use rutent_contracts::core_internal::calls::{
     Log, PolicyLog, RECORD_ON_THE_POLICY_HANDLE, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Attribution, Entry, KeptStatement, Receipt, STATED_WITHOUT_ITS_KEPT_BYTES, StatedEntry, Through,
-    Violation, admit_entry, attribute,
+    Attribution, Entry, KeptStatement, Receipt, STATED_WITHOUT_ITS_KEPT_BYTES, StatedEntry,
+    Through, Violation, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, DigestAlgorithm, DigestValue};
 use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, SafeInteger, to_canonical};
@@ -240,7 +240,7 @@ enum Attributed {
     /// The evidence store keeps bytes under the commitment that don't bear it out.
     BytesDiffer,
     /// The entry the log records, attributed from the kept bytes, and those bytes.
-    Recorded(StatedEntry, Vec<u8>),
+    Recorded(Box<StatedEntry>, Vec<u8>),
 }
 
 /// The log's one attribution of `claim`, a stated entry as its writer hands it over, unverified: the bytes kept under
@@ -269,7 +269,7 @@ fn attribute_stated<K: KeptStatements>(
         register: &state.register,
     };
     let recorded = attribute(claim, &state.history, kept, &mut keys, &Ed25519Strict)?;
-    Ok(Attributed::Recorded(recorded, bytes))
+    Ok(Attributed::Recorded(Box::new(recorded), bytes))
 }
 
 impl<S: Store, K: KeptStatements> AuditLog<S, K> {
@@ -322,8 +322,8 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
         })?;
         let mut state = State::default();
         for bytes in records {
-            let entry =
-                entry_of(&bytes).ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
+            let entry = entry_of(&bytes)
+                .ok_or(AppendFailure::Refused(Violation(NOT_A_RECORD_OF_THE_LOG)))?;
             let advertisement = match &entry {
                 Entry::Stated(s) if is_advertisement(&entry) => Some(
                     self.kept
@@ -347,7 +347,7 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                 };
                 match attribute_stated(&self.settings, &state, &mut self.kept, &claim)? {
                     Attributed::NotKept => {}
-                    Attributed::Recorded(again, _) if again == *stated => {}
+                    Attributed::Recorded(again, _) if *again == *stated => {}
                     Attributed::Recorded(..) | Attributed::BytesDiffer => {
                         return Err(NotOpened::Contradicted {
                             entry: receipt_of(&self.settings.log, state.history.len(), &bytes),
@@ -407,8 +407,8 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
                         return Err(AppendFailure::Refused(Violation(KEPT_BYTES_DIFFER)));
                     }
                     Attributed::Recorded(recorded, bytes) => (
-                        Entry::Stated(recorded),
-                        Some(bytes).filter(|_| is_advertisement(entry)),
+                        Entry::Stated(*recorded),
+                        is_advertisement(entry).then_some(bytes),
                     ),
                 }
             }

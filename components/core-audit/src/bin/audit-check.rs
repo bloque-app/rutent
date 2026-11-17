@@ -99,7 +99,9 @@ fn arguments(args: &[String]) -> Result<Arguments, String> {
                     .ok_or("--operator-key is a public key")?,
             },
         }),
-        None if value(args, "--deployment").is_some() || value(args, "--operator-key").is_some() => {
+        None if value(args, "--deployment").is_some()
+            || value(args, "--operator-key").is_some() =>
+        {
             return Err("--deployment and --operator-key are read only with --evidence".to_owned());
         }
         None => None,

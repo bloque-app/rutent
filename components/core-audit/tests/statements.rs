@@ -591,7 +591,9 @@ fn statement_whose_signature_doesnt_verify_is_not_logged_as_attributed() {
     let settings = Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR));
     assert_eq!(
         AuditLog::open(settings, store.clone(), run.kept()).err(),
-        Some(AppendFailure::Refused(Violation(KEPT_STATEMENT_CONTRADICTS))),
+        Some(AppendFailure::Refused(Violation(
+            KEPT_STATEMENT_CONTRADICTS
+        ))),
         "the log re-attributes on opening (`T-022-08`)"
     );
     let before = run.entries().len();
@@ -839,7 +841,9 @@ fn unproven_holds_the_deployment_and_the_transaction_the_append_does() {
     let settings = Settings::new(id(LOG), deployment(), id(OPERATOR), id(OPERATOR));
     assert_eq!(
         AuditLog::open(settings, store.clone(), run.kept()).err(),
-        Some(AppendFailure::Refused(Violation(KEPT_STATEMENT_CONTRADICTS))),
+        Some(AppendFailure::Refused(Violation(
+            KEPT_STATEMENT_CONTRADICTS
+        ))),
         "the log re-attributes on opening (`T-022-08`)"
     );
     let before = run.entries().len() as u64;

@@ -31,10 +31,10 @@ use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, PublicKey, TERMS_SHAPE, VERSION};
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_core_audit::checkpoint::{Checkpointer, Schedule};
+use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::log::{
     AuditLog, Clock, FileStore, KEPT_STATEMENT_CONTRADICTS, NotOpened, Settings, record,
 };
-use rutent_core_audit::log::kept::base64url;
 use rutent_core_audit::receipts::{EvidenceStore, Keeper, LogsRead};
 use serde_json::{Value, json};
 
@@ -151,7 +151,12 @@ fn advertised(provider: &str) -> Vec<u8> {
 
 /// The stated entry of the terms shape about `transaction`, made at `MADE_AT`, signed with `key`, kept under
 /// `commitment`, attributed as `attribution` says.
-fn stated_entry(attribution: Value, key: &PublicKey, commitment: &Digest, transaction: &str) -> Value {
+fn stated_entry(
+    attribution: Value,
+    key: &PublicKey,
+    commitment: &Digest,
+    transaction: &str,
+) -> Value {
     json!({
         "kind": "stated",
         "attribution": attribution,
@@ -376,8 +381,7 @@ impl Run {
     /// Erases, outside the log, the statement kept under `commitment`, on the log's own decided erasure, and records
     /// the erasure: the bound evidence store's path (`REQ-AUD-13`).
     fn erase(&mut self, commitment: &Digest) {
-        let action =
-            json!({"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"});
+        let action = json!({"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"});
         let result = self.carry_out(action, RECEIVED_AT);
         let bound = self
             .evidence
@@ -442,8 +446,16 @@ fn honest(name: &str) -> (Run, Receipt) {
     let run = Run::new(name);
     run.admit("us-bank");
     run.admit("relay-net");
-    let bank = run.present(&quote("us-bank", "tx-3", "10.00"), &provider("us-bank"), RECEIVED_AT);
-    let relay = run.present(&quote("relay-net", "tx-4", "11.00"), &provider("relay-net"), RECEIVED_AT);
+    let bank = run.present(
+        &quote("us-bank", "tx-3", "10.00"),
+        &provider("us-bank"),
+        RECEIVED_AT,
+    );
+    let relay = run.present(
+        &quote("relay-net", "tx-4", "11.00"),
+        &provider("relay-net"),
+        RECEIVED_AT,
+    );
     assert!(run.verified(&bank) && run.verified(&relay));
     (run, bank)
 }
@@ -472,10 +484,16 @@ fn refused_naming(dir: &TempDir, index: usize, entry: &Entry, case: &str) {
     );
     assert_eq!(
         reopen_plain(dir),
-        Err(AppendFailure::Refused(Violation(KEPT_STATEMENT_CONTRADICTS))),
+        Err(AppendFailure::Refused(Violation(
+            KEPT_STATEMENT_CONTRADICTS
+        ))),
         "{case}"
     );
-    assert_eq!(std::fs::read(dir.history()).unwrap(), before, "{case}: nothing repaired or dropped");
+    assert_eq!(
+        std::fs::read(dir.history()).unwrap(),
+        before,
+        "{case}: nothing repaired or dropped"
+    );
 }
 
 /// Writes `forged` at the end of a copy of `honest`'s file, checks the opening refuses it, naming it, and puts the
@@ -525,15 +543,29 @@ fn store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_open
     // The honest history opens.
     assert!(reopen(&dir).is_ok());
     let cases = [
-        ("signed by another key", marked_verified(&bank, &key, &by_another, "tx-9")),
-        ("altered after signing", marked_verified(&bank, &key, &altered, "tx-9")),
+        (
+            "signed by another key",
+            marked_verified(&bank, &key, &by_another, "tx-9"),
+        ),
+        (
+            "altered after signing",
+            marked_verified(&bank, &key, &altered, "tx-9"),
+        ),
         (
             "naming another key",
             marked_verified(&bank, &public_key(&another_key()), &genuine, "tx-9"),
         ),
-        ("about another transaction", marked_verified(&bank, &key, &genuine, "tx-1")),
+        (
+            "about another transaction",
+            marked_verified(&bank, &key, &genuine, "tx-1"),
+        ),
         ("made at another time", {
-            let mut v = stated_entry(json!({"signature": "verified", "who": bank}), &key, &genuine, "tx-9");
+            let mut v = stated_entry(
+                json!({"signature": "verified", "who": bank}),
+                &key,
+                &genuine,
+                "tx-9",
+            );
             v["when"]["at"] = "2026-11-06T15:04:04Z".into();
             serde_json::from_value(v).unwrap()
         }),
@@ -598,7 +630,12 @@ fn store_holding_a_verified_entry_whose_kept_statement_names_another_maker_is_re
     let honest_file = std::fs::read(dir.history()).unwrap();
 
     let marked_as_relays = marked_verified(&relay, &bank_key, &genuine, "tx-9");
-    refused_with(&dir, &honest_file, &marked_as_relays, "us-bank's quote marked relay-net's");
+    refused_with(
+        &dir,
+        &honest_file,
+        &marked_as_relays,
+        "us-bank's quote marked relay-net's",
+    );
 
     let signed_by_another_maker = marked_verified(&bank, &relay_key, &in_banks_name, "tx-9");
     // What a reader without the register finds: nothing, for this one.
@@ -606,13 +643,25 @@ fn store_holding_a_verified_entry_whose_kept_statement_names_another_maker_is_re
         std::fs::write(dir.history(), &honest_file).unwrap();
         let records = rutent_core_audit::checkpoint::read_lines(&honest_file);
         let mut history = rutent_core_audit::log::read_history(&id(LOG), &records);
-        history.push((receipt_at(records.len(), &signed_by_another_maker), signed_by_another_maker.clone()));
+        history.push((
+            receipt_at(records.len(), &signed_by_another_maker),
+            signed_by_another_maker.clone(),
+        ));
         let evidence = EvidenceStore::open(dir.evidence()).unwrap();
         let mut kept = evidence.for_the_log();
-        let found = rutent_core_audit::statements::unproven(&history, &mut kept, &deployment()).unwrap();
-        assert!(found.found.is_empty() && found.unread.is_empty(), "{found:?}");
+        let found =
+            rutent_core_audit::statements::unproven(&history, &mut kept, &deployment()).unwrap();
+        assert!(
+            found.found.is_empty() && found.unread.is_empty(),
+            "{found:?}"
+        );
     }
-    refused_with(&dir, &honest_file, &signed_by_another_maker, "signed by another maker's key");
+    refused_with(
+        &dir,
+        &honest_file,
+        &signed_by_another_maker,
+        "signed by another maker's key",
+    );
 }
 
 /// A store whose `verified` entries are all borne out opens as before: the same entries, the same root, and the log
@@ -630,7 +679,11 @@ fn store_whose_verified_entries_are_all_borne_out_opens_as_before() {
     ))
     .unwrap();
     by_another["signature"]["key"] = public_key(&statements_key("us-bank")).as_str().into();
-    let unverified = run.present(&serde_json::to_vec(&by_another).unwrap(), &provider("us-bank"), RECEIVED_AT);
+    let unverified = run.present(
+        &serde_json::to_vec(&by_another).unwrap(),
+        &provider("us-bank"),
+        RECEIVED_AT,
+    );
     assert!(!run.verified(&unverified));
     let (entries, root) = (run.entries(), run.log.borrow().root());
     let dir = run.close();
@@ -721,14 +774,23 @@ fn evidence_store_that_cant_be_read_fails_the_opening() {
         FileStore::open(dir.history()).unwrap(),
         Failing(evidence.for_the_log(), Cell::new(2)),
     );
-    assert_eq!(opened.err(), Some(NotOpened::Failed(AppendFailure::Unavailable)));
+    assert_eq!(
+        opened.err(),
+        Some(NotOpened::Failed(AppendFailure::Unavailable))
+    );
 }
 
 // --- The checker's tool, with and without the evidence ----------------------------------------------------------------
 
 /// The tool's run over `dir`'s files: the history, its checkpoints and openings, and with `evidence` the evidence
 /// store's directory, with the deployment named.
-fn audit_check(dir: &TempDir, history: &Path, evidence: bool, through: &str, from: &str) -> std::process::Output {
+fn audit_check(
+    dir: &TempDir,
+    history: &Path,
+    evidence: bool,
+    through: &str,
+    from: &str,
+) -> std::process::Output {
     let (checkpoints, openings) = (dir.0.join("checkpoints-held"), dir.0.join("openings"));
     if !checkpoints.exists() {
         std::fs::write(&checkpoints, b"").unwrap();
@@ -777,14 +839,27 @@ fn audit_check_with_the_evidence_reports_a_verified_entry_no_kept_statement_bear
     assert_eq!(clean.status.code(), Some(0), "{clean:?}");
     let out = stdout(&clean);
     assert!(out.contains("borne out"), "{out}");
-    assert!(!out.contains("not read") && !out.contains("NotBorneOut"), "{out}");
+    assert!(
+        !out.contains("not read") && !out.contains("NotBorneOut"),
+        "{out}"
+    );
 
-    let index = std::fs::read(dir.history()).unwrap().iter().filter(|b| **b == b'\n').count();
-    write_into(&dir.history(), &marked_verified(&bank, &key, &genuine, "tx-1"));
+    let index = std::fs::read(dir.history())
+        .unwrap()
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count();
+    write_into(
+        &dir.history(),
+        &marked_verified(&bank, &key, &genuine, "tx-1"),
+    );
     let found = audit_check(&dir, &dir.history(), true, "0", "1");
     assert_eq!(found.status.code(), Some(1), "{found:?}");
     let out = stdout(&found);
-    assert!(out.contains(&format!("NotBorneOut {{ index: {index} }}")), "{out}");
+    assert!(
+        out.contains(&format!("NotBorneOut {{ index: {index} }}")),
+        "{out}"
+    );
     assert_eq!(out.matches("NotBorneOut").count(), 1, "{out}");
 
     // Evidence it can't read is neither clean nor a finding.
@@ -837,7 +912,10 @@ fn audit_check_without_the_evidence_says_it_did_not_read_it_and_finds_what_it_di
     assert!(out.contains("the evidence was not read"), "{out}");
 
     // A forged verified entry after the checkpoint: nothing the tool reads without the evidence finds it.
-    write_into(&dir.history(), &marked_verified(&bank, &key, &genuine, "tx-1"));
+    write_into(
+        &dir.history(),
+        &marked_verified(&bank, &key, &genuine, "tx-1"),
+    );
     let unread = audit_check(&dir, &dir.history(), false, "0", "0");
     assert_eq!(unread.status.code(), Some(0), "{unread:?}");
     assert!(stdout(&unread).contains("the evidence was not read"));
@@ -876,5 +954,8 @@ fn audit_check_with_the_evidence_reports_an_erased_statement_as_unread_and_not_a
     assert!(!out.contains("NotBorneOut"), "{out}");
     let unread: Vec<&str> = out.lines().filter(|l| l.starts_with("unread")).collect();
     assert_eq!(unread.len(), 1, "{out}");
-    assert!(unread[0].contains(&format!("entry {}", bank.index.get())), "{out}");
+    assert!(
+        unread[0].contains(&format!("entry {}", bank.index.get())),
+        "{out}"
+    );
 }

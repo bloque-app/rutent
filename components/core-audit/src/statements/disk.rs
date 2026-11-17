@@ -32,19 +32,20 @@ impl KeptOnDisk {
     /// whose bytes are still filed, an erasure cut short between its mark and their removal, is taken as erased, as
     /// the store takes it on its next opening.
     pub fn read(dir: &Path) -> Result<Self, String> {
-        let names = |sub: &str| -> Result<Vec<String>, String> {
-            let at = dir.join(sub);
-            let mut names = Vec::new();
-            for item in fs::read_dir(&at).map_err(|e| format!("{} can't be read: {e}", at.display()))? {
-                let item = item.map_err(|e| format!("{} can't be read: {e}", at.display()))?;
-                names.push(
-                    item.file_name()
-                        .into_string()
-                        .map_err(|n| format!("{sub}/{n:?} is no name the evidence store writes"))?,
-                );
-            }
-            Ok(names)
-        };
+        let names =
+            |sub: &str| -> Result<Vec<String>, String> {
+                let at = dir.join(sub);
+                let mut names = Vec::new();
+                for item in
+                    fs::read_dir(&at).map_err(|e| format!("{} can't be read: {e}", at.display()))?
+                {
+                    let item = item.map_err(|e| format!("{} can't be read: {e}", at.display()))?;
+                    names.push(item.file_name().into_string().map_err(|n| {
+                        format!("{sub}/{n:?} is no name the evidence store writes")
+                    })?);
+                }
+                Ok(names)
+            };
         let mut erased = BTreeSet::new();
         for name in names("erased")? {
             DigestValue::new(name.clone())
@@ -57,12 +58,15 @@ impl KeptOnDisk {
                 continue;
             }
             let path = dir.join("kept").join(&name);
-            let text = fs::read(&path).map_err(|e| format!("{} can't be read: {e}", path.display()))?;
+            let text =
+                fs::read(&path).map_err(|e| format!("{} can't be read: {e}", path.display()))?;
             let shelved: Shelved = serde_json::from_slice(&text)
                 .map_err(|_| format!("kept/{name} is no statement the evidence store writes"))?;
             let value = shelved.kept.commitment.value.as_str().to_owned();
             if name != format!("{value}.json") {
-                return Err(format!("kept/{name} is filed under another commitment than its own"));
+                return Err(format!(
+                    "kept/{name} is filed under another commitment than its own"
+                ));
             }
             if !erased.contains(&value) {
                 kept.insert(value, shelved.kept);
