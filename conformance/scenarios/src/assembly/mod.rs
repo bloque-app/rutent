@@ -47,6 +47,7 @@ pub mod charges;
 pub mod durable;
 mod grading;
 pub mod machine;
+pub mod measures;
 pub mod policy;
 pub mod price;
 
