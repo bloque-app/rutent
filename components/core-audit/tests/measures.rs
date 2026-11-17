@@ -445,10 +445,10 @@ fn a_measure_entry_holds_only_the_record() {
     };
     assert_eq!(v.who.acts.as_str(), "core-audit");
     assert_eq!(
-        serde_json::to_value(&v.outcome).unwrap(),
+        serde_json::to_value(v.outcome).unwrap(),
         json!({"status": "observed"})
     );
-    assert_eq!(serde_json::to_value(&v.when.source).unwrap(), "core_clock");
+    assert_eq!(serde_json::to_value(v.when.source).unwrap(), "core_clock");
     let json = serde_json::to_value(&v.what).unwrap();
     let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
     keys.sort();

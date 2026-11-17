@@ -827,3 +827,30 @@ CHANGES: one should-fix and five lows, each done.
   on policy's handle) and `conformance/scenarios/tests/bulk_measures.rs` (assembled Core over the simulated reserve,
   real engine, the operator's grant, revocation). Written after the code, then attacked by the rule-offs below, not seen
   red first; honest note, as `T-022-05`.
+- **Rule-off table** (each switched off once from the committed tree, `cargo test -p rutent-core-audit --test measures`
+  under a 300 s alarm, tree restored from git; none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | window end inclusive | window test, bulk measures |
+  | window ignored | window test, bulk measures |
+  | quote below/above swapped | past-the-bound, bulk measures |
+  | yes-then-done counts every yes | bulk measures |
+  | failure with no figure not counted | bulk measures |
+  | a refusal counted as a reversal | bulk measures |
+  | no counted as yes | bulk measures |
+  | total past the bound kept at the last total | past-the-bound |
+  | one asset code in two units merged | past-the-bound, bulk measures |
+  | trail serves a read of anything | only-a-read-of-the-trail |
+  | answer of another request taken | no-record-behind-it |
+  | answer taken without its record | no-record-behind-it |
+  | record of another outcome taken | no-record-behind-it |
+  | trail not cut at its own record | trail-ends-at-its-record |
+  | record of another reader taken | no-record-behind-it |
+  | `compute` imports `crate::log` | structure test |
+  | `compute` takes `&mut` | structure test |
+  | the trail reader names `grant_permission` | structure test |
+  | writer skips `record.check()` | **not red**: the log runs the same `check` on append, so the writer's own call is a second line of defence; kept |
+
+  Not run against the scenario test (each run is about 80 s): its figures are the runs' own and its checks overlap
+  the above. A first cut of three structure mutations did not compile (missing doc, moved closure) and was redone.
