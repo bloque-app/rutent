@@ -142,6 +142,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "a platform setting (ADR-0014)",
     ),
     (
+        "set_start_deadline",
+        "prov/src/module/platform.rs",
+        "a platform setting: the most a process may take to start, a test's to widen",
+    ),
+    (
         "kill",
         "prov/src/module/platform.rs",
         "a process's life, not a release's standing",

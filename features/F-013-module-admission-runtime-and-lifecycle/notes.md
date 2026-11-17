@@ -864,6 +864,19 @@ The same class was closed in every other test that makes a cross-module call on 
 the outward ones. `START_DEADLINE` is still read on the operating system's time (the platform hands it to the
 spawn directly); a start that passes it fails the install, not the assertion.
 
+The same flaw was in the scenarios' fleet. `conformance/scenarios/src/sim/fleet.rs` (`Fleet::with_context`) built its
+platform on the real clock, so under load (load average 12 to 17, and 8 busy loops) the five tests of
+`execution_routes.rs` failed deterministically with `CantProceed { class: NoRouteRightNow }` where a quote was
+expected: the simulated providers' calls passed their real deadlines, or their starts passed `START_DEADLINE`, and the
+router got no answer. Two changes, confirmed together under the 8-loop load (5 of 5 failed before, 5 of 5 pass after);
+the clock alone did not make them pass:
+- Every `Fleet` platform runs on a `ScenarioClock` that stands still. A scenario that scripts a `silent` or `late`
+  provider is about a real deadline passing, so queueing that behaviour (`SimWorld::script`, `script_for`,
+  `script_dry_run`, `otherwise`) makes the clock follow the operating system's time from then on, without a jump.
+- `Platform::set_start_deadline` (new, default `START_DEADLINE`, 10 s, so production is unchanged); a `Fleet` sets 120 s,
+  since a start is the machine's work, cannot be stepped, and no scenario is about start-up time.
+Edited: `components/prov/src/module/platform.rs` (F-013's) and `fleet.rs` and `world.rs` (F-024's); no scenario test file.
+
 ### Defaults (T-013-08)
 
 - The clock is `Monotonic` unless a test sets another. `STEPPED_POLL` 2 ms; `STEPPED_WAIT_CAP` 60 s.

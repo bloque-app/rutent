@@ -2,6 +2,9 @@
 //! catalogue and admitted like any module (`REQ-MOD-4`, `DEC-23`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant as StdInstant};
 
 use rutent_conformance::role::{
     Received, RoleHarness, RoleProvider, SuiteContext, placeholder_signature,
@@ -21,7 +24,7 @@ use rutent_evidence::{Finality, NetworkRules, ReorgRule};
 use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
-use rutent_prov::module::platform::Platform;
+use rutent_prov::module::platform::{OperationClock, Platform};
 use rutent_prov::module::types::{Admitted, Envelope, Handled};
 use rutent_prov::module::wire::sha256;
 use serde_json::json;
@@ -96,6 +99,55 @@ pub(crate) fn networks_of(spec: &Spec) -> Vec<String> {
     spec.networks()
 }
 
+/// The clock every scenario platform's operations run on (`T-013-08`): it stands still, so that whether a quote's or
+/// an operation's call is answered never depends on how long a loaded machine took to start the simulated
+/// providers. Only a scenario that scripts a silent or late provider, which is about a deadline passing, has its
+/// clock follow the operating system's time, from the moment it queues that behaviour and without a jump.
+#[derive(Debug)]
+struct ScenarioClock {
+    wall_time: Arc<AtomicBool>,
+    /// The time the clock has reached, and when it began to follow real time, if it has.
+    state: Mutex<(StdInstant, Option<StdInstant>)>,
+}
+
+impl ScenarioClock {
+    fn new(wall_time: Arc<AtomicBool>) -> Self {
+        Self {
+            wall_time,
+            state: Mutex::new((StdInstant::now(), None)),
+        }
+    }
+
+    fn following(&self) -> bool {
+        self.wall_time.load(Ordering::SeqCst)
+    }
+}
+
+impl OperationClock for ScenarioClock {
+    fn now(&self) -> StdInstant {
+        let Ok(mut state) = self.state.lock() else {
+            return StdInstant::now();
+        };
+        if state.1.is_none() && self.following() {
+            state.1 = Some(StdInstant::now());
+        }
+        state.0 + state.1.map_or(Duration::ZERO, |since| since.elapsed())
+    }
+
+    fn follows_wall_time(&self) -> bool {
+        false
+    }
+
+    fn wall_due(&self, due: StdInstant) -> StdInstant {
+        let wait = if self.following() {
+            due.saturating_duration_since(self.now())
+        } else {
+            Duration::from_secs(60)
+        };
+        StdInstant::now() + wait
+    }
+}
+
 /// A platform over a [`SimWorld`], with the catalogue that vouches for its releases.
 pub struct Fleet {
     /// The platform. Its world is the simulation's: [`SimWorld`].
@@ -120,9 +172,12 @@ impl Fleet {
     pub fn with_context(deadline: std::time::Duration, context: SuiteContext) -> Self {
         let mut catalogue = Catalogue::new();
         catalogue.set_context(context.deployment.clone(), &context.protocol_version);
+        let wall_time = Arc::new(AtomicBool::new(false));
+        let mut world = SimWorld::new();
+        world.wall_time = Some(wall_time.clone());
         let mut platform = Platform::new(
             disk::paths(),
-            SimWorld::new(),
+            world,
             Envelope {
                 deployment: context.deployment.clone(),
                 protocol_version: context.protocol_version.clone(),
@@ -130,6 +185,10 @@ impl Fleet {
         )
         .expect("a platform");
         platform.set_staging(None);
+        // Starting a simulated provider is the machine's work, which a stepped clock can't move: on a loaded machine
+        // it can pass the 10 s a production start is given, and no scenario is about start-up time.
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
+        platform.set_operation_clock(Arc::new(ScenarioClock::new(wall_time)));
         platform.set_deadline(deadline);
         platform.set_output_limit(1 << 20);
         Self {
