@@ -35,7 +35,7 @@ pub(super) fn append(log: &mut dyn Log, entry: Entry) -> Result<Receipt, AppendF
 }
 
 /// Appends an entry built already, trying again while the log can't take it now.
-pub(super) fn append_general(
+pub(crate) fn append_general(
     log: &mut dyn Log,
     entry: &GeneralEntry,
 ) -> Result<Receipt, AppendFailure> {
@@ -51,7 +51,7 @@ pub(super) fn append_general(
 }
 
 /// One of Core's own records, as a verified entry by `who` at `at`, Core's clock.
-pub(super) fn verified(who: &Actor, what: What, at: &Timestamp, outcome: Outcome) -> Entry {
+pub(crate) fn verified(who: &Actor, what: What, at: &Timestamp, outcome: Outcome) -> Entry {
     Entry::Verified(VerifiedEntry {
         kind: VerifiedKind::Verified,
         who: who.clone(),

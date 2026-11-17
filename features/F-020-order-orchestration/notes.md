@@ -4218,3 +4218,87 @@ wallet's signed answer to it), `conformance/scenarios/src/assembly/` (`holding.r
   green on the first fixtures (every question there was the operator's), so `--a-hand-on-through-a-transaction-bound-by-no-operator-question`
   was added (its first version sat after the result, so the result rule masked the question rule; moved before it) and the rule is now red on the contract test and the table's cases. The holder's stated failure withdrawing the start (L1) is green:
   `flight.known` is cleared when the failure is taken, which already withdraws it; the flag is defence in depth.
+
+## T-020-23
+
+Branch `f-020/t-020-23-reliance-writer`, from `m3` at `ea6c290c`. Edits `components/core-orch/` (`reliance/`, new;
+`segments/mod.rs` where an operation's inputs are handed over; `segments/journal.rs`, two helpers made `pub(crate)`;
+`lib.rs`) and `conformance/scenarios/tests/` (`reliance.rs`, new; the kit `segments_support/mod.rs`, additive). No
+contract is changed: `What::Reliance` and its relation (`reliance-names-its-judges-statement`) were `T-021-07`'s.
+
+- **Design.**
+  1. *The register.* `reliance::Reliances` holds which of an order's inputs rest on which judgement
+     (`Judgement { receipt, judge }`: the receipt of the stated entry holding it, and its maker) and the reliance
+     entries written. Core reads a name and a value, never where a value came from, so declaring that an input rests on
+     a judgement is the caller's (`Segments::rests_on(order, input, judgement)`).
+  2. *The writer.* `Reliances::write(log, core, at, order, provider, judgements)` builds one `reliance` entry (Core's
+     own, `outcome: observed`) per order, judgement and relying provider, once, and appends it unchanged however often
+     it is called. The log, not Core, says whether the judgement is the judge's: it refuses a judgement that is no
+     stated entry of the log, is not verified, was made by another than the judge named, or is about another order. Core
+     asks it and sends nothing on a refusal.
+  3. *The hook.* When a segment is handed over, the judgements its operation's inputs rest on are taken from the
+     register and kept with the segment (`InFlight::relies`, beside `carries`, the names of the inputs). `advance`
+     writes them first, before the segment's hold, question, effect and the operation, so a refusal leaves nothing of the
+     segment recorded but policy's decision, and a retry (a segment resumed from where it stopped) finds them written
+     and appends nothing again. A segment whose inputs rest on nothing writes nothing.
+  4. *The refusal.* A reliance the log refuses or can't take comes back as `SegmentsError::Append`, as every other
+     append of a segment does, so the callers that already map it (`stuck`, `recalc`) need no change; the segment stays
+     handed over in Core's register and is asked again on the next run, which the log refuses again.
+- **Defaults taken (reversible, failing closed).**
+  - *Declared by the caller.* A declaration is made before the segment that carries the input is handed over:
+    afterwards it is `Rests::TooLate`, since its reliance would come after the send. An input resting on one judgement
+    and declared again on another is `Rests::Another`, not replaced; the same one again is a no-op.
+  - *One entry per order, judgement and provider*, not per segment or input: two segments of one provider relying on one
+    judgement leave one entry; another provider relying on it, or the same provider for another order, one each.
+  - *Time.* The entry's time is Core's clock at its first try and doesn't change on a retry, so a retry is an equal
+    entry the log keeps once.
+  - *Judge and relier may be one party.* The log's row doesn't forbid it, so Core doesn't.
+  - *Only what an operation carries.* An input no tuple of the route takes is handed to no one, so nothing relies on
+    what rests on it (`required_inputs` stays the one filter).
+- **For `T-024-12` (the verifier half at the assembly).** Drive it through `Segments`: after the order's route is
+  chosen and before `run_part`, for each input that rests on a judgement call
+  `core.segments.rests_on(&order, "<input name>", Judgement { receipt, judge })`, `receipt` being the log's receipt of the
+  stated entry of the judgement and `judge` its maker's id (the verifier, or the reserve). Then run as usual. The
+  `reliance` entries follow by themselves, one for each provider handed such an input. Standalone, without
+  `Segments`, `Reliances::write` takes the same. The receipt of a verifier's judgement isn't handed back by the
+  routing (`Offer::Offered` carries the reserve's yes only, in `reserve_yes`, and a judgement's `Answer::receipt` is
+  private to `rounds`): the assembly reads it from the log, the stated entry of shape `JUDGEMENT_SHAPE` made by the
+  verifier, with the receipt the log gave it (gap 1). A false judgement is the same: the stand-in's wrong yes is a
+  stated entry like any other, and the reliance names its maker and the provider that relied on it.
+- **Review of Core's loss paths** (the row's Done when). Inspected: every place in `components/*/src` that names a cost,
+  a bearer or a charge. Core writes no entry or call that debits, bills or charges the operator or a customer for a
+  judgement's falsity: a `reliance` names the judge and the relying provider and nothing else, and no other path reads
+  it. The cost allocations Core does carry are `REQ-ORD-28` (the operator resolves and bears a *stuck* order, in
+  `core-authz`'s `stuck`, unrelated to judgements), `REQ-ORD-30` (an undone start's loss is the origin reserve's,
+  `reversal`), and the charge check (`REQ-QTE-5`, a raise to the operator that moves nothing). Residual, a decision of
+  the owner's and not a Core defect: where a false judgement is what leaves an order with no route, `REQ-ORD-28` still
+  puts the stuck order on the operator, and the `reliance` entry is what shows the operator whom to recover from
+  under contract (outside this document, `REQ-CPL-12`); Core doesn't tell such a stuck order from another.
+- **Gaps, with owners.**
+  1. The verifier's judgement receipt isn't returned by the routing (above). Owner: `T-024-12` reads it from the log;
+     a field on `Routed` is a small row of `F-020` if a second caller wants it.
+  2. The register of what rests on what is in memory, like the flights it serves: a restarted Core declares again and
+     appends an equal entry only if its clock reading is the same, which it isn't. Owner: `F-030` (restart), which
+     rebuilds `Segments` as a whole.
+  3. Only a segment's operation is covered. A routing question's dry run, a stuck resolution's move (which carries the
+     destination's account alone) and a hand-on's start carry no judgement-backed input today, so no reliance is
+     written there. Owner: `F-053` (`M5`, `DEC-16`), with the production verifier, if a tuple's input comes to rest on a
+     verifier's word on those paths.
+  4. The real log's row is proved here on the finished history (`Core::admitted`); the scenario log (`TestLog`) refuses
+     a reliance only by its guard (`guards_reliance`: the cited entry is a stated entry claimed by the judge). The
+     attribution part, a statement the log attributes to no one, is the contract's `--verified` fixture.
+- **Histories the log refused.** None in this row's tests. One kit note: `results_after_the_move` appends a question
+  and two results under a transaction; the judge's result is the judgement, about the order through that transaction,
+  which the relation's `about` row takes as agreeing with the relying order.
+- **Rule-off table**, each once, file restored, run under a timeout, none hung:
+
+  | Rule switched off | Red |
+  |---|---|
+  | `advance` never writes the reliance | the four scenario tests |
+  | the reliance written only once the operation was carried (after the send) | the four scenario tests |
+  | the log's refusal of the entry swallowed (the segment goes on) | `reliance on a judgement the log did not verify as its judge's is not written`; `reliance is written before the operation that relies on it is sent` |
+  | the writer keeps no entry (each call builds and offers anew) | `one judgement relied on by one provider is written once`; unit `a retry is the same entry at the same time` |
+  | an input may be declared on another judgement (`Rests::Another` off) | `one judgement relied on by one provider is written once`; unit `inputs name each judgement they rest on once` |
+  | a declaration after the send accepted (`Rests::TooLate` off) | `one judgement relied on by one provider is written once` |
+  | the entry names the provider as judge | the four scenario tests |
+  | every judgement declared for the order relied on, whatever the inputs carried | `provider relying on a reserve's judgement leaves a reliance entry naming both` |

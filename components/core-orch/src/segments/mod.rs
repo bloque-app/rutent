@@ -114,6 +114,7 @@ use rutent_stm::Stm;
 
 use crate::quote::{ChargeError, Charged, Charges, Terms};
 use crate::recalc::{holds_floor, left_after};
+use crate::reliance::{Judgement, Reliances, Rests};
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
     Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefused, check_part,
@@ -511,6 +512,11 @@ struct InFlight {
     drains: Vec<Id>,
     /// The drain of its record, which reaches the log before its result.
     record: Option<Id>,
+    /// The names of the inputs its operation carries (`T-020-23`).
+    carries: Vec<String>,
+    /// The judgements those inputs rest on, as declared when it was handed over: the provider's reliance on each is
+    /// appended before anything of the segment is, and before its operation is sent (`REQ-CPL-12`, `T-020-23`).
+    relies: Vec<Judgement>,
 }
 
 /// One drain, kept whole until each of its items is appended.
@@ -555,6 +561,9 @@ pub struct Segments {
     charges: Charges,
     /// The terms the providers stated, with their times (`REQ-QTE-6`, `T-020-14`).
     terms: Terms,
+    /// The judgements an order's inputs rest on, and the reliance entries written for them (`REQ-CPL-12`,
+    /// `T-020-23`).
+    reliances: Reliances,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -573,6 +582,21 @@ impl Segments {
     /// Nothing handed over yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declares that the order's input `input` rests on `judgement`, a reserve's or a verifier's, the stated entry of
+    /// which the log holds at its receipt. A provider handed that input is recorded as relying on the judgement, in a
+    /// `reliance` entry appended before its operation is sent; where the log refuses the entry, nothing is sent
+    /// (`REQ-CPL-12`, `T-020-23`). To be declared before the segment that carries the input is handed over: one
+    /// already handed over is [`Rests::TooLate`], since its reliance would be written after the send.
+    pub fn rests_on(&mut self, order: &Id, input: &str, judgement: Judgement) -> Result<(), Rests> {
+        let carried = self.flights.iter().any(|((o, _), flight)| {
+            o == order.as_str() && flight.carries.iter().any(|name| name == input)
+        });
+        if carried {
+            return Err(Rests::TooLate);
+        }
+        self.reliances.rests_on(order, input, judgement)
     }
 
     /// How many drains wait to be appended, whole or in part.
@@ -1481,6 +1505,10 @@ impl Segments {
             .iter()
             .filter_map(|name| Some((name.clone(), live.inputs.get(name)?.clone())))
             .collect();
+        let carries: Vec<String> = inputs.keys().cloned().collect();
+        let relies = self
+            .reliances
+            .resting(live.order, carries.iter().map(String::as_str));
         let provider_operation = sign::operation(&sign::Moving {
             operation,
             transaction: &transaction,
@@ -1589,6 +1617,8 @@ impl Segments {
                 verdict: None,
                 drains: Vec::new(),
                 record: None,
+                carries,
+                relies,
             },
         );
         self.advance(parts, live, &at, operation, true)
@@ -1605,6 +1635,16 @@ impl Segments {
         operation: &rutent_contracts::router_api::Operation,
         hold: bool,
     ) -> Result<Accounted, SegmentsError> {
+        // The provider's reliance on each judgement its inputs rest on is recorded before anything of the segment is:
+        // before its hold, its question, its effect and the operation. The log refusing one stops the segment here,
+        // with nothing sent (`REQ-CPL-12`, `INV-7`).
+        let flight = self.flight(at)?;
+        if !flight.relies.is_empty() {
+            let (provider, relies) = (flight.provider.clone(), flight.relies.clone());
+            let when = now(parts.clock)?;
+            self.reliances
+                .write(parts.log, live.core, &when, live.order, &provider, &relies)?;
+        }
         let flight = self.flight(at)?;
         let (segment, place) = (id_of(&at.1)?, flight.place);
         let moved = flight.statement.statement.clone();
