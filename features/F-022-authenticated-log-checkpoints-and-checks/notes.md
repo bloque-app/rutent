@@ -732,3 +732,42 @@ failed open. This round needed a contract change, made under that rule's lift fo
   holds its reader to these dodges and eight more in its own body, and was red on the tree before this round (`use
   super::Incomparable`). A first cut of the reader split `super::holding::{a, b}` on every comma and refused it: a
   bug of the test, fixed to read a braced group by its top-level items, with a case holding it.
+
+### The re-review of `032378d1` (`T-022-05`)
+
+CHANGES: one should-fix and five lows, each done.
+
+- **A refused raise stopped the accounts after it (should-fix).** `evidenced_against_balances` returned at the first
+  refused record, so a later account that differed was never checked or raised. It now keeps going, and answers the
+  first refusal at the end (default 9, gap 6); the reviewer's probe is a case of the `INV-1` test.
+- **A short past the bound.** `judge` walks the amounts against the balance instead of summing them (default 7), so
+  held `[10^78-1, 1]` against `10^78-1` is short by 1, as is evidence summed the same way.
+- **The account's asset** is in `holding_not_comparable` where a balance was read (gap 7 closed): schema, check,
+  fixtures (`raise-of-an-unread-account-naming-an-asset`, `raise-of-a-holding-not-comparable-without-its-asset`).
+- **A valid fixture of reports in two assets**, `raise-of-reports-in-two-assets`, beside the units one.
+- **The reader:** no space is left round `::`, `.` or before `(`; capabilities (`calls::`, `Log`, `Operator`,
+  `Clock`, `Comparisons`) are refused anywhere in the code, not only in a `use`; a `mod` declaration, in a file of its
+  own or inline, is refused, and so is a directory of child modules beside a pure module. Its self-check gains the
+  re-review's three dodges and three more.
+- **The stale comment** in the holding test now says the past-the-bound case is raised.
+- **Tests first.** Contract: the new and changed fixtures and their rows were red on the fixture test's assertions
+  (`asset` unexpected); then the shapes with `Raise::check`'s asset clause absent, red on the two asset fixtures
+  alone; then the clause. `core-audit`: the asset had to be plumbed through for the tests to compile, and with only
+  that, the tests were red on their assertions: the reader's self-check (spaces round separators), the short past the
+  bound in both the holding and `INV-1` tests. The `INV-1` test stopped at its earlier past-the-bound case, so the
+  refusal case's own red is its rule-off (N1).
+- **Rule-off table for the re-review** (from `ecb979d4`, each once, 300 s alarm, tree restored; none hung):
+
+  | Switched off | Red |
+  |---|---|
+  | N1: the first refused raise stops the accounts after it | `INV-1` ("hold-y's over is raised after hold-x's refusal") |
+  | N2: a sum past the bound always read as past it (the old sum) | short/over, `INV-1` |
+  | N3: the account's asset dropped from a holding that can't be compared | short/over, `INV-1` (`Raise::check` refuses the raise) |
+  | N4: the schema's asset rule (back to the word alone) | contract fixture test |
+  | `Raise::check`'s asset clause | contract fixture test (the two asset fixtures accepted by Rust; the stage before the clause) |
+  | N5: the reader keeps spaces round separators | structure test (its self-check) |
+  | N6: capabilities checked inside a `use` only | structure test |
+  | N7: a module declaration allowed | structure test |
+  | N8: `super :: detect :: …` in `holding.rs` | structure test |
+  | N9: an inline `calls::Operator` bound and `o . raise (r)` in `holding.rs` | structure test |
+  | N10: `mod sneak;` in `holding.rs`, with `holding/sneak.rs` reaching `crate::compare::detect` | structure test |
