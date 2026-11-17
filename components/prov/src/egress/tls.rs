@@ -26,6 +26,7 @@ use rustls::pki_types::ServerName;
 use rutent_contracts::module_interface::Scheme;
 
 use super::connector::{ConnectError, Connector, Dial, Request, Response};
+use crate::module::platform::{Monotonic, OperationClock};
 use crate::proxy::{AnswerError, Bounded, client_config, exchange, handshake, left};
 
 /// The default for each of connecting, the handshake, sending and reading.
@@ -83,6 +84,7 @@ pub struct TlsConnector<D = DirectDialer> {
     dialer: D,
     timeout: Duration,
     max_answer: usize,
+    clock: Arc<dyn OperationClock>,
 }
 
 impl<D> core::fmt::Debug for TlsConnector<D> {
@@ -109,12 +111,20 @@ impl<D: Dialer> TlsConnector<D> {
             dialer,
             timeout: DEFAULT_TIMEOUT,
             max_answer: DEFAULT_MAX_ANSWER,
+            clock: Arc::new(Monotonic),
         })
     }
 
     /// The same connector, with `timeout` for each of connecting, the handshake, sending and reading.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// The same connector, reading the operation's deadline, and each exchange's timeout, on `clock`
+    /// (`T-014-06`). By default it is the operating system's, and nothing in production sets another.
+    pub fn with_clock(mut self, clock: Arc<dyn OperationClock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -136,16 +146,17 @@ impl<D: Dialer> Connector for TlsConnector<D> {
             .map_err(|_| ConnectError::NotVerified)?;
         // Each step is bounded by its own timeout and by what is left of the operation's deadline; once that has
         // passed, nothing more is waited for (`REQ-MDL-11`).
-        let connect = left(self.timeout, dial.due).ok_or(ConnectError::Unreachable)?;
+        let connect =
+            left(&*self.clock, self.timeout, dial.due).ok_or(ConnectError::Unreachable)?;
         let tcp = self
             .dialer
             .connect(dial.to, connect)
             .map_err(|_| ConnectError::Unreachable)?;
-        let bounded = Bounded::new(tcp, self.timeout, dial.due);
+        let bounded = Bounded::new(tcp, self.timeout, dial.due, Arc::clone(&self.clock));
         // The handshake has the same bounds: a peer that stalls it is not verified, and receives nothing. One cut
         // off by the deadline connected to nothing verified either, and is unreachable for this operation.
         let mut stream = handshake(&self.config, name, bounded).map_err(|()| {
-            if left(self.timeout, dial.due).is_none() {
+            if left(&*self.clock, self.timeout, dial.due).is_none() {
                 ConnectError::Unreachable
             } else {
                 ConnectError::NotVerified

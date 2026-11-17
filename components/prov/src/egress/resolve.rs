@@ -6,6 +6,10 @@ use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
+use crate::module::platform::{Monotonic, OperationClock};
+
+use super::STEPPED_SLICE;
+
 use rutent_contracts::module_interface::{Host, Identifier};
 
 /// One name lookup as the egress layer asks it: the host and port, the provider whose call it serves, and when
@@ -92,6 +96,7 @@ pub struct ThreadedResolver<R> {
     inner: Arc<R>,
     cap: usize,
     in_flight: Arc<Mutex<BTreeMap<String, usize>>>,
+    clock: Arc<dyn OperationClock>,
 }
 
 impl<R> core::fmt::Debug for ThreadedResolver<R> {
@@ -109,7 +114,16 @@ impl<R: NameResolver + Send + Sync + 'static> ThreadedResolver<R> {
             inner: Arc::new(inner),
             cap: MAX_LOOKUPS_IN_FLIGHT,
             in_flight: Arc::default(),
+            clock: Arc::new(Monotonic),
         }
+    }
+
+    /// The same resolver, reading the lookup's deadline on `clock` (`T-014-06`): a lookup's `due` is a time on it.
+    /// By default it is the operating system's; on one that does not follow wall time the wait is in short slices,
+    /// with the clock read between them, so a step of it ends the lookup.
+    pub fn with_clock(mut self, clock: Arc<dyn OperationClock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The same resolver, with at most `cap` lookups in flight per provider.
@@ -161,7 +175,7 @@ impl<R: NameResolver + Send + Sync + 'static> NameResolver for ThreadedResolver<
         let Some(due) = lookup.due else {
             return Ok(self.inner.resolve(lookup.host, lookup.port));
         };
-        if Instant::now() >= due {
+        if self.clock.now() >= due {
             return Err(LookupRefused::DeadlinePassed);
         }
         let provider = lookup.provider.as_str().to_owned();
@@ -195,11 +209,20 @@ impl<R: NameResolver + Send + Sync + 'static> NameResolver for ThreadedResolver<
         if spawned.is_err() {
             return Err(LookupRefused::TooManyInFlight);
         }
-        match answer.recv_timeout(due.saturating_duration_since(Instant::now())) {
-            Ok(addresses) => Ok(addresses),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(LookupRefused::DeadlinePassed),
-            // The resolver's thread ended with no answer, as a panic ends it: the name resolved to nothing.
-            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(Vec::new()),
+        let wall = self.clock.follows_wall_time();
+        loop {
+            let left = due.saturating_duration_since(self.clock.now());
+            let wait = if wall { left } else { left.min(STEPPED_SLICE) };
+            match answer.recv_timeout(wait) {
+                Ok(addresses) => return Ok(addresses),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if wall || self.clock.now() >= due {
+                        return Err(LookupRefused::DeadlinePassed);
+                    }
+                }
+                // The resolver's thread ended with no answer, as a panic ends it: the name resolved to nothing.
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(Vec::new()),
+            }
         }
     }
 }
