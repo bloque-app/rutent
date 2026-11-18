@@ -1315,6 +1315,7 @@ fn status_asked(caller: &Actor) -> DecisionRequest {
         order: id("ord-17"),
         segment: id("seg-2"),
         provider: id("bridge-pay"),
+        transaction: id("tx-status-1"),
     };
     request
 }

@@ -678,6 +678,7 @@ impl Reversals {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: Some(transaction.clone()),
+                node: None,
             };
             let question = Step::new(journal::stated(
                 parts.evidence,
@@ -748,6 +749,7 @@ impl Reversals {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: Some(state.transaction.clone()),
+                node: None,
             };
             let maker = journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
             match journal::stated(parts.evidence, parts.clock, answer, maker, about) {
@@ -826,9 +828,9 @@ impl Reversals {
     }
 
     /// Asks the provider of `at` where its segment stands, late (`ask_status`, `REQ-ORD-1`, `T-020-27`), once the
-    /// segment's answer was taken and it hasn't settled or had its reversal completed: policy decides the action, and
-    /// only its permit goes on; Core draws a fresh transaction, records the effect before anything is sent, acts on
-    /// it once in the segments' one register and asks the platform ([`crate::segments::Modules::status`]). What the
+    /// segment's answer was taken and it hasn't settled or had its reversal completed: Core draws a fresh transaction,
+    /// which the action names (`T-020-36`); policy decides the action, and only its permit goes on; Core records the
+    /// effect before anything is sent, acts on it once in the segments' one register and asks the platform ([`crate::segments::Modules::status`]). What the
     /// provider answers is kept as its statement ([`Reversals::later`]) and moves nothing (`INV-4`): the segments
     /// stay the one writer of a segment's results, and a stuck part's value moves only on its resolution. The effect's
     /// one result says how it came out. A call that stopped carries on from where it stopped; one that finished asks
@@ -861,10 +863,18 @@ impl Reversals {
             ) {
                 return Err(ReversalError::StatusNotNeeded);
             }
+            // The fresh transaction is drawn first, so the action policy decides names it, and the effect after it,
+            // and a late status is traceable from the log (`T-020-36`). One a refusal leaves unused is never drawn
+            // again.
+            let transaction = parts
+                .segments
+                .claim_transaction(parts.fresh, parts.issued)
+                .map_err(|_| ReversalError::Fresh)?;
             let action = Action::AskStatus {
                 order: at.order.clone(),
                 segment: at.segment.clone(),
                 provider: provider.clone(),
+                transaction: transaction.clone(),
             };
             let request = DecisionRequest {
                 request: parts.fresh.id(),
@@ -876,10 +886,6 @@ impl Reversals {
             let Some(permit) = decision.permit() else {
                 return Err(ReversalError::NotPermitted(decision.outcome));
             };
-            let transaction = parts
-                .segments
-                .claim_transaction(parts.fresh, parts.issued)
-                .map_err(|_| ReversalError::Fresh)?;
             let effect = Step::new(journal::recorded(
                 parts.clock,
                 parts.core,
@@ -1097,6 +1103,7 @@ impl Reversals {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: Some(question.transaction.clone()),
+                node: None,
             };
             match journal::stated(parts.evidence, parts.clock, &answer, maker, about) {
                 Ok(entry) => question.answer_step = Some(Step::new(entry)),
@@ -1163,6 +1170,7 @@ impl Reversals {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: None,
+                node: None,
             };
             let step = Step::new(journal::stated(
                 parts.evidence,
@@ -1226,6 +1234,7 @@ impl Reversals {
             order: Some(at.order.clone()),
             segment: Some(at.segment.clone()),
             transaction: Some(owing.transaction.clone()),
+            node: None,
         };
         let claimed = journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
         let reversal = self.reversal(at, &owing.provider);
@@ -1615,6 +1624,7 @@ impl Reversals {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: names.then_some(transaction),
+                node: None,
             };
             let claimed = journal::provider_maker(parts.catalogue, parts.operator, &maker);
             let step = Step::new(journal::stated(
@@ -1772,6 +1782,7 @@ impl Reversals {
             order: Some(at.order.clone()),
             segment: Some(at.segment.clone()),
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let question = Step::new(journal::stated(
             parts.evidence,
@@ -1947,6 +1958,7 @@ impl Reversals {
                 order: Some(order.clone()),
                 segment: None,
                 transaction: None,
+                node: None,
             };
             let statement = Step::new(journal::stated(
                 parts.evidence,

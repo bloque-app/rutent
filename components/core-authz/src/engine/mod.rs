@@ -1217,6 +1217,7 @@ mod tests {
             order: id("ord-17"),
             segment: id("seg-2"),
             provider: id("bridge-pay"),
+            transaction: id("tx-status-1"),
         });
         for action in &actions {
             match action {

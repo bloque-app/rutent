@@ -15,7 +15,14 @@
 //! 6. its `about` names a transaction exactly when its body names one, and the same one; and where the entry is
 //!    about an order or a segment, its `about` names a transaction, so a statement is verified for an order only
 //!    through a transaction its maker signed, and one whose body names a transaction never about nothing
-//!    (`REQ-ORD-32`, `REQ-ORD-38`). A judgement names no transaction, so it is verified about nothing;
+//!    (`REQ-ORD-32`, `REQ-ORD-38`). A judgement names no transaction, so it is verified about nothing. The one other
+//!    way a statement is verified about an order is a publisher's record of the segments inside a private node
+//!    (provider-role's `inner-segments`, [`inner_segments_of`]), which names its transactions only inside its
+//!    `segments`: about an order, no segment and no transaction, it is verified only where its `about` names the node
+//!    its body names, it lists at least one segment, and every segment's transaction is of that order in this log
+//!    (first bound to it, and asked under for it by the operator's own verified `operation` question), so a record
+//!    naming a transaction of another order, or one Core never asked under for this one, is never verified about it
+//!    (`REQ-ORD-41`, `T-020-36`). An `about` names a node only for such a record, and only the node its body names;
 //! 7. its signature verifies over its signing input;
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`): for a module the operator publishes, a
 //!    statement key that a release of it the log accepted names ([`release_statement_keys`]); for any other maker,
@@ -337,6 +344,62 @@ struct EnvelopeSignature {
     key: PublicKey,
 }
 
+/// Whether `envelope` is a publisher's record of the segments inside a private node that `about` holds it to
+/// (step 6, `T-020-36`): an `inner-segments` body, its node the one `about` names. About an order, as a node's record
+/// is cited (`replay-cites-its-nodes-records`, an `evidence` naming the node), it names no segment and no transaction
+/// of its own, lists at least one segment, and every segment's transaction is of that order in `history`: first
+/// bound to it (`binding_of`), and asked under for it by `operator`'s own verified `operation` question, so the order
+/// rests on transactions Core asked under for it, never on the record's word or on an entry anyone else appended.
+/// `None` where the body is no such record, which step 6 reads as before.
+fn inner_segments_of(
+    envelope: &Envelope,
+    about: Option<&About>,
+    history: &History,
+    operator: &Id,
+) -> Option<bool> {
+    if envelope.shape != crate::provider_role::INNER_SEGMENTS_SHAPE {
+        return None;
+    }
+    let record: crate::provider_role::InnerSegments =
+        serde_json::from_value(envelope.statement.clone()).ok()?;
+    let Some(about) = about else {
+        return Some(true);
+    };
+    let node = about.node.as_ref().map(|n| n.as_str());
+    let Some(order) = about.order.as_ref() else {
+        // About nothing but its node, or about a segment or a transaction, which it names none of: no order binds.
+        return Some(
+            about.segment.is_none()
+                && about.transaction.is_none()
+                && node.is_none_or(|n| n == record.node),
+        );
+    };
+    Some(
+        about.segment.is_none()
+            && about.transaction.is_none()
+            && node == Some(record.node.as_str())
+            && !record.segments.is_empty()
+            && record.segments.iter().all(|s| {
+                Id::new(s.transaction.as_str()).is_some_and(|t| {
+                    super::relations::binding_of(&t, history).is_some_and(|(o, _)| o == order)
+                        && asked_under(&t, order, operator, history)
+                })
+            }),
+    )
+}
+
+/// Whether `history` holds `operator`'s own verified `operation` question under `transaction` about `order`: Core
+/// asked under it for that order (`answer-follows-its-question`'s question).
+fn asked_under(transaction: &Id, order: &Id, operator: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(e, Entry::Stated(s) if matches!(&s.attribution, Attribution::Verified { who } if &who.acts == operator)
+            && s.what.statement.as_str() == crate::provider_role::OPERATION_SHAPE
+            && s.about.as_ref().is_some_and(|a| {
+                a.order.as_ref() == Some(order) && a.transaction.as_ref() == Some(transaction)
+            }))
+    })
+}
+
 /// The bytes `text` writes in base64url without padding, or `None` where it doesn't.
 fn decode(text: &str) -> Option<Vec<u8>> {
     let value = |c: u8| match c {
@@ -398,16 +461,26 @@ pub fn attribute(
                 .and_then(|a| a.transaction.as_ref())
                 .map(|t| t.as_str());
             let bound = about.is_some_and(|a| a.order.is_some() || a.segment.is_some());
+            let node = about.and_then(|a| a.node.as_ref());
+            let operator = keys.operator()?;
+            let bound_as_named = match inner_segments_of(&envelope, about, history, &operator) {
+                // A publisher's record of a node's segments: about an order only through its segments' transactions.
+                Some(holds) => body_transaction.is_none() && holds,
+                None => {
+                    node.is_none()
+                        && match about_transaction {
+                            Some(about) => body_transaction == Some(about),
+                            None => body_transaction.is_none() && !bound,
+                        }
+                }
+            };
             envelope.deployment == keys.deployment()?
                 && envelope.maker == claimed_by.acts.as_str()
                 && envelope.shape == claim.what.statement.as_str()
                 && envelope.made_at == claim.when.at.as_str()
                 && envelope.signature.scheme == claim.signed_with.scheme
                 && envelope.signature.key == claim.signed_with.key
-                && match about_transaction {
-                    Some(about) => body_transaction == Some(about),
-                    None => body_transaction.is_none() && !bound,
-                }
+                && bound_as_named
                 && signatures.verifies(&bytes)
                 && signed_by_its_maker(claim, &claimed_by.acts, history, keys)?
                 && keys.publisher(&claimed_by.acts)?.as_ref() == Some(&claimed_by.party)

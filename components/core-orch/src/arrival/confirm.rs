@@ -122,6 +122,7 @@ impl Confirming {
             order: Some(asking.order.clone()),
             segment: None,
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let (question, _) = journal::stated(
             &mut *desk.parts.evidence,
@@ -177,6 +178,7 @@ impl Confirming {
                 order: Some(self.order.clone()),
                 segment: None,
                 transaction: Some(self.transaction.clone()),
+                node: None,
             };
             self.answer_entry = Some(
                 journal::stated(

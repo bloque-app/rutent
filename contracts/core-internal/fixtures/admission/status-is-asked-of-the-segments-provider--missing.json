@@ -5549,7 +5549,8 @@
               "kind": "ask_status",
               "order": "ord-1",
               "segment": "p1-s2",
-              "provider": "bridge-pay"
+              "provider": "bridge-pay",
+              "transaction": "tx-status-1"
             },
             "at": "2026-11-10T09:00:00Z"
           }
@@ -5578,7 +5579,8 @@
         "kind": "ask_status",
         "order": "ord-1",
         "segment": "p1-s2",
-        "provider": "bridge-pay"
+        "provider": "bridge-pay",
+        "transaction": "tx-status-1"
       },
       "decision": {
         "request": "req-status-2",

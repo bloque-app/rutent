@@ -346,8 +346,12 @@ fn segment_started<'a>(
 }
 
 /// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
-/// under an order names (see `transaction-belongs-to-one-order`).
-fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
+/// under an order names (see `transaction-belongs-to-one-order`). [`attribute`](super::attribute) reads it too, for a
+/// publisher's record of a node's segments about an order (`T-020-36`).
+pub(super) fn binding_of<'a>(
+    transaction: &Id,
+    history: &'a History,
+) -> Option<(&'a Id, Option<&'a Id>)> {
     history.iter().find_map(|(_, e)| {
         let s = stated(e)?;
         let (order, t) = order_transaction(s)?;
@@ -424,7 +428,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 106] = [
+pub static RELATIONS: [Relation; 107] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2289,12 +2293,44 @@ pub static RELATIONS: [Relation; 106] = [
                     order,
                     segment,
                     provider,
+                    ..
                 },
                 _,
             )) if segment_provider(order, segment, h) != Some(provider) => by_fields(0),
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "status-is-asked-under-a-fresh-transaction",
+        spec: &["REQ-ORD-1", "REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a late status is asked under a fresh transaction: no entry before it names that transaction",
+        fields: &[],
+        // The transaction an `ask_status` effect names is the one Core asks under (`T-020-36`), so a late status is
+        // traced from the log by it: never the segment's own, nor any a stated entry already names, nor another
+        // late status's. The same effect retried is no other.
+        cites: |e, _| match effect_action(e) {
+            Some((Action::AskStatus { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let Some((Action::AskStatus { transaction, .. }, _)) = effect_action(e) else {
+                return Match::NotTarget;
+            };
+            let named = match t {
+                Entry::Stated(s) => s
+                    .about
+                    .as_ref()
+                    .and_then(|a| a.transaction.as_ref())
+                    .is_some_and(|x| x == transaction),
+                Entry::Verified(v) => matches!(
+                    effect_action(v),
+                    Some((Action::AskStatus { transaction: x, .. }, _)) if x == transaction
+                ),
+            };
+            judge(named, &[])
+        },
     },
     Relation {
         name: "reversal-carrier-is-of-a-reversal-owed",
@@ -5652,10 +5688,11 @@ fn from_node_of<'a>(order: &str, segment: &str, history: &'a History) -> Option<
 
 /// Whether the log binds `node` as a private node of `order` published by `publisher`: a `replay` of the order
 /// naming the node, resting on a verified statement about the order stating for the publisher, or evidence of the
-/// order whose public movement names the node, resting on one.
+/// order whose public movement names the node, resting on one. A publisher's record of a node's segments binds only
+/// the node it names (`T-020-36`).
 fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -> bool {
     // A verified statement stating for the publisher, about this order: a replay's exit result, or the evidence's
-    // own statement, of another order binds nothing here.
+    // own statement, of another order binds nothing here, nor a record of another node's segments.
     let for_publisher = |r: &Receipt| {
         entry_at(r, history).and_then(stated).is_some_and(|s| {
             matches!(s.attribution, Attribution::Verified { .. })
@@ -5664,6 +5701,11 @@ fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -
                     .as_ref()
                     .and_then(|a| a.order.as_ref())
                     .is_some_and(|o| o.as_str() == order)
+                && (s.what.statement.as_str() != crate::provider_role::INNER_SEGMENTS_SHAPE
+                    || s.about
+                        .as_ref()
+                        .and_then(|a| a.node.as_ref())
+                        .is_some_and(|n| n.as_str() == node))
         })
     };
     history

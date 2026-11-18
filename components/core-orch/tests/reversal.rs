@@ -3756,6 +3756,7 @@ fn late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_p
                 order: order.clone(),
                 segment: s2.clone(),
                 provider: id(EXCHANGE),
+                transaction: asked.transaction.clone(),
             },
             decision: match &effect.what {
                 What::Effect { decision, .. } => decision.clone(),

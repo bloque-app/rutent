@@ -871,3 +871,31 @@
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-audit`'s `compare` and `measures` and its
   key register, `core-orch`'s closing writer and reversal reader, and the consumer lines named in the commit.
   (DEC-4, DEC-20, T-020-30)
+- Folded into 1.0.0 before its release: `core-internal`'s round after `T-020-30` (`T-020-36`). 1.0.0 isn't on
+  `develop`, so `PLAN.md` §4.4 and retrospective lesson 7 fold it into the unreleased major, as `T-020-30` did. Each
+  change, by the row's item:
+  1. A publisher's `inner-segments` record is verified about an order (`T-020-32`'s blocker). `attribute`'s step 6
+     verified an entry about an order only through a transaction its body names at its top level, which a record
+     names only inside `segments`, so the record was never verified about the order it binds and
+     `replay-cites-its-nodes-records` and `private_node_of` refused it. It now verifies such a record about an order,
+     no segment and no transaction, where its `about` names the node its body names, it lists at least one segment, and
+     every segment's transaction is first bound to that order and asked under for it by the operator's own verified
+     `operation` question: one naming another order's transaction, one the log binds to none, one Core never asked
+     under, or one whose questions another maker asked, is attributed to no one about it. Eleven attribution cases
+     (three verified, eight unverified), and two tests on `core-audit`'s log. (REQ-ORD-41)
+  2. A record names its node: `About.node`, named only by an `inner-segments` record, about no segment or
+     transaction (the schema's `if`/`then` and `StatedEntry::check`), and verified against its body.
+     `replay-cites-its-nodes-records` gains three fields: `node` (one the replay replayed and didn't find silent),
+     `publisher` (stating for the party its exit's result states for, the publisher the replay binds its nodes to)
+     and `once` (one record per node). `private_node_of` binds through a record only the node it names
+     (`reversal-rests-on-its-evidence`'s `private`). One valid fixture, two invalid ones and nine admission cases.
+     (REQ-AUD-9, REQ-ORD-3, REQ-ORD-41)
+  3. `Action::AskStatus.transaction`, required: the fresh transaction a late status is asked under (`T-020-27`'s
+     review), so it is traceable from the log; a new row, `status-is-asked-under-a-fresh-transaction` (none other),
+     refuses one an earlier stated entry or another late status's effect names. `core-orch`'s `Reversals::ask_status`
+     draws it before policy decides. One invalid fixture and three admission cases; the status fixtures name
+     `tx-status-1`. (REQ-ORD-1, REQ-ORD-38)
+  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 669 admission cases and 48 attribution cases; 107
+  relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
+  transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
+  literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)

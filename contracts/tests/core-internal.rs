@@ -278,7 +278,22 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 112] = [
+const SCHEMA_RULES: [SchemaRule; 115] = [
+    (
+        "decision-request-to-ask-a-late-status-without-its-transaction",
+        &[("/action", "required")],
+        "missing field `transaction`",
+    ),
+    (
+        "stated-entry-naming-a-node-for-a-result",
+        &[("/what/statement", "const")],
+        "a stated entry names a node only as a publisher's record of the segments inside it",
+    ),
+    (
+        "stated-entry-of-a-nodes-record-naming-a-transaction",
+        &[("/about", "not")],
+        "a stated entry names a node only as a publisher's record of the segments inside it",
+    ),
     (
         "report-pair-without-its-terms",
         &[("", "required")],
@@ -707,7 +722,7 @@ const SCHEMA_RULES: [SchemaRule; 112] = [
     (
         "stated-entry-about-nothing",
         &[("/about", "minProperties")],
-        "a stated entry's about names an order, a segment or a transaction",
+        "a stated entry's about names an order, a segment, a transaction or a node",
     ),
     (
         "stated-entry-carrying-its-signatures-value",
@@ -3603,4 +3618,142 @@ fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_c
         stating_at(&result, body, Role::Provider, Some("2026-11-09T00:00:00Z")),
     );
     assert!(verified(&got), "a result made after it: {got:?}");
+}
+
+// --- T-020-36: core-internal's round after T-020-30 -------------------------------------------------------------
+
+/// Attributes the attribution case `name` over its sources and history, and holds it to what it expects: verified
+/// (only the attribution changed) or unverified (the claim as handed in).
+fn assert_attribution(name: &str) {
+    let case = read_json(
+        &contract_dir()
+            .join("fixtures")
+            .join("attribution")
+            .join(format!("{name}.json")),
+    );
+    let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+    let (mut from, mut keys, signatures) = (sources(&case), sources(&case), sources(&case));
+    let got = attribute(
+        &claim,
+        &case_history(&case),
+        &mut from,
+        &mut keys,
+        &signatures,
+    );
+    match case["expect"].as_str().unwrap() {
+        "verified" => {
+            let entry = got.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(
+                entry.attribution,
+                Attribution::Verified {
+                    who: claim.attribution.maker().clone()
+                },
+                "{name}"
+            );
+        }
+        "unverified" => assert_eq!(got, Ok(claim), "{name}"),
+        other => panic!("{name}: expects {other}"),
+    }
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn inner_segments_record_about_an_order_whose_transactions_are_all_of_that_order_is_verified() {
+    // A publisher's record names its transactions only inside `segments`, so it is verified about an order through
+    // them: every one first bound to that order and asked under for it by the operator's own question, the record's
+    // `about` naming the node its body names (`T-020-32`'s blocker).
+    assert_attribution(
+        "verified--an-inner-segments-record-about-the-order-its-transactions-were-asked-under",
+    );
+    // About its node alone, or about nothing, it is verified as before: it binds no order.
+    assert_attribution("verified--an-inner-segments-record-about-its-node-alone");
+    assert_attribution("verified--an-inner-segments-record-about-nothing");
+    // The stated entry names its node, which only such a record does.
+    assert_accepted_by_both("stated-entry-of-a-publishers-record-of-a-nodes-segments");
+    // Verified about the order, it is what a replay cites for its node, and what binds the node it names.
+    assert_case("replay-cites-its-nodes-records--its-nodes-record");
+    assert_case("reversal-rests-on-its-evidence--a-publishers-word-on-a-node-its-record-binds");
+}
+
+// verifies: REQ-ORD-41
+#[test]
+fn inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one() {
+    // One transaction of another order, one the log binds to none, one Core never asked under (bound by a provider's
+    // own statement), or questions another than the operator asked: never verified about this order.
+    for name in [
+        "unverified--an-inner-segments-record-naming-a-transaction-of-another-order",
+        "unverified--an-inner-segments-record-naming-a-transaction-the-log-binds-to-no-order",
+        "unverified--an-inner-segments-record-naming-a-transaction-core-never-asked-under",
+        "unverified--an-inner-segments-record-whose-transactions-another-than-the-operator-asked-under",
+        // Nor where it lists no segment, which would hold for every order, nor about another node than its body
+        // names, nor about the order without naming its node.
+        "unverified--an-inner-segments-record-of-no-segments-about-the-order",
+        "unverified--an-inner-segments-record-about-the-order-naming-another-node",
+        "unverified--an-inner-segments-record-about-the-order-naming-no-node",
+        "unverified--an-inner-segments-record-about-its-node-alone-naming-another",
+    ] {
+        assert_attribution(name);
+    }
+    // A node is named only by such a record, about no segment or transaction: by the schema and the Rust types.
+    assert_rejected("stated-entry-naming-a-node-for-a-result");
+    assert_rejected("stated-entry-of-a-nodes-record-naming-a-transaction");
+    // Built in memory, a result naming a node is refused before any row, and attributed to no one.
+    let mut result: StatedEntry =
+        serde_json::from_value(fixture("valid", "stated-entry-of-a-quote")).unwrap();
+    result.about.as_mut().unwrap().node = Some(Id::new("acme-ledger").unwrap());
+    assert!(Entry::Stated(result).check().is_err());
+}
+
+// verifies: REQ-AUD-9, REQ-ORD-3
+#[test]
+fn replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused() {
+    let row = "replay-cites-its-nodes-records";
+    // The replay binds its nodes to the publisher its exit's result states for: a record stating for another
+    // publisher, by another provider or one of its own, is refused; one by a sibling of the exit's provider, stating
+    // for the same publisher, is that publisher's word.
+    assert_case_refused(&format!("{row}--publisher"));
+    assert_case_refused(&format!("{row}--another-provider-of-another-publisher"));
+    assert_case(&format!("{row}--a-sibling-of-the-exits-provider"));
+    // A record of a node the replay didn't replay, or of one it found recorded nothing, stands for no node of it.
+    assert_case_refused(&format!("{row}--node"));
+    assert_case_refused(&format!("{row}--a-node-that-recorded-nothing"));
+    // T-020-30's cases stand beside them.
+    for name in ["missing", "verified", "record", "about"] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    // And a record binds only the node it names: evidence of a movement into a node, resting on its publisher's
+    // record of another node, binds neither to the publisher, so its word there completes nothing.
+    assert_case_refused(
+        "reversal-rests-on-its-evidence--a-publishers-word-on-another-nodes-record",
+    );
+}
+
+// verifies: REQ-AUD-9
+#[test]
+fn replay_citing_two_records_of_one_node_is_refused() {
+    let row = "replay-cites-its-nodes-records";
+    assert_case_refused(&format!("{row}--once"));
+    assert_case(&format!("{row}--one-record-of-each-of-two-nodes"));
+    // The exit's result alone stays admitted, and the count the Rust types hold stays.
+    assert_case("world--replay");
+    assert_rejected("verified-entry-of-a-replay-naming-more-records-than-nodes");
+}
+
+// verifies: REQ-ORD-1
+#[test]
+fn late_status_asked_without_its_transaction_is_invalid() {
+    assert_accepted_by_both("decision-request-to-ask-a-providers-late-status");
+    assert_rejected("decision-request-to-ask-a-late-status-without-its-transaction");
+    // Built in Rust, the action names it too: it has no default.
+    let mut action =
+        fixture("valid", "decision-request-to-ask-a-providers-late-status")["action"].clone();
+    action.as_object_mut().unwrap().remove("transaction");
+    assert!(serde_json::from_value::<Action>(action).is_err());
+    // Decided and taken under it, a fresh one; never the segment's own, nor another late status's.
+    assert_case("world--decide_status");
+    assert_case("world--effect_status");
+    let row = "status-is-asked-under-a-fresh-transaction";
+    assert_case(&format!("{row}--another-late-status-under-its-own"));
+    assert_case_refused(&format!("{row}--conflict"));
+    assert_case_refused(&format!("{row}--the-transaction-of-another-late-status"));
 }
