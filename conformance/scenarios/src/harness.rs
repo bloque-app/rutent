@@ -543,6 +543,30 @@ pub struct Run {
     )>,
     /// Each order whose route stopped before its end, and why.
     pub stopped: Vec<(String, String)>,
+    /// Every statement the evidence store kept, read back from its shelf in the order it was kept, as the JSON of the
+    /// bytes the log's commitments name (`T-024-08`: the amounts a provider stated, read from what the log commits to).
+    pub statements: Vec<Value>,
+    /// The same statements as the evidence store kept them, each with its commitment, salt and bytes, so a checker
+    /// can open the log over them (`T-024-08`, `INV-6`).
+    pub kept: Vec<rutent_contracts::core_internal::KeptStatement>,
+}
+
+/// The statements `disk`'s shelf holds, in the order they were kept: parsed, and as kept.
+fn kept_statements(
+    disk: &crate::assembly::durable::Disk,
+) -> (Vec<Value>, Vec<rutent_contracts::core_internal::KeptStatement>) {
+    use rutent_core_audit::receipts::store::Shelf;
+    let mut shelf = disk.shelf();
+    let mut kept = shelf.load().map(|c| c.kept).unwrap_or_default();
+    kept.sort_by_key(|s| s.place);
+    let parsed = kept
+        .iter()
+        .filter_map(|s| {
+            let bytes = rutent_core_audit::log::kept::from_base64url(s.kept.bytes.as_str())?;
+            serde_json::from_slice(&bytes).ok()
+        })
+        .collect();
+    (parsed, kept.into_iter().map(|s| s.kept).collect())
 }
 
 fn state_name(order: &rutent_contracts::state_machine::Order) -> String {
@@ -553,7 +577,10 @@ fn state_name(order: &rutent_contracts::state_machine::Order) -> String {
 }
 
 impl Run {
-    fn read(
+    /// Reads the run `core` left, as it stands after `orders` were accepted (`crashed`: Core stopped on a planted
+    /// crash), from what survives it: the disk, the providers and the state machine's host. A test that drives Core's
+    /// own calls reads its run with this.
+    pub fn read(
         scenario: &Scenario,
         seed: u64,
         mut core: Core,
@@ -630,6 +657,7 @@ impl Run {
         // Core goes before its disk is read back: what reads it then is a process of its own, as after a crash.
         let disk = core.disk.clone();
         let clock = core.clock.clone();
+        let (statements, kept) = kept_statements(&disk);
         drop(core);
         let reopened = read_back(&disk, &clock).and_then(|(store, log)| {
             let bound = store.bind(std::rc::Rc::clone(&log))?;
@@ -676,6 +704,8 @@ impl Run {
             delivered_twice,
             swaps,
             stopped: Vec::new(),
+            statements,
+            kept,
         }
     }
 
