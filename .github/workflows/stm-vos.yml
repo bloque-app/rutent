@@ -15,6 +15,11 @@ name: STM on VOS
 # (rutent-scenarios-vos and its host server, scenarios.sh), and their format and lint. The scenarios build with VOS's
 # guest toolchain, which therefore gains the simulated providers' wasm32 target, and need the runner to allow
 # unprivileged user namespaces, as the ci job's module tests do.
+# T-025-03 adds a step after them: the threat re-check's scan (EXP-1's G-26, THR-79). After full runs on three VOS
+# replicas it searches the state machine's journal, Core's log and the nodes' own files for a provider credential,
+# a secret's plaintext and a module's private state that the run was planted with, and shows it can see by letting
+# each kind through the boundary once. A hit, or a scan that can't see the nodes' files, fails the job. That step is a
+# DEC-20 path, like the rest of this file.
 # GitHub runs a workflow_dispatch only for a workflow file on the default branch, so until this file reaches main
 # the run is the push of this task's branch; the run id goes in F-010's notes (F-024's for T-024-02's steps).
 on:
@@ -24,6 +29,7 @@ on:
       - "f-010/t-010-06-g54-damaged-frame"
       - "f-010/t-010-08-production-host-check"
       - "f-024/t-024-02-assembly"
+      - "f-025/t-025-03-secrets-scan-vos"
       - "m*"
       - "develop"
     paths:
@@ -183,7 +189,17 @@ jobs:
         run: |
           set -o pipefail
           echo "scenario seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee "$OUT/scenarios-seeds.txt"
-          VOS_DIR="$VOS_DIR" $PROGRAM/scenarios.sh "$BUILD" 2>&1 | tee "$OUT/scenarios-tests.txt"
+          VOS_DIR="$VOS_DIR" $PROGRAM/scenarios.sh "$BUILD" --test scenarios --test wire 2>&1 | tee "$OUT/scenarios-tests.txt"
+        env:
+          RUTENT_SCENARIO_SEEDS: "1,2,3"
+
+      # The scan of a run's journal and of the nodes' files for a credential, a secret and module state, with its
+      # controls (the same values let through the state machine's boundary, which it must find in both).
+      - name: No credential, secret or module state in the journal or the nodes' files of three VOS replicas (T-025-03)
+        run: |
+          set -o pipefail
+          echo "scan seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee "$OUT/secrets-scan-seeds.txt"
+          RUST_TEST_NOCAPTURE=1 VOS_DIR="$VOS_DIR" $PROGRAM/scenarios.sh "$BUILD" --test secrets 2>&1 | tee "$OUT/secrets-scan-tests.txt"
         env:
           RUTENT_SCENARIO_SEEDS: "1,2,3"
 
