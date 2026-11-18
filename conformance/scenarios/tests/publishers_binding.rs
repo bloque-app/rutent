@@ -86,8 +86,7 @@ fn records(core: &Core, order: &Id) -> Vec<(Receipt, Option<Id>, Option<Id>, boo
         .collect()
 }
 
-// verifies: REQ-ORD-3
-// verifies: REQ-ORD-41
+// verifies: REQ-ORD-3, REQ-ORD-41
 #[test]
 fn publishers_inner_segments_record_is_appended_as_a_stated_entry_and_cited_by_what_binds_its_node()
 {
@@ -119,8 +118,7 @@ fn publishers_inner_segments_record_is_appended_as_a_stated_entry_and_cited_by_w
     assert!(binding[0].1.contains(&receipt), "{binding:?}");
 }
 
-// verifies: REQ-AUD-9
-// verifies: REQ-ORD-41
+// verifies: REQ-AUD-9, REQ-ORD-41
 #[test]
 fn replay_cites_the_receipt_of_each_inner_segments_record_it_read() {
     let (mut core, session) = core_with("AC-35", &[IN, EXCHANGE, RAMP, OUT]);

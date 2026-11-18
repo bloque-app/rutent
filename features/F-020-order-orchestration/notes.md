@@ -5336,7 +5336,7 @@ only to remove its two `#[ignore]`s.
   | closing: asking for the record at the entering segment | the same, and `a_book_spanning_two_orders…` |
   | closing: the replay's cited records | binding: `replay_cites_the_receipt_of_each_inner_segments_record_it_read` |
   | closing: records of this order's transactions alone | binding: `a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing` |
-  | `grading.rs`: `Books` returns no record | binding: all four but the SamePublisher one's, and the spanning one; reversing: both |
+  | `grading.rs`: `Books` returns no record | binding: the four others (not the `SamePublisher` one); reversing: both |
   | contracts' `private_node_of`, the evidence branch (the log binds the node by evidence) | binding: `failed_providers_own_answer_…`; reversing: both |
   | `judge`: `SamePublisher` | binding: `reserves_confirmation_of_its_own_publishers_providers_reversal_stays_refused`; reversing: AC-4 |
   | `AC-6`'s two-actor rule: Core's `SameParty`/`SameLogin` | reversing: AC-6 |

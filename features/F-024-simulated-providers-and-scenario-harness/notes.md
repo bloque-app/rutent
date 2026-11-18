@@ -825,6 +825,8 @@ the same run where each red names its own cause, and restored; the tests were gr
 | `AC-9` | the destination check on a return (`makers.contains`) | another provider's report is recorded as the return |
 | `AC-41` | the operator among an order's receivers (`receivers_of`) | `AC-41`, and the operator's half of `AC-7` and `AC-9` |
 
+**Update (`T-020-32`):** the two `#[ignore]`s are gone and both tests pass; their rule-offs (`AC-4`: the node's binding, `SamePublisher`; `AC-6`: the two-actor rule in Core, policy and the log) are in `F-020`'s notes, `T-020-32`. `T-020-32` also edited `grading.rs` (`Books` returns the publisher's record whole), an `F-024` file.
+
 `AC-6`'s second rule is held by two layers (Core's `SameParty`/`SameLogin` and policy's `one_actor`): both off together
 is what the table would switch off; neither alone turns the scenario red. (Untested: `AC-6` is ignored.) Once un-ignored it is rule-offed in both layers together, then each alone. Both people hold both permissions, so
 the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameActor` from policy once Core's is off), not a missing permission.
