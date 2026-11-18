@@ -12,7 +12,7 @@
 use rutent_contracts::core_internal::{
     HandedOver, LookupOutcome, Move, MoveReason, Part, StateKey, Token, UseOf, UseOutcome, What,
 };
-use rutent_contracts::module_interface::PartName;
+use rutent_contracts::module_interface::{PartName, PlatformRefusal};
 use rutent_contracts::provider_role::SafeInteger;
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_prov::module::lifecycle::{self, SegmentRecord};
@@ -59,6 +59,7 @@ impl Raw {
                     && e.state_reads.is_empty()
                     && e.calls.is_empty()
                     && e.limits.is_empty()
+                    && e.unknown.is_empty()
             }
             Raw::Uses(u) => u.is_empty(),
             Raw::Record(_) => false,
@@ -67,9 +68,8 @@ impl Raw {
 }
 
 /// The items of one platform drain, in its order: outbound call records, cross-module calls, secret lookups, state
-/// reads and bounds hit. An operation that ended with no answer (`Events::unknown`) has no item in the contract; it
-/// is kept with its segment in flight instead (a gap for a later `F-020` row with a core-internal bump, in the
-/// feature's notes).
+/// reads and bounds hit, then each operation that ended with no answer (`Events::unknown`), the platform's own record
+/// of it (`HandedOver::OperationUnanswered`, `REQ-MDL-8`, `REQ-ORD-1`).
 pub(super) fn of_events(events: &Events) -> Result<Vec<HandedOver>, Uncarried> {
     let Events {
         records,
@@ -77,7 +77,7 @@ pub(super) fn of_events(events: &Events) -> Result<Vec<HandedOver>, Uncarried> {
         state_reads,
         calls,
         limits,
-        unknown: _,
+        unknown,
     } = events;
     let mut items = Vec::new();
     for record in records {
@@ -126,7 +126,38 @@ pub(super) fn of_events(events: &Events) -> Result<Vec<HandedOver>, Uncarried> {
                 .transpose()?,
         });
     }
+    for ended in unknown {
+        let position = items.len();
+        items.push(HandedOver::OperationUnanswered {
+            provider: id(&ended.provider, position)?,
+            transaction: id(&ended.transaction, position)?,
+            ended_by: token(ended_by(ended.ended_by)?, position)?,
+        });
+    }
     Ok(items)
+}
+
+/// The label of what ended an operation with no answer. A refusal prov adds that this names no label for is refused
+/// whole, so the drain is kept and fails loudly rather than leaving a gap.
+fn ended_by(refusal: PlatformRefusal) -> Result<&'static str, Uncarried> {
+    Ok(match refusal {
+        PlatformRefusal::MalformedOutput => "malformed_output",
+        PlatformRefusal::OversizedOutput => "oversized_output",
+        PlatformRefusal::LimitReached => "limit_reached",
+        PlatformRefusal::Unavailable => "unavailable",
+        PlatformRefusal::NotHandled => "not_handled",
+        PlatformRefusal::DuplicateTransaction => "duplicate_transaction",
+        PlatformRefusal::VersionExploited => "version_exploited",
+        PlatformRefusal::StatementKeyUnavailable => "statement_key_unavailable",
+        PlatformRefusal::StatementKeyMisconfigured => "statement_key_misconfigured",
+        PlatformRefusal::OutcomeUnknown => "outcome_unknown",
+        _ => {
+            return Err(Uncarried {
+                position: 0,
+                what: "a refusal with no label",
+            });
+        }
+    })
 }
 
 /// The items of one proxy drain, in its order: each use, resolved or refused, with its transaction.

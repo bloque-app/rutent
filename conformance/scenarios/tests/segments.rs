@@ -562,7 +562,7 @@ fn outcome_unknown_is_left_only_on_stated_evidence() {
     assert!(
         matches!(
             done[0].outcome,
-            SegmentOutcome::Unknown(UnknownBy::Platform(_))
+            SegmentOutcome::Unknown(UnknownBy::Platform { .. })
         ),
         "{done:?}"
     );

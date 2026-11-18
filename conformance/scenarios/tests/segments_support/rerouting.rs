@@ -77,6 +77,8 @@ pub struct Rerouting {
     pub history: History,
     pub releases: Releases,
     pub asked: usize,
+    /// The providers the recalculation's bounds exclude: none unless a test sets them (`T-020-25`).
+    pub excluded: Vec<String>,
 }
 
 impl Rerouting {
@@ -101,6 +103,7 @@ impl Rerouting {
             history: History::recorded(previous, Vec::new()),
             releases: Releases::new(),
             asked: 0,
+            excluded: Vec::new(),
         }
     }
 
@@ -122,7 +125,12 @@ impl Rerouting {
             needs: Vec::new(),
         };
         let authorisation = authorisation_of(&core.named, core.floor.clone());
-        let bounds = bounds(&context);
+        let mut bounds = bounds(&context);
+        if !self.excluded.is_empty() {
+            let mut value = serde_json::to_value(&bounds).expect("bounds");
+            value["excluded_providers"] = serde_json::json!(self.excluded);
+            bounds = serde_json::from_value(value).expect("bounds");
+        }
         let prices = [
             price(tuple(RESERVE, bank(RESERVE), ledger(RESERVE))),
             price(tuple(RESERVE, ledger(RESERVE), bank(RESERVE))),
