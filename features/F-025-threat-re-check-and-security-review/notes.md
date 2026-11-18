@@ -642,6 +642,6 @@ The commands were `cargo test -p rutent-scenarios --test secrets_scan` and
 
 ### Gaps
 
-- The run ids of `jail-probes` and `stm-vos.yml` at this row's head are not here yet (above). Owner: the orchestrator.
+- `stm-vos.yml` does not run on this branch: the scan is cited at `3d9b6a45` (this row's base, the same code), not at the row's head.
 - The first row of "Residuals" shows `PLAN.md` row 605 and `retrospectives/M2.md` out of date by the follow-up. Neither is
   `F-025`'s file to edit. Owner: the orchestrator.
