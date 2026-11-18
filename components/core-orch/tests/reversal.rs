@@ -18,9 +18,9 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Afterwards, Answer, Attribution, Decision, DecisionRequest,
-    DeploymentOperator, Destination, Difference, Effect, Entry, KeptStatement, PermissionChange,
-    ReadAnswer, ReadCheck, ReadOutcome, Receipt, RefusalClass, Role, RouteEnd, ShowingNamed,
-    SignedWith, Through, What, admit_entry, attribute,
+    DeploymentOperator, Destination, Difference, Effect, Entry, KeptStatement, Outcome,
+    PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Receipt, RefusalClass, Role, RouteEnd,
+    ShowingNamed, SignedWith, Through, What, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::{Digest, Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -35,7 +35,7 @@ use rutent_core_orch::quote::{ChargeDesk, ChargeError, Charged, Charges, Checked
 use rutent_core_orch::recalc::evidenced;
 use rutent_core_orch::reversal::{
     Accepting, Asked, Asking, At, Carrier, Confirmation, Moving, NotCounted,
-    Parts as ReversalParts, ReversalError, Reversals, Word,
+    Parts as ReversalParts, ReversalError, Reversals, StatusAsked, Word,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Providers};
 use rutent_core_orch::segments::{
@@ -56,6 +56,15 @@ const SEGMENTS: [&str; 3] = ["p1-s1", "p1-s2", "p1-s3"];
 const RESERVE: &str = "reserve-bank-co";
 const EXCHANGE: &str = "exchange-a";
 const WALLET: &str = "reserve-wallet";
+/// The ramp that delivers the value to `ledger-b` in the route across inner nodes (`T-020-27`).
+const RAMP: &str = "ramp-x";
+/// The exchange whose conversion starts at `ledger-b`, a later inner node, and fails there.
+const EXCHANGE_B: &str = "exchange-b";
+/// What the ramp took in and gave out, in COP.
+const RAMPED: &str = "99895000";
+/// The route across inner nodes: the withdrawal into `ledger-in`, the ramp's transfer from it into `ledger-b`,
+/// `exchange-b`'s conversion at `ledger-b` and the deposit out of it.
+const LATER_SEGMENTS: [&str; 4] = ["p1-s1", "p1-s2", "p1-s3", "p1-s4"];
 /// What the exchange took in, in COP: what the withdrawal handed on.
 const EXCHANGED: &str = "99900000";
 /// What the withdrawal took in, in COP.
@@ -360,6 +369,8 @@ impl Reads for Refusing {
 enum Act {
     Settle,
     Fail,
+    /// Its conversions fail and every other operation settles.
+    FailConversion,
     /// The module passed something out and ended with no answer.
     Unknown,
 }
@@ -367,6 +378,10 @@ enum Act {
 /// The platform: each provider answers as scripted, with a result it signs.
 struct Platform {
     script: BTreeMap<&'static str, Act>,
+    /// What a provider asked for its late status says its segment's move came to: `None`, nothing comes back.
+    late: Option<Value>,
+    /// The late statuses asked: the fresh transaction each was asked under, and the provider asked.
+    statuses: Vec<(Id, Id)>,
 }
 
 impl Platform {
@@ -376,8 +391,18 @@ impl Platform {
                 (RESERVE, Act::Settle),
                 (EXCHANGE, Act::Settle),
                 (WALLET, Act::Settle),
+                (RAMP, Act::Settle),
+                (EXCHANGE_B, Act::Settle),
             ]),
+            late: None,
+            statuses: Vec::new(),
         }
+    }
+
+    /// A provider asked for its late status says the segment's move came to `outcome`.
+    fn saying(mut self, outcome: Value) -> Self {
+        self.late = Some(outcome);
+        self
     }
 
     fn with(mut self, provider: &'static str, act: Act) -> Self {
@@ -436,13 +461,22 @@ impl Modules for Platform {
             });
             return Answered::Bytes(result(provider.as_str(), "reversal", &transaction, outcome));
         }
-        let act = self.script[provider.as_str()];
+        let act = match (self.script[provider.as_str()], kind.as_str()) {
+            (Act::FailConversion, "conversion") => Act::Fail,
+            (Act::FailConversion, _) => Act::Settle,
+            (act, _) => act,
+        };
         let outcome = match (act, kind.as_str()) {
+            (Act::FailConversion, _) => unreachable!("read above"),
             (Act::Unknown, _) => return Answered::Refused(PlatformRefusal::OutcomeUnknown),
             (Act::Fail, _) => json!({ "status": "failed", "evidence": piece(provider.as_str()) }),
             (Act::Settle, "withdrawal") => json!({
                 "status": "succeeded", "amount_in": WITHDRAWN, "amount_out": EXCHANGED,
                 "fee": { "asset": "COP", "amount": "100000" }, "evidence": piece(provider.as_str()),
+            }),
+            (Act::Settle, "transfer") => json!({
+                "status": "succeeded", "amount_in": EXCHANGED, "amount_out": RAMPED,
+                "fee": { "asset": "COP", "amount": "5000" }, "evidence": piece(provider.as_str()),
             }),
             (Act::Settle, "conversion") => json!({
                 "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
@@ -454,6 +488,30 @@ impl Modules for Platform {
             }),
         };
         Answered::Bytes(result(provider.as_str(), &kind, &transaction, outcome))
+    }
+
+    fn status(
+        &mut self,
+        _: &Effect,
+        provider: &Id,
+        asking: &Id,
+        about: &Statement<Operation>,
+    ) -> Answered {
+        self.statuses.push((asking.clone(), provider.clone()));
+        let op = serde_json::to_value(&about.statement).unwrap();
+        let (kind, transaction) = (
+            op["kind"].as_str().unwrap().to_owned(),
+            op["transaction"].as_str().unwrap().to_owned(),
+        );
+        match &self.late {
+            Some(outcome) => Answered::Bytes(result(
+                provider.as_str(),
+                &kind,
+                &transaction,
+                outcome.clone(),
+            )),
+            None => Answered::Refused(PlatformRefusal::OutcomeUnknown),
+        }
     }
 
     fn take_events(&mut self) -> Events {
@@ -740,19 +798,47 @@ fn join(catalogue: &mut Catalogue, n: usize, provider: &str, publisher: &str, no
 /// The route's three providers, the exchange published by `exchange_publisher`, each tuple of the route under the
 /// weakest floor, and `ledger-in` held by the bank's publisher.
 fn catalogue(record: &DecisionRecord, publishers: [&str; 3], ledger_of: usize) -> Catalogue {
+    let providers = [RESERVE, EXCHANGE, WALLET];
+    let nodes: Vec<(&str, &str, Vec<&str>)> = providers
+        .into_iter()
+        .enumerate()
+        .map(|(n, provider)| {
+            let private = if n == ledger_of {
+                vec!["ledger-in"]
+            } else {
+                vec![]
+            };
+            (provider, publishers[n], private)
+        })
+        .collect();
+    catalogue_of(
+        record,
+        &nodes,
+        &[("ledger-in", publishers[ledger_of], "holding")],
+    )
+}
+
+/// A catalogue of `providers` (each with its publisher and the private nodes it declares) and the holding accounts
+/// of `holdings` (node, publisher, reference), each tuple of `record`'s route under the weakest floor.
+fn catalogue_of(
+    record: &DecisionRecord,
+    providers: &[(&str, &str, Vec<&str>)],
+    holdings: &[(&str, &str, &str)],
+) -> Catalogue {
     let mut catalogue = Catalogue::new();
     catalogue.set_context(
         snapshot_support::deployment(),
         rutent_contracts::provider_role::VERSION,
     );
     catalogue.add_public_node("polygon").unwrap();
-    for (n, provider) in [RESERVE, EXCHANGE, WALLET].into_iter().enumerate() {
-        let private: &[&str] = if n == ledger_of { &["ledger-in"] } else { &[] };
-        join(&mut catalogue, n, provider, publishers[n], private);
+    for (n, (provider, publisher, private)) in providers.iter().enumerate() {
+        join(&mut catalogue, n, provider, publisher, private);
     }
-    catalogue
-        .register_private_holding("ledger-in", publishers[ledger_of], "holding")
-        .unwrap();
+    for (node, publisher, reference) in holdings {
+        catalogue
+            .register_private_holding(node, publisher, reference)
+            .unwrap();
+    }
     for operation in record.chosen().unwrap().parts[0].operations.as_slice() {
         let category = match operation.kind {
             rutent_contracts::router_api::OperationKind::Exchange => {
@@ -797,14 +883,81 @@ fn record() -> DecisionRecord {
     serde_json::from_value(envelope["statement"].clone()).unwrap()
 }
 
+/// The router-api fixture's record with its second candidate chosen, the route across two inner nodes (`T-020-27`): the
+/// withdrawal into `ledger-in`, a ramp's transfer from `ledger-in` into `ledger-b`, `exchange-b`'s conversion at
+/// `ledger-b` and the deposit out of it. The conversion starts at an inner node after the first, where the
+/// withdrawal's reserve holds nothing of this order.
+fn later_record() -> DecisionRecord {
+    let mut value = serde_json::to_value(record()).unwrap();
+    value["chosen"] = json!("c2");
+    for candidate in value["candidates"].as_array_mut().unwrap() {
+        match candidate["candidate_id"].as_str().unwrap() {
+            "c2" => {
+                candidate.as_object_mut().unwrap().remove("dropped");
+            }
+            "c1" => candidate["dropped"] = json!({ "reason": "outranked", "by": "c2" }),
+            _ => {}
+        }
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+/// [`later_record`] with `exchange-b` doing the ramp's transfer as well: one provider delivers the value to `ledger-b`
+/// and fails the conversion that starts there.
+fn same_provider_record() -> DecisionRecord {
+    let value = serde_json::to_value(later_record()).unwrap();
+    // The snapshot holds one publisher for a provider: the ramp's figures take the exchange's.
+    let publisher = value["snapshot"]["figures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["origin"]["provider"] == EXCHANGE_B)
+        .map(|f| f["origin"]["publisher"].as_str().unwrap().to_owned())
+        .unwrap();
+    let text = serde_json::to_string(&value).unwrap();
+    let text = text
+        .replace(
+            &format!("\"publisher\":\"{RAMP}\""),
+            &format!("\"publisher\":\"{publisher}\""),
+        )
+        .replace(RAMP, EXCHANGE_B);
+    serde_json::from_str(&text).unwrap()
+}
+
+/// The catalogue of the route across inner nodes: the bank's `ledger-in` and the ramp's `ledger-b`, each declared
+/// private by its provider's publisher and held by it, except `ledger-b`'s holding account is `holding_of_b`, where
+/// there is one, which the ramp's publisher gives.
+fn later_catalogue(
+    record: &DecisionRecord,
+    holding_of_b: Option<&str>,
+    deliverer: &str,
+) -> Catalogue {
+    let mut holdings = vec![("ledger-in", "bank-co", "holding")];
+    holdings.extend(holding_of_b.map(|reference| ("ledger-b", "ramp-co", reference)));
+    let mut providers = vec![
+        (RESERVE, "bank-co", vec!["ledger-in"]),
+        (deliverer, "ramp-co", vec!["ledger-b"]),
+        (WALLET, "wallet-co", vec![]),
+    ];
+    if deliverer != EXCHANGE_B {
+        providers.push((EXCHANGE_B, "bridge-co", vec![]));
+    }
+    catalogue_of(record, &providers, &holdings)
+}
+
 /// The order's `route_chosen`, of the record's chosen route.
 fn route_chosen(record: &DecisionRecord) -> RecordedInput {
+    route_chosen_of(record, &SEGMENTS)
+}
+
+/// The order's `route_chosen`, of the record's chosen route, its segments named `segments`.
+fn route_chosen_of(record: &DecisionRecord, segments: &[&str]) -> RecordedInput {
     let chosen = serde_json::to_value(record.chosen().unwrap()).unwrap();
     let plan: Vec<Value> = chosen["parts"][0]["operations"]
         .as_array()
         .unwrap()
         .iter()
-        .zip(SEGMENTS)
+        .zip(segments)
         .map(|(op, segment)| {
             json!({ "segment_id": segment, "provider": op["provider"], "kind": op["kind"], "from": op["from"], "to": op["to"] })
         })
@@ -850,6 +1003,8 @@ struct World {
     exposures: Exposures,
     segments: Segments,
     record: DecisionRecord,
+    /// The part's segments, in order.
+    plan: Vec<Id>,
     platform: Platform,
     reversals: Reversals,
     stuck: Stuck,
@@ -858,6 +1013,21 @@ struct World {
 }
 
 impl World {
+    /// The order across two inner nodes over `platform` (`T-020-27`): its transfer starts at `ledger-b`, which
+    /// `holding_of_b`, if any, holds as its holding account.
+    fn across(platform: Platform, holding_of_b: Option<&str>) -> Self {
+        let record = later_record();
+        let catalogue = later_catalogue(&record, holding_of_b, RAMP);
+        Self::assembled(platform, record, catalogue, &LATER_SEGMENTS)
+    }
+
+    /// [`World::across`] with `exchange-b` delivering the value to `ledger-b` as well as converting there.
+    fn across_by_one(platform: Platform) -> Self {
+        let record = same_provider_record();
+        let catalogue = later_catalogue(&record, Some("holding-b"), EXCHANGE_B);
+        Self::assembled(platform, record, catalogue, &LATER_SEGMENTS)
+    }
+
     /// The order over `platform`, the exchange published by `acme`.
     fn over(platform: Platform) -> Self {
         Self::published(platform, ["bank-co", "acme", "wallet-co"], 0)
@@ -867,8 +1037,19 @@ impl World {
     /// declared private by the `ledger_of`th of them, which holds it.
     fn published(platform: Platform, publishers: [&str; 3], ledger_of: usize) -> Self {
         let record = record();
+        let catalogue = catalogue(&record, publishers, ledger_of);
+        Self::assembled(platform, record, catalogue, &SEGMENTS)
+    }
+
+    /// The order over `platform` of `record`, whose segments are `segments`, its providers joined to `catalogue`.
+    fn assembled(
+        platform: Platform,
+        record: DecisionRecord,
+        catalogue: Catalogue,
+        segments: &[&str],
+    ) -> Self {
         let clock = TestClock(Cell::new(Reading::at(NOW)));
-        let chosen = route_chosen(&record);
+        let chosen = route_chosen_of(&record, segments);
         let log = KeptLog::default();
         log.entries.borrow_mut().push(Entry::Verified(
             rutent_contracts::core_internal::VerifiedEntry {
@@ -884,6 +1065,7 @@ impl World {
                 outcome: rutent_contracts::core_internal::Outcome::Observed {},
             },
         ));
+        let plan: Vec<Id> = segments.iter().map(|s| id(s)).collect();
         let mut segments = Segments::new();
         assert!(segments.follow(&clock, &chosen));
         // The order's acceptance, by its customer's party, as intake records it: whose acceptance of a fault counts.
@@ -926,7 +1108,7 @@ impl World {
             .collect();
         assert!(reversals.follow(&id(ORDER), &history));
         let world = World {
-            catalogue: catalogue(&record, publishers, ledger_of),
+            catalogue,
             clock,
             log,
             store: Store::default(),
@@ -941,6 +1123,7 @@ impl World {
             exposures: Exposures::new(),
             segments,
             record,
+            plan,
             platform,
             reversals,
             stuck: Stuck::new(),
@@ -964,7 +1147,7 @@ impl World {
     /// Runs the order's part through the segments.
     fn run(&mut self) -> Result<Ran, SegmentsError> {
         let (order, part, auth, origin) = (id(ORDER), id(PART), id("auth-1"), id(RESERVE));
-        let plan = SEGMENTS.map(id);
+        let plan = self.plan.clone();
         let end = RouteEnd {
             destination: Destination {
                 reserve: id(WALLET),
@@ -1229,6 +1412,33 @@ impl World {
         let asked = self.reversals.ask(&mut parts, &mut asking, &mut moving, at);
         assert!(no_one.asked.is_empty(), "no reserve is asked to reverse");
         asked
+    }
+
+    /// Asks the provider of `segment` where it stands, late, policy deciding and the platform carrying it out.
+    fn ask_status(&mut self, segment: &str) -> Result<StatusAsked, ReversalError> {
+        let (order, part, segment) = (id(ORDER), id(PART), id(segment));
+        let at = At {
+            order: &order,
+            part: &part,
+            segment: &segment,
+        };
+        let mut parts = ReversalParts {
+            clock: &self.clock,
+            catalogue: &mut self.catalogue,
+            log: &mut self.log,
+            evidence: &mut self.store,
+            fresh: &mut self.ids,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+            core: &self.core,
+            operator: &self.operator,
+        };
+        let mut moving = Moving {
+            decisions: &mut self.policy,
+            modules: &mut self.platform,
+        };
+        self.reversals.ask_status(&mut parts, &mut moving, at)
     }
 
     /// The order as Core follows it.
@@ -3466,4 +3676,322 @@ fn a_question_the_log_leaves_unattributed_backs_no_move() {
         Err(ReversalError::Append(AppendFailure::Refused(_)))
     ));
     assert!(reserve.asked.is_empty(), "no reserve is asked");
+}
+
+// T-020-27: a late status asked, and a reversal at a later inner node ---------------------------------------------
+
+/// What the exchange says, asked late, if its conversion went through after all.
+fn delivered_after_all() -> Value {
+    json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+        "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) })
+}
+
+/// The exchange's failed segment, its provider answering a late status as `delivered_after_all` says.
+fn exchange_failed_delivering() -> World {
+    let mut world = World::over(
+        Platform::settling()
+            .with(EXCHANGE, Act::Fail)
+            .saying(delivered_after_all()),
+    );
+    let ran = world.ran();
+    assert_eq!(ran[1], SegmentOutcome::Failed, "{ran:?}");
+    world
+}
+
+/// The `ask_status` effects, the provider statements kept and the results of effects among `entries`, in order.
+fn status_trail(entries: &[Entry]) -> Vec<&'static str> {
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action: Action::AskStatus { .. },
+                    ..
+                } => Some("effect"),
+                What::Result { .. } => Some("result"),
+                _ => None,
+            },
+            Entry::Stated(_) => Some("statement"),
+        })
+        .collect()
+}
+
+/// A provider that failed a segment, or fell silent, is asked where the segment stands: policy decides the ask, Core
+/// records it as an effect under a fresh transaction before anything is sent, and what the provider answers is kept as
+/// its own statement about the segment and the transaction it answers, once. A settled segment's provider, a segment
+/// whose operation was never carried out and an ask policy refuses send nothing.
+// verifies: INV-4
+#[test]
+fn late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_providers_statement()
+{
+    let mut world = exchange_failed_delivering();
+    let (order, s2) = (id(ORDER), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let mark = world.log.len();
+    let asked = world.ask_status("p1-s2").expect("asked");
+    assert_ne!(asked.transaction, tx, "not the segment's own transaction");
+    assert!(!world.issued.contains(asked.transaction.as_str()));
+    assert_eq!(
+        world.platform.statuses,
+        vec![(asked.transaction.clone(), id(EXCHANGE))],
+        "the exchange was asked once, under the fresh transaction"
+    );
+    // The ask is recorded before it is sent, and the answer follows it, then the effect's result.
+    let appended: Vec<Entry> = world.log.entries()[mark..].to_vec();
+    assert_eq!(
+        status_trail(&appended),
+        vec!["effect", "statement", "result"],
+        "{appended:?}"
+    );
+    let Some(Entry::Verified(effect)) = appended
+        .iter()
+        .find(|e| matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. })))
+    else {
+        panic!("the effect")
+    };
+    assert_eq!(
+        effect.what,
+        What::Effect {
+            action: Action::AskStatus {
+                order: order.clone(),
+                segment: s2.clone(),
+                provider: id(EXCHANGE),
+            },
+            decision: match &effect.what {
+                What::Effect { decision, .. } => decision.clone(),
+                _ => unreachable!(),
+            },
+        }
+    );
+    let Some(Entry::Stated(kept)) = appended.iter().find(|e| matches!(e, Entry::Stated(_))) else {
+        panic!("the provider's statement")
+    };
+    assert_eq!(kept.what.statement.as_str(), RESULT_SHAPE);
+    assert_eq!(
+        kept.about.as_ref().and_then(|a| a.transaction.as_ref()),
+        Some(&tx),
+        "about the transaction it answers, so the log verifies it"
+    );
+    assert!(asked.answer.is_some());
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    // Asked again, under another fresh transaction: the same statement is kept once.
+    let again = world.ask_status("p1-s2").expect("asked again");
+    assert_ne!(again.transaction, asked.transaction);
+    assert_ne!(again.effect, asked.effect);
+    assert_eq!(again.answer, asked.answer, "its statement is kept once");
+    assert_eq!(
+        status_trail(&world.log.entries()[mark..]),
+        vec!["effect", "statement", "result", "effect", "result"]
+    );
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    // A settled segment's provider isn't asked, nor one whose operation was never carried out, nor on a refusal.
+    let before = (world.log.len(), world.platform.statuses.len());
+    assert_eq!(
+        world.ask_status("p1-s1"),
+        Err(ReversalError::StatusNotNeeded)
+    );
+    world.policy.refusing = true;
+    assert!(matches!(
+        world.ask_status("p1-s2"),
+        Err(ReversalError::NotPermitted(_))
+    ));
+    assert_eq!(world.platform.statuses.len(), before.1, "nothing was sent");
+    assert_eq!(
+        world
+            .log
+            .entries()
+            .iter()
+            .skip(before.0)
+            .filter(|e| matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. })))
+            .count(),
+        0,
+        "no effect is recorded where policy refuses"
+    );
+    let mut world = World::over(Platform::settling());
+    world.log.down = true;
+    assert!(world.run().is_err());
+    world.log.down = false;
+    let appended = world.log.len();
+    assert_eq!(
+        world.ask_status("p1-s1"),
+        Err(ReversalError::NotAnswered),
+        "a segment never carried out has nothing to ask about"
+    );
+    assert_eq!(world.log.len(), appended);
+    assert!(world.platform.statuses.is_empty());
+}
+
+/// A late status, whatever the provider says (that its move went through, or nothing at all), moves nothing: the
+/// segment stays failed and owed, its value held, the order as Core follows it unchanged, and the log gets no
+/// state-machine input or evidence, only the ask, the statement and the effect's result.
+// verifies: INV-4
+#[test]
+fn late_status_moves_nothing() {
+    for says in [Some(delivered_after_all()), None] {
+        let platform = Platform::settling().with(EXCHANGE, Act::Fail);
+        let mut world = World::over(match says.clone() {
+            Some(outcome) => platform.saying(outcome),
+            None => platform,
+        });
+        let ran = world.ran();
+        assert_eq!(ran[1], SegmentOutcome::Failed, "{ran:?}");
+        let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+        world
+            .with(|r, p, _| r.owe(p, at(&order, &part, &s2)))
+            .unwrap();
+        let (followed, mark) = (world.followed().clone(), world.log.len());
+        let asked = world.ask_status("p1-s2").expect("asked");
+        assert_eq!(asked.answer.is_some(), says.is_some(), "{says:?}");
+        assert_eq!(world.followed(), &followed, "the order is as it was");
+        assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
+        assert!(world.held("p1-s2"), "its value is still held");
+        assert!(world.catalogue.owed().is_owed(&owed_id()), "still owed");
+        assert!(world.reversals.completed(&order, &s2).is_none());
+        for what in world.whats_from(mark) {
+            assert!(
+                matches!(
+                    &what,
+                    What::Effect { .. } | What::Result { .. } | What::Decide { .. }
+                ),
+                "nothing is recorded but the ask and its result: {what:?}"
+            );
+        }
+        // The result of the ask says how it came out: done where something came back, unanswered where not.
+        let outcome = world.log.entries()[mark..]
+            .iter()
+            .find_map(|e| match e {
+                Entry::Verified(v) if matches!(v.what, What::Result { .. }) => Some(v.outcome),
+                _ => None,
+            })
+            .expect("the result");
+        assert_eq!(
+            outcome,
+            if says.is_some() {
+                Outcome::Done {}
+            } else {
+                Outcome::Unanswered {}
+            }
+        );
+        assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+    }
+}
+
+/// The route across inner nodes, `exchange-b`'s conversion failing where it starts, `ledger-b`, a later inner node.
+fn conversion_failed(holding_of_b: Option<&str>) -> World {
+    let mut world = World::across(
+        Platform::settling().with(EXCHANGE_B, Act::Fail),
+        holding_of_b,
+    );
+    let ran = world.ran();
+    assert_eq!(ran.len(), 3, "{ran:?}");
+    assert!(
+        ran[..2]
+            .iter()
+            .all(|o| matches!(o, SegmentOutcome::Settled { .. })),
+        "{ran:?}"
+    );
+    assert_eq!(ran[2], SegmentOutcome::Failed, "{ran:?}");
+    assert_eq!(world.state_of("p1-s3"), SegmentState::FailedReversalOwed);
+    world
+}
+
+/// A segment that fails starting at an inner node after the first is confirmed by that node's holding account, the
+/// provider that delivered the value there and gave the operator its interface: Core asks it, not the origin
+/// reserve, whose word is about its own node. The origin reserve's word and the failed provider's own complete
+/// nothing there. The holding account's signed confirmation completes the reversal as its word, and the log admits
+/// it.
+// verifies: REQ-ORD-3, DEC-24
+#[test]
+fn failed_segment_at_a_later_inner_node_is_confirmed_by_that_nodes_holding_account() {
+    let mut world = conversion_failed(Some("holding-b"));
+    let (order, part, s3) = (id(ORDER), id(PART), id("p1-s3"));
+    let tx = world.segments.sent(&order, &s3).unwrap().0.clone();
+    let mark = world.log.len();
+    for (maker, refused) in [
+        (RESERVE, NotCounted::NotTheOriginReserve),
+        (EXCHANGE_B, NotCounted::FailedProvidersOwn),
+    ] {
+        let mut answering = Answering::replying(Reply::Confirms {
+            maker,
+            amount: None,
+        });
+        assert_eq!(why(world.confirm(&mut answering, "p1-s3")), refused);
+        let Operation::ReversalConfirmation(question) = &answering.asked[0].statement else {
+            panic!("a confirmation is asked")
+        };
+        assert_eq!(
+            question.provider, RAMP,
+            "the holding account of ledger-b is asked, not the origin reserve"
+        );
+        assert_eq!(question.segment, tx.as_str());
+        assert_eq!(
+            (question.asset.as_str(), question.amount.as_str()),
+            ("COP", RAMPED)
+        );
+        assert_eq!(world.state_of("p1-s3"), SegmentState::FailedReversalOwed);
+        assert!(world.held("p1-s3"));
+    }
+    let mut answering = Answering::replying(Reply::Confirms {
+        maker: RAMP,
+        amount: None,
+    });
+    let Confirmation::Completed(done) = world
+        .confirm(&mut answering, "p1-s3")
+        .expect("the holding account answers")
+    else {
+        panic!("the holding account's word counts")
+    };
+    assert_eq!(done.whose, id(RAMP));
+    assert_eq!(done.word, Word::Reserves, "its word, not its publisher's");
+    assert_eq!(done.grade, EvidenceGrade::SignedByProvider);
+    assert_eq!(world.state_of("p1-s3"), SegmentState::ReversalComplete);
+    assert!(!world.held("p1-s3"), "the hold is released");
+    assert_eq!(
+        world
+            .reversals
+            .completed(&order, &s3)
+            .map(|c| c.whose.clone()),
+        Some(id(RAMP))
+    );
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+    let _ = part;
+}
+
+/// A reversal at a later inner node whose only deliverer is the failed provider has no party to confirm it: the
+/// provider that delivered the value to `ledger-b` fails the next segment from it, and its own word never confirms its
+/// failure. Nothing is asked or recorded: the reversal stays owed on the catalogue's list and held, for the stuck
+/// orders, failing closed. (A node with no deliverer is the first node, which the origin reserve answers, and a node
+/// with no holding account is one no route runs through.)
+// verifies: REQ-ORD-3, INV-2
+#[test]
+fn reversal_at_a_later_inner_node_with_no_confirming_party_stays_owed_and_held() {
+    let mut world =
+        World::across_by_one(Platform::settling().with(EXCHANGE_B, Act::FailConversion));
+    let ran = world.ran();
+    assert_eq!(ran.len(), 3, "{ran:?}");
+    assert_eq!(ran[2], SegmentOutcome::Failed, "{ran:?}");
+    let (order, part, s3) = (id(ORDER), id(PART), id("p1-s3"));
+    world
+        .with(|r, p, _| r.owe(p, at(&order, &part, &s3)))
+        .unwrap();
+    let mark = world.log.len();
+    for who in [EXCHANGE_B, RESERVE] {
+        let mut answering = Answering::replying(Reply::Confirms {
+            maker: who,
+            amount: None,
+        });
+        assert_eq!(
+            world.confirm(&mut answering, "p1-s3"),
+            Err(ReversalError::NoReserveAtNode),
+            "{who}"
+        );
+        assert!(answering.asked.is_empty(), "no one is asked");
+    }
+    assert_eq!(world.log.len(), mark, "nothing is recorded");
+    assert_eq!(world.state_of("p1-s3"), SegmentState::FailedReversalOwed);
+    assert!(world.held("p1-s3"));
+    assert!(world.catalogue.owed().is_owed(&format!("{ORDER}/p1-s3")));
+    assert!(world.reversals.completed(&order, &s3).is_none());
 }

@@ -65,6 +65,23 @@ pub trait Modules {
         operation: &Statement<Operation>,
     ) -> Answered;
 
+    /// Asks `provider`'s module where the segment of `about` stands, as `effect` (the permitted `ask_status`) lets,
+    /// under `asking`, the fresh transaction of Core's own question (`REQ-ORD-1`, `T-020-27`). The answer is the
+    /// provider's own statement about `about`'s transaction, kept as such and moving nothing (`INV-4`). The
+    /// default answers that the module handles no such query, so nothing comes back and a late status is never
+    /// taken from a platform that can't ask for one; the production platform's status query, which no call of
+    /// `Platform` reaches yet, is a gap named in `F-020`'s notes.
+    fn status(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        asking: &Id,
+        about: &Statement<Operation>,
+    ) -> Answered {
+        let _ = (effect, provider, asking, about);
+        Answered::Refused(PlatformRefusal::NotHandled)
+    }
+
     /// What the platform saw since it was last asked (`Platform::take_events`).
     fn take_events(&mut self) -> Events;
 

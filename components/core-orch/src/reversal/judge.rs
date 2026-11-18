@@ -75,8 +75,10 @@ pub(super) struct Reversed<'a> {
     pub provider: &'a Id,
     /// The inner node the segment starts at, if it starts at one: where the value is to be back.
     pub node: Option<&'a str>,
-    /// The origin reserve: the provider of the part's withdrawal.
-    pub origin: &'a Id,
+    /// The party that confirms the reversal: the origin reserve, the provider of the part's withdrawal, at the node
+    /// its withdrawal took the value to; the node's holding account at a later inner node; none where no party
+    /// confirms, and then nothing counts.
+    pub origin: Option<&'a Id>,
     /// The transaction the segment ran under.
     pub transaction: &'a Id,
     /// The asset it took in.
@@ -111,10 +113,10 @@ pub(super) fn judge(
     }
     let maker = Id::new(result.maker.as_str()).ok_or(NotCounted::Unreadable)?;
     let own = maker == *reversed.provider;
-    if own && maker != *reversed.origin {
+    if own && reversed.origin != Some(&maker) {
         return Err(NotCounted::FailedProvidersOwn);
     }
-    if maker != *reversed.origin {
+    if reversed.origin != Some(&maker) {
         return Err(NotCounted::NotTheOriginReserve);
     }
     let publishers = catalogue.publishers();
