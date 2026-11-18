@@ -645,3 +645,235 @@ The commands were `cargo test -p rutent-scenarios --test secrets_scan` and
 - `stm-vos.yml` does not run on this branch: the scan is cited at `3d9b6a45` (this row's base, the same code), not at the row's head.
 - The first row of "Residuals" shows `PLAN.md` row 605 and `retrospectives/M2.md` out of date by the follow-up. Neither is
   `F-025`'s file to edit. Owner: the orchestrator.
+
+## T-025-05
+
+The security review of what `M3` changed on `DEC-20`'s paths, by a reviewer that wrote none of it. Branch
+`f-025/t-025-05-security-review`, cut from `m3` at `0e3f68db`. The diff is `fb883e01..0e3f68db`: `fb883e01` is
+`origin/develop` and the merge base (`M2` merged), so it holds `M3`'s changes alone. `m3` at `0e3f68db` holds every `M3`
+row but `T-020-35`'s report-pair half, which is in review and touches no `DEC-20` path. **Docs only: no code, no test, no
+contract and no decision changes; `ARCHITECTURE.md` and `SPEC.md` are not edited.**
+
+**The paths.** `DEC-20`'s prefixes as `HOUSE-RULES.md` and `.github/CODEOWNERS` list them, with
+`components/prov/src/module/` whole, `tools/boundary-check/` and `conformance/evidence/v0-scope`, which this row adds:
+1,463 paths, 156 of them code, schemas, docs and workflows, and 1,307 contract fixtures. Each is in
+`t-025-05-paths.md`, beside this file, with its verdict. No `experiments/…-binding/`, `tools/licence-check/`,
+`components/prov/src/catalogue/signature.rs` or `components/prov/src/module/bin/compiler.rs` path changed.
+
+**How far it was read.** Read whole: the two handles and the entry types (`contracts/src/core_internal/calls.rs`), the
+log's attribution (`attribution.rs`), `admit_entry` and the rows that move or free value (`effect-permits-a-decided-action`,
+`stuck-effect-permits-a-stuck-move`, `permit-backs-one-effect`, `decision-is-for-its-caller`, the hold, arrival and erasure
+rows), the log and its register (`core-audit/src/log/mod.rs`, `keys.rs`), the checkpointer's store and cursor, the
+receipt issuer's signing, the evidence store's `fetch`, the policy engine's consultation, verdict and `decide`
+(`core-authz/src/engine/mod.rs`), `held` and the move's authorisation check (`funds`), the stuck rules (`stuck`), every
+`components/prov/src/module/`, `proxy/` and `egress/` hunk, the three workflow diffs, `tools/boundary-check`,
+`tools/contract-guard`'s new rule, the scope file and its parser, and `licences/RECORD`'s hunk. Read by purpose and spot
+checks: the other 90-odd citation rows, `standing.rs`, `check.rs`, the measures, comparisons and `audit-check`, the
+session, roles, parties and person-question rules, the contract schemas and changelogs. Fixtures: grouped, searched for key
+material (none), and taken as `contracts/tests/`' to read valid or refused. Read on the orchestration side, outside
+`DEC-20`, for the row's named areas: the production stuck mover's operation (`core-orch/src/stuck/mover.rs`, built from
+the effect's own action), `carry_out` (`stuck/mod.rs`), the question identifiers (`rounds/ports.rs`) and the assembly's
+policy side (`conformance/scenarios/src/assembly/policy.rs`).
+
+### Named tests, at `0e3f68db`
+
+Run through the lock on the reference host (arm64 macOS), each under a 1500 s alarm:
+
+| Test | Crate, binary | Result |
+|---|---|---|
+| `every value moving action is refused when policy denies` [`REQ-AUZ-1`] | `rutent-core-authz --lib` | 1 passed |
+| `rewrite with full operator access is detected by the checker` [`REQ-AUD-9`] | `rutent-core-audit --test checkpoints` | 1 passed |
+| `statement signed by a key not current at its making is refused before the record` [`THR-3`] | `rutent-core-orch --test snapshot_statements` | 1 passed |
+
+No finding is high or critical, so no new test is owed by `DEC-20`'s rule for this row.
+
+### Findings
+
+None high or critical. Each is routed to its owning feature as a new row or an item on a row; none is fixed here.
+
+| # | Severity | Area | Where | Scenario | Owner, row |
+|---|---|---|---|---|---|
+| M1 | Medium | `INV-8` at the platform (`T-013-09`) | `components/prov/src/module/platform.rs:509` (`carried`), `:549`, `:2351` (`repeated`); `lifecycle.rs:330`, `:597` (`ended`) | The record of what was carried out under each transaction, and the set of ended transactions, live in the platform's memory alone. After the platform's process restarts mid-segment, a repeat under a transaction already carried out for a provider that declares no safe retry finds no record and reaches the module, which moves it a second time: `T-024-08`'s seed-110 double move, after a crash instead of in one run. `F-013`'s gap says the record lasts "until the platform stops" but names no consequence. Probe for the row, written first: open a platform, carry out a `deposit` for a provider without safe retry, drop the platform, open a new one on the same paths and world, hand it the same operation: today it runs; it must be refused `DuplicateTransaction` | `F-013` with `F-030`: a new row, "the platform's carried-out record survives a restart" (a durable record, or Core's journal handing it back on opening), test `a repeat after the platform restarts moves nothing twice` [`INV-8`]. Before production (`M4`); `M3`'s assembly never restarts a platform |
+| L1 | Low | The question identifiers (`REQ-CAT-5`, `T-020-06`) | `conformance/scenarios/src/kit.rs:180-221` (`Seeded`), `components/core-orch/src/rounds/ports.rs:26-31` (`Fresh`) | The assembly draws each question's transaction from SplitMix64 over a seed (`DEC-18`). SplitMix64's output is invertible, so a provider holding one identifier can recover the state and every later one, and two providers holding one each can tell how many questions lie between them: the count `Fresh`'s documentation says no identifier carries. Right for a replayable test assembly, wrong for a deployment | `F-030`: an item on its assembly row, "`Fresh` in production draws 128 bits from the operating system's generator"; nothing in `M3` |
+| L2 | Low | The scope file's switch (`T-024-09`) | `tools/records/src/evidence.rs:130-140` | `parse_scope` takes every `strict:` line and the last wins, with no finding for a second one, so a file reading `strict: on` at the top and `strict: off` lower down runs off. Once `develop` reads `on`, the ratchet catches a head that reads off; until then, and for a reader skimming the top of the file, it hides | `F-024`, an item on `T-024-10`: refuse a second `strict:` line as `bad-row` |
+| L3 | Low | The assembly's policy side | `conformance/scenarios/src/assembly/policy.rs:589-604` | `PolicySide::decline_outcome` still answers `Unavailable` and says the engine has no `decline_outcome`, though `T-021-09` built it (`components/core-authz/src/stuck/mod.rs:597`). Fails closed (a wrong report holds its part), so no value moves wrongly; the assembled Core can't decline a report | `F-024`: forward to the engine, as the other calls do |
+| L4 | Low | CI's jail step | `.github/workflows/ci.yml:64-69` | The jail probes' step in `ci.yml` sets no `RUTENT_RELEASE_PROVIDER`, so the release scan builds its own release provider inside the test (minutes), as `T-024-18`'s low said. Not a hole: the scan and the resolved-graph check still run | `F-024` (`ci.yml`), the lead's call |
+
+### The areas the row names, with their verdicts
+
+- **`core-internal` and the router-api bump.** Sound. The general handle's `GeneralEntry` can't be built or read holding
+  a decision kind or a writer-attributed statement (`calls.rs:104-118`), policy's `DecisionEntry` holds nothing else
+  (`:140-150`), and the log holds the path to the kind again before its retry rule (`log/mod.rs`, `append_through`) and in
+  `admit_entry` (`relations.rs:6138`). An effect rests on an unused permitting decide of the same action
+  (`effect-permits-a-decided-action`, `permit-backs-one-effect`); a stuck order's value only on a stuck move
+  (`stuck-effect-permits-a-stuck-move`), and `decide` refuses `resolve_stuck` unrecorded. Router-api 4.0.0's held quote is
+  bound to its record by id and digest, and capped by its figures' expiry (changelog). Residuals R-HANDLES, R-NODE,
+  R-RELIANCE, R-HOLDER below.
+- **`CMP-CORE-AUTHZ`'s policy engine.** Sound. One consultation mints a permit (`engine/mod.rs`, `consult`): the fixed rules
+  first, the deployment's policy after; a refusal beats not known, and not known never becomes a permit; a missing input
+  of an order record refuses as `not_permitted`, so an order that isn't the caller's reads like one that doesn't exist.
+  `held` only lowers an answer (`funds/mod.rs:542`); a move is held to its authorisation's destination, asset and floor,
+  compared by value (`router_api/atoms.rs:336`). The stuck rules keep deciding, moving and confirming as separate
+  permissions, decider and mover in the operator's role and the operator's by the register, neither the holder nor the
+  order's customer, and the mover another accountable actor than the decider. The engine holds only `L: PolicyLog`.
+- **The log's and the checkpoints' signing.** Sound. Receipts and checkpoints are signed with the log's own key, which
+  both issuers refuse to be the deployment's `operator_key`, as provider-role signs (Ed25519 over the RFC 8785 JSON
+  without `signature.value`), checked by the strict verifier, and kept apart by `shape`; the commitment is hashed under a
+  domain of its own (`checkpoint/mod.rs:54`). The shared key is a residual, R-KEY.
+- **`T-020-05`'s binding of statements to keys.** Sound. Orchestration binds through the catalogue
+  (`snapshot/statements.rs`), refusing a statement dated more than the skew ahead; the log binds again, independently,
+  from its own register (`keys.rs`): a provider's key signs at `made_at` only where a grant is in force then and both the
+  advertisement in force then and the one accepted last list it for statements, so a key dropped by a rotation signs
+  nothing, backdated or not. The register is fed only by entries the log recorded (catalogue changes on permitted
+  effects with a `done` result, advertisements whose kept bytes it re-checks) and the deployment's settings, never by
+  orchestration: the row's "statement keys" residual holds as stated (R-KEYS). Residuals R-BACKDATE, R-FUTURE.
+- **The jail's test-only builder (`T-025-02`).** Sound. In a shipped build `Layers` is a unit type whose `on` is always
+  true (`layers.rs:44-58`), the shipped `isolated` and `confine` pass `Layers::ALL`, and `jail` exists only with the
+  `jail-layers` feature. `T-025-02`'s gap 2 (the release scan is a string scan) is answered in the same test: it also reads
+  the resolved feature graph of the release command line and every workspace manifest through `cargo metadata`, and fails
+  if any package's feature or any dependency on `rutent-prov` enables `jail-layers` (`components/prov/tests/jail_layers.rs:430-500`).
+  The comment in `components/prov/Cargo.toml` credits `tools/boundary-check` with refusing a self-dependency; the metadata
+  check is the one that refuses the scenario assembly turning the feature on, which the boundary check allows.
+- **Every workflow edit of `M3`** (`ci.yml`, `jail-probes.yml`, `stm-vos.yml`). Sound. Each keeps `contents: read`,
+  `persist-credentials: false` and actions pinned by commit; no `pull_request_target`, no secret is read, and no step runs
+  code from the `develop` checkout (`.evidence-base` is read, and hidden from the test walk). The toolchain is pinned to
+  1.98.0. `jail-probes` is still not a required check (R-JAIL-GATE, `T-025-04`'s). Low L4.
+- **`conformance/evidence/v0-scope`, the input that switches a gate.** Sound at `0e3f68db`. `strict: off`, as `T-024-09`
+  leaves it for `T-024-10`. Its classes are exactly `T-024-09`'s: `m4` `REQ-OPS-4`, `REQ-PRT-2`, `REQ-PRT-4`; deferred
+  `REQ-QTE-16`, `REQ-ORD-42`, `AC-38` (`DEC-8`), `REQ-CPL-1`, `-4`, `-7`, `-10`, `AC-16` (`DEC-16`), `REQ-PRT-3`, `GUA-6`
+  (`DEC-17`), `REQ-EXT-1` (`F-052`), `NFR-1` (`ASM-1`, risk 9); partly met `REQ-CAT-5` (`form:cat5-timing-residual`);
+  inspection `REQ-MOD-2`, `REQ-MOD-3`, `REQ-MOD-5`, `NFR-7`, `REQ-EXT-2`. 211 rows are `M3`'s. Every identifier `SPEC.md`
+  defines in the five families has a row (the two `REQ-CHN` ids `SPEC.md` cites are Narthex's, not defined there). No
+  `M3` row is reclassified. Only the `--ci` step reads the switch, and the ratchet against `develop` starts once the file
+  is there (`compare_with_base`), so until `M3` reaches `develop` this review and `T-024-10`'s restriction are the only
+  guard. Low L2.
+- **The unlinkable questions (`T-020-06`).** Reviewed, **not counted closed**: each question is its own transaction, an
+  identifier drawn fresh, carrying no order reference. The timing residual stands for the owner (`cat5-timing-residual`,
+  on the form): providers comparing when their questions arrived can still line them up. Low L1 adds to it for a
+  deployment's identifiers.
+- **The fuzzing verdict for the admitting compiler (`B-09`).** See below.
+- **The contract rounds after `T-020-01`** (provider-role's arrival notice `T-020-18`, `T-020-21`, `T-020-30`, `T-020-32`,
+  `T-022-07`'s checkpoint shapes). Sound. An arrival naming an order must name its notice (`check.rs:528-531`), the notice
+  must be the reserve's verified `arrival-notice` and nothing else (`relations.rs:2959`), and one deposit opens one order,
+  keyed on the notice's signed transaction. A category grant attributes a verifier's judgements of its classes alone
+  (`attribution.rs`, `classes_alone`).
+- **The production stuck mover and its hand-on arm (`T-020-16`, `T-020-17`).** Sound. `carry_out` asks policy's
+  `move_stuck` and appends the effect before anything is handed to the platform; the operation the mover signs is built
+  from the effect's own `resolve_stuck` action (`stuck/mover.rs:530-600`), so what moves is what the log admitted against
+  the decided resolution. Residual R-HOLDER.
+- **Signed holds and `redeemed_by` (`T-020-15`).** Sound. A held quote rests on the reserve's verified hold about its own
+  transaction and no order, and no second order redeems it (`hold-is-redeemed-by-one-order`, keyed on the hold's
+  transaction, so a copy kept under a new commitment is the same hold). The hold's validity and its order or session are
+  checked by Core on intake from the kept bytes, as the row says; the log holds only the commitment.
+- **The arrival read from the reserve's signed notice (`T-020-19`), and `NOT_A_NOTICE`'s hold case.** Closed: the
+  negative list is gone, and the positive shape check above replaces it.
+- **The writer of `reliance` entries (`T-020-23`).** Sound as built; residual R-RELIANCE (`T-020-34`'s gap 1).
+- **Carry-on and `AcceptFault` reads (`T-020-24`), the final deposit's writer (`T-020-22`), the holding account's
+  withdrawal record (`T-020-26`), the late-status ask and the later-node reversal (`T-020-27`), a report's correction
+  (`T-020-20`), policy's order-record answer (`T-021-08`), its decline and late-status rule (`T-021-09`).** Read by their
+  rows in the citation table and the engine; no finding. The order-record answer (`Sources::order_record`) is `Missing`
+  by default, so an order no record knows is refused.
+- **The log's two handles (`T-020-01`).** Sound while Core is one process: residual R-HANDLES.
+- **A question under a false label.** As the row says: the log binds a question to the order it names, and only a
+  comparison of its signed account and amount with that order's catches one orchestration asked for another
+  (`core-internal`'s README). Residual R-LABEL.
+- **The log's opening (`T-022-08`).** Closed as the row sent it: `read_back` runs the append's attribution again over each
+  stated entry the store marks `verified`, against the history and register as they stood, and refuses one the kept
+  statement contradicts or whose statement is gone without a decided erasure. Residual R-REOPEN (gap 5 of `T-022-08`).
+- **A maker's resend and a relay's copy (`T-022-02`).** Residual R-RELAY, as recorded.
+- **The checkpoint store's cursor (`T-022-04`).** Residual R-CURSOR.
+- **The platform's repeat refusal (`T-013-09`, `T-024-08`'s finding 1).** Closed for one run: `repeated` refuses a second
+  operation of any non-read kind under a carried-out transaction for a provider without a declared safe retry, and
+  answers a safe one's identical repeat from its record; an unreadable declaration is no safe retry. Medium M1 for a
+  restart. The foreign-envelope replay to a safe-retry provider rests on the module (R-ENVELOPE).
+- **`F-024`'s stand-ins.** Closed: `PolicySide` forwards every call to the engine (`assembly/policy.rs:516-617`), and no copy
+  of `consult` or `verdict` is left. The log's skew rules can't trip in the assembly (one clock); they are tested in
+  `core-audit`'s own tests.
+
+### Residuals
+
+Each with its evidence and owner; "accepted" means accepted for v0 as it stands, "row" that it needs a row or an item of
+its owning feature, and "form" that it waits on the owner's acceptance (the items are in this row's report; the lead adds
+them).
+
+| Id | Residual | Evidence | Owner | v0 |
+|---|---|---|---|---|
+| R-HANDLES | Decision entries reach the log only through policy's handle while Core's parts share one process. Split across processes, a decision would need the engine's signature for the log to tell it from a forgery. `Policy::new` and `General::new` are public: the boundary (only the assembly reaches `core-audit` and `core-authz`) is what keeps a second policy handle out | `calls.rs:13-18`, `log/mod.rs` (`General`, `Policy`), `tools/boundary-check/tests/graph.rs` | `F-021` with `F-022`, at any split of Core | form |
+| R-KEYS | The log's statement keys hold only while it takes them from advertisements it recorded under permitted `change_catalogue` effects: confirmed, the register reads nothing from orchestration | `keys.rs` (`Register::record`, `join`, `admits`) | `F-022` | accepted |
+| R-BACKDATE | `THR-3`: a key is checked as current at the statement's own `made_at`, so after a grant's revocation a key the provider's latest advertisement still lists can sign a statement dated inside the grant's window, and it is attributed `verified`. A rotation that drops the key does stop it. Use is bounded elsewhere: a judgement is carried only while its verifier's grant is in force at Core's clock (`T-020-05`), and a statement about an order needs a transaction Core asked under | `keys.rs:563-588`, `attribution.rs:487-494` | `F-022` | form |
+| R-FUTURE | The log holds no stated entry's `made_at` to its own clock (only an advertisement's `received_at`, and a catalogue change's time); orchestration's catalogue check refuses one more than the skew ahead, the log doesn't. Rows that compare times also read log positions | `attribution.rs:480-496`, `prov/src/catalogue/advertisements.rs:413` | `F-022` | accepted (low) |
+| R-LABEL | A question under a false label: bound by the log to the order it names, caught only by comparing its signed account and amount with that order's | `contracts/core-internal/README.md` | `F-020` | form |
+| R-OPMODULE | Which module is the operator's: one whose release was done with no grant of it in the log and no advertisement. A grant after it changes nothing, so a provider can't be granted in after its release; the release itself rests on a permitted `accept_module` | `keys.rs:331-338`, `F-022`'s notes | `F-021` (the policy rule behind `accept_module`) | accepted |
+| R-KEY | The log's one key signs receipts and checkpoints; the shapes and the commitment's domain keep them apart. A deployment may hand the checkpointer another key | `checkpoint/mod.rs:54`, `:214-217`, `receipts/receipt.rs:41` | `F-030` (the deployment's keys) | accepted |
+| R-DOMAIN | The commitment's domain and byte layout are `core-audit`'s, not in the contract, so a checker outside rutent's crates can't recompute a commitment (`T-022-07`'s gap). Not a v0 security finding: `audit-check` is the checker | `checkpoint/mod.rs:54`, `:155` | `F-022`, at the next contract round if an outside checker is named (`F-033`) | accepted |
+| R-CURSOR | The checkpoint store's cursor records are unsigned, so whoever writes the store can mark a checkpoint published that never was; the outside checker reports the tick missing against the schedule (`Finding::Missing`) | `checkpoint/mod.rs:128-131`, `:285-292`, `checker.rs:35` | `F-022` | accepted |
+| R-OPENING | The checkpoint store holds each opening in the clear, so whoever reads it learns each tick's size, as whoever holds the history does; a receipt names the log's size (`THR-130`, on the form) and its proof holds neighbours' leaf hashes (linkage, no balance) | `F-022`'s notes | `F-022` | accepted (`THR-130` on the form) |
+| R-REOPEN | The opening runs no `admit_entry` over what it reads back, so someone with full access to the log's file who forges a whole erasure path is taken for an erasure until the next checkpoint's check | `log/mod.rs` (`read_back`), `T-022-08`'s gap 5 | `F-022`; operator compromise is `R119`'s | accepted |
+| R-FSYNC | After a failed `fsync` a later sync may succeed with the data gone; a record the store answered after such a failure isn't re-checked against the disk | `log/store.rs:105-135` | `F-030` (the deployment's storage) | accepted |
+| R-RELAY | A maker's resend of its own statement and a relay's copy under one presenter identity read alike; only `Presented::presented_by` tells them apart | `F-022`'s notes, finding 4 | `F-022` | accepted |
+| R-NODE | The log can't tell a node declared private from the catalogue's declarations in its relations: a final deposit, a holding record or a reversal naming a private node is let off the network comparison. The register does hold each accepted advertisement's private nodes (`keys.rs`, `nodes`), but `admit_entry` reads the history alone | `relations/closing.rs`, `F-020`'s notes (`T-020-22`, `T-020-26`) | `F-020`, a contract round reading the declarations the log recorded | row (low) |
+| R-RELIANCE | A `reliance` entry naming a judgement that said no isn't refused by the writer or the log; the offer already refuses such a route, so it is defence in depth | `T-020-34`'s gap 1 | `F-020`, a contract item: the relation reads the judgement's answer | row (low) |
+| R-HOLDER | The log admits a holding record whose holder an earlier failed `resolve_stuck` named, and the record and first move may sit at another node than where the stuck value rests; Core writes neither | `T-020-33`'s residuals | `F-020` | accepted |
+| R-PUBLISHER | A node's early binding record and the later one a replay cites are never compared, and a record's segments aren't each held to a provider stating for its publisher | `T-020-32`'s residual, `F-020`'s notes (`T-020-36`, item 6) | `F-020` | row (low) |
+| R-ENVELOPE | A foreign-envelope replay to a provider that declares safe retry reaches the module, whose envelope check the role suite asserts; the platform checks no signature | `platform.rs:2351-2378`, `F-013`'s gaps | `F-013` | accepted |
+| R-PERSONAL | A tuple that requires a payer's personal detail gets it through Core, and the evidence store keeps a copy in the signed operation, where `REQ-CPL-11` wants it with the provider alone. v0's tuples require account references only | `F-021`'s notes (`T-021-07`) | `F-020` with `F-022` | form |
+| R-CHECKLOG | A balance check is recorded in the catalogue's check log, not the audit log (`GUA-3`) | `F-024`'s notes | `F-021` | row (low) |
+| R-FUZZ | No coverage-guided fuzzing of the admitting compiler; see the verdict | below | `F-013` | form |
+| R-SCAN | `T-025-03`'s scan sees plaintext only, not a value encoded otherwise nor a leak by length or timing | `T-025-03`, limit 2 | `F-030`, which re-runs the scan on production's stores | accepted |
+
+Restated, already owned and not new: `cat5-timing-residual` (on the form), R-JAIL-GATE, R-UTS and R-BALANCE-SCAN
+(`T-025-04`'s), the checker and checkpointer outside the assembled Core (`F-030`), `R-DNS`.
+
+### The fuzzing verdict (`B-09`, left by `T-013-05`)
+
+**Not required for v0; the residual is accepted, with a condition.** What is admitted is a third party's component, and
+the admitting compiler is Wasmtime 48.0.9's Cranelift (`engine.rs`), run in a jailed process of its own with `RLIMIT_AS`,
+seccomp, Landlock and a deadline (`children::compile`), so a crash or a hang is a refusal of the release, not the host's.
+Wasmtime's parser, validator and Cranelift are fuzzed continuously upstream with coverage guidance (OSS-Fuzz), which
+covers the code a guided fuzzer of ours would mostly reach; what is ours is the judgement around it (imports, exports,
+the declaration, the digests), which the seeded, section-aware mutation fuzzer reaches: after `T-013-05`'s review, 67% of
+mutants passed the parser and 551 of 827 were judged on imports, exports or compiled, none crashed (CI runs 42754273532
+and 42756806042). The condition: the pin is kept on a patched Wasmtime release (`T-025-01`, `T-025-06`), and a guided
+fuzzer is a row of `F-013` before a module from a publisher outside the operator's contracts is admitted, or with
+`F-030`'s hardening, whichever comes first. A fuzzer-made binary was never admitted (`B-09`), which stays under `THR-85`'s
+accepted residual.
+
+### Defaults taken
+
+- **The path set** is `HOUSE-RULES.md`'s list with `components/prov/src/module/` whole, `tools/boundary-check/` and the
+  scope file, as the brief gives it; the per-path record is a file of its own beside this one (`t-025-05-paths.md`), since
+  1,463 rows would bury this section. A reversible default.
+- **Fixtures are reviewed as data,** grouped, not one by one: they are what `contracts/tests/` reads, valid or refused.
+- **Severity by reach in `M3`'s code:** what needs a production assembly that doesn't exist yet (M1, L1) is rated for
+  the release that will carry it, and routed there.
+
+### Gaps
+
+- The review is a reading at `0e3f68db` and three re-run tests; no probe test was written, since nothing is high or
+  critical. M1's probe is described for its row. The other 90-odd citation rows were read by name and purpose, not
+  line by line.
+- The Linux-only paths (the jail's layers, `stm-vos.yml`) were read, not run here: CI's `jail-probes` and `stm-vos`
+  runs at `m3` are their evidence (`T-025-02`, `T-025-03`, `T-025-04`'s "Evidence in one place").
+- `T-020-35`'s report-pair half is not on `m3` at this commit; it touches no `DEC-20` path, so a later diff of it needs
+  only `DEC-20`'s check that it still doesn't.
+
+### Addendum: T-024-19
+
+`T-024-19` (pull request #241, `f-024/t-024-19-review-lows`, `9994463e..559b1d58`) answers L2, L3 and L4; its one `DEC-20`
+path is `.github/workflows/ci.yml`. **Approved at `559b1d58`.** *The workflow:* a step `cargo build --release --locked -p
+rutent-prov --bin rutent-wasm-provider` before the jail step, and `RUTENT_RELEASE_PROVIDER: ${{ github.workspace
+}}/target/release/rutent-wasm-provider` on it. `ci.yml` sets no `CARGO_TARGET_DIR`, no cache and no `--target-dir` (its only
+`GITHUB_ENV` write is `CLANG`), and the toolchain is pinned to 1.98.0, so the build lands at `target/release/` of the
+checkout, the path named; the build adds no permission, secret or untrusted input (the job keeps `contents: read`, the
+command line names no feature, so no `jail-layers`), and the probes' `--features jail-layers` test build goes to
+`target/debug/`, leaving the release binary as built. What the results file gains is the scan probe's own line, no longer
+shared with a build's output: in the `ci` job of run 44372822190 (green) the probe reads `test
+release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off ... ok`, no `Compiling rutent-prov` precedes it,
+and both evidence-table steps read `GUA-5 | m3 | verified | 4 of 4 tests passed` (232 rows: 211 verified, 0 unverified, 0
+table findings). `jail-probes`, `contract-guard`, `records` and the licence record are green on the same head. *The scope
+file:* a second `strict:` line is now a `bad-row` finding and the first stands, so a file showing `strict: on` at its top
+reads on; with a first `strict: off`, a later `on` is reported and the file reads off, as its top line shows, which is the
+switch's own reading (report mode until `T-024-10`). Closes L2. *The assembly:* `decline_outcome` forwards to the engine,
+as the other calls do, tested through the assembly (a decline of nothing is the log's refusal, nothing recorded). Closes
+L3. L4 is closed. A nit, not blocking: the new comment in `ci.yml` says that without the variable "the probe skips"; it
+builds its own release provider instead (`jail_layers.rs:380-402`), as `F-024`'s note on the row says correctly.
