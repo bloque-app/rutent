@@ -356,6 +356,18 @@ pub struct Shape {
     pub deposit_input: Option<String>,
     /// A ramp that takes internal steps to serve a segment (`REQ-CAT-21`).
     pub internal_steps: bool,
+    /// A ramp whose destination (its `outer`) is a private node of its own publisher, not a public one
+    /// (`T-024-05`, `DEC-24`): value enters the node from a public one, and no public network records the transfer.
+    pub outer_private: bool,
+    /// A reserve whose bank rail (its outer node) is declared a private node by its publisher (`T-024-05`,
+    /// `AC-34`): a deposit out to it closes on the public movement into the rail, from the public node it leaves.
+    pub rail_private: bool,
+    /// A reserve whose bank rail has no public record at all: the simulated world serves no network under its name
+    /// (`T-024-05`, `AC-34`).
+    pub rail_unserved: bool,
+    /// A reserve whose inner node is on neither list: no publisher declares it private and the operator doesn't list
+    /// it public (`T-024-05`, `REQ-CAT-22`), so the catalogue leaves its tuples off every route.
+    pub undeclared_node: bool,
 }
 
 /// A real value-moving operation's transaction: the one a repeat would name.
@@ -619,8 +631,18 @@ impl Reserve {
                 }
             }
         }
-        if shape.public_node {
+        if shape.public_node || shape.undeclared_node {
             advertisement.private_nodes.clear();
+        }
+        if shape.rail_private
+            && let Some(rail) = advertisement.offers.reserve.as_ref().and_then(|offer| {
+                offer.tuples.iter().find_map(|t| match &t.destination {
+                    NodeRef::Outer(outer) => Some(outer.network.clone()),
+                    NodeRef::Inner(_) => None,
+                })
+            })
+        {
+            advertisement.private_nodes.push(rail);
         }
         self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
         self.shape = shape.clone();
@@ -1632,6 +1654,9 @@ impl Ramp {
         }
         if let (Some(node), false) = (&shape.node, shape.public_node) {
             advertisement.private_nodes = vec![node.clone()];
+        }
+        if let (Some(outer), true) = (&shape.outer, shape.outer_private) {
+            advertisement.private_nodes.push(outer.clone());
         }
         self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
         self.converts_internally = shape.internal_steps;

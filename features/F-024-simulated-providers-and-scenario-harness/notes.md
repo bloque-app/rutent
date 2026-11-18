@@ -487,6 +487,92 @@ records' content (maker, publisher, node, label, transaction, assets, amounts, f
 | `check_inner_segments` | `a_record_of_another_publisher_or_another_node_is_not_read` |
 | the label (`publishers_word`) | not switchable here: one value, `T-020-18`'s contract rule-off |
 
+## T-024-05: private-node scenarios
+
+Branch `f-024/t-024-05-private-node-scenarios`, from `m3` at `d0a7cf2c`. Edits `conformance/` only; `components/` and
+`contracts/` are untouched. Readings taken without asking, each reversible; the owner's form overrules any of them.
+
+**Tests** (`conformance/scenarios/tests/private_nodes.rs`, the eight the row names, each with exactly its plan tags).
+- `AC-29`: the route `sim-join-in`, `-exchange`, `-ramp`, `-out`. The decision record's chosen operations are a
+  withdrawal, an exchange, a route and a deposit; each operation's figures name its provider's publisher (one publisher
+  for the reserve, exchange and ramp, another for the far reserve), the catalogue names the private node's publisher and
+  none for the public node, and the log labels the exchange's evidence, inside the node, with the publisher.
+- `AC-34`: a reserve (`sim-join-out-private`) out of the public node whose bank rail its publisher declares private and
+  no network serves. The deposit closes on the public node's movement into the rail, naming the rail, and on the
+  reserve's own statement, which is its word and no network's. The same reserve with the rail declared by no one
+  (`sim-join-out-silent`) is quoted and refused at run (`NoPublicRecord`) before anything is handed over.
+- `AC-35`: a match is `consistent_with_the_exit` and the segment inside the node stays its publisher's word; a scripted
+  mismatch is recorded against the node, the order still completes, and the node gets no closing on the public movement
+  out. A route ending in the private rail has one replay only (of the node it left for the public one), none for the
+  rail, whose record is the publisher's word and is replayed against no exit.
+- `AC-39`: the real plain wallet at a public node, three orders landed. A match raises nothing; a wallet asked directly
+  for a withdrawal the host doesn't attribute reads short, one asked for a deposit reads over; each raises the operator
+  with the direction, the amount and whose word, the attribution and the log's earlier entries unchanged. At a private
+  node the same reading with the publisher's word: a match raises nothing, a short raises labelled so.
+- `DEC-24`, `REQ-ORD-41`: **a route across two private nodes runs on the platform**, which `T-024-14` found it couldn't.
+  It runs in four segments (the router takes at most four): `sim-pair-in` (publisher A, bank to A's node), `sim-pair-ramp-a`
+  (A's node onto the public node `sim-pair-x`), `sim-pair-ramp-b` (publisher B, `sim-pair-x` into B's node) and
+  `sim-pair-out` (B's reserve, B's node to its bank). The ramp's tuples join by inner node on both ends, and a ramp's
+  destination may be its publisher's private node; the catalogue and router needed no change. The order completes, each
+  node is replayed once, as the value leaves it (A at the ramp onto `sim-pair-x`, B at the final deposit onto the bank's
+  rail), each against its own movement out and from its own publisher's records, which differ. A scripted mismatch in B's
+  record of the deposit is recorded against B alone, the first node agreeing; one in A's record is recorded against A.
+- `REQ-CAT-22`: every inner node on the chosen route of the join and pair scenarios is on one list or the other; a
+  reserve whose node is on neither (`sim-ghost`) has both tuples left out of the snapshot as `NodeNotListed` and no
+  route.
+
+**Added to the simulator** (`conformance/src/`): `Shape` gains `outer_private`, `rail_private`, `rail_unserved` and
+`undeclared_node`, with their names in `shape_of` (`sim-pair-*`, `sim-join-out-private`, `sim-join-out-silent`,
+`sim-ghost`) and the matching answers of `Spec::public_nodes`, `private_nodes` and `networks`. A deposit out to a rail
+its reserve declares private posts its movement on the public node it leaves (`Simulated::answer`), where
+`movements_made` is unchanged. **Added to the assembly** (`src/assembly/audit.rs`): `Core::holding_reading` and
+`Core::check_holding`, below.
+
+**Defaults taken** (reversible, fail closed).
+- `AC-29`'s "one conversion that changes no value" is the exchange at a rate of one (COP to USD, the amount out equal to
+  the amount in); no second exchange was added.
+- `AC-34`'s "public movement into [the private node]" is the movement of the deposit's transaction on the public node it
+  starts at, since no public network records a rail declared private; the sim posts it there.
+- The private node's balance at `AC-39` has no simulated holding module (`T-024-17` built the operator's plain wallet,
+  which serves public nodes only), so the private reading is built from the wallet's, with the node, the account and
+  the publisher's word changed, as its publisher would state it.
+- The log keeps one `holding_check` record for equal checks (the entry is idempotent), so a check repeated with the
+  same account and orders adds only what differs: the raise.
+
+**Gaps, with owners.**
+1. *Core never reads a holding account's balance or calls the comparison.* `core-audit`'s `Compare` is built and tested
+   (`T-022-05`) and has no caller in `core-orch` or the assembly, so `AC-39` is shown over the pieces: the assembly's
+   `holding_reading` and `check_holding` (the production caller's two steps, on Core's own log handle and operator
+   channel) are the scenario's. Owner: `F-030`'s assembly (the periodic check), with `F-020` for the reading of a
+   private node's balance from its publisher.
+2. *Nothing lands value in a holding account where a segment settles at a public node* (`T-024-17`'s gap 1): the
+   scenario lands it with `Core::land`. Same owners.
+3. *`T-020-32`'s part.* No test of this row needs the publisher's record appended as a stated entry or cited by the
+   replay, so none is ignored: the replays are shown by what they found and the movement they name. `T-020-32`'s
+   `replay cites the receipt of each inner-segments record it read` will hold the cited receipts for both nodes of the
+   pair route (`rests_on` as a list, `T-020-30`).
+4. *The router's four hops* bound a route across two private nodes to the shape above (a public node between, the
+   second node ending in a deposit). A route with a segment inside each node, or a third node, needs `max_hops` raised
+   (`kit.rs`, a deployment setting).
+
+**Rule-off table** (each switched off alone, file restored, the tests green first; run under a hard timeout):
+
+| Switched off | Red |
+|---|---|
+| Closing's replay on the way out (`exits`) | the two-node close, the two-node mismatch, the match and mismatch test, the route ending inside a node |
+| Closing's private rail closing (`can_close`) | `AC-34`, the route ending inside a node |
+| The movement into the rail naming the node | `AC-34`, the route ending inside a node |
+| The publisher label on segments inside a node | `AC-29`, the match and mismatch test |
+| The catalogue leaving out a node on neither list | `REQ-CAT-22` |
+| The holding difference raised (`core-audit`) | `AC-39` |
+| The publisher's scripted misrecording | both mismatch tests |
+| A ramp's private destination (`outer_private`) | the two-node close, the two-node mismatch, `REQ-CAT-22` |
+| A deposit's movement into a private rail (`rail_private`) | `AC-34`, the route ending inside a node |
+| A rail with no public record (`rail_unserved`) | `AC-34` (the silent reserve is routed to) |
+| A node on neither list (`undeclared_node`) | `REQ-CAT-22` |
+
+The four edits to `components/` were temporary, restored after each run; none hung (hard timeout 240 s).
+
 ## The toolchain is pinned (`T-020-11d`)
 
 The root workspace builds on the toolchain `rust-toolchain.toml` names, Rust 1.98.0 with clippy, rustfmt and the

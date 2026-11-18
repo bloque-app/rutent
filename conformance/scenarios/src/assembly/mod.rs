@@ -43,6 +43,7 @@
 //!   (`F-030`).
 
 mod arrivals;
+pub mod audit;
 pub mod charges;
 pub mod durable;
 mod grading;

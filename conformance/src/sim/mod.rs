@@ -197,7 +197,9 @@ impl Spec {
             Role::Reserve if shape.public_node => nodes.push(self.ledger()),
             Role::Exchange if shape.public_node => nodes.extend(shape.node.clone()),
             Role::Ramp => {
-                nodes.extend(shape.outer.clone());
+                if !shape.outer_private {
+                    nodes.extend(shape.outer.clone());
+                }
                 if shape.public_node {
                     nodes.extend(shape.node.clone());
                 }
@@ -211,11 +213,22 @@ impl Spec {
     /// (`REQ-CAT-22`). The segments it serves inside them are the ones its publisher records (`REQ-ORD-41`).
     pub fn private_nodes(&self) -> Vec<String> {
         let shape = shape_of(&self.provider);
-        match self.role {
-            Role::Reserve if !shape.public_node => vec![self.ledger()],
-            Role::Exchange | Role::Ramp if !shape.public_node => shape.node.into_iter().collect(),
+        let mut nodes = match self.role {
+            Role::Reserve if !shape.public_node && !shape.undeclared_node => vec![self.ledger()],
+            Role::Exchange | Role::Ramp if !shape.public_node => {
+                shape.node.clone().into_iter().collect()
+            }
             _ => Vec::new(),
+        };
+        // A ramp's destination its publisher declares private, and a reserve's bank rail its publisher declares so
+        // (`T-024-05`).
+        if self.role == Role::Ramp && shape.outer_private {
+            nodes.extend(shape.outer.clone());
         }
+        if self.role == Role::Reserve && shape.rail_private {
+            nodes.push(self.bank());
+        }
+        nodes
     }
 
     /// The simulated public networks this provider's movements land on, which its module's declaration names: a
@@ -224,12 +237,17 @@ impl Spec {
     pub fn networks(&self) -> Vec<String> {
         let shape = shape_of(&self.provider);
         match self.role {
+            // A rail with no public record is served by no network; the movement into one its publisher declares private
+            // is on the public node the deposit leaves (`AC-34`, `T-024-05`).
+            Role::Reserve if shape.rail_private => vec![self.ledger()],
+            Role::Reserve if shape.rail_unserved => Vec::new(),
             Role::Reserve => vec![self.bank()],
             Role::Exchange => match &shape.node {
                 None => vec!["polygon".to_owned()],
                 Some(node) if shape.public_node => vec![node.clone()],
                 Some(_) => Vec::new(),
             },
+            Role::Ramp if shape.outer_private => Vec::new(),
             Role::Ramp => vec![shape.outer.unwrap_or_else(|| "bsc".to_owned())],
             Role::Verifier => Vec::new(),
         }
@@ -333,6 +351,12 @@ pub fn shape_of(provider: &str) -> Shape {
         node: Some(node.to_owned()),
         ..Shape::default()
     };
+    let pair_a = || Shape {
+        publisher: Some("sim-pair-a-publisher".to_owned()),
+        node: Some("sim-pair-a-ledger".to_owned()),
+        asset: Some("COP".to_owned()),
+        ..Shape::default()
+    };
     let chain = |node: &str| Shape {
         publisher: Some("sim-chain-publisher".to_owned()),
         node: Some(node.to_owned()),
@@ -364,6 +388,59 @@ pub fn shape_of(provider: &str) -> Shape {
             asset: Some("USD".to_owned()),
             node: Some("sim-join-chain".to_owned()),
             public_node: true,
+            ..Shape::default()
+        },
+        // A route across two private nodes (`T-024-05`, `DEC-24`), in COP, two decimals, in four segments (the router
+        // takes at most four): a withdrawal into A's node, a ramp from it onto the public node between the two, a ramp
+        // from that into B's node, and a deposit out of B's node. Each publisher shares its node among its providers;
+        // a private node is its publisher's alone.
+        //
+        // - `sim-pair-in` (publisher A): a reserve between its bank and the private node `sim-pair-a-ledger`;
+        //   `sim-pair-ramp-a` (A): from that node to the public node `sim-pair-x`;
+        // - `sim-pair-ramp-b` (B): from `sim-pair-x` into B's private node `sim-pair-b-ledger`;
+        //   `sim-pair-out` (B): a reserve between that node and its own bank.
+        "sim-pair-in" => pair_a(),
+        "sim-pair-ramp-a" => Shape {
+            outer: Some("sim-pair-x".to_owned()),
+            asset: Some("COP".to_owned()),
+            ..pair_a()
+        },
+        "sim-pair-ramp-b" => Shape {
+            node: Some("sim-pair-x".to_owned()),
+            public_node: true,
+            outer: Some("sim-pair-b-ledger".to_owned()),
+            outer_private: true,
+            asset: Some("COP".to_owned()),
+            publisher: Some("sim-pair-b-publisher".to_owned()),
+            ..Shape::default()
+        },
+        "sim-pair-out" => Shape {
+            node: Some("sim-pair-b-ledger".to_owned()),
+            publisher: Some("sim-pair-b-publisher".to_owned()),
+            ..Shape::default()
+        },
+        // A reserve out of the joined route's public node whose bank rail its publisher declares private, with no
+        // public record of its own (`sim-join-out-private`); and one whose rail has no public record and is declared
+        // by no one (`sim-join-out-silent`), which no route can end in (`AC-34`).
+        "sim-join-out-private" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            rail_private: true,
+            rail_unserved: true,
+            ..Shape::default()
+        },
+        // A reserve whose node no publisher declares and the operator doesn't list (`REQ-CAT-22`).
+        "sim-ghost" => Shape {
+            node: Some("sim-ghost-ledger".to_owned()),
+            undeclared_node: true,
+            ..Shape::default()
+        },
+        "sim-join-out-silent" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            rail_unserved: true,
             ..Shape::default()
         },
         "sim-chain-in" => Shape {
@@ -790,6 +867,24 @@ impl Simulated {
                 Some(&self.provider.advertisement().into_statement().statement),
             )
         };
+        // A deposit out to a rail its reserve's publisher declares private leaves no movement on the rail, which no public
+        // network serves: the movement into it is the public node's the deposit started at, on the network that node
+        // is, under the deposit's own transaction (`AC-34`, `T-024-05`).
+        if movements.is_empty()
+            && !behaviour.unrecorded
+            && changed
+            && shape_of(&self.spec.provider).rail_private
+            && let rutent_contracts::provider_role::Operation::Deposit(deposit) =
+                &operation.statement
+        {
+            let mut into = deposit.clone();
+            into.destination.network.clone_from(&deposit.origin);
+            movements = movements_made(
+                &rutent_contracts::provider_role::Operation::Deposit(into),
+                &body,
+                None,
+            );
+        }
         if behaviour.charge_misplaced {
             misplace_the_charge(&operation.statement, &body, &mut movements);
         }
