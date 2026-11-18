@@ -3685,6 +3685,9 @@ fn inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_a
         "unverified--an-inner-segments-record-naming-a-transaction-the-log-binds-to-no-order",
         "unverified--an-inner-segments-record-naming-a-transaction-core-never-asked-under",
         "unverified--an-inner-segments-record-whose-transactions-another-than-the-operator-asked-under",
+        // Asked under for this order only after another order's statement bound it first (a history the log's
+        // `transaction-belongs-to-one-order` never admits, held here against the binding alone).
+        "unverified--an-inner-segments-record-naming-a-transaction-first-bound-to-another-order",
         // Nor where it lists no segment, which would hold for every order, nor about another node than its body
         // names, nor about the order without naming its node.
         "unverified--an-inner-segments-record-of-no-segments-about-the-order",
@@ -3702,6 +3705,24 @@ fn inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_a
         serde_json::from_value(fixture("valid", "stated-entry-of-a-quote")).unwrap();
     result.about.as_mut().unwrap().node = Some(Id::new("acme-ledger").unwrap());
     assert!(Entry::Stated(result).check().is_err());
+    let case = read_json(
+        &contract_dir().join("fixtures/attribution/verified--the-bytes-bear-the-claim-out.json"),
+    );
+    let mut claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+    claim.about.as_mut().unwrap().node = Some(Id::new("acme-ledger").unwrap());
+    let (mut from, mut keys) = (sources(&case), sources(&case));
+    let got = attribute(
+        &claim,
+        &case_history(&case),
+        &mut from,
+        &mut keys,
+        &sources(&case),
+    );
+    assert_eq!(
+        got,
+        Ok(claim),
+        "a result naming a node is attributed to no one"
+    );
 }
 
 // verifies: REQ-AUD-9, REQ-ORD-3
