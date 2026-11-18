@@ -856,3 +856,24 @@ accepted residual.
   runs at `m3` are their evidence (`T-025-02`, `T-025-03`, `T-025-04`'s "Evidence in one place").
 - `T-020-35`'s report-pair half is not on `m3` at this commit; it touches no `DEC-20` path, so a later diff of it needs
   only `DEC-20`'s check that it still doesn't.
+
+### Addendum: T-024-19
+
+`T-024-19` (pull request #241, `f-024/t-024-19-review-lows`, `9994463e..559b1d58`) answers L2, L3 and L4; its one `DEC-20`
+path is `.github/workflows/ci.yml`. **Approved at `559b1d58`.** *The workflow:* a step `cargo build --release --locked -p
+rutent-prov --bin rutent-wasm-provider` before the jail step, and `RUTENT_RELEASE_PROVIDER: ${{ github.workspace
+}}/target/release/rutent-wasm-provider` on it. `ci.yml` sets no `CARGO_TARGET_DIR`, no cache and no `--target-dir` (its only
+`GITHUB_ENV` write is `CLANG`), and the toolchain is pinned to 1.98.0, so the build lands at `target/release/` of the
+checkout, the path named; the build adds no permission, secret or untrusted input (the job keeps `contents: read`, the
+command line names no feature, so no `jail-layers`), and the probes' `--features jail-layers` test build goes to
+`target/debug/`, leaving the release binary as built. What the results file gains is the scan probe's own line, no longer
+shared with a build's output: in the `ci` job of run 44372822190 (green) the probe reads `test
+release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off ... ok`, no `Compiling rutent-prov` precedes it,
+and both evidence-table steps read `GUA-5 | m3 | verified | 4 of 4 tests passed` (232 rows: 211 verified, 0 unverified, 0
+table findings). `jail-probes`, `contract-guard`, `records` and the licence record are green on the same head. *The scope
+file:* a second `strict:` line is now a `bad-row` finding and the first stands, so a file showing `strict: on` at its top
+reads on; with a first `strict: off`, a later `on` is reported and the file reads off, as its top line shows, which is the
+switch's own reading (report mode until `T-024-10`). Closes L2. *The assembly:* `decline_outcome` forwards to the engine,
+as the other calls do, tested through the assembly (a decline of nothing is the log's refusal, nothing recorded). Closes
+L3. L4 is closed. A nit, not blocking: the new comment in `ci.yml` says that without the variable "the probe skips"; it
+builds its own release provider instead (`jail_layers.rs:380-402`), as `F-024`'s note on the row says correctly.
