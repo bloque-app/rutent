@@ -9,24 +9,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, Advertisement, Availability, BalanceAnswer, BalanceOutcome,
-    BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band, BoundedAvailability,
-    BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote, ConversionResult,
-    ConversionSettlement, Declarations, Denomination, EndUnits, Evidence, EvidenceGrade,
-    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldingBalanceOutcome,
-    HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement, JudgementAnswer,
-    JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement, NoDetail, NodeRef,
-    Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, RampOffer,
-    RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
-    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
-    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
-    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
-    SigningKey, Slippage, Statement, Terms, Tracking, TransferOutcome, TransferQuote,
-    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
+    ADVERTISEMENT_SHAPE, ARRIVAL_ANSWER_SHAPE, ARRIVAL_NOTICE_SHAPE, Advertisement, ArrivalAnswer,
+    ArrivalNotice, ArrivalOutcome, ArrivalQuestion, ArrivedCredits, Availability, BalanceAnswer,
+    BalanceOutcome, BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band,
+    BoundedAvailability, BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote,
+    ConversionResult, ConversionSettlement, Declarations, Denomination, EndUnits, Evidence,
+    EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee,
+    HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement,
+    JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement,
+    NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
+    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
+    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
+    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
+    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
+    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
+    VerifierOffer, VoidedBy,
 };
 
 use super::{
-    Received, RoleHarness, RoleProvider, SuiteContext, placeholder_key, placeholder_signature,
+    BankCredit, Received, RoleHarness, RoleProvider, SuiteContext, placeholder_key,
+    placeholder_signature,
 };
 
 /// A stand-in's answers as the contract's types. Each stand-in sends them as `serde_json` writes them
@@ -36,6 +39,15 @@ trait Typed {
     fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody>;
     fn state(&self) -> String;
     fn status(&mut self, _transaction: &str) -> Option<Statement<ResultBody>> {
+        None
+    }
+    fn arrival(
+        &mut self,
+        _question: &Statement<ArrivalQuestion>,
+    ) -> Option<Statement<ArrivalAnswer>> {
+        None
+    }
+    fn arrival_notice(&mut self, _reference: &str) -> Option<Statement<ArrivalNotice>> {
         None
     }
 }
@@ -55,6 +67,17 @@ impl<T: Typed> RoleProvider for T {
 
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         Typed::status(self, transaction).map(|s| Received::sent(&s))
+    }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        Typed::arrival(self, question).map(|a| Received::sent(&a))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        Typed::arrival_notice(self, reference).map(|n| Received::sent(&n))
     }
 }
 
@@ -137,6 +160,12 @@ enum Fault {
     DatesItsJudgementBadly,
     ChargesItsFeeInAnotherAsset,
     TakesItsFeeOnTopOfTheAmount,
+    StatesCreditsOfAnyAccount,
+    AnswersUnderAnotherTransaction,
+    AnswersQuestionsFromAnyone,
+    AnswersInAnySession,
+    RestatesACreditWithAnotherAmount,
+    GivesEachNoticeANewReference,
 }
 
 /// Signs statements as one maker, with placeholder signatures: its advertisements with its advertising key, and
@@ -426,6 +455,11 @@ pub struct Reserve {
     credits: BTreeMap<String, Served>,
     results: BTreeMap<String, Statement<ResultBody>>,
     pending: BTreeMap<String, ReserveMovementOutcome>,
+    /// What arrived at the simulated bank, by the reference the reserve gives each credit (`T-024-15`). A notice
+    /// states one of these and nothing else.
+    bank_credits: BTreeMap<String, BankCredit>,
+    /// How many notices the reserve has signed of each credit, by reference.
+    noticed: BTreeMap<String, u32>,
     unknown_next: bool,
     /// The next real movement fails, with evidence, having moved nothing (`force_failure`).
     fail_next: bool,
@@ -552,6 +586,8 @@ impl Reserve {
             credits: BTreeMap::new(),
             results: BTreeMap::new(),
             pending: BTreeMap::new(),
+            bank_credits: BTreeMap::new(),
+            noticed: BTreeMap::new(),
             unknown_next: false,
             fail_next: false,
             shape: Shape::default(),
@@ -630,6 +666,78 @@ impl Reserve {
     pub fn confirming_without_the_segment(mut self) -> Self {
         self.faults.insert(Fault::ConfirmsWithoutTheSegment);
         self
+    }
+
+    /// Breaks `REQ-ORD-1`: the reserve states credits of any account, asset or node when asked of one.
+    pub fn stating_credits_of_any_account(mut self) -> Self {
+        self.faults.insert(Fault::StatesCreditsOfAnyAccount);
+        self
+    }
+
+    /// Breaks `REQ-ORD-1`: the reserve answers a question of what arrived under another transaction than its own.
+    pub fn answering_under_another_transaction(mut self) -> Self {
+        self.faults.insert(Fault::AnswersUnderAnotherTransaction);
+        self
+    }
+
+    /// Breaks `REQ-CAT-3`: the reserve states what arrived to a question asked in any session, the holder's or not.
+    pub fn answering_arrivals_in_any_session(mut self) -> Self {
+        self.faults.insert(Fault::AnswersInAnySession);
+        self
+    }
+
+    /// Breaks `REQ-PRT-1`: the reserve answers a question of what arrived that isn't signed with the operator's key.
+    pub fn answering_questions_from_anyone(mut self) -> Self {
+        self.faults.insert(Fault::AnswersQuestionsFromAnyone);
+        self
+    }
+
+    /// Breaks `REQ-ORD-23`: the reserve states a credit it already noticed with another amount.
+    pub fn restating_a_credit_with_another_amount(mut self) -> Self {
+        self.faults.insert(Fault::RestatesACreditWithAnotherAmount);
+        self
+    }
+
+    /// Breaks `REQ-ORD-23`: the reserve gives each notice of a credit a reference of its own, so two notices of one
+    /// credit read as two credits.
+    pub fn giving_each_notice_a_new_reference(mut self) -> Self {
+        self.faults.insert(Fault::GivesEachNoticeANewReference);
+        self
+    }
+
+    /// The reserve's notice of `credit`, signed: its figures are the bank's (`REQ-ORD-14`), its transaction the
+    /// credit's reference (`REQ-ORD-23`).
+    fn notice_of(&mut self, reference: &str) -> Option<Statement<ArrivalNotice>> {
+        let credit = self.bank_credits.get(reference)?.clone();
+        let times = self.noticed.entry(reference.to_owned()).or_insert(0);
+        let earlier = *times;
+        *times += 1;
+        let mut amount = credit.amount;
+        if self
+            .faults
+            .contains(&Fault::RestatesACreditWithAnotherAmount)
+            && earlier > 0
+        {
+            amount = amount
+                .parse::<u128>()
+                .map_or(amount, |a| (a + 1).to_string());
+        }
+        let transaction = if self.faults.contains(&Fault::GivesEachNoticeANewReference) {
+            format!("{}-{earlier}", credit.reference)
+        } else {
+            credit.reference
+        };
+        Some(self.signer.sign(
+            ARRIVAL_NOTICE_SHAPE,
+            ArrivalNotice {
+                transaction,
+                node: credit.node,
+                asset: credit.asset,
+                amount,
+                account: credit.account,
+                holder: credit.holder,
+            },
+        ))
     }
 
     fn breaks(&self, fault: Fault) -> bool {
@@ -877,9 +985,70 @@ impl Typed for Reserve {
 
     fn state(&self) -> String {
         format!(
-            "{:?} {:?} {:?}",
-            self.balances, self.movements, self.credits
+            "{:?} {:?} {:?} {:?}",
+            self.balances, self.movements, self.credits, self.bank_credits
         )
+    }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Statement<ArrivalAnswer>> {
+        let asked = &question.statement;
+        let refused = || {
+            ArrivalOutcome::Refused(BalanceRefused {
+                refusal: BalanceRefusal::Final(NoDetail {}),
+            })
+        };
+        let from_the_operator = question
+            .check_context(
+                &self.signer.context.deployment,
+                &self.signer.context.protocol_version,
+            )
+            .is_ok()
+            && question.check_signed_by_operator().is_ok();
+        let outcome = if !(from_the_operator || self.breaks(Fault::AnswersQuestionsFromAnyone))
+            || !(self.breaks(Fault::AnswersInAnySession) || asked.session == self.session)
+        {
+            refused()
+        } else {
+            let any = self.breaks(Fault::StatesCreditsOfAnyAccount);
+            let references: Vec<String> = self
+                .bank_credits
+                .values()
+                .filter(|c| {
+                    any || (c.account == asked.account
+                        && c.node == asked.node
+                        && c.asset == asked.asset)
+                })
+                .map(|c| c.reference.clone())
+                .collect();
+            let notices: Vec<_> = references
+                .iter()
+                .filter_map(|r| self.notice_of(r))
+                .collect();
+            if notices.is_empty() {
+                ArrivalOutcome::NothingArrived(NoDetail {})
+            } else {
+                ArrivalOutcome::Arrived(ArrivedCredits { notices })
+            }
+        };
+        let transaction = if self.breaks(Fault::AnswersUnderAnotherTransaction) {
+            format!("{}-another", asked.transaction)
+        } else {
+            asked.transaction.clone()
+        };
+        Some(self.signer.sign(
+            ARRIVAL_ANSWER_SHAPE,
+            ArrivalAnswer {
+                transaction,
+                outcome,
+            },
+        ))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Statement<ArrivalNotice>> {
+        self.notice_of(reference)
     }
 
     fn status(&mut self, transaction: &str) -> Option<Statement<ResultBody>> {
@@ -903,6 +1072,27 @@ impl Typed for Reserve {
 }
 
 impl RoleHarness for Reserve {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        let at_its_bank = self
+            .advertisement
+            .statement
+            .offers
+            .reserve
+            .iter()
+            .flat_map(|offer| &offer.tuples)
+            .any(|t| {
+                [&t.origin, &t.destination]
+                    .into_iter()
+                    .any(|end| matches!(end, NodeRef::Outer(node) if *node == credit.node))
+            });
+        if !at_its_bank || self.bank_credits.contains_key(&credit.reference) {
+            return false;
+        }
+        self.bank_credits
+            .insert(credit.reference.clone(), credit.clone());
+        true
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
         true

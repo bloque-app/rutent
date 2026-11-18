@@ -3,13 +3,15 @@
 use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
-    Advertisement, BalanceOutcome, BalanceRefusal, BalanceVerification, Category, Conversion,
-    ConversionOutcome, Deposit, Direction, EvidenceGrade, EvidencePiece, Fee,
-    HoldingBalanceOutcome, Inputs, JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose,
-    NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome,
-    ResultBody, Reversal, ReversalConfirmationOutcome, ReversalConfirmationRequest,
-    ReversalConfirmationResult, ReversalOutcome, Signature, SignatureScheme, Slippage, Statement,
-    StatementShape, Terms, Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts, member,
+    ARRIVAL_QUESTION_SHAPE, Advertisement, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
+    ArrivalOutcome, ArrivalQuestion, BalanceOutcome, BalanceRefusal, BalanceVerification, Category,
+    Conversion, ConversionOutcome, Credits, Denomination, Deposit, Direction, EvidenceGrade,
+    EvidencePiece, Fee, HoldingBalanceOutcome, Inputs, JudgementOutcome, JudgementRequest,
+    JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey,
+    Refusal, ReserveMovementOutcome, ResultBody, Reversal, ReversalConfirmationOutcome,
+    ReversalConfirmationRequest, ReversalConfirmationResult, ReversalOutcome, Signature,
+    SignatureScheme, Slippage, Statement, StatementShape, Terms, Tracking, Transfer,
+    TransferOutcome, Withdrawal, check_amounts, check_answer, check_one_credit, member,
     signing_input, validate_statement,
 };
 
@@ -18,8 +20,8 @@ type Answered<'a> = (&'a Operation, &'a ResultBody, &'a Terms);
 
 use super::encoding::{is_canonical_signature, is_protocol_version, is_utc_timestamp};
 use super::{
-    Check, Exercised, Finding, Received, Report, RoleHarness, SignatureVerifier, SuiteContext,
-    Uncovered, Verification, placeholder_key, placeholder_signature,
+    BankCredit, Check, Exercised, Finding, Received, Report, RoleHarness, SignatureVerifier,
+    SuiteContext, Uncovered, Verification, placeholder_key, placeholder_signature,
 };
 
 /// A node no provider advertises, for probing the edge of a provider's tuples.
@@ -648,6 +650,7 @@ impl Run<'_> {
         if categories.contains(&Category::Reserve) {
             self.probe_balance(provider);
             self.probe_reversal_confirmations(provider);
+            self.probe_arrivals(provider);
         }
         if categories.contains(&Category::Verifier) {
             self.probe_judgements(provider);
@@ -1476,6 +1479,290 @@ impl Run<'_> {
         }
     }
 
+    /// A reserve's statement of what arrived (`REQ-ORD-1`, `REQ-ORD-14`, `REQ-ORD-23`): asked of an account nothing
+    /// reached, it says nothing arrived; asked of a credit at its bank, it gives its notice of the credit under the
+    /// question's transaction, the same notice each time it is asked and of its own accord, and no notice of another
+    /// account's credit, to another session, or to a question from elsewhere.
+    fn probe_arrivals<P: RoleHarness + ?Sized>(&mut self, provider: &mut P) {
+        let Some((node, asset)) = self
+            .advertisement
+            .offers
+            .reserve
+            .iter()
+            .flat_map(|o| &o.tuples)
+            .find_map(|t| {
+                let (node, decimals) = match (&t.origin, &t.destination) {
+                    (NodeRef::Outer(node), _) => (node, t.decimals.origin),
+                    (_, NodeRef::Outer(node)) => (node, t.decimals.destination),
+                    _ => return None,
+                };
+                let asset = Denomination {
+                    id: t.asset.clone(),
+                    decimals,
+                };
+                Some((node.clone(), asset))
+            })
+        else {
+            return;
+        };
+        let subject = format!("arrival questions of {}", asset.id);
+        let account = self.context.account.clone();
+        let session = self.context.session.clone();
+        let ask = (&node, &asset, account.as_str());
+
+        // Nothing has arrived: the reserve says so, and no notice of a credit that never was.
+        let question = self.arrival_question(ask, &session, true);
+        match self.ask_arrival(
+            provider,
+            &question,
+            "the question of what arrived, before any credit",
+        ) {
+            // Required once the reserve answers the question at all: the platform's binding carries operations and
+            // this is not one, so a reserve reached only through it isn't asked (`T-024-15`'s gap).
+            Some(answer) => {
+                self.require(&subject, Exercised::NothingArrived);
+                match answer.statement.outcome {
+                    ArrivalOutcome::NothingArrived(_) => {
+                        self.saw(&subject, Exercised::NothingArrived)
+                    }
+                    ArrivalOutcome::Arrived(_) => self.flag(
+                        Check::ArrivalsStated,
+                        "a credit stated as arrived, with none at its bank",
+                    ),
+                    ArrivalOutcome::Refused(_) => {}
+                }
+            }
+            None => return,
+        }
+
+        let credit = BankCredit {
+            reference: self.transaction(),
+            node: node.clone(),
+            asset: asset.clone(),
+            amount: CREDIT.to_string(),
+            account: account.clone(),
+            holder: "conformance-holder".to_owned(),
+        };
+        if !provider.credit_arrival(&credit) {
+            return;
+        }
+        self.report.hooks_used = true;
+        let what = format!(
+            "the question of what arrived, of {} {}",
+            credit.amount, asset.id
+        );
+        let mut notices = Vec::new();
+        for round in ["first", "again"] {
+            let question = self.arrival_question(ask, &session, true);
+            let what = format!("{what}, asked {round}");
+            let Some(answer) = self.ask_arrival(provider, &question, &what) else {
+                continue;
+            };
+            match answer.statement.outcome {
+                ArrivalOutcome::Arrived(arrived) => {
+                    if arrived.notices.len() != 1 {
+                        self.flag(
+                            Check::ArrivalsStated,
+                            format!("{what}: {} notices of one credit", arrived.notices.len()),
+                        );
+                    }
+                    for notice in arrived.notices {
+                        self.check_notice_of(&notice, &credit, &what);
+                        notices.push(notice);
+                    }
+                }
+                _ => self.flag(
+                    Check::ArrivalsStated,
+                    format!("{what}: not stated as arrived"),
+                ),
+            }
+        }
+        if let [first, second] = notices.as_slice() {
+            self.check_one_credit_of(first, second, &what);
+            self.saw(&subject, Exercised::ArrivalNoticed);
+        }
+        if let Some(sent) = provider.arrival_notice(&credit.reference) {
+            let what = format!("the reserve's own notice of {} {}", credit.amount, asset.id);
+            self.check_envelope(sent.statement(), sent.bytes(), &what);
+            self.check_maker_and_key(sent.statement(), &what);
+            self.check_notice_of(sent.statement(), &credit, &what);
+            if let Some(first) = notices.first() {
+                self.check_one_credit_of(first, sent.statement(), &what);
+            }
+        }
+
+        // What it must not state: another account's credit, to another session, to a question from elsewhere.
+        let elsewhere = format!("{account}-elsewhere");
+        let question = self.arrival_question((&node, &asset, &elsewhere), &session, true);
+        self.expect_nothing_stated(provider, &question, "an account the credit didn't reach");
+        let question = self.arrival_question(ask, &self.other_session(), true);
+        self.expect_nothing_stated(provider, &question, "another session");
+        let question = self.arrival_question(ask, &session, false);
+        self.expect_nothing_stated(
+            provider,
+            &question,
+            "a question not signed with the operator's key",
+        );
+    }
+
+    /// An arrival question as the operator asks it, with the placeholder signature a stand-in doesn't check:
+    /// signed with the operator's key where `by_operator`, and with another where it isn't.
+    fn arrival_question(
+        &mut self,
+        (node, asset, account): (&OuterNode, &Denomination, &str),
+        session: &str,
+        by_operator: bool,
+    ) -> Statement<ArrivalQuestion> {
+        Statement {
+            deployment: self.context.deployment.clone(),
+            protocol_version: self.context.protocol_version.clone(),
+            shape: ARRIVAL_QUESTION_SHAPE.to_owned(),
+            maker: self.context.operator.clone(),
+            made_at: "2026-11-06T15:04:05Z".to_owned(),
+            signature: Signature {
+                scheme: SignatureScheme::Ed25519,
+                key: if by_operator {
+                    self.context.deployment.operator_key.clone()
+                } else {
+                    placeholder_key(9)
+                },
+                value: placeholder_signature(),
+            },
+            statement: ArrivalQuestion {
+                transaction: self.transaction(),
+                provider: self.advertisement.provider.clone(),
+                session: session.to_owned(),
+                account: account.to_owned(),
+                node: node.clone(),
+                asset: asset.clone(),
+            },
+        }
+    }
+
+    /// Asks the reserve what arrived, and checks the answer's envelope, its maker and key, each notice it carries as
+    /// a statement of its own, and that it answers the question (`check_answer`), and that asking changed nothing.
+    /// `None` where the provider doesn't answer the question.
+    fn ask_arrival<P: RoleHarness + ?Sized>(
+        &mut self,
+        provider: &mut P,
+        question: &Statement<ArrivalQuestion>,
+        what: &str,
+    ) -> Option<Statement<ArrivalAnswer>> {
+        let before = provider.state();
+        let received = provider.arrival(question)?;
+        if provider.state() != before {
+            self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: the provider's state changed"),
+            );
+        }
+        let answer = received.statement();
+        self.check_envelope(answer, received.bytes(), what);
+        self.check_maker_and_key(answer, what);
+        if let ArrivalOutcome::Arrived(arrived) = &answer.statement.outcome {
+            let texts = match member(received.bytes(), &["statement", "outcome", "notices"]) {
+                Ok(Some(array)) => elements_of(array),
+                _ => Vec::new(),
+            };
+            if texts.len() != arrived.notices.len() {
+                self.flag(
+                    Check::EnvelopeWellFormed,
+                    format!(
+                        "{what}: its notices are not found as their own text in the answer received"
+                    ),
+                );
+            }
+            for (at, (notice, text)) in arrived.notices.iter().zip(texts).enumerate() {
+                let what = format!("{what}, its notice {at}");
+                self.check_envelope(notice, text, &what);
+                self.check_maker_and_key(notice, &what);
+            }
+        }
+        if let Err(broken) = check_answer(question, answer) {
+            let broken: Vec<String> = broken
+                .iter()
+                .map(|m: &AnswerMismatch| format!("{m:?}"))
+                .collect();
+            self.flag(
+                Check::ArrivalsStated,
+                format!(
+                    "{what}: not an answer to the question: {}",
+                    broken.join(", ")
+                ),
+            );
+        }
+        Some(answer.clone())
+    }
+
+    /// A notice is of the credit it states: its reference as transaction, and the credit's figures, node, account and
+    /// holder, which are the bank's.
+    fn check_notice_of(
+        &mut self,
+        notice: &Statement<ArrivalNotice>,
+        credit: &BankCredit,
+        what: &str,
+    ) {
+        let n = &notice.statement;
+        if n.transaction != credit.reference {
+            self.flag(
+                Check::ArrivalsStated,
+                format!(
+                    "{what}: a notice under {}, not the credit's reference {}",
+                    n.transaction, credit.reference
+                ),
+            );
+        }
+        if n.node != credit.node
+            || n.asset != credit.asset
+            || n.amount != credit.amount
+            || n.account != credit.account
+            || n.holder != credit.holder
+        {
+            self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: a notice whose figures are not the credit's: {n:?}"),
+            );
+        }
+    }
+
+    /// Two notices of one credit are known as one (`REQ-ORD-23`).
+    fn check_one_credit_of(
+        &mut self,
+        earlier: &Statement<ArrivalNotice>,
+        later: &Statement<ArrivalNotice>,
+        what: &str,
+    ) {
+        match check_one_credit(earlier, later) {
+            Ok(Credits::One) => {}
+            Ok(Credits::Two) => self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: two notices of one credit are taken for two credits"),
+            ),
+            Err(restated) => self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: a credit restated with other figures: {restated:?}"),
+            ),
+        }
+    }
+
+    /// A question the reserve mustn't answer with a notice: asked of a credit that isn't the asker's to know.
+    fn expect_nothing_stated<P: RoleHarness + ?Sized>(
+        &mut self,
+        provider: &mut P,
+        question: &Statement<ArrivalQuestion>,
+        of: &str,
+    ) {
+        let what = format!("the question of what arrived, asked of {of}");
+        if let Some(answer) = self.ask_arrival(provider, question, &what)
+            && matches!(answer.statement.outcome, ArrivalOutcome::Arrived(_))
+        {
+            self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: a credit stated as arrived"),
+            );
+        }
+    }
+
     fn probe_judgements<P: RoleHarness + ?Sized>(&mut self, provider: &mut P) {
         let classes: Vec<String> = self
             .advertisement
@@ -1814,6 +2101,47 @@ impl Run<'_> {
 
 /// Protocol versions other than `ours`, each with how it differs: a higher major, a higher patch, and a lower
 /// version where there is one.
+/// The texts of the elements of a JSON array as they sit in `array`, whole.
+fn elements_of(array: &[u8]) -> Vec<&[u8]> {
+    let (mut depth, mut in_string, mut escaped) = (0_usize, false, false);
+    let (mut elements, mut start) = (Vec::new(), None);
+    for (at, byte) in array.iter().enumerate() {
+        if in_string {
+            match (escaped, byte) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                start.get_or_insert(at);
+            }
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > 1 {
+                    start.get_or_insert(at);
+                }
+            }
+            b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    elements.extend(start.take().map(|s| &array[s..at]));
+                }
+            }
+            b',' if depth == 1 => elements.extend(start.take().map(|s| &array[s..at])),
+            b' ' | b'\n' | b'\t' | b'\r' => {}
+            _ => {
+                start.get_or_insert(at);
+            }
+        }
+    }
+    elements.into_iter().map(|e| e.trim_ascii_end()).collect()
+}
+
 fn other_protocol_versions(ours: &str) -> Vec<(&'static str, String)> {
     let parts: Vec<u64> = ours.split('.').filter_map(|p| p.parse().ok()).collect();
     let [major, minor, patch] = parts[..] else {

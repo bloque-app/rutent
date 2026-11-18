@@ -4,14 +4,16 @@
 use std::time::Duration;
 
 use rutent_conformance::role::{
-    Received, RoleHarness, RoleProvider, SuiteContext, WithoutHooks, run_role_suite,
+    BankCredit, Received, RoleHarness, RoleProvider, SuiteContext, WithoutHooks, run_role_suite,
 };
 use rutent_conformance::signing::{Ed25519Verifier, Signing, signed, signed_inside};
 use rutent_conformance::sim::{
     Act, Behaviour, Crash, Delivery, Role, Simulated, Spec, movements_of, operation,
 };
 use rutent_contracts::module_interface::{CallOutcome, Identifier, PlatformRefusal};
-use rutent_contracts::provider_role::{Advertisement, Operation, ResultBody, Statement};
+use rutent_contracts::provider_role::{
+    Advertisement, ArrivalAnswer, ArrivalNotice, ArrivalQuestion, Operation, ResultBody, Statement,
+};
 use rutent_contracts::state_machine::{Observed, OrderState, SegmentState, StuckReason};
 use rutent_evidence::{MovementId, PublicNetwork, Status};
 use rutent_prov::module::types::Handled;
@@ -219,9 +221,30 @@ impl RoleProvider for Through {
             .status(transaction)
             .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
     }
+
+    // The question of what arrived isn't an operation the platform carries: the provider's own answer, signed
+    // with its statements key, as its status is (`T-024-15`'s gap).
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        self.twin
+            .arrival(question)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.twin
+            .arrival_notice(reference)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
+    }
 }
 
 impl RoleHarness for Through {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        self.twin.credit_arrival(credit)
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         let forced = self.twin.force_outcome_unknown();
         if forced {
