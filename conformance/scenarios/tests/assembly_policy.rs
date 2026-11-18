@@ -179,6 +179,31 @@ fn a_moves_outcome_reported_or_confirmed_reaches_the_engine_and_its_log() {
     assert_eq!(core.log().entries().len(), before, "nothing recorded");
 }
 
+/// A decline of a move's outcome report through the assembly's policy reaches the engine, which has decided it since
+/// `T-021-09`: the answer is the log's refusal (this order has no report to decline), as the report's and the
+/// confirmation's are, and no longer unavailable (`T-024-19`).
+// verifies: REQ-AUZ-4
+#[test]
+fn assembled_decline_of_a_stuck_outcome_is_decided_by_the_policy_engine() {
+    use rutent_contracts::core_internal::calls::{AppendFailure, OutcomeDeclines};
+    let core = accepted();
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/valid/verified-entry-of-an-outcome-report-declined.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let entry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let decline: rutent_contracts::core_internal::OutcomeDecline =
+        serde_json::from_value(entry["what"]["request"].clone()).unwrap();
+    let before = core.log().entries().len();
+    let answer = core.policy().decline_outcome(&decline);
+    assert!(
+        matches!(answer, Err(AppendFailure::Refused(_))),
+        "the engine decides it, and the log refuses a decline of nothing: {answer:?}"
+    );
+    assert_eq!(core.log().entries().len(), before, "nothing recorded");
+}
+
 // verifies: DEC-18
 #[test]
 fn deployment_refusing_reaches_the_calls_answered_beside_the_engine() {

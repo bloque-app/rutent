@@ -587,16 +587,14 @@ impl StuckOrders for PolicySide {
     }
 }
 
-/// A decline of a move's outcome report (`REQ-AUZ-4`, `T-020-20`'s call). The engine has no `decline_outcome` on this
-/// base (`T-021-09` builds it), so the assembly answers it as the engine does today, with nothing: it records nothing
-/// and refuses, failing closed (a wrong report holds its part). When `T-021-09` merges, this body is one line,
-/// `self.engine.borrow_mut().decline_outcome(request)`, as the calls above.
+/// A decline of a move's outcome report (`REQ-AUZ-4`): the engine decides it since `T-021-09`, as it decides a
+/// confirmation, so the call goes to it as the others do (`T-024-19`; it answered unavailable before).
 impl rutent_contracts::core_internal::calls::OutcomeDeclines for PolicySide {
     fn decline_outcome(
         &mut self,
-        _request: &rutent_contracts::core_internal::OutcomeDecline,
+        request: &rutent_contracts::core_internal::OutcomeDecline,
     ) -> Result<Decision, AppendFailure> {
-        Err(AppendFailure::Unavailable)
+        self.engine.borrow_mut().decline_outcome(request)
     }
 }
 
