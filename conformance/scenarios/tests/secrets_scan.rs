@@ -3,9 +3,7 @@
 
 use rutent_contracts::module_interface::SecretValue;
 use rutent_scenarios::assembly::machine::Reference;
-use rutent_scenarios::secrets::{
-    Canary, Kind, MIN_LEN, Scan, Surface, forms, run_leaking, run_planted,
-};
+use rutent_scenarios::secrets::{Canary, Kind, MIN_LEN, Scan, Surface, run_leaking, run_planted};
 
 fn text(kind: Kind, value: &str) -> Canary {
     Canary::text(format!("{kind:?} value"), kind, value)
@@ -24,10 +22,24 @@ fn scan_finds_a_value_in_each_form_a_record_writes_it() {
     let value = "rutent-canary: a \"quoted\" secret\\path";
     let bytes = value.as_bytes();
     let scan = Scan::new(vec![text(Kind::Credential, value)]).expect("a scan");
-    let mut written: Vec<(String, Vec<u8>)> = forms(bytes)
-        .into_iter()
-        .map(|(name, form)| (name.to_owned(), form))
-        .collect();
+    // Each form written here, not by the scan's own `forms`, so a form the scan drops is a test that fails.
+    let escaped = serde_json::to_string(value).expect("JSON");
+    let lower: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let percent: String = bytes.iter().map(|b| format!("%{b:02X}")).collect();
+    let mut written: Vec<(String, Vec<u8>)> = vec![
+        ("as it is".to_owned(), bytes.to_vec()),
+        ("escaped as JSON".to_owned(), escaped.into_bytes()),
+        ("in lower-case hex".to_owned(), lower.clone().into_bytes()),
+        (
+            "in upper-case hex".to_owned(),
+            lower.to_uppercase().into_bytes(),
+        ),
+        (
+            "as a JSON array of bytes".to_owned(),
+            serde_json::to_vec(&bytes.to_vec()).expect("JSON"),
+        ),
+        ("percent-encoded".to_owned(), percent.into_bytes()),
+    ];
     // Inside a longer string, at each alignment base64 can fall on.
     for lead in 0..3 {
         for alphabet in [base64_of as fn(&[u8]) -> String, base64url_of] {
@@ -40,7 +52,7 @@ fn scan_finds_a_value_in_each_form_a_record_writes_it() {
             ));
         }
     }
-    assert!(written.len() >= 10, "forms: {}", written.len());
+    assert!(written.len() >= 12, "forms: {}", written.len());
     for (name, haystack) in written {
         let mut around = b"{\"before\":\"".to_vec();
         around.extend_from_slice(&haystack);
@@ -118,6 +130,7 @@ fn reference_run_after_planting_holds_no_credential_secret_or_module_state() {
         let named = |part: &str| report.looked_at.iter().any(|(n, _)| n.contains(part));
         assert!(named("its snapshot") && named("journal of") && named("Core's log"));
         assert!(named("the log read back") && named("the inputs fed"));
+        assert!(named("evidence shelf"), "the evidence shelf wasn't read");
     }
 }
 
@@ -193,5 +206,36 @@ fn run_records_where_module_state_sat() {
                 && key == "private/notes"),
         "the planted entry of module state isn't in the platform's world: {:?}",
         scanned.module_state
+    );
+}
+
+// verifies: THR-79, REQ-AUD-6
+#[test]
+fn run_looks_the_planted_credential_up_and_reads_the_private_state_it_holds() {
+    let scanned = run_planted(&mut Reference, 1);
+    let log = String::from_utf8(serde_json::to_vec(&scanned.run.log).expect("the log is JSON"))
+        .expect("text");
+    // The names, never the values: the platform's records of the lookup and of the read are in the log.
+    for (what, name) in [
+        ("secret lookups", "api-key"),
+        ("state reads", "private/notes"),
+    ] {
+        assert!(
+            log.contains(name),
+            "the log holds no record of the {what} ({name}), so the values never travelled"
+        );
+    }
+}
+
+// verifies: THR-79
+#[test]
+fn leaked_input_carries_the_value_in_its_payload_and_not_only_in_its_ids() {
+    let scanned = run_planted(&mut Reference, 1);
+    let leaked =
+        rutent_scenarios::secrets::leaked_input(&scanned.run.inputs, "rutent-canary-payload");
+    let payload = serde_json::to_string(&leaked.observed).expect("JSON");
+    assert!(
+        payload.contains("rutent-canary-payload"),
+        "the value isn't in the input's payload: {payload}"
     );
 }

@@ -12,12 +12,15 @@
 //! - A scan with no value to seek, a value too short to be told from chance ([`MIN_LEN`]), or a surface with nothing
 //!   in it is refused: there would be nothing to say it saw.
 //! - Each value is sought in the forms a record writes it: as it is, as JSON writes it, in hex, and in base64 (both
-//!   alphabets, padded or not, at each of the three alignments it may fall on inside a longer string).
+//!   alphabets, padded or not, at each of the three alignments it may fall on inside a longer string), as the JSON
+//!   array of bytes serde_json writes a byte string as, and with every byte percent-encoded.
 
 use std::collections::BTreeSet;
 
 use rutent_contracts::state_machine::host::SnapshotEntry;
 use rutent_contracts::state_machine::{Id, Observed, RecordId, RecordedInput};
+
+use rutent_conformance::sim::{CREDENTIAL, PRIVATE_NOTES_KEY};
 
 use crate::assembly::Core;
 use crate::assembly::machine::{Environment, Machine};
@@ -181,6 +184,8 @@ pub fn forms(bytes: &[u8]) -> Forms {
             forms.push(("escaped as JSON", inner));
         }
     }
+    forms.push(("as a JSON array of bytes", byte_array(bytes)));
+    forms.push(("percent-encoded", percent(bytes)));
     forms.push(("in lower-case hex", hex(bytes, false)));
     forms.push(("in upper-case hex", hex(bytes, true)));
     for (name, alphabet) in [("in base64", STANDARD), ("in base64url", URL)] {
@@ -192,6 +197,21 @@ pub fn forms(bytes: &[u8]) -> Forms {
         }
     }
     forms
+}
+
+/// How serde_json writes a byte string with no better form: `[215,132,72]`.
+fn byte_array(bytes: &[u8]) -> Vec<u8> {
+    let list: Vec<String> = bytes.iter().map(u8::to_string).collect();
+    format!("[{}]", list.join(",")).into_bytes()
+}
+
+/// Every byte as `%XX`, which any URL decoder reads back to the value whatever the letter; the unreserved ones are
+/// written plain in the text a URL carries, so this is the form that hides a value from a plain search.
+fn percent(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .iter()
+        .flat_map(|b| format!("%{b:02X}").into_bytes())
+        .collect()
 }
 
 fn found_in(haystack: &[u8], needle: &[u8]) -> bool {
@@ -398,8 +418,8 @@ pub fn plant(core: &mut Core, providers: &[String], seed: u64) -> Vec<Canary> {
     for provider in providers {
         let credential = format!("rutent-canary-credential-{provider}-{seed:016x}");
         let state = format!("rutent-canary-module-state-{provider}-{seed:016x}");
-        core.world().hold_secret(provider, "api-key", &credential);
-        core.world().seed_state(provider, "private/notes", &state);
+        core.world().hold_secret(provider, CREDENTIAL, &credential);
+        core.world().seed_state(provider, PRIVATE_NOTES_KEY, &state);
         canaries.push(Canary::text(
             format!("credential of {provider}"),
             Kind::Credential,
@@ -571,6 +591,12 @@ fn run_with(environment: &mut dyn Environment, seed: u64, leak: Option<Kind>) ->
             let machine = core.feed.machine_mut();
             let mut host = machine_surfaces(machine, "the host").unwrap_or_else(|e| panic!("{e}"));
             surfaces.append(&mut host);
+            for (n, kept) in core.disk.shelved().into_iter().enumerate() {
+                surfaces.push(Surface {
+                    name: format!("Core's evidence shelf, entry {n}"),
+                    bytes: kept,
+                });
+            }
             for (n, record) in core.disk.records().into_iter().enumerate() {
                 surfaces.push(Surface {
                     name: format!("Core's log, record {n}"),
@@ -622,5 +648,12 @@ pub fn leaked_input(inputs: &[RecordedInput], leak: &str) -> RecordedInput {
         .clone();
     leaked.record_id = RecordId::new(format!("record-{leak}")).expect("a record id");
     leaked.subject.order = Id::new(format!("order-{leak}")).expect("an id");
+    // And in a field of the payload, which a host that keeps its keys raw and its values another way still holds.
+    if let Observed::RouteChosen {
+        decision_record, ..
+    } = &mut leaked.observed
+    {
+        *decision_record = Id::new(format!("decision-{leak}")).expect("an id");
+    }
     leaked
 }

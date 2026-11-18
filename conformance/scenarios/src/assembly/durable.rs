@@ -91,6 +91,21 @@ impl Disk {
         self.records.borrow().clone()
     }
 
+    /// Every statement the evidence store's shelf keeps, as the shelf writes it (JSON, one each), and the commitments
+    /// erased, as one more entry.
+    pub fn shelved(&self) -> Vec<Vec<u8>> {
+        let Ok(contents) = self.shelf.borrow_mut().load() else {
+            return Vec::new();
+        };
+        let mut all: Vec<Vec<u8>> = contents
+            .kept
+            .iter()
+            .map(|kept| serde_json::to_vec(kept).expect("a kept statement is JSON"))
+            .collect();
+        all.push(format!("{:?}", contents.erased).into_bytes());
+        all
+    }
+
     /// The log's store on this disk.
     pub(crate) fn log(&self) -> LogDisk {
         LogDisk(self.clone())
