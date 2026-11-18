@@ -21,9 +21,17 @@ name = "rutent-jail-probe"
 path = "src/module/bin/jail_probe.rs"
 required-features = ["jail-layers"]
 
+# The jail's layer probes, which need the `jail-layers` feature: `cargo test -p rutent-prov --features jail-layers
+# --test jail_layers`, run by `.github/workflows/jail-probes.yml`. `cargo test --workspace` skips them.
+[[test]]
+name = "jail_layers"
+path = "tests/jail_layers.rs"
+required-features = ["jail-layers"]
+
 [features]
-# Test-only (`T-025-02`): the builder that composes the jail's layers one at a time. Never a default, and only the
-# package's own tests turn it on (the dev-dependency on itself below), so a release build has none of it.
+# Test-only (`T-025-02`): the builder that composes the jail's layers one at a time. Never a default, and enabled by
+# nothing but the command line of the job that runs the probes (no feature, no dependent crate and no dev-dependency
+# names it: `tools/boundary-check` refuses a package that depends on itself), so a release build has none of it.
 jail-layers = []
 
 [dependencies]
@@ -43,7 +51,6 @@ rustls-pki-types = { version = "1.12", features = ["std"] }
 jsonschema = { version = "0.60.2", default-features = false }
 
 [dev-dependencies]
-rutent-prov = { path = ".", features = ["jail-layers"] }
 rutent-conformance = { path = "../../conformance", features = ["signing"] }
 serde_json = "1.0.154"
 ed25519-dalek = "2.2.0"

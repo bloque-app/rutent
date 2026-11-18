@@ -300,11 +300,22 @@ mod rig {
 
     pub fn descriptors() {
         let (_file, fd) = inheritable();
-        let present = format!("fds=[{fd}]");
+        // The descriptors the child finds, as numbers: the test's own, which it made inheritable on purpose, and
+        // whatever else the runner left open (the first run found 3, 142 and 145 here, all inherited).
+        let fds = |result: &str| -> Vec<i32> {
+            let list = result
+                .strip_prefix("fds=[")
+                .and_then(|r| r.strip_suffix(']'))
+                .expect("a list");
+            list.split(',')
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| n.trim().parse().expect("a number"))
+                .collect()
+        };
         let control = run(Layers::none(), "descriptors", None);
-        assert_eq!(
-            control, present,
-            "the control didn't inherit the descriptor"
+        assert!(
+            fds(&control).contains(&fd),
+            "the control didn't inherit the descriptor {fd}, so the close would prove nothing: {control}"
         );
         for (layer, what) in [
             (CloseBeforeExec, "before exec"),
@@ -420,21 +431,23 @@ mod rig {
         // By construction, not by string: the features Cargo resolves for the release command line. The scan above
         // can't tell a build that carries the feature from one that doesn't if the optimiser folds the names away,
         // so a leak of `jail-layers` is caught here, in the resolved graph.
-        let tree = |edges: &str| {
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let out = Command::new(cargo)
+        let cargo = || std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let tree = |extra: &[&str]| {
+            let out = Command::new(cargo())
                 .args([
                     "tree",
                     "--locked",
                     "-p",
                     "rutent-prov",
                     "-e",
-                    edges,
+                    "normal,build,features",
                     "--prefix",
                     "none",
                 ])
+                .args(extra)
                 .arg("--manifest-path")
-                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+                .arg(manifest)
                 .output()
                 .expect("cargo tree");
             assert!(
@@ -444,46 +457,56 @@ mod rig {
             );
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
-        let shipped_graph = tree("normal,build,features");
-        let test_graph = tree("normal,build,dev,features");
+        let shipped_graph = tree(&[]);
+        let control_graph = tree(&["--features", "jail-layers"]);
         assert!(
-            test_graph.contains("feature \"jail-layers\""),
-            "the control graph (with dev-dependencies) doesn't show the feature: the check would pass for nothing"
+            control_graph.contains("feature \"jail-layers\""),
+            "the control graph (the feature asked for) doesn't show it: the check would pass for nothing"
         );
         assert!(
             !shipped_graph.contains("jail-layers"),
             "the release command line resolves the jail-layers feature:\n{shipped_graph}"
         );
-        // No feature of the package, `default` and its chains included, enables it, so only the package's own
-        // dev-dependency can. `cargo metadata` parses the manifest, a multi-line array included.
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let meta = Command::new(cargo)
+        // Nothing enables it but a command line: no feature of the package (`default` and its chains included), no
+        // dependent crate of the workspace, no dependency of the package on itself. `cargo metadata` parses the
+        // manifests, multi-line arrays included.
+        let meta = Command::new(cargo())
             .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
             .arg("--manifest-path")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .arg(manifest)
             .output()
             .expect("cargo metadata");
         assert!(meta.status.success(), "cargo metadata failed");
         let meta: serde_json::Value = serde_json::from_slice(&meta.stdout).expect("metadata");
-        let package = meta["packages"]
-            .as_array()
-            .and_then(|ps| ps.iter().find(|p| p["name"] == "rutent-prov"))
-            .expect("the package");
-        for (feature, enables) in package["features"].as_object().expect("features") {
-            let leaks = enables
-                .as_array()
-                .expect("a list")
-                .iter()
-                .any(|e| e.as_str().is_some_and(|e| e.contains("jail-layers")));
-            assert!(
-                !leaks || feature == "jail-layers",
-                "feature {feature} enables jail-layers"
-            );
-        }
+        let packages = meta["packages"].as_array().expect("packages");
         assert!(
-            package["features"].get("jail-layers").is_some(),
-            "the feature is gone: the checks mean nothing"
+            packages.len() > 3,
+            "the metadata lists too few workspace packages to mean anything"
         );
+        let mut saw_feature = false;
+        for package in packages {
+            let name = package["name"].as_str().expect("a name");
+            for (feature, enables) in package["features"].as_object().expect("features") {
+                let leaks = enables
+                    .as_array()
+                    .expect("a list")
+                    .iter()
+                    .any(|e| e.as_str().is_some_and(|e| e.contains("jail-layers")));
+                assert!(!leaks, "{name}'s feature {feature} enables jail-layers");
+                saw_feature |= name == "rutent-prov" && feature == "jail-layers";
+            }
+            for dependency in package["dependencies"].as_array().expect("dependencies") {
+                if dependency["name"] == "rutent-prov" {
+                    let features = dependency["features"].to_string();
+                    assert!(
+                        !features.contains("jail-layers"),
+                        "{name} depends on rutent-prov with jail-layers"
+                    );
+                    assert_ne!(name, "rutent-prov", "the package depends on itself");
+                }
+            }
+        }
+        assert!(saw_feature, "the feature is gone: the checks mean nothing");
         note(
             "release scan",
             &format!("{} carries no layer switch", release.display()),

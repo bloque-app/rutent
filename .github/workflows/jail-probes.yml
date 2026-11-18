@@ -42,7 +42,7 @@ jobs:
       # AppArmor, and every jail starts in user namespaces of its own (`unshare --user`).
       - name: Allow unprivileged user namespaces on this runner
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      # The release build the scan reads: no dev-dependency, so no `jail-layers` feature.
+      # The release build the scan reads: no `jail-layers` feature on its command line.
       - name: Release build of the provider binary
         run: cargo build --release --locked -p rutent-prov --bin rutent-wasm-provider
       - name: Probe each layer alone, and scan the release build
@@ -51,7 +51,7 @@ jobs:
           RUTENT_RELEASE_PROVIDER: ${{ github.workspace }}/target/release/rutent-wasm-provider
         run: |
           set -o pipefail
-          cargo test --locked -p rutent-prov --test jail_layers -- --test-threads=1 --nocapture 2>&1 \
+          cargo test --locked -p rutent-prov --features jail-layers --test jail_layers -- --test-threads=1 --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/jail-probes.txt"
       - name: The probes' results, with the run id
         if: always()

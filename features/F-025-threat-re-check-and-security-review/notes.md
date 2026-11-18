@@ -267,8 +267,8 @@ main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touche
   `isolated_layers` / `confine_layers` with `Layers::ALL`, and each step asks `layers.on(Layer::X)`. In a shipped
   build `Layers` is a zero-sized type whose `on` is `true`: no name, parser or setter is compiled in. With the
   `jail-layers` feature the set is real, and `module::jail` (`isolated`, `confine`, `unshare_arguments`) composes
-  layers. The feature is not a default; only the package's own tests turn it on, through a dev-dependency on itself
-  (`rutent-prov = { path = ".", features = ["jail-layers"] }`), and `rutent-jail-probe` (the hostile probe, a binary with
+  layers. The feature is not a default; nothing turns it on but the command line of the job that runs the probes
+  (`--features jail-layers`; see the second review below), and `rutent-jail-probe` (the hostile probe, a binary with
   `required-features`) exists only with it. One source of truth: the shipped jail and the builder's all-layers jail are
   the same code, and a test shows `unshare_arguments(ALL) == UNSHARE`.
 - **The probes** (`components/prov/tests/jail_layers.rs`), each run twice: in a control jail without the layer, where the
@@ -342,3 +342,22 @@ main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touche
   it, and the user namespace already refuses a rename without it. The owner item stands (gap 1 above).
 - **`jail-probes` is not a required check** of the repository (a branch-protection setting, which isn't ours to change),
   so a red run doesn't block a merge by itself. Owner: Pablo, to add it once the first run is green.
+
+### T-025-02, after the first Linux run (`a92e45a9`, run 44237249072)
+
+- **13 of 14 probes passed on Linux**; the run's lines carry the run id, which the row's Done-when cites.
+- **The descriptor control did inherit** (the log read `fds=[3, 142, 145]`): the test made its descriptor inheritable, but
+  asserted the child's list was exactly `[fd]`, and the runner had left two others open (3, 142 and 145 are all inherited:
+  `close_range` removes them in the jail, which `inherited_descriptor_is_closed_inside_the_jail` shows with `fds=[]`). The
+  control now asserts that its list *contains* the test's descriptor.
+- **No self dev-dependency** (`tools/boundary-check` refuses a package that depends on itself, and its paths are
+  `DEC-20`'s, `F-020`'s). The `jail_layers` test and `rutent-jail-probe` carry `required-features = ["jail-layers"]`, and
+  `jail-probes.yml` runs `cargo test -p rutent-prov --features jail-layers --test jail_layers`. **`cargo test --workspace`
+  in `ci.yml` therefore skips the probes: the `jail-probes` job is the one that runs them.** Local clippy for them is
+  `cargo clippy -p rutent-prov --all-targets --features jail-layers`, which `ci.yml`'s workspace clippy doesn't cover.
+- **The resolved-features check follows:** `cargo tree` for the release command line shows no `jail-layers`, and the same
+  with `--features jail-layers` shows it (the control); `cargo metadata` over the workspace shows no feature, no dependent
+  crate and no self-dependency enabling it.
+- **A gap for `F-024`:** `ci.yml`'s evidence table (`T-024-09`) reads the results of `cargo test --workspace`, which no
+  longer holds these 13 tests, so `THR-85`, `THR-79`, `GUA-5` and `REQ-MDL-11` rows they verify would read as untested
+  there unless the table also reads the `jail-probes` job's results. Owner: `F-024`.
