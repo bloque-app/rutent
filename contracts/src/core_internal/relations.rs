@@ -414,6 +414,28 @@ fn statement_by(
     }
 }
 
+/// The stated entry a report of a pair cites: a verified `result` (provider-role's shape, not a hold, terms, notice
+/// or judgement), made by the report's party, about the pair's order and the report's own segment, naming it, through
+/// a transaction first bound to that segment ([`about_the_segment`]). A statement about nothing backs no report
+/// (`T-020-38`'s review): [`about_agrees`] would take it on its body, which the log holds only by commitment.
+fn report_statement(target: &Entry, order: &Id, report: &Report, history: &History) -> Match {
+    match stated(target) {
+        Some(s) => judge(
+            true,
+            &[
+                matches!(s.attribution, Attribution::Verified { .. }),
+                s.what.statement.as_str() == crate::provider_role::RESULT_SHAPE,
+                maker_provider(s) == &report.party,
+                s.about
+                    .as_ref()
+                    .is_some_and(|a| a.segment.as_ref() == Some(&report.segment))
+                    && about_the_segment(s, order, &report.segment, history),
+            ],
+        ),
+        None => Match::NotTarget,
+    }
+}
+
 /// A stated entry about what its citing entry is about ([`about_agrees`]).
 fn statement_about(
     target: &Entry,
@@ -2723,6 +2745,10 @@ pub static RELATIONS: [Relation; 109] = [
         refusal: "a sent report is a stated entry of this log",
         fields: &[
             ("verified", "a sent report is a verified statement"),
+            (
+                "result",
+                "a sent report is its party's result, not another shape",
+            ),
             ("maker", "a sent report is its sending party's statement"),
             (
                 "about",
@@ -2736,13 +2762,7 @@ pub static RELATIONS: [Relation; 109] = [
         // Each report is read against its own segment (`T-020-38`): the sent one's is the pair's
         // (`ReportPair::check`).
         answers: |e, _, t, h| match &e.what {
-            What::ReportPair { pair } => statement_by(
-                t,
-                &pair.sent.party,
-                Some(&pair.order),
-                Some(&pair.sent.segment),
-                h,
-            ),
+            What::ReportPair { pair } => report_statement(t, &pair.order, &pair.sent, h),
             _ => Match::NotTarget,
         },
     },
@@ -2753,6 +2773,10 @@ pub static RELATIONS: [Relation; 109] = [
         refusal: "a received report is a stated entry of this log",
         fields: &[
             ("verified", "a received report is a verified statement"),
+            (
+                "result",
+                "a received report is its party's result, not another shape",
+            ),
             (
                 "maker",
                 "a received report is its receiving party's statement",
@@ -2769,13 +2793,7 @@ pub static RELATIONS: [Relation; 109] = [
         // The next provider's report of receiving is its own result, about the next segment (`T-020-38`), which
         // `received-report-is-about-the-next-segment` holds to the route.
         answers: |e, _, t, h| match &e.what {
-            What::ReportPair { pair } => statement_by(
-                t,
-                &pair.received.party,
-                Some(&pair.order),
-                Some(&pair.received.segment),
-                h,
-            ),
+            What::ReportPair { pair } => report_statement(t, &pair.order, &pair.received, h),
             _ => Match::NotTarget,
         },
     },

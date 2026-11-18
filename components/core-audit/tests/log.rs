@@ -3443,6 +3443,40 @@ fn reporting<S: Store>(
     entry
 }
 
+/// Appends `maker`'s statement of `shape` about `about` (none where null), signed by its statements key and its bytes
+/// kept, as Core hands it over, and answers its receipt.
+fn stated_by<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    shape: &str,
+    about: Value,
+    body: Value,
+) -> Receipt {
+    let mut entry = question_answer(maker, "unused");
+    entry["what"]["statement"] = json!(shape);
+    if about.is_null() {
+        entry.as_object_mut().unwrap().remove("about");
+    } else {
+        entry["about"] = about;
+    }
+    let claim = run.claim(&entry, &statements_key(maker), body);
+    run.append(claim).unwrap()
+}
+
+/// `pair` with its `which` report's statement at `receipt`, its party and segment as they were.
+fn citing(pair: &VerifiedEntry, which: &str, receipt: Receipt) -> VerifiedEntry {
+    let mut entry = pair.clone();
+    let What::ReportPair { pair } = &mut entry.what else {
+        panic!("a report pair");
+    };
+    if which == "sent" {
+        pair.sent.statement = receipt;
+    } else {
+        pair.received.statement = receipt;
+    }
+    entry
+}
+
 /// Appends `entry`, built in memory, through the general handle, as `core-audit`'s comparison does.
 fn append_pair<S: Store>(run: &mut Run<S>, entry: VerifiedEntry) -> Result<Receipt, AppendFailure> {
     run.log
@@ -3499,6 +3533,22 @@ fn a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_
             "a report's party is the provider this log moved its segment's value with"
         )))
     );
+    // A received report by a party that didn't move the next segment: bridge-pay's result about `p1-s2`, which
+    // fx-desk moved (the review of `8a6854b1`).
+    stated_by(
+        &mut run,
+        "bridge-pay",
+        "urn:rutent:provider-role:result",
+        json!({"order": "ord-1", "transaction": "tx-f2", "segment": "p1-s2"}),
+        json!({"kind": "balance_verification", "transaction": "tx-f2"}),
+    );
+    let by_another = reporting(&run, &pair, "received", "bridge-pay", "tx-f2", "p1-s2");
+    assert_eq!(
+        append_pair(&mut run, by_another),
+        Err(AppendFailure::Refused(Violation(
+            "a report's party is the provider this log moved its segment's value with"
+        )))
+    );
     // One party on both sides: us-bank's result about `p1-s2` as the received report.
     let one_party = reporting(&run, &pair, "received", "us-bank", "tx-f2", "p1-s2");
     assert_eq!(
@@ -3507,4 +3557,102 @@ fn a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_
             "a segment's two reports are by two different parties"
         )))
     );
+}
+
+/// The review of `8a6854b1`, on the log `core-audit` keeps: a report rests on its party's verified result about its
+/// own segment, never on another shape of that party's (a judgement, a hold, terms, an arrival notice), nor on a
+/// statement about nothing, which the log would verify on its body alone. A judgement about the segment the log
+/// leaves unverified, since a judgement names no transaction.
+// verifies: REQ-ORD-9, REQ-AUD-2
+#[test]
+fn a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segments() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    let pair = the_worlds_pair(&run);
+    let judgement = json!({"kind": "judgement"});
+    let sent = json!({"order": "ord-1", "segment": "p1-s1", "transaction": "tx-b1"});
+    let received = json!({"order": "ord-1", "segment": "p1-s2", "transaction": "tx-f2"});
+    let under = |t: &str| json!({"kind": "balance_verification", "transaction": t});
+    let cases = [
+        (
+            "sent",
+            "us-bank",
+            "judgement",
+            Value::Null,
+            judgement.clone(),
+            "result",
+        ),
+        (
+            "sent",
+            "us-bank",
+            "result",
+            Value::Null,
+            judgement.clone(),
+            "about",
+        ),
+        (
+            "sent",
+            "us-bank",
+            "judgement",
+            json!({"order": "ord-1", "segment": "p1-s1"}),
+            judgement.clone(),
+            "verified",
+        ),
+        (
+            "sent",
+            "us-bank",
+            "hold",
+            sent.clone(),
+            under("tx-b1"),
+            "result",
+        ),
+        ("sent", "us-bank", "terms", sent, under("tx-b1"), "result"),
+        (
+            "received",
+            "fx-desk",
+            "judgement",
+            Value::Null,
+            judgement.clone(),
+            "result",
+        ),
+        (
+            "received",
+            "fx-desk",
+            "result",
+            Value::Null,
+            judgement,
+            "about",
+        ),
+        (
+            "received",
+            "fx-desk",
+            "arrival-notice",
+            received,
+            under("tx-f2"),
+            "result",
+        ),
+    ];
+    for (which, maker, shape, about, body, field) in cases {
+        let at = stated_by(
+            &mut run,
+            maker,
+            &format!("urn:rutent:provider-role:{shape}"),
+            about.clone(),
+            body,
+        );
+        let refusal = match (which, field) {
+            ("sent", "verified") => "a sent report is a verified statement",
+            ("sent", "result") => "a sent report is its party's result, not another shape",
+            ("sent", _) => "a sent report is about its pair's order and its own segment",
+            (_, "result") => "a received report is its party's result, not another shape",
+            _ => "a received report is about its pair's order and its own segment",
+        };
+        assert_eq!(
+            append_pair(&mut run, citing(&pair, which, at)),
+            Err(AppendFailure::Refused(Violation(refusal))),
+            "{which} {shape} {about}"
+        );
+    }
 }

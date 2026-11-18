@@ -3907,6 +3907,16 @@ fn report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_a
     // Each report is read against its own segment: the sent one about the pair's, the received one about the next.
     assert_case_refused("sent-report-is-its-partys-statement--about-the-received-segment");
     assert_case_refused("received-report-is-its-partys-statement--about-the-sent-segment");
+    // Each a result about its own segment: not the provider's result about nothing, whose body the log holds only by
+    // commitment, nor another shape about the segment (a hold, an arrival notice), the review of `8a6854b1`.
+    for row in [
+        "sent-report-is-its-partys-statement",
+        "received-report-is-its-partys-statement",
+    ] {
+        for name in ["a-statement-about-nothing", "result"] {
+            assert_case_refused(&format!("{row}--{name}"));
+        }
+    }
     // Each by its own segment's provider: the one the log moved that segment's value with, on a segment it moved.
     for name in [
         "missing",
