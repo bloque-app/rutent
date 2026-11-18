@@ -7,10 +7,13 @@
 mod segments_support;
 
 use rutent_conformance::sim::Behaviour;
+use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{Entry, HandedOver, Receipt, What};
 use rutent_contracts::state_machine::{Observed, SegmentState};
 use rutent_core_orch::recalc::Recalculation;
-use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome, UnknownBy};
+use rutent_core_orch::segments::{
+    APPEND_TRIES, Accounted, Ran, SegmentOutcome, SegmentsError, UnknownBy,
+};
 use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Stuck, StuckError, seen_by_provider};
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::on_parts;
@@ -287,4 +290,75 @@ fn outcome_unknown_cites_the_platforms_own_record() {
 
 fn is_unanswered_entry(entry: &Entry) -> bool {
     matches!(entry, Entry::Verified(v) if is_unanswered(&v.what))
+}
+
+/// How many inputs on the log say a segment's outcome is unknown.
+fn count_unknown(core: &Core) -> usize {
+    core.log.borrow().count(|w| {
+        matches!(w, What::Input { input }
+            if matches!(input.observed, Observed::SegmentOutcomeUnknown {}))
+    })
+}
+
+/// While the log can't take the platform's record of an operation that ended with no answer, the segment's unknown
+/// outcome is held back, never recorded without its citation; once the log takes the record, the outcome follows it
+/// and cites it (`REQ-MDL-8`, `T-020-25`'s fail-closed default).
+// verifies: REQ-MDL-8
+#[test]
+fn outcome_unknown_waits_while_the_log_cant_take_the_platforms_record_and_is_recorded_after() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour {
+            late: true,
+            ..Behaviour::default()
+        },
+    );
+    // The log can't take a handed-over item for as many tries as one drain makes.
+    for _ in 0..APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::HandOver, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    let waiting = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut rutent_core_orch::segments::NoProxy,
+        &mut Recorded,
+        &session,
+    );
+    assert!(
+        matches!(
+            waiting,
+            Err(SegmentsError::Append(AppendFailure::Unavailable))
+        ),
+        "the outcome waits for the record: {waiting:?}"
+    );
+    assert_eq!(count_unknown(&core), 0, "no outcome unknown yet");
+    assert_eq!(
+        core.log.borrow().count(is_unanswered),
+        0,
+        "the platform's record is not on the log yet"
+    );
+
+    // The log takes it now: the record first, then the outcome, which cites it.
+    let ran = core.run(&mut world);
+    let SegmentOutcome::Unknown(UnknownBy::Platform { record, .. }) = &segments(&ran)[0].outcome
+    else {
+        panic!("{ran:?}");
+    };
+    let cited = record.clone().expect("the outcome cites the record");
+    assert_eq!(core.log.borrow().count(is_unanswered), 1, "one record");
+    assert_eq!(count_unknown(&core), 1, "one outcome unknown");
+    let log = core.log.borrow();
+    assert!(is_unanswered_entry(
+        &log.entries[cited.index.get() as usize].0
+    ));
+    drop(log);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
 }
