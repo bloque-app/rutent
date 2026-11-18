@@ -1642,6 +1642,6 @@ written after the code, so "red first" is the rows below):
 |---|---|
 | the second-line refusal in `parse_scope` | the second-strict-line test |
 | the assembly's forward to the engine (back to unavailable) | the assembled decline test |
-| the probe's line left shared (the table's reading of the results) | the release-scan test's shared-line assertion |
+| the release-scan probe's `GUA-5` tag | the release-scan test (the table no longer counts the probe) |
 | `RUTENT_RELEASE_PROVIDER` in the jail step | the release-scan test (the workflow assertion) |
 | the release build step before the jail step | the release-scan test (the build-before-probes assertion) |
