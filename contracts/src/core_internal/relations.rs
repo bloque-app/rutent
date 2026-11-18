@@ -2309,16 +2309,21 @@ pub static RELATIONS: [Relation; 107] = [
         fields: &[],
         // The transaction an `ask_status` effect names is the one Core asks under (`T-020-36`), so a late status is
         // traced from the log by it: never the segment's own, nor one any entry before it names, a stated entry's
-        // `about` or a verified entry's transaction ([`transactions_named`]), but for its own permitting decision.
-        // The same effect retried is no other.
+        // `about` or a verified entry's transaction ([`transactions_named`]), but for its own permitting decision, the
+        // one at its permit's receipt deciding the same action. The same effect retried is no other.
         cites: |e, _| match effect_action(e) {
             Some((Action::AskStatus { .. }, _)) => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| {
-            let Some((Action::AskStatus { transaction, .. }, permit)) = effect_action(e) else {
+        answers: |e, _, t, h| {
+            let Some((action @ Action::AskStatus { transaction, .. }, permit)) = effect_action(e)
+            else {
                 return Match::NotTarget;
             };
+            // Its own permitting decision: the entry at the permit's receipt, deciding this same action. A decision
+            // that copies its ids, at another receipt or for another action, is another entry naming the transaction
+            // (the re-review of `2b0f32b1`).
+            let own_decision = entry_at(permit.receipt(), h);
             let named = match t {
                 Entry::Stated(s) => s
                     .about
@@ -2326,8 +2331,11 @@ pub static RELATIONS: [Relation; 107] = [
                     .and_then(|a| a.transaction.as_ref())
                     .is_some_and(|x| x == transaction),
                 Entry::Verified(v) => {
-                    let own = matches!(&v.what, What::Decide { request, decision }
-                        if decision == permit.decision() && &request.request == permit.request());
+                    let own = own_decision.is_some_and(|d| core::ptr::eq(d, t))
+                        && matches!(&v.what, What::Decide { request, decision }
+                            if decision == permit.decision()
+                                && &request.request == permit.request()
+                                && &request.action == action);
                     !own && transactions_named(v).contains(&transaction.as_str())
                 }
             };

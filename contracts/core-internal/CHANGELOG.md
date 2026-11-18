@@ -894,11 +894,11 @@
   3. `Action::AskStatus.transaction`, required: the fresh transaction a late status is asked under (`T-020-27`'s
      review), so it is traceable from the log; a new row, `status-is-asked-under-a-fresh-transaction` (none other),
      refuses one any earlier entry names: a stated entry's `about`, or a verified entry's action (`ask_status`,
-     `resolve_stuck`, an `accept_fault`'s showing), `stuck_decide` or hand-over, but its own permitting decision (the
-     review of `d11e5a2b`). `core-orch`'s `Reversals::ask_status` draws it before policy decides. One invalid fixture
-     and nine admission cases; the status fixtures name
+     `resolve_stuck`, an `accept_fault`'s showing), `stuck_decide` or hand-over, but its own permitting decision, the entry at its permit's receipt deciding the
+     same action (the reviews of `d11e5a2b` and `2b0f32b1`). `core-orch`'s `Reversals::ask_status` draws it before policy decides. One invalid fixture
+     and ten admission cases; the status fixtures name
      `tx-status-1`. (REQ-ORD-1, REQ-ORD-38)
-  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 675 admission cases and 50 attribution cases; 107
+  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 676 admission cases and 50 attribution cases; 107
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
   transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
   literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)
