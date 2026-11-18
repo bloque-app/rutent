@@ -12,5 +12,5 @@ pub mod fleet;
 pub mod orders;
 pub mod world;
 
-pub use fleet::{Fleet, InProcess, Installed};
+pub use fleet::{Fleet, InProcess, Installed, InstalledWallet};
 pub use world::SimWorld;

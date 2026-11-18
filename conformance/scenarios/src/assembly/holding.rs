@@ -13,26 +13,36 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_contracts::core_internal::{Actor, Effect, Entry, Receipt};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Decisions, Evidence, GeneralEntry, Log,
+};
+use rutent_contracts::core_internal::{
+    About, Action, Actor, CatalogueChange, DecisionRequest, Effect, Entry, Outcome, Receipt,
+    Violation, What,
+};
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id, PolicyBounds};
 use rutent_contracts::state_machine::SegmentPlan;
+use rutent_core_authz::roles::Permission;
 use rutent_core_orch::hand_on::{
     Basis, HandOn, HandOnError, HandedOn, Handing, Parts as HandParts, Start,
 };
+use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::{Answered, Modules};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
     AcceptedRoute, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
 };
 use rutent_prov::catalogue::Instant;
-use rutent_prov::holding::wallet::{HandedOnStart, Holdings, StartError};
+use rutent_prov::holding::wallet::{HandedOnStart, Holdings, Operator, StartError, WalletError};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
 use rutent_prov::module::types::Events;
+use rutent_prov::module::types::Handled;
 
-use super::{Core, CoreLog, Running, StepError};
+use super::{AssemblyError, Core, CoreLog, Running, StepError};
 use crate::kit::{self, RealKey};
+use crate::sim::InstalledWallet;
 
 /// The log, as the mover reads it: the log's own handle, so every read is of the log as it stands then.
 pub(super) struct LogHandle(pub(super) Rc<RefCell<CoreLog>>);
@@ -156,6 +166,20 @@ impl Withdrawals for HeldWallets<'_, '_> {
     }
 }
 
+/// The operator, keeping the bytes of the one statement it signed.
+struct Recording<'a, O> {
+    inner: &'a O,
+    asked: RefCell<Option<Vec<u8>>>,
+}
+
+impl<O: Operator> Operator for Recording<'_, O> {
+    fn statement(&self, operation: Operation) -> Statement<Operation> {
+        let statement = self.inner.statement(operation);
+        *self.asked.borrow_mut() = serde_json::to_vec(&statement).ok();
+        statement
+    }
+}
+
 /// Why a hand-on couldn't be recorded.
 #[derive(Debug)]
 pub enum HandingError {
@@ -275,6 +299,256 @@ impl Core {
         };
         self.feed()?;
         Ok(handed)
+    }
+
+    /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
+    /// (`REQ-CAT-23`, `T-024-17`): the wallet's two components admitted to the platform on the operator's own signed
+    /// release, the node on the operator's public list, and the wallet registered as the node's account. Its release
+    /// isn't accepted in the log yet ([`Core::accept_release`]), so the log verifies none of its answers.
+    ///
+    /// # Errors
+    ///
+    /// If the node refuses the wallet.
+    pub fn install_wallet(
+        &mut self,
+        node: &str,
+        asset: &str,
+    ) -> Result<InstalledWallet, AssemblyError> {
+        let wallet = self.fleet.install_wallet(kit::OPERATOR_WALLET);
+        let _ = self.catalogue.publish_operator_module(&wallet.provider);
+        let _ = self.catalogue.add_public_node(node);
+        self.holdings
+            .register(
+                &mut self.catalogue,
+                &self.fleet.platform,
+                node,
+                &wallet.provider,
+                asset,
+            )
+            .map_err(|e| AssemblyError::Listing(format!("the wallet's registration: {e:?}")))?;
+        Ok(wallet)
+    }
+
+    /// Accepts `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`, `REQ-AUD-2`): the operator's
+    /// login decides it, Core records its effect naming the release's statements key, and its result is `done`. From
+    /// then the log verifies the wallet's statements by that key, as it does any module the operator publishes.
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit the change, or the log takes no step of it.
+    pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
+        let listing =
+            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
+        self.records.registers.borrow_mut().permit(
+            &kit::operator_login(),
+            Permission::Change(CatalogueChange::AcceptModule),
+        );
+        let action = Action::ChangeCatalogue {
+            change: CatalogueChange::AcceptModule,
+            provider: kit::id(&wallet.provider),
+            version: Some(kit::id(&wallet.version)),
+            tuple: None,
+            advertising_keys: Vec::new(),
+            statement_key: Some(wallet.statement_key()),
+        };
+        let request = DecisionRequest {
+            request: self.fresh.id(),
+            caller: kit::operator_login(),
+            action: action.clone(),
+            at: self.clock.timestamp(),
+        };
+        let decision = Decisions::decide(&mut self.policy, &request)
+            .map_err(|e| listing("the release's decision", e))?;
+        let permit = decision.permit().ok_or_else(|| {
+            AssemblyError::Listing(format!(
+                "the release wasn't permitted: {:?}",
+                decision.outcome
+            ))
+        })?;
+        let effect = self
+            .verified(
+                What::Effect {
+                    action,
+                    decision: permit,
+                },
+                Outcome::ToTakeEffect {},
+            )
+            .map_err(|e| listing("the release's effect", e))?;
+        self.verified(
+            What::Result {
+                effect: effect.clone(),
+            },
+            Outcome::Done {},
+        )
+        .map_err(|e| listing("the release's result", e))?;
+        Ok(effect)
+    }
+
+    /// Value arrives at the holding account of `node` for `order`, as the operator lands it (`REQ-CAT-23`): the
+    /// wallet is asked, in a statement signed with the operator's key, to place it in the account. Nothing in Core
+    /// lands value where a segment settles at a public node yet (`T-024-17`'s gap), so a scenario does.
+    ///
+    /// # Errors
+    ///
+    /// If the node has no account or the wallet doesn't confirm the movement.
+    pub fn land(
+        &mut self,
+        node: &str,
+        asset: &str,
+        order: &str,
+        amount: &str,
+    ) -> Result<(), WalletError> {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let made_at = self
+            .clock
+            .now()
+            .timestamp()
+            .ok_or(WalletError::NotAnswered(PlatformRefusal::Unavailable))?;
+        let mut key = RealKey::assembly();
+        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        self.holdings.land(
+            &mut self.fleet.platform,
+            &operator,
+            node,
+            asset,
+            order,
+            amount,
+        )
+    }
+
+    /// Asks the wallet of `provider` `operation`, in a statement the operator signs, and gives the statement and the
+    /// wallet's answer as the platform passed it on: a signed result, re-serialised (`REQ-AUD-2`).
+    pub fn ask_wallet(
+        &mut self,
+        provider: &str,
+        operation: Operation,
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let made_at = self.clock.now().timestamp()?;
+        let mut key = RealKey::assembly();
+        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let question = operator.statement(operation);
+        match self.fleet.platform.handle(provider, &question) {
+            Handled::Answered(result) => Some((
+                serde_json::to_vec(&question).ok()?,
+                serde_json::to_vec(&*result).ok()?,
+            )),
+            Handled::Refused(_) => None,
+        }
+    }
+
+    /// Asks the wallet `operation` as a move does: the operator's question is recorded as its stated entry about
+    /// `about` before the answer, which is the wallet's stated entry under the same transaction (the log holds an
+    /// answer to a question Core asked). Gives the answer's bytes and the two receipts.
+    ///
+    /// # Errors
+    ///
+    /// If the wallet doesn't answer, or the log refuses an entry.
+    pub fn ask_wallet_stating(
+        &mut self,
+        provider: &str,
+        operation: Operation,
+        about: &About,
+    ) -> Result<(Receipt, Receipt, Vec<u8>), AppendFailure> {
+        let (question, answer) = self
+            .ask_wallet(provider, operation)
+            .ok_or(AppendFailure::Refused(Violation("the wallet answers")))?;
+        let asked = self.state_by(&question, &kit::operator(), about)?;
+        let answered = self.state_answer(&answer, about)?;
+        Ok((asked, answered, answer))
+    }
+
+    /// The holding account's withdrawal for a route handed on, outside any move (`T-016-03`): the wallet's own
+    /// signed answer and record, as [`Holdings::start_handed_on`] gives them, and the operator's statement of the
+    /// question it was asked, as the operator signed it.
+    ///
+    /// # Errors
+    ///
+    /// If the route isn't handed on from a node with an account, or the wallet doesn't confirm the withdrawal.
+    pub fn withdraw_handed_on(
+        &mut self,
+        route: &[SegmentPlan],
+        order: &str,
+        amount: &str,
+    ) -> Result<(HandedOnStart, Vec<u8>), StartError> {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let made_at = self.clock.now().timestamp().ok_or(StartError::Wallet(
+            rutent_prov::holding::wallet::WalletError::NotAnswered(PlatformRefusal::Unavailable),
+        ))?;
+        let mut key = RealKey::assembly();
+        let signs = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let operator = Recording {
+            inner: &signs,
+            asked: RefCell::new(None),
+        };
+        let start = self.holdings.start_handed_on(
+            &mut self.fleet.platform,
+            &operator,
+            route,
+            order,
+            amount,
+        )?;
+        let question = operator.asked.into_inner().ok_or(StartError::NoRecord)?;
+        Ok((start, question))
+    }
+
+    /// Keeps `answer`, a statement a module made, and appends its stated entry, claimed by the module for the
+    /// operator it is published by, received now and about `about`. The log attributes it from the bytes: verified to
+    /// the module only where the log holds an accepted release of it that names the key that signed it
+    /// (`REQ-AUD-2`).
+    ///
+    /// # Errors
+    ///
+    /// If the answer isn't a statement, or the evidence store or the log refuses.
+    pub fn state_answer(&mut self, answer: &[u8], about: &About) -> Result<Receipt, AppendFailure> {
+        let maker = serde_json::from_slice::<serde_json::Value>(answer)
+            .ok()
+            .and_then(|v| v["maker"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let by = Actor {
+            party: kit::operator().party,
+            acts: Id::new(maker.as_str()).ok_or(AppendFailure::Refused(Violation(
+                "a module's answer names its maker",
+            )))?,
+            role: rutent_contracts::core_internal::Role::Provider,
+            kind: rutent_contracts::core_internal::ActorKind::Component,
+        };
+        self.state_by(answer, &by, about)
+    }
+
+    /// Keeps `statement` and appends its stated entry, claimed by `by`.
+    ///
+    /// # Errors
+    ///
+    /// If the statement isn't JSON, or the evidence store or the log refuses.
+    pub fn state_by(
+        &mut self,
+        statement: &[u8],
+        by: &Actor,
+        about: &About,
+    ) -> Result<Receipt, AppendFailure> {
+        let refused = |why: &'static str| AppendFailure::Refused(Violation(why));
+        let envelope: serde_json::Value =
+            serde_json::from_slice(statement).map_err(|_| refused("a statement is JSON"))?;
+        let kept = Evidence::keep(&mut self.keeper, statement)?;
+        let entry: GeneralEntry = serde_json::from_value(serde_json::json!({
+            "kind": "stated",
+            "attribution": {"signature": "unverified", "claimed_by": by},
+            "what": {"statement": envelope["shape"]},
+            "when": {"at": envelope["made_at"], "source": "party_stated"},
+            "received_at": self.clock.timestamp(),
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": envelope["signature"]["key"]},
+            "commitment": kept.commitment,
+            "about": about,
+        }))
+        .map_err(|_| refused("a statement is a stated entry"))?;
+        let receipt = self.general.append(&entry)?;
+        let _ = self.feed();
+        Ok(receipt)
     }
 
     /// The mover's read of the log: the log's own handle, never a copy of its entries.
