@@ -37,14 +37,39 @@ fn every_stated_entry_core_builds_takes_its_relay_from_the_one_helper() {
             "{} writes `relayed_by: None` itself",
             file.display()
         );
-        if code.contains("StatedEntry {") {
-            builders += 1;
+        let built = code.matches("StatedEntry {").count();
+        if built > 0 {
+            builders += built;
+            // Each builder takes its `relayed_by` by shorthand from a binding the helper makes, and the file has
+            // no other binding or field of that name.
+            let shorthand = code.matches("relayed_by,").count();
+            let bound = code
+                .lines()
+                .filter(|l| l.trim_start().starts_with("let relayed_by"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                shorthand,
+                built,
+                "{}: each entry takes its relay",
+                file.display()
+            );
+            assert_eq!(
+                bound.len(),
+                built,
+                "{}: one binding per entry",
+                file.display()
+            );
             assert!(
-                code.contains("relay::relayed_by("),
-                "{} builds a stated entry without the helper",
+                bound.iter().all(|l| l.contains("relay::relayed_by(")),
+                "{}: a relay not taken from the helper",
                 file.display()
             );
         }
+        assert!(
+            !code.contains("relayed_by:"),
+            "{} sets a `relayed_by` field itself",
+            file.display()
+        );
     }
     assert!(builders >= 5, "the five writers were found: {builders}");
 }

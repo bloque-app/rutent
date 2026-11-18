@@ -656,6 +656,8 @@ impl Core {
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
         let part = self.part_of(order)?;
         let done = self.asking(order, |reversals, parts, _| {
+            // A scenario hands over its provider's own late result: the maker its envelope names presents it.
+            let presented_by = super::handed_over_by(&*parts.catalogue, bytes);
             reversals.later(
                 parts,
                 At {
@@ -664,6 +666,7 @@ impl Core {
                     segment,
                 },
                 bytes,
+                &presented_by,
             )
         })?;
         self.feed()?;
