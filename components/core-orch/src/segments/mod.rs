@@ -2828,36 +2828,44 @@ impl Segments {
         at: &(String, String),
         settled: &ToGrade<'_>,
     ) -> Result<Vec<Kept>, SegmentsError> {
-        if self.flight(at)?.kept.is_none() {
-            let asked = parts.grading.statements(settled);
-            let mut steps = Vec::new();
-            for one in asked {
-                let received_at = now(parts.clock)?;
-                let entry = journal::stated_entry(
-                    parts.evidence,
-                    &received_at,
-                    &one.bytes,
-                    maker(parts.catalogue, &one.bytes),
-                    live.core,
-                    Some(one.about),
-                )
-                .map_err(|e| match e {
-                    Unappended::Append(failure) => SegmentsError::Append(failure),
-                    Unappended::Unrecordable => {
-                        SegmentsError::Plan("a statement to keep is an envelope")
-                    }
-                })?;
-                entry.check().map_err(AppendFailure::Refused)?;
-                let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
-                steps.push((
-                    one.key,
-                    Step {
-                        entry,
-                        receipt: None,
-                    },
-                ));
+        // Asked every time the segment is graded, until it settles: a statement the grading couldn't read at one try
+        // (a book empty then) is asked for again at the next, and one kept already is kept once. Only steps are cached;
+        // an empty answer caches nothing, so the grading is never left holding "asked" for what it didn't have.
+        let asked = parts.grading.statements(settled);
+        for one in asked {
+            if self
+                .flight(at)?
+                .kept
+                .iter()
+                .flatten()
+                .any(|(key, _)| *key == one.key)
+            {
+                continue;
             }
-            self.flight_mut(at)?.kept = Some(steps);
+            let received_at = now(parts.clock)?;
+            let entry = journal::stated_entry(
+                parts.evidence,
+                &received_at,
+                &one.bytes,
+                maker(parts.catalogue, &one.bytes),
+                live.core,
+                Some(one.about),
+            )
+            .map_err(|e| match e {
+                Unappended::Append(failure) => SegmentsError::Append(failure),
+                Unappended::Unrecordable => {
+                    SegmentsError::Plan("a statement to keep is an envelope")
+                }
+            })?;
+            entry.check().map_err(AppendFailure::Refused)?;
+            let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+            self.flight_mut(at)?.kept.get_or_insert_with(Vec::new).push((
+                one.key,
+                Step {
+                    entry,
+                    receipt: None,
+                },
+            ));
         }
         if let Some(steps) = self.flight_mut(at)?.kept.as_mut() {
             for (_, step) in steps {
