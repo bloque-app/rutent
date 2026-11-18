@@ -208,6 +208,10 @@ pub struct Live<'a> {
     /// segment against what is evidenced there and the quotes still ahead, before the next is handed over
     /// (`REQ-ORD-27`, `AC-42`, `T-020-10`).
     pub floor: Option<&'a PositiveAmount>,
+    /// The receipt of the log's `decision_record` entry for `record`, which holds the dry runs and judgements the
+    /// route was evaluated with whole: what the measure records of those answers cite besides the segment's own
+    /// entries (`T-020-31`). `None` where the caller can't name it: those records cite the segment's entries alone.
+    pub record_entry: Option<&'a Receipt>,
 }
 
 /// A provider's statement, labelled as its word: what Core passes on of it is its maker's, never rutent's
@@ -623,6 +627,8 @@ struct InFlight {
     priced: measured::Priced,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
+    /// The entry that carries those answers: the order's `decision_record` entry.
+    record_entry: Option<Receipt>,
 }
 
 /// One drain, kept whole until each of its items is appended.
@@ -800,6 +806,7 @@ impl Segments {
             priced: &flight.priced,
             heard: &flight.heard,
             outcome,
+            answers_rest_on: flight.record_entry.clone(),
             cites,
             at: when,
         };
@@ -1889,6 +1896,7 @@ impl Segments {
                 relies,
                 priced: measured::Priced::of(operation),
                 heard: measured::hear(live.record, operation),
+                record_entry: live.record_entry.cloned(),
             },
         );
         self.advance(parts, live, &at, operation, true)

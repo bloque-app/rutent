@@ -186,6 +186,7 @@ fn run_linked(
         session: Some(&session),
         inputs: &core.inputs,
         floor: None,
+        record_entry: None,
     };
     let mut general = General(std::rc::Rc::clone(&core.log));
     let mut parts = rutent_core_orch::segments::Parts {

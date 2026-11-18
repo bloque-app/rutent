@@ -4911,9 +4911,14 @@ Branch `f-020/t-020-31-measures-called`, from `81be3583` (`m3` with `T-020-27`, 
      written when it is lost isn't rebuilt from the log. Owner: `F-030`'s durable store. The production assembly also
      owns calling `write_measures` after each of its entry points that can end a segment or complete a reversal; the
      scenario assembly calls it from the tests that read measures back.
-  2. A dry run's and a verifier's answer records cite the segment's own entries, not the stated entry of the answer in
-     the routing round: `Live` holds no receipt of it. Owner: none yet; a row that gives the record's snapshot its
-     statements' receipts.
+  2. Closed in the review round: `Live.record_entry` (the receipt of the log's `decision_record` entry, which holds the
+     dry runs and judgements the route was evaluated with whole) is kept in the flight, and the `dry_run` and `answer`
+     records cite it besides the segment's own entries. The assembly finds it in the log (`Core::record_entry_of`, in
+     `assembly/mod.rs`, an `F-024` file); a caller that passes `None` gets records citing the segment's entries alone.
+     The log holds no stated entry of a dry run or judgement tied to the order's segment through the record, so the
+     record entry is the one that carries them. Rule-off: the answers' extra cite dropped turns the unit test and the
+     bulk scenario red. Lows noted: the end-to-end scenario produces no verifier record (the verifier route is
+     `verifier.rs`'s), and the dedupe sets grow without bound (gap 1).
   3. `failure.market` stays absent, as `T-022-06` left it: no part holds a market figure in `M3`.
 - **Histories the log refused.** None: the scenario tests read the records back through the real log, which admits each
   (`measure-cites-entries-of-the-log`).

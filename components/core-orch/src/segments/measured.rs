@@ -154,6 +154,8 @@ pub(super) struct Ending<'a> {
     pub(super) outcome: &'a SegmentOutcome,
     /// The entries the records rest on.
     pub(super) cites: Vec<Receipt>,
+    /// The entry that holds the answers heard, which their records cite too.
+    pub(super) answers_rest_on: Option<Receipt>,
     /// When it ended, by Core's clock.
     pub(super) at: Timestamp,
 }
@@ -213,21 +215,24 @@ impl Measuring {
             if !self.answered.insert(figure) {
                 continue;
             }
-            if heard.dry_run {
-                self.pending.push_back(record(
-                    &heard.party,
-                    heard.role,
-                    Measure::DryRun {
-                        said: heard.said,
-                        outcome: end,
-                    },
-                ));
+            let mut cites = ending.cites.clone();
+            if let Some(entry) = &ending.answers_rest_on
+                && !cites.contains(entry)
+            {
+                cites.push(entry.clone());
             }
-            self.pending.push_back(record(
-                &heard.party,
-                heard.role,
-                Measure::Answer { said: heard.said },
-            ));
+            let record = |measure| MeasureRecord {
+                cites: cites.clone(),
+                ..record(&heard.party, heard.role, measure)
+            };
+            if heard.dry_run {
+                self.pending.push_back(record(Measure::DryRun {
+                    said: heard.said,
+                    outcome: end,
+                }));
+            }
+            self.pending
+                .push_back(record(Measure::Answer { said: heard.said }));
         }
     }
 
@@ -371,6 +376,7 @@ mod tests {
             heard: &heard,
             outcome: &outcome,
             cites: vec![receipt(1)],
+            answers_rest_on: Some(receipt(9)),
             at: Timestamp::new("2026-11-18T10:00:00Z").unwrap(),
         });
         let kept: Vec<_> = measuring.pending.iter().collect();
@@ -394,6 +400,13 @@ mod tests {
         assert_eq!(verifier.len(), 1, "{verifier:?}");
         assert_eq!(verifier[0].provider.as_str(), party);
         assert_eq!(verifier[0].measure, Measure::Answer { said: Said::Yes });
+        // It cites the entry that carries the judgement as well as the segment's own, and the quote cites no answer.
+        assert_eq!(verifier[0].cites, vec![receipt(1), receipt(9)]);
+        let quote = kept
+            .iter()
+            .find(|r| matches!(r.measure, Measure::Quote { .. }))
+            .unwrap();
+        assert_eq!(quote.cites, vec![receipt(1)]);
 
         // Another segment citing the same answers counts none of them again.
         let again = id("seg-2");
@@ -405,6 +418,7 @@ mod tests {
             heard: &heard,
             outcome: &outcome,
             cites: vec![receipt(2)],
+            answers_rest_on: Some(receipt(9)),
             at: Timestamp::new("2026-11-18T10:00:01Z").unwrap(),
         });
         assert_eq!(

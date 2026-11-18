@@ -252,6 +252,7 @@ impl Core {
             .ok_or(StepError::NotNow("the order started"))?;
         let part = self.part_of(order)?;
         let (core, operator) = (kit::core(), kit::operator());
+        let record_entry = self.record_entry_of(&recalculated.record);
         let live = Live {
             order,
             part: &part,
@@ -267,6 +268,7 @@ impl Core {
             session: started.session.as_ref(),
             inputs: &started.inputs,
             floor: started.floor.as_ref(),
+            record_entry: record_entry.as_ref(),
         };
         self.run_live(&live)
     }

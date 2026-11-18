@@ -1726,6 +1726,24 @@ impl Core {
         record_in(recorded).ok_or(StepError::NotNow("a decision record in its envelope"))
     }
 
+    /// The receipt of the log's `decision_record` entry for `record`, which holds the answers the route was
+    /// evaluated with (`T-020-31`).
+    pub(crate) fn record_entry_of(&self, record: &DecisionRecord) -> Option<Receipt> {
+        self.log
+            .borrow()
+            .entries()
+            .iter()
+            .find_map(|(receipt, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::DecisionRecord {
+                        decision_record, ..
+                    } if decision_record == record.record_id() => Some(receipt.clone()),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+    }
+
     /// Runs every part of `order`'s route, each segment after the one before settles.
     pub fn run(&mut self, order: &Id) -> Result<Vec<Ran>, StepError> {
         let started = self
@@ -1735,6 +1753,7 @@ impl Core {
             .ok_or(StepError::NotNow("the order started"))?;
         let core = kit::core();
         let operator = kit::operator();
+        let record_entry = self.record_entry_of(&started.record);
         let mut ran = Vec::new();
         for (at, part) in started.plan.iter().enumerate() {
             let segments: Vec<Id> = part
@@ -1758,6 +1777,7 @@ impl Core {
                 session: started.session.as_ref(),
                 inputs: &started.inputs,
                 floor: started.floor.as_ref(),
+                record_entry: record_entry.as_ref(),
             };
             ran.push(self.run_live(&live)?);
         }

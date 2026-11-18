@@ -240,6 +240,24 @@ fn bulk_measures_over_assembled_runs_with_no_hand_written_record_count_a_failed_
         "no market figure is held in M3"
     );
     assert!(report.verifiers.is_empty(), "no verifier was asked");
+    // The answers a route was evaluated with rest on the entry that carries them: the order's decision record.
+    let heard: Vec<_> = records(&core)
+        .into_iter()
+        .filter(|(_, r)| matches!(r.measure, Measure::DryRun { .. } | Measure::Answer { .. }))
+        .collect();
+    assert!(!heard.is_empty(), "the runs' dry runs were measured");
+    for (_, r) in &heard {
+        let carried = r.cites.iter().any(|c| {
+            matches!(
+                &core.log().entries()[usize::try_from(c.index.get()).unwrap()].1,
+                Entry::Verified(v) if matches!(&v.what, What::DecisionRecord { .. })
+            )
+        });
+        assert!(
+            carried,
+            "{r:?} cites the decision record that carries the answer"
+        );
+    }
     // What was counted is the log's own: every measure record of the log, once.
     assert_eq!(report.counted, records(&core).len() as u64);
 }
