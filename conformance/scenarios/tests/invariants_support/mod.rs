@@ -315,13 +315,12 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
         ),
         Kind::CrashBeforeEffect(nth) => plant(core, &Fault::CrashBeforeEffect(nth)),
         Kind::Repeated => {
-            // The same operation sent to a provider twice, under its transaction. A provider that declares no safe
-            // retry (the simulated exchange, which `T-024-01` models as moving again on a repeat) is never repeated
-            // to by Core (`REQ-CAT-10`), and nothing below Core refuses a duplicate to it: that gap is recorded in
-            // `F-024`'s notes, so the joined route's repeats are the state machine's alone.
-            if plan.shape == Shape::Base {
-                plant(core, &Fault::DeliverTwice);
-            }
+            // The same operation sent to a provider twice, under its transaction, on both routes. A provider that
+            // declares no safe retry (the simulated exchange, which `T-024-01` models as moving again on a repeat)
+            // is never repeated to by Core (`REQ-CAT-10`), so the repeat is injected beneath Core, and the
+            // platform refuses it (`T-013-09`): the joined route's `INV-8` holds the platform, and not only the
+            // provider.
+            plant(core, &Fault::DeliverTwice);
             let delivery = if draw.below(2) == 0 {
                 Delivery::Repeated
             } else {

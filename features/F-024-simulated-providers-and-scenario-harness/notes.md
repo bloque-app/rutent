@@ -1227,6 +1227,7 @@ deliveries, rewrites...) and fails if they reached less, so a green test is neve
    refuses a second operation under a transaction identifier it already carried out for a provider that declared no safe retry, so
    `INV-8`'s "repeating it MUST NOT move value twice" rests on the provider there. Owner: the platform's row in `F-020`/`F-013`,
    with `T-025-05` to review; the check is `R8c` in the table, red as soon as the fault is planted on the joined route again.
+   **Closed by `T-013-09`:** the platform refuses that repeat (`DuplicateTransaction`) and answers a safe-retry provider's from its record; `DeliverTwice` is planted on both routes again.
 2. No run broke an invariant otherwise.
 
 **Defaults taken** (reversible, each failing closed).

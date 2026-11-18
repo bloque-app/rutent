@@ -199,6 +199,21 @@ struct Slot {
     /// in flight are finishing on (`T-013-06`). Still the one provider's code, so no other provider's process is
     /// shared.
     others: BTreeMap<String, ProviderProcess>,
+    /// Whether the provider's advertisement declares a repeat safe (`REQ-CAT-10`), read from the judge when a
+    /// release was admitted or accepted. `None`, declared or not known, is no safe retry (`T-013-09`).
+    safe_retry: Option<bool>,
+}
+
+/// An operation of a transaction the platform carried out: whose it was, and its answer if it gave one, which a
+/// provider that declares a repeat safe is answered from (`T-013-09`).
+struct Carried {
+    provider: String,
+    /// The operation as the platform was handed it. A later one of another envelope (deployment, protocol version
+    /// or signing key) is no repeat of it but a foreign replay, which still reaches the module, as ever: the module
+    /// checks the envelope before it answers from what it has recorded (`REQ-PRT-1`), and the platform doesn't
+    /// pre-empt that. Only an identical one is answered from the record.
+    operation: Statement<Operation>,
+    answer: Option<Box<Statement<ResultBody>>>,
 }
 
 /// The operation one provider's module is handling, and what it obtained while handling it.
@@ -485,6 +500,9 @@ pub struct Platform<W: World> {
     /// How many operations each provider's version ran: its process took the operation and said something of it,
     /// so an operation refused before reaching a live process doesn't count towards a staging.
     runs: BTreeMap<(String, String), u64>,
+    /// The operations carried out under each transaction, by the operation's kind, until its segment ends: a
+    /// second one of the same kind is a repeat (`INV-8`, `REQ-CAT-10`, `T-013-09`).
+    carried: BTreeMap<String, BTreeMap<String, Carried>>,
     /// The callees' versions whose process ended during a top-level operation, started again at the platform's
     /// next call, after that operation's answer was handed back ([`Platform::restart_ended`]).
     restarts: Vec<(String, String)>,
@@ -524,6 +542,7 @@ impl<W: World> Platform<W> {
             lifecycle: Lifecycle::default(),
             told: BTreeMap::new(),
             runs: BTreeMap::new(),
+            carried: BTreeMap::new(),
             restarts: Vec::new(),
         })
     }
@@ -1865,6 +1884,24 @@ fn asserted_before(next: &AdmissionArtefact, previous: &AdmissionArtefact) -> bo
     }
 }
 
+/// The kinds that only ask: they move nothing, so asking one again, under the same transaction, is no repeat.
+const READ_ONLY_KINDS: [&str; 3] = ["balance_verification", "judgement", "holding_balance"];
+
+/// The transaction and the kind an operation is a repeat of, if the platform carries it out only once: one that
+/// names a transaction, is not a dry run and not a kind that only asks. Any other kind, one added later too, counts
+/// (`T-013-09`).
+fn repeat_key(transaction: &str, operation: &Operation) -> Option<(String, String)> {
+    let value = serde_json::to_value(operation).ok()?;
+    if value["dry_run"].as_bool() == Some(true) {
+        return None;
+    }
+    let kind = value["kind"].as_str()?;
+    if READ_ONLY_KINDS.contains(&kind) {
+        return None;
+    }
+    Some((transaction.to_owned(), kind.to_owned()))
+}
+
 fn result_matches(result: &ResultBody, operation: &Operation) -> bool {
     let (Ok(result), Ok(operation)) = (
         serde_json::to_value(result),
@@ -2109,6 +2146,7 @@ impl<W: World> Platform<W> {
             });
         }
         let slot = self.providers.entry(provider.clone()).or_default();
+        slot.safe_retry = judge.safe_retry(&provider);
         if fresh {
             slot.pending = Some((artefact.clone(), machine, received_assertion.to_vec()));
         } else {
@@ -2146,6 +2184,7 @@ impl<W: World> Platform<W> {
             return None;
         }
         let slot = self.providers.get_mut(provider)?;
+        slot.safe_retry = judge.safe_retry(provider);
         let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
         artefact.acceptance.accepted = Some(Accepted {
@@ -2218,7 +2257,10 @@ impl<W: World> Platform<W> {
     /// It runs on the version its segment runs on, if a segment began for its transaction
     /// ([`Platform::begin_segment`]), and on the version in force otherwise. It is refused as `DuplicateTransaction`
     /// where its transaction's segment is another provider's or has ended, and as `VersionExploited` where its
-    /// segment's version was declared exploited (`T-013-06`).
+    /// segment's version was declared exploited (`T-013-06`). A second operation of a kind under a transaction it
+    /// carried out is refused as `DuplicateTransaction`, the module not run, unless the provider declares a repeat
+    /// safe, and then it is answered from the platform's record: the first answer, not a second run. Where the
+    /// platform can't tell whether the provider declared it, it is refused (`T-013-09`; `INV-8`, `REQ-CAT-10`).
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         self.restart_ended();
         let transaction = transaction_of(&operation.statement);
@@ -2241,6 +2283,12 @@ impl<W: World> Platform<W> {
             Ok(version) => version,
             Err(refusal) => return Handled::Refused(refusal),
         };
+        let repeat = transaction.and_then(|t| repeat_key(t, &operation.statement));
+        if let Some((transaction, kind)) = &repeat
+            && let Some(answered_or_refused) = self.repeated(provider, transaction, kind, operation)
+        {
+            return answered_or_refused;
+        }
         let Some(declaration) = self.declaration_of(provider, &version) else {
             return Handled::Refused(PlatformRefusal::Unavailable);
         };
@@ -2252,8 +2300,73 @@ impl<W: World> Platform<W> {
         if self.runs.get(&key).copied().unwrap_or_default() > before {
             self.lifecycle
                 .observe(provider, &version, matches!(handled, Handled::Answered(_)));
+            // The module ran: whatever it came to, the operation was carried out (`T-013-09`). A first outcome
+            // unknown is the case a repeat is least safe in.
+            if let Some((transaction, kind)) = repeat {
+                let answer = match &handled {
+                    Handled::Answered(result) => Some(result.clone()),
+                    Handled::Refused(_) => None,
+                };
+                let carried = self.carried.entry(transaction).or_default();
+                // The first answer stays the record, whoever asks again.
+                if carried
+                    .get(&kind)
+                    .is_none_or(|first| first.answer.is_none())
+                {
+                    carried.insert(
+                        kind,
+                        Carried {
+                            provider: provider.to_owned(),
+                            operation: operation.clone(),
+                            answer,
+                        },
+                    );
+                }
+            }
         }
         handled
+    }
+
+    /// What a repeat of `operation`, an operation of `transaction` of `kind`, gets, if it is one: nothing where
+    /// the platform carried none out under that transaction, or where the provider declares a repeat safe and the
+    /// module gave no answer the first time or is asked something else (another envelope, other terms), so it runs
+    /// again and judges that itself, as it does an operation of another envelope. Otherwise the platform answers it, the module never run: from its record
+    /// where the provider declares a repeat safe and the operation is the first one, and refused as
+    /// `DuplicateTransaction` where it doesn't declare it, where it declares nothing, where the platform can't tell,
+    /// and where the first was another provider's (`INV-8`, `REQ-CAT-10`).
+    fn repeated(
+        &self,
+        provider: &str,
+        transaction: &str,
+        kind: &str,
+        operation: &Statement<Operation>,
+    ) -> Option<Handled> {
+        let first = self.carried.get(transaction)?.get(kind)?;
+        let (before, now) = (&first.operation, operation);
+        if before.deployment != now.deployment
+            || before.protocol_version != now.protocol_version
+            || before.signature.key != now.signature.key
+        {
+            return None;
+        }
+        let safe = self.providers.get(provider).and_then(|s| s.safe_retry) == Some(true);
+        if first.provider != provider || !safe {
+            return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
+        }
+        if first.operation != *operation {
+            return None;
+        }
+        first.answer.clone().map(Handled::Answered)
+    }
+
+    /// How many operations the provider's module ran, on any of its versions: its process took the operation and
+    /// said something of it. An operation the platform refused or answered from its record is not one.
+    pub fn operations_run(&self, provider: &str) -> u64 {
+        self.runs
+            .iter()
+            .filter(|((p, _), _)| p == provider)
+            .map(|(_, n)| n)
+            .sum()
     }
 
     /// [`Platform::handle`] on `version`, whose declaration is `declaration`.
@@ -2378,6 +2491,7 @@ impl<W: World> Platform<W> {
     pub fn end_segment(&mut self, transaction: &str) -> Option<SegmentRecord> {
         self.restart_ended();
         let record = self.lifecycle.end_segment(transaction)?;
+        self.carried.remove(transaction);
         self.reconcile(&record.provider);
         Some(record)
     }

@@ -902,3 +902,64 @@ builds unused for more than a day are removed (a running test may still read an 
 ### Rule-off table (T-013-08)
 
 See the commit body.
+
+## T-013-09: a repeat under a carried out transaction (`f-013/t-013-09-repeat-refused`)
+
+`T-024-08`'s review found that a repeat reaching the platform while its segment is held moved value twice for a provider
+that declares no safe retry (seed 110, the simulated exchange), and that nothing under `components/` read `safe_retry`.
+
+### Design (T-013-09)
+
+- **Where the platform reads `safe_retry`.** From the catalogue's advertisement, through the sealed `ReleaseJudge`, which
+  gains `safe_retry(provider) -> Option<bool>` (`Catalogue::declared_by(..).safe_retry`). The platform reads it each time it
+  admits or accepts a release of the provider and keeps it in the provider's slot. No contract change: the declaration was
+  already in `provider-role`'s `declarations.safe_retry`. `None` (no advertisement, a verifier, a module the operator
+  publishes) and `Some(false)` both mean no safe retry.
+- **What is a repeat.** `Platform::handle_in` keeps, per transaction, the operations it carried out by their kind (the module
+  ran, whatever it came to: an answer, an outcome unknown, a refusal after it ran), until the transaction's segment ends
+  (`Platform::end_segment`; after that `version_for` refuses it as before). A second operation of the same kind under that
+  transaction is a repeat. Dry runs are no repeat: they move nothing, and neither carry out nor repeat anything. Nor are the kinds that only ask (`balance_verification`, `judgement`, `holding_balance`); any other kind, one
+  added later too, counts.
+- **What a repeat gets.** For a provider without safe retry, `PlatformRefusal::DuplicateTransaction` (the contract's reason
+  for `INV-8`; no new reason is needed, so `contracts/` is untouched): the module doesn't run, nothing moves, and the caller
+  reads the refusal. For one with safe retry, the first answer from the platform's record, byte for byte, the module not run.
+  If the first run gave no answer (a refusal after it ran), the module runs again, which its declaration allows. The first
+  answer stays the record. An operation under a transaction carried out for another provider is refused whatever it declares.
+- **A foreign envelope is not a repeat.** An operation whose deployment, protocol version or signing key differs from the
+  first one's reaches the module as before, which refuses it (`REQ-PRT-1`); the role suite's replay probes
+  (`conformance/scenarios/tests/sim_providers.rs`) need that, and the platform did not check envelopes before this row
+  either. So a foreign replay of a carried out transaction to a provider without safe retry still rests on the module's own
+  envelope check.
+- **Existing tests changed (artefacts).** They reused one transaction id for different operations or to re-read a
+  version: `holding_wallet.rs`'s `deposit_answer` now names the node and asset in its transaction;
+  `module_lifecycle.rs` asks a fresh transaction for the version after a promotion, and reads a stale mark's move from the
+  segment's record instead of re-asking its transaction.
+- **New accessor.** `Platform::operations_run(provider)`: how many operations the module ran, so a test can say a repeat
+  never reached it.
+- **Tests.** `components/prov/tests/module_repeat.rs`: the two named tests, and three more (a provider whose advertisement
+  declares nothing is refused, another provider's carried out transaction is refused even for a safe provider, a withdrawn
+  safe-retry declaration is read when the next release is admitted). `conformance/scenarios/tests/repeat_joined.rs`: the
+  named `repeated delivery on the joined route moves nothing twice`. `T-024-08`'s
+  `invariants_support/mod.rs` (an `F-024` file, one edit) plants `DeliverTwice` on both routes again; the invariants pass.
+
+### Defaults (T-013-09)
+
+- No declaration, or one the platform can't read, is no safe retry: the repeat is refused (fail closed).
+- The key is (transaction, operation kind): two different kinds under one transaction are not repeats of each other.
+- A dry run is exempt, and foreign envelopes pass to the module (above). Both reversible.
+
+### Gaps (T-013-09)
+
+- The platform reads the declaration when a release is admitted or accepted, not when the advertisement changes: a
+  provider that re-advertises `safe_retry: false` is read at its next release. Owner: the assembly (`F-020`), to refresh
+  declarations when a successor advertisement joins; until then a provider can't withdraw safe retry without a release.
+- The record is kept until the transaction's segment ends; a transaction handled with no segment begun is kept until the
+  platform stops. Core begins a segment for every transaction, so nothing grows there; owner: `F-013`, if a deployment
+  ever calls `handle` with no segment.
+- A foreign-envelope replay to a provider without safe retry rests on the module's envelope check, which the role suite
+  asserts of every module. Owner: `T-025-05`, to review.
+- `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
+
+### Rule-off table (T-013-09)
+
+See the commit body.
