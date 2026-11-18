@@ -554,7 +554,10 @@ pub struct Run {
 /// The statements `disk`'s shelf holds, in the order they were kept: parsed, and as kept.
 fn kept_statements(
     disk: &crate::assembly::durable::Disk,
-) -> (Vec<Value>, Vec<rutent_contracts::core_internal::KeptStatement>) {
+) -> (
+    Vec<Value>,
+    Vec<rutent_contracts::core_internal::KeptStatement>,
+) {
     use rutent_core_audit::receipts::store::Shelf;
     let mut shelf = disk.shelf();
     let mut kept = shelf.load().map(|c| c.kept).unwrap_or_default();

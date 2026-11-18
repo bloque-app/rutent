@@ -59,14 +59,17 @@ fn flow(net: &mut BTreeMap<(String, String), i128>, op: &Value, amount_in: u128,
     let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
     match op["kind"].as_str() {
         Some("withdrawal") => {
-            *net.entry((text(&op["destination"]), text(&op["asset"]))).or_default() += amount_out as i128;
+            *net.entry((text(&op["destination"]), text(&op["asset"])))
+                .or_default() += amount_out as i128;
         }
         Some("conversion") => {
-            *net.entry((text(&op["node"]), text(&op["from"]))).or_default() -= amount_in as i128;
+            *net.entry((text(&op["node"]), text(&op["from"])))
+                .or_default() -= amount_in as i128;
             *net.entry((text(&op["node"]), text(&op["to"]))).or_default() += amount_out as i128;
         }
         Some("deposit" | "transfer") => {
-            *net.entry((text(&op["origin"]), text(&op["asset"]))).or_default() -= amount_in as i128;
+            *net.entry((text(&op["origin"]), text(&op["asset"])))
+                .or_default() -= amount_in as i128;
         }
         _ => {}
     }
@@ -85,7 +88,9 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
         let all = segments(&sim.run);
         for (order, segs) in by_order(all.clone()) {
             let settled: Vec<&Seg> = segs.iter().filter(|s| s.settled()).collect();
-            let Some(first) = settled.first() else { continue };
+            let Some(first) = settled.first() else {
+                continue;
+            };
             for pair in settled.windows(2) {
                 if pair[1].amount_in() != pair[0].amount_out() {
                     bad.push(format!(
@@ -99,7 +104,9 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
             }
             for s in &settled {
                 if s.kind() == "conversion" && s.res.as_ref().unwrap()["outcome"]["rate"] != "1" {
-                    bad.push(format!("{order}: the simulated exchange's rate is not 1: the check can't hold"));
+                    bad.push(format!(
+                        "{order}: the simulated exchange's rate is not 1: the check can't hold"
+                    ));
                 }
                 if s.amount_in() != s.amount_out() + s.fee() {
                     bad.push(format!(
@@ -122,7 +129,11 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
             }
             let value_in = first.amount_in();
             let last = settled.last().expect("one");
-            let delivered = if last.kind() == "deposit" { last.amount_out() } else { 0 };
+            let delivered = if last.kind() == "deposit" {
+                last.amount_out()
+            } else {
+                0
+            };
             let held = if delivered == 0 { last.amount_out() } else { 0 };
             let fees: u128 = settled.iter().map(|s| s.fee()).sum();
             if value_in != delivered + fees + held {
@@ -148,7 +159,12 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
             .collect();
         let mut evidenced = BTreeMap::new();
         for s in all.iter().filter(|s| s.settled()) {
-            flow(&mut evidenced, s.op.as_ref().unwrap(), s.amount_in(), s.amount_out());
+            flow(
+                &mut evidenced,
+                s.op.as_ref().unwrap(),
+                s.amount_in(),
+                s.amount_out(),
+            );
         }
         let mut booked = BTreeMap::new();
         let mut moving = BTreeMap::new();
@@ -159,7 +175,10 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
             );
             flow(&mut booked, op, a_in, a_out);
             let tx = op["transaction"].as_str().unwrap_or_default();
-            if !all.iter().any(|s| s.settled() && s.transaction().as_deref() == Some(tx)) {
+            if !all
+                .iter()
+                .any(|s| s.settled() && s.transaction().as_deref() == Some(tx))
+            {
                 flow(&mut moving, op, a_in, a_out);
                 in_flight += 1;
                 // The log never settled it: its segment is one the log shows unresolved.
@@ -174,8 +193,14 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
                 if at != node {
                     continue;
                 }
-                let e = evidenced.get(&(at.clone(), asset.clone())).copied().unwrap_or(0);
-                let m = moving.get(&(at.clone(), asset.clone())).copied().unwrap_or(0);
+                let e = evidenced
+                    .get(&(at.clone(), asset.clone()))
+                    .copied()
+                    .unwrap_or(0);
+                let m = moving
+                    .get(&(at.clone(), asset.clone()))
+                    .copied()
+                    .unwrap_or(0);
                 nodes_compared += 1;
                 if *figure != e + m {
                     bad.push(format!(
@@ -187,9 +212,18 @@ fn value_in_equals_value_delivered_plus_fees_remainder_and_value_held_across_eve
         bad
     });
     none(&found);
-    assert!(orders_balanced >= 10, "only {orders_balanced} orders reached a settled segment");
-    assert!(nodes_compared >= 5, "only {nodes_compared} node balances compared");
-    assert!(in_flight >= 1, "no run left value in motion with its outcome unsettled");
+    assert!(
+        orders_balanced >= 10,
+        "only {orders_balanced} orders reached a settled segment"
+    );
+    assert!(
+        nodes_compared >= 5,
+        "only {nodes_compared} node balances compared"
+    );
+    assert!(
+        in_flight >= 1,
+        "no run left value in motion with its outcome unsettled"
+    );
 }
 
 // verifies: INV-2
@@ -222,7 +256,9 @@ fn every_failure_path_leaves_the_value_at_its_origin_in_full() {
                 // It moved nothing on the provider's own book.
                 let tx = s.transaction().expect("a transaction");
                 if book.iter().any(|(_, _, seg)| seg.transaction == tx) {
-                    bad.push(format!("{order}: the failed {tx} moved value in its provider's book"));
+                    bad.push(format!(
+                        "{order}: the failed {tx} moved value in its provider's book"
+                    ));
                 }
                 // Nothing was moved on from it until a recalculation, and then from where the value is.
                 let recalculated = |from: usize, to: usize| {
@@ -253,18 +289,27 @@ fn every_failure_path_leaves_the_value_at_its_origin_in_full() {
                         && e["what"]["whose"] != s.provider.as_str()
                 });
                 if completed && !confirmed {
-                    bad.push(format!("{order}: the failed {} was counted reversed with no other party's word", s.provider));
+                    bad.push(format!(
+                        "{order}: the failed {} was counted reversed with no other party's word",
+                        s.provider
+                    ));
                 }
                 let freed_mid_route = s.kind() != "deposit" && recalculated(s.effect, log.len());
                 if freed_mid_route && !confirmed {
-                    bad.push(format!("{order}: the route was recalculated from the failed {} on its own word", s.provider));
+                    bad.push(format!(
+                        "{order}: the route was recalculated from the failed {} on its own word",
+                        s.provider
+                    ));
                 }
             }
         }
         bad
     });
     none(&found);
-    assert!(failures >= 3, "only {failures} failed segments across the runs");
+    assert!(
+        failures >= 3,
+        "only {failures} failed segments across the runs"
+    );
 }
 
 // verifies: INV-3
@@ -278,7 +323,9 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
             let Some(order_state) = state else { continue };
             for part in &order_state.parts {
                 let st: Vec<SegmentState> = part.segments.iter().map(|s| s.state).collect();
-                let done = |s: &SegmentState| matches!(s, SegmentState::Settled | SegmentState::ReversalComplete);
+                let done = |s: &SegmentState| {
+                    matches!(s, SegmentState::Settled | SegmentState::ReversalComplete)
+                };
                 use rutent_contracts::state_machine::OrderState as O;
                 if sim.run.crashed {
                     // Where Core stopped, no end was reached: no segment says it settled that the log doesn't.
@@ -306,8 +353,12 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
                     O::NotPastFirstSegment | O::FirstSegmentSettled | O::WaitingForCustomer => {
                         open += 1;
                         // A segment whose outcome is unknown past its time is the order stuck, never an open order.
-                        if st.contains(&SegmentState::OutcomeUnknown) || st.contains(&SegmentState::Started) {
-                            bad.push(format!("{order}: open with a segment unsettled in flight: {st:?}"));
+                        if st.contains(&SegmentState::OutcomeUnknown)
+                            || st.contains(&SegmentState::Started)
+                        {
+                            bad.push(format!(
+                                "{order}: open with a segment unsettled in flight: {st:?}"
+                            ));
                         }
                         if st.iter().all(done) && part.retired_segments.is_empty() {
                             bad.push(format!("{order}: open with every segment ended: {st:?}"));
@@ -319,11 +370,20 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
         // What the log says of a segment is the state the machine reached for it, and never two ends.
         for s in segments(&sim.run) {
             let id = s.segment.as_str();
-            let state = states.values().flatten().flat_map(|o| &o.parts).find_map(|p| {
-                p.segments.iter().find(|x| x.segment_id.as_str() == id).map(|x| x.state)
-            });
+            let state = states
+                .values()
+                .flatten()
+                .flat_map(|o| &o.parts)
+                .find_map(|p| {
+                    p.segments
+                        .iter()
+                        .find(|x| x.segment_id.as_str() == id)
+                        .map(|x| x.state)
+                });
             if s.settled() && state.is_some_and(|x| x != SegmentState::Settled) {
-                bad.push(format!("{id}: settled in the log, {state:?} in the machine"));
+                bad.push(format!(
+                    "{id}: settled in the log, {state:?} in the machine"
+                ));
             }
             if s.result.as_deref() == Some("failed") && state == Some(SegmentState::Settled) {
                 bad.push(format!("{id}: failed in the log, settled in the machine"));
@@ -332,7 +392,10 @@ fn every_segment_ends_settled_reversed_in_full_or_its_order_stuck() {
         bad
     });
     none(&found);
-    assert!(complete >= 5 && stuck >= 1 && open >= 1, "ends reached: {complete} complete, {stuck} stuck, {open} open");
+    assert!(
+        complete >= 5 && stuck >= 1 && open >= 1,
+        "ends reached: {complete} complete, {stuck} stuck, {open} open"
+    );
 }
 
 // verifies: INV-4
@@ -384,11 +447,14 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
                     _ => None,
                 };
                 if let Some((node, asset)) = to {
-                    *held.entry((s.order.clone(), node, asset)).or_default() += s.amount_out() as i128;
+                    *held.entry((s.order.clone(), node, asset)).or_default() +=
+                        s.amount_out() as i128;
                 }
             } else if let Some(node) = &from {
                 // A failure puts the value back where it was.
-                *held.entry((s.order.clone(), node.clone(), asset)).or_default() += n(&op["amount"]) as i128;
+                *held
+                    .entry((s.order.clone(), node.clone(), asset))
+                    .or_default() += n(&op["amount"]) as i128;
             }
         }
         // One move for a transaction, from one place: each transaction is handed over once, and moved at most once.
@@ -415,7 +481,9 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
                 .filter(|e| {
                     e["kind"] == "stated"
                         && e["about"]["segment"] == s.segment.as_str()
-                        && e["what"]["statement"].as_str().is_some_and(|x| x.ends_with("result"))
+                        && e["what"]["statement"]
+                            .as_str()
+                            .is_some_and(|x| x.ends_with("result"))
                 })
                 .count();
             if results > 1 {
@@ -429,7 +497,10 @@ fn silence_and_late_delivery_never_move_one_value_from_two_places() {
     });
     none(&found);
     assert!(moves_checked >= 20, "{moves_checked} moves checked");
-    assert!(late >= 1, "no run left a segment whose effect the log ended unanswered, whose late delivery could be tried");
+    assert!(
+        late >= 1,
+        "no run left a segment whose effect the log ended unanswered, whose late delivery could be tried"
+    );
 }
 
 // verifies: INV-5, GUA-1
@@ -444,13 +515,23 @@ fn no_value_rests_outside_a_reserve_or_a_holding_account() {
             .filter(|s| s.role == rutent_conformance::sim::Role::Reserve)
             .map(|s| s.ledger())
             .collect();
-        let end_ok = |segments: &[rutent_contracts::state_machine::SegmentPlan], first_outer: bool, what: &str, bad: &mut Vec<String>| {
+        let end_ok = |segments: &[rutent_contracts::state_machine::SegmentPlan],
+                      first_outer: bool,
+                      what: &str,
+                      bad: &mut Vec<String>| {
             let last = segments.last().expect("a segment");
             if last.kind != OperationKind::Deposit || !matches!(last.to.node, NodeRef::Outer(_)) {
-                bad.push(format!("{what}: a route that doesn't end in a deposit at an outer node"));
+                bad.push(format!(
+                    "{what}: a route that doesn't end in a deposit at an outer node"
+                ));
             }
-            if first_outer && (segments[0].kind != OperationKind::Withdrawal || !matches!(segments[0].from.node, NodeRef::Outer(_))) {
-                bad.push(format!("{what}: a route that doesn't start at a reserve's outer node"));
+            if first_outer
+                && (segments[0].kind != OperationKind::Withdrawal
+                    || !matches!(segments[0].from.node, NodeRef::Outer(_)))
+            {
+                bad.push(format!(
+                    "{what}: a route that doesn't start at a reserve's outer node"
+                ));
             }
             for pair in segments.windows(2) {
                 if let NodeRef::Inner(node) = &pair[0].to.node {
@@ -463,7 +544,9 @@ fn no_value_rests_outside_a_reserve_or_a_holding_account() {
         };
         fn rests_here(node: &str, reserves: &[String], what: &str, bad: &mut Vec<String>) {
             if !reserves.iter().any(|r| r == node) {
-                bad.push(format!("{what}: value rests at {node}, a node of no reserve"));
+                bad.push(format!(
+                    "{what}: value rests at {node}, a node of no reserve"
+                ));
             }
         }
         for input in &sim.run.inputs {
@@ -483,10 +566,15 @@ fn no_value_rests_outside_a_reserve_or_a_holding_account() {
         }
         // And rutent's own position stays empty: no operation moves value to, from or for rutent, and no fee is its.
         let core = rutent_scenarios::kit::core();
-        let (party, acts) = (core.party.as_str().to_owned(), core.acts.as_str().to_owned());
+        let (party, acts) = (
+            core.party.as_str().to_owned(),
+            core.acts.as_str().to_owned(),
+        );
         for st in &sim.run.statements {
             let text = st["statement"].to_string();
-            if st["shape"].as_str().is_some_and(|x| x.ends_with("operation"))
+            if st["shape"]
+                .as_str()
+                .is_some_and(|x| x.ends_with("operation"))
                 && (text.contains(&format!("\"{party}\"")) || text.contains(&format!("\"{acts}\"")))
             {
                 bad.push(format!("an operation names rutent: {text}"));
@@ -494,19 +582,28 @@ fn no_value_rests_outside_a_reserve_or_a_holding_account() {
             rests += 1;
         }
         for e in entries(&sim.run) {
-            if e["kind"] == "verified" && e["what"]["call"] == "fee" && e["what"]["party"] == party.as_str() {
+            if e["kind"] == "verified"
+                && e["what"]["call"] == "fee"
+                && e["what"]["party"] == party.as_str()
+            {
                 bad.push("a fee is attributed to rutent".to_owned());
             }
         }
         for (provider, book) in &sim.run.books {
-            if book.iter().any(|b| b.to_string().contains(&format!("\"{party}\""))) {
+            if book
+                .iter()
+                .any(|b| b.to_string().contains(&format!("\"{party}\"")))
+            {
                 bad.push(format!("{provider}'s book names rutent"));
             }
         }
         bad
     });
     none(&found);
-    assert!(routes >= 15 && rests >= 100, "{routes} routes and {rests} statements read");
+    assert!(
+        routes >= 15 && rests >= 100,
+        "{routes} routes and {rests} statements read"
+    );
 }
 
 // verifies: INV-6, GUA-3
@@ -522,7 +619,7 @@ fn history_rewritten_with_operator_access_is_detected() {
     use rutent_core_audit::log::kept::base64url;
     use rutent_core_audit::log::{AuditLog, MemoryStore, record};
     use rutent_scenarios::assembly::{LOG_NAME, settings};
-    use rutent_scenarios::kit::{SharedClock, START};
+    use rutent_scenarios::kit::{START, SharedClock};
 
     /// The statements the evidence store kept for the log, as the log reads them to open.
     struct Shelf(Vec<rutent_contracts::core_internal::KeptStatement>);
@@ -530,7 +627,10 @@ fn history_rewritten_with_operator_access_is_detected() {
         fn kept(
             &mut self,
             commitment: &rutent_contracts::module_interface::Digest,
-        ) -> Result<Option<rutent_contracts::core_internal::KeptStatement>, rutent_contracts::core_internal::calls::AppendFailure> {
+        ) -> Result<
+            Option<rutent_contracts::core_internal::KeptStatement>,
+            rutent_contracts::core_internal::calls::AppendFailure,
+        > {
             Ok(self.0.iter().find(|k| &k.commitment == commitment).cloned())
         }
     }
@@ -555,11 +655,13 @@ fn history_rewritten_with_operator_access_is_detected() {
             Ok(log) => Rc::new(RefCell::new(log)),
             Err(e) => return vec![format!("the history doesn't open as a log: {e:?}")],
         };
-        let schedule = Schedule::new(&Timestamp::new("2026-11-05T00:00:00Z").unwrap(), 86_400).unwrap();
+        let schedule =
+            Schedule::new(&Timestamp::new("2026-11-05T00:00:00Z").unwrap(), 86_400).unwrap();
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let public = PublicKey::new(base64url(key.verifying_key().as_bytes())).unwrap();
-        let mut checkpointer = Checkpointer::new(Rc::clone(&log), MemoryStore::new(), key, schedule)
-            .expect("a checkpointer");
+        let mut checkpointer =
+            Checkpointer::new(Rc::clone(&log), MemoryStore::new(), key, schedule)
+                .expect("a checkpointer");
         let ran = checkpointer.run_due();
         checkpointer.acknowledge(&ran).expect("published");
         let held = ran.published.clone();
@@ -574,19 +676,30 @@ fn history_rewritten_with_operator_access_is_detected() {
         let checker = Checker::new(public, Id::new(LOG_NAME).unwrap(), schedule);
         let honest = checker.check(&records, &held, &openings, ran.through);
         if !honest.is_clean() {
-            bad.push(format!("the untouched history fails: {:?}", honest.findings));
+            bad.push(format!(
+                "the untouched history fails: {:?}",
+                honest.findings
+            ));
         }
         // A record rewritten: its time moved, the entry otherwise whole and canonical, as full access can make it.
         let at = (sim.plan.seed as usize * 7 + 3) % records.len();
         let mut value: Value = serde_json::from_slice(&records[at]).unwrap();
         value["when"]["at"] = Value::String("2026-12-31T00:00:00Z".to_owned());
-        let rewritten_entry: rutent_contracts::core_internal::Entry = serde_json::from_value(value).unwrap();
+        let rewritten_entry: rutent_contracts::core_internal::Entry =
+            serde_json::from_value(value).unwrap();
         let mut rewritten = records.clone();
         rewritten[at] = record(&rewritten_entry).unwrap();
         let report = checker.check(&rewritten, &held, &openings, ran.through);
         rewrites += 1;
-        if !report.findings.iter().any(|f| matches!(f, Finding::DoesNotHold { .. })) {
-            bad.push(format!("record {at} rewritten and not detected: {:?}", report.findings));
+        if !report
+            .findings
+            .iter()
+            .any(|f| matches!(f, Finding::DoesNotHold { .. }))
+        {
+            bad.push(format!(
+                "record {at} rewritten and not detected: {:?}",
+                report.findings
+            ));
         }
         // A record removed.
         let mut removed = records.clone();
@@ -607,7 +720,10 @@ fn history_rewritten_with_operator_access_is_detected() {
         bad
     });
     none(&found);
-    assert!(rewrites >= 12 && removals >= 12 && inserted >= 12, "{rewrites} {removals} {inserted}");
+    assert!(
+        rewrites >= 12 && removals >= 12 && inserted >= 12,
+        "{rewrites} {removals} {inserted}"
+    );
 }
 
 // verifies: INV-7, NFR-5, GUA-3
@@ -626,7 +742,10 @@ fn no_action_takes_effect_without_its_record_under_injected_faults() {
         for (provider, book) in &sim.run.books {
             for entry in book {
                 let op = &entry["operation"]["statement"];
-                let moves = matches!(op["kind"].as_str(), Some("withdrawal" | "deposit" | "transfer" | "conversion" | "reversal"));
+                let moves = matches!(
+                    op["kind"].as_str(),
+                    Some("withdrawal" | "deposit" | "transfer" | "conversion" | "reversal")
+                );
                 if !moves || op["dry_run"] == true {
                     continue;
                 }
@@ -639,10 +758,14 @@ fn no_action_takes_effect_without_its_record_under_injected_faults() {
                 let answered = log.iter().position(|e| {
                     e["kind"] == "stated"
                         && e["about"]["transaction"] == tx
-                        && e["what"]["statement"].as_str().is_some_and(|x| x.ends_with("result"))
+                        && e["what"]["statement"]
+                            .as_str()
+                            .is_some_and(|x| x.ends_with("result"))
                 });
                 if answered.is_some_and(|at| at < seg.effect) {
-                    bad.push(format!("{provider}'s answer to {tx} is in the log before the effect"));
+                    bad.push(format!(
+                        "{provider}'s answer to {tx} is in the log before the effect"
+                    ));
                 }
             }
         }
@@ -654,18 +777,27 @@ fn no_action_takes_effect_without_its_record_under_injected_faults() {
                 let permitted = log[..at].iter().any(|p| {
                     p["kind"] == "verified"
                         && p["outcome"]["status"] == "permitted"
-                        && (p["what"]["decision"] == permit["decision"] || p["what"]["request"]["request"] == permit["request"])
+                        && (p["what"]["decision"] == permit["decision"]
+                            || p["what"]["request"]["request"] == permit["request"])
                 });
                 if !permitted {
-                    bad.push(format!("the effect at {at} names no permit recorded before it: {permit}"));
+                    bad.push(format!(
+                        "the effect at {at} names no permit recorded before it: {permit}"
+                    ));
                 }
             }
         }
         bad
     });
     none(&found);
-    assert!(actions >= 20 && effects >= 30, "{actions} actions, {effects} effects");
-    assert!(crashed >= 3, "only {crashed} runs crashed between a record and its effect");
+    assert!(
+        actions >= 20 && effects >= 30,
+        "{actions} actions, {effects} effects"
+    );
+    assert!(
+        crashed >= 3,
+        "only {crashed} runs crashed between a record and its effect"
+    );
 }
 
 // verifies: INV-8
@@ -681,11 +813,25 @@ fn repeated_transaction_identifiers_move_nothing_twice() {
         // A transaction identifier is one operation's: no two operations the operator stated share one.
         let mut ids = BTreeMap::new();
         for st in &sim.run.statements {
-            if st["shape"].as_str().is_some_and(|x| x.ends_with("operation")) && st["statement"]["dry_run"] == false {
-                *ids.entry(st["statement"]["transaction"].as_str().unwrap_or_default().to_owned()).or_insert(0) += 1;
+            if st["shape"]
+                .as_str()
+                .is_some_and(|x| x.ends_with("operation"))
+                && st["statement"]["dry_run"] == false
+            {
+                *ids.entry(
+                    st["statement"]["transaction"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+                .or_insert(0) += 1;
             }
         }
-        bad.extend(ids.iter().filter(|(_, c)| **c > 1).map(|(t, c)| format!("{t} stated {c} times")));
+        bad.extend(
+            ids.iter()
+                .filter(|(_, c)| **c > 1)
+                .map(|(t, c)| format!("{t} stated {c} times")),
+        );
         // However often it reached the provider, it moved once, and was handed over once.
         bad.extend(
             sim.run
@@ -698,9 +844,17 @@ fn repeated_transaction_identifiers_move_nothing_twice() {
         for s in segments(&sim.run) {
             *handed.entry(s.segment.clone()).or_insert(0) += 1;
         }
-        bad.extend(handed.iter().filter(|(_, c)| **c > 1).map(|(s, c)| format!("{s} handed over {c} times")));
+        bad.extend(
+            handed
+                .iter()
+                .filter(|(_, c)| **c > 1)
+                .map(|(s, c)| format!("{s} handed over {c} times")),
+        );
         // What moved is what the log handed over: each book movement is of a transaction the log's effects name.
-        let named: Vec<String> = segments(&sim.run).iter().filter_map(Seg::transaction).collect();
+        let named: Vec<String> = segments(&sim.run)
+            .iter()
+            .filter_map(Seg::transaction)
+            .collect();
         bad.extend(
             sim.run
                 .movements()
@@ -711,7 +865,10 @@ fn repeated_transaction_identifiers_move_nothing_twice() {
         bad
     });
     none(&found);
-    assert!(twice >= 2, "{twice} operations delivered twice across the runs");
+    assert!(
+        twice >= 2,
+        "{twice} operations delivered twice across the runs"
+    );
     assert!(reruns >= 1, "no run ran its route again");
 }
 
@@ -733,7 +890,9 @@ fn no_balance_answer_reveals_more_than_sufficiency_across_all_reserves() {
         let session = core.open_session(&kit::customer()).expect("a session");
         core.set_check_bound(1_000);
         let mut draw = Seeded::new(seed ^ 0xba1a_0c35);
-        let mut asked: Vec<u128> = (0..8).map(|_| 1 + u128::from(draw.below(120_000_000))).collect();
+        let mut asked: Vec<u128> = (0..8)
+            .map(|_| 1 + u128::from(draw.below(120_000_000)))
+            .collect();
         asked.extend([BALANCE - 1, BALANCE, BALANCE + 1]);
         asked.sort_unstable();
         asked.dedup();
@@ -743,55 +902,103 @@ fn no_balance_answer_reveals_more_than_sufficiency_across_all_reserves() {
         for reserve in names {
             for amount in &asked {
                 let text = amount.to_string();
-                let by_check = core.check_balance(reserve, &session, &text).expect("the check is sent");
-                let by_dry_run = core.check_by_dry_run(reserve, &session, &text).expect("the dry run is sent");
+                let by_check = core
+                    .check_balance(reserve, &session, &text)
+                    .expect("the check is sent");
+                let by_dry_run = core
+                    .check_by_dry_run(reserve, &session, &text)
+                    .expect("the dry run is sent");
                 // The whole answer: yes or no, the same by either way, and only whether the funds suffice.
-                let expected = if *amount <= BALANCE { Verdict::Yes } else { Verdict::No };
-                assert_eq!(by_check, expected, "seed {seed}, {reserve}, {amount}: replay with RUTENT_SCENARIO_SEEDS={seed}");
+                let expected = if *amount <= BALANCE {
+                    Verdict::Yes
+                } else {
+                    Verdict::No
+                };
+                assert_eq!(
+                    by_check, expected,
+                    "seed {seed}, {reserve}, {amount}: replay with RUTENT_SCENARIO_SEEDS={seed}"
+                );
                 // A dry run may also be refused, by class alone and with no detail: nothing more than yes or no.
                 assert!(
-                    matches!(format!("{by_dry_run:?}").as_str(), "Yes" | "No" | "Refused(Final(NoDetail))"),
+                    matches!(
+                        format!("{by_dry_run:?}").as_str(),
+                        "Yes" | "No" | "Refused(Final(NoDetail))"
+                    ),
                     "the dry run says more: {by_dry_run:?}"
                 );
                 dry.entry(reserve).or_default().push((*amount, by_dry_run));
-                assert!(matches!(format!("{by_check:?}").as_str(), "Yes" | "No"), "the answer says more: {by_check:?}");
+                assert!(
+                    matches!(format!("{by_check:?}").as_str(), "Yes" | "No"),
+                    "the answer says more: {by_check:?}"
+                );
                 answers += 2;
-                if by_check == Verdict::Yes { yes += 1 } else { no += 1 }
-                by_reserve.entry(reserve).or_default().push((*amount, by_check));
+                if by_check == Verdict::Yes {
+                    yes += 1
+                } else {
+                    no += 1
+                }
+                by_reserve
+                    .entry(reserve)
+                    .or_default()
+                    .push((*amount, by_check));
             }
         }
         // Monotone in the amount: the answers say where the balance is only by yes turning to no, and the two
         // reserves' answers are the same function of the amount.
         for list in by_reserve.values() {
-            assert!(list.windows(2).all(|w| !(w[0].1 == Verdict::No && w[1].1 == Verdict::Yes)));
+            assert!(
+                list.windows(2)
+                    .all(|w| !(w[0].1 == Verdict::No && w[1].1 == Verdict::Yes))
+            );
         }
-        assert_eq!(by_reserve[names[0]], by_reserve[names[1]], "the reserves answer alike");
+        assert_eq!(
+            by_reserve[names[0]], by_reserve[names[1]],
+            "the reserves answer alike"
+        );
         for list in dry.values() {
-            assert!(list.windows(2).all(|w| !(w[0].1 != Verdict::Yes && w[1].1 == Verdict::Yes)), "{list:?}");
+            assert!(
+                list.windows(2)
+                    .all(|w| !(w[0].1 != Verdict::Yes && w[1].1 == Verdict::Yes)),
+                "{list:?}"
+            );
         }
         // (A dry run is held to the tuple's band as well as the funds, so two reserves' dry runs needn't be alike.)
         // What Core kept of the checks, in the catalogue's check log and in the audit log, holds no figure the asker
         // didn't state: neither the balance nor what it leaves.
         let mut forbidden: Vec<String> = vec![BALANCE.to_string()];
-        forbidden.extend(asked.iter().filter(|a| **a < BALANCE).map(|a| (BALANCE - a).to_string()));
+        forbidden.extend(
+            asked
+                .iter()
+                .filter(|a| **a < BALANCE)
+                .map(|a| (BALANCE - a).to_string()),
+        );
         forbidden.retain(|f| !asked.iter().any(|a| a.to_string() == *f));
         let account = rutent_scenarios::assembly::context().account;
         let logged = core.catalogue().check_log(&account);
-        assert!(logged.len() >= 2 * asked.len() * names.len(), "seed {seed}: {} checks logged", logged.len());
+        assert!(
+            logged.len() >= 2 * asked.len() * names.len(),
+            "seed {seed}: {} checks logged",
+            logged.len()
+        );
         let kept = format!("{logged:?}");
         let audit = core.log().entries()[before..]
             .iter()
             .map(|(_, e)| serde_json::to_string(e).unwrap())
             .collect::<String>();
         for text in [&kept, &audit] {
-            for token in text.split(|c: char| !c.is_ascii_digit()).filter(|t| t.len() >= 5) {
-                assert!(!forbidden.iter().any(|f| f == token), "seed {seed}: a check's record holds {token}, which no asker stated");
+            for token in text
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|t| t.len() >= 5)
+            {
+                assert!(
+                    !forbidden.iter().any(|f| f == token),
+                    "seed {seed}: a check's record holds {token}, which no asker stated"
+                );
             }
         }
     }
     assert!(yes >= 10 && no >= 10, "{yes} yes, {no} no");
     assert!(answers >= 80);
-
 }
 
 // verifies: INV-10
@@ -807,7 +1014,11 @@ fn no_recalculation_changes_destination_or_to_asset() {
                 NodeRef::Outer(o) => o.network.clone(),
                 NodeRef::Inner(n) => n.clone(),
             };
-            (last.provider.as_str().to_owned(), node, last.to.asset.id.clone())
+            (
+                last.provider.as_str().to_owned(),
+                node,
+                last.to.asset.id.clone(),
+            )
         };
         let mut ends: BTreeMap<String, Vec<((String, String, String), &str)>> = BTreeMap::new();
         for input in &sim.run.inputs {
@@ -815,27 +1026,48 @@ fn no_recalculation_changes_destination_or_to_asset() {
             match &input.observed {
                 Observed::RouteChosen { parts, .. } => {
                     for part in parts {
-                        ends.entry(order.clone()).or_default().push((end_of(&part.segments), "chosen"));
+                        ends.entry(order.clone())
+                            .or_default()
+                            .push((end_of(&part.segments), "chosen"));
                     }
                 }
                 Observed::RouteRecalculated { segments, .. } => {
                     recalculated += 1;
-                    ends.entry(order).or_default().push((end_of(segments), "recalculated"));
+                    ends.entry(order)
+                        .or_default()
+                        .push((end_of(segments), "recalculated"));
                 }
                 _ => {}
             }
         }
         for e in entries(&sim.run) {
-            if e["kind"] == "verified" && e["what"]["call"] == "effect" && e["what"]["action"]["kind"] == "move_value" {
+            if e["kind"] == "verified"
+                && e["what"]["call"] == "effect"
+                && e["what"]["action"]["kind"] == "move_value"
+            {
                 let route = &e["what"]["action"]["route"];
                 let end = (
-                    route["destination"]["reserve"].as_str().unwrap_or_default().to_owned(),
-                    route["destination"]["node"]["network"].as_str().unwrap_or_default().to_owned(),
-                    route["to_asset"]["id"].as_str().unwrap_or_default().to_owned(),
+                    route["destination"]["reserve"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    route["destination"]["node"]["network"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    route["to_asset"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
                 );
-                ends.entry(e["what"]["action"]["order"].as_str().unwrap_or_default().to_owned())
-                    .or_default()
-                    .push((end, "effect"));
+                ends.entry(
+                    e["what"]["action"]["order"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+                .or_default()
+                .push((end, "effect"));
             }
         }
         for (order, list) in &ends {
@@ -843,13 +1075,18 @@ fn no_recalculation_changes_destination_or_to_asset() {
             for (end, what) in list {
                 compared += 1;
                 if end != first {
-                    bad.push(format!("{order}: a {what} route ends at {end:?}, the first at {first:?}"));
+                    bad.push(format!(
+                        "{order}: a {what} route ends at {end:?}, the first at {first:?}"
+                    ));
                 }
             }
         }
         bad
     });
     none(&found);
-    assert!(recalculated >= 2, "only {recalculated} recalculations across the runs");
+    assert!(
+        recalculated >= 2,
+        "only {recalculated} recalculations across the runs"
+    );
     assert!(compared >= 60, "{compared} route ends compared");
 }

@@ -97,18 +97,66 @@ pub struct Plan {
 /// The runs every test binary plays, whatever the seeds say: one of each kind of fault, on both routes where the
 /// kind has a meaning on both.
 pub const PINNED: [Plan; 12] = [
-    Plan { seed: 101, shape: Shape::Base, kind: Kind::Clean },
-    Plan { seed: 102, shape: Shape::Joined, kind: Kind::Clean },
-    Plan { seed: 103, shape: Shape::Base, kind: Kind::FailsAtTheEnd },
-    Plan { seed: 104, shape: Shape::Joined, kind: Kind::FailsInTheMiddle },
-    Plan { seed: 105, shape: Shape::Base, kind: Kind::SilentAtTheEnd },
-    Plan { seed: 106, shape: Shape::Base, kind: Kind::CrashAfterRecord(0) },
-    Plan { seed: 107, shape: Shape::Base, kind: Kind::CrashBeforeEffect(1) },
-    Plan { seed: 108, shape: Shape::Joined, kind: Kind::CrashAfterRecord(2) },
-    Plan { seed: 109, shape: Shape::Base, kind: Kind::Repeated },
-    Plan { seed: 110, shape: Shape::Joined, kind: Kind::Repeated },
-    Plan { seed: 111, shape: Shape::Joined, kind: Kind::Rerun },
-    Plan { seed: 112, shape: Shape::Joined, kind: Kind::FailsAtTheEnd },
+    Plan {
+        seed: 101,
+        shape: Shape::Base,
+        kind: Kind::Clean,
+    },
+    Plan {
+        seed: 102,
+        shape: Shape::Joined,
+        kind: Kind::Clean,
+    },
+    Plan {
+        seed: 103,
+        shape: Shape::Base,
+        kind: Kind::FailsAtTheEnd,
+    },
+    Plan {
+        seed: 104,
+        shape: Shape::Joined,
+        kind: Kind::FailsInTheMiddle,
+    },
+    Plan {
+        seed: 105,
+        shape: Shape::Base,
+        kind: Kind::SilentAtTheEnd,
+    },
+    Plan {
+        seed: 106,
+        shape: Shape::Base,
+        kind: Kind::CrashAfterRecord(0),
+    },
+    Plan {
+        seed: 107,
+        shape: Shape::Base,
+        kind: Kind::CrashBeforeEffect(1),
+    },
+    Plan {
+        seed: 108,
+        shape: Shape::Joined,
+        kind: Kind::CrashAfterRecord(2),
+    },
+    Plan {
+        seed: 109,
+        shape: Shape::Base,
+        kind: Kind::Repeated,
+    },
+    Plan {
+        seed: 110,
+        shape: Shape::Joined,
+        kind: Kind::Repeated,
+    },
+    Plan {
+        seed: 111,
+        shape: Shape::Joined,
+        kind: Kind::Rerun,
+    },
+    Plan {
+        seed: 112,
+        shape: Shape::Joined,
+        kind: Kind::FailsAtTheEnd,
+    },
 ];
 
 /// The seeds the seeded runs are made under where `RUTENT_SCENARIO_SEEDS` sets none.
@@ -127,14 +175,21 @@ pub struct Sim {
 impl Sim {
     /// How a failing check names this run.
     pub fn name(&self) -> String {
-        format!("seed {} ({:?} {:?})", self.plan.seed, self.plan.shape, self.plan.kind)
+        format!(
+            "seed {} ({:?} {:?})",
+            self.plan.seed, self.plan.shape, self.plan.kind
+        )
     }
 }
 
 /// The plan seed `seed` draws.
 pub fn plan_of(seed: u64) -> Plan {
     let mut draw = Seeded::new(seed ^ 0x1a77_a410);
-    let shape = if draw.below(2) == 0 { Shape::Base } else { Shape::Joined };
+    let shape = if draw.below(2) == 0 {
+        Shape::Base
+    } else {
+        Shape::Joined
+    };
     let mut kind = Kind::drawn(&mut draw);
     // The faults that hold of the base route only: a silent final deposit and a refusing one need its second segment
     // to be the destination's, and so do on the joined one; the plan keeps the draw as it is.
@@ -198,7 +253,11 @@ fn order_request(shape: Shape, name: &str, session: &Id, amount: &str) -> OrderR
 pub fn play(plan: Plan) -> Sim {
     let scenario = Scenario::new(
         "invariants",
-        if plan.shape == Shape::Base { BASE_AC } else { JOINED_AC },
+        if plan.shape == Shape::Base {
+            BASE_AC
+        } else {
+            JOINED_AC
+        },
         given_of(plan.shape),
     );
     let (mut core, _) = scenario.core(plan.seed, &mut Reference);
@@ -246,12 +305,13 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
             core.world()
                 .script_for(provider, op, Behaviour::act(Act::Fail));
         }
-        Kind::SilentAtTheEnd => core
-            .world()
-            .script_for(last, "deposit", Behaviour::late()),
+        Kind::SilentAtTheEnd => core.world().script_for(last, "deposit", Behaviour::late()),
         Kind::CrashAfterRecord(nth) => plant(
             core,
-            &Fault::CrashAfterRecord { call: "effect", nth },
+            &Fault::CrashAfterRecord {
+                call: "effect",
+                nth,
+            },
         ),
         Kind::CrashBeforeEffect(nth) => plant(core, &Fault::CrashBeforeEffect(nth)),
         Kind::Repeated => {
@@ -262,7 +322,11 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
             if plan.shape == Shape::Base {
                 plant(core, &Fault::DeliverTwice);
             }
-            let delivery = if draw.below(2) == 0 { Delivery::Repeated } else { Delivery::Reordered };
+            let delivery = if draw.below(2) == 0 {
+                Delivery::Repeated
+            } else {
+                Delivery::Reordered
+            };
             plant(core, &Fault::Deliver(delivery));
             plant(core, &Fault::SwapBeforeEffect(draw.below(3) as usize));
         }
@@ -280,7 +344,10 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
             ..
         } = told
         else {
-            panic!("seed {} {:?}: the order is quoted: {told:?}", plan.seed, plan.shape);
+            panic!(
+                "seed {} {:?}: the order is quoted: {told:?}",
+                plan.seed, plan.shape
+            );
         };
         core.accept(&customer, &order, &digest).expect("accepted");
         orders.push(order.clone());
@@ -289,7 +356,10 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
                 for part in &ran {
                     if let rutent_core_orch::segments::Ran::Segments(segments) = part {
                         for s in segments {
-                            if matches!(s.outcome, rutent_core_orch::segments::SegmentOutcome::Unknown(_)) {
+                            if matches!(
+                                s.outcome,
+                                rutent_core_orch::segments::SegmentOutcome::Unknown(_)
+                            ) {
                                 unknown.push((order.clone(), s.segment.clone()));
                             }
                         }
@@ -298,7 +368,8 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
             }
             Err(e) => notes.push(format!("run {n}: {e:?}")),
         }
-        core.flush().expect("the state machine takes what the log did");
+        core.flush()
+            .expect("the state machine takes what the log did");
     }
     if plan.kind == Kind::Rerun {
         for order in orders.clone() {
@@ -311,37 +382,44 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
     // provider that never answered is timed.
     for order in orders.clone() {
         match plan.kind {
-            Kind::FailsAtTheEnd | Kind::FailsInTheMiddle => {
-                match core.recalculate(&order) {
-                    Ok(r) => {
-                        notes.push(format!("recalculate: {}", format!("{r:?}").chars().take(60).collect::<String>()));
-                        match &r {
-                            Recalculation::Recalculated(recalculated) => {
-                                if let Err(e) = core.run_recalculated(&order, recalculated) {
-                                    notes.push(format!("run recalculated: {e:?}"));
-                                }
+            Kind::FailsAtTheEnd | Kind::FailsInTheMiddle => match core.recalculate(&order) {
+                Ok(r) => {
+                    notes.push(format!(
+                        "recalculate: {}",
+                        format!("{r:?}").chars().take(60).collect::<String>()
+                    ));
+                    match &r {
+                        Recalculation::Recalculated(recalculated) => {
+                            if let Err(e) = core.run_recalculated(&order, recalculated) {
+                                notes.push(format!("run recalculated: {e:?}"));
                             }
-                            Recalculation::NoRouteLeft { .. } => {
-                                if let Err(e) = core.record_no_route(&order, &r) {
-                                    notes.push(format!("no route: {e:?}"));
-                                }
-                            }
-                            _ => {}
                         }
+                        Recalculation::NoRouteLeft { .. } => {
+                            if let Err(e) = core.record_no_route(&order, &r) {
+                                notes.push(format!("no route: {e:?}"));
+                            }
+                        }
+                        _ => {}
                     }
-                    Err(e) => notes.push(format!("recalculate: {e:?}")),
                 }
-            }
+                Err(e) => notes.push(format!("recalculate: {e:?}")),
+            },
             Kind::SilentAtTheEnd => {
                 core.clock.advance(2 * 86_400 + 60);
                 match core.watch(&order) {
-                    Ok(w) => notes.push(format!("watch: {}", format!("{w:?}").chars().take(40).collect::<String>())),
+                    Ok(w) => notes.push(format!(
+                        "watch: {}",
+                        format!("{w:?}").chars().take(40).collect::<String>()
+                    )),
                     Err(e) => notes.push(format!("watch: {e:?}")),
                 }
                 // A stuck order starts no new route and hands nothing over (`AC-5`): both are asked, and what the log
                 // then holds is what the invariants read.
                 match core.recalculate(&order) {
-                    Ok(r) => notes.push(format!("recalculate: {}", format!("{r:?}").chars().take(60).collect::<String>())),
+                    Ok(r) => notes.push(format!(
+                        "recalculate: {}",
+                        format!("{r:?}").chars().take(60).collect::<String>()
+                    )),
                     Err(e) => notes.push(format!("recalculate: {e:?}")),
                 }
                 if let Err(e) = core.run(&order) {
@@ -360,7 +438,8 @@ fn drive(core: &mut Core, plan: Plan, orders: &mut Vec<Id>, notes: &mut Vec<Stri
             }
             _ => {}
         }
-        core.flush().expect("the state machine takes what the log did");
+        core.flush()
+            .expect("the state machine takes what the log did");
     }
 }
 
@@ -405,7 +484,9 @@ pub struct Seg {
 impl Seg {
     /// The outcome's status the provider stated.
     pub fn status(&self) -> Option<&str> {
-        self.res.as_ref().and_then(|r| r["outcome"]["status"].as_str())
+        self.res
+            .as_ref()
+            .and_then(|r| r["outcome"]["status"].as_str())
     }
 
     /// Whether the provider stated the segment succeeded and the log's result says it was done.
@@ -430,7 +511,10 @@ impl Seg {
 
     /// The kind of operation.
     pub fn kind(&self) -> &str {
-        self.op.as_ref().and_then(|o| o["kind"].as_str()).unwrap_or("")
+        self.op
+            .as_ref()
+            .and_then(|o| o["kind"].as_str())
+            .unwrap_or("")
     }
 
     /// The transaction it ran under.
@@ -472,13 +556,20 @@ pub fn segments(run: &Run) -> Vec<Seg> {
             && what["action"]["kind"] == "move_value"
         {
             let (order, segment) = (
-                what["action"]["order"].as_str().unwrap_or_default().to_owned(),
-                what["action"]["segment"].as_str().unwrap_or_default().to_owned(),
+                what["action"]["order"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                what["action"]["segment"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
             );
             // The statements about this segment: the operator's operation and the provider's result.
             let mut transaction = None;
             for s in &log {
-                if s["kind"] == "stated" && s["about"]["segment"].as_str() == Some(segment.as_str()) {
+                if s["kind"] == "stated" && s["about"]["segment"].as_str() == Some(segment.as_str())
+                {
                     transaction = s["about"]["transaction"].as_str().map(str::to_owned);
                 }
             }
@@ -489,7 +580,10 @@ pub fn segments(run: &Run) -> Vec<Seg> {
             segs.push(Seg {
                 order,
                 segment,
-                provider: what["action"]["provider"].as_str().unwrap_or_default().to_owned(),
+                provider: what["action"]["provider"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
                 effect: at,
                 result: None,
                 result_at: None,
@@ -514,7 +608,10 @@ pub fn segments(run: &Run) -> Vec<Seg> {
 pub fn specs_of(shape: Shape) -> Vec<Spec> {
     match shape {
         Shape::Base => vec![spec_of(RESERVE)],
-        Shape::Joined => [IN, EXCHANGE, RAMP, OUT].iter().map(|p| spec_of(p)).collect(),
+        Shape::Joined => [IN, EXCHANGE, RAMP, OUT]
+            .iter()
+            .map(|p| spec_of(p))
+            .collect(),
     }
 }
 
