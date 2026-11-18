@@ -4886,6 +4886,12 @@ consumer files named below.
   3. `private_node_of`'s replay branch still binds through the exit's result alone; the records past it add nothing to
      the binding while they must state for the same publisher. Owner: `T-020-32`, if its scenarios need otherwise.
   4. The scenario suite beyond the binaries run here runs in CI.
+  5. `once` holds within one replay, not across replays of one order: two replays may each cite a record of the same
+     node. Owner: the lead, a later none-other row ("one record of a node per order") if a reader needs it (the
+     review of `d11e5a2b`).
+  6. A record's body names its maker's publisher (the review's fix), but each segment it lists isn't held to a provider
+     stating for that publisher: a provider may list another publisher's segment of the same order. Residual for
+     `T-025-05`.
 - **Rule-off table** (each switched off alone from the committed tree, its tests run under a 600 s alarm through the
   lock, the file restored with `git checkout`; script `scratchpad/f020zh/ruleoff.py`; none hung). "Table" is
   `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "attribution" is
@@ -4912,10 +4918,10 @@ consumer files named below.
   | `private_node_of`: a record binds only its node | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
   | `status-is-asked-under-a-fresh-transaction` whole (cites none) | table, `late_status_asked_without_its_transaction_is_invalid` |
   | its stated entry naming the transaction | the same two |
-  | its other late status's effect | the same two |
+  | its other late status's effect (before the review) | the same two |
   | the schema's `transaction` required on `ask_status` | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `late_status_asked_without_its_transaction_is_invalid` |
   | `core-orch`: the action names the transaction drawn (another fresh id instead) | `late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_providers_statement` |
-- **Local checks** (one lock hold, at `6ba57ed0` with these notes): `cargo fmt --all -- --check`, `cargo clippy
+- **Local checks of the first round** (one lock hold, at `6ba57ed0` with these notes): `cargo fmt --all -- --check`, `cargo clippy
   --workspace --all-targets -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test
   -p rutent-contract-guard`, the guard against `origin/develop` ("1671 changed path(s), no violations"), plan-check
   and tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-authz` (and its `--lib`),
@@ -4923,3 +4929,32 @@ consumer files named below.
   all green but one run of `reopen.rs`'s `store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_opening`,
   which failed opening the evidence store's files (`Unavailable`, at the test's `EvidenceStore::open`) and passed three
   runs of its own binary after; it reads no file this row touched, so a flake for CI to confirm.
+
+### T-020-36, the review of `d11e5a2b`: changes
+
+- **Should-fix, fixed: a late status's transaction could be one a verified entry named.** The row counted stated
+  entries' `about` and other `ask_status` effects only, where the action's doc says no other entry may name it: the
+  reviewer's probe asked under `tx-h3`, named before only by a `stuck_decide` and its `resolve_stuck` effect, and was
+  admitted. The row now reads every verified shape that names a transaction (`transactions_named`: a decision's or an
+  effect's action, `ask_status`, `resolve_stuck` or an `accept_fault`'s showing; a `stuck_decide`; any hand-over item),
+  excepting the effect's own permitting decision (by its request and decision ids). Checked across `types.rs`: no
+  other verified shape names a transaction. Six refused cases: `--a-stuck-resolutions-transaction` (the probe),
+  `--a-transaction-only-a-stuck-decide-step-names`, `--a-transaction-only-a-resolve-stuck-effect-names`,
+  `--a-transaction-another-late-status-decision-names` (decided, never taken), `--a-transaction-a-hand-over-names`,
+  `--a-transaction-an-accepted-showing-names`.
+- **Low, fixed: a record's body names its maker's publisher.** `inner_segments_of` holds the body's `publisher` to the
+  party the entry claims (step 3 binds it to the key), as its `node` to `about.node`. Case
+  `unverified--an-inner-segments-record-naming-another-publisher-than-its-maker-states-for`. Going further (each listed
+  segment's provider stating for that publisher) is gap 6, a residual.
+- **Low, noted:** `once` across replays of one order, gap 5.
+- **Rule-offs of the review's rules** (from `e4c51b1e`, same script and alarm; none hung, every one red):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the row whole; its stated arm; its verified arm (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | its own permitting decision excepted (counted instead) | `every_entry_of_a_complete_log_is_admitted_on_what_came_before_it`, table, `late_status_asked_without_its_transaction_is_invalid`, `request_for_a_providers_late_status_without_its_segment_is_invalid` |
+  | a decision's action; an effect's action; a `stuck_decide`; a hand-over (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | `ask_status`'s and `resolve_stuck`'s transaction; `resolve_stuck`'s alone; an accepted showing's (each alone) | the same two, each time |
+  | `attribute`: a record's publisher is its maker's | `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+- **Local checks** (one lock hold, at `e4c51b1e` with these notes): the same list as the first round's, all green,
+  `rutent-core-audit` included; the guard against `origin/develop`: "1678 changed path(s), no violations".
