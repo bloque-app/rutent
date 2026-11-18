@@ -61,8 +61,14 @@ jobs:
       # untested. They run here, once more beside the `jail-probes` workflow's own run (which stays the one that records
       # the run id for `F-025`'s notes), into the same results file the table reads: a separate workflow's job can't hand
       # its results to this one except through an artefact of an earlier run, which a push would race.
+      # T-024-19: `RUTENT_RELEASE_PROVIDER` is set as `jail-probes.yml` sets it, so the release scan's probe runs
+      # here too and counts towards `GUA-5`; without it the probe skips and its line is shared with the build output.
+      - name: Release build of the provider binary (T-024-19)
+        run: cargo build --release --locked -p rutent-prov --bin rutent-wasm-provider
       - name: Jail probes, for the evidence table (T-024-18)
         shell: bash
+        env:
+          RUTENT_RELEASE_PROVIDER: ${{ github.workspace }}/target/release/rutent-wasm-provider
         run: |
           set -o pipefail
           cargo test --locked -p rutent-prov --features jail-layers --test jail_layers -- --test-threads=1 2>&1 \

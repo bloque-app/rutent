@@ -322,6 +322,26 @@ fn inspection_row_naming_no_check_or_review_is_reported() {
     );
 }
 
+/// The scope file takes its switch once: a second `strict:` line used to win silently, so a file showing `strict: on`
+/// at its top could run off (`T-024-19`, from `T-025-05`'s review). A second line is a finding, whichever it says.
+// verifies: DEC-17
+#[test]
+fn scope_file_with_a_second_strict_line_is_refused() {
+    for second in ["strict: off", "strict: on"] {
+        let text = format!("{}\n{second}", scope_text("on", &[]));
+        let (scope, problems) = parse_scope(&text);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.rule == "bad-row" && p.message.contains("second `strict:`")),
+            "{second}: {problems:?}"
+        );
+        assert!(scope.strict_on, "the first line stands: it is the one read");
+    }
+    let (_, once) = parse_scope(&scope_text("on", &[]));
+    assert!(once.is_empty(), "one line is the file's norm: {once:?}");
+}
+
 // verifies: DEC-17
 #[test]
 fn strict_switch_turned_off_after_develop_has_it_on_fails() {
@@ -1221,6 +1241,67 @@ fn evidence_table_counts_the_jail_probes_jobs_results() {
             .any(|l| l.contains("tee -a \"$RUNNER_TEMP/test-results.txt\"")),
         "their output is appended to the results the table reads"
     );
+}
+
+/// `ci.yml`'s jail step sets `RUTENT_RELEASE_PROVIDER`, as `jail-probes.yml` does, so the release scan's probe runs
+/// without a build of its own: a build's output printed beside the probe's name shares its result line, and the table
+/// read `GUA-5` at two of its three tests (`T-024-19`). A results file where the probe ran, on a line of its own, counts it.
+// verifies: GUA-5
+#[test]
+fn evidence_table_counts_the_release_scan_probe_run_in_ci() {
+    let probe = "release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off";
+    let clean = jail_probes_output();
+    assert!(
+        clean.contains(&format!("test {probe} ... ok")),
+        "the probe is run"
+    );
+    // `GUA-5`'s other tests are not in this file, so the probe is the one that makes the row verified: counted on a
+    // line of its own, the row is verified, and not when the line is shared.
+    assert_eq!(
+        status_of(&real_lines(""), "GUA-5"),
+        "unverified",
+        "no run, no probe"
+    );
+    let counted = real_lines(&clean);
+    assert_eq!(
+        status_of(&counted, "GUA-5"),
+        "verified",
+        "the probe's line counts"
+    );
+    // The scan's own release build, printed where the probe's line begins: the shape that made it read as lost.
+    let shared = clean.replace(
+        &format!("test {probe} ... ok"),
+        &format!("test {probe} ...    Compiling rutent-prov v0.0.0\nok"),
+    );
+    assert_ne!(
+        status_of(&real_lines(&shared), "GUA-5"),
+        "verified",
+        "a probe that shares its line with output is not counted"
+    );
+
+    // The workflow sets the variable on the step that runs the probes, and builds the provider it names first.
+    let ci = std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    let step = ci
+        .split("- name: ")
+        .find(|s| s.starts_with("Jail probes, for the evidence table"))
+        .expect("the jail step");
+    assert!(
+        step.contains(
+            "RUTENT_RELEASE_PROVIDER: ${{ github.workspace }}/target/release/rutent-wasm-provider"
+        ),
+        "the jail step sets the release provider's path"
+    );
+    let build = ci
+        .lines()
+        .position(|l| {
+            l.contains("cargo build --release --locked -p rutent-prov --bin rutent-wasm-provider")
+        })
+        .expect("ci.yml builds the release provider");
+    let probes = ci
+        .lines()
+        .position(|l| l.contains("--features jail-layers --test jail_layers"))
+        .expect("the probes");
+    assert!(build < probes, "the release build comes before the probes");
 }
 
 /// `ci.yml`'s seeded step runs `T-024-08`'s invariants beside the assembly's scenarios, under the seeds the step sets

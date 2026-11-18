@@ -128,6 +128,15 @@ pub fn parse_scope(text: &str) -> (Scope, Vec<Finding>) {
             continue;
         }
         if let Some(value) = line.strip_prefix("strict:") {
+            if switch_seen {
+                // The first line is the one read: a later one must not win silently (`T-024-19`).
+                problems.push(finding(
+                    "bad-row",
+                    location,
+                    "a second `strict:` line: the switch is set once".to_string(),
+                ));
+                continue;
+            }
             match value.trim() {
                 "on" => scope.strict_on = true,
                 "off" => scope.strict_on = false,

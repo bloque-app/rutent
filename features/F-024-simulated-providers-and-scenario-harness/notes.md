@@ -1620,3 +1620,28 @@ written after the code, so "red first" is the rows below):
 - `Through` (`module_role.rs`) says in a comment that the twin answers the arrival question, not the module (`F-014`, `F-031`).
 - The guest no longer caches a provider built on a failed deployment ask: it answers that one operation as the default deployment
   does and asks again next time (`T-024-12`'s verifier tests, rerun, are green).
+
+### T-024-19, three lows from `T-025-05`'s security review
+
+- **A second `strict:` line** in the scope file is a `bad-row` finding (`tools/records/src/evidence.rs`); the first line stands as
+  the one read, so a file showing `strict: on` at its top can no longer run off through a later line. Test:
+  `scope file with a second strict line is refused` (`DEC-17`).
+- **`decline_outcome`** of the assembly's policy side forwards to the engine, as the other calls do, instead of answering
+  unavailable (`conformance/scenarios/src/assembly/policy.rs`). Test through the assembly:
+  `assembled decline of a stuck outcome is decided by the policy engine` (`REQ-AUZ-4`): on an order with no report to decline,
+  the answer is the log's refusal and nothing is recorded; the engine's own decline tests (`T-021-09`) cover the permitted path.
+- **`ci.yml`'s jail step** sets `RUTENT_RELEASE_PROVIDER` as `jail-probes.yml` does, and a release build of the provider binary runs
+  before it (the variable names that build; without it the probe would fail on a missing file). The scan no longer builds inside the
+  test, so its result line stays its own and `GUA-5` counts it. Test: `evidence table counts the release scan probe run in ci`
+  (`GUA-5`): the table reads a results file where the probe ran on a line of its own as verified, a shared line as not, and
+  the workflow sets the variable and builds first. **`DEC-20` path:** the workflow edit waits for the owner's click at the release into
+  main, and for `T-025-05`'s reviewer's addendum.
+- **Default** (fails closed): a second `strict:` line is refused whatever it says, even a repeat of the first.
+
+| Switched off | Red |
+|---|---|
+| the second-line refusal in `parse_scope` | the second-strict-line test |
+| the assembly's forward to the engine (back to unavailable) | the assembled decline test |
+| the release-scan probe's `GUA-5` tag | the release-scan test (the table no longer counts the probe) |
+| `RUTENT_RELEASE_PROVIDER` in the jail step | the release-scan test (the workflow assertion) |
+| the release build step before the jail step | the release-scan test (the build-before-probes assertion) |
