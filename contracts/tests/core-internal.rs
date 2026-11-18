@@ -3809,12 +3809,18 @@ fn handed_on_route_whose_first_move_another_provider_runs_from_the_holding_recor
     assert_case(&format!(
         "{row}--a-wallet-holds-and-the-plans-provider-runs-the-first-move"
     ));
+    // The customer's own hand-on, after a failed final deposit, names no holder: the linked route starts at its first
+    // provider, which holds the value there (`hand_on/`'s customer basis).
+    assert_case(&format!(
+        "{row}--a-customers-hand-on-held-by-its-first-provider"
+    ));
     // The record still required, and held to the holding account the hand-on named, the first segment's node, and
     // the plan's provider.
     for name in [
         "missing",
         "holder",
         "a-holder-the-hand-on-did-not-name",
+        "a-customers-hand-on-held-by-another-than-its-first-provider",
         "node",
         "a-first-move-from-another-node",
         "provider",

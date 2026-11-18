@@ -577,10 +577,11 @@ pub static RELATIONS: [Relation; 107] = [
             ),
         ],
         // A route handed on has no withdrawal of its own: the holding account's record proves its start, so its
-        // first move rests on it. The record is the holding account's that the order handed on named (its
-        // `resolve_stuck` hand-on's `by`), at the node the first segment moves from, and the move is run by the
-        // provider the linked route's own plan names, which needn't be the holding account: a plain wallet holds and
-        // runs no segment (`T-020-33`, the owner's form `hand-on-wallet-holder`; `T-020-36`'s item 4).
+        // first move rests on it. The record is the holding account's that the hand-on named (an operator's
+        // `resolve_stuck` hand-on's `by`; for the customer's, the linked route's first provider, which holds the
+        // value), at the node the first segment moves from, and the move is run by the provider the linked route's
+        // own plan names, which needn't be the holding account: a plain wallet holds and runs no segment (`T-020-33`,
+        // the owner's form `hand-on-wallet-holder`; `T-020-36`'s item 4).
         cites: |e, h| match effect_action(e) {
             Some((Action::MoveValue { order, segment, .. }, _))
                 if handed_on_from_of(order.as_str(), h).is_some()
@@ -611,14 +612,6 @@ pub static RELATIONS: [Relation; 107] = [
                     node,
                     ..
                 }) => {
-                    // The holding account the order handed on named: its hand-on's `by`, onto this order.
-                    let named = h.iter().any(|(_, x)| {
-                        matches!(verified(x).and_then(effect_action), Some((Action::ResolveStuck {
-                            order: from,
-                            resolution: Resolution::HandOn { by, linked_order, .. },
-                            ..
-                        }, _)) if from == handed_on_from && linked_order == order && by == holder)
-                    });
                     // The first segment as the linked route's own plan names it.
                     let plan = h.iter().find_map(|(_, x)| {
                         verified(x)
@@ -626,6 +619,32 @@ pub static RELATIONS: [Relation; 107] = [
                             .filter(|i| i.subject.order.as_str() == order.as_str())
                             .and_then(|i| planned(i, segment.as_str()))
                     });
+                    // The node's holding account, as the hand-on names it: the operator's, a stuck order's
+                    // `resolve_stuck` hand-on onto this order, names it as its `by`; the customer's, after a failed
+                    // final deposit, starts the linked route at its own first segment's provider, which holds the
+                    // value there (`hand_on/`'s two bases).
+                    let operators: Vec<&Id> = h
+                        .iter()
+                        .filter_map(|(_, x)| match verified(x).and_then(effect_action) {
+                            Some((
+                                Action::ResolveStuck {
+                                    order: from,
+                                    resolution:
+                                        Resolution::HandOn {
+                                            by, linked_order, ..
+                                        },
+                                    ..
+                                },
+                                _,
+                            )) if from == handed_on_from && linked_order == order => Some(by),
+                            _ => None,
+                        })
+                        .collect();
+                    let named = if operators.is_empty() {
+                        plan.is_some_and(|s| s.provider.as_str() == holder.as_str())
+                    } else {
+                        operators.contains(&holder)
+                    };
                     judge(
                         o == order
                             && handed_on_from_of(order.as_str(), h)

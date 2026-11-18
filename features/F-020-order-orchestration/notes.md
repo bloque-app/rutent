@@ -4975,3 +4975,44 @@ consumer files named below.
   | the action half alone | none: a decision at the permit's receipt for another action is refused first by the effect's own permit rows, so this half is kept as defence and no case of this row reaches it |
 - **Local checks** (one lock hold, at `c0b58b6e` with these notes): the first round's list, all green; the guard against
   `origin/develop`: "1680 changed path(s), no violations".
+
+### T-020-36, item 4 (added by the lead): a route handed on, whoever runs its first move
+
+- **Finding** (`T-020-33`, a hand-on through a plain wallet, the owner's form `hand-on-wallet-holder` default):
+  `handed-on-route-starts-on-its-holding-record` held the holding record's `holder` to the move's `origin_reserve`,
+  so the wallet holding the value while the linked route's first provider runs the first segment was refused on that
+  field.
+- **Design.** The record stays required. Its `holder` is the holding account the hand-on named (field `holder`): for
+  the operator's hand-on of a stuck order, the `by` of its `resolve_stuck` effect onto this order; for the customer's
+  hand-on after a failed final deposit, which names no holder, the linked route's first provider, which holds the value
+  there (`core-orch`'s `hand_on/` reads the two bases the same way). Its `node` is the inner
+  node the linked route's own plan moves this first segment from (field `node`, as
+  `holding-withdrawal-starts-a-handed-on-route` holds the node). The move's `provider` is the one that plan names for
+  the segment (field `provider`); it needn't be the holder.
+- **Default** (reversible, failing closed): the log holds no register of a node's holding accounts, so "that node's
+  holding account" is the one the hand-on named and its own record places at the node. `origin_reserve` is no longer
+  read by this row (the authorisation's rows still read it).
+- **Cases.** The contract's world had no admitted move of a route handed on (its hand-on names fx-desk, its holding
+  record us-bank's), so the cases are built from `--missing`'s history, with ord-2's own authorisation (`auth-2`, which
+  its acceptance names and the history lacked) and its own segment id (`o2-s1`: `p1-s1` is ord-1's, which
+  `segment-belongs-to-one-order` keeps): `--a-wallet-holds-and-the-plans-provider-runs-the-first-move` admitted
+  (plain-wallet named and holding at `ledger-in`, us-bank running the move); `--a-holder-the-hand-on-did-not-name`
+  (`holder`), `--node` (the record at `ledger-out`), `--a-first-move-from-another-node` (`node`), `--provider` (fx-desk
+  runs what the plan gives us-bank, decided so) refused, beside `--missing` and `--holder` (now refused on the
+  hand-on's name); for the customer's basis, `--a-customers-hand-on-held-by-its-first-provider` admitted and
+  `--a-customers-hand-on-held-by-another-than-its-first-provider` refused (`holder`).
+- **Histories the log refused, sorted.** The first version read the operator's basis alone and the end checks'
+  scenarios refused four of `rutent-scenarios`' real flows (`hand_on.rs`'s
+  `handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record`, and three of `hand_on_record.rs`), each a
+  customer's hand-on with no `resolve_stuck`: a gap in the new rule, not a Core bug; the customer's basis fixed it,
+  and both binaries pass. Test `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`.
+- **Hand-off to `T-020-33`:** its hand-on's `resolve_stuck` names the wallet as `by`, the wallet's `holding_withdrawal`
+  record names it as `holder` at the node the linked plan's first segment starts from, and the plan names the provider
+  that runs it.
+- **Rule-offs** (from the item's second commit; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `holder`: the holding account the hand-on named | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
+  | `node`: the first segment's from-node | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted` |
+  | `provider`: the plan's | the same two |
