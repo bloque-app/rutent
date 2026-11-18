@@ -5093,7 +5093,6 @@ commit body says so. `contracts/` is untouched; its one conflicting rule is gap 
   | the record is the holder's own (`proves_start`'s `by`) | the same |
   | the assembly lands what settled (`run_live`) | `value settled at a public node...`, `real plain wallet's re-serialised answer verifies...`, `stuck order of the assembled Core is handed on...` |
   | one landing per segment (`closed`) | `value settled at a public node held by a holding account lands in it` |
-=======
 
 ## T-020-36: `core-internal`'s round after `T-020-30`
 
@@ -5307,4 +5306,3 @@ consumer files named below.
   | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
 - **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
   included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.
->>>>>>> e2681780
