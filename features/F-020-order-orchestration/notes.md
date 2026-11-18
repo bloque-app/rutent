@@ -4602,20 +4602,21 @@ contract, manifest or `DEC-20` path.
      input, no evidence, no hold released, the order as Core follows it unchanged (`INV-4`). A call that stopped carries
      on from where it stopped (`INV-8`).
   2. *A reversal at a later inner node* (`later_confirmer`, `Target.confirmer`). A segment that doesn't start where the
-     withdrawal took the value (node and asset, as before) is confirmed by the catalogue's holding account of its node,
-     where that account is the provider of the segment that delivered the value there (what the log's
-     `reversal-rests-on-its-evidence` reads as the node's `reserve`) and isn't the failed provider. Core asks that party
-     the same `reversal_confirmation` question; the judge holds the answer to its maker, and the evidence says its word
+     withdrawal took the value (node and asset, as before) is confirmed by the provider of the segment that delivered
+     the value there (what the log's `reversal-rests-on-its-evidence` reads as the node's `reserve`), where the node has
+     a registered holding account and that provider isn't the failed one. A holding account's `reference` is an
+     interface string (a private node's publisher interface, a public node's operator module), never a provider's id,
+     so it names no party; it only gates the node. Core asks that party the same `reversal_confirmation` question; the judge holds the answer to its maker, and the evidence says its word
      (`Word::Reserves`, grade 3). Inside a private node the failed provider's own publisher holds, the publisher's word
      through `Reversals::ask` counts as before, labelled: its guard on the withdrawal's node is lifted, so `ask` is now
      taken at a later node too (its operation names the segment's from-node). With no such party `confirm` is refused
      `NoReserveAtNode` before anything is asked or recorded: the reversal stays owed (the assembly owes it from the
      failure) and held, for the stuck orders.
 - **Defaults (reversible, each failing closed).**
-  - The confirming party at a later node is the holding account **only where it is also the provider that delivered
-    there**, because the log admits no other (`reversal-rests-on-its-evidence`: `whose` is the reserve at the from-node
-    or a labelled publisher). At a public node, whose holding account is an operator module, nothing is admitted
-    unless that module delivered there.
+  - The confirming party at a later node is the provider that delivered the value there, the reserve the log reads
+    (`reversal-rests-on-its-evidence`: `whose` is the reserve at the from-node or a labelled publisher), gated on the
+    node having a registered holding account and never the failed provider. The row's "holding account" is read as
+    that node's reserve; the register's interface string names no one.
   - `Modules::status` has a default that refuses (`NotHandled`), so no platform that implements nothing is asked and
     every existing implementer compiles; the production `Platform<W>` leaves the default.
   - The ask is for a segment whose answer was taken and that hasn't settled or been reversed; it is not limited to a
@@ -4629,11 +4630,13 @@ contract, manifest or `DEC-20` path.
   2. No simulated route in the assembled world crosses two inner nodes (`sim-join-*` has one ledger), so these four tests
      run in `core-orch`'s fakes, as `T-020-12`'s do, over the router-api fixture's second candidate; "on the running
      platform with simulated providers" waits on a route of that shape in the sim. Owner: `T-024-14`'s sim work.
-  3. At a public node, or where the node's holding account delivered nothing there, no party confirms and the reversal
-     waits for the stuck orders. Owner: a contract round (`T-020-30`) if the owner wants the holding account itself
-     (not the delivering provider) to confirm; today the log's `reserve` reading binds it. ADR-0008's open point.
-  4. A route can't run through an inner node with no holding account (`NoHoldingAccount`), so "no holding account"
-     isn't a state this path meets; the test covers the other two (a module of no one's, the origin reserve).
+  3. Where the delivering provider is the failed one, no party confirms and the reversal waits for the stuck orders.
+     Owner: ADR-0008's open point (who confirms at a node whose only reserve failed), a reading for the owner's form.
+  4. A route can't run through an inner node with no holding account (`NoHoldingAccount`), so the gate on a registered
+     holding account is never what refuses; the no-party test uses a route one provider delivers and fails
+     (`Act::FailConversion` in the fake settles a provider's other operations).
+  6. The fresh transaction of `ask_status` is in no log entry (`What::Effect` has no field for it). Held as a contract
+     item by the coordinator.
   5. `ask_status` isn't called by anything yet: the owner of the stuck mover's watch (`T-024-06`'s scenario) calls it.
 - **Histories the log refused.** None: the tests replay every entry through `attribute` and `admit_entry`
   (`World::admitted_from`), and the effect's result and the kept statement are admitted.
@@ -4646,8 +4649,8 @@ contract, manifest or `DEC-20` path.
 
   | Rule switched off | Red |
   |---|---|
-  | the confirmer is the provider that delivered there | `reversal at a later inner node with no confirming party stays owed and held` |
-  | the confirmer isn't the failed provider | none: no fixture reaches it (a delivering provider is never the failed one); kept as defence |
+  | the confirmer is the provider that delivered there | `failed segment at a later inner node is confirmed by that node's holding account` (nothing asked) |
+  | the confirmer isn't the failed provider | `reversal at a later inner node with no confirming party stays owed and held` |
   | an answer counts only from the party asked | `failed segment at a later inner node is confirmed by that node's holding account`, `origin_reserves_statement_completes_a_reversal_as_its_word` |
   | the question goes to the confirmer, not the origin reserve | `failed segment at a later inner node is confirmed by that node's holding account` |
   | `confirm` refuses with no confirmer up front | none: `question` refuses the same case; kept as the first guard |

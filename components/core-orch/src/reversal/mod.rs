@@ -24,9 +24,8 @@
 //!   can be recalculated (`T-020-10`). An answer that doesn't count is kept and completes nothing, and the next call
 //!   asks again.
 //! - **At a later inner node** ([`Reversals::confirm`], `REQ-ORD-3`, `DEC-24`, `T-020-27`). A segment starting at an
-//!   inner node after the first is confirmed by that node's holding account (the catalogue's registered one), where it
-//!   is the provider that delivered the value there and isn't the one that failed, the reserve at the node
-//!   `reversal-rests-on-its-evidence` reads; the confirmation counts as its word, graded signed by its maker. Inside
+//!   inner node after the first is confirmed by the provider that delivered the value there, where it isn't the one
+//!   that failed and the node has a holding account, the reserve at the node `reversal-rests-on-its-evidence` reads; the confirmation counts as its word, graded signed by its maker. Inside
 //!   a private node the failed provider's own publisher holds, the publisher's word through [`Reversals::ask`] counts
 //!   as before, labelled. With no such party nothing is asked or recorded and the reversal stays owed and held,
 //!   failing closed (`NoReserveAtNode`).
@@ -313,7 +312,7 @@ pub enum ReversalError {
     /// The part has no withdrawal whose reserve is its origin reserve.
     NoOriginReserve,
     /// No party Core can ask confirms the reversal: the segment starts at an inner node after the first, and the node
-    /// has no holding account that is the provider that delivered the value there and isn't the one that failed
+    /// has no provider that delivered the value there other than the one that failed, or no holding account
     /// (`REQ-ORD-3`, `T-020-27`). Nothing is asked or recorded; the reversal stays owed and held.
     NoReserveAtNode,
     /// The state machine wouldn't take the input from the order as it stands: nothing is recorded.
@@ -2094,11 +2093,12 @@ fn inner_node(segment: &stm::Segment) -> Option<String> {
 }
 
 /// The party that confirms the reversal of `segment`, which starts at an inner node after the first (`REQ-ORD-3`,
-/// `DEC-24`, `T-020-27`): the holding account the catalogue registers for that node, where it is the provider that
-/// delivered the value there, the reserve at the node `reversal-rests-on-its-evidence` reads, and isn't `failed`, whose
-/// own word never confirms its failure. None where the node has no holding account, or one that delivered nothing
-/// there: the reversal stays owed and held (`INV-2`), failing closed. Inside a private node its publisher holds, the
-/// failed provider's own publisher may instead answer a reversal Core asks it for ([`Reversals::ask`]).
+/// `DEC-24`, `T-020-27`): the provider of the segment that delivered the value there, the reserve at the node
+/// `reversal-rests-on-its-evidence` reads, where the node has a holding account registered and that provider isn't
+/// `failed`, whose own word never confirms its failure. A holding account's `reference` is an interface string, never
+/// a provider's id, so it names no party. None where no segment delivered there, or the deliverer is the failed
+/// provider: the reversal stays owed and held (`INV-2`), failing closed. Inside a private node the failed provider's
+/// own publisher holds, its publisher may instead answer a reversal Core asks it for ([`Reversals::ask`]).
 fn later_confirmer(
     catalogue: &Catalogue,
     part: &stm::Part,
@@ -2106,13 +2106,13 @@ fn later_confirmer(
     failed: &Id,
 ) -> Option<Id> {
     let node = inner_node(segment)?;
-    let holder = Id::new(&catalogue.nodes().holding(&node)?.reference)?;
+    catalogue.nodes().holding(&node)?;
     let delivered = part
         .segments
         .iter()
         .find(|s| s.segment_id != segment.segment_id && s.to == segment.from)
         .and_then(|s| Id::new(s.provider.as_str()))?;
-    (holder == delivered && holder != *failed).then_some(holder)
+    (delivered != *failed).then_some(delivered)
 }
 
 /// A part's origin reserve: the provider of its withdrawal, its first segment.

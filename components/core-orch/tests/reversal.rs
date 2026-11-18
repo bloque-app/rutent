@@ -369,6 +369,8 @@ impl Reads for Refusing {
 enum Act {
     Settle,
     Fail,
+    /// Its conversions fail and every other operation settles.
+    FailConversion,
     /// The module passed something out and ended with no answer.
     Unknown,
 }
@@ -459,8 +461,13 @@ impl Modules for Platform {
             });
             return Answered::Bytes(result(provider.as_str(), "reversal", &transaction, outcome));
         }
-        let act = self.script[provider.as_str()];
+        let act = match (self.script[provider.as_str()], kind.as_str()) {
+            (Act::FailConversion, "conversion") => Act::Fail,
+            (Act::FailConversion, _) => Act::Settle,
+            (act, _) => act,
+        };
         let outcome = match (act, kind.as_str()) {
+            (Act::FailConversion, _) => unreachable!("read above"),
             (Act::Unknown, _) => return Answered::Refused(PlatformRefusal::OutcomeUnknown),
             (Act::Fail, _) => json!({ "status": "failed", "evidence": piece(provider.as_str()) }),
             (Act::Settle, "withdrawal") => json!({
@@ -895,22 +902,47 @@ fn later_record() -> DecisionRecord {
     serde_json::from_value(value).unwrap()
 }
 
+/// [`later_record`] with `exchange-b` doing the ramp's transfer as well: one provider delivers the value to `ledger-b`
+/// and fails the conversion that starts there.
+fn same_provider_record() -> DecisionRecord {
+    let value = serde_json::to_value(later_record()).unwrap();
+    // The snapshot holds one publisher for a provider: the ramp's figures take the exchange's.
+    let publisher = value["snapshot"]["figures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["origin"]["provider"] == EXCHANGE_B)
+        .map(|f| f["origin"]["publisher"].as_str().unwrap().to_owned())
+        .unwrap();
+    let text = serde_json::to_string(&value).unwrap();
+    let text = text
+        .replace(
+            &format!("\"publisher\":\"{RAMP}\""),
+            &format!("\"publisher\":\"{publisher}\""),
+        )
+        .replace(RAMP, EXCHANGE_B);
+    serde_json::from_str(&text).unwrap()
+}
+
 /// The catalogue of the route across inner nodes: the bank's `ledger-in` and the ramp's `ledger-b`, each declared
 /// private by its provider's publisher and held by it, except `ledger-b`'s holding account is `holding_of_b`, where
 /// there is one, which the ramp's publisher gives.
-fn later_catalogue(record: &DecisionRecord, holding_of_b: Option<&str>) -> Catalogue {
+fn later_catalogue(
+    record: &DecisionRecord,
+    holding_of_b: Option<&str>,
+    deliverer: &str,
+) -> Catalogue {
     let mut holdings = vec![("ledger-in", "bank-co", "holding")];
     holdings.extend(holding_of_b.map(|reference| ("ledger-b", "ramp-co", reference)));
-    catalogue_of(
-        record,
-        &[
-            (RESERVE, "bank-co", vec!["ledger-in"]),
-            (RAMP, "ramp-co", vec!["ledger-b"]),
-            (EXCHANGE_B, "bridge-co", vec![]),
-            (WALLET, "wallet-co", vec![]),
-        ],
-        &holdings,
-    )
+    let mut providers = vec![
+        (RESERVE, "bank-co", vec!["ledger-in"]),
+        (deliverer, "ramp-co", vec!["ledger-b"]),
+        (WALLET, "wallet-co", vec![]),
+    ];
+    if deliverer != EXCHANGE_B {
+        providers.push((EXCHANGE_B, "bridge-co", vec![]));
+    }
+    catalogue_of(record, &providers, &holdings)
 }
 
 /// The order's `route_chosen`, of the record's chosen route.
@@ -985,7 +1017,14 @@ impl World {
     /// `holding_of_b`, if any, holds as its holding account.
     fn across(platform: Platform, holding_of_b: Option<&str>) -> Self {
         let record = later_record();
-        let catalogue = later_catalogue(&record, holding_of_b);
+        let catalogue = later_catalogue(&record, holding_of_b, RAMP);
+        Self::assembled(platform, record, catalogue, &LATER_SEGMENTS)
+    }
+
+    /// [`World::across`] with `exchange-b` delivering the value to `ledger-b` as well as converting there.
+    fn across_by_one(platform: Platform) -> Self {
+        let record = same_provider_record();
+        let catalogue = later_catalogue(&record, Some("holding-b"), EXCHANGE_B);
         Self::assembled(platform, record, catalogue, &LATER_SEGMENTS)
     }
 
@@ -3866,7 +3905,7 @@ fn conversion_failed(holding_of_b: Option<&str>) -> World {
 // verifies: REQ-ORD-3, DEC-24
 #[test]
 fn failed_segment_at_a_later_inner_node_is_confirmed_by_that_nodes_holding_account() {
-    let mut world = conversion_failed(Some(RAMP));
+    let mut world = conversion_failed(Some("holding-b"));
     let (order, part, s3) = (id(ORDER), id(PART), id("p1-s3"));
     let tx = world.segments.sent(&order, &s3).unwrap().0.clone();
     let mark = world.log.len();
@@ -3920,37 +3959,39 @@ fn failed_segment_at_a_later_inner_node_is_confirmed_by_that_nodes_holding_accou
     let _ = part;
 }
 
-/// A reversal at a later inner node with no party to confirm it, its holding account not the provider that delivered
-/// the value there, is asked of no one and recorded nowhere: it stays owed on the catalogue's
-/// list and held, for the stuck orders, failing closed.
+/// A reversal at a later inner node whose only deliverer is the failed provider has no party to confirm it: the
+/// provider that delivered the value to `ledger-b` fails the next segment from it, and its own word never confirms its
+/// failure. Nothing is asked or recorded: the reversal stays owed on the catalogue's list and held, for the stuck
+/// orders, failing closed. (A node with no deliverer is the first node, which the origin reserve answers, and a node
+/// with no holding account is one no route runs through.)
 // verifies: REQ-ORD-3, INV-2
 #[test]
 fn reversal_at_a_later_inner_node_with_no_confirming_party_stays_owed_and_held() {
-    // The node must have a holding account for a route to run through it, so the cases are two that are not the
-    // provider that delivered the value there: a module of no one's, and the origin reserve.
-    for holding_of_b in [Some("holding-b"), Some(RESERVE)] {
-        let mut world = conversion_failed(holding_of_b);
-        let (order, part, s3) = (id(ORDER), id(PART), id("p1-s3"));
-        world
-            .with(|r, p, _| r.owe(p, at(&order, &part, &s3)))
-            .unwrap();
-        let mark = world.log.len();
-        for who in [RAMP, RESERVE, EXCHANGE_B] {
-            let mut answering = Answering::replying(Reply::Confirms {
-                maker: who,
-                amount: None,
-            });
-            assert_eq!(
-                world.confirm(&mut answering, "p1-s3"),
-                Err(ReversalError::NoReserveAtNode),
-                "{holding_of_b:?}: {who}"
-            );
-            assert!(answering.asked.is_empty(), "no one is asked");
-        }
-        assert_eq!(world.log.len(), mark, "nothing is recorded");
-        assert_eq!(world.state_of("p1-s3"), SegmentState::FailedReversalOwed);
-        assert!(world.held("p1-s3"));
-        assert!(world.catalogue.owed().is_owed(&format!("{ORDER}/p1-s3")));
-        assert!(world.reversals.completed(&order, &s3).is_none());
+    let mut world =
+        World::across_by_one(Platform::settling().with(EXCHANGE_B, Act::FailConversion));
+    let ran = world.ran();
+    assert_eq!(ran.len(), 3, "{ran:?}");
+    assert_eq!(ran[2], SegmentOutcome::Failed, "{ran:?}");
+    let (order, part, s3) = (id(ORDER), id(PART), id("p1-s3"));
+    world
+        .with(|r, p, _| r.owe(p, at(&order, &part, &s3)))
+        .unwrap();
+    let mark = world.log.len();
+    for who in [EXCHANGE_B, RESERVE] {
+        let mut answering = Answering::replying(Reply::Confirms {
+            maker: who,
+            amount: None,
+        });
+        assert_eq!(
+            world.confirm(&mut answering, "p1-s3"),
+            Err(ReversalError::NoReserveAtNode),
+            "{who}"
+        );
+        assert!(answering.asked.is_empty(), "no one is asked");
     }
+    assert_eq!(world.log.len(), mark, "nothing is recorded");
+    assert_eq!(world.state_of("p1-s3"), SegmentState::FailedReversalOwed);
+    assert!(world.held("p1-s3"));
+    assert!(world.catalogue.owed().is_owed(&format!("{ORDER}/p1-s3")));
+    assert!(world.reversals.completed(&order, &s3).is_none());
 }
