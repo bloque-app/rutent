@@ -1385,7 +1385,8 @@ the crate's hold on it (the compile-fail doc tests) stands.
   catalogue or log; they take the first build of the stand-ins (about 80 s here), cached by a hash of their sources.
 
 **Gaps, each with its owner.**
-1. **`AC-36` can't be run through Core: two missing pieces.** The plan's `erasure leaves the reference and history checks`
+1. **Closed by `T-020-37`** (policy's rule by `T-021-10`, Core's carrying out by `T-020-37`; the scenario is
+   `erasure_leaves_the_reference_and_history_checks` in `audit_scenarios.rs`). As found: **`AC-36` can't be run through Core: two missing pieces.** The plan's `erasure leaves the reference and history checks`
    [`AC-36`] isn't written, and `AC-36` stays unverified through the assembly (`T-022-03`'s own tests hold the store's half).
    (a) *Policy has no rule for `erase_statement`*: `roles/mod.rs` answers `None` for `Action::EraseStatement`, so every
    decision is refused (the test shows it, with the store's own `NO_DECIDED_ERASURE` behind it); the agent's `Scope::EraseStatement`

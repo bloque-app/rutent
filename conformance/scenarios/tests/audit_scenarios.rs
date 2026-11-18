@@ -1,6 +1,6 @@
 //! Audit scenarios over the assembled Core (`T-024-07`): the outside checker against a rewrite made with the
 //! operator's full access (`AC-22`), checkpoints that look the same whether the period was busy or idle (`AC-37`),
-//! and erasure (`AC-36`, whose carrying out needs a policy rule Core doesn't have yet: see `F-024`'s notes).
+//! and erasure (`AC-36`, `T-020-37`).
 //!
 //! A scenario runs Core, and a checkpointer reads its log on the schedule the assembly fixes
 //! ([`rutent_scenarios::assembly::audit`]). The checker is handed bytes, as an outside checker is: the history's
@@ -8,6 +8,7 @@
 //! the log's name and the schedule, and no handle on Core.
 
 use rutent_contracts::core_internal::Entry;
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::OrderState;
 use rutent_core_audit::checkpoint::{Finding, Kept, tick_of};
@@ -414,66 +415,192 @@ fn busy_and_idle_periods_give_indistinguishable_checkpoints() {
 
 // --- AC-36 -----------------------------------------------------------------------------------------------------------
 
-/// What the assembled Core does today when the operator asks to erase a kept statement: it can't be carried out, and
-/// it is refused twice over, by policy, which has no rule that lets anyone decide it (its role table answers none for
-/// `erase_statement`), and by the evidence store, which erases only on the `done` result of a permitted erase effect.
-/// Nothing is erased, the reference stays, and the history still checks against the checkpoints. That the erasure
-/// itself leaves the reference and history still checking (`AC-36`) can't be run through the assembled Core until
-/// policy has that rule (`F-024`'s notes, gaps): this holds the refusal, tagged with the row of the assembly and not
-/// with `AC-36`, which it doesn't verify.
-// verifies: DEC-18
-#[test]
-fn erasure_is_refused_in_the_assembled_core_until_policy_has_a_rule_for_it() {
-    use rutent_contracts::core_internal::calls::{AppendFailure, Decisions};
-    use rutent_contracts::core_internal::{Action, Answer, DecisionRequest, Token, Violation};
-    use rutent_core_audit::receipts::store::NO_DECIDED_ERASURE;
-
-    let mut watched = Watched::new("an erasure asked of Core");
-    watched.publish();
-    watched.busy(&[("req-1", AMOUNT)]);
-
-    // A statement the store keeps and nothing rests on: the store itself would let it go.
-    let history = watched.history();
-    let erasable = history
+/// A statement of the run's history the store keeps and nothing rests on, which the store itself would let go.
+fn erasable_statement(watched: &Watched) -> Digest {
+    watched
+        .history()
         .iter()
         .filter_map(|r| match serde_json::from_slice::<Entry>(r) {
             Ok(Entry::Stated(s)) => Some(s.commitment),
             _ => None,
         })
         .find(|c| watched.core.bound().erasable(c).is_ok())
-        .expect("a statement nothing rests on");
+        .expect("a statement nothing rests on")
+}
 
-    // The operator's login, holding every permission the deployment's register gives it, asks policy to decide it.
-    let request = DecisionRequest {
-        request: kit::id("erase-1"),
-        caller: kit::operator_login(),
-        action: Action::EraseStatement {
-            commitment: erasable.clone(),
-            reason: Token::new("retention").expect("a token"),
-        },
-        at: watched.core.clock.timestamp(),
-    };
-    let decision = watched
-        .core
-        .policy()
-        .decide(&request)
-        .expect("policy answers, on the record");
-    assert!(
-        matches!(decision.outcome, Answer::Refuse { .. }),
-        "no rule lets anyone decide an erasure: {:?}",
-        decision.outcome
-    );
-    assert!(decision.permit().is_none());
+/// The kinds of the verified entries of the history from `from` on, in order.
+fn calls_from(watched: &Watched, from: usize) -> Vec<String> {
+    watched.history()[from..]
+        .iter()
+        .filter_map(|r| match serde_json::from_slice::<Entry>(r) {
+            Ok(Entry::Verified(v)) => Some(
+                serde_json::to_value(&v.what).expect("a what")["call"]
+                    .as_str()
+                    .expect("a call")
+                    .to_owned(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
 
-    // The store, asked to carry it out on the refusal's receipt, refuses: no decided erasure stands behind it.
+/// The operator's login asks Core to erase a statement the store keeps, nothing rests on and policy lets it erase:
+/// Core records the decision, the effect, its done result and the `erasure` entry, the store drops the bytes, and the
+/// reference stays. The statement's entry is in the history as it was, so are the checkpoints published before, and
+/// the outside checker, handed bytes alone, still finds nothing wrong, then and after a later checkpoint. This is
+/// the assembled Core's scenario for `AC-36` (`T-020-37`), in an `F-024` file; the row's other tests are in
+/// `components/core-orch/tests/erasure.rs`.
+// verifies: AC-36, REQ-AUD-13
+#[test]
+fn erasure_leaves_the_reference_and_history_checks() {
+    use rutent_contracts::core_internal::What;
+
+    let mut watched = Watched::new("an erasure asked of Core");
+    watched.publish();
+    watched.busy(&[("req-1", AMOUNT)]);
+    watched.period(CHECKPOINT_EVERY);
+
+    let commitment = erasable_statement(&watched);
+    let before = watched.history();
+    let received = watched.received.clone();
     assert_eq!(
-        watched.core.bound().erase(&decision.receipt),
+        watched.findings(&before, &received, &watched.openings()),
+        Vec::<Finding>::new(),
+        "the history checks before"
+    );
+    assert!(!watched.core.bound().is_erased(&commitment));
+
+    let erased = watched
+        .core
+        .erase_statement(&commitment, "retention")
+        .expect("the operator's login erases a statement nothing rests on");
+
+    // Erased outside the log: the store answers erased, and finds nothing missing or left unsettled.
+    assert!(watched.core.bound().is_erased(&commitment));
+    assert!(watched.core.bound().missing().is_empty());
+    assert!(watched.core.bound().refused_erasures().is_empty());
+    assert!(watched.core.bound().unsettled_erasures().is_empty());
+
+    // The record: the decision, the effect before the result, and the erasure naming the commitment that stays.
+    let history = watched.history();
+    assert_eq!(
+        calls_from(&watched, before.len()),
+        ["decide", "effect", "result", "erasure"]
+    );
+    assert_eq!(history.len(), before.len() + 4);
+    let named: Vec<_> = history[before.len()..]
+        .iter()
+        .filter_map(|r| match serde_json::from_slice::<Entry>(r) {
+            Ok(Entry::Verified(v)) => match v.what {
+                What::Erasure { evidence } => Some(evidence),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        named,
+        std::slice::from_ref(&commitment),
+        "the erasure names the reference"
+    );
+    assert!(erased.effect.index < erased.result.index && erased.result.index < erased.entry.index);
+
+    // The reference stays: everything that was in the history is, byte for byte, including the statement's own entry.
+    assert_eq!(&history[..before.len()], &before[..]);
+    assert!(history.iter().any(|r| matches!(
+        serde_json::from_slice::<Entry>(r),
+        Ok(Entry::Stated(s)) if s.commitment == commitment
+    )));
+
+    // And history still checks, against what was published before the erasure and after it.
+    let openings = watched.openings();
+    assert_eq!(
+        watched.findings(&history, &received, &openings),
+        Vec::<Finding>::new(),
+        "history checks against the checkpoints published before the erasure"
+    );
+    watched.period(CHECKPOINT_EVERY);
+    assert_eq!(
+        watched.findings(&watched.history(), &watched.received, &watched.openings()),
+        Vec::<Finding>::new(),
+        "and against one published after it"
+    );
+}
+
+/// Policy doesn't permit the erasure (a login the register doesn't list for it, here the customer's own): nothing is
+/// decided to take effect, nothing is erased, the reference stays, the store refuses to erase on the refusal's own
+/// receipt, and the history still checks. A statement an entry rests on is refused before policy is asked.
+// verifies: DEC-18
+#[test]
+fn erasure_without_a_permitting_decision_is_refused_in_the_assembled_core() {
+    use rutent_contracts::core_internal::calls::AppendFailure;
+    use rutent_contracts::core_internal::{Violation, What};
+    use rutent_core_audit::receipts::store::{EVIDENCE_RESTED_ON, NO_DECIDED_ERASURE};
+    use rutent_core_orch::erasure::NotErased;
+
+    let mut watched = Watched::new("an erasure asked of Core");
+    watched.publish();
+    watched.busy(&[("req-1", AMOUNT)]);
+    let commitment = erasable_statement(&watched);
+    let before = watched.history();
+
+    let refused = watched
+        .core
+        .erase_statement_as(&kit::customer(), &commitment, "retention");
+    let Err(NotErased::NotPermitted(answer)) = refused.map_err(|e| *e) else {
+        panic!("a customer is let erase")
+    };
+    assert!(matches!(
+        answer,
+        rutent_contracts::core_internal::Answer::Refuse { .. }
+    ));
+    assert!(!watched.core.bound().is_erased(&commitment));
+    assert_eq!(
+        calls_from(&watched, before.len()),
+        ["decide"],
+        "only the refusal is recorded: no effect, no result, no erasure"
+    );
+
+    // The store, handed the refusal's receipt as if it were a decided erasure, refuses.
+    let receipt = watched
+        .core
+        .log()
+        .entries()
+        .iter()
+        .rev()
+        .find_map(|(r, e)| match e {
+            Entry::Verified(v) if matches!(v.what, What::Decide { .. }) => Some(r.clone()),
+            _ => None,
+        })
+        .expect("the refusal's entry");
+    assert_eq!(
+        watched.core.bound().erase(&receipt),
         Err(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)))
     );
-    assert!(!watched.core.bound().is_erased(&erasable));
-    assert!(watched.core.bound().missing().is_empty());
 
-    // Nothing changed for the checker: the history, with the refusal in it, holds against what was published.
+    // A statement an entry rests on is refused before anything is asked of policy.
+    let cited = watched
+        .history()
+        .iter()
+        .filter_map(|r| match serde_json::from_slice::<Entry>(r) {
+            Ok(Entry::Stated(s)) => Some(s.commitment),
+            _ => None,
+        })
+        .find(|c| {
+            watched.core.bound().erasable(c)
+                == Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+        })
+        .expect("a statement an entry rests on");
+    let length = watched.history().len();
+    assert!(matches!(
+        watched
+            .core
+            .erase_statement(&cited, "retention")
+            .map_err(|e| *e),
+        Err(NotErased::NotErasable(_))
+    ));
+    assert_eq!(watched.history().len(), length, "nothing was recorded");
+
     watched.period(CHECKPOINT_EVERY);
     assert_eq!(
         watched.findings(&watched.history(), &watched.received, &watched.openings()),

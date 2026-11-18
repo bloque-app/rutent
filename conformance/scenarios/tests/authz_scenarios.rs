@@ -461,3 +461,95 @@ fn unreachable_verifier_gives_a_refusal_and_nothing_moves() {
         .state;
     assert_eq!(state, OrderState::Complete);
 }
+
+// --- An agent acting for the operator is held to its party's scope and to the register ---------------------------------
+
+/// An agent of the operator's party asking an erasure is held, as every agent is, to the scope its party set and to
+/// the register that lists its login (`REQ-AUZ-8`, `DEC-18`, the review of `T-021-10`): refused when the party never
+/// gave it the erase scope, however the register lists it, and refused when its login is unlisted, whatever scope
+/// and permission the register holds for its name. With both, listed and scoped, it is permitted, so each refusal
+/// is that one thing and not the action. A refusal is on the record, and nothing is carried out.
+// verifies: REQ-AUZ-8, DEC-18
+#[test]
+fn operator_agent_is_refused_an_erasure_without_the_erase_scope_or_when_its_login_is_unlisted() {
+    use rutent_contracts::core_internal::Token;
+    use rutent_core_authz::roles::Permission;
+
+    let core = bare("an operator's agent asks an erasure", "AC-25");
+    let agent = |name: &str| Actor {
+        party: kit::operator().party,
+        acts: id(name),
+        role: Role::Operator,
+        kind: ActorKind::Agent,
+    };
+    let (unscoped, unlisted, whole) = (
+        agent("ops-agent-unscoped"),
+        agent("ops-agent-unlisted"),
+        agent("ops-agent-whole"),
+    );
+    {
+        let mut registers = core.registers();
+        // Listed and holding the permission, but its party gave it no erase scope (it may only post routes).
+        registers.list(&unscoped);
+        registers.permit(&unscoped, Permission::EraseStatement);
+        registers.scope(&unscoped, Scope::PostRoute);
+        // Scoped and holding the permission by name, but its login isn't listed as acting for anyone.
+        registers.permit(&unlisted, Permission::EraseStatement);
+        registers.scope(&unlisted, Scope::EraseStatement);
+        // Listed, permitted and scoped.
+        registers.list(&whole);
+        registers.permit(&whole, Permission::EraseStatement);
+        registers.scope(&whole, Scope::EraseStatement);
+    }
+    let erase = |core: &Core, caller: &Actor, n: usize| DecisionRequest {
+        request: id(&format!("erase-agent-{n}")),
+        caller: caller.clone(),
+        action: Action::EraseStatement {
+            commitment: serde_json::from_value(serde_json::json!({
+                "algorithm": "sha-256",
+                "value": format!("{:064x}", 99),
+            }))
+            .expect("a digest"),
+            reason: Token::new("retention").expect("a token"),
+        },
+        at: core.clock.timestamp(),
+    };
+
+    for (n, (caller, name)) in [
+        (&unscoped, "an agent its party gave no erase scope"),
+        (&unlisted, "an agent whose login is unlisted"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let decision = core
+            .policy()
+            .decide(&erase(&core, caller, n))
+            .expect("policy answers, on the record");
+        assert!(
+            matches!(
+                decision.outcome,
+                Answer::Refuse { .. } | Answer::NotKnown { .. }
+            ),
+            "{name} is refused: {:?}",
+            decision.outcome
+        );
+        assert!(decision.permit().is_none(), "{name}: no permit");
+        assert!(
+            matches!(
+                last(&core).outcome,
+                Outcome::Refused { .. } | Outcome::NotKnown { .. }
+            ),
+            "{name}: the refusal is on the record"
+        );
+    }
+    let decision = core
+        .policy()
+        .decide(&erase(&core, &whole, 9))
+        .expect("policy answers");
+    assert!(
+        matches!(decision.outcome, Answer::Permit {}),
+        "the control, listed and scoped: {:?}",
+        decision.outcome
+    );
+}

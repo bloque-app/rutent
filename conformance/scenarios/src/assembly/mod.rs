@@ -47,6 +47,7 @@ pub mod audit;
 pub mod charges;
 pub mod checking;
 pub mod durable;
+mod erasure;
 mod grading;
 pub mod holding;
 pub mod lifecycle;
@@ -732,6 +733,8 @@ impl Core {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
             r.permit(&kit::operator_login(), Permission::ReadOrderState);
+            // The operator's login erases a kept statement's bytes where policy decides it (`REQ-AUD-13`, `T-020-37`).
+            r.permit(&kit::operator_login(), Permission::EraseStatement);
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);
