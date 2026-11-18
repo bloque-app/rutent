@@ -1058,3 +1058,146 @@ request, since no quote is priced for it. Core's own parts (the log, policy, the
 | the customer as the acceptance's maker (Core writes it instead) | the acceptance test |
 | the linked request following the original's | the acceptance test, the refusal test, the answer test |
 | value landed in the account | the answer test |
+
+## T-024-08: invariants over the assembled Core
+
+Branch `f-024/t-024-08-invariants`, from `m3` at `d0a7cf2c`. Edits `conformance/scenarios/` only: `src/harness.rs` (two changes to the
+shared kit, below), the new `tests/invariants.rs` and `tests/invariants_support/mod.rs`. `components/`, `contracts/` and the
+workflows are untouched.
+
+**What was built.** The ten tests the plan names, each tagged with its row's `INV-*`/`GUA-*`/`NFR-5`, each over the same set of
+seeded runs of the assembled Core and each counted from what the run left on its disk, never from what a driver did:
+the log's entries as they read back, the statements the evidence store kept for the commitments those entries hold (the
+operator's operations and the providers' results, so the amounts a provider stated are read from what the log commits to),
+the state machine's journals replayed from the log's own inputs, and the providers' own books where an invariant is about what
+a provider did. Two additions to the shared kit, both in `harness.rs` and neither changing an existing name: `Run::read` is
+public (a test that drives Core's calls reads its own run), and `Run` carries `statements` (the kept statements, parsed) and
+`kept` (as kept: commitment, salt, bytes). Neither is in `projection`, which is salted.
+
+**The runs** (`invariants_support::runs`, played once for the test binary). Each run is a `Plan { seed, shape, kind }`, and
+`play(plan)` replays it exactly: the seed draws Core's identifiers, the amounts, how a repeated delivery reaches the state
+machine and where a swap or a crash falls. Two routes (`Base`: one reserve's withdrawal and deposit; `Joined`: a reserve, an
+exchange, a ramp and the reserve the value is deposited in, four segments) and eight kinds of fault:
+
+| Kind | What is planted | Then |
+|---|---|---|
+| `Clean` | none | |
+| `FailsAtTheEnd` | the destination reserve fails its deposit (`Act::Fail`) | the route is recalculated and run again (`AC-40`) |
+| `FailsInTheMiddle` | the exchange fails its conversion (the base route's deposit) | recalculation is refused while the value is in motion |
+| `SilentAtTheEnd` | the final deposit is taken and never answered (`Behaviour::late`) | the clock passes twice the advertised time, the part is declared stuck, a recalculation and a second run are asked, the late answer is delivered twice |
+| `CrashAfterRecord(n)`, `CrashBeforeEffect(n)` | `T-024-02`'s crashes between a record and its effect | none: Core is not restarted (`F-030`) |
+| `Repeated` | each input reaches the state machine twice or out of order, the state machine is swapped before an effect, and on the base route each operation reaches its provider twice | |
+| `Rerun` | | the route is run again after it ended |
+
+**Seed count, and why.** Twelve pinned runs (seeds 101 to 112, one or more of every kind on each route where it means something)
+play whatever the seeds say, so no invariant is ever tested over runs that never met what it guards against; then the seeds of
+`RUTENT_SCENARIO_SEEDS`, `1,2,3,4` by default and CI's `11` to `15` where it sets them, each drawing its own shape and kind.
+That is 16 runs by default and 17 under CI's seeds, of 1 to 10 seconds each on a debug build: the whole binary, the ten tests
+together, takes about a minute on one core, and none runs for hours. More seeds would add runs of the same eight kinds, so the
+count is the pinned set (coverage) plus enough drawn seeds (variety in amounts, fault placement and delivery order) to keep the
+binary in minutes. Every test also states what the runs must have reached (failed segments, stuck orders, crashed runs, repeated
+deliveries, rewrites...) and fails if they reached less, so a green test is never an empty one. A failing check names the run
+(`seed 104 (Joined FailsInTheMiddle)`), and a seeded run replays with `RUTENT_SCENARIO_SEEDS=<seed>`, a pinned one from `PINNED`.
+
+**What each test counts** (`tests/invariants.rs`).
+- `INV-1`: per order, over its settled segments (the log's `result` is `done` and the provider's kept result says `succeeded`):
+  each took in what the one before gave out, each took in what it gave out plus its fee, and value in equals what the last
+  deposit delivered plus every fee plus what rests at the last node; the log's own `fee` entries add to the statements' fees; and
+  each figure is the provider's own book's. Across orders, for each private node and asset, what the publishers' books hold equals
+  what the log evidences resting there plus the value in motion, which is exactly what a provider took and the log never settled.
+- `INV-2`: for each segment that failed, what it was handed equals what the last settled segment gave out (in full); its transaction
+  is in no provider's book (it moved nothing); nothing is handed over after it until a recalculation; and the failing provider's
+  word alone frees nothing: no reversal counted complete, and no route recalculated from a failed middle segment, without evidence
+  from another party. A final deposit's failure leaves the value where it is and Core recalculates (`AC-40`), which the check allows.
+- `INV-3`: after the run, a complete part has every segment settled, a stuck one has one that isn't, an ended one has none in
+  flight, an open one has none started or of unknown outcome, and what the log says of a segment is what the state machine reached.
+- `INV-4`: replaying the log's effects and results in order, an order's value is taken out of a node when a segment is handed it and
+  back only by a failure; no segment is handed more than rests there; each transaction is handed over once and moves once; a late
+  answer is kept once.
+- `INV-5`: every chosen or recalculated route starts at a reserve's outer node (or where a reserve's value sits) and ends in a deposit
+  at an outer node, value rests only at a reserve's inner node, and no operation, fee or book names rutent.
+- `INV-6`: a `Checkpointer` is built over each run's history, as read back from the disk; the untouched history passes the outside
+  `Checker` against the checkpoints as published, and a record rewritten, one removed and one inserted are each found.
+- `INV-7`, `NFR-5`: each action in a provider's own book has its `move_value` effect in the log, recorded before the provider's
+  answer; each effect cites a permit recorded before it. Across all runs, crashes included, the count of actions with an effect and
+  no record is 0.
+- `INV-8`: no transaction identifier is stated twice, none moves twice in a book, each segment is handed over once, and every
+  movement a book holds is of a transaction an effect of the log names.
+- `INV-9`: for each of two reserves, over amounts the seed draws and the balance's edges, the check's answer is yes or no and
+  nothing more, is monotone in the amount, is the same function for both reserves and agrees with the simulated balance; a dry run's
+  answer is yes, no or a refusal by class with no detail; and neither the catalogue's check log nor the audit log holds the balance or
+  what it leaves.
+- `INV-10`: every route the log chose, every route it recalculated and every effect's route ends at the same reserve, outer node and
+  asset.
+
+**Findings, sorted.** Nothing in `components/` or `contracts/` was changed, and no invariant was weakened.
+1. *A repeated delivery to a provider that declares no safe retry moves twice.* With `Fault::DeliverTwice` planted on the joined
+   route (seed 110, first form), the simulated exchange's book holds its conversion twice (`id-dbc45aa91cb862f7` at the time), so
+   `INV-1` (the book's node balance), `INV-4` and `INV-8` were red. The exchange advertises `safe_retry: false`, and `T-024-01`
+   models it as changing its books on a repeat; Core never sends such a provider a retry (`REQ-CAT-10`), and the duplicate here is
+   injected beneath Core, at the platform's seam. Sorted as a test artefact for this row (the fault is outside what Core
+   guarantees): the joined route's repeats are the state machine's alone and `DeliverTwice` is planted on the base route's
+   reserve, which answers a repeat as it did. **It is a gap, not a closed question:** nothing in the platform (`rutent-prov`)
+   refuses a second operation under a transaction identifier it already carried out for a provider that declared no safe retry, so
+   `INV-8`'s "repeating it MUST NOT move value twice" rests on the provider there. Owner: the platform's row in `F-020`/`F-013`,
+   with `T-025-05` to review; the check is `R8c` in the table, red as soon as the fault is planted on the joined route again.
+2. No run broke an invariant otherwise.
+
+**Defaults taken** (reversible, each failing closed).
+- A delivery that comes short (`Delivery::Short`) is not drawn: a short delivery is the provider's difference to raise under
+  `REQ-ORD-21`, which `T-022-05`'s comparison raises, and `INV-1` here balances an order whose providers' statements add up. Part
+  delivery is `T-024-13`'s.
+- The exchange's rate is 1 in the simulator, so a conversion balances as in equals out plus fee across assets; a run with another
+  rate fails the check loudly (`the simulated exchange's rate is not 1`), never passes it.
+- The joined route's amount is `AMOUNT`: the simulated tuples' bands refuse the other amounts tried (`NoRouteForAmount`), so only
+  the base route's amount varies with the seed.
+- A crashed run is read as it stands and not restarted (`F-030`), so its end-state checks are skipped; its effects, books and
+  rewrites are checked.
+- `INV-9`'s reserves are the two that take COP (`sim-reserve-a`, `sim-join-in`); the answers are measured against the simulated
+  balance of 50 000 000.
+- `INV-6` builds the `Checkpointer` over the run's history in the test: the assembly wires none. The ticks are daily from
+  2026-11-05 and the clock is four days into the run's, so each run is checked against four or five checkpoints, all over the whole
+  history; the rewrite moves one record's time.
+
+**Gaps (with owners).**
+- **Other-party confirmation is unreachable, so `INV-2`'s "freed only on another party's word" is held on the cases where nothing
+  is freed.** The runs never complete a reversal: a private node is its publisher's alone, so no provider outside it can confirm
+  (`T-020-32`, `T-024-06`'s two `#[ignore]`s). The check is written for the day one can (it fails a reversal counted complete or a
+  middle failure recalculated from, with no evidence from a party other than the failing provider), and `R2b` below shows the
+  freeing rules are held twice over today.
+- **`INV-1`'s second half is the publishers' books, not holding-account readings.** The assembly wires no holding account for the
+  nodes these runs use (`T-024-17`'s gap 1: nothing lands value in one), so the figure compared with what the log evidences is
+  the publisher's own book, the word the audit labels a private node's. `T-022-05`'s pure comparison is tested in `core-audit`.
+  Owner: `F-030`'s assembly, with `T-020-26`'s successor.
+- **A balance check is recorded in the catalogue's check log, not in the audit log.** The audit log grows by no entry for a
+  `check_balance`; only the catalogue's in-memory `check_log` holds it (`AC-15`'s "logged and counted" reads it). Nothing in it
+  reveals the balance, but `GUA-3` ("every action has its record") and a restart would want it in the log. Owner: `F-021`
+  (catalogue) and `T-025-05`.
+- **The outside checker and the checkpointer are not in the assembled Core**: `INV-6` tests them over the Core's history. Owner:
+  `F-030`, `T-025-05`.
+- **CI's seeded step runs `--test assembly` only** (`.github/workflows/ci.yml`, "Scenarios, seeded"). For the invariants to run
+  under CI's seeds as the row says, it needs `cargo test -p rutent-scenarios --test invariants` beside it; the full `cargo test`
+  already runs them under the default seeds. I did not edit the workflow. Owner: the lead (one line).
+- **Crash runs are not restarted** (`F-030`), and a restart's carrying on from the log is not tested here.
+
+**Run id.** Not available locally; the CI run on this branch's pull request is the one the row's "Done when" cites, and its id
+goes here when the lead has it.
+
+**Rule-off table** (each rule switched off alone with a temporary edit, the file restored, the tests green first; every cargo run
+under a 420 s hard alarm, none hung; the suite is the whole `invariants` binary, so a column lists every test that went red).
+
+| Switched off | Red |
+|---|---|
+| the fee entries of a settled segment (`closing::fees` returns none) | `INV-1` |
+| the stuck clock (`over_time` never true) | `INV-3` (a silent deposit's order stays open with a segment of unknown outcome; no stuck order reached) |
+| the route stops at a segment that didn't settle (`run_segments` carries on with the same amount, `R2c`) | `INV-2` (handed value after the failed segment with no recalculation), `INV-4` (handed value from a node where none rests) |
+| the checker's comparison of a checkpoint with the history (`Checker::check` counts every opening as holding) | `INV-6` |
+| the effect's record (`Segments::step` returns an earlier step's receipt for `effect`, so none is appended) | `INV-7` (and, since each segment has no effect, `INV-1`, `INV-2`, `INV-3`, `INV-4`, `INV-8`, `INV-10`) |
+| the balance verdict's `No` (an answer says not known) | `INV-9` |
+| the reserve ends of a route (test side: no node is a reserve's) | `INV-5` |
+| a segment handed over again once final, and an effect acted on again (`AlreadyHandedOver`, `AlreadyActed`) | none: `flight.carried` still holds a segment's single carry-out (`R8`) |
+| a duplicate delivery planted on the joined route, so the exchange that declares no safe retry is sent one (test side, `R8c`: finding 1) | `INV-8` (the transaction moved twice in a book), `INV-1`, `INV-4` |
+| the same two and `carried` (a segment is carried out again) | `INV-3` (the stuck order is no longer stuck); `INV-8` not red: the reserve answers a repeat as it did and moves once |
+| the stuck part's refusal to hand over (`run_segments`' stuck guard) | none: `AlreadyHandedOver` and the flight's `carried` hold a stuck part's segments (`R4`) |
+| the in-flight rule of recalculation and `value_at`'s failed middle segment (both) | none: the state machine refuses the recalculation of a part whose value is in motion by a third rule (`R2`, `R2b`) |
+| every destination and to-asset guard of a recalculation (`Rejected::ChangesDestination`, `ChangesToAsset`, both uses of `recalculation_keeps_destination`) | none: the router plans to the request's own `to`, so no plan Core builds ends elsewhere (`R10`); `INV-10` is held by a property no rule-off of one guard reaches, and the order's own change of destination is `AC-40`'s second half, which the assembly doesn't wire |
