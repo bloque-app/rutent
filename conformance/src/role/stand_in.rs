@@ -140,6 +140,7 @@ enum Fault {
     ChecksTheNameAndItsOwnKey,
     FailsOnlyOnce,
     ChecksTheEnvelopeOnItsFirstClassOnly,
+    SaysYesWithoutChecking,
     FailsAfterMoving,
     RefusesToUndoFailures,
     DryRunMoves,
@@ -2028,6 +2029,13 @@ impl Verifier {
         }
     }
 
+    /// Says yes without checking (`THR-91`): a verifier that judges every subject fit, the ones it knows to be unfit
+    /// included. An honest one answers no to a subject that begins `unfit-` and yes to any other.
+    pub fn saying_yes_without_checking(mut self) -> Self {
+        self.faults.insert(Fault::SaysYesWithoutChecking);
+        self
+    }
+
     /// Breaks `REQ-CPL-1`: the verifier answers about a class other than the one asked.
     pub fn judging_another_class(mut self) -> Self {
         self.faults.insert(Fault::JudgesAnotherClass);
@@ -2095,7 +2103,13 @@ impl Typed for Verifier {
                         Judgement {
                             subject: question.subject.clone(),
                             class,
-                            answer: JudgementAnswer::Yes,
+                            answer: if question.subject.starts_with("unfit-")
+                                && !self.breaks(Fault::SaysYesWithoutChecking)
+                            {
+                                JudgementAnswer::No
+                            } else {
+                                JudgementAnswer::Yes
+                            },
                             valid_until: VALID_UNTIL.to_owned(),
                             holder_key: None,
                         },
