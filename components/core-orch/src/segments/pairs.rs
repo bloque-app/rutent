@@ -184,7 +184,10 @@ impl Segments {
     /// # Errors
     ///
     /// The first failure of the comparison's record, with the pairs after it left waiting.
-    pub fn write_pairs(&mut self, comparisons: &mut dyn Comparisons) -> Result<usize, AppendFailure> {
+    pub fn write_pairs(
+        &mut self,
+        comparisons: &mut dyn Comparisons,
+    ) -> Result<usize, AppendFailure> {
         let mut written = 0;
         while let Some(pair) = self.pairing.waiting.front() {
             comparisons.report_pair(pair)?;
@@ -251,7 +254,8 @@ mod tests {
         assert_eq!(got.increment.unwrap().amount(), &amount("50000"));
         // A coarser out unit: the charge rounds up, the increment down, and one that comes to nothing is exact.
         let (from, to) = (asset("USD", 6), asset("USD", 2));
-        let got = report_terms(&from, &to, &terms(Reporting::Gross, Some("9999")), "15000").unwrap();
+        let got =
+            report_terms(&from, &to, &terms(Reporting::Gross, Some("9999")), "15000").unwrap();
         assert_eq!(
             got.reporting,
             ReportedAs::Gross {

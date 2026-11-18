@@ -145,7 +145,10 @@ impl Core {
                 self.inner.report_pair(&restated)
             }
 
-            fn holding_reading(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
+            fn holding_reading(
+                &mut self,
+                reading: &HoldingReading,
+            ) -> Result<Receipt, AppendFailure> {
                 self.inner.holding_reading(reading)
             }
         }

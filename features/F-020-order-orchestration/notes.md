@@ -5454,6 +5454,61 @@ Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/co
 
   The two tests were written after their rules, which already existed (the hold, `T-020-25`) or were one line (the
   name); the rule-offs are their check.
+
+### T-020-35, part two: the report pair built (after `T-020-38`, merged at `bc27b878`)
+
+Edits `components/core-orch/src/segments/` (a new `pairs.rs`, and `mod.rs`: its hooks, one error, one field in each of
+`Segments` and `InFlight`) and, in `conformance/scenarios/` (`F-024`'s files: the commit body says so), the assembly's
+`audit.rs` (`Core::write_pairs`, `write_pairs_as`, `unpaired_reports`) and a new `tests/report_pairs.rs`. No contract.
+The closed gap 1 above is this part's; the earlier text of the section stays as the record of the stop.
+
+- **Design.** When segment n+1 settles (`settle_on`, late settlements included, never a grade-only call), `segments/`
+  keeps what segment n reported (`note_report`: n's provider, its stated `amount_out`, the out asset, the receipt of
+  its result that counted, and n's tuple's terms) and builds the `ReportPair` of n's report and n+1's (n+1's provider,
+  its stated `amount_in`, its from-asset, the receipt of its result): `pair.segment` and `sent.segment` are n's,
+  `received.segment` n+1's. The terms are n's tuple's: its fill increment restated from the origin's unit to the out
+  unit, rounded down (one that comes to nothing is none: compared exactly, which fails closed), and its convention,
+  `net`, or `gross` with the charge the figure holds restated in the out unit (`0` for a conversion, whose charge is
+  in the asset it doesn't give out). The pair is queued once for its two segments and handed to `core-audit`'s
+  comparison by `Segments::write_pairs(&mut dyn Comparisons)`, the caller's call, as the measures' (`T-020-31`): the
+  segment's outcome, its entries and what it moved depend on neither the writer nor its answer. A pair the log can't
+  take waits, with those after it; one it refuses stays and is the first failure answered (loud, never dropped).
+- **A pair that can't be built is raised, never skipped.** The segment's end answers `SegmentsError::Pair(Unbuilt)`
+  (no sent report held for the segment before; a figure that is no amount; the contract's `ReportPair::check` refusing
+  it), and is built again on the next run. "Raised" here is the run's error, as `SegmentsError::Charge`'s: the
+  assembly's caller sees it; no `Raise` to the operator is written for it (`Difference` has no shape for a pair never
+  built). The segments that make no pair are those with none to make, by the contract's rule: a route's first
+  segment (a recalculated route's included: a pair spans one plan), and one run by the provider that ran the segment
+  before it (the log's two-parties rule).
+- **Defaults** (reversible, each failing closed): the writer is the caller's, not `run_part`'s (no `Parts` changed);
+  the increment restated rounds down, a zero one means exact comparison; a refused pair is kept and answered every
+  call.
+- **Gaps, with owners.**
+  1. *The simulated providers can't make reports differ.* The stand-in tuples declare no increment and Core hands
+     segment n+1 exactly what n gave out, so an honest platform's two reports agree. The two tests that need a
+     difference restate the pair's figures and increment on its way to the comparison (`Core::write_pairs_as`), the
+     statements and receipts as Core built them: a sim that fills in increments (`Delivery`/`Behaviour`) is `F-024`'s.
+  2. *No test of a pair that can't be built.* The only causes are a segment whose flight Core lost (a restart: flights
+     are in memory, `F-030`'s durable store, as `T-020-31`'s gap 1) or a contract refusal no honest result gives. After
+     a restart, `segments/` would answer `Unbuilt::NoSentReport` for the first segment settled in the new session
+     whose predecessor settled in the old one. Owner: `F-030`.
+  3. *A pair across a re-plan* is `T-038`'s gap 1 (the lead).
+  4. *The production assembly* calls `write_pairs` after the entry points that can settle a segment, as it calls
+     `write_measures` (`T-020-31`'s gap 1); the scenario assembly's callers are the tests.
+- **Tests.** Written after the code (the shape was settled by the reading above, then each test run once green):
+  `segment ending with two reports hands core audit a pair with its tuple's terms` and `reports differing by less than
+  one increment on the running platform raise nothing` (the row's), and `reports differing by one increment or more
+  on the running platform raise the difference` (`tests/report_pairs.rs`, the four-provider route of `AC-1`, in the
+  real log: it admits each pair on the citation table of `T-038`); unit tests of the terms in `pairs.rs`. `T-022-05`'s
+  and `T-020-25`'s tests pass unchanged.
+- **Rule-off table** (each alone, run under a 400 s alarm through the lock, file restored with `git checkout`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | no pair is built (the build returns early) | the three `report_pairs` tests |
+  | a gross tuple read as net | `segment ending with two reports hands core audit a pair with its tuple's terms` |
+  | one provider's adjacent segments are not skipped | seven of the kit's `segments` tests (their route runs both segments at one reserve) |
+
 ## T-020-32: the simulated world binds each private node to its publisher
 
 Branch `f-020/t-020-32-publisher-binds-node`, from `m3` at `7bc8be82`, with `T-020-36` (`728a8d72`) merged: the first

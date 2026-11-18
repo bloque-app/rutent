@@ -121,16 +121,25 @@ fn segment_ending_with_two_reports_hands_core_audit_a_pair_with_its_tuples_terms
         };
         assert_eq!(&pair.received.amount, amount_out, "{pair:?}");
         assert_eq!(pair.sent.asset, pair.received.asset);
-        assert_eq!(pair.terms.increment, None, "the simulated tuples declare none");
+        assert_eq!(
+            pair.terms.increment, None,
+            "the simulated tuples declare none"
+        );
         match &pair.terms.reporting {
             ReportedAs::Net {} => assert_eq!(&pair.sent.amount, amount_out),
             ReportedAs::Gross { charge } => {
-                assert_eq!(pair.sent.amount.checked_sub(charge).as_ref(), Some(amount_out));
+                assert_eq!(
+                    pair.sent.amount.checked_sub(charge).as_ref(),
+                    Some(amount_out)
+                );
             }
         }
         reportings.push(pair.terms.reporting.clone());
         // Each report rests on a stated entry the log holds as its party's own.
-        for (report, party) in [(&pair.sent, providers[n]), (&pair.received, providers[n + 1])] {
+        for (report, party) in [
+            (&pair.sent, providers[n]),
+            (&pair.received, providers[n + 1]),
+        ] {
             let at = report.statement.index.get() as usize;
             let log = core.log();
             let Entry::Stated(stated) = &log.entries()[at].1 else {
@@ -144,7 +153,12 @@ fn segment_ending_with_two_reports_hands_core_audit_a_pair_with_its_tuples_terms
         }
     }
     // The exchange converts: its gross figure holds no charge in the asset it gives out.
-    assert_eq!(reportings[1], ReportedAs::Gross { charge: amount("0") });
+    assert_eq!(
+        reportings[1],
+        ReportedAs::Gross {
+            charge: amount("0")
+        }
+    );
     assert!(raised(&core).is_empty(), "agreeing reports raise nothing");
 }
 
@@ -185,13 +199,15 @@ fn reports_differing_by_one_increment_or_more_on_the_running_platform_raise_the_
     });
     assert_eq!(wrote, Ok(3));
     let raises = raised(&core);
-    let [Difference::Reports {
-        order: o,
-        segment,
-        sent,
-        received,
-        ..
-    }] = raises.as_slice()
+    let [
+        Difference::Reports {
+            order: o,
+            segment,
+            sent,
+            received,
+            ..
+        },
+    ] = raises.as_slice()
     else {
         panic!("one difference raised: {raises:?}");
     };

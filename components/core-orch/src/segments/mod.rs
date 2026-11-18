@@ -126,7 +126,6 @@ use crate::snapshot::{
 };
 
 pub use drain::Uncarried;
-pub use pairs::Unbuilt;
 /// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
 /// operation and the stated entry of a statement kept (`T-020-16`).
 pub(crate) use drain::{Raw as Drained, entries as drain_entries};
@@ -136,6 +135,7 @@ pub use journal::{APPEND_TRIES, Unappended};
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
+pub use pairs::Unbuilt;
 pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
     ToKeep, Uses,
