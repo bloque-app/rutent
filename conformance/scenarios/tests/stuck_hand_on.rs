@@ -2296,3 +2296,63 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
         still_held(&core);
     }
 }
+
+/// A restarted Core proves the start again for the effect that succeeded, not the first that named the linked order
+/// (`T-020-33`'s review): the operator first names the route's first provider, which the mover refuses (the effect's
+/// result is failed), then the node's holding account, which is done and handed on; the recovery finds the holder the
+/// done effect named, and no other.
+// verifies: REQ-ORD-43, REQ-ORD-40
+#[test]
+fn recovered_start_follows_the_hand_on_that_succeeded_not_an_earlier_refused_one() {
+    let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let routes = Routes(Some(accepted(&core)));
+    // First naming the route's first provider: refused by the mover, the part still held.
+    let wrong = decide_by(&mut core, &mut stuck, &mut policy, &alice, RESERVE);
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &wrong,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (_, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Failed);
+    still_held(&core);
+    // Then the holding account: done, handed on and proven.
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Done);
+    let withdrawn = mover.withdrawn(&effect).expect("done");
+    let (plan, record) = (withdrawn.route.plan.clone(), withdrawn.start.record.clone());
+    let statement = withdrawn.statement.cloned().expect("on record");
+    let mut hand_on = HandOn::new();
+    operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
+    prove_citing(&mut core, &mut hand_on, &id(LINKED), &record, &statement).expect("proven");
+    let all: Vec<Entry> = core
+        .log
+        .borrow()
+        .entries
+        .iter()
+        .map(|(e, _)| e.clone())
+        .collect();
+    let mut restarted = rutent_core_orch::segments::Segments::new();
+    assert_eq!(HandOn::recover_starts(&mut restarted, &all), 1);
+}

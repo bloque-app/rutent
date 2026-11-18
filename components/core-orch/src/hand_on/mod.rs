@@ -1127,31 +1127,44 @@ impl HandOn {
             {
                 continue;
             }
+            // The hand-on this record follows, and the effect it followed: the last `resolve_stuck` effect handing the
+            // order on to this linked order before the `handed_on` input, which is the one whose result was done (a
+            // part is resolved once, so none follows a done one; an earlier failed or unknown effect, perhaps naming
+            // another provider, doesn't count).
+            let handed_at = entries.iter().position(|e| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
+                    if input.subject.order.as_str() == handed_on_from.as_str()
+                        && matches!(&input.observed, Observed::HandedOn { linked_order, .. }
+                            if linked_order.as_str() == order.as_str())))
+            });
             // The holder the operator's resolution named, where the hand-on was an operator's: the node's holding
             // account, which may run no segment of the route (`T-020-33`). A hand-on with none was the customer's,
             // and its starting reserve is its route's first provider.
-            let named = entries.iter().find_map(|e| match e {
-                Entry::Verified(v) => match &v.what {
-                    What::Effect {
-                        action:
-                            Action::ResolveStuck {
-                                order: resolved,
-                                resolution:
-                                    Resolution::HandOn {
-                                        by, linked_order, ..
-                                    },
-                                ..
-                            },
-                        ..
-                    } if resolved.as_str() == handed_on_from.as_str()
-                        && linked_order.as_str() == order.as_str() =>
-                    {
-                        Some(by)
-                    }
-                    _ => None,
-                },
-                Entry::Stated(_) => None,
-            });
+            let named = entries[..handed_at.unwrap_or(0)]
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    Entry::Verified(v) => match &v.what {
+                        What::Effect {
+                            action:
+                                Action::ResolveStuck {
+                                    order: resolved,
+                                    resolution:
+                                        Resolution::HandOn {
+                                            by, linked_order, ..
+                                        },
+                                    ..
+                                },
+                            ..
+                        } if resolved.as_str() == handed_on_from.as_str()
+                            && linked_order.as_str() == order.as_str() =>
+                        {
+                            Some(by)
+                        }
+                        _ => None,
+                    },
+                    Entry::Stated(_) => None,
+                });
             let opened = entries.iter().any(|e| {
                 matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
                     if input.subject.order.as_str() == order.as_str()
@@ -1164,12 +1177,7 @@ impl HandOn {
                                         && Self::starts_with_holder(s.provider.as_str(), named.map(Id::as_str), holder.as_str())))
                         )))
             });
-            let handed = entries.iter().any(|e| {
-                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
-                    if input.subject.order.as_str() == handed_on_from.as_str()
-                        && matches!(&input.observed, Observed::HandedOn { linked_order, .. }
-                            if linked_order.as_str() == order.as_str())))
-            });
+            let handed = handed_at.is_some();
             if opened && handed {
                 seen.push(order.as_str());
                 segments.prove_start(order);

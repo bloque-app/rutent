@@ -187,21 +187,88 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
         order: &str,
         amount: &rutent_contracts::router_api::Amount,
     ) -> Landed {
-        match self.holdings.land(
+        answered(self.holdings.land(
             self.platform,
             self.operator,
             node,
             asset,
             order,
             amount.as_str(),
-        ) {
-            Ok(()) => Landed::Placed,
-            // Nothing of the operation took effect: it can be asked again.
-            Err(WalletError::NotAnswered(
-                PlatformRefusal::Unavailable | PlatformRefusal::StatementKeyUnavailable,
-            )) => Landed::NotNow,
-            // Anything else may have moved value, or breaks the account's own rules: never asked again.
-            Err(_) => Landed::Unconfirmed,
+        ))
+    }
+
+    fn release(
+        &mut self,
+        node: &str,
+        asset: &str,
+        order: &str,
+        amount: &rutent_contracts::router_api::Amount,
+    ) -> Landed {
+        answered(self.holdings.release(
+            self.platform,
+            self.operator,
+            node,
+            asset,
+            order,
+            amount.as_str(),
+        ))
+    }
+}
+
+/// What the wallet's answer to a landing or a release says to Core (`T-020-33`).
+fn answered(result: Result<(), WalletError>) -> Landed {
+    match result {
+        Ok(()) => Landed::Placed,
+        // Nothing of the operation took effect: it can be asked again.
+        Err(WalletError::NotAnswered(
+            PlatformRefusal::Unavailable | PlatformRefusal::StatementKeyUnavailable,
+        )) => Landed::NotNow,
+        // Anything else may have moved value, or breaks the account's own rules: never asked again.
+        Err(_) => Landed::Unconfirmed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rutent_prov::holding::HoldingError;
+
+    /// A wallet answer reaches Core as asked again only where the platform says nothing took effect; every other
+    /// answer, an unknown outcome and the account's own refusals included, is never asked again.
+    // verifies: REQ-AUD-15, INV-5
+    #[test]
+    fn only_a_refusal_that_moved_nothing_is_asked_again() {
+        assert_eq!(answered(Ok(())), Landed::Placed);
+        for nothing_passed_out in [
+            PlatformRefusal::Unavailable,
+            PlatformRefusal::StatementKeyUnavailable,
+        ] {
+            assert_eq!(
+                answered(Err(WalletError::NotAnswered(nothing_passed_out))),
+                Landed::NotNow
+            );
+        }
+        for refused in [
+            PlatformRefusal::OutcomeUnknown,
+            PlatformRefusal::NotHandled,
+            PlatformRefusal::MalformedOutput,
+        ] {
+            assert_eq!(
+                answered(Err(WalletError::NotAnswered(refused))),
+                Landed::Unconfirmed
+            );
+        }
+        for other in [
+            WalletError::NoHoldingAccount("n".into()),
+            WalletError::NotSucceeded,
+            WalletError::WrongResult,
+            WalletError::Disagrees {
+                asked: 1,
+                stated: "2".into(),
+            },
+            WalletError::Holding(HoldingError::BadAmount("x".into())),
+        ] {
+            assert_eq!(answered(Err(other)), Landed::Unconfirmed);
         }
     }
 }

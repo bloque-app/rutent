@@ -3,6 +3,11 @@
 //! (`Holdings::land`). Until this, nothing in Core called it, so where the value rested at a public node was the
 //! scenario's word; now it is Core's own record, made where the segment that brought the value settled.
 //!
+//! **Only value still resting at the node is held there.** A segment whose value a later segment moved on (the one
+//! out of the node settled) before it was landed lands nothing, and a landing is released, in the account, once the
+//! segment out of the node settles or the segment that brought the value is reversed (`REQ-AUD-15`: the account's
+//! attribution is what the node holds, and `INV-5`'s per-order guard reads it). A release is asked as a landing is.
+//!
 //! **The wallet is asked once for a segment.** The landing is called by the assembly after each entry point that can
 //! settle a segment ([`Segments::land_settled`](super::Segments::land_settled)), like the measure writer, and nothing
 //! of a segment, its outcome, its entries or what it moved depends on it: a value that couldn't be placed leaves the
@@ -17,8 +22,8 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::router_api::Amount;
 
-/// The operator's holding accounts, as the segments land value in them. The assembly gives it, over `Holdings` and the
-/// platform that runs their wallets.
+/// The operator's holding accounts, as the segments land value in them and release it. The assembly gives it, over
+/// `Holdings` and the platform that runs their wallets.
 pub trait Landings {
     /// Whether `node` has a holding account, which value that settles there lands in. A node with none holds nothing
     /// of Core's.
@@ -26,12 +31,16 @@ pub trait Landings {
 
     /// Places `amount` of `asset`, the value of `order` settled at `node`, in the node's holding account.
     fn land(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed;
+
+    /// Releases `amount` of `asset` the account holds for `order` at `node`: the value moved on or came back.
+    /// [`Landed::Placed`] says it was released.
+    fn release(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed;
 }
 
-/// What landing a value answered.
+/// What landing, or releasing, a value answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Landed {
-    /// The wallet confirmed it and the account holds it for the order.
+    /// The wallet confirmed it and the account holds, or no longer holds, the value for the order.
     Placed,
     /// The wallet could not take it now, and nothing passed out: it is asked again on the next call.
     NotNow,
@@ -39,21 +48,54 @@ pub enum Landed {
     Unconfirmed,
 }
 
-/// The segments whose value was landed, or couldn't be confirmed, by order and segment.
+/// A segment, by order and segment.
+pub(super) type At = (String, String);
+
+/// What became of each segment's landing.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Landing {
-    placed: BTreeSet<(String, String)>,
-    unconfirmed: BTreeSet<(String, String)>,
+    placed: BTreeSet<At>,
+    released: BTreeSet<At>,
+    /// The value moved on, or came back, before it was landed: nothing was.
+    passed: BTreeSet<At>,
+    reversed: BTreeSet<At>,
+    unconfirmed: BTreeSet<At>,
+    unreleased: BTreeSet<At>,
+}
+
+/// What a call owes one segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Owes {
+    Nothing,
+    Land,
+    Release,
 }
 
 impl Landing {
-    /// Whether the segment's landing needs no further call.
-    pub(super) fn closed(&self, at: &(String, String)) -> bool {
-        self.placed.contains(at) || self.unconfirmed.contains(at)
+    /// What is owed for the segment `at`, whose value `moved_on` says a later segment took out of the node: a landing
+    /// while it rests there, a release once it landed and has since left (or the segment was reversed), nothing else.
+    /// A value that left before it was landed is never landed.
+    pub(super) fn owes(&mut self, at: &At, moved_on: bool) -> Owes {
+        let gone = moved_on || self.reversed.contains(at);
+        if self.placed.contains(at) {
+            if gone && !self.released.contains(at) && !self.unreleased.contains(at) {
+                return Owes::Release;
+            }
+            return Owes::Nothing;
+        }
+        if self.passed.contains(at) || self.unconfirmed.contains(at) {
+            return Owes::Nothing;
+        }
+        if gone {
+            self.passed.insert(at.clone());
+            return Owes::Nothing;
+        }
+        Owes::Land
     }
 
-    pub(super) fn close(&mut self, at: (String, String), landed: Landed) -> bool {
-        match landed {
+    /// Takes what the port answered for a landing, and whether it placed it.
+    pub(super) fn landed(&mut self, at: At, answered: Landed) -> bool {
+        match answered {
             Landed::Placed => {
                 self.placed.insert(at);
                 true
@@ -66,11 +108,110 @@ impl Landing {
         }
     }
 
-    pub(super) fn unconfirmed(&self) -> usize {
-        self.unconfirmed.len()
+    /// Takes what the port answered for a release.
+    pub(super) fn released(&mut self, at: At, answered: Landed) {
+        match answered {
+            Landed::Placed => {
+                self.released.insert(at);
+            }
+            Landed::Unconfirmed => {
+                self.unreleased.insert(at);
+            }
+            Landed::NotNow => {}
+        }
     }
 
-    pub(super) fn placed(&self, at: &(String, String)) -> bool {
-        self.placed.contains(at)
+    /// The segment's reversal completed: its value is back where it came from.
+    pub(super) fn reverse(&mut self, at: At) {
+        self.reversed.insert(at);
+    }
+
+    pub(super) fn unconfirmed(&self) -> usize {
+        self.unconfirmed.len() + self.unreleased.len()
+    }
+
+    pub(super) fn is_placed(&self, at: &At) -> bool {
+        self.placed.contains(at) && !self.released.contains(at)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at() -> At {
+        ("ord-1".to_owned(), "seg-1".to_owned())
+    }
+
+    /// A value that rests at the node lands once; one the wallet couldn't take now is asked again, and one it didn't
+    /// confirm never is (asking twice could attribute it twice).
+    // verifies: REQ-AUD-15, INV-5
+    #[test]
+    fn landing_is_asked_again_only_where_nothing_took_effect() {
+        let mut landing = Landing::default();
+        assert_eq!(landing.owes(&at(), false), Owes::Land);
+        assert!(!landing.landed(at(), Landed::NotNow));
+        assert_eq!(
+            landing.owes(&at(), false),
+            Owes::Land,
+            "nothing took effect"
+        );
+        assert!(!landing.landed(at(), Landed::Unconfirmed));
+        assert_eq!(
+            landing.owes(&at(), false),
+            Owes::Nothing,
+            "never asked again"
+        );
+        assert_eq!(landing.unconfirmed(), 1);
+        assert!(!landing.is_placed(&at()));
+
+        let mut landing = Landing::default();
+        assert!(landing.landed(at(), Landed::Placed));
+        assert_eq!(landing.owes(&at(), false), Owes::Nothing, "landed once");
+        assert!(landing.is_placed(&at()));
+    }
+
+    /// A value that moved on before it was landed lands nothing; one landed and since moved on, or reversed, is
+    /// released, as a landing is asked: again where nothing took effect, never where unconfirmed.
+    // verifies: REQ-AUD-15, INV-5
+    #[test]
+    fn only_value_still_resting_is_held_and_what_left_is_released() {
+        let mut passing = Landing::default();
+        assert_eq!(passing.owes(&at(), true), Owes::Nothing, "passed through");
+        assert_eq!(passing.owes(&at(), false), Owes::Nothing, "and stays so");
+
+        let mut moved = Landing::default();
+        assert!(moved.landed(at(), Landed::Placed));
+        assert_eq!(moved.owes(&at(), true), Owes::Release);
+        moved.released(at(), Landed::NotNow);
+        assert_eq!(
+            moved.owes(&at(), true),
+            Owes::Release,
+            "nothing took effect"
+        );
+        moved.released(at(), Landed::Unconfirmed);
+        assert_eq!(moved.owes(&at(), true), Owes::Nothing, "never asked again");
+        assert_eq!(moved.unconfirmed(), 1);
+
+        let mut released = Landing::default();
+        assert!(released.landed(at(), Landed::Placed));
+        assert_eq!(released.owes(&at(), true), Owes::Release);
+        released.released(at(), Landed::Placed);
+        assert_eq!(released.owes(&at(), true), Owes::Nothing, "released once");
+        assert!(!released.is_placed(&at()));
+
+        let mut reversed = Landing::default();
+        assert!(reversed.landed(at(), Landed::Placed));
+        assert_eq!(reversed.owes(&at(), false), Owes::Nothing, "resting");
+        reversed.reverse(at());
+        assert_eq!(reversed.owes(&at(), false), Owes::Release, "reversed");
+
+        let mut never = Landing::default();
+        never.reverse(at());
+        assert_eq!(
+            never.owes(&at(), false),
+            Owes::Nothing,
+            "reversed before landed"
+        );
     }
 }

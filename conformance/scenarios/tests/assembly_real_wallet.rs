@@ -114,6 +114,39 @@ fn stuck_at_the_public_node() -> Stuck {
     }
 }
 
+/// An order whose value only passes through the node, its deposit out of it settling, leaves the wallet's account
+/// holding nothing for it: the account's attribution is what the node holds (`REQ-AUD-15`, `INV-5`).
+// verifies: REQ-AUD-15, INV-5
+#[test]
+fn value_that_passes_through_the_wallets_node_is_not_held_for_the_order() {
+    let (mut core, session) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
+    core.registers().accounts.insert(
+        ADDRESS.to_owned(),
+        kit::customer().party.as_str().to_owned(),
+    );
+    core.install_wallet(NODE, "USDC")
+        .expect("the wallet is installed");
+    let asked = request(
+        "req-through",
+        &session,
+        AMOUNT,
+        CHAIN_IN,
+        outer("sim-chain-a", "USDC"),
+        outer("sim-chain-e", "USDC"),
+        OUT_B,
+        ADDRESS,
+        "lowest_total_cost",
+    );
+    let order = accepted(&mut core, asked);
+    core.run(&order).expect("the order runs");
+    assert_eq!(core.land_settled(), 0, "nothing rests at the node");
+    assert_eq!(
+        core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "the account holds nothing for the order"
+    );
+}
+
 /// The customer's ask of the linked order: from the node to the address, the whole of what rests.
 fn linked_order(stuck: &Stuck) -> LinkedOrder {
     let route: Request = serde_json::from_value(json!({

@@ -1918,6 +1918,8 @@ impl Reversals {
         let recorded = completion.recorded.clone();
         reversal.completion = None;
         reversal.completed = Some(done.clone());
+        // What the segment landed in a holding account at its node is released (`T-020-33`).
+        parts.segments.note_reversed(at.order, at.segment);
         // The measure of it, kept for the writer: what it rests on is the confirmation and the input that recorded
         // it. A measure is a detection: no failure of it touches the reversal (`ADR-0009`).
         if let Ok(when) = journal::now(parts.clock) {

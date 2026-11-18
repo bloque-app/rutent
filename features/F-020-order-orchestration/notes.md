@@ -5321,3 +5321,35 @@ is by `sim-chain-out-b`, the wallet is asked nothing by it, and the real log adm
 - **Rule-off:** the first move run with the wallet as its origin reserve (`Started.origin`) turns the T-024-17 scenario
   red: the log refuses it ("a part's first move is from the origin reserve its part's yes names").
 
+### T-020-33, review round (Opus, `16c9529e`)
+
+1. *Only value still resting is held.* `Segments::land_settled` lands a settled segment's value at a held node only
+   while it rests there: where the segment out of the node settled first the value is never landed, and a landing is
+   released (`Landings::release`, `Holdings::release`) once that segment settles or the segment that brought the value is
+   reversed (`Segments::note_reversed`, called where a reversal completes). The probe (the `AC-6` order through
+   `sim-chain-b`, no fault) is `value that passes through the wallet's node is not held for the order`. A release is asked as
+   a landing is (again where nothing took effect, never where unconfirmed). Not done: a reversal of the segment *out of* the
+   node returns the value to the node, which should land it again; owner, `T-020-12`'s successor. The reversal hook has no
+   end-to-end test (no kit scenario completes a reversal of a segment that settled at a held node); `Landing::reverse` is
+   unit-tested, and switching the hook off turns nothing red.
+2. *`recover_starts`* takes the last `resolve_stuck` effect for the linked order before the `handed_on` input, the one
+   whose result was done (a part is resolved once, so none follows it), not the first: `recovered start follows the hand-on
+   that succeeded, not an earlier refused one` (the probe: the first provider named and refused, then the holding account).
+3. The stray `notes.md.bak` is deleted.
+4. *Tests of the retry rules and the error mapping:* `segments/landing.rs` unit tests, `tests/landing.rs` (a fake
+   `Landings` at the kit's ledger: landed once, passed-through never landed, asked again only where nothing took effect),
+   `assembly/holding.rs`' `answered` and its unit test.
+- Lows noted, not changed (kit code): `run_linked` authorises with the original order's destination rather than the linked
+  request's, and `given_by` isn't checked against the linked order; production refuses an unproven start.
+- **Rule-off** (each alone, file restored, none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | value that moved on is not landed (`moved_on`) | `value that passed through a held node is never landed`, `value that passes through the wallet's node is not held for the order` |
+  | the recovered holder is the done effect's, not the first | `recovered start follows the hand-on that succeeded...` |
+  | an unconfirmed landing is never asked again | the `landing.rs` unit test, `a landing is asked again only where nothing took effect` |
+  | a landing that took no effect is asked again | the same two |
+  | the wallet's error mapping (an unknown outcome is never asked again) | `only a refusal that moved nothing is asked again` |
+  | a landed, moved-on value is released | `only value still resting is held and what left is released` |
+  | the reversal hook | none (see 1) |
+
