@@ -7,13 +7,13 @@
 mod segments_support;
 
 use rutent_conformance::sim::Behaviour;
+use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{Entry, HandedOver, Receipt, What};
 use rutent_contracts::state_machine::{Observed, SegmentState};
 use rutent_core_orch::recalc::Recalculation;
 use rutent_core_orch::segments::{
     APPEND_TRIES, Accounted, Ran, SegmentOutcome, SegmentsError, UnknownBy,
 };
-use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Stuck, StuckError, seen_by_provider};
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::on_parts;
@@ -355,7 +355,9 @@ fn outcome_unknown_waits_while_the_log_cant_take_the_platforms_record_and_is_rec
     assert_eq!(core.log.borrow().count(is_unanswered), 1, "one record");
     assert_eq!(count_unknown(&core), 1, "one outcome unknown");
     let log = core.log.borrow();
-    assert!(is_unanswered_entry(&log.entries[cited.index.get() as usize].0));
+    assert!(is_unanswered_entry(
+        &log.entries[cited.index.get() as usize].0
+    ));
     drop(log);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
