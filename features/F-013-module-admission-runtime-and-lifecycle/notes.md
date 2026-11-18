@@ -917,16 +917,18 @@ that declares no safe retry (seed 110, the simulated exchange), and that nothing
   publishes) and `Some(false)` both mean no safe retry.
 - **What is a repeat.** `Platform::handle_in` keeps, per transaction, the operations it carried out by their kind (the module
   ran, whatever it came to: an answer, an outcome unknown, a refusal after it ran), until the transaction's segment ends
-  (`Platform::end_segment`; after that `version_for` refuses it as before). A second operation of the same kind under that
-  transaction is a repeat. Dry runs are no repeat: they move nothing, and neither carry out nor repeat anything. Nor are the kinds that only ask (`balance_verification`, `judgement`, `holding_balance`); any other kind, one
+  (`Platform::end_segment`; after that `version_for` refuses it as before). A second operation under that transaction is a repeat, whatever its kind (a transaction's identifier is one
+  operation's, `INV-8`). Dry runs are no repeat: they move nothing, and neither carry out nor repeat anything. Nor are the kinds that only ask (`balance_verification`, `judgement`, `holding_balance`); any other kind, one
   added later too, counts.
 - **What a repeat gets.** For a provider without safe retry, `PlatformRefusal::DuplicateTransaction` (the contract's reason
   for `INV-8`; no new reason is needed, so `contracts/` is untouched): the module doesn't run, nothing moves, and the caller
   reads the refusal. For one with safe retry, the first answer from the platform's record, byte for byte, the module not run.
   If the first run gave no answer (a refusal after it ran), the module runs again, which its declaration allows. The first
   answer stays the record. An operation under a transaction carried out for another provider is refused whatever it declares.
-- **A foreign envelope is not a repeat.** An operation whose deployment, protocol version or signing key differs from the
-  first one's reaches the module as before, which refuses it (`REQ-PRT-1`); the role suite's replay probes
+- **Envelope.** The platform verifies no signature, so for a provider without safe retry a changed key or protocol
+  version is a retry and is refused like any repeat. For a provider with safe retry an operation whose deployment,
+  protocol version, key or terms differ from the first's is not answered from the record but reaches the module, which
+  refuses it as foreign (`REQ-PRT-1`); the role suite's replay probes
   (`conformance/scenarios/tests/sim_providers.rs`) need that, and the platform did not check envelopes before this row
   either. So a foreign replay of a carried out transaction to a provider without safe retry still rests on the module's own
   envelope check.
@@ -945,8 +947,11 @@ that declares no safe retry (seed 110, the simulated exchange), and that nothing
 ### Defaults (T-013-09)
 
 - No declaration, or one the platform can't read, is no safe retry: the repeat is refused (fail closed).
-- The key is (transaction, operation kind): two different kinds under one transaction are not repeats of each other.
-- A dry run is exempt, and foreign envelopes pass to the module (above). Both reversible.
+- The key is the transaction alone (one operation per transaction), in two scopes: the platform's own, and each callee a
+  module calls (`handle_in(.., called)`), a callee that declares safe retry running each call again (each is an
+  operation within its own budgets), so a module calling a callee without safe retry twice under one transaction is
+  refused the second call (the caller sees it unanswered), and the callee's record never collides with the caller's.
+- A dry run and the read-only kinds are exempt. Reversible.
 
 ### Gaps (T-013-09)
 
@@ -956,7 +961,7 @@ that declares no safe retry (seed 110, the simulated exchange), and that nothing
 - The record is kept until the transaction's segment ends; a transaction handled with no segment begun is kept until the
   platform stops. Core begins a segment for every transaction, so nothing grows there; owner: `F-013`, if a deployment
   ever calls `handle` with no segment.
-- A foreign-envelope replay to a provider without safe retry rests on the module's envelope check, which the role suite
+- A foreign-envelope replay to a provider with safe retry rests on the module's envelope check, which the role suite
   asserts of every module. Owner: `T-025-05`, to review.
 - `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
 

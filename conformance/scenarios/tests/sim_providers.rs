@@ -187,8 +187,23 @@ impl RoleProvider for Through {
     fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         let expected = self.twin.handle(operation);
         let handled = self.fleet.handle(&self.spec.provider, operation);
-        let Handled::Answered(answered) = handled else {
-            panic!("the platform refused an operation of the role suite: {handled:?}");
+        let answered = match handled {
+            Handled::Answered(answered) => answered,
+            // A replay of a carried out transaction from elsewhere, to a provider that declares no safe retry: the
+            // platform refuses it before the module sees it (`T-013-09`), as the replay probe expects of the module,
+            // a final refusal, which the twin gives in process.
+            Handled::Refused(PlatformRefusal::DuplicateTransaction) => {
+                let twin = serde_json::to_value(&expected.statement().statement).expect("JSON");
+                assert_eq!(
+                    twin["outcome"]["refusal"]["class"], "final",
+                    "{}: the platform refused a repeat the twin doesn't refuse as final: {twin}",
+                    self.spec.provider
+                );
+                // Signed as the twin's other results are, with the key its placeholder stands for.
+                return Received::<ResultBody>::from_bytes(signed(expected.bytes()))
+                    .expect("reads back");
+            }
+            handled => panic!("the platform refused an operation of the role suite: {handled:?}"),
         };
         // The platform signs the result, and what the module nested in it, with the provider's statements key.
         let twin_signed = Received::<ResultBody>::from_bytes(signed_inside(expected.bytes()))

@@ -11,15 +11,20 @@ mod signed;
 mod support;
 
 use common::withdrawal;
-use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
+use rutent_contracts::module_interface::{Identifier, PlatformRefusal, RouteReference};
 use rutent_prov::catalogue::{Category, Grant, GrantTerms, Instant};
 use rutent_prov::module::types::{Admitted, Handled};
+use rutent_prov::proxy::NamedCall;
 use signed::{AT, RAMP, RESERVE, Signed, release};
 
 /// Admits `provider`'s first release, handling withdrawals, and gives it its acceptance: it runs.
 fn admit(s: &mut Signed, provider: &str) {
+    admit_handling(s, provider, &["withdrawal"]);
+}
+
+fn admit_handling(s: &mut Signed, provider: &str, handles: &[&str]) {
     let key = signed::catalogue_support::advertising_key(provider);
-    let (declaration, binaries) = release(provider, "1.0.0", &["withdrawal"]);
+    let (declaration, binaries) = release(provider, "1.0.0", handles);
     let Admitted::Artefact(artefact) =
         s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
     else {
@@ -218,4 +223,171 @@ fn a_provider_that_withdraws_its_safe_retry_declaration_is_refused_from_its_next
         s.platform.handle(RAMP, &withdrawal(RAMP, 1)),
         Handled::Refused(PlatformRefusal::DuplicateTransaction)
     );
+}
+
+/// `value` as the operation it is.
+fn operation(
+    value: serde_json::Value,
+) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
+    serde_json::from_value(value).expect("an operation")
+}
+
+// verifies: INV-8, REQ-CAT-10
+#[test]
+fn a_retry_under_another_key_or_protocol_version_is_refused_for_a_provider_without_safe_retry() {
+    for field in ["key", "protocol_version"] {
+        let mut s = running(RESERVE);
+        let first = s.platform.handle(RESERVE, &withdrawal(RESERVE, 1));
+        assert!(matches!(first, Handled::Answered(_)), "{first:?}");
+        let mut v = serde_json::to_value(withdrawal(RESERVE, 1)).expect("JSON");
+        match field {
+            "key" => {
+                v["signature"]["key"] = rutent_conformance::role::placeholder_key(61)
+                    .as_str()
+                    .into();
+            }
+            _ => v["protocol_version"] = "9.0.0".into(),
+        }
+        // The platform verifies no signature, so the retry is what it looks like: a second operation.
+        assert_eq!(
+            s.platform.handle(RESERVE, &operation(v)),
+            Handled::Refused(PlatformRefusal::DuplicateTransaction),
+            "{field}"
+        );
+        assert_eq!(
+            s.platform.operations_run(RESERVE),
+            1,
+            "{field}: the module ran the retry"
+        );
+    }
+}
+
+// verifies: INV-8
+#[test]
+fn a_retry_of_another_envelope_reaches_the_module_of_a_provider_with_safe_retry() {
+    let mut s = running(RAMP);
+    let first = s.platform.handle(RAMP, &withdrawal(RAMP, 1));
+    assert!(matches!(first, Handled::Answered(_)), "{first:?}");
+    let mut v = serde_json::to_value(withdrawal(RAMP, 1)).expect("JSON");
+    v["protocol_version"] = "9.0.0".into();
+    let again = s.platform.handle(RAMP, &operation(v));
+    assert!(matches!(again, Handled::Answered(_)), "{again:?}");
+    assert_eq!(s.platform.operations_run(RAMP), 2);
+}
+
+// verifies: INV-8
+#[test]
+fn another_kind_under_a_carried_out_transaction_is_refused() {
+    let mut s = Signed::new();
+    admit_handling(&mut s, RESERVE, &["withdrawal", "deposit"]);
+    let first = s.platform.handle(RESERVE, &withdrawal(RESERVE, 1));
+    assert!(matches!(first, Handled::Answered(_)), "{first:?}");
+    let mut v = serde_json::to_value(withdrawal(RESERVE, 1)).expect("JSON");
+    let origin = v["statement"]["origin"].clone();
+    v["statement"]["origin"] = v["statement"]["destination"].clone();
+    v["statement"]["destination"] = origin;
+    v["statement"]["kind"] = "deposit".into();
+    assert_eq!(
+        s.platform.handle(RESERVE, &operation(v)),
+        Handled::Refused(PlatformRefusal::DuplicateTransaction)
+    );
+    assert_eq!(s.platform.operations_run(RESERVE), 1);
+}
+
+/// `caller` is admitted and running, its module calling `callee`'s withdrawal twice, one after the other, when it
+/// handles a withdrawal.
+fn admit_caller(s: &mut Signed, caller: &str, callee: &str) {
+    use rutent_conformance::boundary::{ModuleSpec, Output, Step};
+    use rutent_contracts::module_interface::OperationKind;
+    let language = common::languages().into_iter().next().expect("a language");
+    let mut value =
+        serde_json::to_value(common::declaration(caller, "1.0.0", &["withdrawal"])).expect("JSON");
+    value["outside"]["statement_key"] =
+        signed::catalogue_support::public_key(&signed::catalogue_support::statements_key(caller))
+            .as_str()
+            .into();
+    value["outside"]["calls"] = serde_json::json!([{ "callee": callee, "kinds": ["withdrawal"] }]);
+    let declaration = serde_json::from_value(value).expect("a declaration");
+    let step = Step::CallModule {
+        callee: callee.to_owned(),
+        kind: OperationKind::Withdrawal,
+    };
+    let module = ModuleSpec {
+        declaration,
+        steps: vec![step.clone(), step],
+        output: Output::Honest,
+        starts: true,
+    };
+    let binaries = common::build_standin(&module, &language, "reserve", &[]).expect("builds");
+    let key = signed::catalogue_support::advertising_key(caller);
+    let Admitted::Artefact(artefact) = s.admit(
+        &signed::assertion(&module.declaration, &binaries, &key),
+        &binaries,
+    ) else {
+        panic!("the caller wasn't admitted");
+    };
+    if artefact.acceptance.accepted.is_none() {
+        s.accept(caller, &artefact.assertion_digest, "test-reviewer")
+            .expect("accepted");
+    }
+}
+
+/// How many of the two calls `caller` makes into `callee` came back delivered, and how many operations the callee's
+/// module ran, when the caller handles its withdrawal 1.
+fn calls_made(caller: &str, callee: &str) -> (usize, u64, bool) {
+    use rutent_contracts::module_interface::CrossModuleOutcome;
+    let mut s = Signed::new();
+    s.platform.set_operation_clock(std::sync::Arc::new(
+        rutent_prov::module::platform::SteppedClock::new(),
+    ));
+    admit(&mut s, callee);
+    admit_caller(&mut s, caller, callee);
+    s.platform.take_events();
+    // A route names the calls, as the boundary suite's does: every call the caller declares, in its transaction.
+    let transaction = tx(caller, 1);
+    s.platform.routes.name(
+        &transaction,
+        NamedCall {
+            route: RouteReference {
+                decision_record: Identifier::new("conformance-route").expect("an id"),
+                segment: Identifier::new("segment-1").expect("an id"),
+            },
+            caller: Identifier::new(caller).expect("an id"),
+            callee: Identifier::new(callee).expect("an id"),
+            kinds: vec![rutent_contracts::module_interface::OperationKind::Withdrawal],
+        },
+    );
+    let handled = s.platform.handle(caller, &withdrawal(caller, 1));
+    let events = s.platform.take_events();
+    assert_eq!(events.calls.len(), 2, "{handled:?}");
+    eprintln!(
+        "CALLS {:?}",
+        events.calls.iter().map(|c| &c.outcome).collect::<Vec<_>>()
+    );
+    let delivered = events
+        .calls
+        .iter()
+        .filter(|c| matches!(c.outcome, CrossModuleOutcome::Delivered(_)))
+        .count();
+    // The caller's own transaction is its own: a repeat of it is the caller's to be answered from its record, or
+    // refused, as its declaration says, and not the callee's record's to decide.
+    let again = s.platform.handle(caller, &withdrawal(caller, 1));
+    (
+        delivered,
+        s.platform.operations_run(callee),
+        matches!(again, Handled::Answered(_)),
+    )
+}
+
+// verifies: INV-8, REQ-CAT-10
+#[test]
+fn a_second_call_into_a_callee_without_safe_retry_under_one_transaction_is_refused() {
+    // The first call is delivered, which also shows a callee's record collides with nothing of the caller's.
+    assert_eq!(calls_made(RAMP, RESERVE), (1, 1, true));
+}
+
+// verifies: INV-8
+#[test]
+fn a_second_call_into_a_callee_with_safe_retry_runs_it_again() {
+    assert_eq!(calls_made(RESERVE, RAMP), (2, 2, false));
 }
