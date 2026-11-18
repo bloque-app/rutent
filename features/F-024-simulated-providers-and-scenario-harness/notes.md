@@ -1645,3 +1645,74 @@ written after the code, so "red first" is the rows below):
 | the release-scan probe's `GUA-5` tag | the release-scan test (the table no longer counts the probe) |
 | `RUTENT_RELEASE_PROVIDER` in the jail step | the release-scan test (the workflow assertion) |
 | the release build step before the jail step | the release-scan test (the build-before-probes assertion) |
+
+## T-024-10: M3's exit, the evidence table run strictly
+
+The scope file's switch now reads `strict: on`; that is the only line of `conformance/evidence/v0-scope` this row changes, and
+no workflow is edited. `conformance/evidence/check-strict-only.sh [<base> [<head>]]` checks it from the diff (default
+`HEAD~1..HEAD`; `-` for the working tree): the scope file's diff must be exactly `-strict: off` and `+strict: on`, and any other
+changed line, a row added, moved or removed included, exits 1. Tried here on the working tree: exit 0 as the commit stands, and
+exit 1 with a row's class changed beside the switch.
+
+### The table, run strictly before the switch was turned
+
+Run locally, `evidence-table --strict`, over the `ci` job's log of run 44372822190 (`T-024-19`'s pull request, green, head
+`559b1d58`; runner timestamps cut), since the workspace suite is too heavy for the reference machine: exit 0, **232 rows: 211
+verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred**; 0 table findings, 0 against the base. The same line
+is what that run's two evidence-table steps printed. Every `M3` row has a passing verifier but one: `REQ-CAT-5` is partly met by
+the plan's own reading of this row (`T-024-09`'s row: partly met, with the form item it waits on, is listed, not verified).
+
+| Status | Count |
+|---|---|
+| verified | 211 |
+| inspected (`REQ-EXT-2` by `F-011`'s recorded review; `REQ-MOD-2` and `NFR-7` by the documentation check; `REQ-MOD-3` by the boundary check; `REQ-MOD-5` by the licence check) | 5 |
+| partly met | 1 |
+| unverified | 0 |
+| M4 | 3 |
+| deferred | 12 |
+
+**Partly met.** `REQ-CAT-5`: waits on the form item `cat5-timing-residual` (timing correlation between a tuple's questions, a
+residual only the owner can accept; `T-020-06`, `T-025-05` reviewed it and did not count it closed). Owner: Pablo, on the form.
+
+### The M4 and deferred rows, with owners and decisions
+
+| Row | Class | Owner or decision |
+|---|---|---|
+| `REQ-OPS-4` | M4 | `F-030` (§7.1's `REQ-OPS` row): no deployment before M4 |
+| `REQ-PRT-2` | M4 | `F-030` (§7.1's `REQ-PRT` row): production cutovers |
+| `REQ-PRT-4` | M4 | `F-030` (§7.1's `REQ-PRT` row): production cutovers |
+| `REQ-QTE-16`, `REQ-ORD-42`, `AC-38` | deferred | `DEC-8`: the rule is v1's (`F-050`); v0 carries the shape |
+| `REQ-CPL-1`, `REQ-CPL-4`, `REQ-CPL-7`, `REQ-CPL-10`, `AC-16` | deferred | `DEC-16`: verifiers wait for v1 (`F-053`) |
+| `REQ-PRT-3`, `GUA-6` | deferred | `DEC-17`: the protocol's specification is published in v1 (`F-052`) |
+| `REQ-EXT-1` | deferred | `F-052` (§7.1's `REQ-EXT` row): against the protocol, in M5 |
+| `NFR-1` | deferred | `ASM-1` and §6.2 risk 9: no load figure is set |
+
+`M4` halves of rows that are `M3`'s here: `REQ-AUD-10` and `REQ-AUD-12` (the appointed checker, the named regulator), `F-033`
+(`F-032` carries the note); `AC-25` against the deployment, `F-030`.
+
+**Residuals routed to M4, as the notes record them with an owner** (from `T-025-05`'s section of `F-025`'s notes, and the notes
+of this feature):
+
+- `F-013` with `F-030` (finding M1, medium, before production): the platform's carried-out record and ended set live in memory;
+  after a restart a repeat under a carried transaction reaches the module (`INV-8`). New row "the platform's carried-out record
+  survives a restart", test `a repeat after the platform restarts moves nothing twice` [`INV-8`]. `M3`'s assembly never restarts a
+  platform.
+- `F-030` (finding L1): `Fresh` in production draws 128-bit question identifiers from the operating system's generator; the
+  assembly's SplitMix64 ones are invertible. Nothing in `M3`.
+- `F-030`, accepted for v0: `R-KEY` (the deployment's keys for the log's one key), `R-FSYNC` (the deployment's storage), `R-SCAN`
+  (`F-030` re-runs `T-025-03`'s scan on production's stores); the checker and checkpointer outside the assembled Core, and the
+  production proxy's use records with the store behind it (`T-025-03`'s scan re-run); `AppArmor` is `F-033` and `F-030` (`DEC-27`).
+- `F-030`'s assembly, from this feature's notes: restarts (Core's own records are in memory; crash runs are not restarted),
+  `AC-39`'s periodic holding check (with `F-020` for a private node's balance), and the report price and the slippage and
+  public-node settings.
+- Owner Pablo: `R-UTS`, `R-JAIL-GATE` (`jail-probes` is not a required check), `R-SAD-AMEND`, `R-BALANCE-SCAN`; the forms:
+  `R-HANDLES` (`F-021` with `F-022`), `R-BACKDATE` (`F-022`), `R-LABEL` (`F-020`), `R-PERSONAL`, `R-FUZZ` (`F-013`, a guided
+  fuzzer before a module from outside the operator's contracts is admitted, or with `F-030`'s hardening).
+- Rows the review asked for, low: `R-NODE`, `R-RELIANCE`, `R-PUBLISHER` (`F-020`), `R-CHECKLOG` (`F-021`).
+
+Of `T-025-05`'s lows, `L2`, `L3` and `L4` closed in `T-024-19`. Items of the lead's list (`owed-lows.md`) that no note of the
+repository records with an owner are not listed here.
+
+### The strict run
+
+Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; its strict step ran with the switch on and reported `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. The milestone tip's own strict run, once this row is merged, is recorded below by the lead. The run's evidence-table step reports form items not checked, as `decisions/` sits outside the repository, so `form:cat5-timing-residual` is not validated against the form in CI.

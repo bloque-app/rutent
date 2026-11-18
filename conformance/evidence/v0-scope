@@ -19,7 +19,7 @@
 # Moving an m3 row to m4 or deferred needs the PLAN.md rows it cites to have changed to place it there, as the
 # ratchet in `evidence-table` checks against develop.
 
-strict: off
+strict: on
 
 
 # REQ-AUD
