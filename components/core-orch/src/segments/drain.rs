@@ -128,6 +128,14 @@ pub(super) fn of_events(events: &Events) -> Result<Vec<HandedOver>, Uncarried> {
     }
     for ended in unknown {
         let position = items.len();
+        // The platform names no transaction for an operation it ran under none: nothing to name this record by, so
+        // the drain is refused whole under its own name, not under a bare identifier's (`REQ-MDL-8`).
+        if ended.transaction.is_empty() {
+            return Err(Uncarried {
+                position,
+                what: "an operation that ended with no answer under no transaction",
+            });
+        }
         items.push(HandedOver::OperationUnanswered {
             provider: id(&ended.provider, position)?,
             transaction: id(&ended.transaction, position)?,
@@ -314,5 +322,44 @@ fn refused(refusal: &Refusal) -> &'static str {
             ResolveError::Malformed => "store_malformed",
             ResolveError::Transport(_) => "store_transport",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rutent_prov::module::types::UnknownOutcome;
+
+    fn ended(transaction: &str) -> Events {
+        Events {
+            unknown: vec![UnknownOutcome {
+                provider: "sim-reserve".to_owned(),
+                transaction: transaction.to_owned(),
+                ended_by: PlatformRefusal::LimitReached,
+            }],
+            ..Events::default()
+        }
+    }
+
+    // verifies: REQ-MDL-8
+    #[test]
+    fn operation_that_ended_with_no_answer_and_no_transaction_is_refused_by_name() {
+        let refused = of_events(&ended("")).expect_err("nothing to name the operation by");
+        assert_eq!(
+            refused.what,
+            "an operation that ended with no answer under no transaction"
+        );
+        // The drain is kept whole, never dropped: the same refusal on every try.
+        assert!(!Raw::Events(ended("")).is_empty());
+    }
+
+    // verifies: REQ-MDL-8
+    #[test]
+    fn operation_that_ended_with_no_answer_under_a_transaction_is_carried() {
+        let items = of_events(&ended("tx-1")).expect("carried");
+        assert!(matches!(
+            items.as_slice(),
+            [HandedOver::OperationUnanswered { .. }]
+        ));
     }
 }
