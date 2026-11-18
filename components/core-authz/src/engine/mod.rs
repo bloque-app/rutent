@@ -1130,7 +1130,9 @@ mod tests {
         let mut request: DecisionRequest = fixture!("decision-request-to-move-value");
         if matches!(
             action,
-            Action::PostRoute { .. } | Action::ChangeCatalogue { .. }
+            Action::PostRoute { .. }
+                | Action::ChangeCatalogue { .. }
+                | Action::EraseStatement { .. }
         ) {
             request.caller = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
         }
@@ -1218,14 +1220,16 @@ mod tests {
             segment: id("seg-2"),
             provider: id("bridge-pay"),
         });
+        // And erasing a kept statement (`T-021-10`), the fixtures' commitment.
+        let erased: DecisionRequest = fixture!("decision-request-to-erase-a-kept-statement");
+        actions.push(erased.action);
         for action in &actions {
             match action {
                 Action::MoveValue { .. }
                 | Action::PostRoute { .. }
                 | Action::ChangeCatalogue { .. } => {}
-                // A decided action too (`REQ-AUD-13`), which policy's role table answers no rule for yet: it joins
-                // this list when policy's rows add the operator's permission to erase (core-internal's README).
-                Action::EraseStatement { .. } => unreachable!("not yet in policy's tables"),
+                // A decided action too (`REQ-AUD-13`), in policy's tables since `T-021-10`: the operator's permission.
+                Action::EraseStatement { .. } => {}
                 Action::AskReversal { .. } => {}
                 // In policy's tables since `T-021-09`: asked as a reversal is.
                 Action::AskStatus { .. } => {}
@@ -1445,7 +1449,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 15);
+        assert_eq!(actions.len(), 16);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1577,7 +1581,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 15 + 2 * 3 + 3 + 3,
+            3 * 16 + 2 * 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy
