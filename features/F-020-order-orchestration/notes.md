@@ -5402,7 +5402,6 @@ is by `sim-chain-out-b`, the wallet is asked nothing by it, and the real log adm
   | a landed, moved-on value is released | `only value still resting is held and what left is released` |
   | the reversal hook | none (see 1) |
 
-<<<<<<< HEAD
 
 ## T-020-35: the report pair, partly built; `T-020-25`'s two lows closed
 
@@ -5510,8 +5509,6 @@ The closed gap 1 above is this part's; the earlier text of the section stays as 
   | a gross tuple read as net | `segment ending with two reports hands core audit a pair with its tuple's terms` |
   | one provider's adjacent segments are not skipped | seven of the kit's `segments` tests (their route runs both segments at one reserve) |
 
-=======
->>>>>>> origin/m3
 ## T-020-32: the simulated world binds each private node to its publisher
 
 Branch `f-020/t-020-32-publisher-binds-node`, from `m3` at `7bc8be82`, with `T-020-36` (`728a8d72`) merged: the first
@@ -5607,7 +5604,6 @@ only to remove its two `#[ignore]`s.
 - **Residual for `T-025-05` (low):** the early record that binds a node and the later one the replay cites are never
   compared, so a publisher's two records of one node can disagree unnoticed.
 
-<<<<<<< HEAD
 ## T-020-38: `core-internal`'s round after `T-020-36`, a report pair's two segments
 
 Branch `f-020/t-020-38-report-pair-segments`, from `m3` at `c874f7aa` (with `T-020-30` and `T-020-36` merged). Edits
@@ -5741,7 +5737,7 @@ Branch `f-020/t-020-38-report-pair-segments`, from `m3` at `c874f7aa` (with `T-0
 - **Local checks** (one lock hold, at `2a7b1bca`): the same set as the first round, all green; the guard against
   `origin/develop` "1734 changed path(s) … no violations", plan-check and tag-check `--strict` 0 findings (2079 tests
   tagged).
-=======
+
 
 ## T-020-35: the report pair, partly built; `T-020-25`'s two lows closed
 
@@ -5794,4 +5790,3 @@ Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/co
 
   The two tests were written after their rules, which already existed (the hold, `T-020-25`) or were one line (the
   name); the rule-offs are their check.
->>>>>>> origin/m3
