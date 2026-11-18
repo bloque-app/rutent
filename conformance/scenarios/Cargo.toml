@@ -24,7 +24,9 @@ rutent-conformance = { path = "..", features = ["signing"] }
 serde_json = "1.0.154"
 # Core's orchestration and the router, which the assembly puts together with the policy engine and the log
 # (`T-024-02`), and the operator's key, which signs Core's statements.
-rutent-core-orch = { path = "../../components/core-orch" }
+# With its test-support feature: the kit (never shipped) reaches the restart seam `T-020-35` gated behind it, and the
+# VOS scenarios crate builds this library without this crate's dev-dependencies.
+rutent-core-orch = { path = "../../components/core-orch", features = ["test-support"] }
 rutent-router = { path = "../../components/router" }
 ed25519-dalek = "2.2.0"
 
