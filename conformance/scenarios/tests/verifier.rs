@@ -686,3 +686,109 @@ fn simulated_verifier_module_answers_a_judgement_that_names_no_transaction() {
         "a question made in another deployment is refused, not judged"
     );
 }
+
+/// The first operation's tuple of the route a bare quote of `AMOUNT` chooses at the reserve: the tuple a need must
+/// name to bear on the route.
+fn route_tuple(verifiers: &[&str]) -> rutent_contracts::router_api::TupleKey {
+    let (mut core, session) = core_with(verifiers);
+    let (_, told) = quoted(&mut core, base_request("req-bare", AMOUNT, &session));
+    assert!(offered(&told), "{told:?}");
+    let record = record_of(&core, &told);
+    let operation = &record.chosen().expect("a route").parts[0].operations[0];
+    rutent_contracts::router_api::TupleKey {
+        provider: operation.provider.clone(),
+        from: operation.from.clone(),
+        to: operation.to.clone(),
+    }
+}
+
+/// A verifier's no is not a yes (`T-020-34`): a need on the route's own tuple that the honest verifier refuses leaves
+/// no offer; the routing drops the candidate that cites the no (`Ineligible`), nothing is chosen, no reliance is
+/// written and nothing starts.
+// verifies: REQ-AUZ-5, REQ-CPL-12
+#[test]
+fn honest_verifiers_no_to_a_need_on_the_routes_tuple_leaves_no_offer_and_no_reliance() {
+    use rutent_contracts::provider_role::JudgementAnswer;
+    use rutent_contracts::router_api::DropReason;
+    let tuple = route_tuple(&[VERIFIER]);
+    let (mut core, session) = core_with(&[VERIFIER]);
+    let mut request = base_request("req-no", AMOUNT, &session);
+    request.needs.push(Need {
+        tuple,
+        ..need(
+            withdrawal(),
+            kit::customer().party.as_str(),
+            VERIFIER,
+            "unfit-x",
+        )
+    });
+    let (_, told) = quoted(&mut core, request);
+    assert!(!offered(&told), "a no is not a yes: {told:?}");
+
+    let records = core.decision_records();
+    let last = records.last().expect("a choice record");
+    assert!(
+        records.iter().all(|r| r.chosen.is_none()),
+        "no round chose a route"
+    );
+    let figure = last
+        .candidates
+        .iter()
+        .find_map(|c| match &c.dropped {
+            Some(DropReason::Ineligible { figure }) => Some(figure.clone()),
+            _ => None,
+        })
+        .expect("a candidate dropped as ineligible");
+    let no = last
+        .snapshot
+        .figures
+        .iter()
+        .find(|f| f.figure_id == figure)
+        .expect("the figure it names");
+    assert!(
+        matches!(&no.value, FigureValue::Eligibility { judgement, .. }
+            if judgement.statement.answer == JudgementAnswer::No && judgement.maker == VERIFIER),
+        "it names the verifier's no: {:?}",
+        no.value
+    );
+    assert!(reliances(&core).is_empty(), "no reliance on a refusal");
+    assert!(cited_none(&core), "nothing was accepted or shown");
+    assert!(
+        core.log().entries().iter().all(|(_, e)| !matches!(
+            e,
+            Entry::Verified(v)
+                if matches!(&v.what, What::Effect { action: Action::MoveValue { .. }, .. })
+        )),
+        "no value moved, no segment started"
+    );
+}
+
+/// A need whose tuple is no tuple of the chosen route bears on nothing: the order is offered and cites no judgement
+/// (`T-020-34`'s gap 2, pinned for its owner; today's behaviour, not a requirement).
+// verifies: REQ-AUZ-5
+#[test]
+fn need_on_a_tuple_off_the_route_is_ignored_and_the_order_is_offered_with_no_judgement() {
+    let (mut core, session) = core_with(&[VERIFIER]);
+    let mut request = base_request("req-off", AMOUNT, &session);
+    request.needs.push(Need {
+        tuple: kit::tuple(
+            "elsewhere",
+            kit::bank("elsewhere"),
+            kit::ledger("elsewhere"),
+        ),
+        ..need(
+            withdrawal(),
+            kit::customer().party.as_str(),
+            VERIFIER,
+            "unfit-x",
+        )
+    });
+    let (_, told) = quoted(&mut core, request);
+    assert!(offered(&told), "{told:?}");
+    assert!(
+        cited(&record_of(&core, &told))
+            .iter()
+            .all(|(_, judgements)| judgements.is_empty()),
+        "no judgement is cited"
+    );
+}

@@ -66,12 +66,13 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
-    Denomination, JUDGEMENT_SHAPE, Judgement, NodeRef, ResultBody, SafeInteger, Statement,
+    Denomination, JUDGEMENT_SHAPE, Judgement, JudgementAnswer, NodeRef, ResultBody, SafeInteger,
+    Statement,
 };
 use rutent_contracts::router_api::{
-    CatalogueSnapshot, DecisionRecord, Distinct, DropReason, Endpoint, FigureValue, Id, Operation,
-    OperationKind, PolicyBounds, PositiveAmount, Refines, Request, Round, Router, Timestamp,
-    TupleKey, Violation,
+    Candidate, CatalogueSnapshot, DecisionRecord, Distinct, DropReason, Endpoint, FigureValue, Id,
+    Operation, OperationKind, PolicyBounds, PositiveAmount, Refines, Request, Round, Router,
+    Timestamp, TupleKey, Violation,
 };
 use rutent_prov::catalogue::{Catalogue, CheckRefusal, Verdict};
 use rutent_router::shortlist::{self, Wanted};
@@ -1044,17 +1045,8 @@ impl Run<'_, '_> {
                 (_, Presence::AutomaticDeposit { .. }) => {}
             }
         }
-        for operation in chosen.parts.iter().flat_map(|p| p.operations.iter()) {
-            let key = TupleKey {
-                provider: operation.provider.clone(),
-                from: operation.from.clone(),
-                to: operation.to.clone(),
-            };
-            for need in needs.iter().filter(|n| n.tuple == key) {
-                if !judged(record, operation, need) {
-                    return Offer::NotOffered(NotOffered::NotEligible { tuple: key });
-                }
-            }
+        if let Some(tuple) = eligible(record, chosen, needs) {
+            return Offer::NotOffered(NotOffered::NotEligible { tuple });
         }
         Offer::Offered {
             candidate: chosen.candidate_id.clone(),
@@ -1067,7 +1059,29 @@ impl Run<'_, '_> {
     }
 }
 
-/// Whether `operation` cites a judgement of its tuple by the verifier `need` names, about its subject and class.
+/// Whether `chosen`'s route meets every need: no operation cites a judgement of no, and each need of a tuple the
+/// route uses is met by a cited judgement of yes. The tuple that fails, if any.
+fn eligible(record: &DecisionRecord, chosen: &Candidate, needs: &[&Need]) -> Option<TupleKey> {
+    for operation in chosen.parts.iter().flat_map(|p| p.operations.iter()) {
+        let key = TupleKey {
+            provider: operation.provider.clone(),
+            from: operation.from.clone(),
+            to: operation.to.clone(),
+        };
+        if cites_a_refusal(record, operation) {
+            return Some(key);
+        }
+        for need in needs.iter().filter(|n| n.tuple == key) {
+            if !judged(record, operation, need) {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
+/// Whether `operation` cites a judgement of its tuple by the verifier `need` names, about its subject and class,
+/// whose answer is yes: a no meets no need.
 fn judged(record: &DecisionRecord, operation: &Operation, need: &Need) -> bool {
     let tuple = operation.figures.first();
     operation.figures.iter().any(|id| {
@@ -1077,7 +1091,22 @@ fn judged(record: &DecisionRecord, operation: &Operation, need: &Need) -> bool {
                     if t == tuple
                         && judgement.maker == need.verifier.as_str()
                         && judgement.statement.subject == need.subject
-                        && judgement.statement.class == need.class)
+                        && judgement.statement.class == need.class
+                        && judgement.statement.answer == JudgementAnswer::Yes)
+        })
+    })
+}
+
+/// Whether `operation` cites a judgement whose answer is no.
+///
+/// The record's contract already refuses a kept candidate citing one; this is the rounds' own line, so a refusal is
+/// never offered, and none can be what a need or a reliance rests on (`REQ-AUZ-5`, `REQ-CPL-12`).
+fn cites_a_refusal(record: &DecisionRecord, operation: &Operation) -> bool {
+    operation.figures.iter().any(|id| {
+        record.snapshot.figures.iter().any(|f| {
+            &f.figure_id == id
+                && matches!(&f.value, FigureValue::Eligibility { judgement, .. }
+                    if judgement.statement.answer == JudgementAnswer::No)
         })
     })
 }
@@ -1207,4 +1236,114 @@ fn unconfirmed(
         }
     }
     again
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A choice-round record whose chosen route cites one judgement, of `verifier-kyc` about `subj-42` for
+    /// `kyc.natural_person`, from the contract's fixtures; the judgement's answer is set to `answer`.
+    fn record_citing(answer: JudgementAnswer) -> DecisionRecord {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../contracts/router-api/fixtures/valid/decision-record-over-a-ceiling-on-what-it-produces.json",
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        // The contract refuses a record choosing a route that cites a no, so the answer is set on the record read.
+        let mut record: DecisionRecord =
+            serde_json::from_value(value["statement"].clone()).unwrap();
+        for figure in record.snapshot.figures.iter_mut() {
+            if let FigureValue::Eligibility { judgement, .. } = &mut figure.value {
+                judgement.statement.answer = answer;
+            }
+        }
+        assert!(record.chosen().is_some(), "the fixture chooses a route");
+        record
+    }
+
+    /// The operation of the chosen route that cites the judgement, and the need that judgement meets.
+    fn operation_and_need(record: &DecisionRecord) -> (Operation, Need) {
+        let chosen = record.chosen().expect("a route is chosen");
+        chosen
+            .parts
+            .iter()
+            .flat_map(|p| p.operations.iter())
+            .find_map(|operation| {
+                operation.figures.iter().find_map(|id| {
+                    let figure = record
+                        .snapshot
+                        .figures
+                        .iter()
+                        .find(|f| &f.figure_id == id)?;
+                    let FigureValue::Eligibility { tuple, judgement } = &figure.value else {
+                        return None;
+                    };
+                    let _ = tuple;
+                    Some((
+                        operation.clone(),
+                        Need {
+                            tuple: TupleKey {
+                                provider: operation.provider.clone(),
+                                from: operation.from.clone(),
+                                to: operation.to.clone(),
+                            },
+                            person: Id::new("person-1").unwrap(),
+                            verifier: Id::new(&judgement.maker).unwrap(),
+                            subject: judgement.statement.subject.clone(),
+                            class: judgement.statement.class.clone(),
+                        },
+                    ))
+                })
+            })
+            .expect("a chosen operation cites the judgement")
+    }
+
+    /// A need is met by a judgement whose answer is yes, and by none whose answer is no: through `eligible`, the
+    /// check `offer` makes of the chosen route.
+    // verifies: REQ-AUZ-5
+    #[test]
+    fn tuple_whose_verifier_answered_no_is_not_offered() {
+        let yes = record_citing(JudgementAnswer::Yes);
+        let (operation, need) = operation_and_need(&yes);
+        let tuple = need.tuple.clone();
+        let chosen = yes.chosen().unwrap();
+        assert!(judged(&yes, &operation, &need), "a yes meets its need");
+        assert_eq!(eligible(&yes, chosen, &[&need]), None);
+        // A need nothing cited meets holds the route back: the call to `judged` in `eligible`.
+        let other = Need {
+            subject: "another-subject".to_owned(),
+            ..need.clone()
+        };
+        assert_eq!(eligible(&yes, chosen, &[&other]), Some(tuple.clone()));
+
+        let no = record_citing(JudgementAnswer::No);
+        let (_, need) = operation_and_need(&no);
+        assert!(!judged(&no, &operation, &need), "a no meets no need");
+        assert_eq!(
+            eligible(&no, no.chosen().unwrap(), &[&need]),
+            Some(tuple),
+            "a tuple whose verifier answered no is not eligible"
+        );
+    }
+
+    /// A route whose operation cites a refusal is refused whether or not a need names it: nothing a reliance could
+    /// rest on is a no. The call to `cites_a_refusal` in `eligible`.
+    // verifies: REQ-AUZ-5, REQ-CPL-12
+    #[test]
+    fn route_citing_a_verifiers_refusal_as_its_judgement_is_refused() {
+        let yes = record_citing(JudgementAnswer::Yes);
+        let (operation, need) = operation_and_need(&yes);
+        assert!(!cites_a_refusal(&yes, &operation));
+        assert_eq!(eligible(&yes, yes.chosen().unwrap(), &[]), None);
+
+        let no = record_citing(JudgementAnswer::No);
+        let (operation, _) = operation_and_need(&no);
+        assert!(cites_a_refusal(&no, &operation));
+        assert_eq!(
+            eligible(&no, no.chosen().unwrap(), &[]),
+            Some(need.tuple),
+            "no need names the no, and the route is refused all the same"
+        );
+    }
 }
