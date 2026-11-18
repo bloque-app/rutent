@@ -4895,9 +4895,21 @@ Branch `f-020/t-020-34-verifier-no`, from `m3` at `81be3583`. Edits `components/
      single writer through the coordinator (contract round), then `F-020`. Not done here (`contracts/` untouched).
   2. *A need on a tuple the chosen route doesn't use is ignored.* Reasonable, but a caller mistaking the tuple sees an
      offered order with no judgement. Owner: `F-020` (intake could refuse a need whose tuple is no tuple of the catalogue).
-- **Rule-off table:** see below.
+- **Review round 1.** (1) `offer`'s check is now `eligible(record, chosen, needs)`, a free function holding both
+  calls (`cites_a_refusal`, `judged`); the two unit tests drive it, so a removed call is red (a `Run` needs a whole
+  `Parts`, and `route` refuses the no before `offer`). (2) F-024's `verifier.rs` gains two tests (additive; T-024-12's
+  four are untouched): `honest verifier's no to a need on the route's tuple leaves no offer and no reliance` (need on
+  the tuple of a bare quote's route: not offered, no round chose, the candidate dropped `Ineligible` naming the
+  verifier's no, no reliance, nothing accepted, no move of value) and `need on a tuple off the route is ignored and
+  the order is offered with no judgement` (gap 2 pinned; today's behaviour, not a requirement).
+- **Reliances can't reach a no in practice:** a reliance is declared on a judgement of an offered, accepted route, and no
+  such route cites a no (the contract refuses it, and `eligible` again). The reliance half of the row's "refused" stays
+  gap 1's contract item.
+- **Rule-off table** (each alone, 120 s timeout, restored, none hung):
 
-  | Rule switched off (each alone, under a 120 s timeout, restored; none hung) | Red |
+  | Rule switched off | Red |
   |---|---|
+  | `eligible`'s call to `judged` | `tuple whose verifier answered no is not offered` |
+  | `eligible`'s call to `cites_a_refusal` | `route citing a verifier's refusal as its judgement is refused` |
   | `judged` ignoring the answer | `tuple whose verifier answered no is not offered` |
-  | `cites_a_refusal` always false | `route citing a verifier's refusal as its judgement is refused` |
+  | `offer` ignoring `eligible`'s result | T-024-12's `tuple needing a judgement is not offered without one` |
