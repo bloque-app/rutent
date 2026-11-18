@@ -272,7 +272,16 @@ impl Spec {
             Role::Ramp => {
                 Box::new(Ramp::named(context, &identity).shaped(&shape_of(&self.provider)))
             }
-            Role::Verifier => Box::new(Verifier::named(context, &identity)),
+            Role::Verifier => {
+                let verifier = Verifier::named(context, &identity);
+                // `sim-verifier-lax` says yes without checking (`T-024-12`, `THR-91`): the name chooses it, as a
+                // reserve's shape is chosen.
+                if self.provider.ends_with("-lax") {
+                    Box::new(verifier.saying_yes_without_checking())
+                } else {
+                    Box::new(verifier)
+                }
+            }
         }
     }
 }

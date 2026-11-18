@@ -920,3 +920,85 @@ written before the shapes were wired but the shapes went in first, so "red first
 | Core's hand-on of a gross segment, less its charge | seven |
 | Core's charge check reading the charge | `charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core` |
 | the operator's fee figured on what the last segment states, not what arrives | eight |
+
+## T-024-12: the verifier half of `REQ-CPL-12` and of `AC-24`
+
+Readings taken without asking, each reversible; the owner's form overrules any of them. `T-020-23` (the writer of
+`reliance` entries) is merged and this row runs on it: the scenarios declare which input rests on a judgement
+(`Core::rests_on`, then `run`), and the `reliance` follows by itself.
+
+**Tests** (`conformance/scenarios/tests/verifier.rs`, the four the row names, over `execution_support/` for the joined
+route). Each drives Core's own `request`, `quote`, `accept` and `run`; the verifier is the stand-in (`DEC-16`), asked by
+the order's needs (`rounds::Need`), since provider-role 3.0.0's tuples name no verifier.
+- *provider relying on a verifier's judgement leaves a reliance entry naming the verifier and the provider*
+  (`REQ-CPL-12`): one `reliance`, citing the receipt of the verifier's stated judgement, naming it as judge and the
+  reserve as the one relying, written before the first move of value; no entry but the reliance cites the judgement, and
+  neither the operator, the customer nor Core is judge or relier.
+- *false judgement is recorded as its verifier's word and its relier's reliance* (`REQ-CPL-12`): `sim-verifier-lax`
+  says yes without checking to a subject an honest verifier refuses (`unfit-`); the route cites that yes, the order runs,
+  the reliance names the lax verifier and the reserve, and no reliance names the operator or the customer. The same
+  subject put to `sim-verifier` is a no.
+- *requester beneficiary and payer are checked by the judgements their providers' rules name* (`AC-24`, `REQ-AUZ-5`):
+  over `sim-join-in`, `-exchange`, `-ramp` and `-out`, the payer is judged for the withdrawing reserve, the requester for
+  the exchange and the beneficiary for the depositing reserve, each by the verifier that rule names; the acceptance
+  records the three apart, policy was asked about each once, and each operation cites exactly its own party's judgement
+  (the ramp's none).
+- *tuple needing a judgement is not offered without one* (`REQ-AUZ-5`): a control offered with its judgement, then no
+  offer where the verifier is unknown, judges another class, or one of two needs (or the deposit's) goes unmet.
+
+**Added** (`conformance/` only; nothing in `components/` depends on it). The simulator: a verifier says no to a subject
+beginning `unfit-` and `sim-verifier-lax` (the name chooses it) says yes to any (`Verifier::saying_yes_without_checking`).
+The fleet (`sim/fleet.rs`): `Installed::released` (the accepted release) and `Fleet::judge` (a verifier answers in
+process, signed for real). The assembly: `Core::rests_on`, `Core::judgement_of` (the receipt of a verifier's stated
+judgement, read from the log: `T-020-23`'s gap 1), the verifier's logged grant and its release recorded, the `Asking`
+seam handing the rounds the judgement a verifier's result carries, and policy's `OrderParties` falling back on intake's
+record before the acceptance (`Records::order_parties`).
+
+**Defaults taken.**
+- A verifier is asked in process (`Fleet::judge`), not through the platform, and its answer reaches the rounds as the
+  nested judgement (they read a judgement, not the result around it).
+- A verifier's grant is logged naming a placeholder tuple (`verifier_tuple`) and the catalogue grant covers its category.
+- Core's person question is answered before the acceptance from intake's record of the order's parties (the log holds
+  them only from the acceptance, and routing happens before it); a read that used to find no parties before acceptance
+  now finds them.
+- One subject per relying provider is the snapshot's own rule (`all judgements about one relying provider's tuples are
+  about one subject`), so three parties are judged by three providers.
+- Only a verifier's accepted release is recorded in Core's releases; a reserve's would add its calls figure to every
+  snapshot.
+
+**Gaps, with owners.**
+1. *A verifier's grant can't be logged* (contract). The log attributes a statement under the advertising keys a grant
+   names, and `ChangeCatalogue` names a tuple exactly when it is about one, which a verifier's category grant is not
+   (`check.rs`, "a catalogue change names a tuple exactly when it is about a tuple"); without a grant in the log the
+   verifier's judgement is attributed to no one and `reliance-names-its-judges-statement` refuses a reliance on it. The
+   exact shape: a `grant` with `tuple: None` for a category grant (and `granted_advertising_keys` reading it). Owner:
+   core-internal's single writer, through the coordinator (a contract round of `F-020`/`F-021`), then `F-053`. Until it
+   lands the assembly logs a placeholder tuple.
+2. *The simulated verifier module refuses every question* (`components/prov/module-guests/sim/src/lib.rs`, `serve`): a
+   judgement names no transaction, so the guest builds its provider with no deployment (`provider(held, provider,
+   None)`) and refuses what the operator signed. Owner: `T-024-01`'s module guests; the fix reads `DEPLOYMENT_KEY` for a
+   transaction-less operation. Until then `Fleet::judge` answers in process.
+3. *No rule says which input rests on which judgement.* The scenarios declare it (`T-020-23`'s default); the
+   production rule and the verifier's need in the advertisement are `F-053`'s (`M5`, `DEC-16`).
+4. *`OrderParties` before the acceptance* is the assembly's reading of intake's record; `F-030`'s source must do the
+   same, since routing precedes acceptance.
+5. *A refused judgement doesn't stop a route*: `judged` asks for a judgement of the tuple's verifier, subject and
+   class, not that its answer be yes; a no is cited like a yes. Not mine to change (`components/`), and in v0 a
+   provider checks eligibility itself (`DEC-16`). Owner: `F-020`, if the answer is to count.
+
+**Rule-off table** (each switched off alone, under a hard timeout, restored; green first):
+
+| Switched off | Red |
+|---|---|
+| `Asking` handing the rounds the nested judgement | all four |
+| policy's `OrderParties` fallback on intake's record | all four |
+| the verifier's logged grant naming its keys | all four (the assembly refuses the grant) |
+| `sim-verifier-lax` saying yes to everyone | the false-judgement test |
+| the honest verifier's no to `unfit-` | the false-judgement test |
+| the scenario's `rests_on` declaration | the reliance test, the false-judgement test |
+| Core's `advance` writing the reliance (`T-020-23`) | the reliance test, the false-judgement test |
+| `rounds`' `judged` check of a cited judgement | the not-offered test |
+
+The three-party test stays red under the first two and is held by its own exact assertions (the questions put and each
+operation's cited judgements), which no single rule-off isolates: the exact-set assertions were seen to fail while
+the route kit was being built, when two needs on one provider were refused by the one-subject rule.

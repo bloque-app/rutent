@@ -183,7 +183,7 @@ impl Core {
         let mut charges = self.policy.clone();
         let mut persons = self.policy.clone();
         let mut asking = Asking {
-            platform: &mut self.fleet.platform,
+            fleet: &mut self.fleet,
             clock: &self.clock,
         };
         let mut parts = recalc::Parts {
@@ -521,7 +521,7 @@ impl Core {
         self.life.reversals.follow(order, &entries);
         let (core, operator) = (kit::core(), kit::operator());
         let mut asking = Asking {
-            platform: &mut self.fleet.platform,
+            fleet: &mut self.fleet,
             clock: &self.clock,
         };
         let bounds = record.bounds.clone();
