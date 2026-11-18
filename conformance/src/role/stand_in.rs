@@ -983,10 +983,12 @@ impl Typed for Reserve {
         result
     }
 
+    // The bank's credits are not in the fingerprint: they arrive by the harness's hook and not by an operation the
+    // platform journals, so a journal replay couldn't hold them (`T-024-15`).
     fn state(&self) -> String {
         format!(
-            "{:?} {:?} {:?} {:?}",
-            self.balances, self.movements, self.credits, self.bank_credits
+            "{:?} {:?} {:?}",
+            self.balances, self.movements, self.credits
         )
     }
 
