@@ -591,7 +591,13 @@ fn run_with(environment: &mut dyn Environment, seed: u64, leak: Option<Kind>) ->
             let machine = core.feed.machine_mut();
             let mut host = machine_surfaces(machine, "the host").unwrap_or_else(|e| panic!("{e}"));
             surfaces.append(&mut host);
-            for (n, kept) in core.disk.shelved().into_iter().enumerate() {
+            for (n, kept) in core
+                .disk
+                .shelved()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .into_iter()
+                .enumerate()
+            {
                 surfaces.push(Surface {
                     name: format!("Core's evidence shelf, entry {n}"),
                     bytes: kept,

@@ -183,8 +183,8 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, DEPLOYMENT_KEY, SETTLE, chain_host,
-        rail_host, script_key, CREDENTIAL, PRIVATE_NOTES_KEY,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY,
+        PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 
@@ -248,12 +248,7 @@ mod outside {
     }
 
     /// One outbound call to `host`, the destination the operation declares, carrying `body`; how it ended.
-    fn send(
-        operation: &str,
-        host: &str,
-        body: &Value,
-        credential: Option<String>,
-    ) -> &'static str {
+    fn send(operation: &str, host: &str, body: &Value, credential: Option<String>) -> &'static str {
         match egress::call(
             operation,
             Scheme::Https,

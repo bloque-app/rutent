@@ -93,17 +93,23 @@ impl Disk {
 
     /// Every statement the evidence store's shelf keeps, as the shelf writes it (JSON, one each), and the commitments
     /// erased, as one more entry.
-    pub fn shelved(&self) -> Vec<Vec<u8>> {
-        let Ok(contents) = self.shelf.borrow_mut().load() else {
-            return Vec::new();
-        };
+    ///
+    /// # Errors
+    ///
+    /// If the shelf can't be loaded: a shelf that couldn't be read is not an empty one.
+    pub fn shelved(&self) -> Result<Vec<Vec<u8>>, String> {
+        let contents = self
+            .shelf
+            .borrow_mut()
+            .load()
+            .map_err(|e| format!("the evidence shelf couldn't be loaded: {e:?}"))?;
         let mut all: Vec<Vec<u8>> = contents
             .kept
             .iter()
             .map(|kept| serde_json::to_vec(kept).expect("a kept statement is JSON"))
             .collect();
         all.push(format!("{:?}", contents.erased).into_bytes());
-        all
+        Ok(all)
     }
 
     /// The log's store on this disk.

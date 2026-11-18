@@ -61,6 +61,13 @@ fn vos_journal_after_a_full_run_holds_no_credential_or_module_state() {
             "seed {seed}: the scan didn't read the host's snapshot"
         );
         assert!(
+            report
+                .looked_at
+                .iter()
+                .any(|(n, _)| n.contains("evidence shelf")),
+            "seed {seed}: the scan didn't read the evidence shelf"
+        );
+        assert!(
             looked.nodes.files > 0 && looked.nodes.bytes > 0,
             "seed {seed}: the nodes left no file to read, so the scan saw nothing of their state"
         );

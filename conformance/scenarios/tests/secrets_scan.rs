@@ -209,22 +209,61 @@ fn run_records_where_module_state_sat() {
     );
 }
 
+/// Every object of `value` that holds both of `keys`.
+fn objects_with<'a>(
+    value: &'a serde_json::Value,
+    keys: [&str; 2],
+    found: &mut Vec<&'a serde_json::Value>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if keys.iter().all(|k| map.contains_key(*k)) {
+                found.push(value);
+            }
+            map.values().for_each(|v| objects_with(v, keys, found));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| objects_with(v, keys, found)),
+        _ => {}
+    }
+}
+
 // verifies: THR-79, REQ-AUD-6
 #[test]
 fn run_looks_the_planted_credential_up_and_reads_the_private_state_it_holds() {
     let scanned = run_planted(&mut Reference, 1);
-    let log = String::from_utf8(serde_json::to_vec(&scanned.run.log).expect("the log is JSON"))
-        .expect("text");
-    // The names, never the values: the platform's records of the lookup and of the read are in the log.
-    for (what, name) in [
-        ("secret lookups", "api-key"),
-        ("state reads", "private/notes"),
-    ] {
-        assert!(
-            log.contains(name),
-            "the log holds no record of the {what} ({name}), so the values never travelled"
+    let log = serde_json::to_value(&scanned.run.log).expect("the log is JSON");
+    // The credential: each lookup of `api-key` the log records was resolved, and there is at least one.
+    let mut lookups = Vec::new();
+    objects_with(&log, ["lookup", "outcome"], &mut lookups);
+    let lookups: Vec<_> = lookups
+        .into_iter()
+        .filter(|l| l.to_string().contains("api-key"))
+        .collect();
+    assert!(
+        !lookups.is_empty(),
+        "the log holds no record of a lookup of api-key"
+    );
+    for lookup in &lookups {
+        assert_eq!(
+            lookup["outcome"]["status"], "resolved",
+            "a lookup of api-key was refused, so the value never travelled: {lookup}"
         );
     }
+    // The private state: a read of its key, which the module found.
+    let mut reads = Vec::new();
+    objects_with(&log, ["key", "found"], &mut reads);
+    let reads: Vec<_> = reads
+        .into_iter()
+        .filter(|r| r["key"] == "private/notes")
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "the log holds no record of a read of private/notes"
+    );
+    assert!(
+        reads.iter().all(|r| r["found"] == true),
+        "a read of private/notes found nothing, so the value never travelled: {reads:?}"
+    );
 }
 
 // verifies: THR-79
