@@ -1593,3 +1593,17 @@ written after the code, so "red first" is the rows below):
 | the probes' output appended to the results file | the jail probes test |
 | the seeded step's `--test invariants` | the seeded-step test |
 | a probe's `GUA-5` tag | the jail probes test |
+
+### T-024-18, after review of `abf1c85f`
+
+- **The table read no result in CI** (`tools/records/src/evidence.rs`): `CARGO_TERM_COLOR: always` puts ANSI codes in cargo's
+  `Running` and `Doc-tests` words, so no line joined its target ("232 rows: 0 verified" in run 44265372431, and on PR #206; the bug
+  dates from `T-024-09`). `Results::parse` now strips escape sequences before it reads a line; the colour setting is left as it is.
+  Test: `coloured_cargo_output_joins_each_test_to_its_target` (`DEC-17`). Run over the reviewer's saved log of that run (its
+  runner timestamps cut): **232 rows: 210 verified, 5 inspected, 1 partly met, 1 unverified** (`AC-4`, whose only test is
+  ignored), 3 M4's, 12 deferred. Rule-off: with the strip off the test is red.
+- **`expect_final_refusal`** flags a reserve that answered the question in the session but gives no answer to a foreign one
+  (`SilentToForeignQuestions` in `role_arrivals.rs`, which is red without the flag).
+- `Through` (`module_role.rs`) says in a comment that the twin answers the arrival question, not the module (`F-014`, `F-031`).
+- The guest no longer caches a provider built on a failed deployment ask: it answers that one operation as the default deployment
+  does and asks again next time (`T-024-12`'s verifier tests, rerun, are green).

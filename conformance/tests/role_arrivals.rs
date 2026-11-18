@@ -270,6 +270,8 @@ enum Flaw {
     StatesNothingToForeignQuestions,
     /// It refuses them, but not finally: its refusal waits on the person.
     RefusesForeignQuestionsButNotFinally,
+    /// It answers the question in the session and gives no answer to a foreign one.
+    SilentToForeignQuestions,
 }
 
 /// A stand-in reserve with one flaw in how it answers the arrival question.
@@ -314,6 +316,9 @@ impl RoleProvider for Flawed {
         }
         let foreign = question.statement.session != self.context.session
             || question.signature.key != self.context.deployment.operator_key;
+        if foreign && matches!(self.flaw, Flaw::SilentToForeignQuestions) {
+            return None;
+        }
         let mut answered = self.reserve.arrival(question)?.into_statement();
         if foreign {
             answered.statement.outcome = match self.flaw {
@@ -390,6 +395,7 @@ fn arrival_question_under_another_key_or_in_another_session_must_be_refused_fina
             "refusing them, but not finally",
             Flaw::RefusesForeignQuestionsButNotFinally,
         ),
+        ("leaving them unanswered", Flaw::SilentToForeignQuestions),
     ] {
         // With its hooks, and without them: the refusal needs no credit, so a reserve no hook reaches is held to it too.
         let hooked = run_role_suite(

@@ -116,15 +116,22 @@ mod sandboxed {
             // A verifier, and anything with no transaction to ask under, answers as its role asks: in the deployment
             // the world names, which it reads under the name the platform gives an operation that names no
             // transaction (`T-024-18`), the deployment key read for it as for any other.
-            let deployment = (held.is_none())
-                .then(|| {
-                    ask(
-                        &untransacted(handled),
-                        BEGIN,
-                        json!({ "kind": kind_of(&operation.statement).0, "dry_run": false }),
-                    )
-                })
-                .flatten();
+            let asked = held.is_none().then(|| {
+                ask(
+                    &untransacted(handled),
+                    BEGIN,
+                    json!({ "kind": kind_of(&operation.statement).0, "dry_run": false }),
+                )
+            });
+            if let Some(None) = asked {
+                // The ask failed: answer as the suite's default deployment does for this one operation, and keep no
+                // provider built on a failure, so the next operation asks again.
+                let mut unkept = None;
+                return self::provider(&mut unkept, provider, None)
+                    .answer(operation, &Behaviour::default())
+                    .body;
+            }
+            let deployment = asked.flatten();
             return self::provider(
                 held,
                 provider,

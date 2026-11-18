@@ -76,7 +76,9 @@ impl RoleProvider for Through {
     }
 
     // What arrived is not an operation either, so the platform's binding doesn't carry the question: the twin answers
-    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it.
+    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it. So this run does
+    // not show the module answering it: the module's answer to the arrival question is `F-014`'s (the binding) and
+    // `F-031`'s (certification's first report) to carry.
     fn arrival(
         &mut self,
         question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,

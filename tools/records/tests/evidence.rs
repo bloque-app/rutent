@@ -1248,3 +1248,36 @@ fn seeded_ci_step_runs_the_invariants_beside_the_assembly() {
         "under the step's seeds"
     );
 }
+
+/// CI sets `CARGO_TERM_COLOR: always`, so cargo's `Running` and `Doc-tests` words come with ANSI escape sequences, and a
+/// line read as it stands joined no test to its target: the table read no row as verified (`T-024-18`, from the review
+/// of run 44265372431). Coloured output reads as plain output does.
+// verifies: DEC-17
+#[test]
+fn coloured_cargo_output_joins_each_test_to_its_target() {
+    let plain = doc(&[
+        "     Running tests/fixture.rs (/t/deps/fixture-0a1b)",
+        "test checks_req_mod_1 ... ok",
+        "   Doc-tests rutent_fixture",
+        "test src/lib.rs - doc (line 3) ... ok",
+    ]);
+    let coloured = doc(&[
+        "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m tests/fixture.rs (/t/deps/fixture-0a1b)",
+        "test checks_req_mod_1 ... ok",
+        "\u{1b}[1m\u{1b}[92m   Doc-tests\u{1b}[0m rutent_fixture",
+        "test src/lib.rs - doc (line 3) ... ok",
+    ]);
+    assert_eq!(Results::parse(&coloured), Results::parse(&plain));
+    assert!(passed(
+        &Results::parse(&coloured),
+        "tests/fixture.rs",
+        "checks_req_mod_1",
+        1
+    ));
+    // And the whole table: every identifier of the fixture is verified from coloured output.
+    let coloured_all =
+        all_pass().replace("     Running ", "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m ");
+    assert_ne!(coloured_all, all_pass());
+    let (report, _) = report(&scope_text("on", &[]), &sources(&[]), &coloured_all, true);
+    assert!(report.table.is_empty(), "{:?}", report.table);
+}

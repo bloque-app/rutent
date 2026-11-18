@@ -1775,7 +1775,15 @@ impl Run<'_> {
         of: &str,
     ) {
         let what = format!("the question of what arrived, asked of {of}");
-        if let Some(answer) = self.ask_arrival(provider, question, &what) {
+        // The reserve answered the question in the session; one it leaves unanswered here is no refusal at all.
+        let Some(answer) = self.ask_arrival(provider, question, &what) else {
+            self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: no answer, where a final refusal is due"),
+            );
+            return;
+        };
+        {
             match answer.statement.outcome {
                 ArrivalOutcome::Refused(BalanceRefused {
                     refusal: BalanceRefusal::Final(_),

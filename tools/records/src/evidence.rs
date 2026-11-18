@@ -354,6 +354,28 @@ fn stems(manifest: &str, within: &std::path::Path) -> Vec<String> {
     }
 }
 
+/// `text` without its ANSI escape sequences: `ESC [`, parameter and intermediate bytes, and the final byte; a bare `ESC`
+/// goes alone.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&next) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The lines `cargo test` printed, read with the `Running ...` header each sits under, so that a test is joined to
 /// its target and its full path and not to its bare name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -368,7 +390,10 @@ impl Results {
         let mut runs = Vec::new();
         let (mut target, mut binary) = (String::new(), String::new());
         for line in text.lines() {
-            let line = line.trim();
+            // `CARGO_TERM_COLOR: always` (CI) colours the `Running` and `Doc-tests` words, so the escape sequences
+            // are cut before a line is read (`T-024-18`).
+            let plain = strip_ansi(line);
+            let line = plain.trim();
             if let Some(rest) = line.strip_prefix("Running ") {
                 target = rest.split(" (").next().unwrap_or(rest).trim().to_string();
                 binary = rest
