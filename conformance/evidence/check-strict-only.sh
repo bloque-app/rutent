@@ -12,8 +12,19 @@ base="${1:-HEAD~1}"
 head="${2:-HEAD}"
 scope="conformance/evidence/v0-scope"
 
+# Run from the repository's root whatever the caller's directory, and refuse a ref that names no commit: a check that
+# can't read the diff must fail, never pass as "unchanged".
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || { echo "check-strict-only: no commit $base" >&2; exit 2; }
+if [ "$head" != "-" ]; then
+  git rev-parse --verify --quiet "$head^{commit}" >/dev/null || { echo "check-strict-only: no commit $head" >&2; exit 2; }
+fi
+[ -f "$scope" ] || { echo "check-strict-only: no $scope in $root" >&2; exit 2; }
+
 if [ "$head" = "-" ]; then range=("$base"); else range=("$base" "$head"); fi
-changed="$(git diff --unified=0 --no-color "${range[@]}" -- "$scope" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true)"
+diff="$(git diff --unified=0 --no-color "${range[@]}" -- "$scope")"
+changed="$(printf '%s\n' "$diff" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true)"
 expected="$(printf -- '-strict: off\n+strict: on')"
 
 if [ -z "$changed" ]; then

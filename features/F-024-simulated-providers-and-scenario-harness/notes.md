@@ -1715,5 +1715,5 @@ repository records with an owner are not listed here.
 
 ### The strict run
 
-Strict CI run id at this branch's tip: _to fill, run `<id>` (the `ci` job's "Evidence table, strict where the scope file says so"
+Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; its strict step ran with the switch on and reported `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. The milestone tip's own strict run, once this row is merged, is recorded below by the lead. The run's evidence-table step reports form items not checked, as `decisions/` sits outside the repository, so `form:cat5-timing-residual` is not validated against the form in CI.
 step must show it ran strictly)._
