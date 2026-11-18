@@ -955,7 +955,9 @@ impl Core {
     ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
         use rutent_core_orch::closing::Books;
         self.readings.refresh(&self.fleet.platform.world);
-        self.readings.recorded(node, transactions)
+        self.readings
+            .recorded(node, transactions)
+            .map(|r| r.segments)
     }
 
     /// The platform with the simulated providers, to read.

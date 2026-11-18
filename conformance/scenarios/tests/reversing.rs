@@ -86,7 +86,6 @@ fn segment_state(core: &Core, order: &Id, segment: &Id) -> SegmentState {
 
 // verifies: AC-4
 #[test]
-#[ignore = "blocked: the simulated world binds no private node to its publisher, so a failed exchange's reversal never completes (T-024-14); see F-024 notes, T-024-06"]
 fn true_undo_is_shown_back_at_the_origin_by_another_party() {
     let (mut core, order, withdrawal, exchange) = exchange_failed("AC-4");
     assert_eq!(
@@ -250,7 +249,6 @@ fn kept_about(core: &Core, order: &Id) -> rutent_contracts::module_interface::Di
 
 // verifies: AC-6
 #[test]
-#[ignore = "blocked: the simulated world binds no private node to its publisher, so a failed exchange's reversal never completes (T-024-14); see F-024 notes, T-024-06"]
 fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     let (mut core, order, exchange) = stuck_with_no_route("AC-6");
     // Stuck, with nothing rolled back: the withdrawal is settled and the value rests at the reserve's ledger.
