@@ -4532,3 +4532,54 @@ Branch `f-020/t-020-20-stuck-report-correction`, from `m3` at `ea6c290c`. Edits 
 - **Rule-off** (each alone, switched in code and removed): the permit bound to its confirmer, version and evidence: red on
   the retry test; the decline refused after a permit: red on the same test; `if !on.late` around the release: red on
   `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`. The seal is held by the doctest.
+
+## T-020-25
+
+Branch `f-020/t-020-25-empty-shortlist-handed-over`, from `0eaffd68` (`m3` plus `T-020-20`). Edits `components/core-orch/`
+(`segments/drain.rs`, `segments/mod.rs`, `stuck/mod.rs`: `seen_by_provider`) and `conformance/scenarios/` (`tests/recorded_ends.rs`,
+new; `tests/segments_support/rerouting.rs`, one additive field; `tests/segments.rs`, one pattern). No contract is changed:
+`HandedOver::OperationUnanswered` and the empty shortlist's fixtures were `T-020-21`'s.
+
+- **Design.**
+  1. *Empty shortlist: already built.* `rounds::round` has appended the shortlist's `decision_record` for every
+     shortlist round since `T-020-06`'s third review (`Recorded::receipt` stopped being optional; `shortlist_that_keeps_nothing_is_recorded_and_asks_no_one`
+     pins it in `core-orch`). The row's wording ("returned with `receipt: None`") described the code before that, so
+     part (1) needed no writer. What was missing was a test on the running platform: `empty_shortlist_is_appended_and_the_orders_chain_grows`
+     and `no_route_input_citing_an_empty_shortlist_is_admitted` recalculate the kit's order with every provider excluded,
+     so the shortlist keeps nothing, and check the order's chain grows by that record (chained to the last, and the next
+     round chains from it), that a `no_route` cites it, and that the real log's rows admit the history
+     (`input-cites-its-decision-record`).
+  2. *The hand-over item.* `drain::of_events` now emits, after the other items, one `HandedOver::OperationUnanswered
+     {provider, transaction, ended_by}` per `Events::unknown`; `ended_by` is the refusal's label, an exhaustive match
+     with a refusal prov adds later refused whole (the drain is kept, loud), as the other maps are. An events drain holding
+     only such items is no longer empty. The stuck mover's drains use the same function, so its operations that end
+     with no answer reach the log as well.
+  3. *The citation.* `Segments` keeps the receipt of each such record by transaction, collected as drains are appended.
+     `UnknownBy::Platform` became `{refusal, record: Option<Receipt>}`; `account` writes the `segment_outcome_unknown`
+     input and the `unanswered` result only once the record is on the log, and the outcome carries its receipt.
+     `Segments::platform_record(order, segment)` reads it, and `ProviderView::platform_record` (`stuck::seen_by_provider`)
+     shows it to the segment's own provider, on the read policy already allows.
+- **Defaults (reversible, failing closed).**
+  - A platform record the log can't take yet holds the segment's unknown outcome back (`SegmentsError::Append(Unavailable)`,
+    retried on the next run) rather than recording the outcome without its citation. A refusal ends the same way as any
+    drain's.
+  - `record` is `None` only where the platform reported no such record of the operation (an answer Core couldn't keep,
+    `ports::carry_out`'s serialisation failure): there is nothing to cite, and the outcome is recorded as before.
+  - The view gives the receipt, not the entry's content, and only to the provider that reads its own segment.
+- **Gaps, with owners.**
+  1. No row of core-internal ties the `segment_outcome_unknown` input to the record: the input has no field to cite
+     with (`Observed::SegmentOutcomeUnknown {}`), so "cites" is Core's own outcome and the log's order (the record before
+     the input), not a relation the log refuses on. Owner: the next contract round, `T-020-30`, if the owner wants the log to hold it.
+  2. The fail-closed hold (a record the log can't take yet) has no test of its own: the kit's fault queue targets an
+     append by kind, and none targets a `hand_over`. Owner: a follow-up of `F-020`, with the kit's `On` gaining the kind.
+  3. `contracts/core-internal/README.md`'s hand-off for `T-020-25` still says "hands it over in place of carrying it only
+     into the segment's outcome" (future tense); this row doesn't edit `contracts/`. Owner: the next contract round.
+- **Histories the log refused.** None: every history is replayed through `Core::admitted`.
+- **Rule-off table**, each once, file restored, run under a timeout, none hung:
+
+  | Rule switched off | Red |
+  |---|---|
+  | an empty shortlist is not appended (the receipt of the one before is reused) | `empty shortlist is appended and the order's chain grows`; `no route input citing an empty shortlist is admitted` |
+  | `of_events` emits no `OperationUnanswered` item | `operation that ended with no answer reaches the log as a handed over item`; `outcome unknown cites the platform's own record` |
+  | the outcome does not carry the record's receipt (and the segment is then held back, failing closed) | the same two |
+  | `seen_by_provider` shows no platform record | `outcome unknown cites the platform's own record` |
