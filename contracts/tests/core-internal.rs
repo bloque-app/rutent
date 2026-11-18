@@ -3791,6 +3791,8 @@ fn late_status_asked_without_its_transaction_is_invalid() {
         // A decision copying its own permit's ids, at another receipt and for another segment's ask (the re-review
         // of `2b0f32b1`): another entry naming the transaction, not its own decision.
         "a-decision-copying-its-own-ids-for-another-action",
+        // Nor its own decision copied whole to another receipt.
+        "a-copy-of-its-own-decision-at-another-receipt",
     ] {
         assert_case_refused(&format!("{row}--{name}"));
     }
