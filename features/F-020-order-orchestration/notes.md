@@ -4583,3 +4583,77 @@ new; `tests/segments_support/rerouting.rs`, one additive field; `tests/segments.
   | `of_events` emits no `OperationUnanswered` item | `operation that ended with no answer reaches the log as a handed over item`; `outcome unknown cites the platform's own record` |
   | the outcome does not carry the record's receipt (and the segment is then held back, failing closed) | the same two |
   | `seen_by_provider` shows no platform record | `outcome unknown cites the platform's own record` |
+
+## T-020-27
+
+Branch `f-020/t-020-27-late-status-reversal-party`, from `m3` at `f7c38c98`. Edits `components/core-orch/` (`reversal/`,
+and in `segments/` one port, `Modules::status`, and one read, `Segments::statement_of`) and `tests/reversal.rs`. No
+contract, manifest or `DEC-20` path.
+
+- **Design.**
+  1. *A late status asked* (`Reversals::ask_status`, `Modules::status`, `StatusAsked`). Once a segment's answer was
+     taken (`NotAnswered` otherwise) and it hasn't settled or had its reversal completed (`StatusNotNeeded`), Core asks
+     policy for `Action::AskStatus` (caller Core, as `ask` does), draws a fresh transaction from the segments' register,
+     appends the `ask_status` effect before anything is sent, acts on it once (`act_on`), and asks the platform, which
+     answers the provider's own result about the segment's transaction. The answer goes through `Reversals::later`, so it
+     is kept as its maker's statement about the order, segment and the segment's own transaction (which is how the log
+     verifies it), once by its bytes, and the effect's one result is recorded: done where an answer was kept, failed
+     where the platform refused before the module passed anything out, unanswered otherwise. Nothing else is written: no
+     input, no evidence, no hold released, the order as Core follows it unchanged (`INV-4`). A call that stopped carries
+     on from where it stopped (`INV-8`).
+  2. *A reversal at a later inner node* (`later_confirmer`, `Target.confirmer`). A segment that doesn't start where the
+     withdrawal took the value (node and asset, as before) is confirmed by the catalogue's holding account of its node,
+     where that account is the provider of the segment that delivered the value there (what the log's
+     `reversal-rests-on-its-evidence` reads as the node's `reserve`) and isn't the failed provider. Core asks that party
+     the same `reversal_confirmation` question; the judge holds the answer to its maker, and the evidence says its word
+     (`Word::Reserves`, grade 3). Inside a private node the failed provider's own publisher holds, the publisher's word
+     through `Reversals::ask` counts as before, labelled: its guard on the withdrawal's node is lifted, so `ask` is now
+     taken at a later node too (its operation names the segment's from-node). With no such party `confirm` is refused
+     `NoReserveAtNode` before anything is asked or recorded: the reversal stays owed (the assembly owes it from the
+     failure) and held, for the stuck orders.
+- **Defaults (reversible, each failing closed).**
+  - The confirming party at a later node is the holding account **only where it is also the provider that delivered
+    there**, because the log admits no other (`reversal-rests-on-its-evidence`: `whose` is the reserve at the from-node
+    or a labelled publisher). At a public node, whose holding account is an operator module, nothing is admitted
+    unless that module delivered there.
+  - `Modules::status` has a default that refuses (`NotHandled`), so no platform that implements nothing is asked and
+    every existing implementer compiles; the production `Platform<W>` leaves the default.
+  - The ask is for a segment whose answer was taken and that hasn't settled or been reversed; it is not limited to a
+    failed one, so an unknown outcome (silent provider) is covered.
+  - The late status is asked under a fresh transaction of Core's own, passed to the platform; the answer stays about
+    the segment's transaction, because the log verifies a result only under the transaction it names. The fresh
+    transaction appears in the platform call and `StatusAsked`, not in a log entry (`What::Effect` has no field for it).
+- **Gaps, with owners.**
+  1. The production platform has no status query: `Platform<W>` doesn't reach a module's status (`RoleProvider::status` is
+     the conformance kit's), so `Modules::status` answers nothing there. Owner: the lead, a platform row (`F-014`'s).
+  2. No simulated route in the assembled world crosses two inner nodes (`sim-join-*` has one ledger), so these four tests
+     run in `core-orch`'s fakes, as `T-020-12`'s do, over the router-api fixture's second candidate; "on the running
+     platform with simulated providers" waits on a route of that shape in the sim. Owner: `T-024-14`'s sim work.
+  3. At a public node, or where the node's holding account delivered nothing there, no party confirms and the reversal
+     waits for the stuck orders. Owner: a contract round (`T-020-30`) if the owner wants the holding account itself
+     (not the delivering provider) to confirm; today the log's `reserve` reading binds it. ADR-0008's open point.
+  4. A route can't run through an inner node with no holding account (`NoHoldingAccount`), so "no holding account"
+     isn't a state this path meets; the test covers the other two (a module of no one's, the origin reserve).
+  5. `ask_status` isn't called by anything yet: the owner of the stuck mover's watch (`T-024-06`'s scenario) calls it.
+- **Histories the log refused.** None: the tests replay every entry through `attribute` and `admit_entry`
+  (`World::admitted_from`), and the effect's result and the kept statement are admitted.
+- **Red first.** The two status tests were written against a stub (`ask_status` answering `Unknown`) and failed on that
+  assertion. The two later-node tests failed first on the route fixture they build (the record's validation), then, with
+  the fixture right, on the first run of the implementation their guard was already in place; the rule-off below shows
+  each rule's test goes red.
+- **Rule-off table** (each once, file restored, `cargo test -p rutent-core-orch --test reversal` under a 120 s alarm; none
+  hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the confirmer is the provider that delivered there | `reversal at a later inner node with no confirming party stays owed and held` |
+  | the confirmer isn't the failed provider | none: no fixture reaches it (a delivering provider is never the failed one); kept as defence |
+  | an answer counts only from the party asked | `failed segment at a later inner node is confirmed by that node's holding account`, `origin_reserves_statement_completes_a_reversal_as_its_word` |
+  | the question goes to the confirmer, not the origin reserve | `failed segment at a later inner node is confirmed by that node's holding account` |
+  | `confirm` refuses with no confirmer up front | none: `question` refuses the same case; kept as the first guard |
+  | a late status only after the answer was taken | `late status of a segment is asked under a fresh transaction and kept as the provider's statement` |
+  | not asked of a settled segment | the same |
+  | the fresh transaction | the same |
+  | the answer kept as the provider's statement | the same, and `late status moves nothing` |
+  | the result says how it came out | `late status moves nothing` |
+  | a late status releases no hold | `late status moves nothing` |

@@ -1085,6 +1085,18 @@ impl Segments {
             .map(|f| (&f.transaction, &f.statement.statement))
     }
 
+    /// The statement Core signed for `segment` of `order`, once it was handed over: what a provider asked for its late
+    /// status is asked about (`T-020-27`).
+    pub(crate) fn statement_of(
+        &self,
+        order: &Id,
+        segment: &Id,
+    ) -> Option<&Statement<ProviderOperation>> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|f| &f.statement)
+    }
+
     /// Whether the answer of `segment` of `order` was taken: its operation carried out and something given back, the
     /// platform's refusal included. Only after it can something come late (`T-020-12`).
     pub fn answered(&self, order: &Id, segment: &Id) -> bool {
