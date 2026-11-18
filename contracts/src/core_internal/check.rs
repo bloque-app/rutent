@@ -33,6 +33,7 @@ impl Action {
             change,
             version,
             tuple,
+            class,
             advertising_keys,
             statement_key,
             ..
@@ -43,7 +44,18 @@ impl Action {
                     "a catalogue change names a version exactly when it is about a module release",
                 ));
             }
-            if change.is_about_a_tuple() != tuple.is_some() {
+            // A verifier's grant, and its revocation, name its class in place of a tuple (`T-020-30`).
+            if class.is_some()
+                && (!matches!(
+                    change,
+                    CatalogueChange::Grant | CatalogueChange::RevokeGrant
+                ) || tuple.is_some())
+            {
+                return Err(Violation(
+                    "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple",
+                ));
+            }
+            if change.is_about_a_tuple() != (tuple.is_some() || class.is_some()) {
                 return Err(Violation(
                     "a catalogue change names a tuple exactly when it is about a tuple",
                 ));
@@ -202,11 +214,19 @@ impl PermissionChange {
 }
 
 impl ReportPair {
-    /// Checks that the pair's two reports are two parties' (`REQ-ORD-9`).
+    /// Checks that the pair's two reports are two parties' (`REQ-ORD-9`), and that a gross figure holds no more
+    /// charge than it states (`REQ-CAT-11`), so the comparison can take the charge off it.
     pub fn check(&self) -> Result<(), Violation> {
         if self.sent.party == self.received.party {
             return Err(Violation(
                 "a segment's two reports are by two different parties",
+            ));
+        }
+        if let ReportedAs::Gross { charge } = &self.terms.reporting
+            && self.sent.amount.checked_sub(charge).is_none()
+        {
+            return Err(Violation(
+                "a gross report's charge is no more than the amount sent",
             ));
         }
         Ok(())
@@ -499,11 +519,31 @@ impl What {
             } => Err(Violation(
                 "an arrival naming an order names the notice of the deposit it is of",
             )),
-            What::Replay { nodes, found, .. } => {
+            What::Replay {
+                nodes,
+                found,
+                rests_on,
+                ..
+            } => {
                 listed(
                     nodes,
                     "a replay names the nodes it replayed, at least one, each once",
                 )?;
+                listed(
+                    rests_on,
+                    "a replay rests on its exit's result and the records it read, at least one, each once",
+                )?;
+                // Past the exit's result, one record at most for each node it replayed that recorded something: a
+                // receipt beyond names no record for a node it replayed (`REQ-AUD-9`).
+                let silent = match found {
+                    ReplayFound::NothingRecorded { nodes: silent } => silent.len(),
+                    _ => 0,
+                };
+                if rests_on.len() > 1 + nodes.len().saturating_sub(silent) {
+                    return Err(Violation(
+                        "a replay names at most one record for each node it replayed that recorded something",
+                    ));
+                }
                 match found {
                     ReplayFound::Mismatch { mismatches } => {
                         listed(

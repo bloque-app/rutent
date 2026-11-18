@@ -2180,6 +2180,11 @@
                   "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
                 }
               }
+            },
+            "terms": {
+              "reporting": {
+                "kind": "net"
+              }
             }
           }
         },
@@ -2382,6 +2387,7 @@
           "call": "measure",
           "record": {
             "provider": "fx-desk",
+            "role": "provider",
             "order": "ord-17",
             "segment": "seg-3",
             "measure": {
@@ -3638,6 +3644,95 @@
         },
         "outcome": {
           "status": "failed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 330,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "bank-co",
+            "acts": "bank-co",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-10T09:00:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-10T09:00:05Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-d3"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 310,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "part_evidence",
+          "evidence": "ev-0071",
+          "order": "ord-1",
+          "part": "p3",
+          "grade": 2,
+          "whose": "bank-co",
+          "rests_on": [
+            {
+              "log": "log-main",
+              "index": 330,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+              }
+            }
+          ]
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
         }
       }
     }

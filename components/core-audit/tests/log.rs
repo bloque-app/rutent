@@ -580,7 +580,7 @@ fn replay_on<S: Store>(run: &Run<S>) -> Value {
     let mut entry = valid("verified-entry-of-a-replay-consistent-with-its-exit");
     entry["what"]["order"] = serde_json::to_value(&about.order).unwrap();
     entry["what"]["segment"] = serde_json::to_value(&about.segment).unwrap();
-    entry["what"]["rests_on"] = serde_json::to_value(&receipt).unwrap();
+    entry["what"]["rests_on"] = serde_json::to_value([&receipt]).unwrap();
     entry
 }
 
@@ -3037,4 +3037,230 @@ fn only_the_deployment_operator_accepts_a_fault() {
     run.append(command(operator))
         .expect("the deployment operator's acceptance of the fault");
     assert_eq!(run.log.entries().len(), before + 1);
+}
+
+/// A verifier's grant names a class in a tuple's place (`T-020-30`, `T-024-12`'s gap 1): the real log takes the
+/// verifier's keys from it, as from a tuple's grant, and attributes its judgements of that class and nothing else it
+/// signs; a judgement it claims as a provider is refused.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone() {
+    let name = "kyc-desk";
+    let mut run = Run::new(MemoryStore::new());
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        GRANTED_AT,
+    );
+    run.advertise(name, &advertised(name, &advertising_key(name), name))
+        .unwrap();
+    let made = "2026-11-06T15:04:05Z";
+    let stating = |run: &mut Run<MemoryStore>, shape: &str, role: &str, body: Value, n: u8| {
+        set_now("2026-11-06T15:04:06Z");
+        let entry = json!({
+            "kind": "stated",
+            "attribution": {"signature": "verified", "who": actor(name, name, role, "component")},
+            "what": {"statement": shape},
+            "when": {"at": made, "source": "party_stated"},
+            "received_at": "2026-11-06T15:04:06Z",
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": ""},
+            "commitment": {"algorithm": "sha-256", "value": format!("{n:02x}").repeat(32)},
+        });
+        let claim = run.claim(&entry, &statements_key(name), body);
+        run.append(claim)
+    };
+    let judgement = |class: &str| json!({"subject": "subj-1", "class": class, "answer": "yes", "valid_until": "2026-12-01T00:00:00Z"});
+    let shape = "urn:rutent:provider-role:judgement";
+    let verified = |run: &Run<MemoryStore>, receipt: &Receipt| matches!(run.at(receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }));
+    let of_its_class = stating(&mut run, shape, "verifier", judgement("kyc-basic"), 0xd1).unwrap();
+    assert!(verified(&run, &of_its_class), "its class, as a verifier");
+    let of_another = stating(&mut run, shape, "verifier", judgement("aml-full"), 0xd2).unwrap();
+    assert!(!verified(&run, &of_another), "another class");
+    let a_result = stating(
+        &mut run,
+        "urn:rutent:provider-role:result",
+        "provider",
+        json!({"kind": "judgement"}),
+        0xd3,
+    )
+    .unwrap();
+    assert!(!verified(&run, &a_result), "no statement but a judgement");
+    assert!(matches!(
+        stating(&mut run, shape, "provider", judgement("kyc-basic"), 0xd4),
+        Err(AppendFailure::Refused(_))
+    ));
+}
+
+/// The class a verifier's grant is for is read as it stood at the statement's own `made_at`, the time the key register
+/// trusts the key at, never as it stands at the append (the review of `a2cde05d`): a revocation doesn't widen what
+/// is backdated into the grant's window, a maker that only ever held classes attributes nothing once none is in
+/// force, and a tuple granted later widens only what is made after it.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
+    let name = "kyc-desk";
+    let stating = |run: &mut Run<MemoryStore>,
+                   shape: &str,
+                   role: &str,
+                   body: Value,
+                   n: u8,
+                   made: &str,
+                   received: &str| {
+        set_now(received);
+        let entry = json!({
+            "kind": "stated",
+            "attribution": {"signature": "verified", "who": actor(name, name, role, "component")},
+            "what": {"statement": shape},
+            "when": {"at": made, "source": "party_stated"},
+            "received_at": received,
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": ""},
+            "commitment": {"algorithm": "sha-256", "value": format!("{n:02x}").repeat(32)},
+        });
+        let claim = run.claim(&entry, &statements_key(name), body);
+        run.append(claim)
+    };
+    let judgement = |class: &str| json!({"subject": "subj-1", "class": class, "answer": "yes", "valid_until": "2026-12-01T00:00:00Z"});
+    let (shape, result) = (
+        "urn:rutent:provider-role:judgement",
+        "urn:rutent:provider-role:result",
+    );
+    let verified = |run: &Run<MemoryStore>, receipt: &Receipt| matches!(run.at(receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }));
+    let granted = |run: &mut Run<MemoryStore>| {
+        run.carry_out(
+            json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+                   "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+            GRANTED_AT,
+        );
+        run.advertise(name, &advertised(name, &advertising_key(name), name))
+            .unwrap();
+    };
+
+    // Revoked on the 7th; statements backdated to the 6th, inside the grant's window, appended after it.
+    let mut run = Run::new(MemoryStore::new());
+    granted(&mut run);
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "class": "kyc-basic"}),
+        "2026-11-07T00:00:00Z",
+    );
+    let (inside, later) = ("2026-11-06T15:04:05Z", "2026-11-07T00:00:05Z");
+    let own = stating(
+        &mut run,
+        shape,
+        "verifier",
+        judgement("kyc-basic"),
+        0xe1,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(verified(&run, &own), "its class, made inside the window");
+    let other = stating(
+        &mut run,
+        shape,
+        "verifier",
+        judgement("aml-full"),
+        0xe2,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(!verified(&run, &other), "another class, backdated");
+    let a_result = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe3,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(!verified(&run, &a_result), "a result, backdated");
+    assert!(
+        matches!(
+            stating(
+                &mut run,
+                shape,
+                "provider",
+                judgement("kyc-basic"),
+                0xe4,
+                inside,
+                later
+            ),
+            Err(AppendFailure::Refused(_))
+        ),
+        "claimed as a provider, backdated"
+    );
+
+    // Class first, then a tuple on the 8th: before it, the class's limit; after it, a provider's statement too.
+    let mut run = Run::new(MemoryStore::new());
+    granted(&mut run);
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "tuple": format!("tuple-{name}"),
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        "2026-11-08T00:00:00Z",
+    );
+    let before = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe5,
+        inside,
+        "2026-11-08T00:00:05Z",
+    )
+    .unwrap();
+    assert!(
+        !verified(&run, &before),
+        "a result made before the tuple's grant"
+    );
+    let after = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe6,
+        "2026-11-09T00:00:00Z",
+        "2026-11-09T00:00:01Z",
+    )
+    .unwrap();
+    assert!(verified(&run, &after), "a result made after it");
+}
+
+/// A class's grants and revocations are dated in the order the log records them, as a tuple's are (the re-review
+/// of `c9941d98`): a revocation of a class dated back before its grant is refused, so no class grant's window is
+/// reshaped after the fact.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_class_grants_changes_are_dated_in_the_order_the_log_records_them() {
+    let name = "kyc-desk";
+    let mut run = Run::new(MemoryStore::new());
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        GRANTED_AT,
+    );
+    // Dated the 4th, behind the grant of the 5th, on a clock that agrees with it.
+    set_now("2026-11-04T00:00:00Z");
+    assert_eq!(
+        run.try_change(
+            json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "class": "kyc-basic"}),
+            "2026-11-04T00:00:00Z",
+        ),
+        Err(AppendFailure::Refused(Violation(
+            CHANGE_BEFORE_ITS_TUPLES_LAST
+        )))
+    );
+    // Another class of the same verifier has its own order.
+    set_now("2026-11-04T00:00:00Z");
+    assert!(
+        run.try_change(
+            json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "aml-full",
+                   "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+            "2026-11-04T00:00:00Z",
+        )
+        .is_ok()
+    );
 }

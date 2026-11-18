@@ -20,11 +20,16 @@
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`): for a module the operator publishes, a
 //!    statement key that a release of it the log accepted names ([`release_statement_keys`]); for any other maker,
 //!    one [`StatementKeys::signs_for`] answers, whose first trust in a provider is the advertising keys of its latest
-//!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold.
+//!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold;
+//! 9. where its maker has held a verifier's class's grant, in place of a tuple, and no tuple's grant of it was in
+//!    force at the statement's own `made_at`, it is a judgement of a class whose grant was in force then: a category
+//!    grant attributes its maker's statements for that category alone, never for a tuple, and a revocation widens
+//!    nothing backdated into the grant's window (`REQ-CAT-13`, `REQ-CPL-12`, `T-020-30`).
 //!
 //! So a verified entry's `acts` and `party` are both bound to its key. Its `role` is held to one its maker holds:
-//! the maker the operator signs as states as the `operator`, and every other maker, a provider, a verifier or a module
-//! the operator publishes, as a `provider` or a `verifier`. A statement whose bytes bear the claim out in any other
+//! the maker the operator signs as states as the `operator`, a maker held to a verifier's classes at the statement's
+//! own `made_at` (step 9) as a `verifier`, and every other maker, a provider, a verifier or a module the operator publishes, as a `provider` or a
+//! `verifier`. A statement whose bytes bear the claim out in any other
 //! role is refused, not recorded, since the writer mislabelled a genuine statement (`REQ-AUD-2`, `T-022-02`'s probe).
 //! The log can't tell a provider from a verifier, which the catalogue knows, so no relation reads a stated entry's
 //! role.
@@ -39,8 +44,8 @@ use super::Violation;
 use super::calls::{AppendFailure, KeptStatements, Signatures, StatementKeys};
 use super::relations::History;
 use super::types::*;
-use crate::provider_role::{Deployment, PublicKey, SignatureScheme};
-use crate::router_api::Id;
+use crate::provider_role::{Deployment, JUDGEMENT_SHAPE, PublicKey, SignatureScheme};
+use crate::router_api::{Id, Timestamp};
 use serde::Deserialize;
 
 /// The catalogue changes `history` carried out, in log order: each effect's change for which this log holds a
@@ -82,31 +87,121 @@ fn ran_on(history: &History, module: &Id, transaction: &Id, version: &Id) -> boo
     })
 }
 
-/// The advertising keys of `provider`'s latest grant in `history` that no later `revoke_grant` of its tuple took
-/// back: the log's first trust in the provider's advertisements. A new grant replaces the keys, which is how a
-/// provider recovers a lost one; with no grant in force there are none.
-pub fn granted_advertising_keys<'a>(history: &'a History, provider: &Id) -> &'a [PublicKey] {
-    let mut in_force: Vec<(&Id, &[PublicKey])> = Vec::new();
+/// What a grant is of: a tuple, or a verifier's class in its place (`T-020-30`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Granted<'a> {
+    Tuple(&'a Id),
+    Class(&'a Id),
+}
+
+/// The grants of `provider` in force in `history`, in the order made, each with its advertising keys: a grant's
+/// tuple or class until a later `revoke_grant` of the same takes it back, a new grant of it replacing the old.
+fn grants_in_force<'a>(history: &'a History, provider: &Id) -> Vec<(Granted<'a>, &'a [PublicKey])> {
+    let mut in_force: Vec<(Granted<'a>, &'a [PublicKey])> = Vec::new();
     for action in catalogue_changes(history) {
         let Action::ChangeCatalogue {
             change,
             provider: p,
-            tuple: Some(tuple),
+            tuple,
+            class,
             advertising_keys,
             ..
         } = action
         else {
             continue;
         };
+        let granted = match (tuple, class) {
+            (Some(tuple), None) => Granted::Tuple(tuple),
+            (None, Some(class)) => Granted::Class(class),
+            _ => continue,
+        };
         if p != provider {
             continue;
         }
-        in_force.retain(|(t, _)| *t != tuple);
+        in_force.retain(|(g, _)| *g != granted);
         if *change == CatalogueChange::Grant {
-            in_force.push((tuple, advertising_keys));
+            in_force.push((granted, advertising_keys));
         }
     }
-    in_force.last().map_or(&[], |(_, keys)| keys)
+    in_force
+}
+
+/// The advertising keys of `provider`'s latest grant in `history` that no later `revoke_grant` of its tuple, or of
+/// its class for a verifier, took back: the log's first trust in the provider's advertisements. A new grant replaces
+/// the keys, which is how a provider recovers a lost one; with no grant in force there are none.
+pub fn granted_advertising_keys<'a>(history: &'a History, provider: &Id) -> &'a [PublicKey] {
+    grants_in_force(history, provider)
+        .last()
+        .map_or(&[], |(_, keys)| keys)
+}
+
+/// The catalogue changes `history` carried out, as [`catalogue_changes`] gives them, each with its effect's time: the
+/// time a grant or a revocation takes force from, as `core-audit`'s key register reads it.
+fn dated_catalogue_changes(history: &History) -> impl Iterator<Item = (&Action, i128)> {
+    history.iter().filter_map(|(receipt, e)| match e {
+        Entry::Verified(VerifiedEntry {
+            what: What::Effect { action, .. },
+            when,
+            ..
+        }) if matches!(action, Action::ChangeCatalogue { .. }) && done(history, receipt) => {
+            Some((action, when.at.unix_nanos()))
+        }
+        _ => None,
+    })
+}
+
+/// The classes `maker` is trusted for alone at `at`, a statement's own `made_at`: the grants as they stood then, each
+/// tuple's or class's last change made at or before it (the latest by its effect's time, the later in the log on a
+/// tie), as the key register trusts a key at that time, never as they stand when the statement is appended (the
+/// review of `a2cde05d`). `None` where a tuple's grant was in force then, or where the maker never held a class's, and
+/// its statements are attributed as before; otherwise the classes in force then, none where none was, so a maker
+/// that has held classes alone attributes nothing beyond them, and nothing once none is in force.
+fn classes_alone<'a>(history: &'a History, maker: &Id, at: &Timestamp) -> Option<Vec<&'a Id>> {
+    let at = at.unix_nanos();
+    let mut last: Vec<(Granted<'a>, i128, bool)> = Vec::new();
+    let mut held_a_class = false;
+    for (action, when) in dated_catalogue_changes(history) {
+        let Action::ChangeCatalogue {
+            change,
+            provider,
+            tuple,
+            class,
+            ..
+        } = action
+        else {
+            continue;
+        };
+        if provider != maker {
+            continue;
+        }
+        let granted = match (tuple, class) {
+            (Some(tuple), None) => Granted::Tuple(tuple),
+            (None, Some(class)) => Granted::Class(class),
+            _ => continue,
+        };
+        let grant = *change == CatalogueChange::Grant;
+        held_a_class |= grant && matches!(granted, Granted::Class(_));
+        if when > at {
+            continue;
+        }
+        match last.iter_mut().find(|(g, ..)| *g == granted) {
+            Some(change) if change.1 > when => {}
+            Some(change) => *change = (granted, when, grant),
+            None => last.push((granted, when, grant)),
+        }
+    }
+    let in_force = last.iter().filter(|(.., grant)| *grant).map(|(g, ..)| *g);
+    if in_force.clone().any(|g| matches!(g, Granted::Tuple(_))) || !held_a_class {
+        return None;
+    }
+    Some(
+        in_force
+            .filter_map(|g| match g {
+                Granted::Class(c) => Some(c),
+                Granted::Tuple(_) => None,
+            })
+            .collect(),
+    )
 }
 
 /// Where a release stands, by the changes the log carried out.
@@ -191,13 +286,33 @@ fn signed_by_its_maker(
 pub const IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD: &str =
     "a verified statement is recorded only in a role its maker holds";
 
-/// Whether `maker` holds `role`: the operator's own maker the operator's role, any other maker a provider's or a
-/// verifier's.
-fn holds_role(maker: &Id, role: Role, operator: &Id) -> bool {
+/// Whether `maker` holds `role`: the operator's own maker the operator's role, a maker granted a verifier's classes
+/// alone the verifier's (`T-020-30`), and any other maker a provider's or a verifier's.
+fn holds_role(maker: &Id, role: Role, operator: &Id, classes_alone: bool) -> bool {
     if maker == operator {
         role == Role::Operator
+    } else if classes_alone {
+        role == Role::Verifier
     } else {
         matches!(role, Role::Provider | Role::Verifier)
+    }
+}
+
+/// Whether a statement of `maker`'s, made at `at`, is one its grants then attribute: for a maker granted a verifier's
+/// classes alone ([`classes_alone`]), a judgement of one of those classes and nothing else, so a category grant never
+/// attributes a statement about a tuple's segments, nor, revoked, one backdated into its window beyond its class
+/// (`REQ-CAT-13`, `REQ-CPL-12`, `T-020-30`); for any other maker, anything, as before.
+fn within_its_classes(maker: &Id, envelope: &Envelope, history: &History, at: &Timestamp) -> bool {
+    match classes_alone(history, maker, at) {
+        None => true,
+        Some(classes) => {
+            envelope.shape == JUDGEMENT_SHAPE
+                && envelope
+                    .statement
+                    .get("class")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| classes.iter().any(|g| g.as_str() == c))
+        }
     }
 }
 
@@ -296,9 +411,18 @@ pub fn attribute(
                 && signatures.verifies(&bytes)
                 && signed_by_its_maker(claim, &claimed_by.acts, history, keys)?
                 && keys.publisher(&claimed_by.acts)?.as_ref() == Some(&claimed_by.party)
+                && within_its_classes(&claimed_by.acts, &envelope, history, &claim.when.at)
         }
     };
-    if verified && !holds_role(&claimed_by.acts, claimed_by.role, &keys.operator()?) {
+    let alone = classes_alone(history, &claimed_by.acts, &claim.when.at);
+    if verified
+        && !holds_role(
+            &claimed_by.acts,
+            claimed_by.role,
+            &keys.operator()?,
+            alone.is_some(),
+        )
+    {
         return Err(AppendFailure::Refused(Violation(
             IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD,
         )));

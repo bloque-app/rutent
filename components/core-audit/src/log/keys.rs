@@ -217,6 +217,16 @@ fn done(history: &History, receipt: &Receipt) -> bool {
     })
 }
 
+/// What a grant or its revocation is of, as the register keys it: its tuple, or a verifier's class in its place
+/// (`T-020-30`), kept apart from every tuple's id by a space no identifier holds.
+fn granted(tuple: &Option<Id>, class: &Option<Id>) -> Option<String> {
+    match (tuple, class) {
+        (Some(tuple), None) => Some(tuple.as_str().to_owned()),
+        (None, Some(class)) => Some(format!("class {}", class.as_str())),
+        _ => None,
+    }
+}
+
 /// The time of the grant whose advertising keys `granted_advertising_keys` answers for `provider`: the last done
 /// `grant` of the provider in `history` naming those keys.
 fn granted_at(history: &History, provider: &str, keys: &[PublicKey]) -> Option<i128> {
@@ -265,19 +275,23 @@ impl Register {
                             Action::ChangeCatalogue {
                                 change: CatalogueChange::Grant | CatalogueChange::RevokeGrant,
                                 provider,
-                                tuple: Some(tuple),
+                                tuple,
+                                class,
                                 ..
                             },
                         ..
                     },
                 when,
                 ..
-            }) => {
+            }) if granted(tuple, class).is_some() => {
+                let Some(granted) = granted(tuple, class) else {
+                    return;
+                };
                 let last = self
                     .dated
                     .entry(provider.as_str().to_owned())
                     .or_default()
-                    .entry(tuple.as_str().to_owned())
+                    .entry(granted)
                     .or_insert(i128::MIN);
                 *last = (*last).max(when.at.unix_nanos());
             }
@@ -294,6 +308,7 @@ impl Register {
                                     change,
                                     provider,
                                     tuple,
+                                    class,
                                     ..
                                 },
                             ..
@@ -304,12 +319,12 @@ impl Register {
                 else {
                     return;
                 };
-                match (change, tuple) {
-                    (CatalogueChange::Grant | CatalogueChange::RevokeGrant, Some(tuple)) => {
+                match (change, granted(tuple, class)) {
+                    (CatalogueChange::Grant | CatalogueChange::RevokeGrant, Some(granted)) => {
                         self.grants
                             .entry(provider.as_str().to_owned())
                             .or_default()
-                            .entry(tuple.as_str().to_owned())
+                            .entry(granted)
                             .or_default()
                             .push((when.at.unix_nanos(), *change == CatalogueChange::Grant));
                     }
@@ -338,8 +353,9 @@ impl Register {
 
     /// Whether the register takes in `entry`, which the log is about to append: a catalogue change's effect, and an
     /// advertisement's receipt, only where it is dated within the skew of the log's own clock; and a grant's or a
-    /// revocation's effect only where it is dated no earlier than its tuple's last change, so a tuple's changes run
-    /// in the log's order and on a clock orchestration doesn't hold. Every other entry it takes as it is.
+    /// revocation's effect only where it is dated no earlier than its tuple's last change, or its class's for a
+    /// verifier's grant (`T-020-30`), so a tuple's changes run in the log's order and on a clock orchestration doesn't
+    /// hold. Every other entry it takes as it is.
     pub(super) fn admits(&self, settings: &Settings, entry: &Entry) -> Result<(), AppendFailure> {
         match entry {
             Entry::Stated(StatedEntry {
@@ -355,6 +371,7 @@ impl Register {
                                 change,
                                 provider,
                                 tuple,
+                                class,
                                 ..
                             },
                         ..
@@ -364,15 +381,15 @@ impl Register {
             }) => {
                 let at = when.at.unix_nanos();
                 settings.on_the_clock(at, CHANGE_OFF_THE_LOGS_CLOCK)?;
-                let last = tuple
-                    .as_ref()
+                // A tuple's, or a verifier's class's in its place, as the write side keys it (`granted`).
+                let last = granted(tuple, class)
                     .filter(|_| {
                         matches!(
                             change,
                             CatalogueChange::Grant | CatalogueChange::RevokeGrant
                         )
                     })
-                    .and_then(|t| self.dated.get(provider.as_str())?.get(t.as_str()));
+                    .and_then(|g| self.dated.get(provider.as_str())?.get(&g));
                 match last {
                     Some(t) if *t > at => Err(AppendFailure::Refused(Violation(
                         CHANGE_BEFORE_ITS_TUPLES_LAST,

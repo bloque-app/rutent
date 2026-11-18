@@ -1723,8 +1723,13 @@
           "$ref": "#/$defs/replay_found"
         },
         "rests_on": {
-          "description": "The receipt of the exit segment's result, its stated entry: what the replay was compared with.",
-          "$ref": "urn:rutent:core-internal:receipt"
+          "description": "What the replay compared, at least one, each once: first the receipt of the exit segment's result, its stated entry, then, for each private node replayed that recorded something, the receipt of its publisher's inner-segments record the replay read, at most one per such node (REQ-AUD-9). That bound is checked by the Rust types.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:rutent:core-internal:receipt"
+          }
         },
         "movement": {
           "description": "The public movement out it was compared with, where the network ties one to the exit.",

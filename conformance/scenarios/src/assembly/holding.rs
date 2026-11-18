@@ -348,6 +348,7 @@ impl Core {
             provider: kit::id(&wallet.provider),
             version: Some(kit::id(&wallet.version)),
             tuple: None,
+            class: None,
             advertising_keys: Vec::new(),
             statement_key: Some(wallet.statement_key()),
         };

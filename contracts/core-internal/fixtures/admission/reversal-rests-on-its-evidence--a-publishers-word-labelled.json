@@ -2107,14 +2107,16 @@
           "found": {
             "status": "consistent_with_the_exit"
           },
-          "rests_on": {
-            "log": "log-main",
-            "index": 135,
-            "entry": {
-              "algorithm": "sha-256",
-              "value": "2424242424242424242424242424242424242424242424242424242424242424"
+          "rests_on": [
+            {
+              "log": "log-main",
+              "index": 135,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "2424242424242424242424242424242424242424242424242424242424242424"
+              }
             }
-          }
+          ]
         },
         "when": {
           "at": "2026-11-10T09:00:00Z",

@@ -7,11 +7,11 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, DecisionEntry, Delivery, Operator, PolicyLog, StuckOrders,
+    AppendFailure, DecisionEntry, Delivery, GeneralEntry, Operator, PolicyLog, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, Decision, Destination, Effect, Raise, Role, StuckDecide, StuckMove,
-    TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    Action, Actor, ActorKind, Answer, Decision, Destination, Effect, Raise, Receipt, Resolution,
+    Role, StuckDecide, StuckMove, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::OuterNode;
 use rutent_contracts::router_api::{Id, Timestamp};
@@ -75,19 +75,94 @@ impl Operator for Raises {
 }
 
 /// What carries a resolution out, watched: every effect it was handed, each answered as scripted, or moved as
-/// named once the script runs out.
+/// named once the script runs out; and, where it states ([`Moves::stating`]), the moving provider's own word for
+/// each move it answers done.
 #[derive(Default)]
-pub struct Moves(pub Vec<Effect>, pub VecDeque<Resolved>);
+pub struct Moves(pub Vec<Effect>, pub VecDeque<Resolved>, pub Option<Stating>);
+
+/// What a [`Moves`] states for a `deliver` it answers done, as a provider's answer would: the operator's question
+/// under the resolution's transaction and the moving provider's result through it, signed, kept in the kit's store
+/// and appended, so the part's `stuck_resolved` cites an evidence entry resting on it (`T-020-30`, the log's
+/// `stuck-resolved-cites-its-parts-evidence`; `T-020-20`'s gap 2).
+pub struct Stating {
+    store: super::Store,
+    operator: Actor,
+    /// Each effect it stated for, with its statement's receipt.
+    stated: Vec<(Receipt, Receipt)>,
+}
+
+impl Moves {
+    /// A [`Moves`] that states the moving provider's word for each `deliver` it answers done, kept in `core`'s
+    /// store; scripted as `script`.
+    pub fn stating(core: &Core, script: impl IntoIterator<Item = Resolved>) -> Self {
+        Moves(
+            Vec::new(),
+            script.into_iter().collect(),
+            Some(Stating {
+                store: core.store.clone(),
+                operator: core.operator.clone(),
+                stated: Vec::new(),
+            }),
+        )
+    }
+}
 
 impl Resolutions for Moves {
     fn resolve(
         &mut self,
-        _parts: &mut Parts<'_>,
+        parts: &mut Parts<'_>,
         _carrying: &Carrying<'_>,
         effect: &Effect,
     ) -> Result<Resolved, AppendFailure> {
         self.0.push(effect.clone());
-        Ok(self.1.pop_front().unwrap_or(Resolved::Done))
+        let resolved = self.1.pop_front().unwrap_or(Resolved::Done);
+        if resolved == Resolved::Done
+            && let Some(stating) = self.2.as_mut()
+            && !stating.stated.iter().any(|(e, _)| e == &effect.receipt)
+            && let Action::ResolveStuck {
+                order,
+                transaction,
+                resolution: Resolution::Deliver { by, .. },
+                ..
+            } = &effect.action
+        {
+            let made_at = parts
+                .clock
+                .now()
+                .timestamp()
+                .ok_or(AppendFailure::Unavailable)?;
+            let (question, results) = super::answered_under(
+                &mut stating.store,
+                &stating.operator,
+                &made_at,
+                order,
+                None,
+                transaction.as_str(),
+                &[by.as_str()],
+                true,
+            );
+            for entry in question.into_iter() {
+                parts.log.append(&GeneralEntry::try_from(entry).unwrap())?;
+            }
+            let mut receipt = None;
+            for entry in results {
+                receipt = Some(parts.log.append(&GeneralEntry::try_from(entry).unwrap())?);
+            }
+            if let Some(receipt) = receipt {
+                stating.stated.push((effect.receipt.clone(), receipt));
+            }
+        }
+        Ok(resolved)
+    }
+
+    fn evidence_of(&self, effect: &Receipt) -> Option<Receipt> {
+        self.2.as_ref().and_then(|stating| {
+            stating
+                .stated
+                .iter()
+                .find(|(e, _)| e == effect)
+                .map(|(_, statement)| statement.clone())
+        })
     }
 }
 

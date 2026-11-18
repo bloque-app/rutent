@@ -1051,7 +1051,11 @@ fn segment_within_a_private_node_closes_on_the_public_movements_in_and_out() {
         .find(|(_, e)| matches!(e, Entry::Stated(s) if s.about.as_ref().and_then(|a| a.transaction.as_ref()).is_some_and(|t| t.as_str() == "tx-d")))
         .unwrap()
         .0;
-    assert_eq!(replay.2, deposit_result, "resting on the deposit's result");
+    assert_eq!(
+        replay.2,
+        [deposit_result],
+        "resting on the deposit's result"
+    );
     // Its fee records: the reserve's, as it stated billing, and the operator's, which it keeps back, by the operator's
     // formula over what arrived, attributed to the operator.
     let operators: FeeFormula = serde_json::from_value(

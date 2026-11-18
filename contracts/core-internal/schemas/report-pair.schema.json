@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:report-pair",
   "title": "Segment report pair",
-  "description": "A segment's pair of reports: what one party says it sent, and what the next says it received, each with the receipt of the stated entry holding its statement (REQ-ORD-9). That the two are different parties' is checked by the Rust types.",
+  "description": "A segment's pair of reports: what one party says it sent, and what the next says it received, each with the receipt of the stated entry holding its statement, and the sending party's tuple's terms they are compared under: its fill increment and its gross or net convention (REQ-ORD-9, REQ-CAT-11). That the two are different parties', and that a gross figure's charge is no more than it, are checked by the Rust types.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "order",
     "segment",
     "sent",
-    "received"
+    "received",
+    "terms"
   ],
   "properties": {
     "order": {
@@ -25,6 +26,10 @@
     "received": {
       "description": "What the receiving party reports.",
       "$ref": "#/$defs/report"
+    },
+    "terms": {
+      "description": "The sending party's tuple's terms, which orchestration fills from them where it builds the pair (REQ-CAT-11, ADR-0009).",
+      "$ref": "#/$defs/terms"
     }
   },
   "$defs": {
@@ -55,6 +60,57 @@
           "$ref": "urn:rutent:core-internal:receipt"
         }
       }
+    },
+    "terms": {
+      "description": "What the comparison reads of the sending party's tuple: two reports less than one increment apart raise nothing, and a gross figure is compared net of its charge.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reporting"
+      ],
+      "properties": {
+        "increment": {
+          "description": "The tuple's fill increment, in the reports' unit; absent where the tuple declares none, and the reports are then compared exactly.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "reporting": {
+          "$ref": "#/$defs/reported_as"
+        }
+      }
+    },
+    "reported_as": {
+      "description": "Whether the sending party's figure is gross or net of its charge.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "net"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "charge"
+          ],
+          "properties": {
+            "kind": {
+              "const": "gross"
+            },
+            "charge": {
+              "description": "The charge the figure holds, in the reports' unit, which the comparison takes off it; no more than the amount sent. A conversion's charge is in an asset it doesn't give out, so 0.",
+              "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+            }
+          }
+        }
+      ]
     }
   }
 }

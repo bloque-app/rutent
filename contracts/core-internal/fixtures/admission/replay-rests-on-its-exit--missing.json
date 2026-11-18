@@ -1779,14 +1779,16 @@
       "found": {
         "status": "consistent_with_the_exit"
       },
-      "rests_on": {
-        "log": "log-main",
-        "index": 199,
-        "entry": {
-          "algorithm": "sha-256",
-          "value": "c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7"
+      "rests_on": [
+        {
+          "log": "log-main",
+          "index": 199,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7"
+          }
         }
-      },
+      ],
       "movement": {
         "network": "polygon",
         "id": "0x9f3c2a"

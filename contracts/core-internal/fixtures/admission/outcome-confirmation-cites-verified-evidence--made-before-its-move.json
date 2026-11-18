@@ -2180,6 +2180,11 @@
                   "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
                 }
               }
+            },
+            "terms": {
+              "reporting": {
+                "kind": "net"
+              }
             }
           }
         },
@@ -2382,6 +2387,7 @@
           "call": "measure",
           "record": {
             "provider": "fx-desk",
+            "role": "provider",
             "order": "ord-17",
             "segment": "seg-3",
             "measure": {
@@ -3884,8 +3890,8 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "us-bank",
-            "acts": "us-bank",
+            "party": "bank-co",
+            "acts": "bank-co",
             "role": "provider",
             "kind": "component"
           }

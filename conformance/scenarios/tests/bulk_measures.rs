@@ -109,6 +109,7 @@ fn record(core: &Core, run: &Run, dry: Option<Said>) {
             .expect("the segment's effect is recorded");
         let record: MeasureRecord = serde_json::from_value(json!({
             "provider": provider,
+            "role": "provider",
             "order": run.order,
             "segment": segment.segment,
             "measure": what,

@@ -1,5 +1,6 @@
 {
   "provider": "bank-co",
+  "role": "provider",
   "order": "ord-17",
   "segment": "seg-4",
   "measure": {

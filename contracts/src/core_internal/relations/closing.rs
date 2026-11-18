@@ -81,7 +81,7 @@ fn relied_on(entry: &VerifiedEntry) -> Option<(&PublicMovement, &Id, &Id)> {
 }
 
 /// The rows, in the order the engine reads them. `contracts/core-internal/README.md` lists them with the rest.
-pub static CLOSING_RELATIONS: [Relation; 4] = [
+pub static CLOSING_RELATIONS: [Relation; 5] = [
     Relation {
         name: "final-deposit-closes-on-a-public-record",
         spec: &["REQ-ORD-33", "REQ-ORD-39"],
@@ -180,7 +180,11 @@ pub static CLOSING_RELATIONS: [Relation; 4] = [
             ),
         ],
         cites: |e, _| match &e.what {
-            What::Replay { rests_on, .. } => alloc::vec![by_receipt(rests_on, 0)],
+            // The exit's result, the first receipt; the records after it are `replay-cites-its-nodes-records`'.
+            What::Replay { rests_on, .. } => rests_on
+                .first()
+                .map(|exit| alloc::vec![by_receipt(exit, 0)])
+                .unwrap_or_default(),
             _ => none(),
         },
         answers: |e, _, t, _| {
@@ -193,6 +197,45 @@ pub static CLOSING_RELATIONS: [Relation; 4] = [
                 &[
                     about.and_then(|a| a.order.as_ref()) == Some(order),
                     about.and_then(|a| a.segment.as_ref()) == Some(segment),
+                ],
+            )
+        },
+    },
+    Relation {
+        name: "replay-cites-its-nodes-records",
+        spec: &["REQ-AUD-9", "REQ-ORD-41", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a replay's receipts past its exit's name stated entries of this log",
+        fields: &[
+            ("verified", "a replay's node record is a verified statement"),
+            (
+                "record",
+                "a replay's receipt past its exit's names a publisher's record of inner segments",
+            ),
+            ("about", "a replay's node record is about its order"),
+        ],
+        // What the replay read for each private node it replayed: its publisher's `inner-segments` record, so a
+        // checker finds what was compared (`REQ-AUD-9`). That there is one for each node that recorded something is
+        // `T-020-32`'s, which writes them; which node a record is of, the log can't read from its commitment.
+        cites: |e, _| match &e.what {
+            What::Replay { rests_on, .. } => rests_on
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(i, r)| by_receipt(r, i))
+                .collect(),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Replay { order, .. }, Some(s)) = (&e.what, stated(t)) else {
+                return Match::NotTarget;
+            };
+            judge(
+                true,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == crate::provider_role::INNER_SEGMENTS_SHAPE,
+                    s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
                 ],
             )
         },

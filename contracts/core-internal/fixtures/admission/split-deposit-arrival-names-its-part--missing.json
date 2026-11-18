@@ -2180,6 +2180,11 @@
                   "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
                 }
               }
+            },
+            "terms": {
+              "reporting": {
+                "kind": "net"
+              }
             }
           }
         },
@@ -2382,6 +2387,7 @@
           "call": "measure",
           "record": {
             "provider": "fx-desk",
+            "role": "provider",
             "order": "ord-17",
             "segment": "seg-3",
             "measure": {
@@ -3894,10 +3900,10 @@
             },
             "evidence": {
               "log": "log-main",
-              "index": 175,
+              "index": 176,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
+                "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
               }
             },
             "at": "2026-11-10T09:00:00Z"
@@ -3960,10 +3966,10 @@
             },
             "confirmed_with": {
               "log": "log-main",
-              "index": 176,
+              "index": 175,
               "entry": {
                 "algorithm": "sha-256",
-                "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+                "value": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c"
               }
             },
             "at": "2026-11-10T09:00:00Z"

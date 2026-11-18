@@ -1,5 +1,6 @@
 {
   "provider": "bridge-pay",
+  "role": "provider",
   "order": "ord-18",
   "segment": "seg-1",
   "measure": {

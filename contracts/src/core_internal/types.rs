@@ -317,7 +317,7 @@ pub struct RouteEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogueChange {
-    /// Granting a provider a tuple.
+    /// Granting a provider a tuple, or a verifier one of its classes.
     Grant,
     /// Revoking a grant.
     RevokeGrant,
@@ -418,13 +418,24 @@ pub enum Action {
             skip_serializing_if = "Option::is_none"
         )]
         version: Option<Id>,
-        /// The tuple it is about: present exactly when the change is about a tuple.
+        /// The tuple it is about: present exactly when the change is about a tuple, save a verifier's grant and
+        /// its revocation, which name its class in its place.
         #[serde(
             default,
             deserialize_with = "some",
             skip_serializing_if = "Option::is_none"
         )]
         tuple: Option<Id>,
+        /// The class a verifier's grant is for, in place of a tuple: a verifier advertises classes, not tuples
+        /// (`REQ-CAT-13`, `DEC-16`). Named only by a `grant` or a `revoke_grant`, and never with a tuple. The keys a
+        /// grant of a class alone trusts attribute only the maker's judgements of that class, in the verifier's role
+        /// ([`attribute`](super::attribute)), never a statement about a tuple's segments.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        class: Option<Id>,
         /// The provider's advertising keys, at least one, each once: named exactly by a grant. The latest grant in
         /// the log replaces them, which is how a provider recovers a lost key, and they are the log's first trust
         /// in the provider's advertisements, never a deployment setting the log doesn't hold.
@@ -1202,8 +1213,41 @@ pub struct Report {
     pub statement: Receipt,
 }
 
-/// A segment's pair of reports: what one party says it sent, and what the next says it received (`REQ-ORD-9`).
-/// Schema: `urn:rutent:core-internal:report-pair`.
+/// Whether the sending party's figure holds its charge (`REQ-CAT-11`): its tuple's gross or net convention, as the
+/// comparison reads it. Schema: `urn:rutent:core-internal:report-pair#/$defs/reported_as`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReportedAs {
+    /// Net of its charge: what it states it sent is what it gave out.
+    Net {},
+    /// Gross of its charge: what it states it sent holds its charge, which the next party never receives.
+    Gross {
+        /// The charge the figure holds, in the reports' unit, which the comparison takes off it: no more than the
+        /// amount sent (`ReportPair::check`). A conversion's charge is in an asset it doesn't give out, so `0`.
+        charge: Amount,
+    },
+}
+
+/// The terms of the sending party's tuple a pair is compared under (`REQ-CAT-11`, ADR-0009): its declared fill
+/// increment and its gross or net convention, which orchestration fills from the tuple's terms where it builds the
+/// pair. Schema: `urn:rutent:core-internal:report-pair#/$defs/terms`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportTerms {
+    /// The tuple's fill increment, in the reports' unit: two reports less than one increment apart raise nothing.
+    /// Absent where the tuple declares none, and the reports are then compared exactly.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub increment: Option<PositiveAmount>,
+    /// Whether the sending party's figure is gross or net of its charge.
+    pub reporting: ReportedAs,
+}
+
+/// A segment's pair of reports: what one party says it sent, and what the next says it received (`REQ-ORD-9`),
+/// with the terms they are compared under. Schema: `urn:rutent:core-internal:report-pair`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct ReportPair {
@@ -1215,6 +1259,8 @@ pub struct ReportPair {
     pub sent: Report,
     /// What the receiving party reports.
     pub received: Report,
+    /// The sending party's tuple's increment and convention, so like is compared with like within one increment.
+    pub terms: ReportTerms,
 }
 
 /// Whose word a holding account's balance is (`REQ-AUD-15`).
@@ -1334,6 +1380,17 @@ pub enum Measure {
     },
 }
 
+/// The role a measure record measures its party in (`REQ-AUD-7`, `REQ-AUD-8`): a party that is both a provider and a
+/// verifier is measured apart in each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasuredRole {
+    /// As a provider: its quotes, dry runs, failures, refusals, reversals and answers.
+    Provider,
+    /// As a verifier: its answers.
+    Verifier,
+}
+
 /// One record the bulk measures read, per provider or verifier (`REQ-AUD-7`): rutent's record of what it measured,
 /// citing the entries, stated or verified, it rests on. Schema: `urn:rutent:core-internal:measure-record`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1341,6 +1398,8 @@ pub enum Measure {
 pub struct MeasureRecord {
     /// The provider or verifier it measures.
     pub provider: Id,
+    /// The role it measures that party in, which the caller sets: the measures keep each role apart.
+    pub role: MeasuredRole,
     /// The order.
     pub order: Id,
     /// The segment, where it is about one.
@@ -2394,8 +2453,11 @@ pub enum What {
         nodes: Vec<Id>,
         /// What the replay found.
         found: ReplayFound,
-        /// The receipt of the exit segment's result, its stated entry: what the replay was compared with.
-        rests_on: Receipt,
+        /// What the replay compared, at least one, each once: first the receipt of the exit segment's result, its
+        /// stated entry, and then, for each private node replayed that recorded something, the receipt of its
+        /// publisher's `inner-segments` record the replay read, at most one per such node (`REQ-AUD-9`), so a checker
+        /// finds what was compared. `T-020-32` writes the records; until then a writer names the exit's alone.
+        rests_on: Vec<Receipt>,
         /// The public movement out it was compared with, where the network ties one to the exit.
         #[serde(
             default,

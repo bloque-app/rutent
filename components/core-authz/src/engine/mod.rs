@@ -1196,6 +1196,7 @@ mod tests {
                 provider: id("bridge-pay"),
                 version: change.is_about_a_release().then(|| id("2.1.0")),
                 tuple: change.is_about_a_tuple().then(|| id("usd-cop")),
+                class: None,
                 advertising_keys: if change == CatalogueChange::Grant {
                     vec![rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()]
                 } else {

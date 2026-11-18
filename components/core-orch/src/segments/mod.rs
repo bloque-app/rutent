@@ -2570,6 +2570,7 @@ impl Segments {
             provider: promotion.provider.clone(),
             version: Some(promotion.version.clone()),
             tuple: None,
+            class: None,
             advertising_keys: Vec::new(),
             statement_key: None,
         };

@@ -826,3 +826,48 @@
   `--a-hand-on-through-a-transaction-bound-to-another-order`, `--a-hand-on-through-another-effects-transaction`,
   `--a-hand-on-through-a-question-after-its-result`, `--a-hand-on-through-a-transaction-bound-by-no-operator-question`, `--a-hand-on-through-a-statement-naming-no-order`, each
   `about`). No shape changes; no consumer changes. (REQ-ORD-1, REQ-AUZ-4, DEC-4, DEC-20, T-020-26)
+- Folded into 1.0.0 before its release: `core-internal`'s round after `T-020-20` (`T-020-30`). 1.0.0 isn't on
+  `develop`, so `PLAN.md` §4.4 and retrospective lesson 7 fold it into the unreleased major, as `T-020-21` did. Each
+  change, by the row's item:
+  1. `stuck-resolved-cites-its-parts-evidence` is an exists row: a `stuck_resolved` cites a `part_evidence` of the
+     log's with its id, of its own order (`order`) and part (`part`), appended before it, where it refused another's
+     and admitted a bare id until `T-020-20` wrote the entry. A bare id, or a segment's `evidence` under the id, is
+     refused (`--missing`, `--a-segments-evidence`); `--conflict` is now `--part`, beside `--order`. The admitted
+     cases of `stuck-resolved-follows-a-done-resolution` hold their part's evidence. (REQ-AUZ-4, REQ-ORD-39)
+  2. `ReportPair.terms`, the sending party's tuple's terms (`REQ-CAT-11`, ADR-0009, `T-022-05`'s gap 4): its fill
+     `increment`, in the reports' unit, absent where the tuple declares none, and `reporting`, `{kind: net}` or
+     `{kind: gross, charge}`, the charge the gross figure holds, which `ReportPair::check` holds to no more than the
+     amount sent. Orchestration fills them from the tuple's terms where it builds the pair; `core-audit`'s `compare`
+     takes the charge off a gross figure, raises nothing within one increment, and compares exactly with none. Two
+     valid fixtures and five invalid ones; every pair the fixtures hold reads `net`, no increment, as before.
+     (REQ-ORD-9, REQ-CAT-11)
+  3. `MeasureRecord.role`, `provider` or `verifier` (`MeasuredRole`), the role the record measures its party in, set
+     by its caller, so a party in both roles is measured apart in each (`T-022-06`'s review). The fixtures' answers
+     are a verifier's, every other measure a provider's. One valid fixture and two invalid ones. (REQ-AUD-7,
+     REQ-AUD-8)
+  4. `What::Replay.rests_on` is a list (`T-020-18`'s hand-off of `REQ-AUD-9`): the exit segment's result first, then
+     the receipt of each private node's publisher's `inner-segments` record the replay read, at most one per node it
+     replayed that recorded something, which the Rust types hold. `replay-rests-on-its-exit` reads the first; the
+     new closing row `replay-cites-its-nodes-records` holds each after it to a verified `inner-segments` statement
+     about the replay's order (`verified`, `record`, `about`). A private node is still bound by the exit's result, the
+     first receipt. `T-020-32` writes the records; every writer names the exit's alone until then. One valid fixture,
+     three invalid ones, five admission cases. (REQ-AUD-9, REQ-ORD-41)
+  5. `outcome-confirmation-cites-verified-evidence` reads a deliver's report by kind, as `T-020-26` reads a hand-on's:
+     a report of a stuck resolution rests on the moving provider's own statement (its maker the `deliver`'s `by`), a
+     confirmation or a decline on another maker's, so a mover can't report a failure on an unrelated maker's word and
+     have it confirmed on the provider's own `succeeded`. The world's report now rests on bank-co's own result and its
+     confirmation and decline on us-bank's, the two receipts swapped in every case that cites them; the old report is
+     the refused `--a-deliver-reported-on-an-unrelated-makers-statement` (`maker`). (REQ-ORD-1, REQ-AUZ-4)
+  6. A verifier's grant can be logged (`T-024-12`'s gap 1): `Action::ChangeCatalogue.class`, the class a verifier's
+     `grant` or `revoke_grant` is for in a tuple's place, never with a tuple and on no other change, which the Rust
+     types hold. `granted_advertising_keys` reads a grant of a class as of a tuple; `attribute` verifies a statement
+     of a maker whose grants in force are of classes alone only where it is a judgement of one of those classes, and
+     in the verifier's role alone, so a category grant never attributes a statement about a tuple's segments. The
+     grants are read as they stood at the statement's own `made_at` (each change by its effect's time, done), as the
+     key register trusts a key, so a revocation widens nothing backdated into the grant's window, a maker that has held
+     classes alone attributes nothing once none is in force, and a tuple granted later widens only what is made after
+     it (the review of `a2cde05d`). (REQ-AUD-2, REQ-CPL-12, REQ-CAT-13)
+  Twenty-eight schemas, 157 valid fixtures, 159 invalid ones, 657 admission cases and 37 attribution cases; 106
+  relations and 5 closing ones, three stated. Outside `contracts/`: `core-audit`'s `compare` and `measures` and its
+  key register, `core-orch`'s closing writer and reversal reader, and the consumer lines named in the commit.
+  (DEC-4, DEC-20, T-020-30)

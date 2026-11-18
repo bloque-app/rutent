@@ -14,14 +14,16 @@
     "found": {
       "status": "consistent_with_the_exit"
     },
-    "rests_on": {
-      "log": "log-main",
-      "index": 111,
-      "entry": {
-        "algorithm": "sha-256",
-        "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+    "rests_on": [
+      {
+        "log": "log-main",
+        "index": 111,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        }
       }
-    }
+    ]
   },
   "when": {
     "at": "2026-11-10T09:00:00Z",

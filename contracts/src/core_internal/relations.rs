@@ -1397,7 +1397,7 @@ pub static RELATIONS: [Relation; 106] = [
             ),
             (
                 "maker",
-                "an outcome's evidence is not the deployment operator's own statement, and a hand-on's report rests on the holding account's own",
+                "an outcome's evidence is not the deployment operator's own statement, and a stuck resolution's report rests on the moving provider's own: the deliverer's, or the holding account's for a hand-on",
             ),
             (
                 "about",
@@ -1847,12 +1847,14 @@ pub static RELATIONS: [Relation; 106] = [
     Relation {
         name: "stuck-resolved-cites-its-parts-evidence",
         spec: &["REQ-AUZ-4", "REQ-ORD-39"],
-        quantifier: Quantifier::NoneOther,
-        refusal: "a stuck resolution's evidence is its own part's: no evidence of another order or part, nor a segment's, has the id it cites",
-        fields: &[],
-        // The evidence a `stuck_resolved` cites is a `part_evidence` of its order and part. Today's writers append
-        // none behind the id, so the row refuses a citation of another's evidence and admits one of none
-        // (`T-020-20` writes the entry; the notes name the residual).
+        quantifier: Quantifier::Exists,
+        refusal: "a stuck resolution cites an evidence entry of this log: a part's evidence with the id it cites",
+        fields: &[
+            ("order", "a stuck resolution's evidence is of its own order"),
+            ("part", "a stuck resolution's evidence is of its own part"),
+        ],
+        // The evidence a `stuck_resolved` cites is a `part_evidence` of its order and part, appended before it
+        // (`T-020-20` writes it; `T-020-30` requires it). A bare id, or a segment's evidence under it, is none.
         cites: |e, _| match input(e).map(|i| &i.observed) {
             Some(Observed::StuckResolved { .. }) => by_fields(0),
             _ => none(),
@@ -1871,14 +1873,12 @@ pub static RELATIONS: [Relation; 106] = [
                     part,
                     ..
                 }) => judge(
-                    cited.as_str() == evidence.as_str()
-                        && (order.as_str() != i.subject.order.as_str()
-                            || i.subject.part.as_ref().map(|p| p.as_str()) != Some(part.as_str())),
-                    &[],
+                    cited.as_str() == evidence.as_str(),
+                    &[
+                        order.as_str() == i.subject.order.as_str(),
+                        i.subject.part.as_ref().map(|p| p.as_str()) == Some(part.as_str()),
+                    ],
                 ),
-                Some(What::Evidence {
-                    evidence: cited, ..
-                }) => judge(cited.as_str() == evidence.as_str(), &[]),
                 _ => Match::NotTarget,
             }
         },
@@ -5149,11 +5149,12 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
     }
 }
 
-/// Whether a report of a hand-on rests on the holding account's own statement (`REQ-ORD-1`): a mover could otherwise
-/// report the failure of a withdrawal the holder says it made on an unrelated maker's word, and have it confirmed on
-/// the holder's own, and a new decision would follow (`THR-70`). A confirmation or a decline needs another maker's
-/// party than the report's (`outcome-confirmation-rests-on-its-report`), so it reads no maker beyond the row's own, and
-/// neither does a report of anything but a hand-on.
+/// Whether a report of a stuck resolution rests on the moving provider's own statement, the one its resolution's `by`
+/// names (`REQ-ORD-1`): the holding account's for a hand-on (`T-020-26`), the deliverer's for a `deliver` (`T-020-30`).
+/// A mover could otherwise report the failure of a move on an unrelated maker's word, and have it confirmed on the
+/// provider's own, and a new decision would follow (`THR-70`). A confirmation or a decline needs another maker's party
+/// than the report's (`outcome-confirmation-rests-on-its-report`), so it reads no maker beyond the row's own, and
+/// neither does a report of a `move_value`.
 fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &StatedEntry) -> bool {
     if !matches!(citing.what, What::ReportOutcome { .. }) {
         return true;
@@ -5163,8 +5164,11 @@ fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &Stated
         .and_then(effect_action)
         .map(|(a, _)| a)
     {
+        // A report rests on the word of the provider the resolution names to move the value: the holding account's
+        // for a hand-on (`T-020-26`), the moving provider's for a deliver (`T-020-30`), so no mover reports an
+        // outcome on an unrelated maker's word and has it confirmed on the provider's own.
         Some(Action::ResolveStuck {
-            resolution: Resolution::HandOn { by, .. },
+            resolution: Resolution::HandOn { by, .. } | Resolution::Deliver { by, .. },
             ..
         }) => maker_provider(statement) == by,
         _ => true,
@@ -5671,9 +5675,11 @@ fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -
                 rests_on,
                 ..
             }) => {
+                // Bound by the exit's result, the first receipt, as before the list: what a publisher's records of
+                // its nodes bind is `T-020-32`'s.
                 o.as_str() == order
                     && nodes.iter().any(|n| n.as_str() == node)
-                    && for_publisher(rests_on)
+                    && rests_on.first().is_some_and(for_publisher)
             }
             Some(What::Evidence {
                 order: o,

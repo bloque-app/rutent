@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release and promote are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it. The Rust types check both.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release and promote are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13). The Rust types check these.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -438,6 +438,10 @@
         },
         "tuple": {
           "description": "The tuple it is about, where it is about one.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "class": {
+          "description": "The class a verifier's grant, or its revocation, is for, in place of a tuple: a verifier advertises classes, not tuples (REQ-CAT-13). Never with a tuple, which the Rust types check. A grant of classes alone attributes its maker's judgements of those classes alone, in the verifier's role.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "advertising_keys": {

@@ -91,7 +91,7 @@
 //! decliner may hold are its. A mover can't withdraw its own report: only a confirmer's decline lets another stand.
 //! A part's `stuck_resolved` cites an evidence entry of the log's where the resolution's done rests on a statement
 //! Core took ([`Resolutions::evidence_of`], [`Stuck::confirm_outcome`]); a [`Resolutions`] that names none leaves it
-//! a bare id, as before, which the log admits until `T-020-30` holds it to an entry. The hand-on's mover is
+//! a bare id, which the log refuses since `T-020-30` holds it to an entry, so the part stays stuck. The hand-on's mover is
 //! `T-020-17`'s.
 //!
 mod handing;
@@ -606,7 +606,7 @@ pub trait Resolutions {
 
     /// The receipt of the statement a `deliver`'s done rests on, once `effect` is done: the provider's own answer, as
     /// the log holds it attributed. The part's `stuck_resolved` cites an entry of the log's resting on it
-    /// (`REQ-ORD-39`). None where the mover keeps no statement, which leaves the citation a bare id.
+    /// (`REQ-ORD-39`). None where the mover keeps no statement, which leaves the citation a bare id the log refuses.
     fn evidence_of(&self, effect: &Receipt) -> Option<Receipt> {
         let _ = effect;
         None
@@ -2253,7 +2253,8 @@ impl Stuck {
     /// until the log takes it ([`Stuck::flush`]). A `hand_on` resolution's input is the hand-on's (`T-020-13`). Its
     /// evidence is an id of Core's with an entry of the log's behind it, a `part_evidence` of the order and the part
     /// resting on the statement the done rests on, appended before the input, where the resolution's mover or the
-    /// report that was confirmed names one ([`Resolutions::evidence_of`]); with none it stays a bare id.
+    /// report that was confirmed names one ([`Resolutions::evidence_of`]); with none it stays a bare id, which the
+    /// log refuses (`T-020-30`), so the part stays stuck.
     fn resolve(
         &mut self,
         parts: &mut Parts<'_>,
@@ -2293,7 +2294,7 @@ impl Stuck {
             )?;
             // The evidence it cites is an entry of the log's, of the order and the part, resting on the statement the
             // done rests on: the provider's own, graded as its statement (`REQ-ORD-39`). Where Core holds none the
-            // citation stays a bare id, which the log admits until it is held to an entry (`T-020-30`).
+            // citation stays a bare id, which the log refuses since it is held to an entry (`T-020-30`).
             let evidence = done_on
                 .map(|statement| {
                     journal::built(

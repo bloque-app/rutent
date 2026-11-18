@@ -15,12 +15,15 @@
 //! own time (`at`, by Core's clock) lies in the [`Window`], half open: from its first instant, up to but not
 //! including its last. A record is counted once per entry: two records are two measures, and a record written twice
 //! is one entry (the log answers an equal entry again with its own receipt). Each measure is kept per provider or
-//! verifier, as the record names it, and nothing is summed across them. [`COUNTS`] says it in words for each.
+//! verifier, as the record names it, in the role it names (`T-020-30`): a party in both roles has its measures as a
+//! provider and as a verifier apart, and nothing is summed across them. [`COUNTS`] says it in words for each.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::{Entry, Market, Measure, Receipt, Said, SegmentEnd, What};
+use rutent_contracts::core_internal::{
+    Entry, Market, Measure, MeasuredRole, Receipt, Said, SegmentEnd, What,
+};
 use rutent_contracts::router_api::{Amount, Timestamp};
 
 /// What each measure counts, in words, by the name the report gives it.
@@ -372,14 +375,18 @@ pub struct Report {
     pub window: Window,
     /// The `measure` records counted, in all.
     pub counted: u64,
-    /// Each provider or verifier the window's records name, by its identifier, with its measures.
+    /// Each party the window's records measure as a provider, by its identifier, with its measures in that role.
     pub providers: BTreeMap<String, Provider>,
+    /// Each party the window's records measure as a verifier, by its identifier, with its measures in that role: a
+    /// party in both roles is measured apart in each (`REQ-AUD-7`, `REQ-AUD-8`).
+    pub verifiers: BTreeMap<String, Provider>,
 }
 
 /// The bulk measures of `history`, the entries of the log with their receipts as the log hands them out, over
 /// `window`. Nothing but the log's own `measure` entries is counted.
 pub fn measure(history: &[(Receipt, Entry)], window: &Window) -> Report {
     let mut providers: BTreeMap<String, Provider> = BTreeMap::new();
+    let mut verifiers: BTreeMap<String, Provider> = BTreeMap::new();
     let mut counted = 0;
     for (_, entry) in history {
         let Entry::Verified(verified) = entry else {
@@ -391,14 +398,24 @@ pub fn measure(history: &[(Receipt, Entry)], window: &Window) -> Report {
         if !window.holds(&record.at) {
             continue;
         }
+        // Each role its own key: a party in both is measured apart in each (`REQ-AUD-8`).
         let name = record.provider.as_str().to_owned();
-        let provider = providers.remove(&name).unwrap_or_default();
-        providers.insert(name, provider.with(&record.measure));
+        match record.role {
+            MeasuredRole::Provider => {
+                let provider = providers.remove(&name).unwrap_or_default();
+                providers.insert(name, provider.with(&record.measure));
+            }
+            MeasuredRole::Verifier => {
+                let verifier = verifiers.remove(&name).unwrap_or_default();
+                verifiers.insert(name, verifier.with(&record.measure));
+            }
+        }
         counted += 1;
     }
     Report {
         window: window.clone(),
         counted,
         providers,
+        verifiers,
     }
 }

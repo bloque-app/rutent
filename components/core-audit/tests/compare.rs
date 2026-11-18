@@ -677,6 +677,129 @@ fn difference_between_reports_raises_and_changes_nothing_else() {
     assert_eq!(desk.raised().len(), 4);
 }
 
+/// `pair` under the terms `terms`, as JSON reads them (`REQ-CAT-11`).
+fn under(pair: &ReportPair, terms: Value) -> ReportPair {
+    let mut value = serde_json::to_value(pair).unwrap();
+    value["terms"] = terms;
+    serde_json::from_value(value).unwrap()
+}
+
+/// `pair` with `received` as the receiving party's amount.
+fn receiving(pair: &ReportPair, received: &str) -> ReportPair {
+    let mut out = pair.clone();
+    out.received.amount = Amount::new(received).unwrap();
+    out
+}
+
+/// A tuple that fills in increments: reports that differ by less than one increment, either way, raise nothing, and
+/// one increment or more is raised as any difference is (ADR-0009: the tolerance is the provider's own declared
+/// increment, never a fixed one). A tuple that declares none is compared exactly.
+// verifies: REQ-ORD-9, REQ-CAT-11
+#[test]
+fn reports_differing_by_less_than_one_increment_raise_nothing() {
+    let filled: ReportPair =
+        serde_json::from_value(valid("report-pair-filled-in-increments")).unwrap();
+    assert_eq!(
+        filled.terms.increment.as_ref().map(|i| i.amount().as_str()),
+        Some("100")
+    );
+    assert_eq!(filled.sent.amount.as_str(), "1000000000");
+    for within in ["999999950", "999999901", "1000000000", "1000000099"] {
+        assert_eq!(
+            compare_reports(&receiving(&filled, within)),
+            ReportsVerdict::Match,
+            "{within} is within one increment of what was sent"
+        );
+    }
+    for past in ["999999900", "1000000100", "1"] {
+        let pair = receiving(&filled, past);
+        assert_eq!(
+            compare_reports(&pair),
+            ReportsVerdict::Differs(Difference::Reports {
+                order: pair.order.clone(),
+                segment: pair.segment.clone(),
+                sent: pair.sent.amount.clone(),
+                received: pair.received.amount.clone(),
+                asset: pair.sent.asset.clone(),
+            }),
+            "{past} is one increment or more away"
+        );
+    }
+    // No increment declared: exact.
+    let exact = under(&filled, json!({"reporting": {"kind": "net"}}));
+    assert!(matches!(
+        compare_reports(&receiving(&exact, "999999999")),
+        ReportsVerdict::Differs(_)
+    ));
+
+    // Through the detector, on the real log: within one increment the pair is recorded and nothing is raised.
+    let (log, pair) = world_to_the_pair();
+    let desk = Desk::new();
+    let mut compare = checks(&log, &desk);
+    let sent = pair.sent.amount.as_str().to_owned();
+    let increment = format!("1{}", "0".repeat(sent.len() - 1));
+    let near = receiving(
+        &under(
+            &pair,
+            json!({"increment": increment, "reporting": {"kind": "net"}}),
+        ),
+        &format!("{}", sent.parse::<u128>().unwrap() - 1),
+    );
+    let before = log.borrow().len();
+    compare.report_pair(&near).unwrap();
+    assert_eq!(kinds(&log)[before..], ["report_pair:observed"]);
+    assert!(desk.raised().is_empty());
+}
+
+/// A tuple that reports gross states what it sent with its charge in it; the next party's receipt is what arrived,
+/// the charge kept back. The comparison takes the charge off the gross figure first, so a gross report and a net
+/// receipt of the same delivery agree, and a difference names the figure compared, net of the charge.
+// verifies: REQ-ORD-9
+#[test]
+fn gross_and_net_reports_of_one_segment_are_compared_like_with_like() {
+    let gross: ReportPair = serde_json::from_value(valid("report-pair-reported-gross")).unwrap();
+    assert_eq!(gross.sent.amount.as_str(), "1000005000");
+    assert_eq!(gross.received.amount.as_str(), "1000000000");
+    // 1 000 005 000 sent gross, a charge of 5 000, 1 000 000 000 received: one delivery, alike.
+    assert_eq!(compare_reports(&gross), ReportsVerdict::Match);
+    // Read net, the same figures differ by the charge.
+    let as_net = under(&gross, json!({"reporting": {"kind": "net"}}));
+    assert!(matches!(
+        compare_reports(&as_net),
+        ReportsVerdict::Differs(_)
+    ));
+    // A gross report whose receipt is short of it net is raised, naming the figure compared.
+    let short = receiving(&gross, "999990000");
+    assert_eq!(
+        compare_reports(&short),
+        ReportsVerdict::Differs(Difference::Reports {
+            order: short.order.clone(),
+            segment: short.segment.clone(),
+            sent: Amount::new("1000000000").unwrap(),
+            received: Amount::new("999990000").unwrap(),
+            asset: short.sent.asset.clone(),
+        })
+    );
+    // A receipt of the gross figure itself is over what was delivered: the charge didn't reach it.
+    assert!(matches!(
+        compare_reports(&receiving(&gross, "1000005000")),
+        ReportsVerdict::Differs(_)
+    ));
+    // Gross with an increment: within one increment of the net figure.
+    let both = under(
+        &gross,
+        json!({"increment": "10", "reporting": {"kind": "gross", "charge": "5000"}}),
+    );
+    assert_eq!(
+        compare_reports(&receiving(&both, "1000000009")),
+        ReportsVerdict::Match
+    );
+    assert!(matches!(
+        compare_reports(&receiving(&both, "1000000010")),
+        ReportsVerdict::Differs(_)
+    ));
+}
+
 /// `verdict` as it would be for the same figures under `order` and `segment`.
 fn relabelled(verdict: &ReportsVerdict, order: &Id, segment: &Id) -> ReportsVerdict {
     let relabel = |difference: &Difference| match difference.clone() {
