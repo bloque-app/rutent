@@ -862,8 +862,11 @@
      `grant` or `revoke_grant` is for in a tuple's place, never with a tuple and on no other change, which the Rust
      types hold. `granted_advertising_keys` reads a grant of a class as of a tuple; `attribute` verifies a statement
      of a maker whose grants in force are of classes alone only where it is a judgement of one of those classes, and
-     in the verifier's role alone, so a category grant never attributes a statement about a tuple's segments.
-     (REQ-AUD-2, REQ-CPL-12, REQ-CAT-13)
+     in the verifier's role alone, so a category grant never attributes a statement about a tuple's segments. The
+     grants are read as they stood at the statement's own `made_at` (each change by its effect's time, done), as the
+     key register trusts a key, so a revocation widens nothing backdated into the grant's window, a maker that has held
+     classes alone attributes nothing once none is in force, and a tuple granted later widens only what is made after
+     it (the review of `a2cde05d`). (REQ-AUD-2, REQ-CPL-12, REQ-CAT-13)
   Twenty-eight schemas, 157 valid fixtures, 159 invalid ones, 657 admission cases and 37 attribution cases; 106
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-audit`'s `compare` and `measures` and its
   key register, `core-orch`'s closing writer and reversal reader, and the consumer lines named in the commit.

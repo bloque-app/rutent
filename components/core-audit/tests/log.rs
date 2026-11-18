@@ -3091,3 +3091,140 @@ fn a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone() {
         Err(AppendFailure::Refused(_))
     ));
 }
+
+/// The class a verifier's grant is for is read as it stood at the statement's own `made_at`, the time the key register
+/// trusts the key at, never as it stands at the append (the review of `a2cde05d`): a revocation doesn't widen what
+/// is backdated into the grant's window, a maker that only ever held classes attributes nothing once none is in
+/// force, and a tuple granted later widens only what is made after it.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
+    let name = "kyc-desk";
+    let stating = |run: &mut Run<MemoryStore>,
+                   shape: &str,
+                   role: &str,
+                   body: Value,
+                   n: u8,
+                   made: &str,
+                   received: &str| {
+        set_now(received);
+        let entry = json!({
+            "kind": "stated",
+            "attribution": {"signature": "verified", "who": actor(name, name, role, "component")},
+            "what": {"statement": shape},
+            "when": {"at": made, "source": "party_stated"},
+            "received_at": received,
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": ""},
+            "commitment": {"algorithm": "sha-256", "value": format!("{n:02x}").repeat(32)},
+        });
+        let claim = run.claim(&entry, &statements_key(name), body);
+        run.append(claim)
+    };
+    let judgement = |class: &str| json!({"subject": "subj-1", "class": class, "answer": "yes", "valid_until": "2026-12-01T00:00:00Z"});
+    let (shape, result) = (
+        "urn:rutent:provider-role:judgement",
+        "urn:rutent:provider-role:result",
+    );
+    let verified = |run: &Run<MemoryStore>, receipt: &Receipt| matches!(run.at(receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }));
+    let granted = |run: &mut Run<MemoryStore>| {
+        run.carry_out(
+            json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+                   "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+            GRANTED_AT,
+        );
+        run.advertise(name, &advertised(name, &advertising_key(name), name))
+            .unwrap();
+    };
+
+    // Revoked on the 7th; statements backdated to the 6th, inside the grant's window, appended after it.
+    let mut run = Run::new(MemoryStore::new());
+    granted(&mut run);
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "class": "kyc-basic"}),
+        "2026-11-07T00:00:00Z",
+    );
+    let (inside, later) = ("2026-11-06T15:04:05Z", "2026-11-07T00:00:05Z");
+    let own = stating(
+        &mut run,
+        shape,
+        "verifier",
+        judgement("kyc-basic"),
+        0xe1,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(verified(&run, &own), "its class, made inside the window");
+    let other = stating(
+        &mut run,
+        shape,
+        "verifier",
+        judgement("aml-full"),
+        0xe2,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(!verified(&run, &other), "another class, backdated");
+    let a_result = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe3,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(!verified(&run, &a_result), "a result, backdated");
+    assert!(
+        matches!(
+            stating(
+                &mut run,
+                shape,
+                "provider",
+                judgement("kyc-basic"),
+                0xe4,
+                inside,
+                later
+            ),
+            Err(AppendFailure::Refused(_))
+        ),
+        "claimed as a provider, backdated"
+    );
+
+    // Class first, then a tuple on the 8th: before it, the class's limit; after it, a provider's statement too.
+    let mut run = Run::new(MemoryStore::new());
+    granted(&mut run);
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "tuple": format!("tuple-{name}"),
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        "2026-11-08T00:00:00Z",
+    );
+    let before = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe5,
+        inside,
+        "2026-11-08T00:00:05Z",
+    )
+    .unwrap();
+    assert!(
+        !verified(&run, &before),
+        "a result made before the tuple's grant"
+    );
+    let after = stating(
+        &mut run,
+        result,
+        "provider",
+        json!({"kind": "judgement"}),
+        0xe6,
+        "2026-11-09T00:00:00Z",
+        "2026-11-09T00:00:01Z",
+    )
+    .unwrap();
+    assert!(verified(&run, &after), "a result made after it");
+}

@@ -4649,3 +4649,21 @@ named below.
   rutent-contract-guard`, the guard against `origin/develop` ("1605 changed path(s), no violations"), plan-check and
   tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-audit`, `rutent-core-authz`,
   `rutent-core-orch` and `rutent-scenarios`, and `cargo doc -D warnings` of the five: all green.
+
+### T-020-30, the review of `a2cde05d`: changes
+
+- **Blocker, fixed: a revocation widened what a verifier's keys attribute.** `classes_alone` read the grants in force
+  when a statement was appended, and with none left it answered "as before"; `core-audit`'s key register trusts a key
+  where a grant was in force at the statement's own `made_at`, which the maker chooses. So a statement backdated into
+  a revoked class grant's window (another class's judgement, a provider's `result`, a judgement claimed as a
+  provider) came out verified, and a class-only maker later granted a tuple had its earlier statements attributed
+  with no class limit. `classes_alone` now reads the grants as they stood at the claim's `when.at` (each tuple's or
+  class's latest change at or before it by its effect's time, done, as the register reads them), and a maker that has
+  held a class grant and has none in force then attributes nothing. Cases added, seen red on the reviewer's probe
+  before the fix: in `verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_category_only`
+  (revoked then backdated, made after the revocation, class then tuple) and in `core-audit`'s new
+  `a_verifiers_class_grant_is_read_at_its_statements_own_time` (the same on the real log).
+- **Low, fixed:** `holders_own`'s doc names the deliver arm.
+- **Low, noted for `T-020-32`** (gap 2 above, widened): `replay-cites-its-nodes-records` admits an `inner-segments`
+  record by any maker; holding it to the node's publisher's maker is `T-020-32`'s with the records it writes.
+

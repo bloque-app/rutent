@@ -804,7 +804,11 @@ These are defaults taken where the row left a choice open. Each is reversible by
     maker: a later round's, if one is needed.
   - *A verifier's grant is of a class.* `class` stands in a `grant`'s or `revoke_grant`'s tuple's place; the keys a
     grant of classes alone trusts attribute only judgements of those classes, as a verifier, and anything else the
-    maker signs is attributed to no one, or, a judgement claimed as a provider, refused. A party granted a tuple too
+    maker signs is attributed to no one, or, a judgement claimed as a provider, refused. The grants are read as they
+    stood at the statement's own `made_at`, the time `core-audit`'s key register trusts the key at, never as they stand
+    at the append: a revocation widens nothing backdated into the grant's window, a maker that has held classes alone
+    attributes nothing once none is in force, and a tuple granted later widens only what is made after it (the review
+    of `a2cde05d`). A party granted a tuple too
     is a provider as well, and its statements are attributed as before, any class: a residual, since the log can't
     tell which role a statement of such a party is in beyond its claim. Which classes a verifier may be granted is
     policy's and the catalogue's: the log doesn't read the verifier's advertisement. `core-audit`'s key register

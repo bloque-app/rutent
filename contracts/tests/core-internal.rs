@@ -3380,8 +3380,11 @@ fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_c
         }))
         .unwrap()
     };
-    let carried_out = |n: u64, change: Value| -> Vec<(Receipt, Entry)> {
+    // A change carried out at `at`: its effect dated then, and its done result. The log reads a grant in force at a
+    // statement's own `made_at` by the effect's time, as `core-audit`'s key register does.
+    let carried_out_at = |n: u64, change: Value, at: &str| -> Vec<(Receipt, Entry)> {
         let mut entry = fixture("valid", "verified-entry-of-an-effect");
+        entry["when"]["at"] = serde_json::json!(at);
         let mut a = serde_json::json!({"kind": "change_catalogue", "provider": "acme-co"});
         a.as_object_mut()
             .unwrap()
@@ -3390,11 +3393,13 @@ fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_c
         let mut result = fixture("valid", "verified-entry-of-a-result-unanswered");
         result["what"]["effect"] = serde_json::to_value(receipt(n)).unwrap();
         result["outcome"]["status"] = serde_json::json!("done");
+        result["when"]["at"] = serde_json::json!(at);
         vec![
             (receipt(n), serde_json::from_value(entry).unwrap()),
             (receipt(n + 100), serde_json::from_value(result).unwrap()),
         ]
     };
+    let carried_out = |n: u64, change: Value| carried_out_at(n, change, "2026-11-05T00:00:00Z");
     let classes = carried_out(1, grant);
     let acme = Id::new("acme-co").unwrap();
     // Its keys are the log's first trust in the verifier, as a tuple's grant's are a provider's.
@@ -3412,44 +3417,63 @@ fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_c
         .iter()
         .find(|(name, _)| name == "verified--a-body-without-a-transaction-about-nothing")
         .expect("the case");
-    let stating = |shape: &str, body: Value, role: Role| -> (StatedEntry, Sources) {
-        let mut claim: StatedEntry = serde_json::from_value(base["claim"].clone()).unwrap();
-        claim.what.statement = serde_json::from_value(serde_json::json!(shape)).unwrap();
-        let Attribution::Unverified { claimed_by } = &mut claim.attribution else {
-            panic!("an unverified claim")
-        };
-        claimed_by.role = role;
-        let mut source = sources(base);
-        let kept = source.kept.as_mut().unwrap();
-        let text = kept.bytes.as_str();
-        let raw: Vec<u8> = {
-            let value = |c: u8| match c {
-                b'A'..=b'Z' => c - b'A',
-                b'a'..=b'z' => c - b'a' + 26,
-                b'0'..=b'9' => c - b'0' + 52,
-                b'-' => 62,
-                _ => 63,
-            };
-            let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
-            for c in text.bytes() {
-                acc = (acc << 6) | u32::from(value(c));
-                bits += 6;
-                if bits >= 8 {
-                    bits -= 8;
-                    out.push((acc >> bits) as u8);
-                }
+    // Made at the base case's own time, 2026-11-06T15:04:05Z, unless `made` names another.
+    let stating_at =
+        |shape: &str, body: Value, role: Role, made: Option<&str>| -> (StatedEntry, Sources) {
+            let mut claim: StatedEntry = serde_json::from_value(base["claim"].clone()).unwrap();
+            claim.what.statement = serde_json::from_value(serde_json::json!(shape)).unwrap();
+            if let Some(made) = made {
+                claim.when.at = serde_json::from_value(serde_json::json!(made)).unwrap();
             }
-            out
+            let Attribution::Unverified { claimed_by } = &mut claim.attribution else {
+                panic!("an unverified claim")
+            };
+            claimed_by.role = role;
+            let mut source = sources(base);
+            // The stand-in's key signs the maker's statements at the times it lists: at `made` too, so only the grants
+            // decide.
+            if let Some(made) = made {
+                let (maker, key, _) = source.keys[0].clone();
+                source.keys.push((
+                    maker,
+                    key,
+                    serde_json::from_value(serde_json::json!(made)).unwrap(),
+                ));
+            }
+            let kept = source.kept.as_mut().unwrap();
+            let text = kept.bytes.as_str();
+            let raw: Vec<u8> = {
+                let value = |c: u8| match c {
+                    b'A'..=b'Z' => c - b'A',
+                    b'a'..=b'z' => c - b'a' + 26,
+                    b'0'..=b'9' => c - b'0' + 52,
+                    b'-' => 62,
+                    _ => 63,
+                };
+                let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
+                for c in text.bytes() {
+                    acc = (acc << 6) | u32::from(value(c));
+                    bits += 6;
+                    if bits >= 8 {
+                        bits -= 8;
+                        out.push((acc >> bits) as u8);
+                    }
+                }
+                out
+            };
+            let mut envelope: Value = serde_json::from_slice(&raw).unwrap();
+            envelope["shape"] = serde_json::json!(shape);
+            envelope["statement"] = body;
+            if let Some(made) = made {
+                envelope["made_at"] = serde_json::json!(made);
+            }
+            kept.bytes = serde_json::from_value(serde_json::json!(base64url(
+                &serde_json::to_vec(&envelope).unwrap()
+            )))
+            .unwrap();
+            (claim, source)
         };
-        let mut envelope: Value = serde_json::from_slice(&raw).unwrap();
-        envelope["shape"] = serde_json::json!(shape);
-        envelope["statement"] = body;
-        kept.bytes = serde_json::from_value(serde_json::json!(base64url(
-            &serde_json::to_vec(&envelope).unwrap()
-        )))
-        .unwrap();
-        (claim, source)
-    };
+    let stating = |shape: &str, body: Value, role: Role| stating_at(shape, body, role, None);
     let judging = |class: &str| {
         serde_json::json!({"subject": "subj-1", "class": class, "answer": "yes",
                            "valid_until": "2026-12-01T00:00:00Z"})
@@ -3515,14 +3539,68 @@ fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_c
         2,
         serde_json::json!({"change": "grant", "tuple": "usd-cop", "advertising_keys": [key]}),
     ));
-    let got = attributed(&both, stating(&result, body, Role::Provider));
+    let got = attributed(&both, stating(&result, body.clone(), Role::Provider));
     assert!(verified(&got), "{got:?}");
-    // The class revoked, its grant attributes nothing more for it: with no grant left in force, what the log trusts
-    // is as before any grant.
+
+    // The grants are read as they stood at the statement's own `made_at`, never as they stand when it is appended
+    // (the review of `a2cde05d`). Revoked on the 7th, the class grant still limits what was made on the 6th, inside
+    // its window: a statement backdated there is no wider for the revocation.
     let mut revoked = classes.clone();
-    revoked.extend(carried_out(
+    revoked.extend(carried_out_at(
         3,
         serde_json::json!({"change": "revoke_grant", "class": "kyc-basic"}),
+        "2026-11-07T00:00:00Z",
     ));
     assert!(granted_advertising_keys(&revoked, &acme).is_empty());
+    let got = attributed(
+        &revoked,
+        stating(judgement, judging("kyc-basic"), Role::Verifier),
+    );
+    assert!(verified(&got), "its class, made inside the window: {got:?}");
+    let got = attributed(
+        &revoked,
+        stating(judgement, judging("aml-full"), Role::Verifier),
+    );
+    assert!(unverified(&got), "another class, backdated: {got:?}");
+    let got = attributed(&revoked, stating(&result, body.clone(), Role::Provider));
+    assert!(unverified(&got), "a result, backdated: {got:?}");
+    assert_eq!(
+        attributed(
+            &revoked,
+            stating(judgement, judging("kyc-basic"), Role::Provider)
+        ),
+        Err(AppendFailure::Refused(Violation(
+            IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD
+        ))),
+        "claimed as a provider, backdated"
+    );
+    // Made after the revocation, with no grant left in force, a maker that only ever held classes attributes
+    // nothing, its own class included.
+    let after = Some("2026-11-08T00:00:00Z");
+    for (shape, body) in [
+        (judgement, judging("kyc-basic")),
+        (result.as_str(), body.clone()),
+    ] {
+        let got = attributed(&revoked, stating_at(shape, body, Role::Verifier, after));
+        assert!(unverified(&got), "{shape} after the revocation: {got:?}");
+    }
+
+    // Class first, then a tuple on the 8th: what was made before the tuple's grant keeps the class's limit, and what
+    // is made after it is a provider's as well.
+    let mut later = classes.clone();
+    later.extend(carried_out_at(
+        4,
+        serde_json::json!({"change": "grant", "tuple": "usd-cop", "advertising_keys": [key]}),
+        "2026-11-08T00:00:00Z",
+    ));
+    let got = attributed(&later, stating(&result, body.clone(), Role::Provider));
+    assert!(
+        unverified(&got),
+        "a result made before the tuple's grant: {got:?}"
+    );
+    let got = attributed(
+        &later,
+        stating_at(&result, body, Role::Provider, Some("2026-11-09T00:00:00Z")),
+    );
+    assert!(verified(&got), "a result made after it: {got:?}");
 }

@@ -5149,11 +5149,12 @@ fn moved_by(effect: &VerifiedEntry, reporter: &Actor, history: &History) -> bool
     }
 }
 
-/// Whether a report of a hand-on rests on the holding account's own statement (`REQ-ORD-1`): a mover could otherwise
-/// report the failure of a withdrawal the holder says it made on an unrelated maker's word, and have it confirmed on
-/// the holder's own, and a new decision would follow (`THR-70`). A confirmation or a decline needs another maker's
-/// party than the report's (`outcome-confirmation-rests-on-its-report`), so it reads no maker beyond the row's own, and
-/// neither does a report of anything but a hand-on.
+/// Whether a report of a stuck resolution rests on the moving provider's own statement, the one its resolution's `by`
+/// names (`REQ-ORD-1`): the holding account's for a hand-on (`T-020-26`), the deliverer's for a `deliver` (`T-020-30`).
+/// A mover could otherwise report the failure of a move on an unrelated maker's word, and have it confirmed on the
+/// provider's own, and a new decision would follow (`THR-70`). A confirmation or a decline needs another maker's party
+/// than the report's (`outcome-confirmation-rests-on-its-report`), so it reads no maker beyond the row's own, and
+/// neither does a report of a `move_value`.
 fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &StatedEntry) -> bool {
     if !matches!(citing.what, What::ReportOutcome { .. }) {
         return true;
