@@ -60,6 +60,7 @@ use super::is_receipt_of;
 use super::journal::{Step, built};
 use super::{Carrying, Parts, Resolutions, Resolved};
 use crate::hand_on::{proves_start, resting};
+use crate::relay;
 use crate::reliance::Judgement;
 use crate::rounds::OperatorKey;
 use crate::segments::{
@@ -482,12 +483,19 @@ impl Delivering<'_> {
                 order: Some(carrying.order.clone()),
                 segment: None,
                 transaction: Some(transaction),
+                node: None,
             };
             let entry = stated_entry(
                 self.ports.evidence,
                 &now(parts)?,
                 bytes,
                 maker(self.ports.catalogue, bytes),
+                // The provider the move ran with hands its statement over, whoever its envelope names as its maker.
+                &relay::presenter(
+                    self.ports.catalogue,
+                    &provider,
+                    rutent_contracts::core_internal::Role::Provider,
+                ),
                 Some(about),
             )
             .map_err(|why| match why {
@@ -590,12 +598,14 @@ impl Delivering<'_> {
             order: Some(carrying.order.clone()),
             segment: None,
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let question = match stated_entry(
             self.ports.evidence,
             &at,
             &signed,
             self.ports.operator.clone(),
+            self.ports.operator,
             Some(about),
         ) {
             Ok(entry) => entry,
@@ -883,6 +893,7 @@ impl Delivering<'_> {
             order: Some(carrying.order.clone()),
             segment: None,
             transaction: Some(flight.transaction.clone()),
+            node: None,
         };
         let at = now(parts)?;
         match stated_entry(
@@ -890,6 +901,11 @@ impl Delivering<'_> {
             &at,
             &bytes,
             maker(self.ports.catalogue, &bytes),
+            &relay::presenter(
+                self.ports.catalogue,
+                &flight.provider,
+                rutent_contracts::core_internal::Role::Provider,
+            ),
             Some(about),
         ) {
             Ok(entry) => {
@@ -1127,12 +1143,14 @@ impl Delivering<'_> {
                     order: Some(linked.clone()),
                     segment: None,
                     transaction: Some(transaction),
+                    node: None,
                 };
                 let entry = match stated_entry(
                     &mut *self.ports.evidence,
                     &at,
                     &bytes,
                     self.ports.operator.clone(),
+                    self.ports.operator,
                     Some(about),
                 ) {
                     Ok(entry) => entry,
@@ -1303,6 +1321,7 @@ impl Delivering<'_> {
             order: Some(flight.linked.clone()),
             segment: None,
             transaction: Some(transaction),
+            node: None,
         };
         let slot = (key(&effect.receipt), start.answer.clone());
         if !self.mover.statements.contains_key(&slot) {
@@ -1311,6 +1330,11 @@ impl Delivering<'_> {
                 &at,
                 &start.answer,
                 maker(self.ports.catalogue, &start.answer),
+                &relay::presenter(
+                    self.ports.catalogue,
+                    &flight.provider,
+                    rutent_contracts::core_internal::Role::Provider,
+                ),
                 Some(about),
             ) else {
                 return false;
@@ -1400,12 +1424,19 @@ impl Delivering<'_> {
                 order: Some(linked),
                 segment: None,
                 transaction: Some(shown.transaction.clone()),
+                node: None,
             };
             let entry = stated_entry(
                 self.ports.evidence,
                 &now(parts)?,
                 bytes,
                 maker(self.ports.catalogue, bytes),
+                // The provider the move ran with hands its statement over, whoever its envelope names as its maker.
+                &relay::presenter(
+                    self.ports.catalogue,
+                    &provider,
+                    rutent_contracts::core_internal::Role::Provider,
+                ),
                 Some(about),
             )
             .map_err(|why| match why {

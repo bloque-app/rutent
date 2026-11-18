@@ -95,6 +95,20 @@ pub(super) fn maker_named(bytes: &[u8]) -> Option<Id> {
         .and_then(|c| Id::new(c.maker))
 }
 
+/// The actor `bytes` claim made them: the maker their envelope names, acting for its publisher, or `presented_by`
+/// where the envelope names none Core can read. Who presented them is `presented_by` whatever it names, and the entry
+/// says so where it isn't this maker (`crate::relay`).
+pub(super) fn claimed_by(
+    catalogue: &Catalogue,
+    operator: &Actor,
+    bytes: &[u8],
+    presented_by: &Actor,
+) -> Actor {
+    crate::relay::claimed_by(bytes, presented_by, |maker| {
+        provider_maker(catalogue, operator, maker)
+    })
+}
+
 /// The actor a provider's statement claims made it: the provider, stating for its publisher, the operator's party for
 /// one the operator publishes.
 pub(super) fn provider_maker(catalogue: &Catalogue, operator: &Actor, provider: &Id) -> Actor {
@@ -111,13 +125,15 @@ pub(super) fn provider_maker(catalogue: &Catalogue, operator: &Actor, provider: 
     }
 }
 
-/// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
+/// Keeps `bytes`, a statement as received or as Core signed it, presented by `presented_by` (named in the entry's
+/// `relayed_by` where it isn't the maker, `crate::relay`), and builds its stated entry, claimed by `maker`,
 /// unverified, received at Core's clock, about `about`.
 pub(super) fn stated(
     evidence: &mut dyn Evidence,
     clock: &dyn Clock,
     bytes: &[u8],
     maker: Actor,
+    presented_by: &Actor,
     about: About,
 ) -> Result<GeneralEntry, ReversalError> {
     let claimed: Claimed =
@@ -126,6 +142,7 @@ pub(super) fn stated(
     let made_at = Timestamp::new(claimed.made_at).ok_or(ReversalError::Unrecordable)?;
     let received_at = now(clock)?;
     let kept = evidence.keep(bytes)?;
+    let relayed_by = crate::relay::relayed_by(&maker, presented_by);
     let entry = Entry::Stated(StatedEntry {
         kind: StatedKind::Stated,
         attribution: Attribution::Unverified { claimed_by: maker },
@@ -144,7 +161,7 @@ pub(super) fn stated(
         },
         commitment: kept.commitment,
         about: Some(about),
-        relayed_by: None,
+        relayed_by,
     });
     entry.check().map_err(AppendFailure::Refused)?;
     Ok(GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?)

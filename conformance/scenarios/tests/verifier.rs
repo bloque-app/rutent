@@ -559,3 +559,236 @@ fn cited_none(core: &Core) -> bool {
         .iter()
         .any(|w| matches!(w, What::Acceptance { .. } | What::Shown { .. }))
 }
+
+/// A verifier's judgement names no transaction and no tuple of its maker's, so the log attributes it by the grant of
+/// the verifier's class (`T-020-30`): the grant the assembly logs for the verifier names that class in place of a
+/// tuple (no placeholder tuple stands for it), under the verifier's advertising key, and the judgement it states is
+/// attributed to the verifier in the role of a verifier.
+// verifies: REQ-AUD-2
+#[test]
+fn verifier_judged_through_the_assembly_is_attributed_by_its_class_grant() {
+    let (core, _, _) = judged_and_run(&[VERIFIER], VERIFIER, "payer-ref");
+    let log = core.log();
+    let grants: Vec<(Option<Id>, Option<Id>, usize)> = log
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: rutent_contracts::core_internal::CatalogueChange::Grant,
+                            provider,
+                            tuple,
+                            class,
+                            advertising_keys,
+                            ..
+                        },
+                    ..
+                } if provider.as_str() == VERIFIER => {
+                    Some((tuple.clone(), class.clone(), advertising_keys.len()))
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        grants,
+        vec![(None, Some(id(CLASS)), 1)],
+        "the verifier's one grant names its class, no tuple, and its one advertising key"
+    );
+    let judgements: Vec<_> = log
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s) if s.what.statement.as_str() == JUDGEMENT_SHAPE => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(judgements.len(), 1, "the one judgement the order asked for");
+    match &judgements[0].attribution {
+        rutent_contracts::core_internal::Attribution::Verified { who } => {
+            assert_eq!(who.acts.as_str(), VERIFIER, "the verifier's own");
+            assert_eq!(
+                who.role,
+                rutent_contracts::core_internal::Role::Verifier,
+                "in the role the class grant gives its maker"
+            );
+        }
+        other => panic!("the judgement is attributed by the class grant: {other:?}"),
+    }
+}
+
+/// A judgement names no transaction, so the module's provider was once built with no deployment and refused every
+/// question the operator signed (`T-024-12`'s gap 2): it reads the deployment the world names under the identifier the
+/// platform gives such an operation (`T-024-18`). In the assembly's deployment, through the platform and the module, a
+/// fit subject is judged yes and an `unfit-` one no, each the verifier's own signed statement; a question made in
+/// another deployment, the suite's default, is refused, as every operation not held to the world's deployment would be.
+// verifies: REQ-AUZ-5
+#[test]
+fn simulated_verifier_module_answers_a_judgement_that_names_no_transaction() {
+    use rutent_conformance::signing::sign_statement;
+    use rutent_conformance::sim::operation;
+    use rutent_contracts::provider_role::{
+        JudgementAnswer, JudgementOutcome, JudgementResult, ResultBody,
+    };
+    use rutent_prov::module::types::Handled;
+    use rutent_scenarios::sim::Fleet;
+
+    let context = rutent_scenarios::assembly::context();
+    let mut fleet = Fleet::with_context(Duration::from_secs(3), context.clone());
+    fleet.install(Spec::of(Role::Verifier, VERIFIER));
+    let asked = |context: &rutent_conformance::role::SuiteContext, subject: &str| {
+        let question = operation(
+            context,
+            serde_json::json!({
+                "kind": "judgement",
+                "provider": VERIFIER,
+                "subject": subject,
+                "class": CLASS,
+            }),
+        );
+        sign_statement(&question, &kit::RealKey::assembly().0)
+    };
+    let mut answer_to =
+        |context: &rutent_conformance::role::SuiteContext, subject: &str| match fleet
+            .handle(VERIFIER, &asked(context, subject))
+        {
+            Handled::Answered(result) => match &result.statement {
+                ResultBody::Judgement(JudgementResult {
+                    outcome: JudgementOutcome::Judged(judged),
+                }) => {
+                    let judgement = &judged.judgement;
+                    assert_eq!(judgement.maker, VERIFIER, "the verifier's own statement");
+                    assert_eq!(judgement.statement.subject, subject);
+                    assert_eq!(judgement.statement.class, CLASS);
+                    Some(judgement.statement.answer)
+                }
+                _ => None,
+            },
+            Handled::Refused(why) => panic!("the module was refused: {why:?}"),
+        };
+    assert_eq!(
+        answer_to(&context, "payer-ref"),
+        Some(JudgementAnswer::Yes),
+        "a fit subject, judged by the module"
+    );
+    assert_eq!(
+        answer_to(&context, "unfit-payer"),
+        Some(JudgementAnswer::No),
+        "an unfit one"
+    );
+    let other = rutent_conformance::role::SuiteContext::default();
+    assert_eq!(
+        answer_to(&other, "payer-ref"),
+        None,
+        "a question made in another deployment is refused, not judged"
+    );
+}
+
+/// The first operation's tuple of the route a bare quote of `AMOUNT` chooses at the reserve: the tuple a need must
+/// name to bear on the route.
+fn route_tuple(verifiers: &[&str]) -> rutent_contracts::router_api::TupleKey {
+    let (mut core, session) = core_with(verifiers);
+    let (_, told) = quoted(&mut core, base_request("req-bare", AMOUNT, &session));
+    assert!(offered(&told), "{told:?}");
+    let record = record_of(&core, &told);
+    let operation = &record.chosen().expect("a route").parts[0].operations[0];
+    rutent_contracts::router_api::TupleKey {
+        provider: operation.provider.clone(),
+        from: operation.from.clone(),
+        to: operation.to.clone(),
+    }
+}
+
+/// A verifier's no is not a yes (`T-020-34`): a need on the route's own tuple that the honest verifier refuses leaves
+/// no offer; the routing drops the candidate that cites the no (`Ineligible`), nothing is chosen, no reliance is
+/// written and nothing starts.
+// verifies: REQ-AUZ-5, REQ-CPL-12
+#[test]
+fn honest_verifiers_no_to_a_need_on_the_routes_tuple_leaves_no_offer_and_no_reliance() {
+    use rutent_contracts::provider_role::JudgementAnswer;
+    use rutent_contracts::router_api::DropReason;
+    let tuple = route_tuple(&[VERIFIER]);
+    let (mut core, session) = core_with(&[VERIFIER]);
+    let mut request = base_request("req-no", AMOUNT, &session);
+    request.needs.push(Need {
+        tuple,
+        ..need(
+            withdrawal(),
+            kit::customer().party.as_str(),
+            VERIFIER,
+            "unfit-x",
+        )
+    });
+    let (_, told) = quoted(&mut core, request);
+    assert!(!offered(&told), "a no is not a yes: {told:?}");
+
+    let records = core.decision_records();
+    let last = records.last().expect("a choice record");
+    assert!(
+        records.iter().all(|r| r.chosen.is_none()),
+        "no round chose a route"
+    );
+    let figure = last
+        .candidates
+        .iter()
+        .find_map(|c| match &c.dropped {
+            Some(DropReason::Ineligible { figure }) => Some(figure.clone()),
+            _ => None,
+        })
+        .expect("a candidate dropped as ineligible");
+    let no = last
+        .snapshot
+        .figures
+        .iter()
+        .find(|f| f.figure_id == figure)
+        .expect("the figure it names");
+    assert!(
+        matches!(&no.value, FigureValue::Eligibility { judgement, .. }
+            if judgement.statement.answer == JudgementAnswer::No && judgement.maker == VERIFIER),
+        "it names the verifier's no: {:?}",
+        no.value
+    );
+    assert!(reliances(&core).is_empty(), "no reliance on a refusal");
+    assert!(cited_none(&core), "nothing was accepted or shown");
+    assert!(
+        core.log().entries().iter().all(|(_, e)| !matches!(
+            e,
+            Entry::Verified(v)
+                if matches!(&v.what, What::Effect { action: Action::MoveValue { .. }, .. })
+        )),
+        "no value moved, no segment started"
+    );
+}
+
+/// A need whose tuple is no tuple of the chosen route bears on nothing: the order is offered and cites no judgement
+/// (`T-020-34`'s gap 2, pinned for its owner; today's behaviour, not a requirement).
+// verifies: REQ-AUZ-5
+#[test]
+fn need_on_a_tuple_off_the_route_is_ignored_and_the_order_is_offered_with_no_judgement() {
+    let (mut core, session) = core_with(&[VERIFIER]);
+    let mut request = base_request("req-off", AMOUNT, &session);
+    request.needs.push(Need {
+        tuple: kit::tuple(
+            "elsewhere",
+            kit::bank("elsewhere"),
+            kit::ledger("elsewhere"),
+        ),
+        ..need(
+            withdrawal(),
+            kit::customer().party.as_str(),
+            VERIFIER,
+            "unfit-x",
+        )
+    });
+    let (_, told) = quoted(&mut core, request);
+    assert!(offered(&told), "{told:?}");
+    assert!(
+        cited(&record_of(&core, &told))
+            .iter()
+            .all(|(_, judgements)| judgements.is_empty()),
+        "no judgement is cited"
+    );
+}

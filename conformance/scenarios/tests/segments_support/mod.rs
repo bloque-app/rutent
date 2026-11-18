@@ -1126,6 +1126,7 @@ fn answered_under(
                     order: Some(order.clone()),
                     segment: segment.map(id),
                     transaction: Some(id(transaction)),
+                    node: None,
                 });
                 Entry::Stated(stated)
             }
@@ -1833,6 +1834,7 @@ impl Core {
             session: Some(&session),
             inputs: &self.inputs,
             floor: self.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&self.log));
         let mut parts = Parts {
@@ -1910,6 +1912,7 @@ impl Core {
             session: Some(&session),
             inputs: &self.inputs,
             floor: self.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&self.log));
         let mut parts = Parts {

@@ -252,6 +252,7 @@ impl Core {
             .ok_or(StepError::NotNow("the order started"))?;
         let part = self.part_of(order)?;
         let (core, operator) = (kit::core(), kit::operator());
+        let record_entry = self.record_entry_of(&recalculated.record);
         let live = Live {
             order,
             part: &part,
@@ -267,6 +268,7 @@ impl Core {
             session: started.session.as_ref(),
             inputs: &started.inputs,
             floor: started.floor.as_ref(),
+            record_entry: record_entry.as_ref(),
         };
         self.run_live(&live)
     }
@@ -656,6 +658,8 @@ impl Core {
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
         let part = self.part_of(order)?;
         let done = self.asking(order, |reversals, parts, _| {
+            // A scenario hands over its provider's own late result: the maker its envelope names presents it.
+            let presented_by = super::handed_over_by(&*parts.catalogue, bytes);
             reversals.later(
                 parts,
                 At {
@@ -664,6 +668,7 @@ impl Core {
                     segment,
                 },
                 bytes,
+                &presented_by,
             )
         })?;
         self.feed()?;

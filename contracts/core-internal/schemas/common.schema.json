@@ -486,14 +486,15 @@
       }
     },
     "action_ask_status": {
-      "description": "Asking a segment's provider where the segment stands, late, once it failed or fell silent (REQ-ORD-1, INV-4): a decided action, taken as an effect under a fresh transaction of its order before the question is sent. The provider is the one the segment's move went to, which the log holds (status-is-asked-of-the-segments-provider); its answer is kept as its statement and moves nothing.",
+      "description": "Asking a segment's provider where the segment stands, late, once it failed or fell silent (REQ-ORD-1, INV-4): a decided action, taken as an effect under a fresh transaction of its order, which it names, before the question is sent, so a late status is traceable from the log (T-020-36); no entry before it names that transaction (status-is-asked-under-a-fresh-transaction). The provider is the one the segment's move went to, which the log holds (status-is-asked-of-the-segments-provider); its answer is kept as its statement and moves nothing.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "kind",
         "order",
         "segment",
-        "provider"
+        "provider",
+        "transaction"
       ],
       "properties": {
         "kind": {
@@ -508,6 +509,10 @@
         },
         "provider": {
           "description": "The segment's provider, asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "transaction": {
+          "description": "The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

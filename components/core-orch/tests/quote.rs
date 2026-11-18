@@ -1185,11 +1185,13 @@ fn held_quote_past_its_validity_starts_nothing() {
         order: None,
         segment: None,
         transaction: Some(id("hold-elsewhere")),
+        node: None,
     });
     ill[3].stated.about = Some(About {
         order: Some(id("order-held")),
         segment: None,
         transaction: Some(id("hold-5")),
+        node: None,
     });
     for ill in &ill {
         assert_eq!(
@@ -1624,6 +1626,7 @@ fn hold_of(
             order: None,
             segment: None,
             transaction: Some(id(transaction)),
+            node: None,
         }),
     );
     stated.commitment = serde_json::from_value(json!({
@@ -1693,6 +1696,7 @@ fn stated_result(env: &mut Env, segment: &str, charge: u64) -> Receipt {
             order: Some(id("order-charged")),
             segment: None,
             transaction: None,
+            node: None,
         }),
         relayed_by: None,
     });

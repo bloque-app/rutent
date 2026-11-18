@@ -1485,3 +1485,41 @@ Branch `f-021/t-021-09-decline-and-status-policy`, from `m3` at `4b306ca9`. Edit
   | ask_status: operator refused | `late_status_asked_by_core_for_a_segment_is_permitted`, `authenticated_caller_is_still_decided_by_policy` |
   | ask_status: customer, provider and others permitted | `late_status_asked_by_a_customer_or_a_provider_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
   | ask_status: operator needs no permission | `late_status_asked_by_core_for_a_segment_is_permitted`, `late_status_asked_by_a_customer_or_a_provider_is_refused` |
+
+## T-021-10
+
+Branch `f-021/t-021-10-erase-permission`, from `m3` at `430b73dd`. Edits `components/core-authz/` only (`roles/`, and the
+engine's list of decided actions and its counts).
+
+- **What changed.** `Permission::EraseStatement` joins the operator's permissions, held login by login as each
+  catalogue change is. `Action::EraseStatement` is asked by an operator's login the register lists for it
+  (`operator_holds`), and by no other role, Core's own actors included; a register that says nothing gives a missing
+  input and so a refusal. The contract's action shape already names what is erased (`commitment`, `reason`) and the
+  decision's entry records the request whole, so the decision names the commitment and the actor: no contract edit.
+  `Scope::EraseStatement` (agent scope) was already in `parties/` and its table row is unchanged. The engine's
+  `every_decided_action` now lists the erasure (replacing the `unreachable!`), its caller is the operator's, and the
+  counts of `every_value_moving_action_is_refused_when_policy_denies` (15 to 16) and
+  `authenticated_caller_is_still_decided_by_policy` (`3 * 15` to `3 * 16`) follow: the only edits to `T-021-01`'s tests.
+  `every_permission` and the tests that count it are untouched.
+- **Defaults, reversible, each failing closed.**
+  - a permission apart from every catalogue change and from `PostRoute`: an operator holding all of those is refused;
+  - Core's own actors may not erase (no `CarryOnward` path): erasing is an operator's act, never one carried onward;
+  - the `reason` is a label policy never branches on, as the contract says.
+- **Gaps, with owners.**
+  1. The deployment's register must list `EraseStatement` for the operator logins that may erase: configuration,
+     owner `F-021`'s register docs / the deployment.
+  2. Policy doesn't read that the commitment names a statement the store keeps, nor that nothing rests on it: the
+     log's rows `erasure-waits-while-anything-rests-on-the-statement` and `erasure-is-carried-out-on-its-decision`
+     hold those. Owner: `T-020-37` (Core carrying out the erasure).
+  3. Core doesn't carry the erasure out yet. Owner: `T-020-37`.
+- **Red first.** Both named tests were written against `Permission::EraseStatement` with the arm still `None`: the
+  permitted test failed on its outcome assertion (`Refuse` for `Permit`); the refused test passes against that stub
+  (the behaviour before the row) and is held by its rule-offs.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the erase arm answers no rule (`None`) | `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | the operator-only restriction (any listed role may erase) | `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | another permission (`PostRoute`) stands for it | `caller_without_the_erase_permission_is_refused`, `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies` |
+  | no permission asked of the operator | `caller_without_the_erase_permission_is_refused`, `every_value_moving_action_is_refused_when_policy_denies` |

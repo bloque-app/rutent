@@ -56,6 +56,17 @@ jobs:
         # fail on a red test through the pipe (`-o pipefail`); the default shell would not.
         shell: bash
         run: cargo test --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test-results.txt"
+      # T-024-18: the jail probes (T-025-02) need `--features jail-layers`, which `cargo test --workspace` leaves off, so
+      # the Test step above never runs them, and a row they verify (`THR-85`, `THR-79`, `GUA-5`, `REQ-MDL-11`) would read
+      # untested. They run here, once more beside the `jail-probes` workflow's own run (which stays the one that records
+      # the run id for `F-025`'s notes), into the same results file the table reads: a separate workflow's job can't hand
+      # its results to this one except through an artefact of an earlier run, which a push would race.
+      - name: Jail probes, for the evidence table (T-024-18)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p rutent-prov --features jail-layers --test jail_layers -- --test-threads=1 2>&1 \
+            | tee -a "$RUNNER_TEMP/test-results.txt"
       # T-024-09: the requirement-to-evidence table (`conformance/evidence/v0-scope`), from the tags on the tests and
       # the results the Test step kept. `develop`, checked out beside the head, is what the scope file is compared
       # with: its strict switch, and the rows it classes as M3's. The checkout is a hidden directory, which the walk over
@@ -79,10 +90,11 @@ jobs:
             --results "$RUNNER_TEMP/test-results.txt" --base .evidence-base
       # T-024-02: the assembled Core's scenarios again, under seeds of their own. `cargo test` above runs them under
       # their default seeds (1, 2 and 3); a failing run names its seed, and `RUTENT_SCENARIO_SEEDS=<seed>` replays it.
+      # T-024-18: `invariants` (T-024-08's `INV-1` to `INV-10` over seeded runs) is run under these seeds beside `assembly`.
       - name: Scenarios, seeded (T-024-02)
         run: |
           echo "scenario seeds: ${RUTENT_SCENARIO_SEEDS}, run ${GITHUB_RUN_ID}" | tee -a "$GITHUB_STEP_SUMMARY"
-          cargo test -p rutent-scenarios --test assembly
+          cargo test -p rutent-scenarios --test assembly --test invariants
         env:
           RUTENT_SCENARIO_SEEDS: "11,12,13,14,15"
       # T-013-05 (B-09): seeded, time-bounded mutation fuzzing of the admitting compiler, every binary through its

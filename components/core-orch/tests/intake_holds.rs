@@ -171,6 +171,7 @@ fn log_hold(env: &mut Env, bytes: &[u8], transaction: &str) -> (Receipt, StatedE
             order: None,
             segment: None,
             transaction: Some(id(transaction)),
+            node: None,
         }),
         relayed_by: None,
     });

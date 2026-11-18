@@ -67,6 +67,10 @@ pub struct SimWorld {
     /// The state keys the platform asked this world for, in order.
     pub state_asked: Vec<String>,
     seeded: HashMap<(String, String), String>,
+    /// Each provider's secrets, by name (`T-024-07`), which only that provider's own declared lookup is answered from.
+    secrets: BTreeMap<(String, String), String>,
+    /// Every secret value the world handed a provider, by provider (`T-024-07`).
+    secrets_delivered: Vec<(String, String)>,
     clock: Option<Instant>,
     keys_down: Vec<String>,
     /// The flag of the fleet's operation clock: raised when a script holds a behaviour that waits out a real
@@ -188,6 +192,18 @@ impl SimWorld {
             .insert((provider.to_owned(), key.to_owned()), value.to_owned());
     }
 
+    /// Seeds `provider`'s own secret `name`, which only a lookup of that provider's, for a secret its release
+    /// declares, is answered with (`T-024-07`, `AC-20`).
+    pub fn seed_secret(&mut self, provider: &str, name: &str, value: &str) {
+        self.secrets
+            .insert((provider.to_owned(), name.to_owned()), value.to_owned());
+    }
+
+    /// Every secret value the world handed a provider's module, as the provider and the value, in order.
+    pub fn secrets_delivered(&self) -> &[(String, String)] {
+        &self.secrets_delivered
+    }
+
     /// Sets the clock the platform's records take their times from.
     pub fn set_clock(&mut self, at: Instant) {
         self.clock = Some(at);
@@ -221,8 +237,14 @@ impl SimWorld {
 }
 
 impl World for SimWorld {
-    fn secret(&mut self, _: &str, _: &str) -> Option<String> {
-        None
+    fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
+        let value = self
+            .secrets
+            .get(&(provider.to_owned(), name.to_owned()))
+            .cloned()?;
+        self.secrets_delivered
+            .push((provider.to_owned(), value.clone()));
+        Some(value)
     }
 
     fn state(&mut self, provider: &str, key: &str) -> Option<String> {

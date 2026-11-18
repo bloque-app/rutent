@@ -4807,3 +4807,465 @@ named below.
   `a_class_grants_changes_are_dated_in_the_order_the_log_records_them` (`core-audit`'s `tests/log.rs`): red before the
   fix on the reviewer's probe (a revocation dated the 4th behind the grant of the 5th admitted).
 
+## T-020-28
+
+Run in wave 27 after `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-27`, each merged first; `T-020-31`,
+`T-020-33`, `T-020-34` and `T-020-35` edit these modules after it.
+
+- **What is built.** `components/core-orch/src/relay.rs`, the one place `relayed_by` is set: `relayed_by(maker,
+  presented_by)` answers the presenter where it isn't the claimed maker (compared by `acts`, as `core-audit`'s
+  `Statements` does) and nothing where the maker presented its own statement. `claimed_by` reads the maker an envelope
+  names; `presenter` makes the actor of a provider (or verifier) that handed Core a statement. Each of the five writers
+  (`snapshot/statements.rs::record_refused`, `reversal/journal.rs::stated`, `segments/journal.rs::stated_entry`,
+  `arrival/journal.rs::stated`, `rounds/journal.rs::append_stated`) takes `presented_by` as a required argument and calls
+  the helper before building the entry; none writes `relayed_by: None`, and `tests/relay_helper.rs` scans `src/` so a
+  sixth site that builds a `StatedEntry` without the helper, or writes `None`, fails.
+- **Who presented, per caller.** Core's own questions: the operator, who is also their maker. A statement a provider
+  hands back to a call Core made to it (a segment's result, a stuck move's statement or late status, a reversal's
+  answer, a reserve's answer to a balance question, a round's answers): the provider asked, whatever the envelope
+  names as its maker. The round's answers and the reversal's and arrival's answers now claim the maker the envelope
+  names (the log verifies a mismatch between a claim and the kept bytes, so this is the honest claim); where the
+  envelope names none Core can read, the provider asked. A snapshot's refused statement: the answer's provider
+  (`record_refused` takes the presenter; rounds passes the answer's provider, or the envelope's maker where no answer
+  is found). `Terms::take` and the hold's take: a new required `presented_by` on `TermsDesk` and `HoldDesk`.
+- **Defaults taken (reversible).** (1) `Reversals::report` and `later` take `presented_by` from their caller (review
+  of `04f0756c`): a default of the target provider would record "no relay" when that provider is the maker and another
+  party handed the statement over, the loss this row closes. The one internal caller of `later` (the late status Core
+  asks a provider for) passes that provider, who answered the platform call. (2) `show_fault` and an `afterwards` statement are accepted only from the party named
+  (`NotTheProvider`, `makers`), so their presenter is that maker and no relay can be named there. (3) The scenario
+  harness hands over each provider's own terms or hold, so its desks name the envelope's maker as the presenter
+  (`assembly::handed_over_by`, in `conformance/scenarios`, an `F-024` file).
+- **Gaps, with owners.**
+  1. `T-024-02`'s assembly doesn't route Core's statements through `core-audit`'s `Statements`: Core appends through
+     orchestration's `Log` handle (`GeneralHandle`), and `Statements` is the intake of an outside presenter with its own
+     `Evidence`/`Log`; routing would put a second writer between Core and the log. The five sites set the field as
+     `Statements` does instead. Owner: the lead, if the owner wants one writer.
+  2. `Arrivals::arrive` takes only a notice its reporting reserve made (`read_notice` requires the envelope's maker to
+     be `report.reserve`), so no relayed notice reaches that site by that door; the named test drives the arrival
+     site through the reserve's answer, where a relay does arrive. Owner: `T-020-19`'s notice read, if a relayed
+     notice should ever be taken.
+  3. `show_fault` and the `afterwards` statements still name no presenter: they are accepted only from the party
+     named, so no relay is possible there. `report`'s and `later`'s external callers (none outside `core-orch`'s
+     tests today) must supply the authenticated presenter: the owner of the route that delivers a provider's late or
+     unasked statement (`T-024-06`/`T-024-14`'s assembly work). `T-020-12`'s tests changed only to pass the maker as
+     presenter to those two calls.
+  5. `rounds` passes the envelope's maker to `record_refused` where no answer is found for a refused statement; every
+     refused statement comes from an answer Core holds, so that case does not arise today.
+  4. `conformance/scenarios` (`assembly/mod.rs`, `assembly/charges.rs`) changed by the new desk field only.
+- **Histories the log refused.** None: the reversal, rounds and arrival tests replay the log through `attribute` and
+  `admit_entry`, and admit the relayed entries.
+- **Red first.** The six tests were written with the sites; each goes red with the helper switched off (R1 below). I
+  wrote the code before the tests, so the red was seen by rule-off and not before the code.
+- **Rule-off table** (each once, file restored; test binaries `rounds`, `reversal`, `segments`, `arrival`,
+  `snapshot_statements`, `relay_helper` under a 500 s alarm; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: the helper names no relay | all five relay tests: `quote`, `segment result`, `arrival notice`, `reversal statement`, `statement the snapshot takes` |
+  | R2: rounds claims the provider asked, not the envelope's maker | `quote restated by a relay is recorded naming the relay` |
+  | R3: reversal's answer claims the presenter, not the envelope's maker | `reversal statement restated by a relay is recorded naming the relay` |
+  | R4: a segment's result is handed over by its claimed maker | `segment result restated by a relay is recorded naming the relay` |
+  | R5: a writer writes `relayed_by: None` | `arrival notice restated by a relay is recorded naming the relay`, `every stated entry core builds takes its relay from the one helper` |
+
+
+## T-020-37: Core carries out an erasure
+
+Branch `f-020/t-020-37-erasure`, from `m3` at `b1771c2b`. Edits a new module `components/core-orch/src/erasure.rs`
+(`pub mod erasure`), the assembly's wiring (`conformance/scenarios/src/assembly/erasure.rs`, one `mod` line, one
+register line) and two scenario files. Nothing in `contracts/`, `core-audit/` or `core-authz/` changed.
+
+- **The order, each step once** (`erasure::erase_statement`): (1) the store's `erasable` check, before anything is asked
+  of policy, so no erasure is decided that the store would refuse (`NotErasable`, nothing recorded); (2) policy's
+  `decide` of `erase_statement`, the caller the operator's login; no permit ends it (`NotPermitted`: no effect, nothing
+  erased); (3) the effect, recorded before it takes place (`INV-7`); (4) `erasable` again, since a citation may have
+  landed since (1): a store that now refuses gets the effect's result `failed` and the statement stays (`Failed`);
+  (5) the effect's `done` result, which is what `BoundStore::erase` takes and reads the decision back through; (6) the
+  store's erasure, bytes and salt gone, commitment and reference staying; (7) the `erasure` entry, by Core, `done`.
+  Core reaches the store through a port, `erasure::Statements` (`erasable`, `erase`), which the assembly implements over
+  the bound store: `core-orch` never imports `core-audit` (`DEC-2`).
+- **After the done result the erasure can't be called a failure.** The log counts a statement erased from its done
+  result (`nothing-cites-an-erased-statement`) and refuses an `erasure` entry that says `failed` after one
+  (`erasure-is-carried-out-on-its-decision`). So a store unreachable now, or an `erasure` entry the log can't take, gives
+  `NotErased::Unsettled`, which `Unsettled::settle` finishes: the store's erase of one erased already is `Ok`, the entry
+  is appended after. Until then `BoundStore::unsettled_erasures` reports it (`T-022-03`).
+- **Defaults, each reversible and failing closed.**
+  1. The effect's `who` and the `erasure` entry's are Core's own actor, as a promotion's effect is (`T-020-08`); the
+     decision's is the caller's, as the log requires (`a decision is recorded for its request's caller`).
+  2. A failed erase is recorded as the effect's result `failed`, only where the store refuses before the done result.
+     The log has no record for a failure after it, so there is none; it is a finding for the checker.
+  3. Erasing what is erased already, asked a second time, is decided and recorded again (the store's `erasable` says
+     yes to an erased statement); no rule says it shouldn't. Not held by a test.
+  4. The assembly's register lists `Permission::EraseStatement` for the operator's login (`kit::operator_login`); a
+     deployment lists its own (`T-021-10`, gap 1).
+  5. The `reason` is a label (`retention` here); nothing branches on it.
+- **Tests.** `components/core-orch/tests/erasure.rs`, over a log that admits every entry through the real `admit_entry`:
+  `erasure without a permitting decision erases nothing` [`DEC-18`]; `erase that fails leaves the statement and records
+  the failure` [`REQ-AUD-14`], as the plan tags it; and three more: the permitted path in order, a statement the store
+  would refuse is never decided, and an erasure the store can't finish now settles later. The assembled Core:
+  `erasure leaves the reference and history checks` [`AC-36`, `REQ-AUD-13`] in `conformance/scenarios/tests/audit_scenarios.rs`,
+  **an `F-024` file** (`T-024-07`'s). The outside checker, handed bytes, finds nothing before the erasure, after it
+  against the checkpoints published before, and after a later one; the history up to the erasure is byte for byte what it
+  was, the statement's entry is still in it, the four new entries are the decision, the effect, its done result and the
+  `erasure` entry naming the commitment, and the store's `missing`, `refused_erasures` and `unsettled_erasures` are
+  empty. `T-024-07`'s `erasure_is_refused_in_the_assembled_core_until_policy_has_a_rule_for_it`, which pinned today's
+  refusal, is rewritten for the fixed rules as `erasure_without_a_permitting_decision_is_refused_in_the_assembled_core`
+  [`DEC-18`]: a caller the register doesn't list is refused (only the refusal is recorded; the store refuses to erase on
+  its receipt) and a statement an entry rests on is refused before policy is asked. The review of `T-021-10`'s low, in
+  `authz_scenarios.rs`: `operator agent is refused an erasure without the erase scope or when its login is unlisted`
+  [`REQ-AUZ-8`, `DEC-18`], with the listed, scoped, permitted agent as its control.
+- **Red first.** The module and its tests were written together and the tests passed on the first full run, so each rule
+  is shown by its rule-off below instead; the log's own refusal (a decision's actor is its caller) was the one history it
+  refused, a test artefact in the policy stand-in, fixed there.
+- **Gaps, with owners.**
+  1. `T-024-07`'s gap 1 is closed. The evidence store's findings (`missing`, `refused_erasures`, `unsettled_erasures`)
+     still don't reach the outside checker: `F-033` with the lead (unchanged).
+  2. A crashed erasure between the done result and the `erasure` entry is settled by the caller calling
+     `Unsettled::settle`, which Core keeps nowhere: after a restart, binding the store reports it and the operator asks
+     again. A durable resume is `F-030`'s (production assembly), with the rest of what Core keeps in memory.
+  3. Nothing here calls `erase_statement` from an operator channel: the operator's surface is `F-030`'s.
+  4. The login-unlisted half of the agent test is held by the engine's actors source (`T-021-05`'s rows); it is not
+     switched off here on its own (see the table).
+
+**Rule-off table** (the file restored each time; the core-orch ones under `perl -e 'alarm 120'`, none hung):
+
+| Rule switched off | Red |
+|---|---|
+| `erasable` before the decision (`erasure.rs`) | `erasure_of_what_the_store_would_refuse_is_not_even_decided`, `erase_that_fails_leaves_the_statement_and_records_the_failure` |
+| the permit required (a permit minted from the answer) | `erasure_without_a_permitting_decision_erases_nothing` (the log refuses the effect) |
+| `erasable` again after the effect | `erase_that_fails_leaves_the_statement_and_records_the_failure` |
+| the `erasure` entry not appended | `a_permitted_erasure_is_decided_recorded_carried_out_and_recorded_again`, `an_erasure_the_store_cannot_finish_now_settles_later` |
+| the store asked on the effect's receipt, not the done result's | the same two |
+| the store tried once, not `APPEND_TRIES` times | `an_erasure_the_store_cannot_finish_now_settles_later` |
+| the assembly's register without `Permission::EraseStatement` for the operator's login | `erasure_leaves_the_reference_and_history_checks` |
+| `core-authz` `roles`: no permission asked of the erasing caller | `erasure_without_a_permitting_decision_is_refused_in_the_assembled_core` |
+| `core-authz` `parties`: an agent's scope refusal read as yes | `operator_agent_is_refused_an_erasure_without_the_erase_scope_or_when_its_login_is_unlisted` (and `unreachable_verifier_gives_a_refusal_and_nothing_moves`, which also meets it) |
+
+## T-020-31: orchestration calls `Measures::measure`
+
+Branch `f-020/t-020-31-measures-called`, from `81be3583` (`m3` with `T-020-27`, `T-020-28` and `T-020-30`). Edits
+`components/core-orch/src/segments/` (a new `measured.rs`, and the measure calls in `mod.rs`: its hooks only),
+`reversal/mod.rs`, and `conformance/scenarios/src/assembly/measures.rs` (an `F-024` file: the commit body says so).
+`contracts/` is untouched. `T-020-28`'s one relay helper is untouched: no stated entry is written here.
+
+- **Design.** A measure is a detection (`ADR-0009`), so it is built where the ending happens and written apart from it.
+  `Segments` keeps a queue of `MeasureRecord`s, each built once, with the time of its ending by Core's clock;
+  `Segments::write_measures(&mut dyn Measures) -> usize` is orchestration's one call of `Measures::measure`, oldest
+  first. A record the log can't take now is tried up to `APPEND_TRIES` times and then waits, with those after it, for the
+  caller's next call ("retried by the caller as any other append"); one the log refuses is dropped and counted
+  (`measures_refused`). `unmeasured()` reads what waits. The hooks build the record from what the segment holds
+  (`measure_end`, infallible: a record that can't be built is none), so the segment's outcome, its entries and what it
+  moved do not depend on the writer or its answer.
+- **What each ending gives**, for the provider the segment ran at, role `provider`: settled, a quote (the operation's
+  `amount_out` against what the segment gave out, in the operation's asset); failed or a withdrawal cancelled, a
+  failure with `market` absent; refused (final or until a known time), a refusal. For the answers the operation was
+  evaluated with: each dry run of its own provider, a `dry_run` against how the segment ended and an `answer`, role
+  `provider`; each verifier's judgement the operation cites, an `answer` by the judgement's maker, role `verifier`.
+  Each answer counts once for its order, whichever segments cite it. A completed reversal gives a `reversal` for the
+  provider whose segment was reversed (`reversal/` records it in `complete`, the one place a reversal completes).
+  The endings hooked are the run's (`advance`), `confirmed_done` and `confirmed_failed`.
+- **Cites.** A segment's records cite its effect and its result as the provider stated it (a late result, for
+  `confirmed_done`; the failed `result` entry, for `confirmed_failed`); a reversal's cite the confirmation and the input
+  that recorded it.
+- **The assembly's one handle.** `Core::write_measures()` (`assembly/measures.rs`) hands `Segments` the writer
+  `Core::measure_writer` already gives. It is not called by the assembly's own run, so `T-022-06`'s counting test,
+  which writes its own records, still counts what it writes and no more (a call from `run` would double them: the
+  entry's time differs, so the log would not dedupe).
+- **Defaults taken** (reversible, each failing closed).
+  1. A segment the platform wouldn't begin (`NotHandedOver`) and every outcome that isn't final measure nothing: neither
+     says anything of the provider's conduct.
+  2. A refusal counts as a segment that ended failed, for its dry runs; a settled one as done.
+  3. Only `dry_run` figures of the operation's own provider count as dry runs; a fresh quote is a quote, which the
+     route's price already measures.
+  4. The writer is called by the assembly's caller, not by `run_part`: orchestration holds the records and the caller
+     writes them, so no `Parts` of any caller changed.
+  5. A record the log refuses is dropped, never retried; one it can't take now is kept without bound until written.
+- **Gaps, with owners.**
+  1. The queue is in `Segments`, which the production assembly keeps durably (`F-030`): a record queued and not yet
+     written when it is lost isn't rebuilt from the log. Owner: `F-030`'s durable store. The production assembly also
+     owns calling `write_measures` after each of its entry points that can end a segment or complete a reversal; the
+     scenario assembly calls it from the tests that read measures back.
+  2. Closed in the review round: `Live.record_entry` (the receipt of the log's `decision_record` entry, which holds the
+     dry runs and judgements the route was evaluated with whole) is kept in the flight, and the `dry_run` and `answer`
+     records cite it besides the segment's own entries. The assembly finds it in the log (`Core::record_entry_of`, in
+     `assembly/mod.rs`, an `F-024` file); a caller that passes `None` gets records citing the segment's entries alone.
+     The log holds no stated entry of a dry run or judgement tied to the order's segment through the record, so the
+     record entry is the one that carries them. Rule-off: the answers' extra cite dropped turns the unit test and the
+     bulk scenario red. Lows noted: the end-to-end scenario produces no verifier record (the verifier route is
+     `verifier.rs`'s), and the dedupe sets grow without bound (gap 1).
+  3. `failure.market` stays absent, as `T-022-06` left it: no part holds a market figure in `M3`.
+- **Histories the log refused.** None: the scenario tests read the records back through the real log, which admits each
+  (`measure-cites-entries-of-the-log`).
+- **Red first.** The four scenario tests (`conformance/scenarios/tests/measures_called.rs`) were written against a
+  no-op `write_measures` and failed on their assertions; the fifth (`measured.rs`' unit test) after the code, its fixture
+  needing the contract's rule that an operation cites every usable judgement about its tuple.
+- **Rule-off table** (each once, file restored; none could hang, so no alarm):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: a verifier's answer is measured in the provider's role | `a verifier's answer and the same party's quote as provider are measured apart` |
+  | R2: an answer counts once per order | the same test (its second segment) |
+  | R3: the queue drops a record the log can't take now | `a measure that cannot be written leaves the segment's outcome unchanged` (the retry) |
+  | R4: a failed segment gives no record | `bulk measures over assembled runs ...` |
+  | R5: a completed reversal queues no record | `completed reversal is measured` |
+  | R6: the run's ending queues no record (the caller's hook) | `segment ending leaves no measure record when its writer is not called`, the bulk test and the unwritable one |
+
+## T-020-34
+
+Branch `f-020/t-020-34-verifier-no`, from `m3` at `81be3583`. Edits `components/core-orch/src/rounds/mod.rs` only.
+
+- **Finding, as the row states it, did not reproduce through `route`.** `judged` indeed never read a judgement's answer,
+  but `rounds::route` runs `DecisionRecord::check` on every round's record, and the contract refuses a kept candidate
+  that cites a judgement of no ("a kept candidate cites no refused dry run and no judgement of no"), as the real router
+  also drops it (`Ineligible`). Probed at the assembly (four-provider route, `sim-verifier-b`, `unfit-x`, the need on the
+  route's real first tuple): not offered, the candidate dropped `Ineligible`. The offered order `T-024-12`'s review saw
+  had a need whose tuple is no tuple of the route (`kit::tuple(...)` instead of the route's own), and `offer` only
+  tests the needs whose tuple the chosen route uses; such a need is ignored, not a no. A router returning a record that
+  keeps a no is refused as `RoutingError::Router` (tried with a router that un-drops the candidate).
+- **Design (defence in depth, fail closed).** (1) `judged` now requires the cited judgement's answer to be yes. (2)
+  `offer` refuses a chosen route any of whose operations cites a judgement of no (`cites_a_refusal`), needed or not:
+  `NotOffered::NotEligible { tuple }`. Nothing a reliance rests on can then be a refusal, since a reliance is declared
+  on a judgement of an offered, accepted route.
+- **Tests** (unit, in `rounds/mod.rs`, over the contract's own fixture record with its judgement's answer set after
+  reading, since the contract refuses it earlier): `tuple whose verifier answered no is not offered`,
+  `route citing a verifier's refusal as its judgement is refused`. `T-024-12`'s tests are unchanged.
+- **Gaps, with owners.**
+  1. *The reliance writer can't see an answer.* `Reliances::write` takes `Judgement { receipt, judge }` and an
+     append-only `Log`, and `reliance-names-its-judges-statement` checks stated, verified, maker and about, never the
+     answer. A reliance on a refusal is therefore not refused at the writer or the log. Exact shape if wanted: the
+     relation reads the stated entry's judgement body and requires `answer: yes` (a new refused fixture `--answer`), or
+     `Judgement` gains the answer and the caller (the assembly's `judgement_of`) supplies it. Owner: core-internal's
+     single writer through the coordinator (contract round), then `F-020`. Not done here (`contracts/` untouched).
+  2. *A need on a tuple the chosen route doesn't use is ignored.* Reasonable, but a caller mistaking the tuple sees an
+     offered order with no judgement. Owner: `F-020` (intake could refuse a need whose tuple is no tuple of the catalogue).
+- **Review round 1.** (1) `offer`'s check is now `eligible(record, chosen, needs)`, a free function holding both
+  calls (`cites_a_refusal`, `judged`); the two unit tests drive it, so a removed call is red (a `Run` needs a whole
+  `Parts`, and `route` refuses the no before `offer`). (2) F-024's `verifier.rs` gains two tests (additive; T-024-12's
+  four are untouched): `honest verifier's no to a need on the route's tuple leaves no offer and no reliance` (need on
+  the tuple of a bare quote's route: not offered, no round chose, the candidate dropped `Ineligible` naming the
+  verifier's no, no reliance, nothing accepted, no move of value) and `need on a tuple off the route is ignored and
+  the order is offered with no judgement` (gap 2 pinned; today's behaviour, not a requirement).
+- **Reliances can't reach a no in practice:** a reliance is declared on a judgement of an offered, accepted route, and no
+  such route cites a no (the contract refuses it, and `eligible` again). The reliance half of the row's "refused" stays
+  gap 1's contract item.
+- **Rule-off table** (each alone, 120 s timeout, restored, none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `eligible`'s call to `judged` | `tuple whose verifier answered no is not offered` |
+  | `eligible`'s call to `cites_a_refusal` | `route citing a verifier's refusal as its judgement is refused` |
+  | `judged` ignoring the answer | `tuple whose verifier answered no is not offered` |
+  | `offer` ignoring `eligible`'s result | T-024-12's `tuple needing a judgement is not offered without one` |
+
+
+## T-020-36: `core-internal`'s round after `T-020-30`
+
+Branch `f-020/t-020-36-core-internal-round`, from `m3` at `430b73dd` (with `T-020-30` and `T-020-27` merged). Edits
+`contracts/` (core-internal, a `DEC-20` path: it waits for the owner's click at the release into `main`), and the
+consumer files named below.
+
+- **Versioning: folded into 1.0.0, no bump** (lesson 7): core-internal 1.0.0 isn't on `develop`. The changelog's last
+  entry names each item by number; `contracts/CHANGELOG.md` takes a line.
+- **Item by item.**
+  1. *A node's record verified about an order* (`T-020-32`'s blocker). `attribute`'s step 6 verified an entry about an
+     order only through a transaction its body names at top level; an `inner-segments` body names its transactions
+     only inside `segments[]` (and denies unknown fields), so the record was never verified about the order it binds.
+     Step 6 now reads such a body (`inner_segments_of`, parsed as provider-role's `InnerSegments`): about an order, no
+     segment, no transaction, it is verified only where `about.node` is the body's `node`, `segments` isn't empty, and
+     every segment's transaction is first bound to that order (`binding_of`, the binding `transaction-belongs-to-one-
+     order` keeps) **and** asked under for it by the operator's own verified `operation` question (`asked_under`).
+     About its node alone, or about nothing, it is verified as before and binds no order. Every other shape is read as
+     before, and names no node.
+  2. *A record names its node; the replay holds it to the node's publisher, once.* `About.node: Option<Id>`, named only
+     by an `inner-segments` record, about no segment or transaction (`StatedEntry::check`, and the schema's `if`/`then`
+     on `stated-entry`), and verified against the body (item 1). `replay-cites-its-nodes-records` gains `node` (one of
+     the replay's `nodes`, not one its `found` says recorded nothing), `publisher` (its maker states for the party the
+     replay's exit result states for) and `once` (no other cited record names the node). `private_node_of`, which
+     binds a node for `reversal-rests-on-its-evidence`'s `private`, binds through an `inner-segments` record only the
+     node its `about` names.
+  3. *A late status names its transaction.* `Action::AskStatus.transaction: Id`, required. New none-other row
+     `status-is-asked-under-a-fresh-transaction`: no earlier stated entry's `about` names it, nor another `ask_status`
+     effect. `core-orch`'s `Reversals::ask_status` (`reversal/mod.rs`) now claims the transaction before policy
+     decides, so the request, the decision and the effect name it; `tests/reversal.rs`'s late-status test asserts the
+     effect names `asked.transaction`.
+- **Security reading** (the brief's weight). The widened step 6 can't verify a record about an order through another
+  order's transaction (`binding_of` fixes a transaction to the first order named, and `transaction-belongs-to-one-
+  order` refuses a later other), through one no entry binds, through one only a provider's own statement binds (Core
+  never asked under it), or vacuously (no segments). The node is the body's own, so a writer can't relabel a record of
+  one node as another's. A non-publisher's record binds no node: the replay row holds it to the exit's publisher, and
+  `private_node_of` lets a record bind only the node it names, under the publisher its key states for (attribution's
+  step 3).
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0;
+  - "of that order" is first bound to it and asked under for it by the operator's own verified `operation`, stricter
+    than the binding alone: a record of a publisher's internal transaction, or appended before Core's questions, is
+    attributed to no one about the order;
+  - a node a replay replayed belongs to the publisher its exit's result states for, as `private_node_of` already binds
+    it; a sibling provider of that publisher may sign the record;
+  - a record of a node the replay found silent is refused (`node`), beside the Rust count;
+  - an `inner-segments` record about its node alone, or about nothing, stays verifiable and binds nothing;
+  - the late status's transaction is drawn before policy decides; a refused ask leaves it unused, never drawn again;
+  - the freshness row reads stated entries' `about.transaction` and other `ask_status` effects, not hand-overs
+    (which follow the effect) nor decisions (which name the same action).
+- **Consumer lines** (to compile): `node: None` in every `About` literal: `components/core-orch/src/{arrival/confirm.rs,
+  arrival/mod.rs, quote/held.rs, reversal/mod.rs, rounds/mod.rs, segments/mod.rs, snapshot/statements.rs,
+  stuck/mover.rs}`, `components/core-orch/tests/{intake_holds.rs, quote.rs, rounds.rs}`,
+  `conformance/scenarios/tests/{assembly_real_wallet.rs, segments_support/mod.rs}` (`F-024`'s); a transaction in
+  the two `AskStatus` literals of `components/core-authz/src/{engine/mod.rs, roles/tests.rs}` (`F-021`'s). New tests in
+  `components/core-audit/tests/log.rs` (`F-022`'s).
+- **Real log's path.** `core-audit`'s `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log`
+  and `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` run the contract's world on `AuditLog`, sign each
+  record for real with its maker's statements key, keep its bytes, and append it through the general handle: fx-desk's
+  record of `ledger-in` under `tx-f1` and `tx-f2` (Core's questions for `ord-1`) is verified, one naming `ord-2`'s
+  `tx-yes-2` or an unbound transaction isn't; a replay citing the verified record is admitted, one citing the
+  unverified one, us-bank's (another publisher than the exit's fx-desk), two of one node or one of a node not
+  replayed is refused, and one record of each of two nodes is admitted.
+- **Histories the log refused, sorted.** None new: every world case, `T-020-30`'s and `T-020-27`'s tests pass with only
+  the shape's literals changed. `T-020-30`'s three `inner-segments` admission cases now name their node.
+- **Order of work.** Shapes, then the rules, then the fixtures (`scratchpad/f020zh/gen.py`) and the named tests, which
+  passed on their first run; their red is shown by the rule-offs below, each run from the committed round. The first
+  run left two rules green; each got a case (`6ba57ed0`) and went red on the second run.
+- **Gaps, with owners.**
+  1. `T-020-32` appends each record about its order and node after the operations it lists, one per order: a book
+     spanning orders, or a segment under a transaction Core never asked under, stays unverified about the order (by
+     design). Owner: `T-020-32`.
+  2. A replay's nodes are bound to its exit's publisher. A run of private nodes of two publishers, or an exit made by
+     another publisher's provider, would need each node's publisher from the catalogue's private-node declarations,
+     which the log doesn't hold. Owner: the lead, a later `F-020` round if `T-020-32` meets one; residual for
+     `T-025-05`.
+  3. `private_node_of`'s replay branch still binds through the exit's result alone; the records past it add nothing to
+     the binding while they must state for the same publisher. Owner: `T-020-32`, if its scenarios need otherwise.
+  4. The scenario suite beyond the binaries run here runs in CI.
+  5. `once` holds within one replay, not across replays of one order: two replays may each cite a record of the same
+     node. Owner: the lead, a later none-other row ("one record of a node per order") if a reader needs it (the
+     review of `d11e5a2b`).
+  6. A record's body names its maker's publisher (the review's fix), but each segment it lists isn't held to a provider
+     stating for that publisher: a provider may list another publisher's segment of the same order. Residual for
+     `T-025-05`.
+- **Rule-off table** (each switched off alone from the committed tree, its tests run under a 600 s alarm through the
+  lock, the file restored with `git checkout`; script `scratchpad/f020zh/ruleoff.py`; none hung). "Table" is
+  `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "attribution" is
+  `the_log_not_the_writer_attributes_a_stated_entry`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `attribute`: a record's transactions first bound to its order (`binding_of`) | green on the first run (the operator's question covered every case); with `--naming-a-transaction-first-bound-to-another-order` (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+  | `attribute`: asked under by the operator's own question | the same two |
+  | `attribute`: no segment transaction read at all | the same two |
+  | the same, on `core-audit`'s log | `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log` |
+  | `attribute`: at least one segment | the same two contract tests |
+  | `attribute`: `about.node` is the body's, about an order | the same two |
+  | `attribute`: `about.node` is the body's, about its node alone | the same two |
+  | `attribute`: no node on another shape | green on the first run (`StatedEntry::check` refuses first); with the in-memory probe (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `attribute`: the widening whole (records read as before) | `inner_segments_record_about_an_order_whose_transactions_are_all_of_that_order_is_verified`, attribution |
+  | `StatedEntry::check`: a node only on a record | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `every_invalid_fixture_is_rejected_by_the_rust_types_too`, `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `replay-cites-its-nodes-records`'s `node` | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | its `node`, the silent nodes alone | the same two |
+  | its `publisher` | the same two |
+  | its `once` | table, `replay_citing_two_records_of_one_node_is_refused` |
+  | its `publisher`, on `core-audit`'s log | `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` |
+  | its `once`, on `core-audit`'s log | the same |
+  | `private_node_of`: a record binds only its node | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | `status-is-asked-under-a-fresh-transaction` whole (cites none) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | its stated entry naming the transaction | the same two |
+  | its other late status's effect (before the review) | the same two |
+  | the schema's `transaction` required on `ask_status` | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `late_status_asked_without_its_transaction_is_invalid` |
+  | `core-orch`: the action names the transaction drawn (another fresh id instead) | `late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_providers_statement` |
+- **Local checks of the first round** (one lock hold, at `6ba57ed0` with these notes): `cargo fmt --all -- --check`, `cargo clippy
+  --workspace --all-targets -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test
+  -p rutent-contract-guard`, the guard against `origin/develop` ("1671 changed path(s), no violations"), plan-check
+  and tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-authz` (and its `--lib`),
+  `rutent-core-orch` and `rutent-scenarios`, and `cargo doc -D warnings` of the five: all green. `rutent-core-audit`:
+  all green but one run of `reopen.rs`'s `store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_opening`,
+  which failed opening the evidence store's files (`Unavailable`, at the test's `EvidenceStore::open`) and passed three
+  runs of its own binary after; it reads no file this row touched, so a flake for CI to confirm.
+
+### T-020-36, the review of `d11e5a2b`: changes
+
+- **Should-fix, fixed: a late status's transaction could be one a verified entry named.** The row counted stated
+  entries' `about` and other `ask_status` effects only, where the action's doc says no other entry may name it: the
+  reviewer's probe asked under `tx-h3`, named before only by a `stuck_decide` and its `resolve_stuck` effect, and was
+  admitted. The row now reads every verified shape that names a transaction (`transactions_named`: a decision's or an
+  effect's action, `ask_status`, `resolve_stuck` or an `accept_fault`'s showing; a `stuck_decide`; any hand-over item),
+  excepting the effect's own permitting decision (by its request and decision ids). Checked across `types.rs`: no
+  other verified shape names a transaction. Six refused cases: `--a-stuck-resolutions-transaction` (the probe),
+  `--a-transaction-only-a-stuck-decide-step-names`, `--a-transaction-only-a-resolve-stuck-effect-names`,
+  `--a-transaction-another-late-status-decision-names` (decided, never taken), `--a-transaction-a-hand-over-names`,
+  `--a-transaction-an-accepted-showing-names`.
+- **Low, fixed: a record's body names its maker's publisher.** `inner_segments_of` holds the body's `publisher` to the
+  party the entry claims (step 3 binds it to the key), as its `node` to `about.node`. Case
+  `unverified--an-inner-segments-record-naming-another-publisher-than-its-maker-states-for`. Going further (each listed
+  segment's provider stating for that publisher) is gap 6, a residual.
+- **Low, noted:** `once` across replays of one order, gap 5.
+- **Rule-offs of the review's rules** (from `e4c51b1e`, same script and alarm; none hung, every one red):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the row whole; its stated arm; its verified arm (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | its own permitting decision excepted (counted instead) | `every_entry_of_a_complete_log_is_admitted_on_what_came_before_it`, table, `late_status_asked_without_its_transaction_is_invalid`, `request_for_a_providers_late_status_without_its_segment_is_invalid` |
+  | a decision's action; an effect's action; a `stuck_decide`; a hand-over (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | `ask_status`'s and `resolve_stuck`'s transaction; `resolve_stuck`'s alone; an accepted showing's (each alone) | the same two, each time |
+  | `attribute`: a record's publisher is its maker's | `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+- **Local checks** (one lock hold, at `e4c51b1e` with these notes): the same list as the first round's, all green,
+  `rutent-core-audit` included; the guard against `origin/develop`: "1678 changed path(s), no violations".
+
+### T-020-36, the re-review of `2b0f32b1`: changes
+
+- **Should-fix, fixed: the own-decision exception matched by ids alone.** A decision copying the permit's request and
+  decision ids, asking about p1-s1 (us-bank) under `tx-status-2`, was read as the effect's own and admitted. The
+  exception is now the entry at the permit's receipt (the same entry, `core::ptr::eq`), deciding the same action.
+  Cases `--a-decision-copying-its-own-ids-for-another-action` (the reviewer's) and
+  `--a-copy-of-its-own-decision-at-another-receipt` (pins the receipt half), both refused.
+- **Rule-offs** (from `d12dd92a` and `c0b58b6e`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the fix whole (ids alone, as before) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the receipt half alone | green from `d12dd92a` (the action half refused the reviewer's case); from `c0b58b6e`, with the copy case: table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the action half alone | none: a decision at the permit's receipt for another action is refused first by the effect's own permit rows, so this half is kept as defence and no case of this row reaches it |
+- **Local checks** (one lock hold, at `c0b58b6e` with these notes): the first round's list, all green; the guard against
+  `origin/develop`: "1680 changed path(s), no violations".
+
+### T-020-36, item 4 (added by the lead): a route handed on, whoever runs its first move
+
+- **Finding** (`T-020-33`, a hand-on through a plain wallet, the owner's form `hand-on-wallet-holder` default):
+  `handed-on-route-starts-on-its-holding-record` held the holding record's `holder` to the move's `origin_reserve`,
+  so the wallet holding the value while the linked route's first provider runs the first segment was refused on that
+  field.
+- **Design.** The record stays required. Its `holder` is the holding account the hand-on named (field `holder`): for
+  the operator's hand-on of a stuck order, the `by` of its `resolve_stuck` effect onto this order; for the customer's
+  hand-on after a failed final deposit, which names no holder, the linked route's first provider, which holds the value
+  there (`core-orch`'s `hand_on/` reads the two bases the same way). Its `node` is the inner
+  node the linked route's own plan moves this first segment from (field `node`, as
+  `holding-withdrawal-starts-a-handed-on-route` holds the node). The move's `provider` is the one that plan names for
+  the segment (field `provider`); it needn't be the holder.
+- **Default** (reversible, failing closed): the log holds no register of a node's holding accounts, so "that node's
+  holding account" is the one the hand-on named and its own record places at the node. `origin_reserve` is no longer
+  read by this row (the authorisation's rows still read it).
+- **Cases.** The contract's world had no admitted move of a route handed on (its hand-on names fx-desk, its holding
+  record us-bank's), so the cases are built from `--missing`'s history, with ord-2's own authorisation (`auth-2`, which
+  its acceptance names and the history lacked) and its own segment id (`o2-s1`: `p1-s1` is ord-1's, which
+  `segment-belongs-to-one-order` keeps): `--a-wallet-holds-and-the-plans-provider-runs-the-first-move` admitted
+  (plain-wallet named and holding at `ledger-in`, us-bank running the move); `--a-holder-the-hand-on-did-not-name`
+  (`holder`), `--node` (the record at `ledger-out`), `--a-first-move-from-another-node` (`node`), `--provider` (fx-desk
+  runs what the plan gives us-bank, decided so) refused, beside `--missing` and `--holder` (now refused on the
+  hand-on's name); for the customer's basis, `--a-customers-hand-on-held-by-its-first-provider` admitted and
+  `--a-customers-hand-on-held-by-another-than-its-first-provider` refused (`holder`).
+- **Histories the log refused, sorted.** The first version read the operator's basis alone and the end checks'
+  scenarios refused four of `rutent-scenarios`' real flows (`hand_on.rs`'s
+  `handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record`, and three of `hand_on_record.rs`), each a
+  customer's hand-on with no `resolve_stuck`: a gap in the new rule, not a Core bug; the customer's basis fixed it,
+  and both binaries pass. Test `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`.
+- **Hand-off to `T-020-33`:** its hand-on's `resolve_stuck` names the wallet as `by`, the wallet's `holding_withdrawal`
+  record names it as `holder` at the node the linked plan's first segment starts from, and the plan names the provider
+  that runs it.
+- **Rule-offs** (from the item's second commit; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `holder`: the holding account the hand-on named | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
+  | `node`: the first segment's from-node | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted` |
+  | `provider`: the plan's | the same two |
+  | `holder`, the customer's basis alone (its first provider) | the same two |
+  | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
+- **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
+  included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.

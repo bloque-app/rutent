@@ -246,6 +246,7 @@ impl Recalc {
             session: Some(&session),
             inputs: &core.inputs,
             floor: self.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&core.log));
         let mut parts = Parts {
@@ -789,6 +790,7 @@ fn settled_segment_that_crosses_the_floor_makes_the_order_wait() {
             session: Some(&session),
             inputs: &inputs,
             floor: recalc.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&core.log));
         let mut parts = Parts {

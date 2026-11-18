@@ -112,6 +112,7 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
             order: Some(id(ORDER)),
             segment: None,
             transaction: withdrawal.transaction.clone(),
+            node: None,
         })
     );
     // The log admits every entry: each answer follows its question, which is the operator's, verified, and the
@@ -894,4 +895,58 @@ fn automatic_deposit_is_routed_without_a_users_yes() {
             session: None,
         }
     );
+}
+
+/// The stated entries in `env`'s log claimed by `maker`, with who each names as its relay.
+fn relays_of(env: &Env, maker: &str) -> Vec<Option<rutent_contracts::core_internal::Actor>> {
+    env.log
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A provider asked a dry run answers with a quote another provider signed: the entry is the quote's maker's,
+/// unverified, and names the provider that handed it over as its relay; a provider's own quote names none.
+// verifies: REQ-AUD-2
+#[test]
+fn quote_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let inputs = on_polygon(&[RESERVE, SIBLING], RESERVE);
+    let reserves = [(RESERVE, "acme"), (SIBLING, "acme")];
+    let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
+    let mut sim = env.sim();
+    // The sibling hands over a quote the reserve signed, for a transaction of the reserve's own.
+    let carried = json!({
+        "kind": "withdrawal", "transaction": "carried-tx", "provider": RESERVE, "session": SESSION,
+        "origin": { "network": "polygon" }, "destination": "polygon", "asset": "USDC", "amount": "1000",
+        "dry_run": true, "inputs": {},
+    });
+    let quote = sign(
+        answer(RESERVE, &carried, START, 0, false, false),
+        &statements_key(RESERVE, 1),
+    );
+    sim.relay.insert(SIBLING.into(), quote.clone());
+    run(&mut env, &mut sim, &inputs);
+    let at = env.stated_at(&quote).expect("the quote is on the record");
+    let Entry::Stated(entry) = &env.log.entries[at] else {
+        unreachable!()
+    };
+    assert_eq!(entry.attribution.maker().acts, id(RESERVE));
+    let relay = entry.relayed_by.as_ref().expect("the relay is named");
+    assert_eq!(relay.acts, id(SIBLING));
+    env.admitted().expect("the log admits every entry");
+
+    // The sibling's own answers, and the reserve's, name no relay.
+    let mut env = Env::new(catalogue(&reserves, 100_000), true, 100);
+    let mut sim = env.sim();
+    run(&mut env, &mut sim, &inputs);
+    for maker in [RESERVE, SIBLING] {
+        let relays = relays_of(&env, maker);
+        assert!(!relays.is_empty() && relays.iter().all(Option::is_none));
+    }
 }

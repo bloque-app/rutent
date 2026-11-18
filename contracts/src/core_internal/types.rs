@@ -461,9 +461,11 @@ pub enum Action {
         provider: Id,
     },
     /// Asking a segment's provider where the segment stands, late, once it failed or fell silent (`REQ-ORD-1`, `AC-5`'s
-    /// late delivery): a decided action, taken as an effect under a fresh transaction of its order and appended
-    /// before the question is sent. What the provider answers is kept as its statement and moves nothing
-    /// (`INV-4`). The provider is the one the segment's move went to (`status-is-asked-of-the-segments-provider`).
+    /// late delivery): a decided action, taken as an effect under a fresh transaction of its order, which it names,
+    /// and appended before the question is sent, so a late status is traceable from the log (`T-020-36`). What the
+    /// provider answers is kept as its statement and moves nothing (`INV-4`). The provider is the one the segment's
+    /// move went to (`status-is-asked-of-the-segments-provider`), and the transaction one no entry before it names
+    /// (`status-is-asked-under-a-fresh-transaction`).
     AskStatus {
         /// The order.
         order: Id,
@@ -471,6 +473,8 @@ pub enum Action {
         segment: Id,
         /// The segment's provider, asked.
         provider: Id,
+        /// The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.
+        transaction: Id,
     },
     /// The customer accepting a provider's showing that a failed segment's failure was its fault (`REQ-ORD-11`): a
     /// decision of policy's on the policy handle, as an order's authorisation is, asked by the order's requester in its
@@ -2956,8 +2960,8 @@ pub struct SignedWith {
     pub key: PublicKey,
 }
 
-/// What a stated entry is about, where Core knows it: at least one of an order, a segment or a transaction. Schema:
-/// `urn:rutent:core-internal:stated-entry#/$defs/about`.
+/// What a stated entry is about, where Core knows it: at least one of an order, a segment, a transaction or a private
+/// node. Schema: `urn:rutent:core-internal:stated-entry#/$defs/about`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct About {
@@ -2982,6 +2986,15 @@ pub struct About {
         skip_serializing_if = "Option::is_none"
     )]
     pub transaction: Option<Id>,
+    /// The private node a publisher's record of the segments inside it is of (provider-role's `inner-segments`), as
+    /// its body names it: named by that shape alone, so the log reads which node a record is of
+    /// (`replay-cites-its-nodes-records`, `T-020-36`). [`attribute`](super::attribute) verifies it against the body.
+    #[serde(
+        default,
+        deserialize_with = "some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub node: Option<Id>,
 }
 
 /// What a party stated, apart from anything rutent verified (`REQ-AUD-2`): who it is attributed to, its shape, the

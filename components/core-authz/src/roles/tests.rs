@@ -1315,6 +1315,7 @@ fn status_asked(caller: &Actor) -> DecisionRequest {
         order: id("ord-17"),
         segment: id("seg-2"),
         provider: id("bridge-pay"),
+        transaction: id("tx-status-1"),
     };
     request
 }
@@ -1605,5 +1606,123 @@ fn only_the_requester_in_its_open_session_after_the_showing_accepts_a_fault() {
         }
         let decision = policy.decide(&request).unwrap();
         assert_eq!(decision.outcome, NOT_PERMITTED, "{request:?}");
+    }
+}
+
+/// A kept statement's erasure, as `caller` asks it: the fixtures' request, which names the commitment and a reason.
+fn erasure_asked(caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-erase-a-kept-statement");
+    request.request = id(&format!("req-erase-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request
+}
+
+/// An operator's login the register lists for the permission to erase is permitted to erase a kept statement, and the
+/// decision's entry holds the request whole, so it names the commitment erased and the actor who asked (`T-021-10`,
+/// `DEC-18`); the permit it gives is one the log takes an `erase_statement` effect on.
+// verifies: AC-36, DEC-18
+#[test]
+fn operator_with_the_erase_permission_is_permitted_to_erase_a_statement() {
+    let asked = erasure_asked(&operator());
+    let Action::EraseStatement { commitment, .. } = &asked.action else {
+        panic!("an erasure");
+    };
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::EraseStatement]),
+    );
+    let decision = policy.decide(&asked).unwrap();
+    assert_eq!(decision.outcome, Answer::Permit {});
+    let entry = policy.log().entry_of(&decision).clone();
+    assert_eq!(entry.who, operator(), "recorded with its actor");
+    let What::Decide { request, .. } = &entry.what else {
+        panic!("a decide entry");
+    };
+    assert!(
+        matches!(&request.action, Action::EraseStatement { commitment: c, .. } if c == commitment),
+        "the decision names the commitment erased"
+    );
+    assert_eq!(
+        policy.policy.1.ruled, 1,
+        "it reached the deployment's policy"
+    );
+    assert!(
+        policy
+            .log
+            .effect(&asked, decision.permit().unwrap())
+            .is_ok(),
+        "the erasure's effect rests on the permit"
+    );
+}
+
+/// A caller without the permission to erase is refused: the operator's login the register doesn't list for it, even
+/// holding every other permission, and another login of its party; nobody in another role, whatever the register
+/// lists for them, before the deployment's policy is asked; and the permission to erase allows no other action.
+// verifies: REQ-AUZ-1
+#[test]
+fn caller_without_the_erase_permission_is_refused() {
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::AskReversal,
+        Permission::AskStatus,
+        Permission::DecideStuck,
+        Permission::MoveStuck,
+        Permission::ConfirmOutcome,
+        Permission::DeclineOutcome,
+    ]);
+    let others = [
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+        actor(
+            "bridge-pay",
+            "bridge-pay",
+            Role::Provider,
+            ActorKind::Component,
+        ),
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+        core(),
+    ];
+    let mut register = Register::holding(&operator(), &every_other);
+    for other in &others {
+        register = register.and_holding(other, &[Permission::EraseStatement]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    let other_login = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
+    for caller in [operator(), other_login].iter().chain(&others) {
+        let decision = policy.decide(&erasure_asked(caller)).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{caller:?}");
+        assert_eq!(
+            policy.log.effect(&erasure_asked(caller), forged(&decision)),
+            no_permitting_decision(),
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+
+    // The permission to erase allows nothing else.
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::EraseStatement]),
+    );
+    for (permission, request) in every_permission(&operator()) {
+        assert_eq!(
+            policy.decide(&request).unwrap().outcome,
+            NOT_PERMITTED,
+            "{permission:?}"
+        );
     }
 }

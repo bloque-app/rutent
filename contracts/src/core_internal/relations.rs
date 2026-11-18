@@ -346,8 +346,12 @@ fn segment_started<'a>(
 }
 
 /// The order `transaction` belongs to, and the segment, where it names one: those the first stated entry naming it
-/// under an order names (see `transaction-belongs-to-one-order`).
-fn binding_of<'a>(transaction: &Id, history: &'a History) -> Option<(&'a Id, Option<&'a Id>)> {
+/// under an order names (see `transaction-belongs-to-one-order`). [`attribute`](super::attribute) reads it too, for a
+/// publisher's record of a node's segments about an order (`T-020-36`).
+pub(super) fn binding_of<'a>(
+    transaction: &Id,
+    history: &'a History,
+) -> Option<(&'a Id, Option<&'a Id>)> {
     history.iter().find_map(|(_, e)| {
         let s = stated(e)?;
         let (order, t) = order_transaction(s)?;
@@ -424,7 +428,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 106] = [
+pub static RELATIONS: [Relation; 107] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -558,12 +562,26 @@ pub static RELATIONS: [Relation; 106] = [
         spec: &["REQ-ORD-40", "REQ-ORD-43", "INV-5"],
         quantifier: Quantifier::Exists,
         refusal: "a route handed on starts on its holding account's record of the withdrawal in this log",
-        fields: &[(
-            "holder",
-            "a route handed on starts on the record of its starting reserve, the holding account's provider",
-        )],
+        fields: &[
+            (
+                "holder",
+                "a route handed on starts on the record of the holding account its order's hand-on named",
+            ),
+            (
+                "node",
+                "a route handed on starts its first move from the node its holding record names",
+            ),
+            (
+                "provider",
+                "a route handed on's first move is run by the provider its own plan names for it",
+            ),
+        ],
         // A route handed on has no withdrawal of its own: the holding account's record proves its start, so its
-        // first move rests on it, by the reserve it moves from.
+        // first move rests on it. The record is the holding account's that the hand-on named (an operator's
+        // `resolve_stuck` hand-on's `by`; for the customer's, the linked route's first provider, which holds the
+        // value), at the node the first segment moves from, and the move is run by the provider the linked route's
+        // own plan names, which needn't be the holding account: a plain wallet holds and runs no segment (`T-020-33`,
+        // the owner's form `hand-on-wallet-holder`; `T-020-36`'s item 4).
         cites: |e, h| match effect_action(e) {
             Some((Action::MoveValue { order, segment, .. }, _))
                 if handed_on_from_of(order.as_str(), h).is_some()
@@ -577,7 +595,8 @@ pub static RELATIONS: [Relation; 106] = [
             let Some((
                 Action::MoveValue {
                     order,
-                    origin_reserve,
+                    segment,
+                    provider,
                     ..
                 },
                 _,
@@ -590,12 +609,56 @@ pub static RELATIONS: [Relation; 106] = [
                     order: o,
                     handed_on_from,
                     holder,
+                    node,
                     ..
-                }) => judge(
-                    o == order
-                        && handed_on_from_of(order.as_str(), h) == Some(handed_on_from.as_str()),
-                    &[holder == origin_reserve],
-                ),
+                }) => {
+                    // The first segment as the linked route's own plan names it.
+                    let plan = h.iter().find_map(|(_, x)| {
+                        verified(x)
+                            .and_then(input)
+                            .filter(|i| i.subject.order.as_str() == order.as_str())
+                            .and_then(|i| planned(i, segment.as_str()))
+                    });
+                    // The node's holding account, as the hand-on names it: the operator's, a stuck order's
+                    // `resolve_stuck` hand-on onto this order, names it as its `by`; the customer's, after a failed
+                    // final deposit, starts the linked route at its own first segment's provider, which holds the
+                    // value there (`hand_on/`'s two bases).
+                    let operators: Vec<&Id> = h
+                        .iter()
+                        .filter_map(|(_, x)| match verified(x).and_then(effect_action) {
+                            Some((
+                                Action::ResolveStuck {
+                                    order: from,
+                                    resolution:
+                                        Resolution::HandOn {
+                                            by, linked_order, ..
+                                        },
+                                    ..
+                                },
+                                _,
+                            )) if from == handed_on_from && linked_order == order => Some(by),
+                            _ => None,
+                        })
+                        .collect();
+                    let named = if operators.is_empty() {
+                        plan.is_some_and(|s| s.provider.as_str() == holder.as_str())
+                    } else {
+                        operators.contains(&holder)
+                    };
+                    judge(
+                        o == order
+                            && handed_on_from_of(order.as_str(), h)
+                                == Some(handed_on_from.as_str()),
+                        &[
+                            named,
+                            plan.is_some_and(|s| {
+                                matches!(&s.from.node, crate::provider_role::NodeRef::Inner(n)
+                                    if n.as_str() == node.as_str())
+                            }),
+                            plan.is_some_and(|s| s.provider.as_str() == provider.as_str()),
+                        ],
+                    )
+                }
                 _ => Match::NotTarget,
             }
         },
@@ -2289,12 +2352,54 @@ pub static RELATIONS: [Relation; 106] = [
                     order,
                     segment,
                     provider,
+                    ..
                 },
                 _,
             )) if segment_provider(order, segment, h) != Some(provider) => by_fields(0),
             _ => none(),
         },
         answers: |_, _, _, _| Match::NotTarget,
+    },
+    Relation {
+        name: "status-is-asked-under-a-fresh-transaction",
+        spec: &["REQ-ORD-1", "REQ-ORD-38"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a late status is asked under a fresh transaction: no entry before it names that transaction",
+        fields: &[],
+        // The transaction an `ask_status` effect names is the one Core asks under (`T-020-36`), so a late status is
+        // traced from the log by it: never the segment's own, nor one any entry before it names, a stated entry's
+        // `about` or a verified entry's transaction ([`transactions_named`]), but for its own permitting decision, the
+        // one at its permit's receipt deciding the same action. The same effect retried is no other.
+        cites: |e, _| match effect_action(e) {
+            Some((Action::AskStatus { .. }, _)) => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| {
+            let Some((action @ Action::AskStatus { transaction, .. }, permit)) = effect_action(e)
+            else {
+                return Match::NotTarget;
+            };
+            // Its own permitting decision: the entry at the permit's receipt, deciding this same action. A decision
+            // that copies its ids, at another receipt or for another action, is another entry naming the transaction
+            // (the re-review of `2b0f32b1`).
+            let own_decision = entry_at(permit.receipt(), h);
+            let named = match t {
+                Entry::Stated(s) => s
+                    .about
+                    .as_ref()
+                    .and_then(|a| a.transaction.as_ref())
+                    .is_some_and(|x| x == transaction),
+                Entry::Verified(v) => {
+                    let own = own_decision.is_some_and(|d| core::ptr::eq(d, t))
+                        && matches!(&v.what, What::Decide { request, decision }
+                            if decision == permit.decision()
+                                && &request.request == permit.request()
+                                && &request.action == action);
+                    !own && transactions_named(v).contains(&transaction.as_str())
+                }
+            };
+            judge(named, &[])
+        },
     },
     Relation {
         name: "reversal-carrier-is-of-a-reversal-owed",
@@ -4915,6 +5020,40 @@ fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'
         .flatten()
 }
 
+/// The transactions a decided action names: a late status's, a stuck resolution's, and the one an accepted showing
+/// of fault is about.
+fn action_transactions(action: &Action) -> Option<&str> {
+    match action {
+        Action::AskStatus { transaction, .. } | Action::ResolveStuck { transaction, .. } => {
+            Some(transaction.as_str())
+        }
+        Action::AcceptFault { showing, .. } => Some(showing.transaction.as_str()),
+        _ => None,
+    }
+}
+
+/// Every transaction a verified entry names (`status-is-asked-under-a-fresh-transaction`, `T-020-36`): a decision's
+/// or an effect's action ([`action_transactions`]), a stuck resolution's decide step, and a platform event or segment
+/// record handed over. No other verified shape names one.
+fn transactions_named(entry: &VerifiedEntry) -> Vec<&str> {
+    match &entry.what {
+        What::Decide { request, .. } => action_transactions(&request.action).into_iter().collect(),
+        What::Effect { action, .. } => action_transactions(action).into_iter().collect(),
+        What::StuckDecide { request, .. } => alloc::vec![request.transaction.as_str()],
+        What::HandOver { item, .. } => alloc::vec![match item {
+            HandedOver::OutboundCall { record } => record.transaction.as_str(),
+            HandedOver::CrossModuleCall { call } => call.transaction.as_str(),
+            HandedOver::SecretLookup { lookup, .. } => lookup.transaction.as_str(),
+            HandedOver::StateRead { transaction, .. }
+            | HandedOver::Limit { transaction, .. }
+            | HandedOver::SecretUse { transaction, .. }
+            | HandedOver::OperationUnanswered { transaction, .. }
+            | HandedOver::SegmentRecord { transaction, .. } => transaction.as_str(),
+        }],
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `transaction` is a stuck resolution's in `history`: a `stuck_decide` names it.
 fn resolution_transaction_in(transaction: &Id, history: &History) -> bool {
     history.iter().any(|(_, e)| {
@@ -5652,10 +5791,11 @@ fn from_node_of<'a>(order: &str, segment: &str, history: &'a History) -> Option<
 
 /// Whether the log binds `node` as a private node of `order` published by `publisher`: a `replay` of the order
 /// naming the node, resting on a verified statement about the order stating for the publisher, or evidence of the
-/// order whose public movement names the node, resting on one.
+/// order whose public movement names the node, resting on one. A publisher's record of a node's segments binds only
+/// the node it names (`T-020-36`).
 fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -> bool {
     // A verified statement stating for the publisher, about this order: a replay's exit result, or the evidence's
-    // own statement, of another order binds nothing here.
+    // own statement, of another order binds nothing here, nor a record of another node's segments.
     let for_publisher = |r: &Receipt| {
         entry_at(r, history).and_then(stated).is_some_and(|s| {
             matches!(s.attribution, Attribution::Verified { .. })
@@ -5664,6 +5804,11 @@ fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -
                     .as_ref()
                     .and_then(|a| a.order.as_ref())
                     .is_some_and(|o| o.as_str() == order)
+                && (s.what.statement.as_str() != crate::provider_role::INNER_SEGMENTS_SHAPE
+                    || s.about
+                        .as_ref()
+                        .and_then(|a| a.node.as_ref())
+                        .is_some_and(|n| n.as_str() == node))
         })
     };
     history

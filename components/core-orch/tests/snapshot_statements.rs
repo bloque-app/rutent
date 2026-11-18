@@ -8,7 +8,7 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, KeptStatements, Signatures, StatementKeys,
 };
 use rutent_contracts::core_internal::{
-    Attribution, Entry, KeptStatement, Role, SignedWith, StatedEntry, attribute,
+    Actor, ActorKind, Attribution, Entry, KeptStatement, Role, SignedWith, StatedEntry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE};
@@ -22,6 +22,17 @@ use rutent_prov::catalogue::Publisher;
 use rutent_prov::catalogue::{Instant, StatementRefusal};
 use serde_json::{Value, json};
 use snapshot_support::*;
+
+/// Who handed `statement` to Core where its maker did: the maker its envelope names, for itself.
+fn by_its_maker(statement: &RefusedStatement) -> Actor {
+    let acts = Id::new(statement.maker().expect("an envelope names its maker")).unwrap();
+    Actor {
+        party: acts.clone(),
+        acts,
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    }
+}
 
 fn m(name: &str) -> PathStep {
     PathStep::Member(name.into())
@@ -136,7 +147,16 @@ fn record_each(
     let mut log = KeptLog::default();
     let mut evidence = KeptEvidence::default();
     for statement in refused {
-        record_refused(&mut evidence, &mut log, clock, catalogue, statement, None).unwrap();
+        record_refused(
+            &mut evidence,
+            &mut log,
+            clock,
+            catalogue,
+            statement,
+            &by_its_maker(statement),
+            None,
+        )
+        .unwrap();
     }
     assert_eq!(log.entries.len(), refused.len());
     for (entry, statement) in log.entries.iter().zip(refused) {
@@ -568,7 +588,16 @@ fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_sign
     };
     let mut log = KeptLog::default();
     let mut evidence = KeptEvidence::default();
-    record_refused(&mut evidence, &mut log, &clock, &catalogue, &claimed, None).unwrap();
+    record_refused(
+        &mut evidence,
+        &mut log,
+        &clock,
+        &catalogue,
+        &claimed,
+        &by_its_maker(&claimed),
+        None,
+    )
+    .unwrap();
     // Orchestration never attributes a statement, whatever it is told: it appends it unverified, claimed by the
     // maker its envelope names and about the transaction its bytes sign, and the log, which alone attributes, reads
     // the kept bytes' own signature (core-internal's `attribute`).
@@ -577,7 +606,16 @@ fn refused_statement_claiming_its_signature_verified_is_recorded_by_its_own_sign
         verified: false,
         ..claimed.clone()
     };
-    record_refused(&mut evidence, &mut log, &clock, &catalogue, &honest, None).unwrap();
+    record_refused(
+        &mut evidence,
+        &mut log,
+        &clock,
+        &catalogue,
+        &honest,
+        &by_its_maker(&honest),
+        None,
+    )
+    .unwrap();
     let [Entry::Stated(stray), Entry::Stated(signed)] = log.entries.as_slice() else {
         panic!("two stated entries");
     };
@@ -661,7 +699,16 @@ fn operators_module_statement_is_claimed_in_the_providers_role() {
     };
     let mut log = KeptLog::default();
     let mut evidence = KeptEvidence::default();
-    record_refused(&mut evidence, &mut log, &clock, &catalogue, &refused, None).unwrap();
+    record_refused(
+        &mut evidence,
+        &mut log,
+        &clock,
+        &catalogue,
+        &refused,
+        &by_its_maker(&refused),
+        None,
+    )
+    .unwrap();
     let [Entry::Stated(claim)] = log.entries.as_slice() else {
         panic!("one stated entry");
     };
@@ -686,4 +733,65 @@ fn operators_module_statement_is_claimed_in_the_providers_role() {
     let mut keys = LogSources { ..sources };
     let signatures = LogSources { ..sources };
     assert!(attribute(&claim, &[], &mut sources, &mut keys, &signatures).is_ok());
+}
+
+/// A reserve's dry run, `RESERVE`'s own statement under its own key, handed to Core by `presenter`, and the stated entry
+/// the log gets for it.
+fn recorded_as_presented_by(presenter: &Actor) -> StatedEntry {
+    let catalogue = catalogue(&[(RESERVE, "acme")], 100_000);
+    let clock = TestClock::at(4_000);
+    let refused = RefusedStatement {
+        tuple: withdrawal_tuple(RESERVE),
+        bytes: dry_run(&deployment(), 3_500, &statements_key(RESERVE, 1)),
+        reason: Refusal::NoTuple,
+        verified: false,
+    };
+    let mut log = KeptLog::default();
+    let mut evidence = KeptEvidence::default();
+    record_refused(
+        &mut evidence,
+        &mut log,
+        &clock,
+        &catalogue,
+        &refused,
+        presenter,
+        None,
+    )
+    .unwrap();
+    let [Entry::Stated(stated)] = log.entries.as_slice() else {
+        panic!("one stated entry");
+    };
+    stated.clone()
+}
+
+/// A statement of the reserve's that another provider hands Core is recorded as the reserve's, the relay named apart
+/// from its claimed maker, so a copy is never recorded as if its maker had presented it.
+// verifies: REQ-AUD-2
+#[test]
+fn statement_the_snapshot_takes_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let relay = Actor {
+        party: Id::new("other-party").unwrap(),
+        acts: Id::new(SIBLING).unwrap(),
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    };
+    let stated = recorded_as_presented_by(&relay);
+    let Attribution::Unverified { claimed_by } = &stated.attribution else {
+        panic!("appended unverified");
+    };
+    assert_eq!(claimed_by.acts.as_str(), RESERVE);
+    assert_eq!(stated.relayed_by.as_ref(), Some(&relay));
+}
+
+/// The maker's own statement, handed over by the maker, names no relay.
+// verifies: REQ-AUD-2
+#[test]
+fn statement_presented_by_its_own_maker_is_recorded_with_no_relay_named() {
+    let maker = Actor {
+        party: Id::new("acme").unwrap(),
+        acts: Id::new(RESERVE).unwrap(),
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    };
+    assert_eq!(recorded_as_presented_by(&maker).relayed_by, None);
 }

@@ -47,6 +47,14 @@
 //! (`REQ-AUZ-5`). Each decision's entry records its actor and the change, and each role it acts in apart, even where
 //! one party holds several (`REQ-AUD-8`).
 //!
+//! # Erasing a statement
+//!
+//! Erasing a kept statement's bytes is a permission of its own, [`Permission::EraseStatement`], held actor by actor as
+//! each catalogue change is, so no login holds it by holding another (`REQ-AUZ-1`, `DEC-18`). Only an operator's login
+//! the register lists for it is permitted; every other role is refused before the deployment's policy is asked, Core's
+//! own actors too, and a register that says nothing gives a missing input and so a refusal. The decision's entry holds
+//! the request whole, naming the commitment and the actor, which the evidence store's erase reads as its permit.
+//!
 //! # Acting for a user
 //!
 //! A user authorises at its origin, and the route carries that onward (`REQ-AUZ-9`). The role a request states is
@@ -121,6 +129,10 @@ pub enum Permission {
     /// An actor declining a mover's report of a move's outcome, on its own evidence: the confirming actor's other
     /// word, a permission apart from confirming (`REQ-AUZ-4`, ADR-0011, `T-021-09`). Asked by `T-021-09`'s rule.
     DeclineOutcome,
+    /// An operator's login erasing a kept statement's bytes from the evidence store, the commitment staying in the
+    /// log, a permission of its own as each catalogue change is (`REQ-AUZ-1`, `REQ-AUD-13`, `DEC-18`). Asked by
+    /// `T-021-10`'s rule.
+    EraseStatement,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
@@ -176,9 +188,14 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 },
                 // A request carrying it fails its check before it is consulted (`REQ-AUZ-4`).
                 Action::ResolveStuck { .. } => None,
-                // No rule lets anyone ask it yet, so policy refuses it: the operator's permission to erase a kept
-                // statement is a hand-off to policy's rows (core-internal's README, `REQ-AUD-13`).
-                Action::EraseStatement { .. } => None,
+                // Erasing a kept statement's bytes (`REQ-AUD-13`, `DEC-18`, `T-021-10`): an operator's login the register
+                // lists for a permission of its own, as each catalogue change has one, and no other role, Core's own
+                // actors included. The decision's entry records the request whole, so it names the commitment erased
+                // and who asked. That the log's statement is one it keeps, and that its erasure is decided, the log holds
+                // (`BoundStore::erase`).
+                Action::EraseStatement { .. } => {
+                    operator_holds(caller, Permission::EraseStatement).map(Needs::from)
+                }
                 // Asking a segment's provider for a late status (core-internal's `T-020-21` round, `T-021-09`), as
                 // a reversal is asked: an operator's login the register lists for it, a permission of its own, or
                 // one of Core's own actors carrying the order on. Nobody else, and an unknown role fails closed.

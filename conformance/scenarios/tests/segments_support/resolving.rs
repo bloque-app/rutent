@@ -452,6 +452,7 @@ pub fn on_settling<T>(
         session: Some(&session),
         inputs: &core.inputs,
         floor: core.floor.as_ref(),
+        record_entry: None,
     };
     let mut general = General(Rc::clone(&core.log));
     let mut parts = Parts {

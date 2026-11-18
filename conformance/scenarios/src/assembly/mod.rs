@@ -45,7 +45,9 @@
 mod arrivals;
 pub mod audit;
 pub mod charges;
+pub mod checking;
 pub mod durable;
+mod erasure;
 mod grading;
 pub mod holding;
 pub mod lifecycle;
@@ -54,6 +56,7 @@ pub mod machine;
 pub mod measures;
 pub mod policy;
 pub mod price;
+pub mod releases;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -102,6 +105,27 @@ use serde_json::json;
 
 use crate::kit::{self, RealKey, Seeded, SharedClock};
 use crate::sim::{Fleet, Installed, SimWorld};
+
+/// Who hands a statement to Core in a scenario: the maker its envelope names, acting for its publisher. A scenario
+/// hands over its providers' own statements, so none is a relay's copy (`T-020-28`).
+fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
+    let acts = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v["maker"].as_str().and_then(Id::new))
+        .unwrap_or_else(|| Id::new("unknown").expect("an id"));
+    let party = match catalogue.publishers().publisher(acts.as_str()) {
+        Some(rutent_prov::catalogue::Publisher::Operator) => Id::new("operator"),
+        Some(rutent_prov::catalogue::Publisher::Party(publisher)) => Id::new(publisher),
+        None => None,
+    }
+    .unwrap_or_else(|| acts.clone());
+    Actor {
+        party,
+        acts,
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    }
+}
 use crate::{GeneralHandle, PolicyHandle};
 use durable::{Disk, LogDisk};
 use machine::{Delivery, Environment, Feed};
@@ -260,36 +284,19 @@ struct Asking<'a> {
 impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
-        // A verifier answers in process (`Fleet::judge`), and its answer is the judgement the rounds read: the
-        // verifier's own statement, which its result carries inside (`T-024-12`). A refused judgement stays the
-        // result.
-        if let Some(bytes) = self.fleet.judge(provider.as_str(), &operation) {
-            let result: Statement<ResultBody> = serde_json::from_slice(&bytes).ok()?;
-            return match result.statement {
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
+        // signed statement, is what the rounds read. A refused judgement stays the result.
+        match self.fleet.platform.handle(provider.as_str(), &operation) {
+            Handled::Answered(result) => match result.statement {
                 ResultBody::Judgement(JudgementResult {
                     outcome: JudgementOutcome::Judged(judged),
                 }) => serde_json::to_vec(&*judged.judgement).ok(),
-                _ => Some(bytes),
-            };
-        }
-        self.fleet.platform.world.set_clock(self.clock.instant());
-        match self.fleet.platform.handle(provider.as_str(), &operation) {
-            Handled::Answered(result) => serde_json::to_vec(&*result).ok(),
+                _ => serde_json::to_vec(&*result).ok(),
+            },
             Handled::Refused(_) => None,
         }
     }
-}
-
-/// The placeholder tuple a verifier's logged grant names: `tuple-` and the first 32 hex digits of SHA-256 over the
-/// canonical JSON of `{"provider", "category": "verifier"}`. No tuple stands behind it (`T-024-12`).
-fn verifier_tuple(provider: &str) -> Id {
-    let canonical = rutent_contracts::provider_role::to_canonical(&json!({
-        "provider": provider,
-        "category": "verifier",
-    }))
-    .expect("canonical JSON");
-    let digest = rutent_prov::module::wire::sha256(&canonical);
-    kit::id(&format!("tuple-{}", &digest[..32]))
 }
 
 /// Faults planted at the platform's seam, counted by the effects the segments carry out, from 0 (`T-024-02`).
@@ -730,6 +737,8 @@ impl Core {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
             r.permit(&kit::operator_login(), Permission::ReadOrderState);
+            // The operator's login erases a kept statement's bytes where policy decides it (`REQ-AUD-13`, `T-020-37`).
+            r.permit(&kit::operator_login(), Permission::EraseStatement);
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);
@@ -753,6 +762,7 @@ impl Core {
             orders: Rc::default(),
             declarations: Rc::default(),
             registers,
+            verifier: Rc::default(),
         };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.
@@ -1091,27 +1101,36 @@ impl Core {
         let provider = kit::id(&statement.statement.provider);
         let key = statement.signature.key.clone();
         let decider = kit::operator_login();
-        // A verifier advertises classes, not tuples, and the contract's catalogue change names a tuple exactly when it
-        // is about one, so no change of its own can be logged for it. The log trusts a provider's advertising keys by
-        // its latest grant, which a verifier's judgement needs to be attributed, so its grant is logged naming a
-        // placeholder tuple (`verifier_tuple`): a stand-in, and a gap for core-internal (`T-024-12`, `DEC-16`).
-        let tuples: Vec<(Id, Option<rutent_prov::catalogue::TupleKey>)> =
-            rutent_prov::catalogue::tuples_of(&statement.statement)
-                .into_iter()
-                .map(|t| (kit::tuple_id(provider.as_str(), &t), Some(t)))
-                .chain(
-                    (statement.statement.offers.verifier.is_some()
-                        && statement.statement.offers.reserve.is_none())
-                    .then(|| (verifier_tuple(provider.as_str()), None)),
-                )
-                .collect();
-        for (tuple_id, tuple) in tuples {
+        // A verifier advertises classes, not tuples: its grant is logged naming a class, one grant for each (`T-020-30`),
+        // and the keys that grant trusts attribute its judgements of that class (`T-024-18`).
+        let verifier_classes = statement
+            .statement
+            .offers
+            .verifier
+            .as_ref()
+            .filter(|_| statement.statement.offers.reserve.is_none())
+            .map(|v| v.classes.clone())
+            .unwrap_or_default();
+        let tuples: Vec<(
+            Option<Id>,
+            Option<Id>,
+            Option<rutent_prov::catalogue::TupleKey>,
+        )> = rutent_prov::catalogue::tuples_of(&statement.statement)
+            .into_iter()
+            .map(|t| (Some(kit::tuple_id(provider.as_str(), &t)), None, Some(t)))
+            .chain(
+                verifier_classes
+                    .iter()
+                    .map(|class| (None, Some(kit::id(class)), None)),
+            )
+            .collect();
+        for (tuple_id, class, tuple) in tuples {
             let action = Action::ChangeCatalogue {
                 change: CatalogueChange::Grant,
                 provider: provider.clone(),
                 version: None,
-                tuple: Some(tuple_id),
-                class: None,
+                tuple: tuple_id,
+                class,
                 advertising_keys: vec![key.clone()],
                 statement_key: None,
             };
@@ -1165,8 +1184,8 @@ impl Core {
         }
     }
 
-    /// Grants a verifier its category in the catalogue where the log's grant is replayed (`Core::relist`), which finds
-    /// no tuple behind the placeholder (`T-024-12`). Nothing for a provider that offers a tuple.
+    /// Grants a verifier its category in the catalogue where the log's grants are replayed (`Core::relist`), which
+    /// finds no tuple behind a class grant. Nothing for a provider that offers a tuple.
     fn grant_verifier(&mut self, installed: &Installed) {
         self.record_release(installed);
         let ad = &installed.advertisement.statement().statement;
@@ -1244,6 +1263,7 @@ impl Core {
                         change,
                         provider,
                         tuple,
+                        class,
                         ..
                     },
                 ..
@@ -1252,6 +1272,11 @@ impl Core {
                 continue;
             };
             if !done.contains(&receipt) {
+                continue;
+            }
+            // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
+            // replayed (`grant_verifier`).
+            if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
                 continue;
             }
             let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
@@ -1529,12 +1554,14 @@ impl Core {
         }
         let log = Rc::clone(&self.log);
         let recorded = Now(&log);
+        let presented_by = handed_over_by(&self.catalogue, bytes);
         let desk = rutent_core_orch::quote::HoldDesk {
             evidence: &mut self.keeper,
             log: &mut self.general,
             recorded: &recorded,
             clock: &self.clock,
             catalogue: &self.catalogue,
+            presented_by: &presented_by,
         };
         self.holds
             .take(
@@ -1700,6 +1727,24 @@ impl Core {
         record_in(recorded).ok_or(StepError::NotNow("a decision record in its envelope"))
     }
 
+    /// The receipt of the log's `decision_record` entry for `record`, which holds the answers the route was
+    /// evaluated with (`T-020-31`).
+    pub(crate) fn record_entry_of(&self, record: &DecisionRecord) -> Option<Receipt> {
+        self.log
+            .borrow()
+            .entries()
+            .iter()
+            .find_map(|(receipt, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::DecisionRecord {
+                        decision_record, ..
+                    } if decision_record == record.record_id() => Some(receipt.clone()),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+    }
+
     /// Runs every part of `order`'s route, each segment after the one before settles.
     pub fn run(&mut self, order: &Id) -> Result<Vec<Ran>, StepError> {
         let started = self
@@ -1709,6 +1754,7 @@ impl Core {
             .ok_or(StepError::NotNow("the order started"))?;
         let core = kit::core();
         let operator = kit::operator();
+        let record_entry = self.record_entry_of(&started.record);
         let mut ran = Vec::new();
         for (at, part) in started.plan.iter().enumerate() {
             let segments: Vec<Id> = part
@@ -1732,6 +1778,7 @@ impl Core {
                 session: started.session.as_ref(),
                 inputs: &started.inputs,
                 floor: started.floor.as_ref(),
+                record_entry: record_entry.as_ref(),
             };
             ran.push(self.run_live(&live)?);
         }

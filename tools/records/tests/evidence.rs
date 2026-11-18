@@ -1112,3 +1112,172 @@ fn the_binary_reads_the_decisions_file_and_a_review_needs_notes_that_are_not_emp
     assert!(!stdout.contains("form-item-unknown"), "{stdout}");
     std::fs::remove_dir_all(&head).unwrap();
 }
+
+/// The real repository's table, built from the tests the sources hold and `results` as `cargo test` printed them.
+fn real_lines(results: &str) -> Vec<rutent_records::evidence::Line> {
+    let root = root();
+    let spec = std::fs::read_to_string(root.join("SPEC.md")).expect("SPEC.md is readable");
+    let plan_text = std::fs::read_to_string(root.join("PLAN.md")).expect("PLAN.md is readable");
+    let scope_text = std::fs::read_to_string(root.join("conformance/evidence/v0-scope"))
+        .expect("the scope file is readable");
+    let (scope, _) = parse_scope(&scope_text);
+    let defined = rutent_records::ids::load_defined(&root).expect("documents are readable");
+    let mut tests = Vec::new();
+    for path in rutent_records::evidence::find_member_rust_files(&root).expect("the walk") {
+        let text = std::fs::read_to_string(&path).expect("a source file");
+        let shown = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        tests.extend(scan_tests(&shown, &text));
+    }
+    let results = Results::parse(results);
+    let exists = |_: &str| true;
+    let inputs = Inputs {
+        universe: &universe(&spec),
+        defined: &defined,
+        tests: &tests,
+        results: &results,
+        review_exists: &exists,
+        binaries: &|file| rutent_records::evidence::unit_binaries(&root, file),
+        plan: &plan_text,
+        form_items: None,
+    };
+    build(&scope, &inputs).lines
+}
+
+/// What `cargo test -p rutent-prov --features jail-layers --test jail_layers` prints when every probe passes: the
+/// `Running` line of its target, and a `... ok` line for each probe the source holds.
+fn jail_probes_output() -> String {
+    let source = std::fs::read_to_string(root().join("components/prov/tests/jail_layers.rs"))
+        .expect("probes");
+    let probes: Vec<String> = scan_tests("components/prov/tests/jail_layers.rs", &source)
+        .into_iter()
+        .map(|t| format!("test {} ... ok", t.name))
+        .collect();
+    assert!(
+        probes.len() >= 13,
+        "the probes are in the source: {probes:?}"
+    );
+    format!(
+        "     Running tests/jail_layers.rs (/t/debug/deps/jail_layers-0a1b2c)\n{}",
+        probes.join("\n")
+    )
+}
+
+fn status_of(lines: &[rutent_records::evidence::Line], id: &str) -> String {
+    lines
+        .iter()
+        .find(|l| l.id == id)
+        .unwrap_or_else(|| panic!("the table has a row for {id}"))
+        .status
+        .clone()
+}
+
+/// `cargo test --workspace` skips the jail probes (they need `--features jail-layers`), so the rows they verify read as
+/// untested unless the table also reads a run of them (`T-025-02`'s gap, `T-024-18`). The rows are the probes' own, `GUA-5`
+/// and `REQ-MDL-11` (the identifiers the probes tag that the table has a row for); with the probes' results read as `cargo
+/// test` prints them, they read verified, and without, not. And `ci.yml` is what puts those results into the file the table
+/// reads: the probes' run is appended to the Test step's results, and before the table's first step.
+// verifies: GUA-5
+#[test]
+fn evidence_table_counts_the_jail_probes_jobs_results() {
+    // The workspace's run alone, with every other test's line but the probes': the rows the probes verify.
+    let without = real_lines("");
+    let with = real_lines(&jail_probes_output());
+    for id in ["GUA-5", "REQ-MDL-11"] {
+        assert_ne!(
+            status_of(&without, id),
+            "verified",
+            "{id}: no run, no verifier"
+        );
+        assert_eq!(
+            status_of(&with, id),
+            "verified",
+            "{id}: the probes' results count"
+        );
+    }
+    // A probe that failed, or was ignored (off Linux), counts for nothing.
+    let failed = jail_probes_output().replace("... ok", "... FAILED");
+    assert_ne!(status_of(&real_lines(&failed), "GUA-5"), "verified");
+    let ignored = jail_probes_output().replace("... ok", "... ignored, Linux only");
+    assert_ne!(status_of(&real_lines(&ignored), "GUA-5"), "verified");
+
+    // The workflow runs the probes into the file the table reads, before the table.
+    let ci = std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    let at = |needle: &str| {
+        ci.lines()
+            .position(|l| l.contains(needle) && !l.trim_start().starts_with('#'))
+            .unwrap_or_else(|| panic!("ci.yml has no line with `{needle}`"))
+    };
+    let probes = at("--features jail-layers --test jail_layers");
+    let table = at("--bin evidence-table");
+    assert!(probes < table, "the probes run before the table reads");
+    assert!(
+        ci.lines()
+            .skip(probes)
+            .take(3)
+            .any(|l| l.contains("tee -a \"$RUNNER_TEMP/test-results.txt\"")),
+        "their output is appended to the results the table reads"
+    );
+}
+
+/// `ci.yml`'s seeded step runs `T-024-08`'s invariants beside the assembly's scenarios, under the seeds the step sets
+/// (`T-024-18`): `cargo test` in the Test step runs them under their defaults only.
+// verifies: DEC-18
+#[test]
+fn seeded_ci_step_runs_the_invariants_beside_the_assembly() {
+    let ci = std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    let step = ci
+        .split("- name: ")
+        .find(|s| s.starts_with("Scenarios, seeded"))
+        .expect("the seeded step");
+    let command = step
+        .lines()
+        .find(|l| l.trim_start().starts_with("cargo test"))
+        .expect("the step runs cargo test");
+    for target in ["assembly", "invariants"] {
+        assert!(
+            command.contains(&format!("--test {target}")),
+            "the seeded step runs `{target}`: {command}"
+        );
+    }
+    assert!(
+        step.contains("RUTENT_SCENARIO_SEEDS"),
+        "under the step's seeds"
+    );
+}
+
+/// CI sets `CARGO_TERM_COLOR: always`, so cargo's `Running` and `Doc-tests` words come with ANSI escape sequences, and a
+/// line read as it stands joined no test to its target: the table read no row as verified (`T-024-18`, from the review
+/// of run 44265372431). Coloured output reads as plain output does.
+// verifies: DEC-17
+#[test]
+fn coloured_cargo_output_joins_each_test_to_its_target() {
+    let plain = doc(&[
+        "     Running tests/fixture.rs (/t/deps/fixture-0a1b)",
+        "test checks_req_mod_1 ... ok",
+        "   Doc-tests rutent_fixture",
+        "test src/lib.rs - doc (line 3) ... ok",
+    ]);
+    let coloured = doc(&[
+        "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m tests/fixture.rs (/t/deps/fixture-0a1b)",
+        "test checks_req_mod_1 ... ok",
+        "\u{1b}[1m\u{1b}[92m   Doc-tests\u{1b}[0m rutent_fixture",
+        "test src/lib.rs - doc (line 3) ... ok",
+    ]);
+    assert_eq!(Results::parse(&coloured), Results::parse(&plain));
+    assert!(passed(
+        &Results::parse(&coloured),
+        "tests/fixture.rs",
+        "checks_req_mod_1",
+        1
+    ));
+    // And the whole table: every identifier of the fixture is verified from coloured output.
+    let coloured_all =
+        all_pass().replace("     Running ", "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m ");
+    assert_ne!(coloured_all, all_pass());
+    let (report, _) = report(&scope_text("on", &[]), &sources(&[]), &coloured_all, true);
+    assert!(report.table.is_empty(), "{:?}", report.table);
+}

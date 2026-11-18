@@ -74,6 +74,8 @@ struct Reserve {
     silent: bool,
     /// The balance verifications the reserve was asked, as received.
     verifications: Vec<Value>,
+    /// The maker its answers to them name, where another provider's than the reserve's: a relay's copy.
+    speaks_as: Option<&'static str>,
 }
 
 impl Reserve {
@@ -83,6 +85,7 @@ impl Reserve {
             insufficient: false,
             silent: false,
             verifications: Vec::new(),
+            speaks_as: None,
         }
     }
 
@@ -109,8 +112,9 @@ impl Providers for Reserve {
             "transaction": operation["transaction"],
             "outcome": { "status": "answered", "sufficient": !self.insufficient },
         });
-        let answer = envelope(&deployment(), RESULT_SHAPE, provider.as_str(), now, body);
-        Some(sign(answer, &statements_key(provider.as_str(), 1)))
+        let maker = self.speaks_as.unwrap_or(provider.as_str());
+        let answer = envelope(&deployment(), RESULT_SHAPE, maker, now, body);
+        Some(sign(answer, &statements_key(maker, 1)))
     }
 }
 
@@ -3658,5 +3662,58 @@ fn a_parked_forged_notice_does_not_wedge_the_genuine_one() {
         Err(ArrivalError::OtherFigures)
     );
     assert_eq!(arrival_entries(&env).len(), 1);
+    assert_admitted(&env);
+}
+
+/// The stated entries the log holds claimed by `maker`, each with who it says relayed it.
+fn relays_of(env: &Env, maker: &str) -> Vec<Option<Actor>> {
+    entries(env)
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The reserve is asked about an arrival held against an order and answers with a statement another provider signed:
+/// the entry is that maker's, unverified, and names the reserve that handed it over as its relay. The reserve's own
+/// answer, and its own notice, name none.
+// verifies: REQ-AUD-2
+#[test]
+fn arrival_notice_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&order)]);
+    providers.speaks_as = Some("other-reserve");
+    let _ = arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &report(600, 0),
+    );
+    let [relayed] = relays_of(&env, "other-reserve").try_into().unwrap();
+    assert_eq!(relayed.expect("the relay is named").acts, id(RESERVE));
+
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let mut open = Open(vec![open_order(&order)]);
+    arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut open,
+        &report(600, 0),
+    )
+    .unwrap();
+    let own = relays_of(&env, RESERVE);
+    assert!(own.len() >= 2 && own.iter().all(Option::is_none), "{own:?}");
     assert_admitted(&env);
 }

@@ -547,6 +547,7 @@ fn run_linked(
         session: Some(&session),
         inputs: &core.inputs,
         floor: None,
+        record_entry: None,
     };
     let mut general = General(std::rc::Rc::clone(&core.log));
     let mut parts = rutent_core_orch::segments::Parts {
@@ -1035,6 +1036,7 @@ fn customers_new_floor_resumes_a_part_waiting_at_it() {
         session: Some(&session),
         inputs: &core.inputs,
         floor: new_floor.as_ref(),
+        record_entry: None,
     };
     let mut general = General(std::rc::Rc::clone(&core.log));
     let mut parts = rutent_core_orch::segments::Parts {

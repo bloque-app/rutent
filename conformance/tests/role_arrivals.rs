@@ -261,5 +261,177 @@ fn two_notices_of_one_credit_from_the_stand_in_reserve_are_one_credit() {
     }
 }
 
+/// What a flawed reserve does with the arrival question, in place of what the stand-in does.
+#[derive(Clone, Copy)]
+enum Flaw {
+    /// It is never asked: the question isn't one its binding carries.
+    NeverAsked,
+    /// A question under another session or key is answered "nothing arrived", not refused.
+    StatesNothingToForeignQuestions,
+    /// It refuses them, but not finally: its refusal waits on the person.
+    RefusesForeignQuestionsButNotFinally,
+    /// It answers the question in the session and gives no answer to a foreign one.
+    SilentToForeignQuestions,
+}
+
+/// A stand-in reserve with one flaw in how it answers the arrival question.
+struct Flawed {
+    reserve: Reserve,
+    context: SuiteContext,
+    flaw: Flaw,
+}
+
+impl Flawed {
+    fn new(context: &SuiteContext, flaw: Flaw) -> Self {
+        Self {
+            reserve: Reserve::new(context),
+            context: context.clone(),
+            flaw,
+        }
+    }
+}
+
+impl RoleProvider for Flawed {
+    fn advertisement(&self) -> Received<rutent_contracts::provider_role::Advertisement> {
+        self.reserve.advertisement()
+    }
+
+    fn handle(
+        &mut self,
+        operation: &Statement<rutent_contracts::provider_role::Operation>,
+    ) -> Received<rutent_contracts::provider_role::ResultBody> {
+        self.reserve.handle(operation)
+    }
+
+    fn state(&self) -> String {
+        self.reserve.state()
+    }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        if matches!(self.flaw, Flaw::NeverAsked) {
+            return None;
+        }
+        let foreign = question.statement.session != self.context.session
+            || question.signature.key != self.context.deployment.operator_key;
+        if foreign && matches!(self.flaw, Flaw::SilentToForeignQuestions) {
+            return None;
+        }
+        let mut answered = self.reserve.arrival(question)?.into_statement();
+        if foreign {
+            answered.statement.outcome = match self.flaw {
+                Flaw::RefusesForeignQuestionsButNotFinally => {
+                    ArrivalOutcome::Refused(rutent_contracts::provider_role::BalanceRefused {
+                        refusal: rutent_contracts::provider_role::BalanceRefusal::WaitsOnPerson(
+                            rutent_contracts::provider_role::NoDetail {},
+                        ),
+                    })
+                }
+                _ => ArrivalOutcome::NothingArrived(rutent_contracts::provider_role::NoDetail {}),
+            };
+        }
+        Some(Received::sent(&answered))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.reserve.arrival_notice(reference)
+    }
+}
+
+impl RoleHarness for Flawed {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        self.reserve.credit_arrival(credit)
+    }
+}
+
+// verifies: REQ-ORD-23
+#[test]
+fn reserve_never_asked_the_arrival_question_is_reported_uncovered() {
+    let context = SuiteContext::default();
+    let report = run_role_suite(
+        &mut Signing(Flawed::new(&context, Flaw::NeverAsked)),
+        &context,
+        &Ed25519Verifier,
+    );
+    assert!(
+        report.findings.is_empty(),
+        "nothing it did is wrong: {:?}",
+        report.findings
+    );
+    assert!(
+        !report.passed(),
+        "a reserve the question isn't put to doesn't pass"
+    );
+    assert!(
+        report
+            .uncovered
+            .iter()
+            .any(|u| u.answer == Exercised::NothingArrived && u.subject.starts_with("arrival")),
+        "its arrival question is uncovered: {:?}",
+        report.uncovered
+    );
+    assert!(!report.exercised.contains(&Exercised::NothingArrived));
+    // The stand-in, asked, leaves it covered.
+    let asked = run_role_suite(
+        &mut Signing(Reserve::new(&context)),
+        &context,
+        &Ed25519Verifier,
+    );
+    assert!(asked.uncovered.is_empty(), "{:?}", asked.uncovered);
+}
+
+// verifies: REQ-ORD-23
+#[test]
+fn arrival_question_under_another_key_or_in_another_session_must_be_refused_finally() {
+    let context = SuiteContext::default();
+    for (name, flaw) in [
+        (
+            "answering them with nothing arrived",
+            Flaw::StatesNothingToForeignQuestions,
+        ),
+        (
+            "refusing them, but not finally",
+            Flaw::RefusesForeignQuestionsButNotFinally,
+        ),
+        ("leaving them unanswered", Flaw::SilentToForeignQuestions),
+    ] {
+        // With its hooks, and without them: the refusal needs no credit, so a reserve no hook reaches is held to it too.
+        let hooked = run_role_suite(
+            &mut Signing(Flawed::new(&context, flaw)),
+            &context,
+            &Ed25519Verifier,
+        );
+        let hookless = run_role_suite(
+            &mut WithoutHooks(Signing(Flawed::new(&context, flaw))),
+            &context,
+            &Ed25519Verifier,
+        );
+        for (how, report) in [("hooked", hooked), ("hookless", hookless)] {
+            let found: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|f| f.check == Check::ArrivalsStated)
+                .map(|f| f.detail.clone())
+                .collect();
+            assert!(
+                found.iter().any(|m| m.contains("another session"))
+                    && found
+                        .iter()
+                        .any(|m| m.contains("not signed with the operator's key")),
+                "a reserve {name}, {how}: both foreign questions are flagged: {found:?}"
+            );
+        }
+    }
+    // The stand-in refuses both, finally, and nothing is flagged.
+    let report = run_role_suite(
+        &mut WithoutHooks(Signing(Reserve::new(&context))),
+        &context,
+        &Ed25519Verifier,
+    );
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+}
+
 #[allow(dead_code)]
 fn _is_harness(_: &dyn RoleHarness) {}
