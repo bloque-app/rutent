@@ -16,6 +16,24 @@ path = "src/module/bin/compiler.rs"
 name = "rutent-wasm-provider"
 path = "src/module/bin/provider.rs"
 
+[[bin]]
+name = "rutent-jail-probe"
+path = "src/module/bin/jail_probe.rs"
+required-features = ["jail-layers"]
+
+# The jail's layer probes, which need the `jail-layers` feature: `cargo test -p rutent-prov --features jail-layers
+# --test jail_layers`, run by `.github/workflows/jail-probes.yml`. `cargo test --workspace` skips them.
+[[test]]
+name = "jail_layers"
+path = "tests/jail_layers.rs"
+required-features = ["jail-layers"]
+
+[features]
+# Test-only (`T-025-02`): the builder that composes the jail's layers one at a time. Never a default, and enabled by
+# nothing but the command line of the job that runs the probes (no feature, no dependent crate and no dev-dependency
+# names it: `tools/boundary-check` refuses a package that depends on itself), so a release build has none of it.
+jail-layers = []
+
 [dependencies]
 ed25519-dalek = { version = "2.2.0", default-features = false }
 rutent-contracts = { path = "../../contracts" }

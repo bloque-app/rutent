@@ -253,3 +253,137 @@ The Wasmtime pin bumped from 48.0.8 to 48.0.9 (`components/prov/Cargo.toml`, `Ca
   holds none of these crates.
 - **Rule-off.** `pinned_runtime_is_the_patched_release` with `WASMTIME_VERSION` left at `48.0.8`: red on the first
   assertion. Restoring it: green.
+
+## T-025-02
+
+Each jail layer probed alone, on Linux, with the release build scanned for a way to turn one off. **Written on macOS:
+the Linux evidence is `jail-probes.yml`'s runs, recorded at the end of this section** (`ci.yml`'s
+`cargo test --workspace` skips the probes, which need `--features jail-layers`; this job runs them). Row 18; touches `components/prov/src/module/` and
+`.github/workflows/`, both `DEC-20` paths, so it waits for the owner's click at the release into `main`.
+
+- **The builder.** `components/prov/src/module/layers.rs` names the layers (`Layer`, fifteen: the six namespaces,
+  `no_new_privs`, the empty root, dropped capabilities, Landlock, seccomp, descriptors closed before `exec` and in the
+  jail, `RLIMIT_AS`, and the other rlimits) and `Layers`. `sandbox::isolated` and `confine` now call
+  `isolated_layers` / `confine_layers` with `Layers::ALL`, and each step asks `layers.on(Layer::X)`. In a shipped
+  build `Layers` is a zero-sized type whose `on` is `true`: no name, parser or setter is compiled in. With the
+  `jail-layers` feature the set is real, and `module::jail` (`isolated`, `confine`, `unshare_arguments`) composes
+  layers. The feature is not a default; nothing turns it on but the command line of the job that runs the probes
+  (`--features jail-layers`; see the second review below), and `rutent-jail-probe` (the hostile probe, a binary with
+  `required-features`) exists only with it. One source of truth: the shipped jail and the builder's all-layers jail are
+  the same code, and a test shows `unshare_arguments(ALL) == UNSHARE`.
+- **The probes** (`components/prov/tests/jail_layers.rs`), each run twice: in a control jail without the layer, where the
+  hostile act must succeed (so no probe passes for want of the power to do harm), then with the layer alone, where it must
+  be refused. A jail that can't be established makes the probe exit 3 with no result and the test fails (fail closed).
+  User: the host's root owner shows as 65534 and `setresuid(1)` fails `EINVAL`. Network: a connect to a listener the test
+  holds, which sees no connection. IPC: `shmat` of the test's segment. UTS: the jail renames itself, the host's name
+  is unchanged. PID: `SIGTERM` to a host `sleep`, which survives (`ESRCH`). Mount: user, mount and the root pivot, which sees
+  no entry in `/`. `no_new_privs`: `sudo -n id -u` is not root. Capabilities: `chroot(".")` is `EPERM`. Landlock:
+  reading `/etc/passwd` is `EACCES`. Seccomp: raw `socket` is `EPERM`. Descriptors: an inherited `/dev/null` is gone
+  after either close alone, and from the shipped provider's own `--probe`. `RLIMIT_AS`: a mapping of 4 GiB + 4 KiB is
+  `ENOMEM` while a page maps, and the shipped provider's `--probe` reports the 4 GiB and the refusal (**`G-05`, run id
+  in every line: `jail-probe run <GITHUB_RUN_ID>`**). The release scan reads `rutent-wasm-provider` built `--release`
+  (the Linux job builds it and passes `RUTENT_RELEASE_PROVIDER`; unset, the test builds it itself): it carries none of the
+  fifteen `jail-layer:` names, which the probe binary, the control, carries all of.
+- **Layers that can't stand alone, named with their reasons** (`Layers::check`, refused by the builder, tested):
+  the network, IPC, UTS, mount and PID namespaces each need the user namespace; the root pivot needs the mount
+  namespace (and so the user one); dropped capabilities need the user namespace to hold any; seccomp and Landlock
+  need `no_new_privs` or the user namespace, so their probes run over `no_new_privs`, which stops nothing they try.
+- **Defaults (reversible, fail closed).** A kernel without Landlock fails the Landlock probe (the jail then protects
+  nothing there; the shipped jail still starts, by design). The `no_new_privs` control needs passwordless `sudo`
+  (GitHub's Ubuntu runner has it); without it the test fails, saying the hazard isn't shown. The seccomp list is
+  x86-64, so the probes fail on another architecture, as the jail itself refuses to start there. Probes run with
+  `--test-threads=1` in the Linux job. The rlimits are one layer, `Limits`, not in `THR-85`'s list, so not probed.
+- **Gaps and owner items.** (1) The UTS namespace stops nothing alone against an unprivileged jail: the user namespace
+  already refuses `sethostname` (`EPERM`), and the probe shows only that a rename made with the power stays inside.
+  The row's rule makes this **an item for the owner's form**: keep the namespace as depth, or drop it. Owner: Pablo.
+  (2) The release scan is a string scan of a binary: it shows the names are not compiled in, not that no other
+  switch can exist; `T-025-05`'s review reads the diff. Owner: `T-025-05`. (3) `ci.yml`'s `cargo test --workspace`
+  builds a release provider inside the scan test when `RUTENT_RELEASE_PROVIDER` is unset, which costs minutes there;
+  setting it is a `ci.yml` edit, `F-024`'s file. Owner: `F-024`. (4) The Linux code was not even type-checked here (no
+  Linux target installed, none installed on purpose); the first CI compile may find errors in `jail_probe.rs` and the
+  `rig` module. Owner: this row's author at the first red run.
+- **Rule-off table.** The jail rules were not switched off here: they can't run on this machine. Each probe's control
+  does that in CI, run by run: the same hostile act in a jail without the layer must succeed, and the test fails if it
+  doesn't. To switch a layer off for good, remove its `layers.on(..)` step in `sandbox.rs` and its probe goes red.
+
+| Rule switched off | Test that must go red | Seen |
+|---|---|---|
+| user namespace | `probe_for_the_hosts_users_is_refused_by_the_user_namespace_alone` | CI only |
+| network namespace | `network_probe_is_refused_by_the_network_namespace_alone` | CI only |
+| IPC namespace | `shared_memory_probe_is_refused_by_the_ipc_namespace_alone` | CI only |
+| UTS namespace | `hostname_change_is_refused_by_the_uts_namespace_alone` | CI only |
+| PID namespace | `signal_to_a_host_process_is_refused_by_the_pid_namespace_alone` | CI only |
+| mount namespace, root pivot | `probe_in_the_mount_namespace_sees_only_the_empty_root` | CI only |
+| `no_new_privs` | `privilege_gain_is_refused_by_no_new_privs_alone` | CI only |
+| dropped capabilities | `capability_use_is_refused_by_the_dropped_capabilities_alone` | CI only |
+| Landlock | `filesystem_probe_is_refused_by_landlock_alone` | CI only |
+| seccomp | `forbidden_system_call_is_refused_by_seccomp_alone` | CI only |
+| either descriptor close | `inherited_descriptor_is_closed_inside_the_jail` | CI only |
+| `RLIMIT_AS` | `mapping_past_the_address_space_limit_is_refused` | CI only |
+| `jail-layers` in a release build | `release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off` | CI only |
+
+### T-025-02, after review of `16dc2296`
+
+- **Compile fixes for Linux:** the duplicate `use std::time::Duration` in the tests, and an `unused_mut` in
+  `sandbox::isolated_layers` (the Linux branch). Every `cfg(target_os = "linux")` line the row added was read again by hand.
+- **Controls now differ from the jail by the one layer.** Network, IPC and PID compare `User` with `User + X`; mount
+  compares `User + Mount` (root visible) with `User + Mount + EmptyRoot` (empty). Capabilities, Landlock, seccomp and UTS
+  already did.
+- **The release scan has a second prong that doesn't depend on the optimiser.** A provider built with the feature never
+  calls the builder, so its names may fold away and can't serve as the string scan's control. The test therefore also reads
+  Cargo's resolved features, in the inverted tree `cargo tree -e features -i rutent-prov` (a forward tree never lists the
+  root package's own features): for the release command line it must show `feature "default"` and no `jail-layers`, and with
+  `--features jail-layers` it must show `rutent-prov feature "jail-layers"` (the control, which shows the check can fail);
+  and `cargo metadata` over the workspace must show no feature, dependent crate or self-dependency enabling it.
+- **The composition test runs on every platform** (`unshare_arguments(ALL) == UNSHARE` and the refusals of a layer that
+  can't stand alone), no longer ignored off Linux.
+- **The UTS test keeps `PLAN.md`'s name**, `hostname_change_is_refused_by_the_uts_namespace_alone`, since the row's test
+  names are written there; what it shows is said in its comment and messages: a rename made in the namespace stays inside
+  it, and the user namespace already refuses a rename without it. The owner item stands (gap 1 above).
+- **`jail-probes` is not a required check** of the repository (a branch-protection setting, which isn't ours to change),
+  so a red run doesn't block a merge by itself. Owner: Pablo, to add it once the first run is green.
+
+### T-025-02, after the first Linux run (`a92e45a9`, run 44237249072)
+
+- **13 of 14 probes passed on Linux**; the run's lines carry the run id, which the row's Done-when cites.
+- **The descriptor control did inherit** (the log read `fds=[3, 142, 145]`): the test made its descriptor inheritable, but
+  asserted the child's list was exactly `[fd]`, and the runner had left two others open (3, 142 and 145 are all inherited:
+  `close_range` removes them in the jail, which `inherited_descriptor_is_closed_inside_the_jail` shows with `fds=[]`). The
+  control now asserts that its list *contains* the test's descriptor.
+- **No self dev-dependency** (`tools/boundary-check` refuses a package that depends on itself, and its paths are
+  `DEC-20`'s, `F-020`'s). The `jail_layers` test and `rutent-jail-probe` carry `required-features = ["jail-layers"]`, and
+  `jail-probes.yml` runs `cargo test -p rutent-prov --features jail-layers --test jail_layers`. **`cargo test --workspace`
+  in `ci.yml` therefore skips the probes: the `jail-probes` job is the one that runs them.** Local clippy for them is
+  `cargo clippy -p rutent-prov --all-targets --features jail-layers`, which `ci.yml`'s workspace clippy doesn't cover.
+- **The resolved-features check follows:** `cargo tree` for the release command line shows no `jail-layers`, and the same
+  with `--features jail-layers` shows it (the control); `cargo metadata` over the workspace shows no feature, no dependent
+  crate and no self-dependency enabling it.
+- **A gap for `F-024`:** `ci.yml`'s evidence table (`T-024-09`) reads the results of `cargo test --workspace`, which no
+  longer holds these 13 tests, so `THR-85`, `THR-79`, `GUA-5` and `REQ-MDL-11` rows they verify would read as untested
+  there unless the table also reads the `jail-probes` job's results. Owner: `F-024`.
+- **The resolved-features check's control was wrong** in `19fb8314` (a forward tree can't show the root's features); it
+  reads the inverted tree now, whose two outputs were reproduced on cargo 1.98.0. `jail-probes.yml` also lints the probes:
+  `cargo clippy --locked -p rutent-prov --all-targets --features jail-layers -- -D warnings`.
+
+### T-025-02: Linux evidence
+
+Run 44242098797 (commit `19fb8314`, `jail-probes`), per probe, control then with the layer; every one as the test asserts:
+
+| Layer | Control | With the layer |
+|---|---|---|
+| user namespace | `[]`: `owner=0 switch=refused EPERM` | `[user]`: `owner=65534 switch=refused EINVAL` |
+| network namespace | `[user]`: allowed | `[user,net]`: refused `ENETUNREACH` |
+| IPC namespace | `[user]`: allowed | `[user,ipc]`: refused `EINVAL` |
+| UTS namespace | `[user]`: refused `EPERM` | `[user,uts]`: allowed, `hostname=rutent-jail-probe`, the host's unchanged (depth only) |
+| PID namespace | `[user]`: allowed | `[user,pid]`: refused `ESRCH` |
+| mount namespace and root pivot | `[user,mount]`: `entries=26 passwd=readable` | `[user,mount,empty-root]`: `entries=0 passwd=absent` |
+| `no_new_privs` | `[]`: allowed `euid=0` | `[no-new-privs]`: refused |
+| capabilities | `[user]`: allowed | `[user,caps]`: refused `EPERM` |
+| Landlock (ABI 8) | `[no-new-privs]`: allowed | `[no-new-privs,landlock]`: refused `EACCES` |
+| seccomp | `[no-new-privs]`: allowed | `[no-new-privs,seccomp]`: refused `EPERM` |
+| descriptors | `[]`: `fds=[3, 142, 145]` | `[close-before-exec]` and `[close-in-jail]`: `fds=[]` |
+| `RLIMIT_AS` | `[]`: `limit=0 past=allowed` | `[address-space]`: `limit=4294967296 small=allowed past=refused ENOMEM` |
+| `G-05`, the shipped provider's `--probe` | | `address_space_limit` 4294967296, `address_space_denied` true, `landlock_abi` 8, `open_descriptors` [] |
+
+The release scan found no layer name in the release provider. Green run's id (the whole job, with the resolved-features
+check fixed): **TO FILL after CI.**
