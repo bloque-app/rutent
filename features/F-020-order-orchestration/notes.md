@@ -4400,3 +4400,135 @@ contract is changed: `What::Reliance` and its relation (`reliance-names-its-judg
   | a declaration after the send accepted (`Rests::TooLate` off) | `one judgement relied on by one provider is written once` |
   | the entry names the provider as judge | the four scenario tests |
   | every judgement declared for the order relied on, whatever the inputs carried | `provider relying on a reserve's judgement leaves a reliance entry naming both` |
+
+## T-020-20
+
+Branch `f-020/t-020-20-stuck-report-correction`, from `m3` at `ea6c290c`. Edits `components/core-orch` `stuck/`
+(`mod.rs`, `mover.rs`) and, as the row's seam, `segments/mod.rs`; the kit (`segments_support`: `on_settling`,
+`Core::late_statement`, `PermitsEveryStep`'s decline) and four test files. No contract, manifest or `DEC-20` path.
+
+- **A decline, and a new report after it** (`Stuck::decline_outcome`, `Stuck::decline_segment_outcome`, over
+  `OutcomeDeclines`, `T-021-09`). The decliner is of another party and login than the reporter's (`two_actors`: the
+  mover cannot withdraw its own report; policy holds the chain and the customer and holder checks). It names the
+  report (outcome, version, evidence), and its own evidence, another statement following the move. A permitted decline
+  settles and frees nothing: the report no longer stands, the part stays held (`OutcomeUnknown`, `ValueInMotion`), and
+  a new report is admitted, one version beyond every one made, which a confirmation names (`ConfirmingSegment` gains
+  `report`). A confirmation or a decline of a declined version, and the declined report made again (same outcome and
+  evidence), are `ResolveError::ReportDeclined`. `Moved::Declined { report }`.
+- **A refusal is not a crash.** A decline or a confirmation the log's rules refuse (a report settled or declined)
+  comes back from policy as `Err(AppendFailure::Refused)`, and `Stuck` returns it as `ResolveError::Append(Refused)` before
+  it has changed anything: the report still stands and is declined or confirmed once the log takes it.
+- **The evidence states the outcome claimed** (`T-020-16`'s gap 5). `known_outcome`, `report_segment_outcome`,
+  `Confirming.evidence` and `ConfirmingSegment.evidence` take a `Stated` (the receipt and what Core's own reading of
+  the statement says of the move, `Delivering::statement`, `Segments::late_statement`), not a bare receipt. A report
+  rests on a statement stating the outcome it reports (`EvidenceStatesAnother` for another, or for none: another maker's
+  states none of the move's). A confirmation or a decline is held to the same only where the move's own provider made
+  it; another maker's states none and backs the outcome the report named.
+- **A segment's move confirmed done** (`Stuck::confirm_segment_done`, `Segments::late_statement`, `grade_late`,
+  `confirmed_done`). The provider's late result is taken as the segments take a result (attributable, a result, the
+  move's transaction, judged against the operation Core signed), kept once as its maker's stated entry about the
+  order, the segment and the transaction, and is what a report names. Done is confirmed only through
+  `confirm_segment_done`, which grades first (`Segments::grade_late` over `Grading`, nothing recorded), asks policy only
+  on a result that grades, and then records the final `result` after the `unanswered` one, the entries it graded to
+  and the segment's `segment_settled` (`settle_on`, the settlement the segments' `account` carries out too). A done
+  that grades to nothing yet, or rests on no late result Core took as the segment's own, is
+  `ResolveError::Ungraded(..)` and nothing is recorded. A confirmation policy permitted whose record the log couldn't
+  take is recorded once: a retry records the outcome and asks policy nothing more (`segment_confirmed`, as `INV-8`).
+  `report_segment_outcome` now takes a done too (it settles nothing); `confirm_segment_outcome` still takes failed only
+  (`DoneNeedsEvidence`). `Settling` carries the ports the stuck orders' `Parts` doesn't hold.
+- **A stuck resolution's evidence has an entry behind it** (`Resolutions::evidence_of`, `Stuck::resolve`). Where a
+  `deliver` is done, `stuck_resolved`'s evidence id is the id of a `part_evidence` of the order and the part, grade 4,
+  `whose` the provider the decision names, resting on the statement the done rests on: the provider's own answer, as
+  the log holds it attributed (`Delivering::evidence_of`), or the report the confirmer confirmed. Appended before the
+  input. `Delivering::statement` now refuses a statement the log recorded unattributed (`NotTaken::Unattributable`),
+  as `hand_statement` did: the log refuses a `part_evidence` resting on one.
+- **Tests** (written beside the code, then each rule switched off below). `tests/stuck_mover.rs`: the ten named by the
+  row for a stuck resolution's move (`report declined by its confirmer is followed by a new report that stands until it is confirmed`,
+  `second report with no decline between is refused`, `mover cannot withdraw its own report`,
+  `confirmation of a declined report is refused`, `decline by the reporter's own party is refused`,
+  `part stays held while its report is declined`, `report whose evidence states another outcome than the one reported
+  is refused`, `stuck resolved cites an evidence entry the log holds`), plus
+  `statement_the_log_recorded_unattributed_is_not_taken_as_evidence` and
+  `decline_or_confirmation_the_log_refuses_is_a_refusal_that_changes_nothing`. `tests/stuck.rs`, for a segment's silent
+  move: `declined_report_of_a_silent_move_is_followed_by_a_new_one_that_stands_until_it_is_confirmed`,
+  `silent_move_reported_on_evidence_stating_another_outcome_is_refused`,
+  `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`,
+  `segments_move_confirmed_done_with_no_graded_evidence_settles_nothing`,
+  `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once`. Each replays its history through
+  `admit_entry`. The two earlier stuck tests' calls changed to pass a `Stated` (no behaviour), and
+  `silent_move_on_a_stuck_part_...` no longer asserts that a report of done is refused (it is taken, and graded on
+  its confirmation).
+- **Rule-off** (each alone, through a temporary environment switch in the code, removed before the commit; the named
+  tests of each file run; none hung; every one red):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a report rests on a statement stating its outcome (`states`) | `report_whose_evidence_states_another_outcome_than_the_one_reported_is_refused`, `silent_move_reported_on_evidence_stating_another_outcome_is_refused` |
+  | a confirmation's evidence bears the report's outcome out (`bears_out`) | the same two |
+  | the declined report is not made again (`made_again`) | `report_declined_by_its_confirmer_is_followed_by_a_new_report_that_stands_until_it_is_confirmed` |
+  | the decline is of another party and login (`two_actors`, both arms) | `mover_cannot_withdraw_its_own_report`, `decline_by_the_reporters_own_party_is_refused`, `declined_report_of_a_silent_move_...` |
+  | one report while it stands (`AlreadyReported`, both arms) | `second_report_with_no_decline_between_is_refused`, `declined_report_of_a_silent_move_...` |
+  | a declined version is not confirmed (`ReportDeclined` on a confirmation, both arms) | `confirmation_of_a_declined_report_is_refused`, `declined_report_of_a_silent_move_...` (red on the error named; the refusal itself still holds: no report stands, or the version differs) |
+  | a decline frees nothing (the part is released) | `part_stays_held_while_its_report_is_declined` |
+  | the decline's evidence is its own (`on_its_own_statement`, segment arm) | `declined_report_of_a_silent_move_...` |
+  | a done is graded before policy is asked | `segments_move_confirmed_done_with_no_graded_evidence_settles_nothing` |
+  | a permitted confirmation is not asked again on a retry | `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once` |
+  | `stuck_resolved` cites a `part_evidence` | `stuck_resolved_cites_an_evidence_entry_the_log_holds` |
+  | the evidence entry reaches the log before the input | the same |
+  | a statement the log recorded unattributed is not taken | `statement_the_log_recorded_unattributed_is_not_taken_as_evidence` |
+
+  Not run, each defence in depth or covered by an assertion of a test above only: `confirm_segment_outcome` refusing a done
+  (`DoneNeedsEvidence`, asserted in the done test), `late_figures` taking only a late result judged settled,
+  `evidence_of`'s attributed filter (the statement is refused unattributed before it, at `statement`).
+- **Probed for paying twice** (none found). A failed outcome frees a part only on a confirmation by another party:
+  a decline frees nothing, a new report counts one version more and still needs one, and a declined report is never
+  confirmed; the mover can't decline its own. A done confirmed on a silent segment settles that segment, which the part's
+  stuck record keeps stuck: a stuck part is handed over no more (`SegmentsError::Stuck`), so the late settlement hands
+  nothing on; a part's final deposit confirmed done waits for its public record, since grading refuses a statement
+  alone (`REQ-ORD-33`). A late statement tried again is one entry (kept by its bytes), a retried confirmation is one
+  entry on the log, and a statement of another transaction, one forged or one a key never published signed is not taken.
+- **Defaults** (reversible, each failing closed):
+  - the evidence trust of the deliver arm is the caller's `Stated`, which only Core's own readers (`Delivering::statement`,
+    `Segments::late_statement`) make; a done on a silent segment rests besides on the segments' own record of the late
+    result, so a `Stated` made by hand can't settle one (`Ungraded(None)`);
+  - a confirmer's evidence maker need not be a party to the order (the form's default, 2026-11-17): Core reads no maker;
+  - a declined report is not made again as it stands (same outcome and evidence), beyond the row;
+  - a late settlement records no settlement time and keeps the segment's hold (a stuck part's resolution releases it): a
+    time the confirmation stretched says nothing of the provider's p99, and the hold over-reports rather than drops;
+  - a `Resolutions` that names no evidence leaves `stuck_resolved` citing a bare id, as before;
+  - a statement the log recorded unattributed is not taken as evidence on the deliver arm either (`hand_statement`'s
+    rule), so no `part_evidence` rests on one.
+- **Gaps, with owners.**
+  1. `PolicySide` of the assembly doesn't forward `decline_outcome` yet (`T-021-09`'s gap 1; an `F-024` file the row
+     doesn't edit): a decline can't be asked through the assembled Core; the tests use the kit's policy. Owner: the
+     lead, with a row of `F-024`'s.
+  2. The `Resolutions` stand-ins of `T-020-11`'s tests (`Moves`) name no evidence, so their `stuck_resolved`s cite a bare
+     id, which `T-020-30` (1) will hold to an entry: they must name one then. Owner: `T-020-30`.
+  3. After a segment's move is confirmed done the part's resting hold is not re-formed at the node the value went to
+     (the segment's hold stays, as above); a hand-on or delivery of such a part reads the last settled segment. No
+     test drives a resolution after a late settlement. Owner: the lead (a later `F-020` row after `T-020-28`).
+  4. The assembly calls none of the new calls yet (`decline_outcome`, `confirm_segment_done`, `late_statement`): a
+     `Core::` entry for each is `F-024`'s. Owner: the lead.
+  5. The mover's and `Stuck`'s new state (declined reports, versions, `segment_confirmed`, late statements) is in memory
+     (`F-030`).
+  6. `contracts/core-internal/README.md`'s hand-off on `stuck-resolved-cites-its-parts-evidence` (a citation of none is
+     admitted until `T-020-20` writes one) is now stale in its second half: the writer exists. A `DEC-20` path; the
+     round that tightens the row (`T-020-30`) brings it up to date.
+
+### T-020-20, the review of `258475fb`: changes
+
+- **S1, fixed.** `segment_confirmed` held only (order, segment), so a retry by another confirmer skipped policy
+  (`THR-70`). It now stores the confirmer, the report version and the evidence receipt with the permit, and a retry skips
+  policy only on an exact match; any other is asked of policy. `probe_retry_by_another_confirmer_skips_policy` is in
+  `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once` (another confirmer, and bob with
+  other evidence, are refused by policy; bob's own retry is not asked). The stuck-resolution path has no such bypass:
+  once policy permits, `motion.resolved` is set, so no further confirmation is open to anyone
+  (`confirmation_whose_result_the_log_could_not_take_is_not_open_to_another_confirmer`).
+- **S2, fixed.** `Stated`'s fields are private (accessors `receipt()`, `outcome()`); only Core's readers build one. The
+  kit builds its own through `Stated::for_tests`, behind the `test-support` feature, enabled by the scenarios'
+  dev-dependency only. A `compile_fail` doctest shows outside code can't build one by hand.
+- **Low 3, 4, added.** The late settlement keeps the hold (asserted in the done test); a segment decline after a permitted
+  confirmation is refused (`NoDecision`, in the retry test).
+- **Rule-off** (each alone, switched in code and removed): the permit bound to its confirmer, version and evidence: red on
+  the retry test; the decline refused after a permit: red on the same test; `if !on.late` around the release: red on
+  `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`. The seal is held by the doctest.

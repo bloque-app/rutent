@@ -101,6 +101,9 @@ pub struct PermitsEveryStep {
     pub answers_another: bool,
     /// It refuses every move step for this class, recording the refusal as the engine would (`T-020-16`).
     pub refuses_moves: Option<rutent_contracts::core_internal::RefusalClass>,
+    /// The log's rules refuse every confirmation and decline of an outcome, as for a report already settled: the
+    /// engine's call comes back `Err(Refused)` (`T-021-09`'s gap 3).
+    pub log_refuses_outcomes: bool,
 }
 
 impl PermitsEveryStep {
@@ -110,6 +113,7 @@ impl PermitsEveryStep {
             asked: 0,
             answers_another: false,
             refuses_moves: None,
+            log_refuses_outcomes: false,
         }
     }
 
@@ -195,11 +199,36 @@ impl StuckOrders for PermitsEveryStep {
         &mut self,
         request: &rutent_contracts::core_internal::OutcomeConfirmation,
     ) -> Result<Decision, AppendFailure> {
+        if self.log_refuses_outcomes {
+            return Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("the report is settled already"),
+            ));
+        }
         let what = What::ConfirmOutcome {
             request: request.clone(),
             decision: request.request.clone(),
         };
         self.permit(&request.request, &request.confirmer, what, &request.at)
+    }
+}
+
+/// A decline of a report, as the engine records it (`T-021-09`): the kit's policy permits it, and the log's rules are
+/// what refuse one it should (a settled or declined report), at replay.
+impl rutent_contracts::core_internal::calls::OutcomeDeclines for PermitsEveryStep {
+    fn decline_outcome(
+        &mut self,
+        request: &rutent_contracts::core_internal::OutcomeDecline,
+    ) -> Result<Decision, AppendFailure> {
+        if self.log_refuses_outcomes {
+            return Err(AppendFailure::Refused(
+                rutent_contracts::core_internal::Violation("the report is settled already"),
+            ));
+        }
+        let what = What::DeclineOutcome {
+            request: request.clone(),
+            decision: request.request.clone(),
+        };
+        self.permit(&request.request, &request.decliner, what, &request.at)
     }
 }
 
@@ -310,6 +339,68 @@ pub fn two_makers(
         .expect("a statement by another maker")
         .clone();
     (first.0, second.0)
+}
+
+/// Runs `with` over Core's stuck parts and what settling a segment's move confirmed done reaches (`T-020-20`): the
+/// kit's evidence store, policy, operator key and the order's part as the segments run it, over `modules` and
+/// `grading`, with no credential proxy.
+pub fn on_settling<T>(
+    core: &mut Core,
+    catalogue: &rutent_prov::catalogue::Catalogue,
+    modules: &mut dyn rutent_core_orch::segments::Modules,
+    grading: &mut dyn rutent_core_orch::segments::Grading,
+    with: impl FnOnce(&mut Parts<'_>, &mut rutent_core_orch::stuck::Settling<'_>) -> T,
+) -> T {
+    let (order, part, auth, origin, end) = (
+        id(&core.named.order),
+        id(PART),
+        id(&core.named.authorisation()),
+        id(super::RESERVE),
+        super::route_end(),
+    );
+    let segments = [id(&core.named.withdrawal), id(&core.named.deposit)];
+    let (caller, core_actor, operator_actor) =
+        (super::core(), super::core(), core.operator.clone());
+    let session = id(&rutent_conformance::role::SuiteContext::default().session);
+    let live = rutent_core_orch::segments::Live {
+        order: &order,
+        part: &part,
+        segments: &segments,
+        record: &core.record,
+        at: 0,
+        authorisation: &auth,
+        origin_reserve: &origin,
+        route: &end,
+        caller: &caller,
+        core: &core_actor,
+        operator: &operator_actor,
+        session: Some(&session),
+        inputs: &core.inputs,
+        floor: core.floor.as_ref(),
+    };
+    let mut general = General(Rc::clone(&core.log));
+    let mut parts = Parts {
+        clock: &*core.clock,
+        log: &mut general,
+        fresh: &mut core.ids,
+        issued: &core.issued,
+        segments: &mut core.segments,
+        exposures: &mut core.exposures,
+    };
+    let mut no_proxy = rutent_core_orch::segments::NoProxy;
+    let mut channel = rutent_core_orch::notice::Unbuilt;
+    let mut settling = rutent_core_orch::stuck::Settling {
+        catalogue,
+        evidence: &mut core.store,
+        decisions: &mut core.policy,
+        modules,
+        uses: &mut no_proxy,
+        grading,
+        operator_key: &mut core.key,
+        channel: &mut channel,
+        live: &live,
+    };
+    with(&mut parts, &mut settling)
 }
 
 /// Runs `with` over Core's stuck parts and the production mover over `modules`, the world's platform as the segments

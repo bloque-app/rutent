@@ -1846,6 +1846,60 @@ impl Core {
         )
     }
 
+    /// Takes `bytes`, the provider's later statement about `segment`'s move, whose outcome is unknown, as evidence
+    /// of what it came to (`T-020-20`): over the world's platform, as the segments take it.
+    pub fn late_statement(
+        &mut self,
+        world: &mut World,
+        segment: &str,
+        bytes: &[u8],
+    ) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
+        let (order, part, auth, origin, end) = (
+            id(&self.named.order),
+            id(PART),
+            id(&self.named.authorisation()),
+            id(RESERVE),
+            route_end(),
+        );
+        let segments = [id(&self.named.withdrawal), id(&self.named.deposit)];
+        let (caller, core_actor, operator_actor) = (core(), core(), self.operator.clone());
+        let session = id(&world.context().session);
+        let live = Live {
+            order: &order,
+            part: &part,
+            segments: &segments,
+            record: &self.record,
+            at: 0,
+            authorisation: &auth,
+            origin_reserve: &origin,
+            route: &end,
+            caller: &caller,
+            core: &core_actor,
+            operator: &operator_actor,
+            session: Some(&session),
+            inputs: &self.inputs,
+            floor: self.floor.as_ref(),
+        };
+        let mut general = General(Rc::clone(&self.log));
+        let mut parts = Parts {
+            clock: &*self.clock,
+            catalogue: &world.catalogue,
+            log: &mut general,
+            evidence: &mut self.store,
+            decisions: &mut self.policy,
+            modules: &mut world.fleet.platform,
+            uses: &mut NoProxy,
+            grading: &mut Recorded,
+            operator_key: &mut self.key,
+            fresh: &mut self.ids,
+            issued: &self.issued,
+            exposures: &mut self.exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        self.segments
+            .late_statement(&mut parts, &live, &id(segment), bytes)
+    }
+
     /// The log as the log itself would keep it: each stated entry attributed from its kept bytes, and every entry
     /// admitted over the ones before it on the path it came by. Refused at the first entry the log wouldn't admit.
     ///

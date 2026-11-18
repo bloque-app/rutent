@@ -375,6 +375,95 @@ pub struct UnknownMove {
     pub mover: Actor,
 }
 
+/// A late statement Core took about a move whose outcome was unknown ([`Segments::late_statement`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Late {
+    /// The receipt of its stated entry: the evidence a report or a confirmation of the move's outcome names.
+    pub receipt: Receipt,
+    /// What it says of the move.
+    pub says: Says,
+}
+
+/// What a late statement says of the move it is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Says {
+    /// The move's own provider's result, which counts and says settled.
+    Settled,
+    /// The move's own provider's result, which counts and says failed or refused finally.
+    Failed,
+    /// The move's own provider's result, which counts and says it doesn't know, waits on the person or refuses for
+    /// now.
+    Unknown,
+    /// Another maker's: it bears out nothing of the move itself, and backs a confirmation only as another maker's.
+    Nothing,
+}
+
+/// Why a late statement wasn't taken as evidence of a move's outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LateRefused {
+    /// The segment has no move whose outcome is unknown.
+    NotUnknown,
+    /// Its signature doesn't verify under a key its maker published for statements, or it is of another deployment or
+    /// protocol version: it is attributable to no one.
+    Unattributable,
+    /// It isn't a result in its envelope, or names no transaction.
+    Unreadable,
+    /// It is not about the transaction the move ran under.
+    OfAnotherTransaction,
+    /// The move's own provider's result, which doesn't count against the operation Core signed.
+    NotCounted,
+    /// The log or the evidence store refused or failed an append.
+    Append(AppendFailure),
+}
+
+/// A segment's unknown outcome confirmed done, to record ([`Segments::confirmed_done`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ConfirmedDone<'a> {
+    /// The order.
+    pub order: &'a Id,
+    /// The segment's part.
+    pub part: &'a Id,
+    /// The segment.
+    pub segment: &'a Id,
+    /// The receipt of the late result the report named, which Core took and judged settled.
+    pub evidence: &'a Receipt,
+}
+
+/// What a settled result says, as the segment's settlement needs it.
+struct Figures {
+    amount_in: String,
+    amount_out: String,
+    fee: rutent_contracts::provider_role::Fee,
+    handed_on: String,
+}
+
+/// A result that counted, to settle a segment on.
+struct On<'a> {
+    stated: &'a Receipt,
+    bytes: &'a [u8],
+    figures: &'a Figures,
+    /// Carried out late, on a move's confirmation ([`Segments::confirmed_done`]).
+    late: bool,
+    /// Only whether it grades is asked: nothing is recorded.
+    grade_only: bool,
+}
+
+/// What settling a result came to.
+enum Settle {
+    Waits(Short),
+    Graded,
+    Settled { amount_out: Amount, evidence: Id },
+}
+
+/// A late statement kept for a move whose outcome is unknown.
+#[derive(Debug, Clone)]
+struct LateKept {
+    step: Step,
+    bytes: Vec<u8>,
+    says: Says,
+    counted: Option<Counted>,
+}
+
 /// A segment's unknown outcome confirmed failed, to record ([`Segments::confirmed_failed`]).
 pub struct Confirmed<'a> {
     /// Orchestration's handle on the log.
@@ -514,6 +603,8 @@ struct InFlight {
     drains: Vec<Id>,
     /// The drain of its record, which reaches the log before its result.
     record: Option<Id>,
+    /// The late statements taken about it while its outcome was unknown, by their bytes (`T-020-20`).
+    late: BTreeMap<Vec<u8>, LateKept>,
     /// The names of the inputs its operation carries (`T-020-23`).
     carries: Vec<String>,
     /// The judgements those inputs rest on, as declared when it was handed over: the provider's reliance on each is
@@ -1661,6 +1752,7 @@ impl Segments {
                 verdict: None,
                 drains: Vec::new(),
                 record: None,
+                late: BTreeMap::new(),
                 carries,
                 relies,
             },
@@ -1921,107 +2013,35 @@ impl Segments {
         match counted {
             Counted::Succeeded {
                 handed_on,
-                amount_in: stated_in,
-                amount_out: stated_out,
-                fee: stated_fee,
+                amount_in,
+                amount_out,
+                fee,
                 ..
             } => {
-                let arrives = handed_on.clone();
-                let amount_out = handed_on;
-                let amount_out = Amount::new(amount_out)
-                    .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
-                let flight = self.flight_mut(at)?;
-                let (evidence, graded_at) = match &flight.evidence {
-                    Some(graded) => graded.clone(),
-                    None => {
-                        let graded = (parts.fresh.id(), now(parts.clock)?);
-                        flight.evidence = Some(graded.clone());
-                        graded
-                    }
-                };
-                let transaction = flight.transaction.clone();
-                let settled = ToGrade {
-                    evidence: &evidence,
-                    order: live.order,
-                    part: live.part,
-                    segment: &segment,
-                    provider: &provider,
-                    transaction: &transaction,
-                    result: &stated,
-                    bytes: &bytes,
-                    operations: chosen.parts[live.at].operations.as_slice(),
-                    operator_fee: &live.record.bounds.operator_fee,
-                    place,
-                    segments: live.segments,
-                    end: live.route,
-                    amount_out: &stated_out,
-                    arrives: &arrives,
-                    core: live.core,
-                    operator: live.operator,
-                    at: &graded_at,
-                };
-                // Graded once it settles: what it settled on is kept and appended, each entry once (`INV-8`). One
-                // that waits is graded again next time, since what is public may have changed (`REQ-ORD-33`).
-                if self.flight(at)?.graded.is_none() {
-                    match parts.grading.grade(&settled) {
-                        Graded::Settles { cites, entries } => {
-                            let steps = entries
-                                .into_iter()
-                                .map(kept_step)
-                                .collect::<Result<Vec<_>, _>>()?;
-                            self.flight_mut(at)?.graded = Some((cites, steps));
-                        }
-                        Graded::Waits(short) => {
-                            return Ok(SegmentOutcome::AwaitsEvidence(short));
-                        }
-                    }
-                }
-                let evidence = self.append_graded(parts.log, at)?;
-                // What the grading answered is in the log: its entries' receipts, for a grading that raises on one.
-                let receipts = self.graded_receipts(at)?;
-                parts.grading.recorded(&settled, &receipts);
-                let state_evidence = stm::Id::new(evidence.as_str())
-                    .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
-                self.input(
-                    parts,
-                    live,
-                    at,
-                    "settled",
-                    Some(&segment),
-                    Observed::SegmentSettled {
-                        evidence: state_evidence,
-                    },
-                )?;
-                self.result(parts, live, at, Outcome::Done {})?;
-                if let Some(declared) = cited.declared_seconds {
-                    self.settlement(parts, live, at, declared)?;
-                }
-                // The fee captured, recorded once the segment settled (`REQ-AUD-11`): attributed to its provider,
-                // and on a part's final deposit the operator's too, which that provider keeps back.
-                if self.flight(at)?.fees.is_none() {
-                    let fees = crate::closing::fees(&settled)
-                        .into_iter()
-                        .map(kept_step)
-                        .collect::<Result<Vec<_>, _>>()?;
-                    self.flight_mut(at)?.fees = Some(fees);
-                }
-                self.append_fees(parts.log, at)?;
-                parts.exposures.release(live.order, &segment);
-                // Its charge, held to the formula that bound it as soon as it settled, before the next segment is
-                // handed over (`REQ-QTE-5`, `AC-14`), whatever it states of billing it separately.
-                self.note_charge(
-                    live,
-                    at,
-                    operation,
-                    cited.price,
-                    &stated,
-                    (stated_in.as_str(), &stated_fee),
-                )?;
-                self.check_charge(parts, live, at)?;
-                Ok(SegmentOutcome::Settled {
+                let figures = Figures {
+                    amount_in,
                     amount_out,
-                    evidence,
-                })
+                    fee,
+                    handed_on,
+                };
+                let on = On {
+                    stated: &stated,
+                    bytes: &bytes,
+                    figures: &figures,
+                    late: false,
+                    grade_only: false,
+                };
+                match self.settle_on(parts, live, at, on)? {
+                    Settle::Waits(short) => Ok(SegmentOutcome::AwaitsEvidence(short)),
+                    Settle::Settled {
+                        amount_out,
+                        evidence,
+                    } => Ok(SegmentOutcome::Settled {
+                        amount_out,
+                        evidence,
+                    }),
+                    Settle::Graded => Err(SegmentsError::Plan("a settlement settles")),
+                }
             }
             Counted::Failed
             | Counted::Refused(Refusal::Final(_) | Refusal::LiftsAtKnownTime(_))
@@ -2086,6 +2106,386 @@ impl Segments {
                 Ok(SegmentOutcome::Unknown(UnknownBy::Provider(stated)))
             }
         }
+    }
+
+    /// Grades a settled result's evidence and, unless only the grading is asked for, settles the segment on it: the
+    /// entries graded, the segment's `segment_settled`, the effect's `done` result, its fee records, its charge held to
+    /// the formula that bound it. Graded once however often it is tried; one that waits is graded again next time. A
+    /// settlement carried out late ([`Segments::confirmed_done`]) records no settlement time (a time the confirmation
+    /// stretched says nothing of the provider's p99) and keeps the segment's hold, which the stuck part's own
+    /// resolution releases (the hold over-reports rather than drop a live one).
+    fn settle_on(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        at: &(String, String),
+        on: On<'_>,
+    ) -> Result<Settle, SegmentsError> {
+        let segment = id_of(&at.1)?;
+        let (provider, place) = {
+            let flight = self.flight(at)?;
+            (flight.provider.clone(), flight.place)
+        };
+        let chosen = live
+            .record
+            .chosen()
+            .ok_or(SegmentsError::Plan("the record chose no route"))?;
+        let operation = &chosen.parts[live.at].operations[place];
+        let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
+            "the record's snapshot names no tuple for the operation",
+        ))?;
+        let Figures {
+            amount_in: stated_in,
+            amount_out: stated_out,
+            fee: stated_fee,
+            handed_on,
+        } = on.figures;
+        let arrives = handed_on.clone();
+        let amount_out = Amount::new(handed_on.clone())
+            .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
+        let flight = self.flight_mut(at)?;
+        let (evidence, graded_at) = match &flight.evidence {
+            Some(graded) => graded.clone(),
+            None => {
+                let graded = (parts.fresh.id(), now(parts.clock)?);
+                flight.evidence = Some(graded.clone());
+                graded
+            }
+        };
+        let transaction = flight.transaction.clone();
+        let settled = ToGrade {
+            evidence: &evidence,
+            order: live.order,
+            part: live.part,
+            segment: &segment,
+            provider: &provider,
+            transaction: &transaction,
+            result: on.stated,
+            bytes: on.bytes,
+            operations: chosen.parts[live.at].operations.as_slice(),
+            operator_fee: &live.record.bounds.operator_fee,
+            place,
+            segments: live.segments,
+            end: live.route,
+            amount_out: stated_out,
+            arrives: &arrives,
+            core: live.core,
+            operator: live.operator,
+            at: &graded_at,
+        };
+        // Graded once it settles: what it settled on is kept and appended, each entry once (`INV-8`). One
+        // that waits is graded again next time, since what is public may have changed (`REQ-ORD-33`).
+        if self.flight(at)?.graded.is_none() {
+            match parts.grading.grade(&settled) {
+                Graded::Settles { cites, entries } => {
+                    let steps = entries
+                        .into_iter()
+                        .map(kept_step)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.flight_mut(at)?.graded = Some((cites, steps));
+                }
+                Graded::Waits(short) => return Ok(Settle::Waits(short)),
+            }
+        }
+        if on.grade_only {
+            return Ok(Settle::Graded);
+        }
+        let evidence = self.append_graded(parts.log, at)?;
+        // What the grading answered is in the log: its entries' receipts, for a grading that raises on one.
+        let receipts = self.graded_receipts(at)?;
+        parts.grading.recorded(&settled, &receipts);
+        let state_evidence = stm::Id::new(evidence.as_str())
+            .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
+        self.input(
+            parts,
+            live,
+            at,
+            "settled",
+            Some(&segment),
+            Observed::SegmentSettled {
+                evidence: state_evidence,
+            },
+        )?;
+        self.result(parts, live, at, Outcome::Done {})?;
+        if !on.late
+            && let Some(declared) = cited.declared_seconds
+        {
+            self.settlement(parts, live, at, declared)?;
+        }
+        // The fee captured, recorded once the segment settled (`REQ-AUD-11`): attributed to its provider,
+        // and on a part's final deposit the operator's too, which that provider keeps back.
+        if self.flight(at)?.fees.is_none() {
+            let fees = crate::closing::fees(&settled)
+                .into_iter()
+                .map(kept_step)
+                .collect::<Result<Vec<_>, _>>()?;
+            self.flight_mut(at)?.fees = Some(fees);
+        }
+        self.append_fees(parts.log, at)?;
+        if !on.late {
+            parts.exposures.release(live.order, &segment);
+        }
+        // Its charge, held to the formula that bound it as soon as it settled, before the next segment is
+        // handed over (`REQ-QTE-5`, `AC-14`), whatever it states of billing it separately.
+        self.note_charge(
+            live,
+            at,
+            operation,
+            cited.price,
+            on.stated,
+            (stated_in.as_str(), stated_fee),
+        )?;
+        self.check_charge(parts, live, at)?;
+        Ok(Settle::Settled {
+            amount_out,
+            evidence,
+        })
+    }
+
+    /// Takes the provider's later statement about the move of `segment` of `live`'s order, whose outcome is unknown,
+    /// as evidence of what it came to (`REQ-ORD-1`, `T-020-20`): it is attributable (its signature verifies under a
+    /// key its maker published for statements), a result, and names the transaction the move ran under; the move's
+    /// own provider's is judged as the segment's own result is, against the operation Core signed. It is kept once as
+    /// its maker's stated entry about the order, the segment and the transaction, however often it is tried. It moves
+    /// nothing and settles nothing: a reporter names it ([`crate::stuck::Stuck::report_segment_outcome`]) and a
+    /// confirmer, with another maker's, confirms.
+    pub fn late_statement(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        segment: &Id,
+        bytes: &[u8],
+    ) -> Result<Late, LateRefused> {
+        if self.unknown_move(live.order, segment).is_none() {
+            return Err(LateRefused::NotUnknown);
+        }
+        let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+        let (provider, place, transaction, statement) = {
+            let flight = self.flights.get(&at).ok_or(LateRefused::NotUnknown)?;
+            (
+                flight.provider.clone(),
+                flight.place,
+                flight.transaction.clone(),
+                flight.statement.statement.clone(),
+            )
+        };
+        let at_instant = parts.clock.now().floor();
+        parts
+            .catalogue
+            .verify_statement(bytes, at_instant)
+            .map_err(|_| LateRefused::Unattributable)?;
+        let body: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| LateRefused::Unreadable)?;
+        if body["shape"] != rutent_contracts::provider_role::RESULT_SHAPE {
+            return Err(LateRefused::Unreadable);
+        }
+        match body["statement"]["transaction"].as_str() {
+            Some(named) if named == transaction.as_str() => {}
+            Some(_) => return Err(LateRefused::OfAnotherTransaction),
+            None => return Err(LateRefused::Unreadable),
+        }
+        let (says, counted) = if body["maker"] == provider.as_str() {
+            let chosen = live.record.chosen().ok_or(LateRefused::NotCounted)?;
+            let operation = &chosen.parts[live.at].operations[place];
+            let cited = sign::cited(live.record, operation).ok_or(LateRefused::NotCounted)?;
+            match judge(
+                parts.catalogue,
+                at_instant,
+                &provider,
+                &statement,
+                cited.terms,
+                cited.quoted.as_ref(),
+                Units {
+                    origin_decimals: operation.from.asset.decimals,
+                    out_decimals: operation.to.asset.decimals,
+                },
+                bytes,
+            ) {
+                Ok(counted @ Counted::Succeeded { .. }) => (Says::Settled, Some(counted)),
+                Ok(Counted::Failed)
+                | Ok(Counted::Refused(Refusal::Final(_) | Refusal::LiftsAtKnownTime(_))) => {
+                    (Says::Failed, None)
+                }
+                Ok(_) => (Says::Unknown, None),
+                Err(_) => return Err(LateRefused::NotCounted),
+            }
+        } else {
+            (Says::Nothing, None)
+        };
+        let flight = self.flights.get_mut(&at).ok_or(LateRefused::NotUnknown)?;
+        if !flight.late.contains_key(bytes) {
+            let about = About {
+                order: Some(live.order.clone()),
+                segment: Some(segment.clone()),
+                transaction: Some(transaction),
+            };
+            let received_at = now(parts.clock).map_err(LateRefused::Append)?;
+            let entry = journal::stated_entry(
+                parts.evidence,
+                &received_at,
+                bytes,
+                maker(parts.catalogue, bytes),
+                Some(about),
+            )
+            .map_err(|why| match why {
+                Unappended::Append(failure) => LateRefused::Append(failure),
+                Unappended::Unrecordable => LateRefused::Unreadable,
+            })?;
+            let entry = GeneralEntry::try_from(entry)
+                .map_err(|v| LateRefused::Append(AppendFailure::Refused(v)))?;
+            flight.late.insert(
+                bytes.to_vec(),
+                LateKept {
+                    step: Step {
+                        entry,
+                        receipt: None,
+                    },
+                    bytes: bytes.to_vec(),
+                    says,
+                    counted,
+                },
+            );
+        }
+        let kept = flight.late.get_mut(bytes).ok_or(LateRefused::NotUnknown)?;
+        let receipt = match &kept.step.receipt {
+            Some(receipt) => receipt.clone(),
+            None => {
+                let receipt = journal::append_general(parts.log, &kept.step.entry)
+                    .map_err(LateRefused::Append)?;
+                kept.step.receipt = Some(receipt.clone());
+                receipt
+            }
+        };
+        Ok(Late { receipt, says })
+    }
+
+    /// The late result the report named, as Core took it and judged it settled, and what grading it comes to
+    /// (`T-020-09`): `Ok` where it grades, `Err(None)` where Core took no such result of the segment's own provider or
+    /// it doesn't say settled, `Err(Some(why))` where `CMP-EVIDENCE` has it wait. Records nothing.
+    pub fn grade_late(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        segment: &Id,
+        evidence: &Receipt,
+    ) -> Result<(), Option<Short>> {
+        if self.unknown_move(live.order, segment).is_none() {
+            return Err(None);
+        }
+        let at = (live.order.as_str().to_owned(), segment.as_str().to_owned());
+        let (stated, bytes, figures) = self.late_figures(&at, evidence).ok_or(None)?;
+        let on = On {
+            stated: &stated,
+            bytes: &bytes,
+            figures: &figures,
+            late: true,
+            grade_only: true,
+        };
+        match self.settle_on(parts, live, &at, on) {
+            Ok(Settle::Waits(short)) => Err(Some(short)),
+            Ok(_) => Ok(()),
+            Err(_) => Err(None),
+        }
+    }
+
+    /// The late result held for `evidence`: its receipt, its bytes and the figures it counted for, only where it was
+    /// taken as the segment's own provider's and says settled.
+    fn late_figures(
+        &self,
+        at: &(String, String),
+        evidence: &Receipt,
+    ) -> Option<(Receipt, Vec<u8>, Figures)> {
+        let kept = self
+            .flights
+            .get(at)?
+            .late
+            .values()
+            .find(|l| l.step.receipt.as_ref() == Some(evidence))?;
+        let Some(Counted::Succeeded {
+            amount_in,
+            amount_out,
+            fee,
+            handed_on,
+            ..
+        }) = kept.counted.clone()
+        else {
+            return None;
+        };
+        (kept.says == Says::Settled).then(|| {
+            (
+                evidence.clone(),
+                kept.bytes.clone(),
+                Figures {
+                    amount_in,
+                    amount_out,
+                    fee,
+                    handed_on,
+                },
+            )
+        })
+    }
+
+    /// Records the outcome of the move of `segment` of `order`, unknown until now, as done, once its report and a
+    /// confirmation of it by another actor were permitted and the late result the report named grades
+    /// ([`Segments::grade_late`]): the segment ends on the platform, the entries it graded to, the segment's
+    /// `segment_settled` on them, then the effect's final `result`, `done`, after its `unanswered` one, each the
+    /// segment's own step, built once and appended until the log takes it, and its fee records and charge check as any
+    /// settlement's (`REQ-ORD-1`, `REQ-ORD-33`, `unknown-outcome-settles-on-its-confirmation`, `AC-6`). Nothing is
+    /// recorded for a result that doesn't grade.
+    pub fn confirmed_done(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        confirmed: ConfirmedDone<'_>,
+    ) -> Result<Receipt, SegmentsError> {
+        let at = (
+            confirmed.order.as_str().to_owned(),
+            confirmed.segment.as_str().to_owned(),
+        );
+        if self
+            .unknown_move(confirmed.order, confirmed.segment)
+            .is_none()
+        {
+            return Err(SegmentsError::Plan(
+                "only a move whose outcome is unknown, its result unanswered, is confirmed",
+            ));
+        }
+        let (stated, bytes, figures) =
+            self.late_figures(&at, confirmed.evidence)
+                .ok_or(SegmentsError::Plan(
+                    "a move is confirmed done on a late result Core took as settled",
+                ))?;
+        self.end(parts, live, &at)?;
+        let on = On {
+            stated: &stated,
+            bytes: &bytes,
+            figures: &figures,
+            late: true,
+            grade_only: false,
+        };
+        let amount_out = match self.settle_on(parts, live, &at, on)? {
+            Settle::Settled { amount_out, .. } => amount_out,
+            Settle::Waits(_) | Settle::Graded => {
+                return Err(SegmentsError::Plan(
+                    "a late result graded before it settles",
+                ));
+            }
+        };
+        let evidence = self.append_graded(parts.log, &at)?;
+        self.finish(
+            &at,
+            &SegmentOutcome::Settled {
+                amount_out,
+                evidence,
+            },
+        )?;
+        self.flight(&at)?
+            .steps
+            .get("result: done")
+            .and_then(|s| s.receipt.clone())
+            .ok_or(SegmentsError::Plan(
+                "a settled segment's result is recorded",
+            ))
     }
 
     /// Puts `promotion.provider`'s staged release in force, as policy decides, by the decision's caller: only the

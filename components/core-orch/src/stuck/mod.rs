@@ -62,7 +62,21 @@
 //! another party and login, confirms it ([`Stuck::confirm_segment_outcome`]), each through policy and each on its
 //! own result about the segment's transaction, made after the move; the segments then record its final result and
 //! the segment's input ([`Segments::confirmed_failed`]), the one writer of a segment's results, and the part can be
-//! decided. Only failed is taken: done would settle the segment on nothing graded, so it is refused, failing closed.
+//! decided. A move confirmed done is taken only through [`Stuck::confirm_segment_done`]: the provider's late result,
+//! which the segments took ([`Segments::late_statement`]), is graded through `CMP-EVIDENCE` as any settlement is
+//! before anything is asked of policy, and only then do the segments record the final result and the segment's
+//! input ([`Segments::confirmed_done`]); a done that grades to nothing waits, held, and nothing is recorded.
+//!
+//! **A report that is wrong** (`T-020-20`). A move's outcome is reported once and its report stands until another
+//! actor of another party and login confirms it ([`Stuck::confirm_outcome`]) or declines it
+//! ([`Stuck::decline_outcome`], [`Stuck::decline_segment_outcome`]), naming the report and its own evidence, each
+//! through policy. A decline settles nothing and frees nothing: the part stays held, and only after it is a new
+//! report of the move admitted, counting a version beyond every one made before, which a confirmation names as it
+//! names the report it confirms. The reporter can't withdraw its own report (a decline is of another party and
+//! login than its reporter's), and a declined report is never confirmed. The evidence a report or a confirmation
+//! names is held to the outcome claimed ([`Stated::outcome`]): a report rests on a statement stating the outcome it
+//! reports, a confirmation on one stating the outcome of the report it confirms or, where it is another maker's and
+//! so states none of the move's, on any, for the outcome the report named.
 //! The order Core follows takes each part's `stuck_resolved` ([`Segments::observe`]), and a part its resolution
 //! ended is never handed over or timed again.
 //!
@@ -73,10 +87,12 @@
 //! [`Unbuilt`], which fails every resolution. It runs only on an effect the log admitted on a stuck move's permit; see
 //! its module for what it hands the provider and how each answer maps to [`Resolved`].
 //!
-//! **Gaps.** Policy's stuck rules are built (`T-021-06`); the roles a decider, mover and confirmer may hold are its.
-//! A move's outcome is reported once, and a report that is wrong can't be corrected: the confirmer can only decline
-//! it, and the part stays held, failing closed, until a follow-up row lets a report be withdrawn (`T-020-20`). A
-//! segment's move confirmed done isn't taken. The hand-on's mover is `T-020-17`'s.
+//! **Gaps.** Policy's stuck rules are built (`T-021-06`, `T-021-09`); the roles a decider, mover, confirmer and
+//! decliner may hold are its. A mover can't withdraw its own report: only a confirmer's decline lets another stand.
+//! A part's `stuck_resolved` cites an evidence entry of the log's where the resolution's done rests on a statement
+//! Core took ([`Resolutions::evidence_of`], [`Stuck::confirm_outcome`]); a [`Resolutions`] that names none leaves it
+//! a bare id, as before, which the log admits until `T-020-30` holds it to an entry. The hand-on's mover is
+//! `T-020-17`'s.
 //!
 mod handing;
 mod journal;
@@ -87,15 +103,15 @@ mod view;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Delivery, Operator, Reads, StuckOrders,
+    AppendFailure, Decisions, Delivery, Evidence, Operator, OutcomeDeclines, Reads, StuckOrders,
 };
 use rutent_contracts::core_internal::{
     Action, Actor, Answer, Decided, Decision, Destination, Difference, Effect, Entry, MoveOutcome,
-    Outcome, OutcomeConfirmation, OutcomeReport, Permit, Raise, ReadCheck, ReadOutcome, Receipt,
-    Resolution, Role, StuckBasis, StuckDecide, StuckMove, What,
+    Outcome, OutcomeConfirmation, OutcomeDecline, OutcomeReport, Permit, Raise, ReadCheck,
+    ReadOutcome, Receipt, Resolution, Role, StuckBasis, StuckDecide, StuckMove, What,
 };
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{Denomination, NodeRef, SafeInteger};
+use rutent_contracts::provider_role::{Denomination, EvidenceGrade, NodeRef, SafeInteger};
 use rutent_contracts::router_api::{
     Amount, DecisionRecord, Endpoint, Id, OperationKind, Timestamp,
 };
@@ -107,8 +123,11 @@ use rutent_router::quote::declared_times;
 use rutent_stm::Stm;
 
 use crate::recalc::Recalculation;
-use crate::rounds::{Fresh, Issued};
-use crate::segments::{Confirmed, Segments, SegmentsError, StatusError};
+use crate::rounds::{Fresh, Issued, OperatorKey};
+use crate::segments::{
+    Confirmed, ConfirmedDone, Grading, Live, Modules, Segments, SegmentsError, Short, StatusError,
+    Uses,
+};
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
 pub use handing::{
@@ -153,7 +172,7 @@ pub struct NoRouteLeft<'a> {
     pub core: &'a Actor,
 }
 
-/// A part to time (`REQ-ORD-29`): the route it runs, as [`Live`](crate::segments::Live) names it.
+/// A part to time (`REQ-ORD-29`): the route it runs, as [`Live`] names it.
 #[derive(Debug, Clone, Copy)]
 pub struct Watching<'a> {
     /// The order.
@@ -254,6 +273,34 @@ impl From<AppendFailure> for StuckError {
     }
 }
 
+impl<'a> Settling<'a> {
+    /// The segments' own parts, made of what the stuck orders' `parts` share and what this holds, with the segments
+    /// themselves apart.
+    fn parts<'p>(
+        &'p mut self,
+        parts: &'p mut Parts<'_>,
+    ) -> (&'p mut Segments, crate::segments::Parts<'p>) {
+        (
+            &mut *parts.segments,
+            crate::segments::Parts {
+                clock: parts.clock,
+                catalogue: self.catalogue,
+                log: &mut *parts.log,
+                evidence: &mut *self.evidence,
+                decisions: &mut *self.decisions,
+                modules: &mut *self.modules,
+                uses: &mut *self.uses,
+                grading: &mut *self.grading,
+                operator_key: &mut *self.operator_key,
+                fresh: &mut *parts.fresh,
+                issued: parts.issued,
+                exposures: &mut *parts.exposures,
+                channel: &mut *self.channel,
+            },
+        )
+    }
+}
+
 /// A decide step to ask (`REQ-AUZ-4`).
 #[derive(Debug, Clone, Copy)]
 pub struct Deciding<'a> {
@@ -284,11 +331,77 @@ pub struct Confirming<'a> {
     pub report: u64,
     /// The evidence the report it confirms named.
     pub reported_with: &'a Receipt,
-    /// The evidence the confirmation relies on: the receipt of a verified statement about the move's order and part,
-    /// another than the report's, by another maker (`outcome-confirmation-rests-on-its-report`).
-    pub evidence: &'a Receipt,
+    /// The evidence the confirmation relies on: a verified statement about the move's order and part, another than
+    /// the report's, by another maker (`outcome-confirmation-rests-on-its-report`), with what it states of the move.
+    pub evidence: &'a Stated,
     /// Core, which writes the result.
     pub core: &'a Actor,
+}
+
+/// A report of a stuck resolution's move to decline (`REQ-AUZ-4`, `T-020-20`): by an actor of another party and login
+/// than its reporter, naming the report and its own evidence.
+#[derive(Debug, Clone, Copy)]
+pub struct Declining<'a> {
+    /// The stuck order.
+    pub order: &'a Id,
+    /// The decide step's decision the move carried out.
+    pub carries_out: &'a Decided,
+    /// Who declines.
+    pub decliner: &'a Actor,
+    /// The outcome the decliner read in the report it declines.
+    pub outcome: Resolved,
+    /// The version of the report it declines.
+    pub report: u64,
+    /// The evidence the report it declines named.
+    pub reported_with: &'a Receipt,
+    /// The evidence the decline relies on: a verified statement about the move's order and part, another than the
+    /// report's, by another maker.
+    pub evidence: &'a Stated,
+}
+
+/// A segment's report to decline (`REQ-AUZ-4`, `T-020-20`).
+#[derive(Debug, Clone, Copy)]
+pub struct DecliningSegment<'a> {
+    /// The stuck order.
+    pub order: &'a Id,
+    /// Its stuck part.
+    pub part: &'a Id,
+    /// The segment whose move's outcome was reported.
+    pub segment: &'a Id,
+    /// Who declines.
+    pub decliner: &'a Actor,
+    /// The outcome the decliner read in the report.
+    pub outcome: Resolved,
+    /// The version of the report it declines.
+    pub report: u64,
+    /// The evidence the report named.
+    pub reported_with: &'a Receipt,
+    /// The evidence the decline relies on: another statement than the report's, by another maker.
+    pub evidence: &'a Stated,
+}
+
+/// What settling a segment's move confirmed done reaches beyond the stuck orders' own [`Parts`] (whose log, clock,
+/// identifiers, exposures and segments it shares): what the segments' settlement uses, the grading of its evidence
+/// among it, and the part of the order's chosen route the segment is on ([`Stuck::confirm_segment_done`]).
+pub struct Settling<'a> {
+    /// The catalogue: a result is attributed by its keys.
+    pub catalogue: &'a rutent_prov::catalogue::Catalogue,
+    /// The evidence store.
+    pub evidence: &'a mut dyn Evidence,
+    /// Policy's one decision call.
+    pub decisions: &'a mut dyn Decisions,
+    /// The module platform.
+    pub modules: &'a mut dyn Modules,
+    /// The credential proxy's records of use.
+    pub uses: &'a mut dyn Uses,
+    /// The grading of a settled segment's evidence (`T-020-09`).
+    pub grading: &'a mut dyn Grading,
+    /// The operator key.
+    pub operator_key: &'a mut dyn OperatorKey,
+    /// The operator's channel, which a charge above its formula is raised to.
+    pub channel: &'a mut dyn Operator,
+    /// The part as Core runs it.
+    pub live: &'a Live<'a>,
 }
 
 /// A segment's move of unknown outcome to report, the silent `move_value` of `AC-6` (`REQ-AUZ-4`).
@@ -318,10 +431,12 @@ pub struct ConfirmingSegment<'a> {
     pub confirmer: &'a Actor,
     /// The outcome the confirmer read in the report.
     pub outcome: Resolved,
+    /// The version of the report it confirms ([`Moved::AwaitsConfirmation`]).
+    pub report: u64,
     /// The evidence the report named.
     pub reported_with: &'a Receipt,
     /// The evidence the confirmation relies on: another statement than the report's, by another maker.
-    pub evidence: &'a Receipt,
+    pub evidence: &'a Stated,
     /// Core, which writes the result and the input.
     pub core: &'a Actor,
 }
@@ -387,9 +502,19 @@ pub enum ResolveError {
     /// The segment named has no move whose outcome is unknown with its `unanswered` result recorded, or isn't a
     /// segment of the part: there is nothing to report or confirm.
     NotUnknown,
-    /// A segment's move reported done: taken, it would settle the segment with no graded evidence for its
-    /// `segment_settled`, so Core takes only failed, failing closed: the part stays held.
+    /// A segment's move confirmed done through [`Stuck::confirm_segment_outcome`]: done settles the segment, which
+    /// takes graded evidence, so it is taken only through [`Stuck::confirm_segment_done`]; here only failed is, failing
+    /// closed, and the part stays held.
     DoneNeedsEvidence,
+    /// The evidence names a statement that states another outcome than the one claimed, or, for a report, none of the
+    /// move's own: nothing is recorded (`REQ-ORD-1`, `T-020-16`'s gap 5).
+    EvidenceStatesAnother,
+    /// The report was declined, so it is confirmed or declined no more, and a new report is not the declined one made
+    /// again: its confirmer's decline stands (`REQ-AUZ-4`).
+    ReportDeclined,
+    /// A segment's move confirmed done whose provider's late result grades to nothing yet, or which Core took no late
+    /// result of: it settles nothing, and the part stays held, the report standing (`REQ-ORD-1`, `REQ-ORD-33`).
+    Ungraded(Option<Short>),
     /// The effect was acted on already (`INV-8`).
     AlreadyActed(Receipt),
     /// The source of fresh identifiers repeats ones Core used: no transaction of its own is drawn for the
@@ -428,6 +553,12 @@ pub enum Moved {
     AwaitsConfirmation {
         /// The report's version: each report of the move counts one more, and a confirmation names the one it
         /// confirms.
+        report: u64,
+    },
+    /// Its confirmer declined the report: it settled nothing and freed nothing, the part stays held, and a new report
+    /// of the move stands in its place once made ([`Stuck::known_outcome`]).
+    Declined {
+        /// The version of the report declined.
         report: u64,
     },
     /// The effect was recorded and carried out.
@@ -472,6 +603,14 @@ pub trait Resolutions {
         carrying: &Carrying<'_>,
         effect: &Effect,
     ) -> Result<Resolved, AppendFailure>;
+
+    /// The receipt of the statement a `deliver`'s done rests on, once `effect` is done: the provider's own answer, as
+    /// the log holds it attributed. The part's `stuck_resolved` cites an entry of the log's resting on it
+    /// (`REQ-ORD-39`). None where the mover keeps no statement, which leaves the citation a bare id.
+    fn evidence_of(&self, effect: &Receipt) -> Option<Receipt> {
+        let _ = effect;
+        None
+    }
 
     /// Whether a call for `effect` may already have handed the provider the operation. A mover that knows it handed
     /// nothing says so, and [`Stuck`] then reads the part's ends again before it goes on (the customer may have
@@ -599,6 +738,11 @@ struct InMotion {
     reported: Option<Report>,
     /// How many reports its mover made.
     reports: u64,
+    /// The reports a confirmer declined, each settling nothing: none is confirmed, and none is made again.
+    declined: Vec<Report>,
+    /// What a done rests on, the receipt of the statement the part's `stuck_resolved` cites an entry resting on:
+    /// the provider's own answer, or the statement a confirmed report named.
+    done_on: Option<Receipt>,
     /// Its `unanswered` result, once its outcome was unknown: the first of its two results.
     unanswered: Option<Step>,
     /// Why the move was dropped before it acted, its effect recorded: its result is recorded `failed`, since it
@@ -636,11 +780,34 @@ pub struct Stuck {
     moving: BTreeMap<String, InMotion>,
     /// Each order's destination and origin, from Core's records ([`Stuck::follow`]).
     ends: BTreeMap<(String, String), Ends>,
-    /// Each part's `stuck_resolved` input, built once its value all moved, kept until the log takes it.
-    resolving: BTreeMap<(String, String), (Step, RecordedInput)>,
+    /// Each part's `stuck_resolved` input, built once its value all moved, kept until the log takes it, with the
+    /// evidence entry it cites, which is appended first.
+    resolving: BTreeMap<(String, String), Resolving>,
     /// The report policy permitted of each segment's move of unknown outcome, by order and segment, until it is
-    /// confirmed (`AC-6`).
+    /// confirmed or declined (`AC-6`).
     segment_reports: BTreeMap<(String, String), (Actor, Report)>,
+    /// How many reports each segment's move had made, and those a confirmer declined (`T-020-20`).
+    segment_history: BTreeMap<(String, String), (u64, Vec<Report>)>,
+    /// The segment moves whose confirmation policy permitted, whose outcome the segments haven't recorded yet: a
+    /// retried confirmation goes on to record it and asks policy nothing more.
+    segment_confirmed: BTreeMap<(String, String), Permitted>,
+}
+
+/// A confirmation policy permitted, bound to who it permitted: a retry skips policy only for exactly this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Permitted {
+    confirmer: Actor,
+    version: u64,
+    evidence: Receipt,
+}
+
+/// A part's `stuck_resolved`, built once, with the evidence entry it cites where Core holds a statement the done rests
+/// on (`REQ-ORD-39`): the evidence is appended before the input.
+#[derive(Debug, Clone)]
+struct Resolving {
+    evidence: Option<Step>,
+    input: Step,
+    recorded: RecordedInput,
 }
 
 impl Stuck {
@@ -1295,6 +1462,8 @@ impl Stuck {
                 mover: moving.mover.clone(),
                 reported: None,
                 reports: 0,
+                declined: Vec::new(),
+                done_on: None,
                 unanswered: None,
                 dropped: None,
                 effect: Step::new(entry),
@@ -1309,21 +1478,25 @@ impl Stuck {
     }
 
     /// Reports the outcome, now known, of a move whose outcome was unknown, done or failed, as its own mover for its
-    /// own order, naming its evidence: the receipt of a verified statement about the move's order and part. Policy
-    /// decides the report (`StuckOrders::report_outcome`, `outcome-report-rests-on-its-move`), and a permitted one
-    /// settles nothing: done would resolve the part and failed free it, each on the mover's word alone, which a mover
-    /// colluding with the provider holding the funds could misuse (`THR-70`). It counts once another actor confirms it
-    /// ([`Stuck::confirm_outcome`]). A move's outcome is reported once: a second report is refused
-    /// ([`ResolveError::AlreadyReported`]). Nothing is carried out
-    /// again. Policy's side of reporting and confirming is `T-021-06`'s. The evidence a report names is, for a move the
-    /// production mover carried out, a statement it took ([`Delivering::statement`]).
+    /// own order, naming its evidence: a verified statement about the move's order and part, with what it states of
+    /// the move. Policy decides the report (`StuckOrders::report_outcome`, `outcome-report-rests-on-its-move`), and a
+    /// permitted one settles nothing: done would resolve the part and failed free it, each on the mover's word alone,
+    /// which a mover colluding with the provider holding the funds could misuse (`THR-70`). It counts once another
+    /// actor confirms it ([`Stuck::confirm_outcome`]). The evidence must state the outcome reported
+    /// ([`ResolveError::EvidenceStatesAnother`]): a statement that states another, or none of the move's own, backs
+    /// no report (`REQ-ORD-1`). A move's outcome is reported once while its report stands: a second report is refused
+    /// ([`ResolveError::AlreadyReported`]) until a confirmer's decline ([`Stuck::decline_outcome`]) lets another take
+    /// its place, one version beyond the last, and never the declined report made again
+    /// ([`ResolveError::ReportDeclined`]). Nothing is carried out again. Policy's side of reporting and confirming is
+    /// `T-021-06`'s. The evidence a report names is, for a move the production mover carried out, a statement it took
+    /// ([`Delivering::statement`]).
     pub fn known_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         moving: Moving<'_>,
         outcome: Resolved,
-        evidence: &Receipt,
+        evidence: &Stated,
     ) -> Result<Moved, ResolveError> {
         let at = moving.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1334,8 +1507,8 @@ impl Stuck {
         if motion.mover != *moving.mover {
             return Err(ResolveError::NotTheMover);
         }
-        // A move's outcome is reported once (`one-report-per-effect`): a permitted report stands until it is
-        // confirmed, and is never replaced.
+        // A move's outcome is reported once while its report stands (`one-report-per-effect`): a permitted report
+        // stands until it is confirmed or declined, and is never replaced.
         if motion.reported.is_some() {
             return Err(ResolveError::AlreadyReported);
         }
@@ -1344,13 +1517,17 @@ impl Stuck {
             Resolved::Failed => MoveOutcome::Failed,
             Resolved::Unknown => return Err(ResolveError::OutcomeUnknown),
         };
+        states(evidence, outcome)?;
+        if made_again(&motion.declined, outcome, evidence.receipt()) {
+            return Err(ResolveError::ReportDeclined);
+        }
         let effect = motion
             .effect
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         // Evidence older than the move can't say what it came to (`outcome-confirmation-cites-verified-evidence`).
-        if !follows(evidence, &effect) {
+        if !follows(evidence.receipt(), &effect) {
             return Err(ResolveError::NoEvidence);
         }
         let version = motion
@@ -1363,7 +1540,7 @@ impl Stuck {
             effect,
             outcome: reported,
             reporter: moving.mover.clone(),
-            evidence: evidence.clone(),
+            evidence: evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.report_outcome(&request)?;
@@ -1377,7 +1554,7 @@ impl Stuck {
         motion.reports = version;
         motion.reported = Some(Report {
             outcome,
-            evidence: evidence.clone(),
+            evidence: evidence.receipt().clone(),
             version,
             receipt: decision.receipt,
         });
@@ -1388,11 +1565,15 @@ impl Stuck {
     /// outcome, version and evidence, which must all be the current report's, so the mover can't change the outcome
     /// after the confirmer committed) and its own evidence, another statement than the report's: only by an actor
     /// of another party and another login than the mover, as a decision and its move are (`REQ-AUZ-4`, ADR-0011; the
-    /// decider may). Policy decides the confirmation (`StuckOrders::confirm_outcome`), citing the report's receipt;
-    /// once it permits, the outcome is recorded as the effect's final result, once: done counts what moved, and the
-    /// part resolves once all of it moved; failed frees the part for a new decision. The log records who reported
-    /// and who confirmed, each with its evidence. The roles a confirmer may hold (no customer, not the desk of the
-    /// provider holding the funds, `THR-70`) are policy's rule (`T-021-06`).
+    /// decider may). The evidence must bear the outcome out: a statement of the move's own provider stating another
+    /// is refused ([`ResolveError::EvidenceStatesAnother`]); another maker's states none of the move's, and backs
+    /// the outcome the report named. A declined report is never confirmed ([`ResolveError::ReportDeclined`]). Policy
+    /// decides the confirmation (`StuckOrders::confirm_outcome`), citing the report's receipt; once it permits, the
+    /// outcome is recorded as the effect's final result, once: done counts what moved, and the part resolves once all
+    /// of it moved, its `stuck_resolved` citing an evidence entry resting on the statement the report named; failed
+    /// frees the part for a new decision. The log records who reported and who confirmed, each with its evidence. The
+    /// roles a confirmer may hold (no customer, not the desk of the provider holding the funds, `THR-70`) are
+    /// policy's rule (`T-021-06`).
     pub fn confirm_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1405,6 +1586,13 @@ impl Stuck {
             .get(&at)
             .filter(|m| m.order == *confirming.order && m.resolved == Some(Resolved::Unknown))
             .ok_or(ResolveError::NoDecision)?;
+        if motion
+            .declined
+            .iter()
+            .any(|d| d.version == confirming.report)
+        {
+            return Err(ResolveError::ReportDeclined);
+        }
         let Some(report) = motion.reported.clone() else {
             return Err(ResolveError::NoDecision);
         };
@@ -1419,12 +1607,13 @@ impl Stuck {
         {
             return Err(ResolveError::NotTheReport);
         }
+        bears_out(confirming.evidence, report.outcome)?;
         let effect = motion
             .effect
             .receipt
             .clone()
             .ok_or(ResolveError::NoDecision)?;
-        on_its_own_statement(confirming.evidence, &report.evidence, &effect)?;
+        on_its_own_statement(confirming.evidence.receipt(), &report.evidence, &effect)?;
         let request = OutcomeConfirmation {
             request: parts.fresh.id(),
             order: confirming.order.clone(),
@@ -1435,7 +1624,7 @@ impl Stuck {
             },
             report: report.receipt.clone(),
             confirmer: confirming.confirmer.clone(),
-            confirmed_with: confirming.evidence.clone(),
+            confirmed_with: confirming.evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.confirm_outcome(&request)?;
@@ -1448,6 +1637,9 @@ impl Stuck {
         let outcome = report.outcome;
         let motion = self.moving.get_mut(&at).ok_or(ResolveError::NoDecision)?;
         motion.resolved = Some(outcome);
+        if outcome == Resolved::Done {
+            motion.done_on = Some(report.evidence.clone());
+        }
         if outcome == Resolved::Done
             && let Some((asset, amount)) = moved_by(&motion.action)
             && let Some(declared) = self.declared.get_mut(&key(&motion.order, &motion.part))
@@ -1457,20 +1649,86 @@ impl Stuck {
         self.advance(parts, &mut Unbuilt, confirming.core, &at)
     }
 
+    /// Declines the outcome a move's mover reported ([`Stuck::known_outcome`]), naming the report it declines (its
+    /// outcome, version and evidence) and its own evidence, another statement than the report's, following the move:
+    /// only by an actor of another party and another login than the mover, so a mover can't withdraw its own report
+    /// and swap its word after the fact (`THR-70`). Policy decides the decline (`OutcomeDeclines::decline_outcome`,
+    /// `T-021-09`) as it decides a confirmation, and a refusal of the log's, a report already settled or declined,
+    /// comes back as the error it is, with nothing changed. A permitted decline settles nothing and frees nothing:
+    /// the part stays held, the report no longer stands, and a new one of the same move is admitted
+    /// ([`Stuck::known_outcome`]).
+    pub fn decline_outcome(
+        &mut self,
+        parts: &mut Parts<'_>,
+        policy: &mut dyn OutcomeDeclines,
+        declining: Declining<'_>,
+    ) -> Result<Moved, ResolveError> {
+        let at = declining.carries_out.request.as_str().to_owned();
+        let motion = self
+            .moving
+            .get(&at)
+            .filter(|m| m.order == *declining.order && m.resolved == Some(Resolved::Unknown))
+            .ok_or(ResolveError::NoDecision)?;
+        if motion
+            .declined
+            .iter()
+            .any(|d| d.version == declining.report)
+        {
+            return Err(ResolveError::ReportDeclined);
+        }
+        let Some(report) = motion.reported.clone() else {
+            return Err(ResolveError::NoDecision);
+        };
+        two_actors(&motion.mover, declining.decliner)?;
+        if (declining.outcome, declining.report, declining.reported_with)
+            != (report.outcome, report.version, &report.evidence)
+        {
+            return Err(ResolveError::NotTheReport);
+        }
+        let effect = motion
+            .effect
+            .receipt
+            .clone()
+            .ok_or(ResolveError::NoDecision)?;
+        on_its_own_statement(declining.evidence.receipt(), &report.evidence, &effect)?;
+        let request = OutcomeDecline {
+            request: parts.fresh.id(),
+            order: declining.order.clone(),
+            effect,
+            report: report.receipt.clone(),
+            decliner: declining.decliner.clone(),
+            declined_with: declining.evidence.receipt().clone(),
+            at: now(parts.clock)?,
+        };
+        let decision = policy.decline_outcome(&request)?;
+        if decision.request != request.request {
+            return Err(ResolveError::NotItsAnswer);
+        }
+        if decision.permit().is_none() {
+            return Ok(Moved::NotPermitted(decision.outcome));
+        }
+        let motion = self.moving.get_mut(&at).ok_or(ResolveError::NoDecision)?;
+        let version = report.version;
+        motion.declined.push(report);
+        motion.reported = None;
+        Ok(Moved::Declined { report: version })
+    }
+
     /// Reports the outcome, now known, of a segment's `move_value` whose outcome was unknown, its `unanswered` result
     /// recorded by the segments: the silent move of `AC-6`, of a part Core declared stuck. Only its mover reports it,
-    /// the actor whose request policy permitted or one of its accountable party, naming the receipt of a verified
-    /// statement about the segment, through the transaction it ran under, that follows the move's effect. Policy
-    /// decides the report (`StuckOrders::report_outcome`); a permitted one settles nothing until another actor
-    /// confirms it ([`Stuck::confirm_segment_outcome`]). One report per move (`one-report-per-effect`). Only failed is
-    /// taken: done would settle the segment with no graded evidence ([`ResolveError::DoneNeedsEvidence`]).
+    /// the actor whose request policy permitted or one of its accountable party, naming a verified statement about the
+    /// segment, through the transaction it ran under, that follows the move's effect and states the outcome reported
+    /// ([`ResolveError::EvidenceStatesAnother`]). Policy decides the report (`StuckOrders::report_outcome`); a permitted
+    /// one settles nothing until another actor confirms it ([`Stuck::confirm_segment_outcome`],
+    /// [`Stuck::confirm_segment_done`]) and stands until it is confirmed or declined
+    /// ([`Stuck::decline_segment_outcome`]), after which another takes its place (`one-report-per-effect`).
     pub fn report_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         reporting: Reporting<'_>,
         outcome: Resolved,
-        evidence: &Receipt,
+        evidence: &Stated,
     ) -> Result<Moved, ResolveError> {
         let declared = self.unresolved(parts.segments, reporting.order, reporting.part)?;
         if !declared
@@ -1493,19 +1751,25 @@ impl Stuck {
         }
         let reported = match outcome {
             Resolved::Failed => MoveOutcome::Failed,
-            Resolved::Done => return Err(ResolveError::DoneNeedsEvidence),
+            Resolved::Done => MoveOutcome::Done,
             Resolved::Unknown => return Err(ResolveError::OutcomeUnknown),
         };
-        if !follows(evidence, &unknown.effect) {
+        states(evidence, outcome)?;
+        let (made, declined) = self.segment_history.get(&at).cloned().unwrap_or_default();
+        if made_again(&declined, outcome, evidence.receipt()) {
+            return Err(ResolveError::ReportDeclined);
+        }
+        if !follows(evidence.receipt(), &unknown.effect) {
             return Err(ResolveError::NoEvidence);
         }
+        let version = made.checked_add(1).ok_or(ResolveError::ReportsExhausted)?;
         let request = OutcomeReport {
             request: parts.fresh.id(),
             order: reporting.order.clone(),
             effect: unknown.effect,
             outcome: reported,
             reporter: reporting.reporter.clone(),
-            evidence: evidence.clone(),
+            evidence: evidence.receipt().clone(),
             at: now(parts.clock)?,
         };
         let decision = policy.report_outcome(&request)?;
@@ -1515,35 +1779,71 @@ impl Stuck {
         if decision.permit().is_none() {
             return Ok(Moved::NotPermitted(decision.outcome));
         }
+        self.segment_history.insert(at.clone(), (version, declined));
         self.segment_reports.insert(
             at,
             (
                 reporting.reporter.clone(),
                 Report {
                     outcome,
-                    evidence: evidence.clone(),
-                    version: 1,
+                    evidence: evidence.receipt().clone(),
+                    version,
                     receipt: decision.receipt,
                 },
             ),
         );
-        Ok(Moved::AwaitsConfirmation { report: 1 })
+        Ok(Moved::AwaitsConfirmation { report: version })
     }
 
-    /// Confirms a segment's reported outcome ([`Stuck::report_segment_outcome`]), naming the report's outcome and
-    /// evidence and its own, another statement by another maker, that follows the move's effect: only by an actor of
-    /// another party and login than the reporter. Policy decides it (`StuckOrders::confirm_outcome`), citing the
-    /// report's receipt; once permitted, the segments record the move's final result, `failed`, and the segment's
-    /// `segment_failed` ([`Segments::confirmed_failed`]): the segment is no longer in motion, its value still held,
-    /// and the part can be decided (`AC-6`).
+    /// Confirms a segment's reported outcome ([`Stuck::report_segment_outcome`]), naming the report's outcome, version
+    /// and evidence and its own, another statement by another maker, that follows the move's effect and bears the
+    /// outcome out: only by an actor of another party and login than the reporter. Policy decides it
+    /// (`StuckOrders::confirm_outcome`), citing the report's receipt; once permitted, the segments record the move's
+    /// final result, `failed`, and the segment's `segment_failed` ([`Segments::confirmed_failed`]): the segment is no
+    /// longer in motion, its value still held, and the part can be decided (`AC-6`). Only failed is taken here: done
+    /// settles the segment, which takes graded evidence ([`Stuck::confirm_segment_done`]).
     pub fn confirm_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
     ) -> Result<Moved, ResolveError> {
+        self.confirm_segment(parts, policy, confirming, None)
+    }
+
+    /// Confirms a segment's reported outcome as [`Stuck::confirm_segment_outcome`] does, and takes it done too
+    /// (`REQ-ORD-1`, `REQ-ORD-33`, `T-020-09`): the provider's late result the report named, which the segments took
+    /// ([`Segments::late_statement`]) and judged settled, is graded through `CMP-EVIDENCE` as any settlement is, and
+    /// only when it grades is policy asked and the confirmation decided; then the segments record the effect's final
+    /// result, `done`, and the segment's `segment_settled` on the evidence graded ([`Segments::confirmed_done`]). A
+    /// done that grades to nothing yet, or that rests on no late result Core took, settles nothing
+    /// ([`ResolveError::Ungraded`]): nothing is recorded, the report stands and the part stays held.
+    pub fn confirm_segment_done(
+        &mut self,
+        parts: &mut Parts<'_>,
+        policy: &mut dyn StuckOrders,
+        confirming: ConfirmingSegment<'_>,
+        settling: &mut Settling<'_>,
+    ) -> Result<Moved, ResolveError> {
+        self.confirm_segment(parts, policy, confirming, Some(settling))
+    }
+
+    fn confirm_segment(
+        &mut self,
+        parts: &mut Parts<'_>,
+        policy: &mut dyn StuckOrders,
+        confirming: ConfirmingSegment<'_>,
+        mut settling: Option<&mut Settling<'_>>,
+    ) -> Result<Moved, ResolveError> {
         self.unresolved(parts.segments, confirming.order, confirming.part)?;
         let at = key(confirming.order, confirming.segment);
+        if self
+            .segment_history
+            .get(&at)
+            .is_some_and(|(_, declined)| declined.iter().any(|d| d.version == confirming.report))
+        {
+            return Err(ResolveError::ReportDeclined);
+        }
         let (reporter, report) = self
             .segment_reports
             .get(&at)
@@ -1554,30 +1854,84 @@ impl Stuck {
             .unknown_move(confirming.order, confirming.segment)
             .ok_or(ResolveError::NotUnknown)?;
         two_actors(&reporter, confirming.confirmer)?;
-        if (confirming.outcome, confirming.reported_with) != (report.outcome, &report.evidence) {
+        if (
+            confirming.outcome,
+            confirming.report,
+            confirming.reported_with,
+        ) != (report.outcome, report.version, &report.evidence)
+        {
             return Err(ResolveError::NotTheReport);
         }
-        on_its_own_statement(confirming.evidence, &report.evidence, &unknown.effect)?;
-        let request = OutcomeConfirmation {
-            request: parts.fresh.id(),
-            order: confirming.order.clone(),
-            effect: unknown.effect.clone(),
-            outcome: MoveOutcome::Failed,
-            report: report.receipt.clone(),
+        bears_out(confirming.evidence, report.outcome)?;
+        on_its_own_statement(
+            confirming.evidence.receipt(),
+            &report.evidence,
+            &unknown.effect,
+        )?;
+        let outcome = report.outcome;
+        // A done is graded before anything is recorded or policy is asked: one that grades to nothing yet waits, the
+        // report standing, and is tried again with no second confirmation on the log.
+        if outcome == Resolved::Done {
+            let settling = settling
+                .as_deref_mut()
+                .ok_or(ResolveError::DoneNeedsEvidence)?;
+            let live = settling.live;
+            let (segments, mut segment_parts) = settling.parts(parts);
+            segments
+                .grade_late(
+                    &mut segment_parts,
+                    live,
+                    confirming.segment,
+                    &report.evidence,
+                )
+                .map_err(ResolveError::Ungraded)?;
+        }
+        let permitted = Permitted {
             confirmer: confirming.confirmer.clone(),
-            confirmed_with: confirming.evidence.clone(),
-            at: now(parts.clock)?,
+            version: report.version,
+            evidence: confirming.evidence.receipt().clone(),
         };
-        let decision = policy.confirm_outcome(&request)?;
-        if decision.request != request.request {
-            return Err(ResolveError::NotItsAnswer);
+        if self.segment_confirmed.get(&at) != Some(&permitted) {
+            let request = OutcomeConfirmation {
+                request: parts.fresh.id(),
+                order: confirming.order.clone(),
+                effect: unknown.effect.clone(),
+                outcome: match outcome {
+                    Resolved::Done => MoveOutcome::Done,
+                    _ => MoveOutcome::Failed,
+                },
+                report: report.receipt.clone(),
+                confirmer: confirming.confirmer.clone(),
+                confirmed_with: confirming.evidence.receipt().clone(),
+                at: now(parts.clock)?,
+            };
+            let decision = policy.confirm_outcome(&request)?;
+            if decision.request != request.request {
+                return Err(ResolveError::NotItsAnswer);
+            }
+            if decision.permit().is_none() {
+                return Ok(Moved::NotPermitted(decision.outcome));
+            }
+            // Permitted and on the log: a retry goes on to record the outcome and asks policy nothing more.
+            self.segment_confirmed.insert(at.clone(), permitted);
         }
-        if decision.permit().is_none() {
-            return Ok(Moved::NotPermitted(decision.outcome));
-        }
-        let result = parts
-            .segments
-            .confirmed_failed(Confirmed {
+        let result = match outcome {
+            Resolved::Done => {
+                let settling = settling.ok_or(ResolveError::DoneNeedsEvidence)?;
+                let live = settling.live;
+                let (segments, mut segment_parts) = settling.parts(parts);
+                segments.confirmed_done(
+                    &mut segment_parts,
+                    live,
+                    ConfirmedDone {
+                        order: confirming.order,
+                        part: confirming.part,
+                        segment: confirming.segment,
+                        evidence: &report.evidence,
+                    },
+                )
+            }
+            _ => parts.segments.confirmed_failed(Confirmed {
                 log: &mut *parts.log,
                 clock: parts.clock,
                 fresh: &mut *parts.fresh,
@@ -1585,17 +1939,87 @@ impl Stuck {
                 order: confirming.order,
                 part: confirming.part,
                 segment: confirming.segment,
-            })
-            .map_err(|why| match why {
-                SegmentsError::Append(failure) => ResolveError::Append(failure),
-                _ => ResolveError::NotUnknown,
-            })?;
+            }),
+        }
+        .map_err(|why| match why {
+            SegmentsError::Append(failure) => ResolveError::Append(failure),
+            _ => ResolveError::NotUnknown,
+        })?;
         self.segment_reports.remove(&at);
+        self.segment_confirmed.remove(&at);
         Ok(Moved::CarriedOut {
             effect: unknown.effect,
-            resolved: Resolved::Failed,
+            resolved: outcome,
             result: Some(result),
         })
+    }
+
+    /// Declines a segment's reported outcome ([`Stuck::report_segment_outcome`]) as [`Stuck::decline_outcome`] declines
+    /// a stuck resolution's: by an actor of another party and login than its reporter, naming the report and its own
+    /// evidence, through policy. It settles nothing and frees nothing, and a new report of the segment's move is
+    /// admitted in its place. A report whose confirmation policy permitted is settled and declined no more.
+    pub fn decline_segment_outcome(
+        &mut self,
+        parts: &mut Parts<'_>,
+        policy: &mut dyn OutcomeDeclines,
+        declining: DecliningSegment<'_>,
+    ) -> Result<Moved, ResolveError> {
+        self.unresolved(parts.segments, declining.order, declining.part)?;
+        let at = key(declining.order, declining.segment);
+        if self
+            .segment_history
+            .get(&at)
+            .is_some_and(|(_, declined)| declined.iter().any(|d| d.version == declining.report))
+        {
+            return Err(ResolveError::ReportDeclined);
+        }
+        let (reporter, report) = self
+            .segment_reports
+            .get(&at)
+            .cloned()
+            .ok_or(ResolveError::NoDecision)?;
+        if self.segment_confirmed.contains_key(&at) {
+            return Err(ResolveError::NoDecision);
+        }
+        let unknown = parts
+            .segments
+            .unknown_move(declining.order, declining.segment)
+            .ok_or(ResolveError::NotUnknown)?;
+        two_actors(&reporter, declining.decliner)?;
+        if (declining.outcome, declining.report, declining.reported_with)
+            != (report.outcome, report.version, &report.evidence)
+        {
+            return Err(ResolveError::NotTheReport);
+        }
+        on_its_own_statement(
+            declining.evidence.receipt(),
+            &report.evidence,
+            &unknown.effect,
+        )?;
+        let request = OutcomeDecline {
+            request: parts.fresh.id(),
+            order: declining.order.clone(),
+            effect: unknown.effect,
+            report: report.receipt.clone(),
+            decliner: declining.decliner.clone(),
+            declined_with: declining.evidence.receipt().clone(),
+            at: now(parts.clock)?,
+        };
+        let decision = policy.decline_outcome(&request)?;
+        if decision.request != request.request {
+            return Err(ResolveError::NotItsAnswer);
+        }
+        if decision.permit().is_none() {
+            return Ok(Moved::NotPermitted(decision.outcome));
+        }
+        let version = report.version;
+        self.segment_reports.remove(&at);
+        self.segment_history
+            .entry(at)
+            .or_insert((version, Vec::new()))
+            .1
+            .push(report);
+        Ok(Moved::Declined { report: version })
     }
 
     /// Takes a move on from where it stopped: its effect appended, acted on once, its result recorded, and the
@@ -1684,8 +2108,12 @@ impl Stuck {
                         again,
                     };
                     let resolved = resolutions.resolve(parts, &carrying, &effect)?;
+                    let done_on = (resolved == Resolved::Done)
+                        .then(|| resolutions.evidence_of(&receipt))
+                        .flatten();
                     let motion = self.moving.get_mut(at).ok_or(ResolveError::NoDecision)?;
                     motion.resolved = Some(resolved);
+                    motion.done_on = done_on;
                     // Its decision is spent, whatever came of it: a new move needs a new decision.
                     let decided = carried_out_of(&motion.action);
                     if let Some(decided) = decided {
@@ -1764,7 +2192,13 @@ impl Stuck {
                 .is_some_and(|d| remaining(parts.exposures, &order, d).is_empty());
             if all_moved {
                 self.release_part(parts.exposures, parts.segments, &order, &motion.part);
-                self.resolve(parts, core, &order, &motion.part, &motion.action)?;
+                self.resolve(
+                    parts,
+                    core,
+                    (&order, &motion.part),
+                    &motion.action,
+                    motion.done_on.as_ref(),
+                )?;
             }
         }
         Ok(Moved::CarriedOut {
@@ -1814,20 +2248,21 @@ impl Stuck {
     /// sent it, the order's destination or its origin, after the done result it follows
     /// (`stuck-resolved-follows-a-done-resolution`). The state machine ends the part there. Built once, and appended
     /// until the log takes it ([`Stuck::flush`]). A `hand_on` resolution's input is the hand-on's (`T-020-13`). Its
-    /// evidence is an id of Core's: no evidence entry stands behind it until the production [`Resolutions`] answers
-    /// with one.
+    /// evidence is an id of Core's with an entry of the log's behind it, a `part_evidence` of the order and the part
+    /// resting on the statement the done rests on, appended before the input, where the resolution's mover or the
+    /// report that was confirmed names one ([`Resolutions::evidence_of`]); with none it stays a bare id.
     fn resolve(
         &mut self,
         parts: &mut Parts<'_>,
         core: &Actor,
-        order: &Id,
-        part: &Id,
+        (order, part): (&Id, &Id),
         action: &Action,
+        done_on: Option<&Receipt>,
     ) -> Result<(), ResolveError> {
         let at = key(order, part);
         if !self.resolving.contains_key(&at) {
             let Action::ResolveStuck {
-                resolution: Resolution::Deliver { to, .. },
+                resolution: Resolution::Deliver { to, by, .. },
                 ..
             } = action
             else {
@@ -1838,10 +2273,10 @@ impl Stuck {
                 Some(ends) if ends.origin.as_ref() == Some(to) => ResolvedTo::Origin,
                 _ => return Err(ResolveError::ElsewhereThanItsEnds),
             };
+            let evidence = parts.fresh.id();
             let observed = Observed::StuckResolved {
                 to,
-                evidence: stm_id(parts.fresh.id().as_str())
-                    .map_err(|_| ResolveError::NoDecision)?,
+                evidence: stm_id(evidence.as_str()).map_err(|_| ResolveError::NoDecision)?,
             };
             let input = Self::part_input(parts, order, part, core, observed)
                 .map_err(|_| ResolveError::NotStuck)?;
@@ -1853,7 +2288,35 @@ impl Stuck {
                 &now(parts.clock)?,
                 Outcome::Observed {},
             )?;
-            self.resolving.insert(at.clone(), (Step::new(entry), input));
+            // The evidence it cites is an entry of the log's, of the order and the part, resting on the statement the
+            // done rests on: the provider's own, graded as its statement (`REQ-ORD-39`). Where Core holds none the
+            // citation stays a bare id, which the log admits until it is held to an entry (`T-020-30`).
+            let evidence = done_on
+                .map(|statement| {
+                    journal::built(
+                        core,
+                        What::PartEvidence {
+                            evidence: evidence.clone(),
+                            order: order.clone(),
+                            part: part.clone(),
+                            grade: EvidenceGrade::Statement,
+                            whose: by.clone(),
+                            rests_on: vec![statement.clone()],
+                        },
+                        &now(parts.clock)?,
+                        Outcome::Observed {},
+                    )
+                    .map(Step::new)
+                })
+                .transpose()?;
+            self.resolving.insert(
+                at.clone(),
+                Resolving {
+                    evidence,
+                    input: Step::new(entry),
+                    recorded: input,
+                },
+            );
         }
         self.flush(parts)
     }
@@ -1863,15 +2326,23 @@ impl Stuck {
     /// reads the part stuck, and Core holds it resolved.
     pub fn flush(&mut self, parts: &mut Parts<'_>) -> Result<(), ResolveError> {
         let mut failure = None;
-        for (step, input) in self.resolving.values_mut() {
-            match step.append(parts.log) {
+        for resolving in self.resolving.values_mut() {
+            // The evidence it cites reaches the log first.
+            if let Some(evidence) = resolving.evidence.as_mut()
+                && let Err(why) = evidence.append(parts.log)
+            {
+                failure = failure.or(Some(why));
+                continue;
+            }
+            match resolving.input.append(parts.log) {
                 Ok(_) => {
-                    let _ = parts.segments.observe(parts.clock, input);
+                    let _ = parts.segments.observe(parts.clock, &resolving.recorded);
                 }
                 Err(why) => failure = failure.or(Some(why)),
             }
         }
-        self.resolving.retain(|_, (step, _)| step.receipt.is_none());
+        self.resolving
+            .retain(|_, resolving| resolving.input.receipt.is_none());
         match failure {
             Some(why) => Err(why.into()),
             None => Ok(()),
@@ -2283,6 +2754,32 @@ fn on_its_own_statement(
 /// Whether `evidence` follows `effect` in the one log both receipts are of.
 fn follows(evidence: &Receipt, effect: &Receipt) -> bool {
     evidence.log == effect.log && u64::from(evidence.index) > u64::from(effect.index)
+}
+
+/// A report rests on a statement stating the outcome it reports: one that states another, or none of the move's own
+/// (another maker's), backs no report (`REQ-ORD-1`).
+fn states(evidence: &Stated, claimed: Resolved) -> Result<(), ResolveError> {
+    if evidence.outcome() == Some(claimed) {
+        Ok(())
+    } else {
+        Err(ResolveError::EvidenceStatesAnother)
+    }
+}
+
+/// A confirmation's evidence bears the outcome out: a statement that states another outcome is refused, and one that
+/// states none (another maker's) backs the outcome the report named.
+fn bears_out(evidence: &Stated, claimed: Resolved) -> Result<(), ResolveError> {
+    match evidence.outcome() {
+        Some(stated) if stated != claimed => Err(ResolveError::EvidenceStatesAnother),
+        _ => Ok(()),
+    }
+}
+
+/// Whether `outcome` on `evidence` is a report a confirmer declined already.
+fn made_again(declined: &[Report], outcome: Resolved, evidence: &Receipt) -> bool {
+    declined
+        .iter()
+        .any(|d| d.outcome == outcome && d.evidence == *evidence)
 }
 
 /// Whether no segment of a declared part is handed over with no final outcome.

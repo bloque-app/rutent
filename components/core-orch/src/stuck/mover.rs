@@ -193,16 +193,57 @@ pub struct Mover {
     statements: BTreeMap<(String, Vec<u8>), Step>,
 }
 
-/// A provider's statement, taken as evidence of a move's outcome.
+/// A provider's statement, taken as evidence of a move's outcome. Only Core's own readers make one
+/// ([`Delivering::statement`], [`crate::segments::Segments::late_statement`]): its fields are private, so no caller
+/// states an outcome the statement doesn't.
+///
+/// ```compile_fail
+/// use rutent_core_orch::stuck::{Resolved, Stated};
+/// fn forged(receipt: rutent_contracts::core_internal::Receipt) -> Stated {
+///     Stated { receipt, outcome: Some(Resolved::Failed) }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stated {
-    /// The receipt of its stated entry, the evidence a report or a confirmation of the outcome names.
-    pub receipt: Receipt,
+    receipt: Receipt,
     /// What it says of the move, where it is the move's own provider's statement of the move's own deposit: `Done` for
     /// a result that counts and says it settled, `Failed` for one that counts and says it failed or refused finally,
     /// `Unknown` for one that says it doesn't know. `None` of another provider's statement, which bears out
     /// nothing of the move itself, and only backs a confirmation as another maker's.
-    pub outcome: Option<Resolved>,
+    outcome: Option<Resolved>,
+}
+
+impl Stated {
+    /// The receipt of its stated entry, the evidence a report or a confirmation of the outcome names.
+    pub fn receipt(&self) -> &Receipt {
+        &self.receipt
+    }
+
+    /// What it says of the move (see the type's docs).
+    pub fn outcome(&self) -> Option<Resolved> {
+        self.outcome
+    }
+
+    /// A statement as a test states it, for the test kit's own evidence: with the `test-support` feature only.
+    #[cfg(feature = "test-support")]
+    pub fn for_tests(receipt: Receipt, outcome: Option<Resolved>) -> Self {
+        Stated { receipt, outcome }
+    }
+}
+
+impl From<&crate::segments::Late> for Stated {
+    fn from(late: &crate::segments::Late) -> Self {
+        use crate::segments::Says;
+        Stated {
+            receipt: late.receipt.clone(),
+            outcome: match late.says {
+                Says::Settled => Some(Resolved::Done),
+                Says::Failed => Some(Resolved::Failed),
+                Says::Unknown => Some(Resolved::Unknown),
+                Says::Nothing => None,
+            },
+        }
+    }
 }
 
 /// Why a statement wasn't taken as evidence of a move's outcome.
@@ -462,6 +503,11 @@ impl Delivering<'_> {
             .get_mut(&slot)
             .ok_or(NotTaken::NoMove)?;
         let receipt = step.append_stated(parts.log)?;
+        // A statement the log recorded unattributed rests on no key: it is evidence of nothing, and no entry of the
+        // log's may rest on it.
+        if is_receipt_of(&receipt, &step.entry) {
+            return Err(NotTaken::Unattributable);
+        }
         Ok(Stated { receipt, outcome })
     }
 
@@ -610,6 +656,21 @@ impl Delivering<'_> {
 }
 
 impl Resolutions for Delivering<'_> {
+    /// The provider's own answer to the move, as the log holds it attributed, once the move is done on it: the
+    /// evidence the part's `stuck_resolved` rests on (`REQ-ORD-39`). A move that was never answered, or whose
+    /// answer the log recorded unattributed (its key unknown to it), has none.
+    fn evidence_of(&self, effect: &Receipt) -> Option<Receipt> {
+        let Some(Kept::Flight(flight)) = self.mover.kept.get(&key(effect)) else {
+            return None;
+        };
+        if flight.verdict != Some(Resolved::Done) || flight.uncarried {
+            return None;
+        }
+        let answer = flight.answer.as_ref()?;
+        let receipt = answer.receipt.as_ref()?;
+        (!is_receipt_of(receipt, &answer.entry)).then(|| receipt.clone())
+    }
+
     fn may_have_handed_over(&self, effect: &Receipt) -> bool {
         match self.mover.kept.get(&key(effect)) {
             Some(Kept::Flight(flight)) => flight.carried,

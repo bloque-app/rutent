@@ -27,3 +27,6 @@ serde_json = "1.0.154"
 rutent-core-orch = { path = "../../components/core-orch" }
 rutent-router = { path = "../../components/router" }
 ed25519-dalek = "2.2.0"
+
+[dev-dependencies]
+rutent-core-orch = { path = "../../components/core-orch", features = ["test-support"] }
