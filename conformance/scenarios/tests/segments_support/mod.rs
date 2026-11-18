@@ -1833,6 +1833,7 @@ impl Core {
             session: Some(&session),
             inputs: &self.inputs,
             floor: self.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&self.log));
         let mut parts = Parts {
@@ -1910,6 +1911,7 @@ impl Core {
             session: Some(&session),
             inputs: &self.inputs,
             floor: self.floor.as_ref(),
+            record_entry: None,
         };
         let mut general = General(Rc::clone(&self.log));
         let mut parts = Parts {

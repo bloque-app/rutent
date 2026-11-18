@@ -4939,3 +4939,72 @@ register line) and two scenario files. Nothing in `contracts/`, `core-audit/` or
 | the assembly's register without `Permission::EraseStatement` for the operator's login | `erasure_leaves_the_reference_and_history_checks` |
 | `core-authz` `roles`: no permission asked of the erasing caller | `erasure_without_a_permitting_decision_is_refused_in_the_assembled_core` |
 | `core-authz` `parties`: an agent's scope refusal read as yes | `operator_agent_is_refused_an_erasure_without_the_erase_scope_or_when_its_login_is_unlisted` (and `unreachable_verifier_gives_a_refusal_and_nothing_moves`, which also meets it) |
+
+## T-020-31: orchestration calls `Measures::measure`
+
+Branch `f-020/t-020-31-measures-called`, from `81be3583` (`m3` with `T-020-27`, `T-020-28` and `T-020-30`). Edits
+`components/core-orch/src/segments/` (a new `measured.rs`, and the measure calls in `mod.rs`: its hooks only),
+`reversal/mod.rs`, and `conformance/scenarios/src/assembly/measures.rs` (an `F-024` file: the commit body says so).
+`contracts/` is untouched. `T-020-28`'s one relay helper is untouched: no stated entry is written here.
+
+- **Design.** A measure is a detection (`ADR-0009`), so it is built where the ending happens and written apart from it.
+  `Segments` keeps a queue of `MeasureRecord`s, each built once, with the time of its ending by Core's clock;
+  `Segments::write_measures(&mut dyn Measures) -> usize` is orchestration's one call of `Measures::measure`, oldest
+  first. A record the log can't take now is tried up to `APPEND_TRIES` times and then waits, with those after it, for the
+  caller's next call ("retried by the caller as any other append"); one the log refuses is dropped and counted
+  (`measures_refused`). `unmeasured()` reads what waits. The hooks build the record from what the segment holds
+  (`measure_end`, infallible: a record that can't be built is none), so the segment's outcome, its entries and what it
+  moved do not depend on the writer or its answer.
+- **What each ending gives**, for the provider the segment ran at, role `provider`: settled, a quote (the operation's
+  `amount_out` against what the segment gave out, in the operation's asset); failed or a withdrawal cancelled, a
+  failure with `market` absent; refused (final or until a known time), a refusal. For the answers the operation was
+  evaluated with: each dry run of its own provider, a `dry_run` against how the segment ended and an `answer`, role
+  `provider`; each verifier's judgement the operation cites, an `answer` by the judgement's maker, role `verifier`.
+  Each answer counts once for its order, whichever segments cite it. A completed reversal gives a `reversal` for the
+  provider whose segment was reversed (`reversal/` records it in `complete`, the one place a reversal completes).
+  The endings hooked are the run's (`advance`), `confirmed_done` and `confirmed_failed`.
+- **Cites.** A segment's records cite its effect and its result as the provider stated it (a late result, for
+  `confirmed_done`; the failed `result` entry, for `confirmed_failed`); a reversal's cite the confirmation and the input
+  that recorded it.
+- **The assembly's one handle.** `Core::write_measures()` (`assembly/measures.rs`) hands `Segments` the writer
+  `Core::measure_writer` already gives. It is not called by the assembly's own run, so `T-022-06`'s counting test,
+  which writes its own records, still counts what it writes and no more (a call from `run` would double them: the
+  entry's time differs, so the log would not dedupe).
+- **Defaults taken** (reversible, each failing closed).
+  1. A segment the platform wouldn't begin (`NotHandedOver`) and every outcome that isn't final measure nothing: neither
+     says anything of the provider's conduct.
+  2. A refusal counts as a segment that ended failed, for its dry runs; a settled one as done.
+  3. Only `dry_run` figures of the operation's own provider count as dry runs; a fresh quote is a quote, which the
+     route's price already measures.
+  4. The writer is called by the assembly's caller, not by `run_part`: orchestration holds the records and the caller
+     writes them, so no `Parts` of any caller changed.
+  5. A record the log refuses is dropped, never retried; one it can't take now is kept without bound until written.
+- **Gaps, with owners.**
+  1. The queue is in `Segments`, which the production assembly keeps durably (`F-030`): a record queued and not yet
+     written when it is lost isn't rebuilt from the log. Owner: `F-030`'s durable store. The production assembly also
+     owns calling `write_measures` after each of its entry points that can end a segment or complete a reversal; the
+     scenario assembly calls it from the tests that read measures back.
+  2. Closed in the review round: `Live.record_entry` (the receipt of the log's `decision_record` entry, which holds the
+     dry runs and judgements the route was evaluated with whole) is kept in the flight, and the `dry_run` and `answer`
+     records cite it besides the segment's own entries. The assembly finds it in the log (`Core::record_entry_of`, in
+     `assembly/mod.rs`, an `F-024` file); a caller that passes `None` gets records citing the segment's entries alone.
+     The log holds no stated entry of a dry run or judgement tied to the order's segment through the record, so the
+     record entry is the one that carries them. Rule-off: the answers' extra cite dropped turns the unit test and the
+     bulk scenario red. Lows noted: the end-to-end scenario produces no verifier record (the verifier route is
+     `verifier.rs`'s), and the dedupe sets grow without bound (gap 1).
+  3. `failure.market` stays absent, as `T-022-06` left it: no part holds a market figure in `M3`.
+- **Histories the log refused.** None: the scenario tests read the records back through the real log, which admits each
+  (`measure-cites-entries-of-the-log`).
+- **Red first.** The four scenario tests (`conformance/scenarios/tests/measures_called.rs`) were written against a
+  no-op `write_measures` and failed on their assertions; the fifth (`measured.rs`' unit test) after the code, its fixture
+  needing the contract's rule that an operation cites every usable judgement about its tuple.
+- **Rule-off table** (each once, file restored; none could hang, so no alarm):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: a verifier's answer is measured in the provider's role | `a verifier's answer and the same party's quote as provider are measured apart` |
+  | R2: an answer counts once per order | the same test (its second segment) |
+  | R3: the queue drops a record the log can't take now | `a measure that cannot be written leaves the segment's outcome unchanged` (the retry) |
+  | R4: a failed segment gives no record | `bulk measures over assembled runs ...` |
+  | R5: a completed reversal queues no record | `completed reversal is measured` |
+  | R6: the run's ending queues no record (the caller's hook) | `segment ending leaves no measure record when its writer is not called`, the bulk test and the unwritable one |

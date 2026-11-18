@@ -1179,6 +1179,7 @@ impl World {
             session: Some(&session),
             inputs: &inputs,
             floor: None,
+            record_entry: None,
         };
         let mut parts = Parts {
             clock: &self.clock,
