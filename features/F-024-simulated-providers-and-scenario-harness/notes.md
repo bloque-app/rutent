@@ -1288,6 +1288,8 @@ under a 420 s hard alarm, none hung; the suite is the whole `invariants` binary,
 | the in-flight rule of recalculation and `value_at`'s failed middle segment (both) | none: the state machine refuses the recalculation of a part whose value is in motion by a third rule (`R2`, `R2b`) |
 | every destination and to-asset guard of a recalculation (`Rejected::ChangesDestination`, `ChangesToAsset`, both uses of `recalculation_keeps_destination`) | none: the router plans to the request's own `to`, so no plan Core builds ends elsewhere (`R10`); `INV-10` is held by a property no rule-off of one guard reaches, and the order's own change of destination is `AC-40`'s second half, which the assembly doesn't wire |
 
+**CI run.** The ten tests passed in CI's `ci` job, run `44255094117`, at `2988a310` (the branch merged up to `m3` at `f7c38c98`). CI's seeded step doesn't run this binary yet; `T-024-18` adds it.
+
 ## T-024-12: the verifier half of `REQ-CPL-12` and of `AC-24`
 
 Readings taken without asking, each reversible; the owner's form overrules any of them. `T-020-23` (the writer of
