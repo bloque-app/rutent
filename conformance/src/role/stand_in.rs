@@ -323,6 +323,8 @@ fn terms(min: &str, max: &str, reporting: Reporting, inputs: &[&str]) -> Terms {
 /// runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Shape {
+    /// The fill increment its reserve tuples declare (`REQ-CAT-11`): none where `None`, the stand-in's own.
+    pub increment: Option<u128>,
     /// The seconds it declares to settle, where it isn't the role's own.
     pub settles_in: Option<u64>,
     /// What it takes from each movement, quoted and charged, in the asset moved: reported net, so the amount it gives
@@ -628,6 +630,9 @@ impl Reserve {
                 }
                 if shape.gross {
                     tuple.terms.reporting = Reporting::Gross;
+                }
+                if let Some(increment) = shape.increment {
+                    tuple.terms.increment = Some(increment.to_string());
                 }
             }
         }

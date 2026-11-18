@@ -87,6 +87,7 @@ pub(crate) mod journal;
 mod judge;
 mod landing;
 mod measured;
+mod pairs;
 mod ports;
 mod sign;
 
@@ -134,6 +135,7 @@ pub use journal::{APPEND_TRIES, Unappended};
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
+pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
     ToKeep, Uses,
@@ -614,6 +616,8 @@ struct InFlight {
     /// What its provider charged, as its result that counted states it, with what the check needs of it: kept once
     /// it settled (`T-020-14`).
     charged: Option<Charged>,
+    /// What it reports having given out, for the segment after it (`T-020-35`).
+    reported: Option<pairs::Sent>,
     /// The platform's refusal to begin it, kept before its result is appended.
     begin_refused: Option<PlatformRefusal>,
     /// The first verdict on what it gave back, kept: a later try reads the same, whatever changed since.
@@ -689,6 +693,8 @@ pub struct Segments {
     reliances: Reliances,
     /// The measure records segments' endings and completed reversals gave, for the writer (`T-020-31`).
     measuring: measured::Measuring,
+    /// The pairs of reports segments' ends gave, for the comparison (`T-020-35`).
+    pairing: pairs::Pairing,
     /// The value landed in holding accounts, by segment (`T-020-33`).
     landing: landing::Landing,
 }
@@ -1989,6 +1995,7 @@ impl Segments {
                 ended: false,
                 outcome: None,
                 charged: None,
+                reported: None,
                 begin_refused: None,
                 verdict: None,
                 drains: Vec::new(),
@@ -2504,6 +2511,20 @@ impl Segments {
             (stated_in.as_str(), stated_fee),
         )?;
         self.check_charge(parts, live, at)?;
+        // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`): a detection, so what it
+        // can't build is parked and the settlement goes on (`ADR-0009`).
+        self.report_end(
+            live,
+            at,
+            operation,
+            cited.terms,
+            on.stated,
+            pairs::Figures {
+                out: stated_out.as_str(),
+                fee: stated_fee,
+                amount_in: stated_in.as_str(),
+            },
+        );
         Ok(Settle::Settled {
             amount_out,
             evidence,

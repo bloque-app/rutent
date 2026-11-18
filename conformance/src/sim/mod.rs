@@ -337,7 +337,8 @@ pub const GROSS_FEE: u128 = 5_000;
 /// node (a private node is its publisher's alone) and its public nodes on the operator's list. The first is a route
 /// across a reserve, an exchange and a ramp, and a second reserve (`AC-1`, `AC-2`, `AC-30`):
 ///
-/// - `sim-join-in`, a reserve between its bank and the private node `sim-join-ledger`, in COP;
+/// - `sim-join-in`, a reserve between its bank and the private node `sim-join-ledger`, in COP, its tuples declaring
+///   a fill increment of 10 (`T-020-35`);
 /// - `sim-join-exchange`, at that node, from COP to USD, a statement by its publisher;
 /// - `sim-join-ramp`, from that node to the public node `sim-join-chain`, in USD, charging nothing and declaring
 ///   600 seconds; `sim-join-ramp-quick`, the same tuple at 5 000 a transfer and 30 seconds; `sim-join-ramp-steps`,
@@ -371,7 +372,10 @@ pub fn shape_of(provider: &str) -> Shape {
         ..Shape::default()
     };
     match provider {
-        "sim-join-in" => join("sim-join-ledger"),
+        "sim-join-in" => Shape {
+            increment: Some(10),
+            ..join("sim-join-ledger")
+        },
         "sim-join-exchange" => Shape {
             asset: Some("COP".to_owned()),
             to_asset: Some("USD".to_owned()),
