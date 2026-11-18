@@ -254,6 +254,64 @@ fn built_guests() -> PathBuf {
     out
 }
 
+/// The directory holding the module runtime's stand-ins, `{rs,c}-{category}-{part}.wasm` (`T-013-01`): `RUTENT_WASM_STANDINS`
+/// if set, else the one `module-guests/build.sh` writes into the build directory, built the way the simulated
+/// providers' are (`T-024-07`). They need clang for wasm32, which the script finds as the prov tests do.
+pub fn standins() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = match std::env::var_os("RUTENT_WASM_STANDINS") {
+            Some(dir) => PathBuf::from(dir),
+            None => built_standins(),
+        };
+        assert!(
+            dir.join("c-reserve-sandboxed.wasm").exists(),
+            "{} holds no stand-ins: run components/prov/module-guests/build.sh",
+            dir.display()
+        );
+        dir
+    })
+    .clone()
+}
+
+fn built_standins() -> PathBuf {
+    let (target, _) = build_directories();
+    let root = root();
+    let module_guests = root.join("components/prov/module-guests");
+    let key = key_of(&[
+        module_guests.clone(),
+        root.join("components/prov/src/module/wit"),
+        root.join("conformance/src"),
+        root.join("conformance/Cargo.toml"),
+        root.join("contracts/src"),
+        root.join("contracts/Cargo.toml"),
+        root.join("rust-toolchain.toml"),
+    ]);
+    let builds = target.join("rutent-scenarios-standins");
+    let out = builds.join(&key);
+    std::fs::create_dir_all(&builds).expect("a directory for the stand-ins");
+    {
+        let _lock = BuildLock::take(target.join("rutent-scenarios-standins.lock"));
+        if !out.join("built").exists() {
+            let unfinished = builds.join(format!("{key}.tmp-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&unfinished);
+            let status = Command::new(module_guests.join("build.sh"))
+                .arg(&unfinished)
+                .env("CARGO_TARGET_DIR", target.join("standins-build"))
+                .status()
+                .expect("components/prov/module-guests/build.sh runs");
+            assert!(status.success(), "the stand-ins' build failed: {status}");
+            let _ = std::fs::remove_dir_all(&out);
+            std::fs::rename(&unfinished, &out).expect("the build is moved into place");
+        }
+        if let Ok(marker) = std::fs::File::options().write(true).open(out.join("built")) {
+            let _ = marker.set_modified(SystemTime::now());
+        }
+        prune(&builds, &out);
+    }
+    out
+}
+
 /// The directory holding `plain-wallet-sandboxed.wasm` and `plain-wallet-outside.wasm`, the operator's plain wallet
 /// (`T-016-02`): `RUTENT_PLAIN_WALLET` if set, else the one `guests/plain-wallet/build.sh` writes into the build
 /// directory, built the way the simulated providers' are: into a directory named by a hash of its sources, one

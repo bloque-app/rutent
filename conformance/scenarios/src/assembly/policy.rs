@@ -15,7 +15,8 @@
 //! | `Showing` | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, received no later than the acceptance is decided |
 //! | `Statement` | the stated entry naming the commitment: its maker's party, as the log attributed it |
 //! | `Declarations` | the reserve's advertisement, as the assembly listed it in the log: its reserve declaration |
-//! | `Verifier`, `Provider` | nothing yet: a missing input, so a decision that needs a judgement is refused |
+//! | `Verifier` | the verifier stand-in ([`Verifier`]): by default reached and silent, a missing input, so a decision that needs a judgement is refused; a scenario sets it out of reach, or to yes or no (`T-024-07`) |
+//! | `Provider` | nothing yet: a missing input, so a decision that needs a provider's answer is refused |
 //! | `Consent` | nothing yet: no register of a person's consents, so a question on the person's own authority is refused as missing its input (`T-021-07`) |
 //!
 //! **Policy's one handle.** The engine holds the log's policy handle and appends every decision there; [`PolicySide`]
@@ -163,13 +164,42 @@ pub struct Records {
     pub(crate) declarations: Rc<RefCell<BTreeMap<String, ReserveDeclaration>>>,
     /// The deployment's registers.
     pub(crate) registers: Rc<RefCell<Registers>>,
+    /// What the verifier stand-in does when policy asks it for a judgement (`T-024-07`).
+    pub(crate) verifier: Rc<std::cell::Cell<Verifier>>,
 }
+
+/// What the verifier stand-in does when policy asks it for a judgement: it is reached and says nothing (the default,
+/// as the assembly had it: a missing input), can't be reached, or says yes or no (`T-024-07`, `AC-17`). The production
+/// verifier is `F-053`'s; this stands in for the role only (`DEC-16`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Verifier {
+    /// Reached, and holds no judgement of the party asked about.
+    #[default]
+    Silent,
+    /// Out of reach.
+    Unreachable,
+    /// Reached, and judges yes.
+    Yes,
+    /// Reached, and judges no.
+    No,
+}
+
+/// The name the deployment's judgement rule asks the verifier stand-in under.
+pub const VERIFIER: &str = "sim-verifier";
+
+/// The input the deployment's judgement rule asks the verifier for.
+pub const JUDGEMENT: &str = "payer-eligible";
 
 fn said(yes: bool) -> Reply<Said> {
     Reply::Given(if yes { Said::Yes } else { Said::No })
 }
 
 impl Records {
+    /// Sets what the verifier stand-in does from now on (`T-024-07`).
+    pub fn verifier_is(&self, verifier: Verifier) {
+        self.verifier.set(verifier);
+    }
+
     /// Each verified entry's `what`, oldest first.
     fn verified(&self) -> Vec<What> {
         self.log
@@ -376,7 +406,13 @@ impl authz::Sources for Records {
             Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
             // No verifier's judgement or provider's answer is a source in M3's assembly yet, and no register of a
             // person's consents (`T-021-07`): a question on the person's own authority is refused.
-            Source::Verifier(_) | Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
+            Source::Verifier(_) => match self.verifier.get() {
+                Verifier::Silent => Reply::Missing,
+                Verifier::Unreachable => Reply::Unreachable,
+                Verifier::Yes => said(true),
+                Verifier::No => said(false),
+            },
+            Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
         }
     }
 
@@ -395,16 +431,43 @@ impl authz::Sources for Records {
 pub struct Deployment {
     /// Refuses every call with this class, where set.
     pub refuse: Rc<std::cell::Cell<Option<RefusalClass>>>,
+    /// Whether a move of value needs the verifier's judgement of the payer first (`T-024-07`, `AC-17`).
+    judges_moves: Rc<std::cell::Cell<bool>>,
+}
+
+impl Deployment {
+    /// Has the deployment's policy ask the verifier stand-in for its judgement of the payer before any value moves,
+    /// and refuse where it says no.
+    pub fn judge_before_moving(&self, on: bool) {
+        self.judges_moves.set(on);
+    }
 }
 
 impl authz::Policy for Deployment {
-    fn needs(&mut self, _: authz::Asked<'_>) -> Reply<Vec<Need>> {
-        Reply::Given(Vec::new())
+    fn needs(&mut self, asked: authz::Asked<'_>) -> Reply<Vec<Need>> {
+        let moves = matches!(
+            asked,
+            authz::Asked::Decide(DecisionRequest {
+                action: Action::MoveValue { .. },
+                ..
+            })
+        );
+        Reply::Given(if moves && self.judges_moves.get() {
+            vec![Need {
+                input: Id::new(JUDGEMENT).expect("an identifier"),
+                from: Source::Verifier(Id::new(VERIFIER).expect("an identifier")),
+            }]
+        } else {
+            Vec::new()
+        })
     }
 
-    fn rule(&mut self, _: authz::Asked<'_>, _: &[Input]) -> Reply<Ruling> {
+    fn rule(&mut self, _: authz::Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
         Reply::Given(match self.refuse.get() {
             Some(class) => Ruling::Refuse(class),
+            None if inputs.iter().any(|i| i.said == Said::No) => {
+                Ruling::Refuse(RefusalClass::NotPermitted)
+            }
             None => Ruling::Permit,
         })
     }

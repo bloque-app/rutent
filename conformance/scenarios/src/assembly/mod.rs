@@ -43,6 +43,7 @@
 //!   (`F-030`).
 
 mod arrivals;
+pub mod audit;
 pub mod charges;
 pub mod durable;
 mod grading;
@@ -53,6 +54,7 @@ pub mod machine;
 pub mod measures;
 pub mod policy;
 pub mod price;
+pub mod releases;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -727,6 +729,7 @@ impl Core {
             orders: Rc::default(),
             declarations: Rc::default(),
             registers,
+            verifier: Rc::default(),
         };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.

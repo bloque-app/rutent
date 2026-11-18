@@ -10,7 +10,8 @@
 pub mod disk;
 pub mod fleet;
 pub mod orders;
+pub mod probes;
 pub mod world;
 
-pub use fleet::{Fleet, InProcess, Installed, InstalledWallet};
+pub use fleet::{Fleet, InProcess, Installed, InstalledWallet, Release};
 pub use world::SimWorld;
