@@ -501,8 +501,12 @@ impl Arrivals {
         let at = match existing {
             Some(at) => at,
             None => {
-                let maker =
+                // The reserve hands its notice over; the maker its envelope names is the one the entry claims.
+                let presenter =
                     confirm::reserve_maker(desk.parts.catalogue, desk.operator, &credit.reserve);
+                let maker = crate::relay::claimed_by(&report.notice, &presenter, |maker| {
+                    confirm::reserve_maker(desk.parts.catalogue, desk.operator, maker)
+                });
                 // The notice is about the deposit's own transaction, bound to no order.
                 let about = About {
                     order: None,
@@ -514,6 +518,7 @@ impl Arrivals {
                     desk.parts.clock,
                     &report.notice,
                     maker,
+                    &presenter,
                     Some(about),
                 )?;
                 let Entry::Stated(stated) = &notice else {

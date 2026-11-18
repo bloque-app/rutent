@@ -684,6 +684,7 @@ impl Reversals {
                 parts.clock,
                 &bytes,
                 parts.operator.clone(),
+                parts.operator,
                 about,
             )?);
             let effect = Step::new(journal::recorded(
@@ -749,8 +750,17 @@ impl Reversals {
                 segment: Some(at.segment.clone()),
                 transaction: Some(state.transaction.clone()),
             };
-            let maker = journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
-            match journal::stated(parts.evidence, parts.clock, answer, maker, about) {
+            let presenter =
+                journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
+            let maker = journal::claimed_by(parts.catalogue, parts.operator, answer, &presenter);
+            match journal::stated(
+                parts.evidence,
+                parts.clock,
+                answer,
+                maker,
+                &presenter,
+                about,
+            ) {
                 Ok(entry) => state.answer_step = Some(Step::new(entry)),
                 Err(ReversalError::Unrecordable) => state.answer = None,
                 Err(other) => return Err(other),
@@ -932,7 +942,12 @@ impl Reversals {
         }
         let answer = state.answer.clone();
         let kept = match answer {
-            Some(bytes) => match self.later(parts, at, &bytes) {
+            Some(bytes) => match self.later(
+                parts,
+                at,
+                &bytes,
+                &journal::provider_maker(parts.catalogue, parts.operator, &provider),
+            ) {
                 Ok(receipt) => Some(receipt),
                 Err(ReversalError::Unrecordable) => {
                     if let Some(state) = self.statuses.get_mut(&at_key) {
@@ -1092,13 +1107,22 @@ impl Reversals {
             });
         };
         if question.answer_step.is_none() {
-            let maker = journal::provider_maker(parts.catalogue, parts.operator, &question.origin);
+            let presenter =
+                journal::provider_maker(parts.catalogue, parts.operator, &question.origin);
+            let maker = journal::claimed_by(parts.catalogue, parts.operator, &answer, &presenter);
             let about = About {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: Some(question.transaction.clone()),
             };
-            match journal::stated(parts.evidence, parts.clock, &answer, maker, about) {
+            match journal::stated(
+                parts.evidence,
+                parts.clock,
+                &answer,
+                maker,
+                &presenter,
+                about,
+            ) {
                 Ok(entry) => question.answer_step = Some(Step::new(entry)),
                 Err(ReversalError::Unrecordable) => {
                     // Nothing can be kept of it: the question is spent, and the next call asks again.
@@ -1147,12 +1171,14 @@ impl Reversals {
 
     /// Keeps `bytes`, a statement about `at`'s reversal or its undone start that answers no question of Core's, as
     /// its maker's stated entry about the order and segment, once, and says why it completes nothing (see the
-    /// module's docs).
+    /// module's docs). `presented_by` is who handed it to Core, as external authentication established it: the entry
+    /// names it as the relay where it isn't the statement's maker (`REQ-AUD-2`).
     pub fn report(
         &mut self,
         parts: &mut Parts<'_>,
         at: At<'_>,
         bytes: &[u8],
+        presented_by: &Actor,
     ) -> Result<Reported, ReversalError> {
         let target = self.target(parts, at)?;
         let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
@@ -1169,6 +1195,7 @@ impl Reversals {
                 parts.clock,
                 bytes,
                 claimed,
+                presented_by,
                 about,
             )?);
             reversal.reports.push((bytes.to_vec(), step));
@@ -1234,7 +1261,8 @@ impl Reversals {
                 parts.evidence,
                 parts.clock,
                 bytes,
-                claimed,
+                claimed.clone(),
+                &claimed,
                 about,
             )?);
             reversal.showings.push((bytes.to_vec(), step));
@@ -1589,12 +1617,14 @@ impl Reversals {
 
     /// Keeps `bytes`, a provider's result about `at` arriving after the segment's answer was taken, as its maker's
     /// stated entry about the segment and, where it names it, the transaction the segment ran under; once, moving
-    /// nothing (`REQ-STM-6`, `AC-5`).
+    /// nothing (`REQ-STM-6`, `AC-5`). `presented_by` is who handed it to Core, named as the relay where it isn't
+    /// the maker.
     pub fn later(
         &mut self,
         parts: &mut Parts<'_>,
         at: At<'_>,
         bytes: &[u8],
+        presented_by: &Actor,
     ) -> Result<Receipt, ReversalError> {
         let (transaction, _) = parts
             .segments
@@ -1622,6 +1652,7 @@ impl Reversals {
                 parts.clock,
                 bytes,
                 claimed,
+                presented_by,
                 about,
             )?);
             kept.push((bytes.to_vec(), step));
@@ -1778,6 +1809,7 @@ impl Reversals {
             parts.clock,
             &bytes,
             parts.operator.clone(),
+            parts.operator,
             about,
         )?);
         Ok(Question {
@@ -1952,7 +1984,8 @@ impl Reversals {
                 parts.evidence,
                 parts.clock,
                 bytes,
-                claimed,
+                claimed.clone(),
+                &claimed,
                 about,
             )?);
             kept.push(After {

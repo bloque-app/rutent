@@ -1649,7 +1649,7 @@ fn failed_providers_own_statement_does_not_complete_its_reversal() {
         json!({ "status": "succeeded", "node": "ledger-in", "asset": "COP", "amount": EXCHANGED, "evidence": piece(EXCHANGE) }),
     );
     let reported = world
-        .with(|r, p, _| r.report(p, at(&order, &part, &s2), &own))
+        .with(|r, p, _| r.report(p, at(&order, &part, &s2), &own, &presenter_of(&own)))
         .unwrap();
     assert_eq!(reported.why, NotCounted::FailedProvidersOwn);
     // Asked in the reserve's place, the exchange's answer is still its own.
@@ -2285,7 +2285,7 @@ fn owed_reversal_stays_owed_until_it_is_confirmed() {
         json!({ "status": "succeeded", "node": "ledger-in", "asset": "COP", "amount": EXCHANGED, "evidence": piece(EXCHANGE) }),
     );
     world
-        .with(|r, p, _| r.report(p, at(&order, &part, &s2), &own))
+        .with(|r, p, _| r.report(p, at(&order, &part, &s2), &own, &presenter_of(&own)))
         .unwrap();
     assert!(world.catalogue.owed().is_owed(&owed_id()));
     assert_eq!(
@@ -2389,7 +2389,7 @@ fn partial_evidence_of_an_undone_start_is_kept() {
     let mut kept = Vec::new();
     for piece in pieces.iter().chain(pieces.iter()) {
         let reported = world
-            .with(|r, p, _| r.report(p, at(&order, &part, &s1), piece))
+            .with(|r, p, _| r.report(p, at(&order, &part, &s1), piece, &presenter_of(piece)))
             .unwrap();
         assert!(
             matches!(reported.why, NotCounted::NotInFull { .. }),
@@ -2778,10 +2778,10 @@ fn late_delivery_is_recorded_and_moves_nothing() {
             "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
     );
     let first = world
-        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late, &presenter_of(&late)))
         .unwrap();
     let again = world
-        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late, &presenter_of(&late)))
         .unwrap();
     assert_eq!(first, again, "kept once");
     assert_eq!(world.log.len(), mark + 1);
@@ -2816,7 +2816,7 @@ fn late_delivery_is_recorded_and_moves_nothing() {
     );
     let appended = world.log.len();
     assert_eq!(
-        world.with(|r, p, _| r.later(p, at(&order, &part, &s1), &early)),
+        world.with(|r, p, _| r.later(p, at(&order, &part, &s1), &early, &presenter_of(&early))),
         Err(ReversalError::NotAnswered)
     );
     assert_eq!(world.log.len(), appended);
@@ -3578,10 +3578,10 @@ fn a_late_word_and_a_return_are_kept_over_a_log_that_attributes_its_statements()
             "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
     );
     let first = world
-        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late, &presenter_of(&late)))
         .expect("the log took the late word");
     let again = world
-        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late))
+        .with(|r, p, _| r.later(p, at(&order, &part, &s2), &late, &presenter_of(&late)))
         .unwrap();
     assert_eq!(first, again, "kept once");
     assert_eq!(world.log.len(), mark + 1);
@@ -3994,4 +3994,62 @@ fn reversal_at_a_later_inner_node_with_no_confirming_party_stays_owed_and_held()
     assert!(world.held("p1-s3"));
     assert!(world.catalogue.owed().is_owed(&format!("{ORDER}/p1-s3")));
     assert!(world.reversals.completed(&order, &s3).is_none());
+}
+
+/// Who hands `bytes` over where their maker does: the maker their envelope names, for itself.
+fn presenter_of(bytes: &[u8]) -> Actor {
+    let acts = id(value_maker(bytes).as_str());
+    Actor {
+        party: acts.clone(),
+        acts,
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    }
+}
+
+fn value_maker(bytes: &[u8]) -> String {
+    serde_json::from_slice::<Value>(bytes).unwrap()["maker"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The stated entries of `maker`'s statements the log holds from `from` on, with who each says relayed it.
+fn stated_by(world: &World, maker: &str, from: usize) -> Vec<Option<Actor>> {
+    world.log.entries()[from..]
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The origin reserve is asked and answers with another provider's signed statement: the entry for it is the
+/// statement's maker's, unverified, and names the reserve that handed it over as its relay. The reserve's own answer
+/// names none.
+// verifies: REQ-AUD-2
+#[test]
+fn reversal_statement_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let mut world = exchange_failed();
+    let mark = world.log.len();
+    let mut relaying = Answering::replying(Reply::Confirms {
+        maker: WALLET,
+        amount: None,
+    });
+    assert_eq!(
+        why(world.confirm(&mut relaying, "p1-s2")),
+        NotCounted::NotTheOriginReserve
+    );
+    let [relayed] = stated_by(&world, WALLET, mark).try_into().unwrap();
+    let relay = relayed.expect("the relay is named");
+    assert_eq!(relay.acts, id(RESERVE));
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    let mut world = exchange_failed();
+    let mark = world.log.len();
+    assert!(world.confirm(&mut Answering::confirming(), "p1-s2").is_ok());
+    assert_eq!(stated_by(&world, RESERVE, mark), vec![None]);
 }

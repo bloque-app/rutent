@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, KeptStatements, Log};
-use rutent_contracts::core_internal::{Attribution, Entry, Receipt, StatedEntry};
+use rutent_contracts::core_internal::{Actor, Attribution, Entry, Receipt, StatedEntry};
 use rutent_contracts::provider_role::{Statement, TERMS_SHAPE, TupleTerms, check_terms};
 use rutent_contracts::router_api::{StatedTerms, Timestamp, TupleKey};
 use rutent_prov::catalogue::Catalogue;
@@ -74,6 +74,9 @@ pub struct TermsDesk<'a> {
     pub clock: &'a dyn Clock,
     /// The catalogue, which names the party a provider states for.
     pub catalogue: &'a Catalogue,
+    /// Who handed the terms to Core, as external authentication established it: named in the entry as its relay where
+    /// it isn't the terms' maker (`REQ-AUD-2`).
+    pub presented_by: &'a Actor,
 }
 
 /// Why a provider's terms weren't taken.
@@ -179,6 +182,7 @@ impl Terms {
             &received_at,
             bytes,
             segments::maker(desk.catalogue, bytes),
+            desk.presented_by,
             None,
         )
         .map_err(|why| match why {

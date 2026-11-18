@@ -4807,3 +4807,62 @@ named below.
   `a_class_grants_changes_are_dated_in_the_order_the_log_records_them` (`core-audit`'s `tests/log.rs`): red before the
   fix on the reviewer's probe (a revocation dated the 4th behind the grant of the 5th admitted).
 
+## T-020-28
+
+Run in wave 27 after `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-27`, each merged first; `T-020-31`,
+`T-020-33`, `T-020-34` and `T-020-35` edit these modules after it.
+
+- **What is built.** `components/core-orch/src/relay.rs`, the one place `relayed_by` is set: `relayed_by(maker,
+  presented_by)` answers the presenter where it isn't the claimed maker (compared by `acts`, as `core-audit`'s
+  `Statements` does) and nothing where the maker presented its own statement. `claimed_by` reads the maker an envelope
+  names; `presenter` makes the actor of a provider (or verifier) that handed Core a statement. Each of the five writers
+  (`snapshot/statements.rs::record_refused`, `reversal/journal.rs::stated`, `segments/journal.rs::stated_entry`,
+  `arrival/journal.rs::stated`, `rounds/journal.rs::append_stated`) takes `presented_by` as a required argument and calls
+  the helper before building the entry; none writes `relayed_by: None`, and `tests/relay_helper.rs` scans `src/` so a
+  sixth site that builds a `StatedEntry` without the helper, or writes `None`, fails.
+- **Who presented, per caller.** Core's own questions: the operator, who is also their maker. A statement a provider
+  hands back to a call Core made to it (a segment's result, a stuck move's statement or late status, a reversal's
+  answer, a reserve's answer to a balance question, a round's answers): the provider asked, whatever the envelope
+  names as its maker. The round's answers and the reversal's and arrival's answers now claim the maker the envelope
+  names (the log verifies a mismatch between a claim and the kept bytes, so this is the honest claim); where the
+  envelope names none Core can read, the provider asked. A snapshot's refused statement: the answer's provider
+  (`record_refused` takes the presenter; rounds passes the answer's provider, or the envelope's maker where no answer
+  is found). `Terms::take` and the hold's take: a new required `presented_by` on `TermsDesk` and `HoldDesk`.
+- **Defaults taken (reversible).** (1) `Reversals::report` and `later` take `presented_by` from their caller (review
+  of `04f0756c`): a default of the target provider would record "no relay" when that provider is the maker and another
+  party handed the statement over, the loss this row closes. The one internal caller of `later` (the late status Core
+  asks a provider for) passes that provider, who answered the platform call. (2) `show_fault` and an `afterwards` statement are accepted only from the party named
+  (`NotTheProvider`, `makers`), so their presenter is that maker and no relay can be named there. (3) The scenario
+  harness hands over each provider's own terms or hold, so its desks name the envelope's maker as the presenter
+  (`assembly::handed_over_by`, in `conformance/scenarios`, an `F-024` file).
+- **Gaps, with owners.**
+  1. `T-024-02`'s assembly doesn't route Core's statements through `core-audit`'s `Statements`: Core appends through
+     orchestration's `Log` handle (`GeneralHandle`), and `Statements` is the intake of an outside presenter with its own
+     `Evidence`/`Log`; routing would put a second writer between Core and the log. The five sites set the field as
+     `Statements` does instead. Owner: the lead, if the owner wants one writer.
+  2. `Arrivals::arrive` takes only a notice its reporting reserve made (`read_notice` requires the envelope's maker to
+     be `report.reserve`), so no relayed notice reaches that site by that door; the named test drives the arrival
+     site through the reserve's answer, where a relay does arrive. Owner: `T-020-19`'s notice read, if a relayed
+     notice should ever be taken.
+  3. `show_fault` and the `afterwards` statements still name no presenter: they are accepted only from the party
+     named, so no relay is possible there. `report`'s and `later`'s external callers (none outside `core-orch`'s
+     tests today) must supply the authenticated presenter: the owner of the route that delivers a provider's late or
+     unasked statement (`T-024-06`/`T-024-14`'s assembly work). `T-020-12`'s tests changed only to pass the maker as
+     presenter to those two calls.
+  5. `rounds` passes the envelope's maker to `record_refused` where no answer is found for a refused statement; every
+     refused statement comes from an answer Core holds, so that case does not arise today.
+  4. `conformance/scenarios` (`assembly/mod.rs`, `assembly/charges.rs`) changed by the new desk field only.
+- **Histories the log refused.** None: the reversal, rounds and arrival tests replay the log through `attribute` and
+  `admit_entry`, and admit the relayed entries.
+- **Red first.** The six tests were written with the sites; each goes red with the helper switched off (R1 below). I
+  wrote the code before the tests, so the red was seen by rule-off and not before the code.
+- **Rule-off table** (each once, file restored; test binaries `rounds`, `reversal`, `segments`, `arrival`,
+  `snapshot_statements`, `relay_helper` under a 500 s alarm; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: the helper names no relay | all five relay tests: `quote`, `segment result`, `arrival notice`, `reversal statement`, `statement the snapshot takes` |
+  | R2: rounds claims the provider asked, not the envelope's maker | `quote restated by a relay is recorded naming the relay` |
+  | R3: reversal's answer claims the presenter, not the envelope's maker | `reversal statement restated by a relay is recorded naming the relay` |
+  | R4: a segment's result is handed over by its claimed maker | `segment result restated by a relay is recorded naming the relay` |
+  | R5: a writer writes `relayed_by: None` | `arrival notice restated by a relay is recorded naming the relay`, `every stated entry core builds takes its relay from the one helper` |

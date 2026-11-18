@@ -219,6 +219,7 @@ impl Core {
         }
         let log = std::rc::Rc::clone(&self.log);
         let recorded = Now(&log);
+        let presented_by = super::handed_over_by(&self.catalogue, bytes);
         let desk = TermsDesk {
             evidence: &mut self.keeper,
             log: &mut self.general,
@@ -226,6 +227,7 @@ impl Core {
             recorded: &recorded,
             clock: &self.clock,
             catalogue: &self.catalogue,
+            presented_by: &presented_by,
         };
         self.segments.take_terms(desk, bytes)
     }

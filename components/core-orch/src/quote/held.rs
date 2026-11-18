@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Evidence, KeptStatements, Log};
 use rutent_contracts::core_internal::{
-    About, Attribution, Entry, Receipt, ShownAs, StatedEntry, What,
+    About, Actor, Attribution, Entry, Receipt, ShownAs, StatedEntry, What,
 };
 use rutent_contracts::module_interface::{Digest, DigestAlgorithm};
 use rutent_contracts::provider_role::{
@@ -168,6 +168,9 @@ pub struct HoldDesk<'a> {
     pub clock: &'a dyn Clock,
     /// The catalogue, which names the party a provider states for.
     pub catalogue: &'a Catalogue,
+    /// Who handed the hold to Core, as external authentication established it: named in the entry as its relay where
+    /// it isn't the hold's maker (`REQ-AUD-2`).
+    pub presented_by: &'a Actor,
 }
 
 /// Why a reserve's hold wasn't taken.
@@ -344,6 +347,7 @@ impl Holds {
             &received_at,
             bytes,
             segments::maker(desk.catalogue, bytes),
+            desk.presented_by,
             Some(About {
                 order: None,
                 segment: None,
