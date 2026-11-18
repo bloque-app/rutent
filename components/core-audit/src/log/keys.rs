@@ -353,8 +353,9 @@ impl Register {
 
     /// Whether the register takes in `entry`, which the log is about to append: a catalogue change's effect, and an
     /// advertisement's receipt, only where it is dated within the skew of the log's own clock; and a grant's or a
-    /// revocation's effect only where it is dated no earlier than its tuple's last change, so a tuple's changes run
-    /// in the log's order and on a clock orchestration doesn't hold. Every other entry it takes as it is.
+    /// revocation's effect only where it is dated no earlier than its tuple's last change, or its class's for a
+    /// verifier's grant (`T-020-30`), so a tuple's changes run in the log's order and on a clock orchestration doesn't
+    /// hold. Every other entry it takes as it is.
     pub(super) fn admits(&self, settings: &Settings, entry: &Entry) -> Result<(), AppendFailure> {
         match entry {
             Entry::Stated(StatedEntry {
@@ -370,6 +371,7 @@ impl Register {
                                 change,
                                 provider,
                                 tuple,
+                                class,
                                 ..
                             },
                         ..
@@ -379,15 +381,15 @@ impl Register {
             }) => {
                 let at = when.at.unix_nanos();
                 settings.on_the_clock(at, CHANGE_OFF_THE_LOGS_CLOCK)?;
-                let last = tuple
-                    .as_ref()
+                // A tuple's, or a verifier's class's in its place, as the write side keys it (`granted`).
+                let last = granted(tuple, class)
                     .filter(|_| {
                         matches!(
                             change,
                             CatalogueChange::Grant | CatalogueChange::RevokeGrant
                         )
                     })
-                    .and_then(|t| self.dated.get(provider.as_str())?.get(t.as_str()));
+                    .and_then(|g| self.dated.get(provider.as_str())?.get(&g));
                 match last {
                     Some(t) if *t > at => Err(AppendFailure::Refused(Violation(
                         CHANGE_BEFORE_ITS_TUPLES_LAST,

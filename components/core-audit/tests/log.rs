@@ -3228,3 +3228,39 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
     .unwrap();
     assert!(verified(&run, &after), "a result made after it");
 }
+
+/// A class's grants and revocations are dated in the order the log records them, as a tuple's are (the re-review
+/// of `c9941d98`): a revocation of a class dated back before its grant is refused, so no class grant's window is
+/// reshaped after the fact.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_class_grants_changes_are_dated_in_the_order_the_log_records_them() {
+    let name = "kyc-desk";
+    let mut run = Run::new(MemoryStore::new());
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        GRANTED_AT,
+    );
+    // Dated the 4th, behind the grant of the 5th, on a clock that agrees with it.
+    set_now("2026-11-04T00:00:00Z");
+    assert_eq!(
+        run.try_change(
+            json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "class": "kyc-basic"}),
+            "2026-11-04T00:00:00Z",
+        ),
+        Err(AppendFailure::Refused(Violation(
+            CHANGE_BEFORE_ITS_TUPLES_LAST
+        )))
+    );
+    // Another class of the same verifier has its own order.
+    set_now("2026-11-04T00:00:00Z");
+    assert!(
+        run.try_change(
+            json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "aml-full",
+                   "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+            "2026-11-04T00:00:00Z",
+        )
+        .is_ok()
+    );
+}
