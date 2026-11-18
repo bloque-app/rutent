@@ -9,24 +9,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, Advertisement, Availability, BalanceAnswer, BalanceOutcome,
-    BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band, BoundedAvailability,
-    BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote, ConversionResult,
-    ConversionSettlement, Declarations, Denomination, EndUnits, Evidence, EvidenceGrade,
-    EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldingBalanceOutcome,
-    HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement, JudgementAnswer,
-    JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement, NoDetail, NodeRef,
-    Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, RampOffer,
-    RampTuple, Refusal, Refused, Reporting, ReserveDeclaration, ReserveDryRunAnswer,
-    ReserveMovementOutcome, ReserveMovementResult, ReserveOffer, ReserveTuple, ResultBody,
-    Reversal, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationResult,
-    ReversalOutcome, ReversalResult, ReversalSettlement, SafeInteger, Signature, SignatureScheme,
-    SigningKey, Slippage, Statement, Terms, Tracking, TransferOutcome, TransferQuote,
-    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
+    ADVERTISEMENT_SHAPE, ARRIVAL_ANSWER_SHAPE, ARRIVAL_NOTICE_SHAPE, Advertisement, ArrivalAnswer,
+    ArrivalNotice, ArrivalOutcome, ArrivalQuestion, ArrivedCredits, Availability, BalanceAnswer,
+    BalanceOutcome, BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band,
+    BoundedAvailability, BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote,
+    ConversionResult, ConversionSettlement, Declarations, Denomination, EndUnits, Evidence,
+    EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee,
+    HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement,
+    JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement,
+    NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
+    ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
+    ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
+    ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
+    ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
+    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
+    VerifierOffer, VoidedBy,
 };
 
 use super::{
-    Received, RoleHarness, RoleProvider, SuiteContext, placeholder_key, placeholder_signature,
+    BankCredit, Received, RoleHarness, RoleProvider, SuiteContext, placeholder_key,
+    placeholder_signature,
 };
 
 /// A stand-in's answers as the contract's types. Each stand-in sends them as `serde_json` writes them
@@ -36,6 +39,15 @@ trait Typed {
     fn handle(&mut self, operation: &Statement<Operation>) -> Statement<ResultBody>;
     fn state(&self) -> String;
     fn status(&mut self, _transaction: &str) -> Option<Statement<ResultBody>> {
+        None
+    }
+    fn arrival(
+        &mut self,
+        _question: &Statement<ArrivalQuestion>,
+    ) -> Option<Statement<ArrivalAnswer>> {
+        None
+    }
+    fn arrival_notice(&mut self, _reference: &str) -> Option<Statement<ArrivalNotice>> {
         None
     }
 }
@@ -56,14 +68,60 @@ impl<T: Typed> RoleProvider for T {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         Typed::status(self, transaction).map(|s| Received::sent(&s))
     }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        Typed::arrival(self, question).map(|a| Received::sent(&a))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        Typed::arrival_notice(self, reference).map(|n| Received::sent(&n))
+    }
 }
 
 /// When stand-ins say they made a statement.
 const MADE_AT: &str = "2026-11-06T15:04:05Z";
+
+/// When the stand-ins make their statements.
+#[cfg(feature = "signing")]
+pub(crate) fn made_at() -> &'static str {
+    MADE_AT
+}
 /// Until when stand-ins' quotes and judgements hold, and when a lifting refusal lifts.
 const VALID_UNTIL: &str = "2026-11-13T15:04:05Z";
 /// The publisher behind every stand-in.
 const PUBLISHER: &str = "stand-in-publisher";
+
+/// Who a stand-in is: the provider identifier it advertises and signs as, its publisher, and the seed its
+/// placeholder keys come from (`T-024-01`). The suites' own stand-ins keep the identities `new` gives them; a
+/// simulated provider is a stand-in under an identity of its own, so two of them can be told apart: two reserves
+/// on two private nodes have two publishers (`DEC-24`).
+///
+/// Placeholder keys repeat every 64 seeds, and a stand-in's advertising key is its seed plus 30, so the seeds a
+/// deployment's stand-ins use must avoid the ones `new` uses (0 to 4, 12 and 30 to 34) and each other's, and a
+/// seed plus 30, modulo 64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// The provider identifier.
+    pub provider: String,
+    /// The publisher behind it.
+    pub publisher: String,
+    /// The seed of its placeholder keys.
+    pub seed: u8,
+}
+
+impl Identity {
+    /// An identity.
+    pub fn new(provider: &str, publisher: &str, seed: u8) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            publisher: publisher.to_owned(),
+            seed,
+        }
+    }
+}
 
 /// A role rule a stand-in breaks, set by one of its builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -82,6 +140,7 @@ enum Fault {
     ChecksTheNameAndItsOwnKey,
     FailsOnlyOnce,
     ChecksTheEnvelopeOnItsFirstClassOnly,
+    SaysYesWithoutChecking,
     FailsAfterMoving,
     RefusesToUndoFailures,
     DryRunMoves,
@@ -102,6 +161,12 @@ enum Fault {
     DatesItsJudgementBadly,
     ChargesItsFeeInAnotherAsset,
     TakesItsFeeOnTopOfTheAmount,
+    StatesCreditsOfAnyAccount,
+    AnswersUnderAnotherTransaction,
+    AnswersQuestionsFromAnyone,
+    AnswersInAnySession,
+    RestatesACreditWithAnotherAmount,
+    GivesEachNoticeANewReference,
 }
 
 /// Signs statements as one maker, with placeholder signatures: its advertisements with its advertising key, and
@@ -252,6 +317,61 @@ fn terms(min: &str, max: &str, reporting: Reporting, inputs: &[&str]) -> Terms {
     }
 }
 
+/// How a simulated reserve departs from the stand-in's defaults, which `rutent_conformance::sim` picks by the
+/// provider's name (`T-024-03`): what it charges and when it settles, the evidence it declares, and whose books and
+/// nodes it sits beside. The defaults are the stand-in's own, so a stand-in under no shape is the one the role suite
+/// runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shape {
+    /// The fill increment its reserve tuples declare (`REQ-CAT-11`): none where `None`, the stand-in's own.
+    pub increment: Option<u128>,
+    /// The seconds it declares to settle, where it isn't the role's own.
+    pub settles_in: Option<u64>,
+    /// What it takes from each movement, quoted and charged, in the asset moved: reported net, so the amount it gives
+    /// out is the amount it took in less this, unless the shape is [`gross`](Self::gross).
+    pub fee: u128,
+    /// A reserve whose tuples report gross (`REQ-CAT-11`, `T-024-13`): the `amount_out` it states includes its charge,
+    /// so it states what it took in and what arrives is that less the charge it reports. Net where false.
+    pub gross: bool,
+    /// What it charges on execution above what it quoted: a charge known only after the movement (`REQ-QTE-5`).
+    pub extra_charge: u128,
+    /// The evidence it declares and gives, where it isn't the role's own.
+    pub grade: Option<EvidenceGrade>,
+    /// The provider whose publisher, bank network and private node it shares, so two providers serve the same
+    /// tuples. Its own are used where it names none.
+    pub beside: Option<String>,
+    /// The publisher it shares with the providers of its group (`T-024-04`), where it isn't its own or its
+    /// `beside`'s: a private node is its publisher's alone, so providers that reach one node share a publisher.
+    pub publisher: Option<String>,
+    /// Its inner node, where it isn't a reserve's own ledger: a reserve's ledger, an exchange's node, a ramp's origin.
+    pub node: Option<String>,
+    /// Whether that node is on the operator's public list: then no publisher declares it private.
+    pub public_node: bool,
+    /// Where it meets a public network, where it isn't the bank of its own: a reserve's outer network, a ramp's
+    /// destination, which is a public node.
+    pub outer: Option<String>,
+    /// The asset a reserve or a ramp moves, or an exchange takes in, in two decimals; the stand-in's own where none.
+    pub asset: Option<String>,
+    /// The asset an exchange gives out.
+    pub to_asset: Option<String>,
+    /// The input a reserve's deposit needs, where it isn't the account of a bank.
+    pub deposit_input: Option<String>,
+    /// A ramp that takes internal steps to serve a segment (`REQ-CAT-21`).
+    pub internal_steps: bool,
+    /// A ramp whose destination (its `outer`) is a private node of its own publisher, not a public one
+    /// (`T-024-05`, `DEC-24`): value enters the node from a public one, and no public network records the transfer.
+    pub outer_private: bool,
+    /// A reserve whose bank rail (its outer node) is declared a private node by its publisher (`T-024-05`,
+    /// `AC-34`): a deposit out to it closes on the public movement into the rail, from the public node it leaves.
+    pub rail_private: bool,
+    /// A reserve whose bank rail has no public record at all: the simulated world serves no network under its name
+    /// (`T-024-05`, `AC-34`).
+    pub rail_unserved: bool,
+    /// A reserve whose inner node is on neither list: no publisher declares it private and the operator doesn't list
+    /// it public (`T-024-05`, `REQ-CAT-22`), so the catalogue leaves its tuples off every route.
+    pub undeclared_node: bool,
+}
+
 /// A real value-moving operation's transaction: the one a repeat would name.
 fn real_transaction(operation: &Operation) -> Option<&str> {
     match operation {
@@ -311,11 +431,36 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
     }
 }
 
+/// How a refusal says it is final, or when it lifts (`REQ-CAT-18`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalClass {
+    /// Final: asking again changes nothing.
+    Final,
+    /// It lifts at a known time.
+    LiftsAtKnownTime,
+    /// It waits on the person, who can supply what it lacks.
+    WaitsOnPerson,
+}
+
+/// The refusal an operation is answered with, of its kind and of `class`: what a provider that refuses an
+/// operation says (`T-024-01`). A balance verification's refusal is always final, since it can't say when it lifts.
+pub fn refusal_to(operation: &Operation, class: RefusalClass) -> ResultBody {
+    refuse_outside_role(
+        operation,
+        match class {
+            RefusalClass::Final => final_refusal(),
+            RefusalClass::LiftsAtKnownTime => lifting_refusal(),
+            RefusalClass::WaitsOnPerson => waiting_on_the_person(),
+        },
+    )
+}
+
 // Reserve ------------------------------------------------------------------------------------------------
 
 /// A reserve over a book, between a bank network and its ledger, in COP.
 #[derive(Debug, Clone)]
 pub struct Reserve {
+    name: String,
     signer: Signer,
     advertisement: Statement<Advertisement>,
     session: String,
@@ -325,7 +470,15 @@ pub struct Reserve {
     credits: BTreeMap<String, Served>,
     results: BTreeMap<String, Statement<ResultBody>>,
     pending: BTreeMap<String, ReserveMovementOutcome>,
+    /// What arrived at the simulated bank, by the reference the reserve gives each credit (`T-024-15`). A notice
+    /// states one of these and nothing else.
+    bank_credits: BTreeMap<String, BankCredit>,
+    /// How many notices the reserve has signed of each credit, by reference.
+    noticed: BTreeMap<String, u32>,
     unknown_next: bool,
+    /// The next real movement fails, with evidence, having moved nothing (`force_failure`).
+    fail_next: bool,
+    shape: Shape,
     faults: BTreeSet<Fault>,
 }
 
@@ -347,10 +500,33 @@ impl Reserve {
     /// A reserve that keeps its role. `context.account` holds funds, and `context.session` is its holder's
     /// session.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 1);
+        Self::named(
+            context,
+            &Identity::new(Self::PROVIDER, PUBLISHER, 1),
+            "stand-in-bank",
+            "stand-in-ledger",
+        )
+    }
+
+    /// A reserve that keeps its role under `identity`, between the bank network `bank` and its own private node
+    /// `ledger`, which its publisher declares (`DEC-24`).
+    pub fn named(context: &SuiteContext, identity: &Identity, bank: &str, ledger: &str) -> Self {
+        Self::declaring(context, identity, bank, ledger, false)
+    }
+
+    /// A reserve that keeps its role under `identity`, as [`Reserve::named`] does, declaring that it starts routes on
+    /// automatic deposits where `automatic_deposits` says so (`REQ-ORD-13`).
+    pub fn declaring(
+        context: &SuiteContext,
+        identity: &Identity,
+        bank: &str,
+        ledger: &str,
+        automatic_deposits: bool,
+    ) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -358,9 +534,9 @@ impl Reserve {
                     tuples: vec![
                         ReserveTuple {
                             origin: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
-                            destination: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            destination: NodeRef::Inner(ledger.to_owned()),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
                                 origin: 2,
@@ -374,9 +550,9 @@ impl Reserve {
                             ),
                         },
                         ReserveTuple {
-                            origin: NodeRef::Inner("stand-in-ledger".to_owned()),
+                            origin: NodeRef::Inner(ledger.to_owned()),
                             destination: NodeRef::Outer(OuterNode {
-                                network: "stand-in-bank".to_owned(),
+                                network: bank.to_owned(),
                             }),
                             asset: "COP".to_owned(),
                             decimals: EndUnits {
@@ -393,8 +569,8 @@ impl Reserve {
                     ],
                     declaration: ReserveDeclaration {
                         can_require_user_initiated_withdrawal: true,
-                        starts_routes_on_automatic_deposits: false,
-                        maker: Self::PROVIDER.to_owned(),
+                        starts_routes_on_automatic_deposits: automatic_deposits,
+                        maker: identity.provider.clone(),
                         declared_in_version: "0.1.0".to_owned(),
                     },
                 }),
@@ -410,11 +586,12 @@ impl Reserve {
                 }),
                 safe_retry: Some(true),
             },
-            private_nodes: vec!["stand-in-ledger".to_owned()],
+            private_nodes: vec![ledger.to_owned()],
         };
         let mut balances = BTreeMap::new();
         balances.insert(context.account.clone(), 50_000_000);
         Self {
+            name: identity.provider.clone(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             signer,
             session: context.session.clone(),
@@ -424,9 +601,57 @@ impl Reserve {
             credits: BTreeMap::new(),
             results: BTreeMap::new(),
             pending: BTreeMap::new(),
+            bank_credits: BTreeMap::new(),
+            noticed: BTreeMap::new(),
             unknown_next: false,
+            fail_next: false,
+            shape: Shape::default(),
             faults: BTreeSet::new(),
         }
+    }
+
+    /// This reserve under `shape`: what it takes from a movement, what it charges beyond the quote, when it declares
+    /// it settles and the evidence it declares. Its advertisement is signed again.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        if let Some(offer) = advertisement.offers.reserve.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(asset) = &shape.asset {
+                    tuple.asset.clone_from(asset);
+                }
+                if let (Some(input), NodeRef::Inner(_)) = (&shape.deposit_input, &tuple.origin) {
+                    tuple.terms.required_inputs = vec![input.clone()];
+                }
+                if shape.gross {
+                    tuple.terms.reporting = Reporting::Gross;
+                }
+                if let Some(increment) = shape.increment {
+                    tuple.terms.increment = Some(increment.to_string());
+                }
+            }
+        }
+        if shape.public_node || shape.undeclared_node {
+            advertisement.private_nodes.clear();
+        }
+        if shape.rail_private
+            && let Some(rail) = advertisement.offers.reserve.as_ref().and_then(|offer| {
+                offer.tuples.iter().find_map(|t| match &t.destination {
+                    NodeRef::Outer(outer) => Some(outer.network.clone()),
+                    NodeRef::Inner(_) => None,
+                })
+            })
+        {
+            advertisement.private_nodes.push(rail);
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.shape = shape.clone();
+        self
     }
 
     /// Breaks `REQ-CAT-9`: the reserve executes transfers, moving value outside its role.
@@ -469,6 +694,78 @@ impl Reserve {
     pub fn confirming_without_the_segment(mut self) -> Self {
         self.faults.insert(Fault::ConfirmsWithoutTheSegment);
         self
+    }
+
+    /// Breaks `REQ-ORD-1`: the reserve states credits of any account, asset or node when asked of one.
+    pub fn stating_credits_of_any_account(mut self) -> Self {
+        self.faults.insert(Fault::StatesCreditsOfAnyAccount);
+        self
+    }
+
+    /// Breaks `REQ-ORD-1`: the reserve answers a question of what arrived under another transaction than its own.
+    pub fn answering_under_another_transaction(mut self) -> Self {
+        self.faults.insert(Fault::AnswersUnderAnotherTransaction);
+        self
+    }
+
+    /// Breaks `REQ-CAT-3`: the reserve states what arrived to a question asked in any session, the holder's or not.
+    pub fn answering_arrivals_in_any_session(mut self) -> Self {
+        self.faults.insert(Fault::AnswersInAnySession);
+        self
+    }
+
+    /// Breaks `REQ-PRT-1`: the reserve answers a question of what arrived that isn't signed with the operator's key.
+    pub fn answering_questions_from_anyone(mut self) -> Self {
+        self.faults.insert(Fault::AnswersQuestionsFromAnyone);
+        self
+    }
+
+    /// Breaks `REQ-ORD-23`: the reserve states a credit it already noticed with another amount.
+    pub fn restating_a_credit_with_another_amount(mut self) -> Self {
+        self.faults.insert(Fault::RestatesACreditWithAnotherAmount);
+        self
+    }
+
+    /// Breaks `REQ-ORD-23`: the reserve gives each notice of a credit a reference of its own, so two notices of one
+    /// credit read as two credits.
+    pub fn giving_each_notice_a_new_reference(mut self) -> Self {
+        self.faults.insert(Fault::GivesEachNoticeANewReference);
+        self
+    }
+
+    /// The reserve's notice of `credit`, signed: its figures are the bank's (`REQ-ORD-14`), its transaction the
+    /// credit's reference (`REQ-ORD-23`).
+    fn notice_of(&mut self, reference: &str) -> Option<Statement<ArrivalNotice>> {
+        let credit = self.bank_credits.get(reference)?.clone();
+        let times = self.noticed.entry(reference.to_owned()).or_insert(0);
+        let earlier = *times;
+        *times += 1;
+        let mut amount = credit.amount;
+        if self
+            .faults
+            .contains(&Fault::RestatesACreditWithAnotherAmount)
+            && earlier > 0
+        {
+            amount = amount
+                .parse::<u128>()
+                .map_or(amount, |a| (a + 1).to_string());
+        }
+        let transaction = if self.faults.contains(&Fault::GivesEachNoticeANewReference) {
+            format!("{}-{earlier}", credit.reference)
+        } else {
+            credit.reference
+        };
+        Some(self.signer.sign(
+            ARRIVAL_NOTICE_SHAPE,
+            ArrivalNotice {
+                transaction,
+                node: credit.node,
+                asset: credit.asset,
+                amount,
+                account: credit.account,
+                holder: credit.holder,
+            },
+        ))
     }
 
     fn breaks(&self, fault: Fault) -> bool {
@@ -522,20 +819,45 @@ impl Reserve {
         if lacks_inputs(&terms.required_inputs, inputs) {
             return ReserveMovementOutcome::Refused(waiting_on_the_person());
         }
-        let fee = Fee {
+        // Reported net: what it gives out is what it took in less its charge, which a dry run quotes at `fee` and a
+        // movement charges at `fee` and the charge beyond it (`REQ-QTE-5`). Reported gross, what it states giving out
+        // is what it took in, its charge within it: what arrives is that less the charge (`REQ-CAT-11`).
+        let charged = |fee: u128| Fee {
             asset: asset.to_owned(),
-            amount: "0".to_owned(),
+            amount: fee.to_string(),
+            billed_separately: None,
+        };
+        let gross = self.shape.gross;
+        let out_of = |fee: u128| {
+            if gross {
+                value.to_string()
+            } else {
+                value.saturating_sub(fee).to_string()
+            }
         };
         if dry_run {
             return ReserveMovementOutcome::DryRunAccepted(ReserveDryRunAnswer {
                 amount_in: stated.to_owned(),
-                amount_out: stated.to_owned(),
-                fee,
+                amount_out: out_of(self.shape.fee),
+                fee: charged(self.shape.fee),
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::AmountChanges],
-                settlement_seconds: seconds(86_400),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(86_400)),
             });
         }
+        if std::mem::take(&mut self.fail_next) {
+            // Failed before anything moved: the book is untouched.
+            return ReserveMovementOutcome::Failed(Failure {
+                evidence: evidence(
+                    self.shape.grade.unwrap_or(EvidenceGrade::SignedByProvider),
+                    &self.name,
+                    transaction,
+                ),
+                fault: None,
+            });
+        }
+        let taken = self.shape.fee + self.shape.extra_charge;
+        let fee = charged(taken);
         // A withdrawal takes the value out of the holder's account; a deposit puts it in.
         let balance = self.balances.entry(self.account.clone()).or_insert(0);
         match origin {
@@ -548,9 +870,13 @@ impl Reserve {
         self.movements.push(transaction.to_owned());
         let settled = ReserveMovementOutcome::Succeeded(MovementSettlement {
             amount_in: stated.to_owned(),
-            amount_out: stated.to_owned(),
+            amount_out: out_of(taken),
             fee,
-            evidence: evidence(EvidenceGrade::SignedByProvider, Self::PROVIDER, transaction),
+            evidence: evidence(
+                self.shape.grade.unwrap_or(EvidenceGrade::SignedByProvider),
+                &self.name,
+                transaction,
+            ),
         });
         if std::mem::take(&mut self.unknown_next) {
             // The movement happened, but the reserve can't tell yet; its status query tells later.
@@ -666,10 +992,11 @@ impl Typed for Reserve {
                         fee: Fee {
                             asset: t.asset.clone(),
                             amount: "0".to_owned(),
+                            billed_separately: None,
                         },
                         evidence: evidence(
                             EvidenceGrade::SignedByProvider,
-                            Self::PROVIDER,
+                            &self.name,
                             &t.transaction,
                         ),
                     }),
@@ -684,11 +1011,74 @@ impl Typed for Reserve {
         result
     }
 
+    // The bank's credits are not in the fingerprint: they arrive by the harness's hook and not by an operation the
+    // platform journals, so a journal replay couldn't hold them (`T-024-15`).
     fn state(&self) -> String {
         format!(
             "{:?} {:?} {:?}",
             self.balances, self.movements, self.credits
         )
+    }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Statement<ArrivalAnswer>> {
+        let asked = &question.statement;
+        let refused = || {
+            ArrivalOutcome::Refused(BalanceRefused {
+                refusal: BalanceRefusal::Final(NoDetail {}),
+            })
+        };
+        let from_the_operator = question
+            .check_context(
+                &self.signer.context.deployment,
+                &self.signer.context.protocol_version,
+            )
+            .is_ok()
+            && question.check_signed_by_operator().is_ok();
+        let outcome = if !(from_the_operator || self.breaks(Fault::AnswersQuestionsFromAnyone))
+            || !(self.breaks(Fault::AnswersInAnySession) || asked.session == self.session)
+        {
+            refused()
+        } else {
+            let any = self.breaks(Fault::StatesCreditsOfAnyAccount);
+            let references: Vec<String> = self
+                .bank_credits
+                .values()
+                .filter(|c| {
+                    any || (c.account == asked.account
+                        && c.node == asked.node
+                        && c.asset == asked.asset)
+                })
+                .map(|c| c.reference.clone())
+                .collect();
+            let notices: Vec<_> = references
+                .iter()
+                .filter_map(|r| self.notice_of(r))
+                .collect();
+            if notices.is_empty() {
+                ArrivalOutcome::NothingArrived(NoDetail {})
+            } else {
+                ArrivalOutcome::Arrived(ArrivedCredits { notices })
+            }
+        };
+        let transaction = if self.breaks(Fault::AnswersUnderAnotherTransaction) {
+            format!("{}-another", asked.transaction)
+        } else {
+            asked.transaction.clone()
+        };
+        Some(self.signer.sign(
+            ARRIVAL_ANSWER_SHAPE,
+            ArrivalAnswer {
+                transaction,
+                outcome,
+            },
+        ))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Statement<ArrivalNotice>> {
+        self.notice_of(reference)
     }
 
     fn status(&mut self, transaction: &str) -> Option<Statement<ResultBody>> {
@@ -712,8 +1102,34 @@ impl Typed for Reserve {
 }
 
 impl RoleHarness for Reserve {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        let at_its_bank = self
+            .advertisement
+            .statement
+            .offers
+            .reserve
+            .iter()
+            .flat_map(|offer| &offer.tuples)
+            .any(|t| {
+                [&t.origin, &t.destination]
+                    .into_iter()
+                    .any(|end| matches!(end, NodeRef::Outer(node) if *node == credit.node))
+            });
+        if !at_its_bank || self.bank_credits.contains_key(&credit.reference) {
+            return false;
+        }
+        self.bank_credits
+            .insert(credit.reference.clone(), credit.clone());
+        true
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
+        true
+    }
+
+    fn force_failure(&mut self) -> bool {
+        self.fail_next = true;
         true
     }
 
@@ -739,6 +1155,8 @@ impl RoleHarness for Reserve {
 /// An exchange converting USDC to USDT at one public node, at a rate of one.
 #[derive(Debug, Clone)]
 pub struct Exchange {
+    name: String,
+    shape: Shape,
     signer: Signer,
     rogue: Signer,
     advertisement: Statement<Advertisement>,
@@ -756,10 +1174,15 @@ impl Exchange {
 
     /// An exchange that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 2);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 2))
+    }
+
+    /// An exchange that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -790,8 +1213,10 @@ impl Exchange {
             private_nodes: Vec::new(),
         };
         Self {
+            name: identity.provider.clone(),
+            shape: Shape::default(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
-            rogue: Signer::new(context, Self::PROVIDER, 12),
+            rogue: Signer::new(context, &identity.provider, identity.seed.wrapping_add(10)),
             signer,
             conversions: Vec::new(),
             served: BTreeMap::new(),
@@ -799,6 +1224,56 @@ impl Exchange {
             fail_next: false,
             failed_once: false,
             faults: BTreeSet::new(),
+        }
+    }
+
+    /// This exchange under `shape` (`T-024-04`): at the node, between the assets and declaring the evidence the shape
+    /// names, and quoting the seconds it settles in. Its advertisement is signed again. An exchange under no shape
+    /// is the stand-in's own, at the public node `polygon`.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let Some(offer) = advertisement.offers.exchange.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(node) = &shape.node {
+                    tuple.node.clone_from(node);
+                    tuple.from.decimals = 2;
+                    tuple.to.decimals = 2;
+                }
+                if let Some(asset) = &shape.asset {
+                    tuple.from.id.clone_from(asset);
+                }
+                if let Some(asset) = &shape.to_asset {
+                    tuple.to.id.clone_from(asset);
+                }
+            }
+        }
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        // The node of its own, which its publisher declares private, unless the operator lists it public.
+        if let (Some(node), false) = (&shape.node, shape.public_node) {
+            advertisement.private_nodes = vec![node.clone()];
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.shape = shape.clone();
+        self
+    }
+
+    /// The grade of the evidence it gives: the one it declares.
+    fn grade(&self) -> EvidenceGrade {
+        self.shape.grade.unwrap_or(EvidenceGrade::PublicRecord)
+    }
+
+    /// Who the evidence it gives names as its maker: the public node the conversion is on, or, at a node of its
+    /// own, itself.
+    fn by(&self) -> &str {
+        if self.shape.node.is_some() {
+            &self.name
+        } else {
+            "polygon"
         }
     }
 
@@ -913,6 +1388,7 @@ impl Exchange {
                 c.from.clone()
             },
             amount: "0".to_owned(),
+            billed_separately: None,
         };
         let Some(value) =
             amount(&c.amount).filter(|v| self.advertises(&c.node, &c.from, &c.to, *v))
@@ -942,7 +1418,7 @@ impl Exchange {
                 direction: c.direction,
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::RateMovesBeyondSlippage],
-                settlement_seconds: seconds(60),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(60)),
             });
         }
         let failing = std::mem::take(&mut self.fail_next);
@@ -965,7 +1441,8 @@ impl Exchange {
         );
         if failing {
             return ConversionOutcome::Failed(Failure {
-                evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+                evidence: evidence(self.grade(), self.by(), &c.transaction),
+                fault: None,
             });
         }
         if std::mem::take(&mut self.unknown_next) {
@@ -981,7 +1458,7 @@ impl Exchange {
             amount_out,
             rate,
             fee,
-            evidence: evidence(EvidenceGrade::PublicRecord, "polygon", &c.transaction),
+            evidence: evidence(self.grade(), self.by(), &c.transaction),
         })
     }
 
@@ -1072,6 +1549,7 @@ impl RoleHarness for Exchange {
 /// A ramp moving USDC between two public nodes.
 #[derive(Debug, Clone)]
 pub struct Ramp {
+    shape: Shape,
     signer: Signer,
     advertisement: Statement<Advertisement>,
     transfers: Vec<String>,
@@ -1091,10 +1569,15 @@ impl Ramp {
 
     /// A ramp that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 3);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 3))
+    }
+
+    /// A ramp that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -1130,6 +1613,7 @@ impl Ramp {
             private_nodes: Vec::new(),
         };
         Self {
+            shape: Shape::default(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),
             signer,
             transfers: Vec::new(),
@@ -1142,6 +1626,47 @@ impl Ramp {
             converts_internally: false,
             faults: BTreeSet::new(),
         }
+    }
+
+    /// This ramp under `shape` (`T-024-04`): from the node to the network, in the asset, taking what the shape says
+    /// from each transfer, quoting the seconds it settles in and declaring the evidence it names, with the internal
+    /// steps the shape gives it. Its advertisement is signed again. A ramp under no shape is the stand-in's own,
+    /// from the public node `polygon` to `bsc`.
+    #[must_use]
+    pub fn shaped(mut self, shape: &Shape) -> Self {
+        let mut advertisement = self.advertisement.statement.clone();
+        if let Some(offer) = advertisement.offers.ramp.as_mut() {
+            for tuple in &mut offer.tuples {
+                if let Some(node) = &shape.node {
+                    tuple.origin.clone_from(node);
+                }
+                if let Some(outer) = &shape.outer {
+                    tuple.destination.clone_from(outer);
+                }
+                if let Some(asset) = &shape.asset {
+                    tuple.asset.clone_from(asset);
+                    tuple.decimals = EndUnits {
+                        origin: 2,
+                        destination: 2,
+                    };
+                }
+            }
+        }
+        if let (Some(grade), Some(evidence)) =
+            (shape.grade, advertisement.declarations.evidence.as_mut())
+        {
+            evidence.grade = grade;
+        }
+        if let (Some(node), false) = (&shape.node, shape.public_node) {
+            advertisement.private_nodes = vec![node.clone()];
+        }
+        if let (Some(outer), true) = (&shape.outer, shape.outer_private) {
+            advertisement.private_nodes.push(outer.clone());
+        }
+        self.advertisement = self.signer.sign(ADVERTISEMENT_SHAPE, advertisement);
+        self.converts_internally = shape.internal_steps;
+        self.shape = shape.clone();
+        self
     }
 
     /// Breaks `REQ-CAT-13`: the ramp serves amounts and nodes it doesn't advertise.
@@ -1264,7 +1789,9 @@ impl Ramp {
         if self.breaks(Fault::GivesWeakerEvidence) {
             EvidenceGrade::SignedByProvider
         } else {
-            EvidenceGrade::SignedByAnotherParty
+            self.shape
+                .grade
+                .unwrap_or(EvidenceGrade::SignedByAnotherParty)
         }
     }
 
@@ -1298,26 +1825,32 @@ impl Ramp {
         {
             return TransferOutcome::Refused(waiting_on_the_person());
         }
-        // The ramp charges nothing, unless it takes a fee of one unit on top of the amount stated.
+        // The ramp charges nothing, unless it takes a fee of one unit on top of the amount stated, or its shape takes
+        // a fee from what it moves, reported net: what it gives out is what it took in less the fee.
         let on_top = self.breaks(Fault::TakesItsFeeOnTopOfTheAmount);
         let taken = if on_top {
             amount(&t.amount).map_or(t.amount.clone(), |v| (v + 1).to_string())
         } else {
             t.amount.clone()
         };
+        let charged = if on_top { 1 } else { self.shape.fee };
         let fee = Fee {
             asset: t.asset.clone(),
-            amount: if on_top { "1" } else { "0" }.to_owned(),
+            amount: charged.to_string(),
+            billed_separately: None,
         };
+        let given_out = amount(&t.amount)
+            .filter(|_| !on_top)
+            .map_or(t.amount.clone(), |v| v.saturating_sub(charged).to_string());
         if t.dry_run {
             return TransferOutcome::DryRunAccepted(TransferQuote {
                 amount_in: taken.clone(),
-                amount_out: t.amount.clone(),
+                amount_out: given_out,
                 fee,
                 direction: t.direction,
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses],
-                settlement_seconds: seconds(600),
+                settlement_seconds: seconds(self.shape.settles_in.unwrap_or(600)),
             });
         }
         if std::mem::take(&mut self.fail_next) {
@@ -1333,6 +1866,7 @@ impl Ramp {
             );
             return TransferOutcome::Failed(Failure {
                 evidence: evidence(self.grade(), &t.destination, &t.transaction),
+                fault: None,
             });
         }
         if self.converts_internally {
@@ -1357,7 +1891,7 @@ impl Ramp {
         );
         let settled = TransferOutcome::Succeeded(MovementSettlement {
             amount_in: taken,
-            amount_out: t.amount.clone(),
+            amount_out: given_out,
             fee,
             evidence: evidence(self.grade(), &t.destination, &t.transaction),
         });
@@ -1463,6 +1997,10 @@ impl Typed for Ramp {
 }
 
 impl RoleHarness for Ramp {
+    fn internal_steps(&self) -> Vec<String> {
+        self.internal_steps.clone()
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
         true
@@ -1490,10 +2028,15 @@ impl Verifier {
 
     /// A verifier that keeps its role.
     pub fn new(context: &SuiteContext) -> Self {
-        let signer = Signer::new(context, Self::PROVIDER, 4);
+        Self::named(context, &Identity::new(Self::PROVIDER, PUBLISHER, 4))
+    }
+
+    /// A verifier that keeps its role under `identity`.
+    pub fn named(context: &SuiteContext, identity: &Identity) -> Self {
+        let signer = Signer::new(context, &identity.provider, identity.seed);
         let advertisement = Advertisement {
-            provider: Self::PROVIDER.to_owned(),
-            publisher: PUBLISHER.to_owned(),
+            provider: identity.provider.clone(),
+            publisher: identity.publisher.clone(),
             version: "0.1.0".to_owned(),
             keys: signer.keys(),
             offers: Offers {
@@ -1514,6 +2057,13 @@ impl Verifier {
             signer,
             faults: BTreeSet::new(),
         }
+    }
+
+    /// Says yes without checking (`THR-91`): a verifier that judges every subject fit, the ones it knows to be unfit
+    /// included. An honest one answers no to a subject that begins `unfit-` and yes to any other.
+    pub fn saying_yes_without_checking(mut self) -> Self {
+        self.faults.insert(Fault::SaysYesWithoutChecking);
+        self
     }
 
     /// Breaks `REQ-CPL-1`: the verifier answers about a class other than the one asked.
@@ -1583,7 +2133,13 @@ impl Typed for Verifier {
                         Judgement {
                             subject: question.subject.clone(),
                             class,
-                            answer: JudgementAnswer::Yes,
+                            answer: if question.subject.starts_with("unfit-")
+                                && !self.breaks(Fault::SaysYesWithoutChecking)
+                            {
+                                JudgementAnswer::No
+                            } else {
+                                JudgementAnswer::Yes
+                            },
                             valid_until: VALID_UNTIL.to_owned(),
                             holder_key: None,
                         },

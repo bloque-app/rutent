@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use jsonschema::{Registry, Validator};
 use rutent_contracts::state_machine::{
     Destination, Id, NodeId, NodeRef, NotApplicableReason, Observed, Order, OrderState, Outcome,
-    Part, RecordedInput, Segment, SegmentPlan, SegmentState, VERSION, after_no_route,
-    deposit_failed_at_after, destination_change_applies, recalculation_keeps_destination,
-    recalculation_starts_where_value_sits, value_at,
+    Part, RecordedInput, ResolvedTo, Segment, SegmentPlan, SegmentState, Timestamp, VERSION,
+    after_no_route, after_stuck_resolved, after_waiting_at_floor, deposit_failed_at_after,
+    destination_change_applies, recalculation_keeps_destination,
+    recalculation_starts_where_value_sits, value_at, waiting_since_after,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -937,4 +938,97 @@ fn a_restart_away_from_the_value_has_its_own_reason_in_both_lists() {
             reason: NotApplicableReason::ValueNotAtStart
         }
     );
+}
+
+/// The part waiting at its floor, before it waited: its withdrawal settled and nothing started since.
+fn before_the_floor() -> Part {
+    let mut part = part_of("order-waiting-for-the-customer-at-its-floor");
+    part.state = OrderState::FirstSegmentSettled;
+    part.waiting_since = None;
+    part
+}
+
+// verifies: REQ-ORD-27, AC-12, INV-4
+#[test]
+fn a_part_past_its_floor_waits_for_the_customer_only_while_its_value_sits_at_a_node() {
+    let part = before_the_floor();
+    assert_eq!(
+        after_waiting_at_floor(&part),
+        Some(OrderState::WaitingForCustomer)
+    );
+    for held in [OrderState::WaitingForCustomer, OrderState::Stuck] {
+        let mut again = part.clone();
+        again.state = held;
+        assert_eq!(after_waiting_at_floor(&again), None, "{held:?}");
+    }
+    let mut in_flight = part.clone();
+    in_flight.segments[1].state = SegmentState::Started;
+    assert_eq!(
+        after_waiting_at_floor(&in_flight),
+        None,
+        "a segment in flight"
+    );
+    let mut outside = part.clone();
+    outside.state = OrderState::NotPastFirstSegment;
+    outside.segments[0].state = SegmentState::Started;
+    assert_eq!(
+        after_waiting_at_floor(&outside),
+        None,
+        "nothing withdrawn yet"
+    );
+}
+
+// verifies: REQ-ORD-27, AC-12, REQ-STM-5
+#[test]
+fn waiting_since_is_when_the_part_began_waiting_kept_while_it_waits_and_dropped_after() {
+    let floor: RecordedInput =
+        serde_json::from_value(valid_fixture("recorded-input-waiting-at-floor")).unwrap();
+    let part = before_the_floor();
+    let began = waiting_since_after(&part, OrderState::WaitingForCustomer, &floor);
+    assert_eq!(began, Some(floor.recorded_at.clone()));
+
+    let mut waiting = part.clone();
+    waiting.state = OrderState::WaitingForCustomer;
+    waiting.waiting_since = Timestamp::new("2026-11-01T08:00:00Z");
+    assert_eq!(
+        waiting_since_after(&waiting, OrderState::WaitingForCustomer, &floor),
+        waiting.waiting_since,
+        "kept while it goes on waiting"
+    );
+    assert_eq!(
+        waiting_since_after(&waiting, OrderState::FirstSegmentSettled, &floor),
+        None,
+        "dropped when it stops"
+    );
+    assert_eq!(waiting_since_after(&part, OrderState::Stuck, &floor), None);
+}
+
+// verifies: REQ-AUZ-4, REQ-STM-6, AC-5
+#[test]
+fn a_stuck_part_s_resolution_ends_it_where_its_value_went_and_nothing_else_is_resolved() {
+    let mut stuck = before_the_floor();
+    stuck.state = OrderState::Stuck;
+    stuck.segments[1].state = SegmentState::Started;
+    assert_eq!(
+        after_stuck_resolved(&stuck, ResolvedTo::Destination),
+        Some(OrderState::Complete),
+        "delivered with its exchange still in flight"
+    );
+    assert_eq!(
+        after_stuck_resolved(&stuck, ResolvedTo::Origin),
+        Some(OrderState::EndedWithoutCompleting)
+    );
+    for state in [
+        OrderState::WaitingForCustomer,
+        OrderState::FirstSegmentSettled,
+        OrderState::Complete,
+    ] {
+        let mut other = stuck.clone();
+        other.state = state;
+        assert_eq!(
+            after_stuck_resolved(&other, ResolvedTo::Destination),
+            None,
+            "{state:?}"
+        );
+    }
 }

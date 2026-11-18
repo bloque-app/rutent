@@ -11,7 +11,7 @@ use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
     Exercised, Received, RoleHarness, RoleProvider, SuiteContext, WithoutHooks, run_role_suite,
 };
-use rutent_conformance::signing::{Ed25519Verifier, Signing, real, signed_inside};
+use rutent_conformance::signing::{Ed25519Verifier, Signing, real, signed, signed_inside};
 use rutent_contracts::module_interface::Parts;
 use rutent_contracts::provider_role::{
     Advertisement, KeyPurpose, Operation, ResultBody, Statement,
@@ -50,8 +50,25 @@ impl RoleProvider for Through {
     fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         let expected = self.twin.handle(operation);
         let handled = self.binding.handle(&self.provider, operation);
-        let Handled::Answered(answered) = handled else {
-            panic!("the platform refused an operation of the role suite: {handled:?}");
+        let answered = match handled {
+            Handled::Answered(answered) => answered,
+            // A replay of a carried out transaction from elsewhere, to a provider that declares no safe retry: the
+            // platform refuses it before the module sees it (`T-013-09`), as the replay probe expects of the module,
+            // a final refusal, which the stand-in gives in process.
+            Handled::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::DuplicateTransaction,
+            ) => {
+                let twin = serde_json::to_value(&expected.statement().statement).expect("JSON");
+                assert_eq!(
+                    twin["outcome"]["refusal"]["class"], "final",
+                    "{}: the platform refused a repeat the stand-in doesn't refuse as final: {twin}",
+                    self.provider
+                );
+                // Signed as the twin's other results are, with the key its placeholder stands for.
+                return Received::<ResultBody>::from_bytes(signed(expected.bytes()))
+                    .expect("reads back");
+            }
+            handled => panic!("the platform refused an operation of the role suite: {handled:?}"),
         };
         // The platform signs the result, and a judgement the module nested in it in the provider's name, with the
         // provider's statements key, which the stand-in's placeholder stands for. Ed25519 is deterministic, so
@@ -73,6 +90,20 @@ impl RoleProvider for Through {
 
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.twin.status(transaction)
+    }
+
+    // What arrived is not an operation either, so the platform's binding doesn't carry the question: the twin answers
+    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it. So this run does
+    // not show the module answering it: the module's answer to the arrival question is `F-014`'s (the binding) and
+    // `F-031`'s (certification's first report) to carry.
+    fn arrival(
+        &mut self,
+        question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalAnswer>> {
+        // Signed for real, as the suite's other signed runs are: the twin's own statements carry placeholders.
+        self.twin
+            .arrival(question)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
     }
 }
 
@@ -96,6 +127,15 @@ impl RoleProvider for InProcess {
 
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
+    }
+
+    // What arrived is not an operation either, so the platform's binding doesn't carry the question: the twin answers
+    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it.
+    fn arrival(
+        &mut self,
+        question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalAnswer>> {
+        self.0.arrival(question)
     }
 }
 

@@ -1,0 +1,29 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "reliance",
+    "order": "ord-17",
+    "judgement": {
+      "log": "log-main",
+      "index": 83,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "8484848484848484848484848484848484848484848484848484848484848484"
+      }
+    },
+    "relied_on_by": "bank-co"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "row": null,
+  "breaks": null,
+  "history": [],
+  "entry": {
+    "kind": "verified",
+    "who": {
+      "party": "cust-1",
+      "acts": "cust-1",
+      "role": "customer",
+      "kind": "person"
+    },
+    "what": {
+      "call": "open_session",
+      "request": {
+        "request": "req-s1",
+        "account": "acct-ref-1",
+        "holder": "cust-1",
+        "requester": {
+          "party": "cust-1",
+          "acts": "cust-1",
+          "role": "customer",
+          "kind": "person"
+        },
+        "until": "2026-11-10T09:15:00Z",
+        "at": "2026-11-10T09:00:00Z"
+      },
+      "opened": {
+        "session": "sess-1",
+        "expires_at": "2026-11-10T09:15:00Z"
+      }
+    },
+    "when": {
+      "at": "2026-11-10T09:00:00Z",
+      "source": "core_clock"
+    },
+    "outcome": {
+      "status": "permitted"
+    }
+  }
+}

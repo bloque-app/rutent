@@ -1,0 +1,52 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "decide",
+    "request": {
+      "request": "req-100",
+      "caller": {
+        "party": "rutent",
+        "acts": "core-orch",
+        "role": "core",
+        "kind": "component"
+      },
+      "action": {
+        "kind": "move_value",
+        "order": "ord-17",
+        "segment": "seg-2",
+        "provider": "bridge-pay",
+        "origin_reserve": "us-bank",
+        "authorisation": "auth-17",
+        "route": {
+          "destination": {
+            "reserve": "bank-co",
+            "node": {
+              "network": "co-ach"
+            },
+            "account": "acct-ref-9"
+          },
+          "to_asset": {
+            "id": "COP",
+            "decimals": 2
+          },
+          "delivers": "2500000"
+        }
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-100"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "party_stated"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

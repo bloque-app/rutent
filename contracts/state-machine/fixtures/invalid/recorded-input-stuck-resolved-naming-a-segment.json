@@ -1,0 +1,20 @@
+{
+  "record_id": "rec-0071",
+  "recorded_at": "2026-11-06T10:00:00Z",
+  "time_source": "core-orch clock",
+  "source": {
+    "kind": "orchestrator",
+    "id": "core-orch"
+  },
+  "standing": "stated",
+  "subject": {
+    "order": "ord-1",
+    "part": "p3",
+    "segment": "p3-s2"
+  },
+  "observed": {
+    "kind": "stuck_resolved",
+    "to": "destination",
+    "evidence": "ev-0071"
+  }
+}

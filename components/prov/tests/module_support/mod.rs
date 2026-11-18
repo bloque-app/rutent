@@ -34,6 +34,7 @@ use rutent_prov::catalogue::{
     Bond, Catalogue, Category, Grant, GrantTerms, Instant, ReversalCapacity, tuples_of,
 };
 use rutent_prov::module::children::Paths;
+use rutent_prov::module::limits::Bounds;
 use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types;
 use rutent_prov::module::wire::sha256;
@@ -99,12 +100,7 @@ fn newest_of(dir: &Path) -> std::time::SystemTime {
 fn built_standins() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let exe = std::env::current_exe().expect("the test's own path");
-    // target/<profile>/deps/<test> -> target
-    let target = exe
-        .ancestors()
-        .nth(3)
-        .expect("a build directory")
-        .to_path_buf();
+    let target = build_directory(&exe);
     let out = target.join("rutent-wasm-standins");
     let built = out.join("built");
     let sources = [
@@ -388,6 +384,9 @@ impl WasmBinding {
         )?;
         // The suite expects an accepted upgrade to run at once; the lifecycle's tests stage their own.
         platform.set_staging(None);
+        // Starting a process is the machine's work, which a stepped clock can't move: on a loaded machine it can pass
+        // the 10 s a production start is given, and no test here is about start-up time (`T-013-08`).
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
         Ok(Self {
             catalogue,
             listed: BTreeSet::new(),
@@ -542,6 +541,20 @@ impl ModuleBinding for WasmBinding {
 
     fn set_output_limit(&mut self, bytes: usize) {
         self.platform.set_output_limit(bytes);
+    }
+
+    /// The most steps one module's operation may take is its most state reads: a denied read of a sandboxed part
+    /// is a host call the platform counts (`REQ-MDL-11`), for the operation and for its provider. `usize::MAX`
+    /// puts the platform's own bounds back.
+    fn set_step_limit(&mut self, steps: usize) -> bool {
+        let mut bounds = Bounds::DEFAULT;
+        if steps != usize::MAX {
+            let steps = steps as u64;
+            bounds.per_operation.state_reads = steps;
+            bounds.per_provider.state_reads = steps;
+        }
+        self.platform.set_bounds(bounds);
+        true
     }
 
     fn admit(
@@ -901,4 +914,21 @@ pub fn alive(pid: u64) -> bool {
     }
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { kill(pid as i32, 0) == 0 }
+}
+
+/// The build directory `exe`, a test's executable, was built in: the grandparent of the nearest `deps` or `build`
+/// directory above it. Cargo places a test's executable at `<target>/<profile>/deps/<test>` in its old layout, and
+/// at `<target>/<profile>/build/<package>/<hash>/out/<test>` in its new build-directory layout, the default from Rust
+/// 1.100 (`-Zbuild-dir-new-layout` before it).
+fn build_directory(exe: &Path) -> PathBuf {
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("a build directory above the test's executable")
+        .to_path_buf()
 }

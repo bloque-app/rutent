@@ -777,3 +777,194 @@ operation's declared destinations. So a request that is both malformed and aimed
 `request_not_allowed`, not `undeclared_destination`, and its hop looks the same as one to a declared host. It is still
 recorded and still refused; only the reason differs. Left as it is, and stated here, so an audit reads
 `request_not_allowed` as "refused before any destination was judged".
+
+## T-013-08: the flaky deadline test (`plan/m3-owed-rows`)
+
+`callee_past_its_deadline_is_unanswered_to_its_caller_never_refused` (`components/prov/tests/production_world.rs`,
+`T-014-05`'s) failed once in CI and passed on the same commit. Its margins are a 2 s deadline and a 1 s call budget.
+`T-013-08` makes it deterministic by removing the race, not by widening the margins. It sits in an `M3` wave, as
+`T-011-07` does.
+
+### Design (T-013-08)
+
+- **Cause, reproduced.** The platform starts a callee only while `caller.due - now >= call_budget + call_budget / 2`.
+  With a 2 s deadline and a 1 s budget the caller has 0.5 s from the start of its operation to reach the call. A
+  delay of 600 ms in front of that check on the old code (a temporary sleep, not kept) fails the test at its first
+  assertion, `the callee wasn't stopped at its deadline`, `left: 0, right: 1`, which is the CI failure: the call was
+  refused as `deadline_too_near`, not started, so nothing was `unanswered`. Plain CPU load did not reproduce it: 60
+  runs of the old test passed with 36 and with 100 busy loops on 12 cores (the second at the lowest priority); the
+  caller's start-up on that machine stays far under 0.5 s.
+- **Second CI failure, same file.** `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`
+  failed at `took < 4 s` (`production_world.rs:1336` at `34c700e`) on the push run `43424104071`, and passed on the
+  pull-request run. That is a bound on the machine's speed, not on the platform: a runner that stalls for 4 s
+  anywhere in the operation breaks it. With a temporary 4.5 s stall in the platform after the deadline was set, the
+  old test fails at that assertion (`held for 4.547706083s`), as do the old `slow_peer_...` (its twin bound) and the
+  old `callee_past_...`; the new tests pass under the same stall.
+- **The seam.** `OperationClock` (`module/platform.rs`), held by the platform (`set_operation_clock`). `Monotonic`
+  is the default and is `Instant::now()`, as before. `SteppedClock` stands still until `step` moves it. The clock is
+  read for the operation's own deadline, the caller's remaining time at a call, and the wait for a process's next
+  message; the deadlines handed outward go through `wall_due`.
+- **Production unchanged.** On `Monotonic` the wait is the same single `receive_until(due)`, and the deadlines handed
+  to the proxy world and to name lookups are the same instants.
+- **On a stepped clock** the wait polls the clock every 2 ms and a deadline it has reached has passed, whatever is
+  waiting. Deadlines handed outward are either the operating system's time left on the clock
+  (`SteppedClock::with_outward_waits_on_wall_time`, for tests of a lookup or a peer given up at the deadline, which
+  then take the deadline's 2 s) or a fixed 60 s that a step of the clock ends first (`SteppedClock::new`).
+
+### Tests converted (T-013-08)
+
+In `components/prov/tests/production_world.rs`:
+- `callee_past_its_deadline_is_unanswered_to_its_caller_never_refused_however_slowly_the_caller_started` (the
+  flaky one, renamed to the row's name): the clock stands still, and a stepper thread steps it 1.5 s once the callee
+  is stuck in its lookup.
+- `callee_is_started_only_while_its_callers_remaining_time_on_the_platforms_clock_covers_its_budget_and_reserve`
+  (new): a deadline of exactly 1.5 budgets starts the callee, one nanosecond less refuses it.
+- `hanging_name_lookup_is_given_up_at_the_operation_deadline_and_another_provider_still_runs`: stepped clock, a
+  stepper steps the 2 s deadline once the lookup is asked; the `took < 4 s` bounds are gone.
+- `slow_peer_is_cut_off_at_the_operation_deadline_and_another_provider_still_runs`: the same, stepped once the peer
+  got the call; its two `< 4 s` bounds are gone.
+
+In `components/prov/tests/module_calls.rs`, stepped clock standing still:
+- `call_with_too_little_deadline_left_is_refused` and `call_needs_the_callees_budget_and_the_callers_reserve_left`:
+  their controls (a callee started with 3 s of deadline and a 1 s budget) needed the caller to reach its call within
+  1.5 s.
+
+In `components/prov/tests/module_limits.rs`:
+- `a_guest_that_loops_is_stopped_when_its_fuel_runs_out`: the clock stands still, so only fuel can stop the guest;
+  its `took < OPERATION_DEADLINE / 4` bound (2.5 s of a machine's speed) is gone, and the time is still printed.
+
+### Not converted through the seam (T-013-08)
+
+- `module_limits.rs::a_provider_process_that_misses_the_operation_deadline_is_killed_and_started_again`: its 1 ms
+  deadline is one-sided (the guest spins until its fuel runs out, seconds later), and the platform's wait for it
+  begins before any message could arrive; there is nothing to interlock a step with. Left on real time.
+- `module_admission.rs::admitting_compiler_past_its_wall_time_deadline_is_stopped`: the admitting compiler's
+  deadline is a wall-time bound on another process's exchange, not an operation deadline, and is not read from the
+  seam; its 1 ms deadline is one-sided, and its `took < 20 s` bound is a thousand times the margin. Owner: `F-013`.
+- `proxy_https.rs` (`store_that_never_answers_times_out` and the one after it): they call the HTTPS transport with
+  a real `Instant` deadline and a read timeout, without a platform, so no platform clock reaches them; their bounds
+  (700 ms for a 200 ms timeout over an 800 ms silence, 1.5 s for 800 ms) are a machine's speed. Owner: `F-014`
+  (the proxy's transport). The `F-014` row is `T-014-06` (wave 25), which also takes the three tests of `egress.rs` with the same kind of bound.
+- `module_lifecycle.rs` polls up to 5 s for a killed process to be seen gone: a wait for the operating system, not
+  a deadline or budget of the platform.
+- The 10 s `OPERATION_DEADLINE` and `START_DEADLINE` the other platform tests run under are read on the
+  operating system's time still, as in production; a runner that takes 10 s to start a process fails them, which is
+  the deadline doing its job.
+
+### Follow-up (T-013-08): stepped clock in every cross-module call test
+
+`route_calls.rs::call_a_route_doesnt_name_is_refused_when_the_route_comes_from_the_router` failed once in a full
+workspace run under load, and passed alone and in 10 later runs. It ran on the real `Monotonic` clock, so spawning
+the wasm children of p-r1, p-r2 and p-z could pass the 10 s `OPERATION_DEADLINE`, and the call was then refused on
+its deadline instead of as `NotNamedByRoute`. Its binding now has a `SteppedClock`, with the assertions unchanged.
+The same class was closed in every other test that makes a cross-module call on a platform with no operation clock:
+`module_calls.rs` (4 tests), `module_limits.rs` (4 tests), `proxy_calls.rs` (3 tests) and `production_world.rs`
+(4 tests). Not changed, because they are about real time or never start a callee: the single-process tests of
+`module_limits.rs`, `module_lifecycle.rs`, `module_process.rs` and the others, and `egress.rs`, whose deadlines are
+the outward ones. `START_DEADLINE` is still read on the operating system's time (the platform hands it to the
+spawn directly); a start that passes it fails the install, not the assertion.
+
+The scenarios' fleet had the same flaw in principle, and it is fixed as defence, but it was not why `execution_routes`
+failed. `Fleet::with_context` built its platform on the real clock, so under load a simulated provider's call could pass
+its real deadline, or its start `START_DEADLINE`. Every `Fleet` platform now runs on a `ScenarioClock` that stands still
+(a scenario that scripts a `silent` or `late` provider is about a real deadline passing, so queueing that behaviour makes
+the clock follow the operating system's time from then on, without a jump), and `Platform::set_start_deadline` (new,
+default `START_DEADLINE`, so production is unchanged) is set to 120 s on a fleet, since a start is the machine's work
+and no scenario is about start-up time. Edited: `module/platform.rs` (F-013's), `fleet.rs` and `world.rs` (F-024's).
+
+The real cause of the five `execution_routes` failures (`CantProceed { class: NoRouteRightNow }` where a quote is
+expected, within 8 to 20 s, and only while other worktrees were building, which is why load seemed to matter) was the
+shared simulated-provider build. `conformance/scenarios/src/sim/disk.rs::built_guests` built the guests into
+`<target>/rutent-sim-guests` and rebuilt them only when the `built` marker was older than the newest file of the
+current worktree's sources. Every worktree in a build lane shares one target directory, so a worktree on an older base
+whose files had just been edited rebuilt the guests from its own sources and left the marker newest; the next worktree
+saw a marker newer than its sources and ran on guests without the simulated providers `T-024-04` added. Confirmed
+deterministically: `execution_routes` passed on `f013i`; the guests were then rebuilt from a scratch checkout of
+`b8c416e0` into the same directory; the same test run again from `f013i` failed 5 of 5 in 13 s. Fixed: the build is now
+in `<target>/rutent-sim-guests/<key>`, where the key is a hash of the paths and bytes of the guests' sources
+(`module-guests`, the WIT, `conformance/src`, `contracts/src`), so two trees never share a build and a file's age
+decides nothing; the newest three other builds are kept and older ones, and the loose files of the earlier layout, are
+removed. `RUTENT_SIM_GUESTS` still overrides it.
+Review of that fix added: builds are taken one at a time under a lock directory in the target (they share cargo's
+intermediate `sim-guests-build`, which another key's build could overwrite between `cargo build` and `componentize`),
+each is made in `<key>.tmp-<pid>` and renamed into place whole, a build's use is its `built` marker's time and only
+builds unused for more than a day are removed (a running test may still read an old one), and the key also covers
+`conformance/Cargo.toml`, `contracts/Cargo.toml` and `rust-toolchain.toml`. The prov tests' two platform builders
+(`module_support/mod.rs`, `signed.rs`) get the same 120 s start deadline as the fleet, for `holding_handed_on`'s
+"the wallet runs" under load. CI, with one checkout, was never affected.
+
+### Defaults (T-013-08)
+
+- The clock is `Monotonic` unless a test sets another. `STEPPED_POLL` 2 ms; `STEPPED_WAIT_CAP` 60 s.
+- The reproduced test's outcomes are unchanged (`unanswered`, never `refused`, callee stopped, started again). Its
+  deadline (2 s) and budget (1 s) are as before.
+
+### Rule-off table (T-013-08)
+
+See the commit body.
+
+## T-013-09: a repeat under a carried out transaction (`f-013/t-013-09-repeat-refused`)
+
+`T-024-08`'s review found that a repeat reaching the platform while its segment is held moved value twice for a provider
+that declares no safe retry (seed 110, the simulated exchange), and that nothing under `components/` read `safe_retry`.
+
+### Design (T-013-09)
+
+- **Where the platform reads `safe_retry`.** From the catalogue's advertisement, through the sealed `ReleaseJudge`, which
+  gains `safe_retry(provider) -> Option<bool>` (`Catalogue::declared_by(..).safe_retry`). The platform reads it each time it
+  admits or accepts a release of the provider and keeps it in the provider's slot. No contract change: the declaration was
+  already in `provider-role`'s `declarations.safe_retry`. `None` (no advertisement, a verifier, a module the operator
+  publishes) and `Some(false)` both mean no safe retry.
+- **What is a repeat.** `Platform::handle_in` keeps, per transaction, the operations it carried out by their kind (the module
+  ran, whatever it came to: an answer, an outcome unknown, a refusal after it ran), until the transaction's segment ends
+  (`Platform::end_segment`; after that `version_for` refuses it as before). A second operation under that transaction is a repeat, whatever its kind (a transaction's identifier is one
+  operation's, `INV-8`). Dry runs are no repeat: they move nothing, and neither carry out nor repeat anything. Nor are the kinds that only ask (`balance_verification`, `judgement`, `holding_balance`); any other kind, one
+  added later too, counts.
+- **What a repeat gets.** For a provider without safe retry, `PlatformRefusal::DuplicateTransaction` (the contract's reason
+  for `INV-8`; no new reason is needed, so `contracts/` is untouched): the module doesn't run, nothing moves, and the caller
+  reads the refusal. For one with safe retry, the first answer from the platform's record, byte for byte, the module not run.
+  If the first run gave no answer (a refusal after it ran), the module runs again, which its declaration allows. The first
+  answer stays the record. An operation under a transaction carried out for another provider is refused whatever it declares.
+- **Envelope.** The platform verifies no signature, so for a provider without safe retry a changed key or protocol
+  version is a retry and is refused like any repeat. For a provider with safe retry an operation whose deployment,
+  protocol version, key or terms differ from the first's is not answered from the record but reaches the module, which
+  refuses it as foreign (`REQ-PRT-1`); the role suite's replay probes
+  (`conformance/scenarios/tests/sim_providers.rs`) need that, and the platform did not check envelopes before this row
+  either. So a foreign replay of a carried out transaction to a provider without safe retry still rests on the module's own
+  envelope check.
+- **Existing tests changed (artefacts).** They reused one transaction id for different operations or to re-read a
+  version: `holding_wallet.rs`'s `deposit_answer` now names the node and asset in its transaction;
+  `module_lifecycle.rs` asks a fresh transaction for the version after a promotion, and reads a stale mark's move from the
+  segment's record instead of re-asking its transaction.
+- **New accessor.** `Platform::operations_run(provider)`: how many operations the module ran, so a test can say a repeat
+  never reached it.
+- **Tests.** `components/prov/tests/module_repeat.rs`: the two named tests, and three more (a provider whose advertisement
+  declares nothing is refused, another provider's carried out transaction is refused even for a safe provider, a withdrawn
+  safe-retry declaration is read when the next release is admitted). `conformance/scenarios/tests/repeat_joined.rs`: the
+  named `repeated delivery on the joined route moves nothing twice`. `T-024-08`'s
+  `invariants_support/mod.rs` (an `F-024` file, one edit) plants `DeliverTwice` on both routes again; the invariants pass.
+
+### Defaults (T-013-09)
+
+- No declaration, or one the platform can't read, is no safe retry: the repeat is refused (fail closed).
+- The key is the transaction alone (one operation per transaction), in two scopes: the platform's own, and each callee a
+  module calls (`handle_in(.., called)`), a callee that declares safe retry running each call again (each is an
+  operation within its own budgets), so a module calling a callee without safe retry twice under one transaction is
+  refused the second call (the caller sees it unanswered), and the callee's record never collides with the caller's.
+- A dry run and the read-only kinds are exempt. Reversible.
+
+### Gaps (T-013-09)
+
+- The platform reads the declaration when a release is admitted or accepted, not when the advertisement changes: a
+  provider that re-advertises `safe_retry: false` is read at its next release. Owner: the assembly (`F-020`), to refresh
+  declarations when a successor advertisement joins; until then a provider can't withdraw safe retry without a release.
+- The record is kept until the transaction's segment ends; a transaction handled with no segment begun is kept until the
+  platform stops. Core begins a segment for every transaction, so nothing grows there; owner: `F-013`, if a deployment
+  ever calls `handle` with no segment.
+- A foreign-envelope replay to a provider with safe retry rests on the module's envelope check, which the role suite
+  asserts of every module. Owner: `T-025-05`, to review.
+- `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
+
+### Rule-off table (T-013-09)
+
+See the commit body.

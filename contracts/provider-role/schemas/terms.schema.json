@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:terms",
+  "title": "Terms",
+  "description": "A provider's own signed terms for one of its tuples (REQ-QTE-5, REQ-QTE-6): the tuple, by its provider and both ends, its fee formula, and, where the tuple sets a rate, its slippage regime. Its maker is the tuple's provider. Core keeps it and appends it as a stated entry; it binds from the later of its made_at and Core's received_at, never made_at alone, so terms dated before a segment started but received after it never bind that segment. That the maker is the tuple's provider, and the slippage regime present exactly where the tuple's ends hold different assets, are checked by the contract's Rust (check_terms).",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:terms"
+    },
+    "statement": {
+      "$ref": "#/$defs/terms"
+    }
+  },
+  "$defs": {
+    "terms": {
+      "description": "The terms.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tuple",
+        "fee"
+      ],
+      "properties": {
+        "tuple": {
+          "$ref": "#/$defs/tuple"
+        },
+        "fee": {
+          "$ref": "#/$defs/fee_formula"
+        },
+        "slippage": {
+          "description": "The slippage regime: present exactly where the tuple sets a rate, an exchange's, whose ends hold different assets.",
+          "$ref": "urn:rutent:provider-role:result#/$defs/slippage"
+        }
+      }
+    },
+    "tuple": {
+      "description": "A tuple, by its provider and both ends.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "provider": {
+          "description": "The provider: the statement's maker.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "from": {
+          "$ref": "#/$defs/end"
+        },
+        "to": {
+          "$ref": "#/$defs/end"
+        }
+      }
+    },
+    "end": {
+      "description": "One end of a tuple: an inner node by identifier or an outer node by its network, and the asset with the unit it is counted in there.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "asset"
+      ],
+      "properties": {
+        "node": {
+          "oneOf": [
+            {
+              "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+            },
+            {
+              "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+            }
+          ]
+        },
+        "asset": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        }
+      }
+    },
+    "fee_formula": {
+      "description": "Flat and proportional parts, depending only on amount and tuple (REQ-QTE-5): on an amount a entering the tuple, flat + ceil(a * numerator / denominator), in the tuple's input unit. Where a maximum is given, the charge is known only after execution and stays within it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flat",
+        "proportional"
+      ],
+      "properties": {
+        "flat": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "proportional": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "numerator",
+            "denominator"
+          ],
+          "properties": {
+            "numerator": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+            },
+            "denominator": {
+              "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+            }
+          }
+        },
+        "maximum": {
+          "description": "The most the charge may come to, where it is known only after execution.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        }
+      }
+    }
+  }
+}

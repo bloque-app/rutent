@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:settlement-times",
+  "title": "Settlement times",
+  "description": "One segment's declared settlement time and its actual one (REQ-QTE-3): the seconds from segment start its quote or price declared, and when it started and settled, so the two are measurable against each other. It settles at or after it starts, checked by the contract's Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "declared_seconds",
+    "started_at",
+    "settled_at"
+  ],
+  "properties": {
+    "declared_seconds": {
+      "description": "The declared settlement time, in seconds from segment start.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+    },
+    "started_at": {
+      "description": "When the segment started.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "settled_at": {
+      "description": "When it settled.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

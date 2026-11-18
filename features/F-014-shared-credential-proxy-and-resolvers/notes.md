@@ -670,3 +670,85 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
 
   Both are cut at the deadline while each step may take 10 s. They pass with `Bounded` as it is, and failed when
   `Bounded` ignored the deadline.
+
+## Owed row (plan/m3-owed-rows-2)
+
+- `T-014-06` owns the wall-clock bounds left in `tests/proxy_https.rs` (`store_that_never_answers_times_out`,
+  `store_dribbling_its_answer_is_cut_off_at_the_deadline`) and in `tests/egress.rs`
+  (`lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`,
+  `a_lookup_whose_resolver_panics_gives_its_place_back`,
+  `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline`) and in `src/proxy/tests/deadline.rs`
+  (`store_whose_name_lookup_hangs_is_unavailable_at_the_deadline`). `proxy/https.rs`'s `left` and
+  `egress/resolve.rs` read `Instant::now()`, so no platform clock reaches them; the row gives them `T-013-08`'s
+  `OperationClock`.
+
+## T-014-06: the proxy's transport and egress on the platform's clock
+
+The wall-clock bounds `T-013-08` left in the proxy's HTTPS transport and in egress are gone. Edits files `T-014-05`
+made: `proxy/https.rs`, `egress/resolve.rs`, `egress/tls.rs`, and three test files. `module/platform.rs` is not edited;
+`OperationClock`, `Monotonic` and `SteppedClock` are used as they are.
+
+### Design (T-014-06)
+
+- **The seam.** `HttpsTransport::with_clock`, `TlsConnector::with_clock` and `ThreadedResolver::with_clock` take an
+  `Arc<dyn OperationClock>`; the deadline a caller hands in (`due`) is a time on that clock. The default is
+  `Monotonic`, so production reads the same instants. Nothing in production sets another clock, and none can turn a
+  deadline off. `HttpsTransport::with_clock` also puts the default resolver on the clock; a resolver set with
+  `with_resolver` is the caller's to put on it. `Egress` itself never read a clock, it only hands `due` to the
+  resolver and the connector, so it is unchanged.
+- **`Bounded`.** The per-read `step` timeout is now one deadline on the clock, `min(now + step, due)`, set when the
+  exchange begins and read before every read and write, the TLS handshake's included. On `Monotonic` a read or write
+  is the one socket wait for what is left, as before. On a clock that does not follow wall time the socket timeout is
+  only a slice (`STEPPED_SLICE`, 2 ms, the platform's poll) and the clock is read between slices, so a step is seen
+  wherever the exchange is.
+- **`ThreadedResolver`.** The same: a stepped clock polls in 2 ms slices, and a lookup whose deadline the clock has
+  reached is `DeadlinePassed`.
+
+### Defaults (T-014-06)
+
+- The clock is `Monotonic` unless a test sets another.
+- **The step timeout is now a bound on the whole exchange after the dial**, not on each read (the row's reading:
+  "set once at the start of the exchange"). With the defaults (10 s for the transport, 5 s for the connector) a store
+  that answers a 1 MiB answer slowly, one read at a time, is cut at 10 s or 5 s in all, where before each read had
+  its own. It fails closed; a deployment that needs longer sets `with_timeout`. Owner: `F-014`.
+- The dial's own wait is still `min(step, left)` through `TcpStream::connect_timeout`, on the operating system's
+  time: a connect to an address is a socket's wait, which the clock does not move.
+
+### Tests (T-014-06)
+
+- `tests/proxy_https.rs`: `store_that_never_answers_is_cut_off_at_its_timeout_on_the_platforms_clock` and
+  `store_dribbling_its_answer_is_cut_off_when_the_clock_is_stepped_to_the_deadline` (the two old names went), and
+  `transport_on_the_operating_systems_clock_still_cuts_a_silent_store_at_its_timeout` (new). The clock is stepped
+  once the stand-in store has read the request, so the exchange's deadline is already set. Each asserts the
+  refusal is the transport's `the store timed out`, not the store ending the exchange (an empty answer, an answer cut
+  short), and the first and third that the store still held the connection when the transport gave up. No elapsed
+  bound is read.
+- `tests/egress.rs`: `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`,
+  `a_lookup_whose_resolver_panics_gives_its_place_back` and
+  `peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline`, names kept. The clock stands still
+  and is stepped past the deadline once the resolver was asked (a stepper per lookup), or once the peer holds the
+  connection (accepted, or its handshake done). The last one's old `took < 2 s` bound became "each peer still held
+  its connection when the call was cut off" (`Silent::let_go` and `TlsServer::stalls_ended`, new in
+  `tests/tls_support/mod.rs`), since a connector that ignored the deadline still ended the stall by the peer's own
+  timeout with the same outcome. This is the test that flaked once ("held for 4.78s"): it is converted.
+- `src/proxy/tests/deadline.rs`: `store_whose_name_lookup_hangs_is_unavailable_at_the_deadline` keeps its name; its
+  bound became "the lookup was given up while the resolver still hung".
+
+### Gaps (T-014-06)
+
+- The two waits of `lookups_past_...` and `a_lookup_whose_...` for an abandoned thread to give its place back poll
+  with no bound: they wait for a thread, not a deadline, and a thread that never ends holds the test, which is how
+  it would fail. Owner: `F-014`; a counter on `ThreadedResolver` would give a bounded way, and is not worth an API.
+- The helpers that wait for the peer (the steppers' polls) are unbounded for the same reason.
+- The stepped 200-in-a-row run under CPU load on one CI runner is the row's Done-when for CI; locally the six pass
+  and no test reads real elapsed time.
+
+### Rule-off table (T-014-06)
+
+| Rule switched off | Red |
+| --- | --- |
+| `Bounded` ignores the deadline (reads and writes wait a fixed 10 s) | the two stepped proxy tests and the operating-system-clock test (the store's own close is seen instead of a timeout), and `peer_stalling_...` (the peers' stalls ended by themselves) |
+| `ThreadedResolver` never gives up on a stepped clock | `store_whose_name_lookup_hangs_is_unavailable_at_the_deadline` (the lookup returns only when the resolver does), `lookups_past_the_deadline_...` (an answer instead of `DeadlinePassed`) |
+
+The panicking-resolver test's own rule (`T-014-05`'s `Place` guard) was not switched off again: this row changes
+only its clock, which its assertions do not depend on, and `Place` is untouched.

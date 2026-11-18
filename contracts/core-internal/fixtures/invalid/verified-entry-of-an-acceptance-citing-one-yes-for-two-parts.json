@@ -1,0 +1,61 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "what": {
+    "call": "acceptance",
+    "acceptance": "acc-0001",
+    "order": "ord-19",
+    "request": "client-req-9",
+    "quote": {
+      "algorithm": "sha-256",
+      "value": "9191919191919191919191919191919191919191919191919191919191919191"
+    },
+    "authorisation": "auth-19",
+    "basis": "given",
+    "parties": {
+      "requester": "acme-treasury",
+      "beneficiary": "payee-ref-3",
+      "payer": "acme-treasury"
+    },
+    "origin_reserve": "us-bank",
+    "yeses": [
+      {
+        "part": "p1",
+        "origin_reserve": "us-bank",
+        "reserve_yes": {
+          "log": "log-main",
+          "index": 85,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "8686868686868686868686868686868686868686868686868686868686868686"
+          }
+        }
+      },
+      {
+        "part": "p2",
+        "origin_reserve": "eu-bank",
+        "reserve_yes": {
+          "log": "log-main",
+          "index": 85,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "8686868686868686868686868686868686868686868686868686868686868686"
+          }
+        }
+      }
+    ],
+    "session": "sess-300"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:effect",
+  "title": "Effect",
+  "description": "An action about to take effect: what it is, the permit it rests on, and the receipt of its own entry in the log, appended before it takes effect (REQ-AUZ-1, INV-7). Orchestration holds one before it acts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "decision",
+    "receipt"
+  ],
+  "properties": {
+    "action": {
+      "$ref": "urn:rutent:core-internal:common#/$defs/action"
+    },
+    "decision": {
+      "description": "The decision that permitted it.",
+      "$ref": "#/$defs/permit"
+    },
+    "receipt": {
+      "description": "The receipt of the entry that records it.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "permit": {
+      "description": "A decision an effect cites: its request, its id, that it permitted, and its entry's receipt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "decision",
+        "answer",
+        "receipt"
+      ],
+      "properties": {
+        "request": {
+          "description": "The request the decision answered.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decision": {
+          "description": "The decision.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "answer": {
+          "description": "A permit, and nothing else.",
+          "const": "permit"
+        },
+        "receipt": {
+          "description": "The receipt of the decision's entry, by which the log finds the action decided and refuses an effect whose action differs.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        }
+      }
+    }
+  }
+}

@@ -77,6 +77,7 @@ mod sandboxed {
             fee: Fee {
                 asset: asset.to_owned(),
                 amount: "0".to_owned(),
+                billed_separately: None,
             },
             evidence: vec![EvidencePiece {
                 grade: EvidenceGrade::SignedByProvider,

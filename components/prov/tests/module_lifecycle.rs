@@ -300,7 +300,7 @@ fn low_volume_release_stays_staged_until_its_minimum_is_observed() {
         Ok("1.1.0")
     );
     assert_eq!(binding.active_version(provider).as_deref(), Some("1.1.0"));
-    assert_eq!(answer(&mut binding, provider, 9).as_deref(), Ok("1.1.0"));
+    assert_eq!(answer(&mut binding, provider, 99).as_deref(), Ok("1.1.0"));
     let last = binding.lifecycle().decisions().last().expect("a decision");
     assert_eq!(
         (last.kind, last.by.as_str(), last.at),
@@ -401,7 +401,16 @@ fn newer_release_never_moves_a_segment_and_a_stale_mark_moves_it_to_the_version_
         binding.mark_stale(provider, "1.0.0", OPERATOR, later(5)),
         Ok(1)
     );
-    assert_eq!(answer(&mut binding, provider, 1).as_deref(), Ok("1.1.0"));
+    // Asked again, the transaction is answered from the platform's record (`T-013-09`), so the move is read from its
+    // segment.
+    assert_eq!(
+        binding
+            .lifecycle()
+            .segment(tx(provider, 1).as_str())
+            .map(|segment| segment.runs_on.as_str()),
+        Some("1.1.0")
+    );
+    assert_eq!(answer(&mut binding, provider, 2).as_deref(), Ok("1.1.0"));
     assert!(binding.version_process(provider, "1.0.0").is_none());
     let record = binding
         .end_segment(tx(provider, 1).as_str())
@@ -466,6 +475,38 @@ fn transaction_cannot_read_another_transactions_state() {
         // Another transaction's entry is never asked of the world.
         let asked: Vec<_> = binding.world.state_asked[asked..].to_vec();
         assert_eq!(asked.contains(&key), own, "transaction {n}: {asked:?}");
+    }
+}
+
+// verifies: REQ-MDL-8
+#[test]
+fn each_state_read_names_the_transaction_it_was_made_for() {
+    let provider = "stateful";
+    let mut binding = binding("reserve");
+    binding.seed_state(provider, "rates", "shared");
+    let module = spec(
+        provider,
+        "1.0.0",
+        vec![Step::ReadState {
+            part: PartName::Outside,
+            key: "rates".to_owned(),
+        }],
+        true,
+    );
+    install(&mut binding, &module, &language(), "reserve", &[]);
+    for n in [1, 2] {
+        Platform::take_events(&mut binding);
+        assert!(answer(&mut binding, provider, n).is_ok());
+        let reads: Vec<_> = Platform::take_events(&mut binding)
+            .state_reads
+            .into_iter()
+            .map(|r| (r.key, r.transaction))
+            .collect();
+        assert_eq!(
+            reads,
+            [("rates".to_owned(), tx(provider, n).as_str().to_owned())],
+            "transaction {n}"
+        );
     }
 }
 

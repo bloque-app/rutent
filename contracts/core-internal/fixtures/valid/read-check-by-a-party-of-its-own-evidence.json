@@ -1,0 +1,17 @@
+{
+  "request": "req-405",
+  "reader": {
+    "party": "bridge-pay",
+    "acts": "bridge-pay",
+    "role": "provider",
+    "kind": "component"
+  },
+  "reads": {
+    "kind": "evidence",
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "8686868686868686868686868686868686868686868686868686868686868686"
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

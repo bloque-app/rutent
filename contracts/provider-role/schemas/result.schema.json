@@ -963,6 +963,13 @@
         },
         "evidence": {
           "$ref": "#/$defs/outcome_evidence"
+        },
+        "fault": {
+          "description": "Whose fault the provider shows the failure was, where it shows one: the customer's or the operator's (REQ-ORD-11). Until the party it names accepts it, the provider carries the reversal. Absent where it shows none.",
+          "enum": [
+            "customer",
+            "operator"
+          ]
         }
       }
     },
@@ -1328,6 +1335,10 @@
         },
         "amount": {
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+        },
+        "billed_separately": {
+          "description": "Whether the provider bills the fee separately, outside the amounts it reports (REQ-AUD-11, since 3.1.0). Absent where it doesn't say.",
+          "type": "boolean"
         }
       }
     },

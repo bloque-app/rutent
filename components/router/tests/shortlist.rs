@@ -8,6 +8,7 @@ use common::{
     Net, WIDE, bounds, choice_of, endpoint, fee, on, outer, parse, request, routed, shortlist,
 };
 use rutent_conformance::router::recompute;
+use rutent_contracts::provider_role::VoidedBy;
 use rutent_contracts::router_api::{
     CatalogueSnapshot, DecisionRecord, DropReason, Id, OperationKind, PolicyBounds,
 };
@@ -492,7 +493,8 @@ fn provider_reached_at_two_amounts_is_asked_at_one_only() {
     // At the amount of the route the search ranks first.
     assert_eq!(questions[0].amount_in.amount().as_str(), "100000000");
 
-    // The other route's ramp stays unconfirmed until Core asks again.
+    // The other route's ramp is asked at another amount than it takes in, by a quote that lists `amount_changes`:
+    // its candidate is dropped for that quote, which it cites, until Core asks again (`T-020-06`).
     let mut answers = Net::new("answers", CHOICE_AT, 0);
     let (r1, r2) = (
         ("100000000", "USDC", "1000000", "99000000"),
@@ -504,10 +506,19 @@ fn provider_reached_at_two_amounts_is_asked_at_one_only() {
     let (_, choice) = route_both(&net, answers, (from, to, "100000000"), &bounds(2));
     assert_eq!(
         on(&choice, &["f-r1", "f-ramp"]).dropped,
-        Some(DropReason::Unconfirmed {
-            part: 0,
-            operation: 1
+        Some(DropReason::QuoteVoided {
+            figure: id("q-ramp"),
+            condition: VoidedBy::AmountChanges,
         })
+    );
+    assert!(
+        on(&choice, &["f-r1", "f-ramp"])
+            .parts
+            .first()
+            .operations
+            .as_slice()[1]
+            .figures
+            .contains(&id("q-ramp"))
     );
     assert_eq!(
         common::tuples(choice.chosen().unwrap()),

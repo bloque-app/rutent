@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:holding-reading",
+  "title": "Holding account reading",
+  "description": "A holding account's balance, with the value each order holds there, for the check that they agree (REQ-AUD-15). It goes to the check, never to the log, which holds no balance (REQ-AUD-6). That each order is named once is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "account",
+    "provider",
+    "node",
+    "asset",
+    "balance",
+    "word",
+    "held_for",
+    "at"
+  ],
+  "properties": {
+    "account": {
+      "description": "The holding account.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "provider": {
+      "description": "The provider whose module holds it.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "node": {
+      "description": "The inner node it is at.",
+      "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
+    },
+    "asset": {
+      "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+    },
+    "balance": {
+      "description": "Its balance, in the asset's unit.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+    },
+    "word": {
+      "description": "Whose word the balance is: rutent's own reading at a public node, or the publisher's at a private one (REQ-AUD-15).",
+      "enum": [
+        "checked",
+        "publisher"
+      ]
+    },
+    "held_for": {
+      "description": "What each order holds there, each order once: empty where no order holds anything, never absent.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/held"
+      }
+    },
+    "at": {
+      "description": "When it was read, by Core's clock.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "held": {
+      "description": "The value one order holds in the account.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "order",
+        "amount"
+      ],
+      "properties": {
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "amount": {
+          "description": "The amount it holds there, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        }
+      }
+    }
+  }
+}

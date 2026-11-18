@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:stuck-move",
+  "title": "Stuck order: move",
+  "description": "The move step of resolving a stuck order: another actor, compared at the accountable party, moves the value the decision named (REQ-AUZ-4, ADR-0011). Policy answers with a decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "order",
+    "carries_out",
+    "mover",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "order": {
+      "description": "The stuck order.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "carries_out": {
+      "description": "The decide step's decision it carries out.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/decided"
+    },
+    "mover": {
+      "description": "Who moves the value.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

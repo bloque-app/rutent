@@ -48,5 +48,13 @@
       },
       "amount": "800000000"
     }
-  ]
+  ],
+  "operator_fee": {
+    "flat": "0",
+    "proportional": {
+      "numerator": "0",
+      "denominator": "1"
+    }
+  },
+  "slippage_limits": []
 }

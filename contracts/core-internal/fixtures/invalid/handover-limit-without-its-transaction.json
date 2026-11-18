@@ -1,0 +1,6 @@
+{
+  "kind": "limit",
+  "provider": "bridge-pay",
+  "limit": "count",
+  "scope": "outbound_calls"
+}

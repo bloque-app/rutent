@@ -6,15 +6,15 @@ use std::path::{Path, PathBuf};
 
 use jsonschema::{Registry, Validator};
 use rutent_contracts::router_api::{
-    Candidate, CatalogueSnapshot, FigureValue, Id, NonEmpty, Operation, Part, PolicyBounds,
-    RecordedDecision, Request, VERSION,
+    Candidate, CatalogueSnapshot, FigureValue, HeldQuote, Id, NonEmpty, Operation, Part,
+    PolicyBounds, RecordedDecision, Request, SettlementTimes, StatedTerms, VERSION,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:router-api:<shape>`.
-const SHAPES: [&str; 7] = [
+const SHAPES: [&str; 10] = [
     "common",
     "request",
     "catalogue-snapshot",
@@ -22,11 +22,42 @@ const SHAPES: [&str; 7] = [
     "operation",
     "candidate",
     "decision-record",
+    "stated-terms",
+    "settlement-times",
+    "held-quote",
 ];
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 120] = [
+const RUST_RULES: [(&str, &str); 131] = [
+    (
+        "policy-bounds-two-slippage-limits-for-one-tuple",
+        "there is at most one slippage limit per tuple",
+    ),
+    (
+        "policy-bounds-operator-fee-above-the-whole",
+        "the operator's fee takes at most the whole of what arrives in proportion",
+    ),
+    (
+        "decision-record-without-a-slippage-limit-for-an-exchange-settling-within-three-days",
+        "every exchange tuple settling within three days has a slippage limit in the bounds",
+    ),
+    (
+        "settlement-times-settled-before-started",
+        "a segment settles at or after it starts",
+    ),
+    (
+        "held-quote-valid-until-before-its-snapshot",
+        "a held quote's validity is at or after its record's snapshot",
+    ),
+    (
+        "held-quote-of-a-record-choosing-nothing",
+        "a held quote's record chose a candidate",
+    ),
+    (
+        "held-quote-valid-until-past-its-quotes-figures",
+        "a held quote's validity is no later than the earliest expiry of the figures its quote cites",
+    ),
     (
         "decision-record-naming-an-undeclared-call",
         "every call an operation names is one its provider's module declares",
@@ -325,7 +356,7 @@ const RUST_RULES: [(&str, &str); 120] = [
     ),
     (
         "catalogue-snapshot-disagreeing-judgements",
-        "eligibility judgements of one subject for one tuple agree",
+        "eligibility judgements of one subject and class for one tuple agree",
     ),
     (
         "catalogue-snapshot-tuple-listed-twice",
@@ -360,8 +391,24 @@ const RUST_RULES: [(&str, &str); 120] = [
         "the choice round chooses only a candidate whose every operation is confirmed",
     ),
     (
+        "decision-record-choosing-a-gross-deposit-stated-as-its-answer",
+        "the choice round chooses only a candidate whose every operation is confirmed",
+    ),
+    (
         "decision-record-below-floor-without-a-floor",
-        "a below-floor reason names a candidate that arrives below the floor",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
+        "a below-floor reason names a candidate that leaves the customer less than the floor after the operator's fee",
+    ),
+    (
+        "decision-record-chosen-candidate-below-the-floor-after-the-operator-s-fee",
+        "a kept candidate leaves the customer at least the floor after the operator's fee",
     ),
     (
         "decision-record-no-positive-outcome-for-a-candidate-that-arrives",
@@ -381,7 +428,7 @@ const RUST_RULES: [(&str, &str); 120] = [
     ),
     (
         "decision-record-chosen-candidate-below-the-floor",
-        "a kept candidate arrives at or above the floor",
+        "a kept candidate leaves the customer at least the floor after the operator's fee",
     ),
     (
         "decision-record-chosen-candidate-over-a-ceiling",
@@ -511,7 +558,24 @@ const RUST_RULES: [(&str, &str); 120] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 73] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 81] = [
+    ("policy-bounds-without-operator-fee", &[("", "required")]),
+    ("policy-bounds-without-slippage-limits", &[("", "required")]),
+    (
+        "policy-bounds-slippage-limit-beyond-ten-thousand-bps",
+        &[("/slippage_limits/0/max_bps", "maximum")],
+    ),
+    (
+        "decision-record-ranking-net-of-the-operator-s-fee",
+        &[("/statement/ranking", "enum")],
+    ),
+    ("stated-terms-without-stated-at", &[("", "required")]),
+    ("stated-terms-without-a-tuple", &[("", "required")]),
+    (
+        "settlement-times-without-declared-seconds",
+        &[("", "required")],
+    ),
+    ("held-quote-without-validity", &[("", "required")]),
     (
         "catalogue-snapshot-calls-figure-asking-for-a-holding-balance",
         &[("/figures/37/value/calls/0/kinds/1", "not")],
@@ -900,6 +964,9 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "policy-bounds" => round_trip::<PolicyBounds>(value),
         "operation" => round_trip::<Operation>(value),
         "candidate" => round_trip::<Candidate>(value),
+        "stated-terms" => round_trip::<StatedTerms>(value),
+        "settlement-times" => round_trip::<SettlementTimes>(value),
+        "held-quote" => round_trip::<HeldQuote>(value),
         "decision-record" => {
             let record: RecordedDecision =
                 serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -977,6 +1044,185 @@ fn route_with_an_untyped_operation_is_invalid() {
 #[test]
 fn operation_of_an_unknown_kind_is_refused() {
     assert_rejected_by_both("operation-of-an-unknown-kind");
+}
+
+// verifies: REQ-QTE-9
+#[test]
+fn policy_bounds_without_a_slippage_limit_for_a_tuple_settling_within_three_days_are_invalid() {
+    let name =
+        "decision-record-without-a-slippage-limit-for-an-exchange-settling-within-three-days";
+    let value = fixture("invalid", name);
+    let refusal = through_rust("decision-record", &value).unwrap_err();
+    assert!(
+        refusal.contains("every exchange tuple settling within three days has a slippage limit"),
+        "{refusal}"
+    );
+    // The same bounds and snapshot, checked apart: the bounds pass their own check and fail against the
+    // snapshot, whose exchange `exchange-a` declares settling within three days.
+    let record = valid_record("decision-record-split-of-one-part").statement;
+    let mut bounds = record.bounds.clone();
+    bounds.slippage_limits.clear();
+    assert!(bounds.check().is_ok());
+    assert!(bounds.check_against(&record.snapshot).is_err());
+    assert!(record.bounds.check_against(&record.snapshot).is_ok());
+}
+
+// verifies: REQ-ORD-27
+#[test]
+fn the_floor_is_judged_on_what_the_operators_fee_leaves_the_customer() {
+    // Kept exactly at the floor after a capped fee: 248,250,500 arrives, the fee is min(ceil(248,250.5), 200,000).
+    let at =
+        valid_record("decision-record-kept-at-the-floor-after-a-capped-operator-s-fee").statement;
+    assert!(at.check().is_ok());
+    // One unit more of floor, and the kept candidate is refused.
+    let mut above = at.clone();
+    above.request.floor = Some(rutent_contracts::router_api::Amount::new("248050501").unwrap());
+    assert!(above.check().is_err());
+    for (name, rule) in [
+        (
+            "decision-record-chosen-candidate-below-the-floor-after-the-operator-s-fee",
+            "a kept candidate leaves the customer at least the floor after the operator's fee",
+        ),
+        (
+            "decision-record-below-floor-for-a-candidate-that-arrives-above-it",
+            "a below-floor reason names a candidate that leaves the customer less than the floor",
+        ),
+        (
+            "decision-record-below-floor-for-a-candidate-the-operator-s-fee-leaves-above-it",
+            "a below-floor reason names a candidate that leaves the customer less than the floor",
+        ),
+    ] {
+        let refusal = through_rust("decision-record", &fixture("invalid", name)).unwrap_err();
+        assert!(refusal.contains(rule), "{name}: {refusal}");
+    }
+}
+
+// verifies: REQ-QTE-15
+#[test]
+fn held_quote_without_a_validity_is_invalid() {
+    assert_rejected_by_both("held-quote-without-validity");
+}
+
+/// A provider-role statement fixture, for the rules that read one into this contract's types.
+fn provider_statement<T: DeserializeOwned>(kind: &str, name: &str) -> T {
+    let path = contracts_dir()
+        .join("provider-role/fixtures")
+        .join(kind)
+        .join(format!("{name}.json"));
+    serde_json::from_value(read_json(&path)).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// A provider's signed terms bind from the later of their `made_at` and Core's `received_at`, never `made_at` alone,
+/// and only a tuple's own provider's, with a slippage regime exactly where it sets a rate, are taken (round 3 of
+/// `T-020-01`, item q).
+// verifies: REQ-QTE-6, REQ-QTE-5
+#[test]
+fn stated_terms_bind_from_the_later_of_their_making_and_their_receipt() {
+    use rutent_contracts::provider_role::{Statement, TupleTerms};
+    use rutent_contracts::router_api::Timestamp;
+    let signed: Statement<TupleTerms> =
+        provider_statement("valid", "terms-of-an-exchange-with-its-slippage-regime");
+    let at = |t: &str| Timestamp::new(t).unwrap();
+    // Received after it was made: it binds from its receipt.
+    let late = StatedTerms::from_statement(&signed, &at("2026-11-06T16:00:00Z")).unwrap();
+    assert_eq!(late.stated_at, at("2026-11-06T16:00:00Z"));
+    assert_eq!(late.tuple.provider.as_str(), "fx-desk");
+    assert_eq!(
+        late.fee.maximum.as_ref().map(|m| m.as_str()),
+        Some("500000")
+    );
+    assert!(late.slippage.is_some());
+    // Received before the time it names: it binds from its making.
+    let early = StatedTerms::from_statement(&signed, &at("2026-11-06T15:00:00Z")).unwrap();
+    assert_eq!(early.stated_at, at("2026-11-06T15:04:05Z"));
+    let theirs: Statement<TupleTerms> =
+        provider_statement("invalid", "terms-made-by-another-party");
+    assert_eq!(
+        StatedTerms::from_statement(&theirs, &at("2026-11-06T16:00:00Z")).map(|_| ()),
+        Err(rutent_contracts::router_api::Violation(
+            "stated terms are their tuple's provider's own, with a slippage regime exactly where the tuple sets a rate"
+        ))
+    );
+}
+
+/// A reserve's hold names its held quote's record by the id and digest the log names it by, holds its chosen
+/// candidate, is made by the reserve each part starts at, and is valid no
+/// later than the figures its candidate cites; Core holds the quote no longer than the hold (round 3 of `T-020-01`,
+/// item q).
+// verifies: REQ-QTE-15, REQ-QTE-4
+#[test]
+fn a_hold_is_its_reserves_for_the_chosen_candidate_within_its_figures() {
+    use rutent_contracts::provider_role::{Hold, Statement};
+    use rutent_contracts::router_api::{Timestamp, Violation};
+    let held: HeldQuote =
+        serde_json::from_value(fixture("valid", "held-quote-of-a-choice-round")).unwrap();
+    // The log names the held quote's record dr-0004, by its digest.
+    let record = Id::new("dr-0004").unwrap();
+    let digest: rutent_contracts::module_interface::Digest = serde_json::from_value(
+        serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+    )
+    .unwrap();
+    let check = |held: &HeldQuote, hold: &Statement<Hold>| held.check_hold(hold, &record, &digest);
+    let hold: Statement<Hold> = provider_statement("valid", "hold-for-an-order");
+    assert_eq!(check(&held, &hold), Ok(()));
+    // Another record's `c1`, at the same reserve and within its validity, isn't this quote's hold.
+    let elsewhere: Statement<Hold> =
+        provider_statement("valid", "hold-of-another-records-candidate-of-the-same-id");
+    assert_eq!(elsewhere.statement.candidate, hold.statement.candidate);
+    assert_eq!(
+        check(&held, &elsewhere),
+        Err(Violation(
+            "a hold names its held quote's decision record, by the id and digest the log names it by"
+        ))
+    );
+    let mut other_digest = hold.clone();
+    other_digest.statement.record.digest.value = "cd".repeat(32);
+    assert!(check(&held, &other_digest).is_err());
+    let mut another = hold.clone();
+    another.statement.candidate = "c2".to_owned();
+    assert_eq!(
+        check(&held, &another),
+        Err(Violation("a hold holds its record's chosen candidate"))
+    );
+    let mut by_another = hold.clone();
+    by_another.maker = "reserve-wallet".to_owned();
+    assert_eq!(
+        check(&held, &by_another),
+        Err(Violation(
+            "a hold is made by the reserve that starts each part of its candidate"
+        ))
+    );
+    let mut too_long = hold.clone();
+    too_long.statement.valid_until = "2026-11-06T15:01:56Z".to_owned();
+    assert_eq!(
+        check(&held, &too_long),
+        Err(Violation(
+            "a hold's validity is no later than the earliest expiry of the figures its candidate cites"
+        ))
+    );
+    let mut shorter = hold.clone();
+    shorter.statement.valid_until = "2026-11-06T15:01:00Z".to_owned();
+    assert_eq!(
+        check(&held, &shorter),
+        Err(Violation(
+            "a held quote is held no longer than its hold's validity"
+        ))
+    );
+    let mut core_shorter = held.clone();
+    core_shorter.valid_until = Timestamp::new("2026-11-06T15:01:00Z").unwrap();
+    assert_eq!(check(&core_shorter, &shorter), Ok(()));
+}
+
+// verifies: REQ-QTE-6
+#[test]
+fn stated_terms_without_the_time_they_were_stated_are_invalid() {
+    assert_rejected_by_both("stated-terms-without-stated-at");
+}
+
+// verifies: REQ-QTE-3
+#[test]
+fn settlement_time_pair_without_its_declared_time_is_invalid() {
+    assert_rejected_by_both("settlement-times-without-declared-seconds");
 }
 
 // verifies: REQ-QTE-1, REQ-QTE-4, REQ-QTE-16, REQ-AUD-4, REQ-ORD-37, DEC-4, DEC-8

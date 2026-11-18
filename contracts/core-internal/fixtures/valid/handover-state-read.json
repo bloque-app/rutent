@@ -1,0 +1,8 @@
+{
+  "kind": "state_read",
+  "provider": "bridge-pay",
+  "part": "sandboxed",
+  "transaction": "tx-003",
+  "key": "nonce",
+  "found": true
+}

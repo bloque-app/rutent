@@ -18,8 +18,9 @@
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, Advertisement, KeyPurpose, Operation, PublicKey, ResultBody, Signature,
-    SignatureScheme, SigningKey as ListedKey, Statement, signing_input,
+    ADVERTISEMENT_SHAPE, Advertisement, ArrivalAnswer, ArrivalNotice, ArrivalQuestion, KeyPurpose,
+    Operation, PublicKey, ResultBody, Signature, SignatureScheme, SigningKey as ListedKey,
+    Statement, signing_input,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -28,7 +29,7 @@ use serde_json::Value;
 use crate::boundary::sha256::digest;
 use crate::role::stand_in::Reserve;
 use crate::role::{
-    Received, RoleHarness, RoleProvider, SignatureVerifier, SuiteContext, Verification,
+    BankCredit, Received, RoleHarness, RoleProvider, SignatureVerifier, SuiteContext, Verification,
 };
 
 pub use ed25519_dalek::SigningKey as Ed25519Key;
@@ -269,9 +270,28 @@ impl<P: RoleProvider> RoleProvider for Signing<P> {
             .status(transaction)
             .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
     }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        self.0
+            .arrival(question)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.0
+            .arrival_notice(reference)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
+    }
 }
 
 impl<P: RoleHarness> RoleHarness for Signing<P> {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        self.0.credit_arrival(credit)
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.0.force_outcome_unknown()
     }

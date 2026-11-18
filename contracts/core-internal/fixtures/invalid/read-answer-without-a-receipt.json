@@ -1,0 +1,7 @@
+{
+  "request": "req-402",
+  "outcome": {
+    "answer": "refused",
+    "class": "not_permitted"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "decline_outcome",
+    "request": {
+      "request": "req-decline-es",
+      "order": "ord-1",
+      "effect": {
+        "log": "log-main",
+        "index": 170,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4747474747474747474747474747474747474747474747474747474747474747"
+        }
+      },
+      "decliner": {
+        "party": "operator",
+        "acts": "op-login-2",
+        "role": "operator",
+        "kind": "person"
+      },
+      "declined_with": {
+        "log": "log-main",
+        "index": 176,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+        }
+      },
+      "at": "2026-11-10T09:00:00Z"
+    },
+    "decision": "dec-req-decline-es"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

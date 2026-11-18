@@ -1,0 +1,15 @@
+{
+  "shape": "urn:rutent:core-internal:checkpoint",
+  "log": "log-main",
+  "tick": "2a",
+  "at": "2026-11-10T09:00:00Z",
+  "commitment": {
+    "algorithm": "sha-256",
+    "value": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"
+  },
+  "signature": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+    "value": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"
+  }
+}

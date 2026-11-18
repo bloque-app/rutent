@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rutent_contracts::module_interface::{
@@ -73,6 +74,113 @@ pub const START_DEADLINE: Duration = Duration::from_secs(10);
 /// answer, or take its caller's answer with it.
 pub const MIN_CALL_BUDGET: Duration = Duration::from_secs(1);
 
+/// The time the platform's operation deadlines and a callee's remaining budget run on (`T-013-08`). Whether a
+/// callee is started, and when an operation's process is given up on, are judged on this clock and not on how
+/// long a caller took to come up.
+///
+/// In production it is [`Monotonic`], `Instant`, as it always was. A test hands the platform a [`SteppedClock`],
+/// which moves only when the test steps it.
+pub trait OperationClock: Send + Sync {
+    /// The time now, on this clock.
+    fn now(&self) -> Instant;
+
+    /// Whether this clock runs with the operating system's, so that waiting until `due` is waiting that long. A
+    /// clock that does not is polled by the platform while it waits, so that a step is seen.
+    fn follows_wall_time(&self) -> bool;
+
+    /// The operating system's time a wait that ends at `due`, a time on this clock, and that the platform hands
+    /// outward (a name lookup, a connection) is to end at: `due` itself on a clock that follows it.
+    fn wall_due(&self, due: Instant) -> Instant {
+        due
+    }
+}
+
+/// The operating system's monotonic clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Monotonic;
+
+impl OperationClock for Monotonic {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn follows_wall_time(&self) -> bool {
+        true
+    }
+}
+
+/// A clock that stands still until [`SteppedClock::step`] moves it: for tests of the deadlines, which then never
+/// depend on how long a process took to start.
+#[derive(Debug, Clone)]
+pub struct SteppedClock {
+    start: Instant,
+    stepped: Arc<Mutex<Duration>>,
+    /// Whether what the platform hands outward waits on the operating system's time for what is left on this
+    /// clock, or is not tied to it.
+    outward_on_wall_time: bool,
+}
+
+impl SteppedClock {
+    /// A clock that reads the current time and stays there.
+    pub fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            stepped: Arc::new(Mutex::new(Duration::ZERO)),
+            outward_on_wall_time: false,
+        }
+    }
+
+    /// A clock that stands still, whose deadlines the platform hands outward as the operating system's time left on
+    /// them when it does (a name lookup given up, a peer cut off): for a test of those, which ends by itself at
+    /// the deadline and takes as long as the deadline says, whatever else the machine is doing.
+    pub fn with_outward_waits_on_wall_time() -> Self {
+        Self {
+            outward_on_wall_time: true,
+            ..Self::new()
+        }
+    }
+
+    /// Moves the clock on by `by`; every clone of it moves.
+    pub fn step(&self, by: Duration) {
+        if let Ok(mut stepped) = self.stepped.lock() {
+            *stepped += by;
+        }
+    }
+}
+
+impl Default for SteppedClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OperationClock for SteppedClock {
+    fn now(&self) -> Instant {
+        self.start + self.stepped.lock().map_or(Duration::ZERO, |s| *s)
+    }
+
+    fn follows_wall_time(&self) -> bool {
+        false
+    }
+
+    fn wall_due(&self, due: Instant) -> Instant {
+        let wait = if self.outward_on_wall_time {
+            due.saturating_duration_since(self.now())
+        } else {
+            STEPPED_WAIT_CAP
+        };
+        Instant::now() + wait
+    }
+}
+
+/// How often the platform looks at a clock that doesn't follow wall time while it waits for a process.
+const STEPPED_POLL: Duration = Duration::from_millis(2);
+
+/// The longest an outbound call waits on the operating system's time under a clock that doesn't follow it: the
+/// deadline there ends the operation by a step of the clock, and this only stops a test that never steps from
+/// waiting for ever.
+const STEPPED_WAIT_CAP: Duration = Duration::from_secs(60);
+
 /// One provider's releases and its running processes.
 #[derive(Default)]
 struct Slot {
@@ -91,6 +199,24 @@ struct Slot {
     /// in flight are finishing on (`T-013-06`). Still the one provider's code, so no other provider's process is
     /// shared.
     others: BTreeMap<String, ProviderProcess>,
+    /// Whether the provider's advertisement declares a repeat safe (`REQ-CAT-10`), read from the judge when a
+    /// release was admitted or accepted. `None`, declared or not known, is no safe retry (`T-013-09`).
+    safe_retry: Option<bool>,
+}
+
+/// The scope of an operation the platform was handed, as against one a module called a callee with.
+const TOP_LEVEL: &str = "";
+
+/// An operation of a transaction the platform carried out: whose it was, and its answer if it gave one, which a
+/// provider that declares a repeat safe is answered from (`T-013-09`).
+struct Carried {
+    provider: String,
+    /// The operation as the platform was handed it. A later one of another envelope (deployment, protocol version
+    /// or signing key) is no repeat of it but a foreign replay, which still reaches the module, as ever: the module
+    /// checks the envelope before it answers from what it has recorded (`REQ-PRT-1`), and the platform doesn't
+    /// pre-empt that. Only an identical one is answered from the record.
+    operation: Statement<Operation>,
+    answer: Option<Box<Statement<ResultBody>>>,
 }
 
 /// The operation one provider's module is handling, and what it obtained while handling it.
@@ -356,6 +482,9 @@ pub struct Platform<W: World> {
     stack: Vec<Context>,
     events: Events,
     deadline: Duration,
+    /// The most a process may take to start, on the operating system's time: [`START_DEADLINE`] by default.
+    start_deadline: Duration,
+    clock: Arc<dyn OperationClock>,
     stderrs: Stderrs,
     bounds: Bounds,
     /// What each provider has used inside the top-level operation in flight, which ends with it.
@@ -374,6 +503,10 @@ pub struct Platform<W: World> {
     /// How many operations each provider's version ran: its process took the operation and said something of it,
     /// so an operation refused before reaching a live process doesn't count towards a staging.
     runs: BTreeMap<(String, String), u64>,
+    /// The operation carried out under each transaction, by the scope it was asked in, until its segment ends:
+    /// [`TOP_LEVEL`] for the platform's own, and the callee's name for a call a module made into it. A second one
+    /// in a scope is a repeat, whatever its kind (`INV-8`, `REQ-CAT-10`, `T-013-09`).
+    carried: BTreeMap<String, BTreeMap<String, Carried>>,
     /// The callees' versions whose process ended during a top-level operation, started again at the platform's
     /// next call, after that operation's answer was handed back ([`Platform::restart_ended`]).
     restarts: Vec<(String, String)>,
@@ -401,6 +534,8 @@ impl<W: World> Platform<W> {
             stack: Vec::new(),
             events: Events::default(),
             deadline: OPERATION_DEADLINE,
+            start_deadline: START_DEADLINE,
+            clock: Arc::new(Monotonic),
             stderrs: Stderrs::default(),
             bounds: Bounds::DEFAULT,
             tree: BTreeMap::new(),
@@ -411,6 +546,7 @@ impl<W: World> Platform<W> {
             lifecycle: Lifecycle::default(),
             told: BTreeMap::new(),
             runs: BTreeMap::new(),
+            carried: BTreeMap::new(),
             restarts: Vec::new(),
         })
     }
@@ -446,6 +582,41 @@ impl<W: World> Platform<W> {
     pub fn set_stderr_capacity(&mut self, capacity: usize) {
         if let Ok(mut log) = self.stderrs.lock() {
             log.set_capacity(capacity);
+        }
+    }
+
+    /// Sets the most a provider's process may take to start, [`START_DEADLINE`] by default. A start is the operating
+    /// system's work and cannot be stepped, so a test of something other than start-up on a loaded machine gives
+    /// it room.
+    pub fn set_start_deadline(&mut self, deadline: Duration) {
+        self.start_deadline = deadline;
+    }
+
+    /// Sets the clock the deadlines and a callee's remaining budget run on, [`Monotonic`] by default
+    /// (`T-013-08`).
+    pub fn set_operation_clock(&mut self, clock: Arc<dyn OperationClock>) {
+        self.clock = clock;
+    }
+
+    /// The operating system's time a wait for `due` on the clock ends at: `due` itself on a clock that follows it.
+    fn wall(&self, due: Instant) -> Instant {
+        self.clock.wall_due(due)
+    }
+
+    /// The process's next message, waiting at most until `due` on the clock.
+    fn receive(&self, process: &mut ProviderProcess, due: Instant) -> Received {
+        if self.clock.follows_wall_time() {
+            return process.receive_until(due);
+        }
+        // The clock moves only when stepped: a deadline it has reached has passed, whatever is waiting.
+        loop {
+            if self.clock.now() >= due {
+                return Received::Overdue;
+            }
+            match process.receive_until(Instant::now() + STEPPED_POLL) {
+                Received::Overdue => {}
+                received => return received,
+            }
         }
     }
 
@@ -524,7 +695,7 @@ impl<W: World> Platform<W> {
             &machine,
             [&admitted[0], &admitted[1]],
             &self.stderrs,
-            START_DEADLINE,
+            self.start_deadline,
         )
         .ok()?;
         keep_last(
@@ -766,10 +937,13 @@ impl<W: World> Platform<W> {
                 ) {
                     return reply;
                 }
-                let provider = self.stack.last().expect("a context").provider.clone();
+                let context = self.stack.last().expect("a context");
+                let (provider, transaction) =
+                    (context.provider.clone(), context.transaction.clone());
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Sandboxed,
+                    transaction,
                     key,
                     found: false,
                 });
@@ -799,7 +973,11 @@ impl<W: World> Platform<W> {
                 // Only the shared entries and the handled transaction's own: another transaction's entry is never
                 // asked of the world (`REQ-MDL-10`).
                 let context = self.stack.last().expect("a context");
-                let (provider, serving) = (context.provider.clone(), context.serving.is_some());
+                let (provider, transaction, serving) = (
+                    context.provider.clone(),
+                    context.transaction.clone(),
+                    context.serving.is_some(),
+                );
                 let readable = lifecycle::state_readable(&key, &context.transaction);
                 let value = if serving && readable {
                     self.world.state(&provider, &key)
@@ -816,6 +994,7 @@ impl<W: World> Platform<W> {
                 self.events.state_reads.push(StateEvent {
                     provider,
                     part: PartName::Outside,
+                    transaction,
                     key,
                     found: value.is_some(),
                 });
@@ -1082,7 +1261,7 @@ impl<W: World> Platform<W> {
             return refused();
         };
         let declaration = context.declaration.clone();
-        let due = context.due;
+        let due = self.wall(context.due);
         let secrets = context
             .resolved
             .get(in_flight.as_str())
@@ -1299,7 +1478,7 @@ impl<W: World> Platform<W> {
             // The callee runs inside the caller's deadline: with less than it needs left, it is not started
             // (`REQ-MDL-11`). It is refused as `deadline_too_near`, and the caller's operation goes on.
             let left = self.stack.last().map_or(Duration::ZERO, |c| {
-                c.due.saturating_duration_since(Instant::now())
+                c.due.saturating_duration_since(self.clock.now())
             });
             let handling = self.stack.iter().map(|context| context.provider.as_str());
             if reenters(handling, callee) || !running {
@@ -1319,7 +1498,10 @@ impl<W: World> Platform<W> {
             }
             // On the callee's version in force: the caller's segment is the caller's, and names no version of the
             // callee (`T-013-06`).
-            answered = matches!(self.handle_in(callee, &asked, None), Handled::Answered(_));
+            answered = matches!(
+                self.handle_in(callee, &asked, None, true),
+                Handled::Answered(_)
+            );
         }
         // What the caller is told is what is recorded: a call passed on and not answered is unanswered, never
         // refused, since the callee may have acted on it (`REQ-ORD-1`).
@@ -1394,7 +1576,7 @@ impl<W: World> Platform<W> {
             .unwrap_or_default();
         // A cross-module call's operation ends no later than the caller's reserve before the one that made it, so
         // the caller outlives a callee stopped at its deadline and hears that its call went unanswered.
-        let own = Instant::now() + self.deadline;
+        let own = self.clock.now() + self.deadline;
         let reserve = self.call_reserve();
         let due = self.stack.last().map_or(own, |caller| {
             caller
@@ -1407,14 +1589,16 @@ impl<W: World> Platform<W> {
         let json = serde_json::to_string(operation).unwrap_or_default();
         // What the world knows the operation by: its transaction, or, for one that names none (a verifier's
         // judgement), an identifier of the platform's own, from the operation's digest. The proxy resolves the
-        // statement key only for the operation it was told is being handled.
-        let handled_as = Identifier::new(transaction.clone()).or_else(|| {
-            Identifier::new(format!("rutent:untransacted:{}", sha256(json.as_bytes())))
-        });
+        // statement key only for the operation it was told is being handled. It is also what the operation's own
+        // outside requests name (`Context::transaction`): an outside request names a transaction, so an operation
+        // that names none is asked about by this one, which its module computes from the bytes it was handed
+        // (`untransacted`), and its state, egress and limit records name it too (`T-024-18`).
+        let handled_as = Identifier::new(transaction.clone()).or_else(|| untransacted(&json));
         // The world judges against the release that handles it, which the last one told may not be (`T-013-06`).
         self.tell_running(provider, &version);
         if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
-            self.world.begin_operation(caller, handled_as, due);
+            self.world
+                .begin_operation(caller, handled_as, self.wall(due));
         }
         // The statement key, resolved while the module handles the operation, the proxy's condition for it, and
         // before the module is handed it: a store that can't answer, or a key that isn't the declared one's, ends
@@ -1453,7 +1637,9 @@ impl<W: World> Platform<W> {
             version,
             declaration,
             operation: operation.clone(),
-            transaction,
+            transaction: handled_as
+                .as_ref()
+                .map_or(transaction, |id| id.as_str().to_owned()),
             serving: None,
             resolved: BTreeMap::new(),
             due,
@@ -1466,7 +1652,7 @@ impl<W: World> Platform<W> {
             .send(&ToProvider::Handle { operation: json })
             .is_ok();
         while alive {
-            let received = process.receive_until(due);
+            let received = self.receive(&mut process, due);
             // Anything but the process gone before a word means it took the operation and ran it.
             ran |= !matches!(received, Received::Gone);
             match received {
@@ -1675,6 +1861,17 @@ fn time_of(at: Clock) -> Option<Time> {
     at.rfc3339().and_then(Time::new)
 }
 
+/// What an operation that names no transaction (a verifier's judgement) is known by: `rutent:untransacted:` and the
+/// SHA-256 of the operation's JSON, as the platform hands it to the module. A module computes it from the bytes it
+/// was handed, to name it in an outside request.
+fn untransacted_name(operation_json: &str) -> String {
+    format!("rutent:untransacted:{}", sha256(operation_json.as_bytes()))
+}
+
+fn untransacted(operation_json: &str) -> Option<Identifier> {
+    Identifier::new(untransacted_name(operation_json))
+}
+
 /// The transaction an operation names, if it names one.
 fn transaction_of(operation: &Operation) -> Option<String> {
     serde_json::to_value(operation)
@@ -1692,6 +1889,24 @@ fn asserted_before(next: &AdmissionArtefact, previous: &AdmissionArtefact) -> bo
         (Some(next), Some(previous)) => next < previous,
         _ => true,
     }
+}
+
+/// The kinds that only ask: they move nothing, so asking one again, under the same transaction, is no repeat.
+const READ_ONLY_KINDS: [&str; 3] = ["balance_verification", "judgement", "holding_balance"];
+
+/// The transaction an operation is a repeat under, if the platform carries out one operation of it only once: one
+/// that names a transaction, is not a dry run and not a kind that only asks. A transaction's identifier is one
+/// operation's (`INV-8`), so the kind doesn't matter; any kind, one added later too, counts (`T-013-09`).
+fn repeat_key(operation: &Operation) -> Option<String> {
+    let value = serde_json::to_value(operation).ok()?;
+    if value["dry_run"].as_bool() == Some(true) {
+        return None;
+    }
+    let kind = value["kind"].as_str()?;
+    if READ_ONLY_KINDS.contains(&kind) {
+        return None;
+    }
+    Some(value["transaction"].as_str()?.to_owned())
 }
 
 fn result_matches(result: &ResultBody, operation: &Operation) -> bool {
@@ -1938,6 +2153,7 @@ impl<W: World> Platform<W> {
             });
         }
         let slot = self.providers.entry(provider.clone()).or_default();
+        slot.safe_retry = judge.safe_retry(&provider);
         if fresh {
             slot.pending = Some((artefact.clone(), machine, received_assertion.to_vec()));
         } else {
@@ -1975,6 +2191,7 @@ impl<W: World> Platform<W> {
             return None;
         }
         let slot = self.providers.get_mut(provider)?;
+        slot.safe_retry = judge.safe_retry(provider);
         let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
         artefact.acceptance.accepted = Some(Accepted {
@@ -2047,11 +2264,14 @@ impl<W: World> Platform<W> {
     /// It runs on the version its segment runs on, if a segment began for its transaction
     /// ([`Platform::begin_segment`]), and on the version in force otherwise. It is refused as `DuplicateTransaction`
     /// where its transaction's segment is another provider's or has ended, and as `VersionExploited` where its
-    /// segment's version was declared exploited (`T-013-06`).
+    /// segment's version was declared exploited (`T-013-06`). A second operation of a kind under a transaction it
+    /// carried out is refused as `DuplicateTransaction`, the module not run, unless the provider declares a repeat
+    /// safe, and then it is answered from the platform's record: the first answer, not a second run. Where the
+    /// platform can't tell whether the provider declared it, it is refused (`T-013-09`; `INV-8`, `REQ-CAT-10`).
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         self.restart_ended();
         let transaction = transaction_of(&operation.statement);
-        self.handle_in(provider, operation, transaction.as_deref())
+        self.handle_in(provider, operation, transaction.as_deref(), false)
     }
 
     /// [`Platform::handle`], in the segment of `transaction` if one holds it, and on the version in force for
@@ -2061,6 +2281,7 @@ impl<W: World> Platform<W> {
         provider: &str,
         operation: &Statement<Operation>,
         transaction: Option<&str>,
+        called: bool,
     ) -> Handled {
         *self
             .operations_received
@@ -2070,6 +2291,16 @@ impl<W: World> Platform<W> {
             Ok(version) => version,
             Err(refusal) => return Handled::Refused(refusal),
         };
+        // A callee's record has the callee's own scope, so a transaction a module asks another provider about is no
+        // collision with the transaction's own (`T-013-09`).
+        let scope = if called { provider } else { TOP_LEVEL };
+        let repeat = repeat_key(&operation.statement).map(|t| (t, scope.to_owned()));
+        if let Some((transaction, scope)) = &repeat
+            && let Some(answered_or_refused) =
+                self.repeated(provider, transaction, scope, operation)
+        {
+            return answered_or_refused;
+        }
         let Some(declaration) = self.declaration_of(provider, &version) else {
             return Handled::Refused(PlatformRefusal::Unavailable);
         };
@@ -2081,8 +2312,78 @@ impl<W: World> Platform<W> {
         if self.runs.get(&key).copied().unwrap_or_default() > before {
             self.lifecycle
                 .observe(provider, &version, matches!(handled, Handled::Answered(_)));
+            // The module ran: whatever it came to, the operation was carried out (`T-013-09`). A first outcome
+            // unknown is the case a repeat is least safe in.
+            if let Some((transaction, scope)) = repeat {
+                let answer = match &handled {
+                    Handled::Answered(result) => Some(result.clone()),
+                    Handled::Refused(_) => None,
+                };
+                let carried = self.carried.entry(transaction).or_default();
+                // The first answer stays the record, whoever asks again.
+                if carried
+                    .get(&scope)
+                    .is_none_or(|first| first.answer.is_none())
+                {
+                    carried.insert(
+                        scope,
+                        Carried {
+                            provider: provider.to_owned(),
+                            operation: operation.clone(),
+                            answer,
+                        },
+                    );
+                }
+            }
         }
         handled
+    }
+
+    /// What a repeat of `operation`, an operation of `transaction` asked in `scope`, gets, if it is one: nothing
+    /// where the platform carried none out under that transaction in that scope. Otherwise the platform answers
+    /// it, the module never run: from its record where the provider declares a repeat safe and the operation is the
+    /// first one, and refused as `DuplicateTransaction` where it doesn't declare it, where it declares nothing,
+    /// where the platform can't tell, where the first was another provider's, and whatever the kind or the
+    /// envelope: the platform verifies no signature, so a changed key or protocol version is a retry (`INV-8`,
+    /// `REQ-CAT-10`). Only where the provider declares a repeat safe does the module run again: where its first
+    /// run gave no answer, and for an operation of another envelope or other terms, which it judges itself, as it
+    /// does a foreign replay (`REQ-PRT-1`), which the record must not answer.
+    fn repeated(
+        &self,
+        provider: &str,
+        transaction: &str,
+        scope: &str,
+        operation: &Statement<Operation>,
+    ) -> Option<Handled> {
+        let first = self.carried.get(transaction)?.get(scope)?;
+        let safe = self.providers.get(provider).and_then(|s| s.safe_retry) == Some(true);
+        if first.provider != provider || !safe {
+            return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
+        }
+        // A callee that declares a repeat safe runs the call again: each call is an operation of its own, within its
+        // budgets, and the declaration says it may.
+        if scope != TOP_LEVEL {
+            return None;
+        }
+        let (before, now) = (&first.operation, operation);
+        if before.deployment != now.deployment
+            || before.protocol_version != now.protocol_version
+            || before.signature.key != now.signature.key
+            || before.statement != now.statement
+        {
+            return None;
+        }
+        first.answer.clone().map(Handled::Answered)
+    }
+
+    /// How many operations the provider's module ran, on any of its versions: its process took the operation and
+    /// said something of it. An operation the platform refused or answered from its record is not one.
+    pub fn operations_run(&self, provider: &str) -> u64 {
+        self.runs
+            .iter()
+            .filter(|((p, _), _)| p == provider)
+            .map(|(_, n)| n)
+            .sum()
     }
 
     /// [`Platform::handle`] on `version`, whose declaration is `declaration`.
@@ -2207,6 +2508,7 @@ impl<W: World> Platform<W> {
     pub fn end_segment(&mut self, transaction: &str) -> Option<SegmentRecord> {
         self.restart_ended();
         let record = self.lifecycle.end_segment(transaction)?;
+        self.carried.remove(transaction);
         self.reconcile(&record.provider);
         Some(record)
     }

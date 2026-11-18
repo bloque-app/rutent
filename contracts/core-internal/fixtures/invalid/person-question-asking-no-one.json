@@ -1,0 +1,21 @@
+{
+  "request": "req-600",
+  "asker": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "person": "person-ref-8",
+  "order": "ord-17",
+  "authority": {
+    "kind": "person",
+    "consent": {
+      "algorithm": "sha-256",
+      "value": "5151515151515151515151515151515151515151515151515151515151515151"
+    }
+  },
+  "ask": [],
+  "asked_before": [],
+  "at": "2026-11-10T09:00:00Z"
+}

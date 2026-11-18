@@ -4,13 +4,16 @@
 //! followed with the actual amount: each segment is evaluated on what the one before delivered, after its fees and
 //! in its own unit, so its band and its price's levels are judged on that amount (`REQ-QTE-12`). Each operation's
 //! terms come from a usable accepted answer of its provider at that amount where the snapshot holds one, and else
-//! from its advertised price, so the route's price is its segments' prices composed (`REQ-QTE-8`).
+//! from its advertised price, so the route's price is its segments' prices composed (`REQ-QTE-8`). Either way an
+//! operation states what arrives: an answer under a tuple that reports `gross` includes its charge in what a
+//! withdrawal, deposit or transfer gives out, so the operation states that less the charge (`REQ-CAT-11`,
+//! `T-011-07`), and an advertised price takes its fee out before anything is given out.
 
 use std::collections::BTreeMap;
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Fee, ReserveMovementOutcome, ResultBody, TransferOutcome,
+    ConversionOutcome, Fee, ReserveMovementOutcome, ResultBody, TransferOutcome, VoidedBy,
 };
 use rutent_contracts::router_api::{
     Amount, CatalogueSnapshot, Endpoint, Figure, FigureValue, NonEmpty, Operation, PolicyBounds,
@@ -223,6 +226,36 @@ impl<'a> Search<'a> {
         figure.is_within_validity() && !self.is_void(figure) && in_time
     }
 
+    /// A usable fresh quote about `operation`'s tuple, accepted for another amount than the one entering it and
+    /// voided by `amount_changes`: the quote the choice round names when it drops the operation's candidate as
+    /// `quote_voided` (`REQ-QTE-1`). The first in the snapshot's order.
+    pub(crate) fn voided_quote(&self, operation: &Operation) -> Option<&'a Figure> {
+        let asked = operation.amount_in.amount().as_str();
+        self.statements
+            .get(operation.figures.first().as_str())?
+            .iter()
+            .copied()
+            .find(|f| {
+                let FigureValue::FreshQuote { quote, .. } = &f.value else {
+                    return false;
+                };
+                let voided_by = match &quote.statement {
+                    ResultBody::Transfer(r) => match &r.outcome {
+                        TransferOutcome::DryRunAccepted(q) => &q.voided_by,
+                        _ => return false,
+                    },
+                    ResultBody::Conversion(r) => match &r.outcome {
+                        ConversionOutcome::DryRunAccepted(q) => &q.voided_by,
+                        _ => return false,
+                    },
+                    _ => return false,
+                };
+                self.is_usable(f)
+                    && voided_by.contains(&VoidedBy::AmountChanges)
+                    && accepted(&quote.statement).is_some_and(|a| a.amount_in != asked)
+            })
+    }
+
     /// Every statement about a segment's tuple that bears on `asked` entering it: each fresh quote and dry run
     /// for that amount, and each eligibility judgement.
     fn statements_at(&self, segment: &Segment<'_>, asked: &str) -> Vec<&'a Figure> {
@@ -252,21 +285,33 @@ impl<'a> Search<'a> {
         let asked = amount_in.amount().as_str();
         let statements = self.statements_at(segment, asked);
         // A usable answer at this amount binds: the provider's own terms, in the segment's input asset and at
-        // most what enters. A figure past its validity binds nothing (`REQ-QTE-4`).
-        let confirmed = statements
+        // most what enters. A figure past its validity binds nothing (`REQ-QTE-4`). The operation states what
+        // arrives, as router-api's `Operation::stated_out` reads the answer: under a tuple that reports `gross`, a
+        // withdrawal's, deposit's or transfer's `amount_out` less the charge it includes, in its out unit; else the
+        // answer's `amount_out` as it stands (`REQ-CAT-11`). So the next segment, the ranking, the floor, the
+        // ceilings and the rate-cycle check all read what arrives. A gross answer whose charge is above what it
+        // gives out still binds, since the contract has every usable answer cited, but nothing arrives by it and it
+        // confirms nothing: the operation states its fee and `0` out, so its path is dropped as arriving with
+        // nothing, or as delivering nothing short of the destination.
+        let bound = statements
             .iter()
             .filter(|f| self.is_usable(f))
             .find_map(|f| {
                 let answer = answer_of(f)?;
                 let fee = whole(&answer.fee.amount)?;
                 (answer.fee.asset == segment.from.asset.id && &fee <= amount).then_some(())?;
-                Some((answer.fee.clone(), Amount::new(answer.amount_out)?))
+                Some(match Self::stated_out(segment, &amount_in, &answer) {
+                    Some(out) => (answer.fee.clone(), Amount::new(out)?, true),
+                    None => (answer.fee.clone(), Amount::zero(), false),
+                })
             });
         let fee_of = |amount: String| Fee {
             asset: segment.from.asset.id.clone(),
             amount,
+            billed_separately: None,
         };
-        let (fee, amount_out, is_confirmed, unstatable) = match (confirmed, segment.price) {
+        let is_bound = bound.is_some() && segment.price.is_some();
+        let (fee, amount_out, is_confirmed, unstatable) = match (bound, segment.price) {
             // An operation cites one price: with none, it can't be stated, whatever answers there are.
             (_, None) => (
                 fee_of("0".to_owned()),
@@ -274,7 +319,7 @@ impl<'a> Search<'a> {
                 false,
                 Some(Cut::NoPrice),
             ),
-            (Some((fee, out)), Some(_)) => (fee, out, true, None),
+            (Some((fee, out, confirms)), Some(_)) => (fee, out, confirms, None),
             (None, Some((_, formula))) => match evaluate(
                 formula,
                 segment.rate,
@@ -297,14 +342,14 @@ impl<'a> Search<'a> {
             },
         };
         // Cite every usable statement, as the contract asks. One that is past its validity or void is cited only
-        // where no usable answer covers the operation: there the operation stands on it and is dropped for it. An
+        // where no usable answer binds the operation: there the operation stands on it and is dropped for it. An
         // operation that can't be stated is dropped for that, so it cites the usable ones only.
         let mut figures = vec![segment.tuple.figure_id.clone()];
         figures.extend(segment.price.map(|(price, _)| price.figure_id.clone()));
         figures.extend(
             statements
                 .iter()
-                .filter(|f| (!is_confirmed && unstatable.is_none()) || self.is_usable(f))
+                .filter(|f| (!is_bound && unstatable.is_none()) || self.is_usable(f))
                 .map(|f| f.figure_id.clone()),
         );
         Some(Step {
@@ -323,6 +368,28 @@ impl<'a> Search<'a> {
             confirmed: is_confirmed,
             unstatable,
         })
+    }
+
+    /// What an operation through `segment` on `amount_in` states as its `amount_out` for `answer`: router-api's
+    /// [`Operation::stated_out`], so the router states exactly what the contract confirms. `None` where the answer's
+    /// charge is above the amount it gives out under `gross`, which then confirms nothing.
+    fn stated_out(
+        segment: &Segment<'_>,
+        amount_in: &PositiveAmount,
+        answer: &Answer<'_>,
+    ) -> Option<String> {
+        let operation = Operation {
+            kind: segment.kind,
+            provider: segment.provider.clone(),
+            from: segment.from.clone(),
+            to: segment.to.clone(),
+            amount_in: amount_in.clone(),
+            fee: answer.fee.clone(),
+            amount_out: Amount::zero(),
+            figures: NonEmpty::new(vec![segment.tuple.figure_id.clone()])?,
+            calls: Vec::new(),
+        };
+        operation.stated_out(segment.tuple, answer.amount_out, answer.fee)
     }
 
     /// Whether an unconfirmed step's net is above its price's last level, so its price serves it nothing.

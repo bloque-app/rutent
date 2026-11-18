@@ -1,0 +1,33 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "what": {
+    "call": "check_read",
+    "check": {
+      "request": "req-402",
+      "reader": {
+        "party": "bridge-pay",
+        "acts": "bridge-pay",
+        "role": "provider",
+        "kind": "component"
+      },
+      "reads": {
+        "kind": "order",
+        "order": "ord-1"
+      },
+      "at": "2026-11-10T09:00:00Z"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "permitted"
+  }
+}

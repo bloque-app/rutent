@@ -19,9 +19,11 @@ mod tls;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use rutent_prov::module::platform::{OperationClock, SteppedClock};
 
 use rutent_contracts::module_interface::{
     Address, CallOutcome, Nothing, OutboundCallRecord, RefusalReason, Refused, Scheme,
@@ -1185,9 +1187,37 @@ fn credentials_never_return_to_the_first_host_after_a_redirect_away() {
     assert_eq!(dials[2].name, "api.acme.example", "back at the first host");
 }
 
-/// A resolver that hangs on every lookup until released, for the threaded resolver's tests.
+/// A resolver that hangs on every lookup until released, for the threaded resolver's tests. It counts the lookups
+/// it was asked.
 #[derive(Default)]
-struct Hanging(Arc<(Mutex<bool>, std::sync::Condvar)>);
+struct Hanging {
+    gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    asked: Arc<AtomicUsize>,
+}
+
+/// Steps `clock` by a second each time `asked` has grown, until the returned flag is set: the lookups' deadlines
+/// are reached by the clock, never by waiting for them. It is joined by the test once the flag is set.
+fn step_whenever_asked(
+    clock: &SteppedClock,
+    asked: &Arc<AtomicUsize>,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let done = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let (clock, asked, done) = (clock.clone(), Arc::clone(asked), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut seen = 0;
+            while !done.load(Ordering::SeqCst) {
+                if asked.load(Ordering::SeqCst) > seen {
+                    seen += 1;
+                    clock.step(Duration::from_secs(1));
+                } else {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        })
+    };
+    (done, thread)
+}
 
 impl rutent_prov::egress::NameResolver for Hanging {
     fn resolve(
@@ -1195,7 +1225,8 @@ impl rutent_prov::egress::NameResolver for Hanging {
         _: &rutent_contracts::module_interface::Host,
         _: std::num::NonZeroU16,
     ) -> Vec<IpAddr> {
-        let (released, wake) = &*self.0;
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        let (released, wake) = &*self.gate;
         let mut done = released.lock().unwrap();
         let started = std::time::Instant::now();
         while !*done && started.elapsed() < Duration::from_secs(20) {
@@ -1211,13 +1242,22 @@ impl rutent_prov::egress::NameResolver for Hanging {
 /// A lookup that never answers is given up at its deadline and its thread abandoned; abandoned lookups are bounded
 /// per provider, so a provider at its cap is refused a new one at once, and recorded as `limit_reached`, while
 /// another provider's lookups go on. Released, the abandoned threads end and give their places back.
+///
+/// The deadlines are on a stepped clock (`T-014-06`): it stands still, and is stepped past a lookup's deadline once
+/// the resolver was asked. A refusal at the cap is not waited for: were it, the clock would be stepped and the
+/// lookup would end as a passed deadline instead.
 // verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
 #[test]
 fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
     use rutent_prov::egress::{Lookup, LookupRefused, NameResolver, ThreadedResolver};
 
-    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-    let resolver = ThreadedResolver::new(Hanging(gate.clone())).with_cap(1);
+    let clock = SteppedClock::new();
+    let hanging = Hanging::default();
+    let (gate, asked) = (hanging.gate.clone(), hanging.asked.clone());
+    let resolver = ThreadedResolver::new(hanging)
+        .with_cap(1)
+        .with_clock(Arc::new(clock.clone()));
+    let (stepping, stepper) = step_whenever_asked(&clock, &asked);
     let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
     let port = std::num::NonZeroU16::new(443).unwrap();
     let (acme, other) = (
@@ -1228,18 +1268,12 @@ fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
         host: &host,
         port,
         provider,
-        due: Some(std::time::Instant::now() + Duration::from_millis(300)),
+        due: Some(clock.now() + Duration::from_millis(300)),
     };
 
-    let started = std::time::Instant::now();
     assert_eq!(
         resolver.resolve_for(&lookup(&acme)),
         Err(LookupRefused::DeadlinePassed)
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "{:?}",
-        started.elapsed()
     );
     assert_eq!(
         resolver.in_flight(&acme),
@@ -1247,12 +1281,10 @@ fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
         "the abandoned lookup still counts"
     );
 
-    let started = std::time::Instant::now();
     assert_eq!(
         resolver.resolve_for(&lookup(&acme)),
         Err(LookupRefused::TooManyInFlight)
     );
-    assert!(started.elapsed() < Duration::from_millis(100));
     assert_eq!(
         resolver.resolve_for(&lookup(&other)),
         Err(LookupRefused::DeadlinePassed),
@@ -1263,7 +1295,7 @@ fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
     let connector = ScriptedConnector::default();
     let flight = Flight::payout("tx-cap");
     let mut call = flight.call();
-    call.due = Some(std::time::Instant::now() + Duration::from_millis(300));
+    call.due = Some(clock.now() + Duration::from_millis(300));
     let mut log = Vec::new();
     let outcome = Egress::new(&resolver, &connector).send(
         &call,
@@ -1276,17 +1308,15 @@ fn lookups_past_the_deadline_are_abandoned_and_bounded_per_provider() {
     assert!(connector.dials().is_empty());
     valid(&log[0]);
 
-    // Released, the abandoned lookups end and give their places back.
+    // Released, the abandoned lookups end and give their places back. The wait is for the threads, not a
+    // deadline; a thread that never ended would hold the test, which is how it would fail.
     *gate.0.lock().unwrap() = true;
     gate.1.notify_all();
-    let started = std::time::Instant::now();
     while resolver.in_flight(&acme) + resolver.in_flight(&other) > 0 {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the threads didn't end"
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(5));
     }
+    stepping.store(true, Ordering::SeqCst);
+    stepper.join().unwrap();
 }
 
 /// A resolver that panics on every lookup.
@@ -1309,7 +1339,10 @@ impl rutent_prov::egress::NameResolver for Panicking {
 fn a_lookup_whose_resolver_panics_gives_its_place_back() {
     use rutent_prov::egress::{Lookup, NameResolver, ThreadedResolver};
 
-    let resolver = ThreadedResolver::new(Panicking).with_cap(1);
+    let clock = SteppedClock::new();
+    let resolver = ThreadedResolver::new(Panicking)
+        .with_cap(1)
+        .with_clock(Arc::new(clock.clone()));
     let host = rutent_contracts::module_interface::Host::new("api.acme.example").unwrap();
     let acme = rutent_contracts::module_interface::Identifier::new(PROVIDER).unwrap();
     for attempt in 0..3 {
@@ -1317,27 +1350,26 @@ fn a_lookup_whose_resolver_panics_gives_its_place_back() {
             host: &host,
             port: std::num::NonZeroU16::new(443).unwrap(),
             provider: &acme,
-            due: Some(std::time::Instant::now() + Duration::from_secs(2)),
+            due: Some(clock.now() + Duration::from_secs(2)),
         });
         assert_eq!(answer, Ok(Vec::new()), "attempt {attempt}");
-        let started = std::time::Instant::now();
+        // The place is given back as the thread ends; the wait is for that thread, not a deadline, and a slot
+        // that stayed taken would hold the test, which is how it would fail.
         while resolver.in_flight(&acme) > 0 {
-            assert!(
-                started.elapsed() < Duration::from_secs(2),
-                "attempt {attempt}: the slot stayed taken"
-            );
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
 
 /// A peer that stalls the TLS handshake, or stops reading while the request is written, is cut off at the
-/// operation's deadline (`REQ-MDL-11`), whatever each step's own timeout: before the handshake finished nothing was
+/// operation's deadline (`REQ-MDL-11`), whatever each step's own timeout, which here is 10 s: the connector's clock
+/// is stepped past the deadline once the peer holds the connection (`T-014-06`), and nothing reads real time. Before the handshake finished nothing was
 /// sent, and the call is unknown with no address; after it, the request may have reached the peer, and the call is
 /// unknown with the address connected to.
 // verifies: REQ-MDL-11, REQ-MDL-7, REQ-MDL-8
 #[test]
 fn peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline() {
+    let clock = SteppedClock::new();
     let pki = tls::Pki::new();
     let silent = tls::Silent::listen();
     let deaf = tls::TlsServer::stalling_after_handshake(pki.server_for("api.acme.example"));
@@ -1347,34 +1379,49 @@ fn peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline()
     // Each step may take 10 s; the deadline is what cuts.
     let connector = rutent_prov::egress::TlsConnector::with_dialer(&pki.roots_pem(), dialer)
         .expect("a connector")
-        .with_timeout(Duration::from_secs(10));
+        .with_timeout(Duration::from_secs(10))
+        .with_clock(Arc::new(clock.clone()));
     let flight = Flight::payout("tx-stall");
     // A body far larger than the sockets' buffers, so its write blocks once the peer stops reading.
     let large =
         Request::new(Method::Post, "/p", Vec::new(), vec![b'x'; 16 << 20]).expect("a request");
 
-    for (address, request, connected) in [
-        ("93.184.216.38", post("/p"), false),
-        ("93.184.216.39", large, true),
+    for (address, request, connected, reached) in [
+        (
+            "93.184.216.38",
+            post("/p"),
+            false,
+            &(|| silent.accepted() >= 1) as &(dyn Fn() -> bool + Sync),
+        ),
+        (
+            "93.184.216.39",
+            large,
+            true,
+            &(|| deaf.handshakes() >= 1) as &(dyn Fn() -> bool + Sync),
+        ),
     ] {
         let resolver = TableResolver::default();
         resolver.then("api.acme.example", &[address]);
         let mut call = flight.call();
-        let started = std::time::Instant::now();
-        call.due = Some(started + Duration::from_millis(800));
+        call.due = Some(clock.now() + Duration::from_millis(800));
         let mut log = Vec::new();
-        let outcome = Egress::new(&resolver, &connector).send(
-            &call,
-            https("api.acme.example"),
-            request,
-            &mut log,
-        );
-        let took = started.elapsed();
+        // The clock stands still while the peer stalls, then is stepped past the deadline once the peer holds
+        // the connection (accepted, or its handshake done): the exchange is cut off wherever it is.
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !reached() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                clock.step(Duration::from_secs(1));
+            });
+            Egress::new(&resolver, &connector).send(
+                &call,
+                https("api.acme.example"),
+                request,
+                &mut log,
+            )
+        });
 
-        assert!(
-            took < Duration::from_secs(2),
-            "{address}: held for {took:?}"
-        );
         let expected = if connected {
             Outcome::NoAnswer
         } else {
@@ -1395,4 +1442,7 @@ fn peer_stalling_the_handshake_or_the_request_write_is_cut_off_at_the_deadline()
         valid(&log[0]);
     }
     assert_eq!((silent.accepted(), deaf.handshakes()), (1, 1));
+    // Each peer still held its connection when the call was cut off: it was the deadline that ended it, not the
+    // peer ending the stall (which a connector that ignored the deadline would have waited for).
+    assert_eq!((silent.let_go(), deaf.stalls_ended()), (0, 0));
 }

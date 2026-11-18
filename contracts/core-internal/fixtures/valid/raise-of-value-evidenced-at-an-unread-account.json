@@ -1,0 +1,19 @@
+{
+  "raise": "raise-8",
+  "difference": {
+    "kind": "holding_not_comparable",
+    "account": "hold-9",
+    "reason": "no_reading"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 80,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "8181818181818181818181818181818181818181818181818181818181818181"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

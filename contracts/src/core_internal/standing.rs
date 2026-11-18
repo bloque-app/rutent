@@ -1,0 +1,302 @@
+//! A part's standing as this log's inputs show it: the one reading the citation table's part rows share, so each row
+//! reads where a part stands the same way (`T-020-01`, `T-020-10`, `T-020-11`).
+//!
+//! The reading is the state machine's own: each of the order's inputs goes, in the log's order, through the
+//! state-machine contract's one transition ([`rules::transition`](crate::state_machine::rules::transition)), the
+//! very function `CMP-STM` steps by. An input those rules don't take (one `CMP-STM` would answer not applicable)
+//! is one the log refuses ([`state_machine_takes`]), so an admitted log holds only inputs the state machine took,
+//! and what a row reads of a part is what the state machine holds. The differential oracle in `CMP-STM`'s tests
+//! holds the two to each other. A stuck resolution's move counts once its result is `done`, which the state machine
+//! doesn't see.
+
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+
+use super::relations::History;
+use super::types::{Action, Entry, Outcome as EntryOutcome, VerifiedEntry, What};
+use crate::state_machine::rules::open;
+use crate::state_machine::{
+    Observed, OperationKind, Order, OrderState, Outcome, Part, RecordedInput, SegmentState,
+};
+
+/// Where a part stands after a history.
+pub(crate) struct Standing {
+    /// The part, as the state machine holds it.
+    pub part: Part,
+    /// The index in the history of the entry that put the part where it stands: the input that moved it to its
+    /// state, or the `done` result of its stuck resolution.
+    pub since: usize,
+    /// Whether a stuck resolution's move for the part has a `done` result: the part is resolved.
+    pub resolved: bool,
+    /// Every segment the part ever had, retired ones included, with its kind and its last state.
+    pub segments: BTreeMap<String, (OperationKind, SegmentState)>,
+}
+
+impl Standing {
+    /// Whether the part has ended (`REQ-STM-6`), or was resolved while stuck, its value moved on its resolution.
+    pub fn ended(&self) -> bool {
+        self.resolved || crate::state_machine::rules::is_ended(self.part.state)
+    }
+
+    /// Whether the part is held: waiting for the customer or stuck, where no provider starts on it.
+    pub fn held(&self) -> bool {
+        matches!(
+            self.part.state,
+            OrderState::WaitingForCustomer | OrderState::Stuck
+        )
+    }
+
+    /// Whether `segment` failed with its reversal owed: a withdrawal, a route or an exchange whose value may sit
+    /// with its provider until the reversal completes, a dispute (`INV-3`, `REQ-ORD-3`).
+    pub fn reversal_owed(&self, segment: &str) -> bool {
+        matches!(
+            self.segments.get(segment),
+            Some((kind, SegmentState::FailedReversalOwed)) if *kind != OperationKind::Deposit
+        )
+    }
+
+    /// Whether the part's value has left `segment`: it settled, was reversed, or is a deposit that failed, which
+    /// leaves the value where it was (`INV-2`, `REQ-ORD-43`).
+    pub fn released(&self, segment: &str) -> bool {
+        matches!(
+            self.segments.get(segment),
+            Some((_, SegmentState::Settled | SegmentState::ReversalComplete))
+                | Some((OperationKind::Deposit, SegmentState::FailedReversalOwed))
+        )
+    }
+}
+
+fn verified(entry: &Entry) -> Option<&VerifiedEntry> {
+    match entry {
+        Entry::Verified(v) => Some(v),
+        Entry::Stated(_) => None,
+    }
+}
+
+fn input(entry: &VerifiedEntry) -> Option<&RecordedInput> {
+    match &entry.what {
+        What::Input { input } => Some(input),
+        _ => None,
+    }
+}
+
+/// One transition: `input` on `order`, by the state-machine contract's own `rules::transition`, as `CMP-STM` steps.
+pub(crate) fn step(order: &Order, input: &RecordedInput) -> Order {
+    crate::state_machine::rules::transition(order, input)
+}
+
+/// Whether the state machine takes `outcome`: it applied the input, or recorded it late or as a repeat.
+fn taken(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Applied {} | Outcome::Late {} | Outcome::Repeat {}
+    )
+}
+
+/// The order `order` after the inputs of `history` the state machine took, with the index of each entry that
+/// changed it, or `None` before its route is chosen.
+fn order_after(order: &str, history: &History) -> Option<Order> {
+    let mut current: Option<Order> = None;
+    for (_, entry) in history {
+        let Some(input) = verified(entry).and_then(input) else {
+            continue;
+        };
+        if input.subject.order.as_str() != order {
+            continue;
+        }
+        current = match current {
+            None => open(input),
+            Some(state) => {
+                let next = step(&state, input);
+                Some(if taken(&next.last_input.outcome) {
+                    next
+                } else {
+                    state
+                })
+            }
+        };
+    }
+    current
+}
+
+/// The input an entry records, and whether the log took it: an `input`'s, taken, or an `input_not_taken`'s, kept as
+/// refused. Both hold their record id (the host recorded them).
+fn recorded(entry: &Entry) -> Option<(&RecordedInput, bool)> {
+    match verified(entry).map(|v| &v.what) {
+        Some(What::Input { input }) => Some((input, true)),
+        Some(What::InputNotTaken { input, .. }) => Some((input, false)),
+        _ => None,
+    }
+}
+
+/// Why `input` isn't taken after `history`, or `None` where it is: the host's refusal of a reused record id, or the
+/// state machine's not-applicable reason.
+pub(crate) fn not_taken(
+    history: &History,
+    input: &RecordedInput,
+) -> Option<super::types::NotTaken> {
+    if state_machine_takes(history, input) {
+        return None;
+    }
+    let reused = history.iter().any(|(_, e)| {
+        recorded(e)
+            .is_some_and(|(earlier, _)| earlier.record_id == input.record_id && earlier != input)
+    });
+    if reused {
+        return Some(super::types::NotTaken::RecordIdReused {});
+    }
+    // The same input as one refused before: the host hands back the refusal it recorded (the host contract's
+    // exactly-once), so only an identical trace follows it.
+    let refusal = history
+        .iter()
+        .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::InputNotTaken {
+                input: earlier,
+                reason,
+            }) if earlier == input => Some(*reason),
+            _ => None,
+        });
+    if refusal.is_some() {
+        return refusal;
+    }
+    match order_after(input.subject.order.as_str(), history) {
+        Some(order) => match step(&order, input).last_input.outcome {
+            Outcome::NotApplicable { reason } => {
+                Some(super::types::NotTaken::NotApplicable { reason })
+            }
+            _ => Some(super::types::NotTaken::NotApplicable {
+                reason: crate::state_machine::NotApplicableReason::NotFromThisState,
+            }),
+        },
+        // A route that opens no valid order.
+        None => Some(super::types::NotTaken::NotApplicable {
+            reason: crate::state_machine::NotApplicableReason::NotFromThisState,
+        }),
+    }
+}
+
+/// Whether the state machine takes `input` after `history`: the log admits a state-machine input only where it
+/// does (`input-is-one-the-state-machine-takes`). An input before its order's route is recorded with no state, as
+/// the host contract records it, and taken; a `route_chosen` is taken where it opens a valid order.
+pub fn state_machine_takes(history: &History, input: &RecordedInput) -> bool {
+    // One record id names one content, in the whole log (the host contract's exactly-once, `RecordIdReused`), a
+    // refused input's kept in `input_not_taken` too: an input under a record id an earlier taken input holds is that
+    // input sent again, or refused; under a refused input's, it is never taken, the same input again included,
+    // since the host hands back the refusal it recorded (the host contract's README).
+    if let Some((earlier, taken)) = history
+        .iter()
+        .filter_map(|(_, e)| recorded(e))
+        .find(|(earlier, _)| earlier.record_id == input.record_id)
+    {
+        return taken && earlier == input;
+    }
+    match order_after(input.subject.order.as_str(), history) {
+        None => !matches!(input.observed, Observed::RouteChosen { .. }) || open(input).is_some(),
+        Some(order) => match step(&order, input).last_input.outcome {
+            // A repeat is the same input sent again: another input under a used record id is the host contract's
+            // refusal, never a repeat.
+            Outcome::Repeat {} => history.iter().any(|(_, e)| {
+                matches!(verified(e).map(|v| &v.what), Some(What::Input { input: earlier })
+                    if earlier.record_id == input.record_id && earlier == input)
+            }),
+            outcome => taken(&outcome),
+        },
+    }
+}
+
+/// The part of `order` a stuck decision of `history` names, by the request and decision `carries` names.
+pub(crate) fn decided_part<'a>(
+    order: &str,
+    carries: &super::types::Decided,
+    history: &'a History,
+) -> Option<&'a str> {
+    history.iter().find_map(|(_, e)| match &verified(e)?.what {
+        What::StuckDecide { request, decision }
+            if request.order.as_str() == order
+                && request.request == carries.request
+                && *decision == carries.decision =>
+        {
+            Some(request.part.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// Whether `entry` is the `done` result of a stuck resolution's move for `part` of `order`.
+fn resolves(entry: &VerifiedEntry, order: &str, part: &str, history: &History) -> bool {
+    let (What::Result { effect }, EntryOutcome::Done {}) = (&entry.what, &entry.outcome) else {
+        return false;
+    };
+    history.iter().any(|(r, e)| {
+        r == effect
+            && verified(e).is_some_and(|v| match &v.what {
+                What::Effect {
+                    action:
+                        Action::ResolveStuck {
+                            order: o,
+                            carries_out,
+                            ..
+                        },
+                    ..
+                } => o.as_str() == order && decided_part(order, carries_out, history) == Some(part),
+                _ => false,
+            })
+    })
+}
+
+/// Where `part` of `order` stands after `history`, or `None` if no `route_chosen` of the order planned it.
+pub(crate) fn standing(order: &str, part: &str, history: &History) -> Option<Standing> {
+    let mut current: Option<Order> = None;
+    let mut standing: Option<Standing> = None;
+    for (index, (_, entry)) in history.iter().enumerate() {
+        let Some(entry) = verified(entry) else {
+            continue;
+        };
+        let Some(input) = input(entry) else {
+            if let Some(s) = &mut standing
+                && !s.resolved
+                && resolves(entry, order, part, history)
+            {
+                s.resolved = true;
+                s.since = index;
+            }
+            continue;
+        };
+        if input.subject.order.as_str() != order {
+            continue;
+        }
+        let next = match &current {
+            None => open(input),
+            Some(state) => {
+                let next = step(state, input);
+                if !taken(&next.last_input.outcome) {
+                    continue;
+                }
+                Some(next)
+            }
+        };
+        let Some(next) = next else {
+            continue;
+        };
+        if let Some(now) = next.parts.iter().find(|p| p.part_id.as_str() == part) {
+            let s = standing.get_or_insert_with(|| Standing {
+                part: now.clone(),
+                since: index,
+                resolved: false,
+                segments: BTreeMap::new(),
+            });
+            if s.part.state != now.state {
+                s.since = index;
+            }
+            s.part = now.clone();
+            for segment in &now.segments {
+                s.segments.insert(
+                    segment.segment_id.as_str().to_string(),
+                    (segment.kind, segment.state),
+                );
+            }
+        }
+        current = Some(next);
+    }
+    standing
+}

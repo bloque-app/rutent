@@ -1,0 +1,25 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "shown",
+    "order": "ord-25",
+    "shown": {
+      "algorithm": "sha-256",
+      "value": "9393939393939393939393939393939393939393939393939393939393939393"
+    },
+    "shown_as": "quote_without_firm_rate"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

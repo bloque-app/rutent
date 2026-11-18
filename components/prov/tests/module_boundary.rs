@@ -5,10 +5,12 @@
 mod common;
 
 use rutent_conformance::boundary::{
-    AdmissionRefusal, Admitted, Exercised, ModuleBinding, RunConfig, run_boundary_suite,
+    AdmissionRefusal, Admitted, Check, Exercised, Handled, ModuleBinding, PlatformRefusal,
+    RunConfig, STEP_LIMIT, Step, run_boundary_suite,
 };
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::signing::{advertisement, another_key};
+use rutent_contracts::module_interface::PartName;
 
 fn run(category: &str) {
     let mut binding = common::binding(category);
@@ -82,4 +84,97 @@ fn boundary_suite_refuses_a_release_whose_assertion_is_signed_by_another_key() {
         binding.admit(&common::assertion(&spec.declaration, &binaries), &binaries),
         Admitted::Artefact(_)
     ));
+}
+
+// verifies: REQ-MDL-1
+#[test]
+fn re_admitted_version_is_refused_with_its_own_reason() {
+    let mut binding = common::binding("reserve");
+    let report = run_boundary_suite(&mut binding, &RunConfig::default());
+    for language in &report.languages {
+        for probe in [
+            Exercised::ReadmittedVersionRefused,
+            Exercised::ReadmittedWaitingVersionRefused,
+        ] {
+            assert!(
+                report.exercised.contains(&(language.clone(), probe)),
+                "{language}: {probe:?} wasn't seen: {:#?}",
+                report.findings
+            );
+        }
+    }
+    assert!(
+        !report.flagged().contains(&Check::ReadmittedVersionRefused),
+        "{:#?}",
+        report.findings
+    );
+    // The reason itself, from the platform: a version admitted is named, whichever the binaries.
+    let provider = "readmitted-provider-rs";
+    let spec = common::spec(provider, "1.0.0", Vec::new(), true);
+    let binaries = binding
+        .build_with(&spec, "rs", "reserve", &[])
+        .expect("the stand-in builds");
+    let assertion = common::assertion(&spec.declaration, &binaries);
+    assert!(matches!(
+        binding.admit(&assertion, &binaries),
+        Admitted::Artefact(_)
+    ));
+    binding.accept(provider, "1.0.0", "test-reviewer");
+    assert_eq!(
+        binding.admit(&assertion, &binaries),
+        Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+    );
+    assert_eq!(binding.active_version(provider).as_deref(), Some("1.0.0"));
+}
+
+// verifies: REQ-MDL-11
+#[test]
+fn module_past_its_step_limit_is_refused() {
+    let mut binding = common::binding("reserve");
+    let config = RunConfig::default();
+    let report = run_boundary_suite(&mut binding, &config);
+    for language in &report.languages {
+        for probe in [
+            Exercised::StepLimitRefused,
+            Exercised::StepsWithinTheLimitAnswered,
+        ] {
+            assert!(
+                report.exercised.contains(&(language.clone(), probe)),
+                "{language}: {probe:?} wasn't seen: {:#?}",
+                report.findings
+            );
+        }
+    }
+    assert!(
+        !report.flagged().contains(&Check::StepLimitEnforced),
+        "{:#?}",
+        report.findings
+    );
+    // The reason itself, from the platform: past the limit, a module that passed nothing out is refused as a
+    // limit, and the same module within it answers.
+    assert!(binding.set_step_limit(STEP_LIMIT));
+    let step = |n: usize| -> Vec<Step> {
+        (0..n)
+            .map(|i| Step::ReadState {
+                part: PartName::Sandboxed,
+                key: format!("step.{i}"),
+            })
+            .collect()
+    };
+    for (provider, steps, answers) in [
+        ("within-the-limit-rs", STEP_LIMIT, true),
+        ("past-the-limit-rs", STEP_LIMIT + 1, false),
+    ] {
+        let spec = common::spec(provider, "1.0.0", step(steps), true);
+        let installed = common::install(&mut binding, &spec, "rs", "reserve", &[]);
+        assert!(matches!(installed, Admitted::Artefact(_)));
+        let handled = binding.handle(provider, &common::withdrawal(provider, 1));
+        if answers {
+            assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
+        } else {
+            assert_eq!(handled, Handled::Refused(PlatformRefusal::LimitReached));
+            assert_eq!(binding.active_version(provider).as_deref(), Some("1.0.0"));
+        }
+    }
+    assert!(binding.set_step_limit(usize::MAX));
 }

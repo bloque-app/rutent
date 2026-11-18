@@ -480,7 +480,8 @@ pub struct Band {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reporting {
-    /// Reported amounts include the charge.
+    /// Reported amounts include the charge. A segment that keeps its asset then delivers its `amount_out` less its
+    /// charge, the fee restated in the out unit ([`less_the_charge`](crate::provider_role::less_the_charge)).
     Gross,
     /// Reported amounts exclude the charge.
     Net,

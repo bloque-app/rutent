@@ -8,7 +8,7 @@ use wasmtime::{Config, Engine, OptLevel, Strategy, WasmFeatures};
 pub const FORMAT: &str = "wasm-component";
 
 /// The runtime and its pinned version (item `exp2-wasm-runtime`).
-pub const WASMTIME_VERSION: &str = "48.0.8";
+pub const WASMTIME_VERSION: &str = "48.0.9";
 
 /// The binding's own version, which names, with the runtime and the target, what made a release's machine code
 /// (`build.platform_version`). It changed with `T-013-02`'s engine settings, which change the machine code.
@@ -90,8 +90,16 @@ pub const SPECTRE: [(&str, &str); 2] = [
 
 /// The configuration, every setting the binding makes stated here and in [`settings`].
 pub fn config() -> wasmtime::Result<Config> {
+    config_for(TARGET)
+}
+
+/// [`config`] for the compilation target `target`, a triple. Naming the target is what keeps Cranelift from
+/// reading the compiling machine's CPU: with it set, the code is made for the triple's baseline and no CPU
+/// feature beyond it (`THR-85`, `DEC-27`). [`config`] is this with the build's own triple; a test names another
+/// one to read the same settings for a target the machine it runs on isn't (the x86-64 ones, on an arm64 host).
+pub fn config_for(target: &str) -> wasmtime::Result<Config> {
     let mut config = Config::new();
-    config.target(TARGET)?;
+    config.target(target)?;
     config
         .strategy(Strategy::Cranelift)
         .cranelift_opt_level(OptLevel::Speed)

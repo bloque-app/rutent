@@ -1741,8 +1741,58 @@
           },
           "amount": "800000000"
         }
+      ],
+      "operator_fee": {
+        "flat": "0",
+        "proportional": {
+          "numerator": "0",
+          "denominator": "1"
+        }
+      },
+      "slippage_limits": [
+        {
+          "tuple": {
+            "provider": "exchange-a",
+            "from": {
+              "node": "ledger-in",
+              "asset": {
+                "id": "COP",
+                "decimals": 2
+              }
+            },
+            "to": {
+              "node": "ledger-in",
+              "asset": {
+                "id": "USDC",
+                "decimals": 6
+              }
+            }
+          },
+          "max_bps": 50
+        },
+        {
+          "tuple": {
+            "provider": "exchange-b",
+            "from": {
+              "node": "ledger-b",
+              "asset": {
+                "id": "COP",
+                "decimals": 2
+              }
+            },
+            "to": {
+              "node": "ledger-b",
+              "asset": {
+                "id": "USDC",
+                "decimals": 6
+              }
+            }
+          },
+          "max_bps": 50
+        }
       ]
     },
+    "ranking": "before_operator_fee",
     "candidates": [
       {
         "candidate_id": "c1",
