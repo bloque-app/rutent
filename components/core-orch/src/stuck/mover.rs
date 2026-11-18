@@ -60,6 +60,7 @@ use super::is_receipt_of;
 use super::journal::{Step, built};
 use super::{Carrying, Parts, Resolutions, Resolved};
 use crate::hand_on::{proves_start, resting};
+use crate::reliance::Judgement;
 use crate::rounds::OperatorKey;
 use crate::segments::{
     Answered, Counted, Drained, Modules, Unappended, Units, Uses, drain_entries, judge, maker,
@@ -108,6 +109,11 @@ struct Flight {
     drains: Vec<Step>,
     /// A drain the contract can't carry, which holds the answer unknown.
     uncarried: bool,
+    /// The order, which the reliance on what the move's input rests on is about (`T-020-23`).
+    order: Id,
+    /// The judgements the input it carries rests on: the provider's reliance on each is appended before anything is
+    /// handed over, and one the log refuses fails the move (`REQ-CPL-12`).
+    relies: Vec<Judgement>,
 }
 
 /// A move that was refused before anything was asked, or written: its answer, kept.
@@ -554,6 +560,9 @@ impl Delivering<'_> {
         let Some(inputs) = inputs_for(&tuple.terms.required_inputs, &to.account) else {
             return Ok(None);
         };
+        let relies = parts
+            .segments
+            .resting(carrying.order, inputs.keys().map(String::as_str));
         let operation = ProviderOperation::Deposit(Deposit {
             transaction: transaction.as_str().to_owned(),
             provider: by.as_str().to_owned(),
@@ -612,6 +621,8 @@ impl Delivering<'_> {
             answer: None,
             drains: Vec::new(),
             uncarried: false,
+            order: carrying.order.clone(),
+            relies,
         }))
     }
 
@@ -720,6 +731,24 @@ impl Delivering<'_> {
         effect: &Effect,
         flight: &mut Flight,
     ) -> Result<Resolved, AppendFailure> {
+        // The provider's reliance on what the input it is handed rests on is appended before anything else: one the
+        // log refuses (the judgement isn't its judge's) fails the move with nothing sent, and one it can't take now
+        // is tried again (`REQ-CPL-12`, `T-020-23`).
+        if flight.verdict.is_none() && !flight.carried && !flight.relies.is_empty() {
+            let when = now(parts)?;
+            match parts.segments.write_reliance(
+                parts.log,
+                carrying.core,
+                &when,
+                &flight.order,
+                &flight.provider,
+                &flight.relies,
+            ) {
+                Ok(()) => {}
+                Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable),
+                Err(_) => flight.verdict = Some(Resolved::Failed),
+            }
+        }
         // The question is appended before anything is handed over; one the log refuses backs no move: nothing
         // passed out, so it failed.
         if flight.verdict.is_none() && !flight.carried {

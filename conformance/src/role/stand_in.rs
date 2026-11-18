@@ -296,8 +296,11 @@ pub struct Shape {
     /// The seconds it declares to settle, where it isn't the role's own.
     pub settles_in: Option<u64>,
     /// What it takes from each movement, quoted and charged, in the asset moved: reported net, so the amount it gives
-    /// out is the amount it took in less this.
+    /// out is the amount it took in less this, unless the shape is [`gross`](Self::gross).
     pub fee: u128,
+    /// A reserve whose tuples report gross (`REQ-CAT-11`, `T-024-13`): the `amount_out` it states includes its charge,
+    /// so it states what it took in and what arrives is that less the charge it reports. Net where false.
+    pub gross: bool,
     /// What it charges on execution above what it quoted: a charge known only after the movement (`REQ-QTE-5`).
     pub extra_charge: u128,
     /// The evidence it declares and gives, where it isn't the role's own.
@@ -574,6 +577,9 @@ impl Reserve {
                 if let (Some(input), NodeRef::Inner(_)) = (&shape.deposit_input, &tuple.origin) {
                     tuple.terms.required_inputs = vec![input.clone()];
                 }
+                if shape.gross {
+                    tuple.terms.reporting = Reporting::Gross;
+                }
             }
         }
         if shape.public_node {
@@ -678,13 +684,21 @@ impl Reserve {
             return ReserveMovementOutcome::Refused(waiting_on_the_person());
         }
         // Reported net: what it gives out is what it took in less its charge, which a dry run quotes at `fee` and a
-        // movement charges at `fee` and the charge beyond it (`REQ-QTE-5`).
+        // movement charges at `fee` and the charge beyond it (`REQ-QTE-5`). Reported gross, what it states giving out
+        // is what it took in, its charge within it: what arrives is that less the charge (`REQ-CAT-11`).
         let charged = |fee: u128| Fee {
             asset: asset.to_owned(),
             amount: fee.to_string(),
             billed_separately: None,
         };
-        let out_of = |fee: u128| value.saturating_sub(fee).to_string();
+        let gross = self.shape.gross;
+        let out_of = |fee: u128| {
+            if gross {
+                value.to_string()
+            } else {
+                value.saturating_sub(fee).to_string()
+            }
+        };
         if dry_run {
             return ReserveMovementOutcome::DryRunAccepted(ReserveDryRunAnswer {
                 amount_in: stated.to_owned(),

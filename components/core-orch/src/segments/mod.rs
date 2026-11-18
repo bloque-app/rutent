@@ -114,6 +114,7 @@ use rutent_stm::Stm;
 
 use crate::quote::{ChargeError, Charged, Charges, Terms};
 use crate::recalc::{holds_floor, left_after};
+use crate::reliance::{Judgement, Reliances, Rests};
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
     Clock, Exposures, HoldError, OrchestrationLog, Reading, RouteRefused, check_part,
@@ -129,7 +130,9 @@ pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
-pub use ports::{Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, Short, ToGrade, Uses};
+pub use ports::{
+    Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade, Uses,
+};
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 
@@ -602,6 +605,11 @@ struct InFlight {
     record: Option<Id>,
     /// The late statements taken about it while its outcome was unknown, by their bytes (`T-020-20`).
     late: BTreeMap<Vec<u8>, LateKept>,
+    /// The names of the inputs its operation carries (`T-020-23`).
+    carries: Vec<String>,
+    /// The judgements those inputs rest on, as declared when it was handed over: the provider's reliance on each is
+    /// appended before anything of the segment is, and before its operation is sent (`REQ-CPL-12`, `T-020-23`).
+    relies: Vec<Judgement>,
 }
 
 /// One drain, kept whole until each of its items is appended.
@@ -646,6 +654,9 @@ pub struct Segments {
     charges: Charges,
     /// The terms the providers stated, with their times (`REQ-QTE-6`, `T-020-14`).
     terms: Terms,
+    /// The judgements an order's inputs rest on, and the reliance entries written for them (`REQ-CPL-12`,
+    /// `T-020-23`).
+    reliances: Reliances,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -664,6 +675,50 @@ impl Segments {
     /// Nothing handed over yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declares that the order's input `input` rests on `judgement`, a reserve's or a verifier's, the stated entry of
+    /// which the log holds at its receipt. A provider handed that input is recorded as relying on the judgement, in a
+    /// `reliance` entry appended before its operation is sent; where the log refuses the entry, nothing is sent
+    /// (`REQ-CPL-12`, `T-020-23`). To be declared before the segment that carries the input is handed over: one
+    /// already handed over is [`Rests::TooLate`], since its reliance would be written after the send. The declaration
+    /// stands for the segments after it.
+    pub fn rests_on(&mut self, order: &Id, input: &str, judgement: Judgement) -> Result<(), Rests> {
+        let carried = self.flights.iter().any(|((o, _), flight)| {
+            o == order.as_str() && flight.carries.iter().any(|name| name == input)
+        });
+        // Kept even where it is late, so every segment handed over after it, and the stuck mover's, writes its
+        // reliance; only the one already sent goes without, which the caller is told.
+        self.reliances.rests_on(order, input, judgement)?;
+        if carried {
+            return Err(Rests::TooLate);
+        }
+        Ok(())
+    }
+
+    /// The judgements the order's `inputs` rest on, each once (`T-020-23`): what the stuck mover consults before it
+    /// sends an input of its own.
+    pub(crate) fn resting<'a>(
+        &self,
+        order: &Id,
+        inputs: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<Judgement> {
+        self.reliances.resting(order, inputs)
+    }
+
+    /// [`Reliances::write`] on this register, for a hand-over that isn't a segment's own.
+    pub(crate) fn write_reliance(
+        &mut self,
+        log: &mut dyn Log,
+        core: &Actor,
+        at: &Timestamp,
+        order: &Id,
+        provider: &Id,
+        judgements: &[Judgement],
+    ) -> Result<(), AppendFailure> {
+        self.reliances
+            .write(log, core, at, order, provider, judgements)
+            .map(|_| ())
     }
 
     /// How many drains wait to be appended, whole or in part.
@@ -1244,9 +1299,22 @@ impl Segments {
         // this time: a check or raise that couldn't be recorded before is done now, and one done already is not
         // done again (`REQ-QTE-5`, `T-020-14`).
         let checked = self.check_charges(parts, live);
-        match (ran, checked) {
-            (Err(failure), _) | (Ok(_), Err(failure)) => Err(failure),
-            (Ok(ran), Ok(())) => Ok(ran),
+        // What the grading found that it raises, raised and recorded likewise, and once (`T-020-22`).
+        let raised = parts
+            .grading
+            .raise(RaiseDesk {
+                log: &mut *parts.log,
+                clock: parts.clock,
+                fresh: &mut *parts.fresh,
+                operator: &mut *parts.channel,
+                core: live.core,
+            })
+            .map_err(SegmentsError::Append);
+        match (ran, checked, raised) {
+            (Err(failure), _, _) | (Ok(_), Err(failure), _) | (Ok(_), Ok(()), Err(failure)) => {
+                Err(failure)
+            }
+            (Ok(ran), Ok(()), Ok(())) => Ok(ran),
         }
     }
 
@@ -1572,6 +1640,10 @@ impl Segments {
             .iter()
             .filter_map(|name| Some((name.clone(), live.inputs.get(name)?.clone())))
             .collect();
+        let carries: Vec<String> = inputs.keys().cloned().collect();
+        let relies = self
+            .reliances
+            .resting(live.order, carries.iter().map(String::as_str));
         let provider_operation = sign::operation(&sign::Moving {
             operation,
             transaction: &transaction,
@@ -1681,6 +1753,8 @@ impl Segments {
                 drains: Vec::new(),
                 record: None,
                 late: BTreeMap::new(),
+                carries,
+                relies,
             },
         );
         self.advance(parts, live, &at, operation, true)
@@ -1697,6 +1771,16 @@ impl Segments {
         operation: &rutent_contracts::router_api::Operation,
         hold: bool,
     ) -> Result<Accounted, SegmentsError> {
+        // The provider's reliance on each judgement its inputs rest on is recorded before anything of the segment is:
+        // before its hold, its question, its effect and the operation. The log refusing one stops the segment here,
+        // with nothing sent (`REQ-CPL-12`, `INV-7`).
+        let flight = self.flight(at)?;
+        if !flight.relies.is_empty() {
+            let (provider, relies) = (flight.provider.clone(), flight.relies.clone());
+            let when = now(parts.clock)?;
+            self.reliances
+                .write(parts.log, live.core, &when, live.order, &provider, &relies)?;
+        }
         let flight = self.flight(at)?;
         let (segment, place) = (id_of(&at.1)?, flight.place);
         let moved = flight.statement.statement.clone();
@@ -2107,6 +2191,9 @@ impl Segments {
             return Ok(Settle::Graded);
         }
         let evidence = self.append_graded(parts.log, at)?;
+        // What the grading answered is in the log: its entries' receipts, for a grading that raises on one.
+        let receipts = self.graded_receipts(at)?;
+        parts.grading.recorded(&settled, &receipts);
         let state_evidence = stm::Id::new(evidence.as_str())
             .ok_or(SegmentsError::Plan("an evidence id is an id"))?;
         self.input(
@@ -2572,6 +2659,24 @@ impl Segments {
             .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
         append_all(log, steps)?;
         Ok(cites.clone())
+    }
+
+    /// The receipts of the entries the segment's grading answered, in the order it answered them: all of them, once
+    /// they are appended.
+    fn graded_receipts(&self, at: &(String, String)) -> Result<Vec<Receipt>, SegmentsError> {
+        let (_, steps) = self
+            .flight(at)?
+            .graded
+            .as_ref()
+            .ok_or(SegmentsError::Plan("a segment is graded before it settles"))?;
+        steps
+            .iter()
+            .map(|s| {
+                s.receipt
+                    .clone()
+                    .ok_or(SegmentsError::Plan("what a grading answered is appended"))
+            })
+            .collect()
     }
 
     /// Appends the segment's fee records, each once.

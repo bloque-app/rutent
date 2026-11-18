@@ -7,16 +7,17 @@
 //! and `other-ca.pem` an unrelated CA. They were made with `openssl req` and `openssl x509` (P-256, valid until
 //! 2126), and no deployment trusts them.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rutent_contracts::module_interface::{Identifier, Name};
+use rutent_prov::module::platform::{OperationClock, SteppedClock};
 use rutent_prov::proxy::{
     HttpsTransport, KvConfig, KvResolver, Resolver, RoleSettings, Server, StoreAddress,
     StoreScheme, Token, Transport,
@@ -296,29 +297,97 @@ fn answer_over_the_size_limit_is_refused() {
     server.join().unwrap();
 }
 
-// verifies: REQ-MDL-17
-#[test]
-fn store_that_never_answers_times_out() {
+/// A stand-in store that has read one request's head, tells the test so on `asked`, and what it does next is the
+/// test's: `then` is given the connection. Returns what `then` returns.
+fn store_after_the_request<T: Send + 'static>(
+    asked: mpsc::Sender<()>,
+    then: impl FnOnce(TcpStream) -> T + Send + 'static,
+) -> (u16, JoinHandle<T>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         let (tcp, _): (TcpStream, _) = listener.accept().unwrap();
-        std::thread::sleep(Duration::from_millis(800));
-        drop(tcp);
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(tcp);
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        asked.send(()).unwrap();
+        then(reader.into_inner())
     });
+    (port, server)
+}
+
+/// Whether the peer closed the connection while this still held it: it is read until it ends, within five
+/// seconds, which a test that fails has to outlast.
+fn closed_by_the_peer(mut tcp: TcpStream) -> bool {
+    let mut sink = [0u8; 64];
+    loop {
+        match tcp.read(&mut sink) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) => return !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        }
+    }
+}
+
+/// The platform's clock, `T-013-08`'s seam, stands still: a store that has read the request and says nothing is
+/// cut off when the clock is stepped past the transport's timeout, as timed out, while the store still holds the
+/// connection. No assertion reads real time.
+// verifies: REQ-MDL-17, REQ-MDL-11
+#[test]
+fn store_that_never_answers_is_cut_off_at_its_timeout_on_the_platforms_clock() {
+    let (asked, wait) = mpsc::channel();
+    let (port, server) = store_after_the_request(asked, closed_by_the_peer);
+    let clock = SteppedClock::new();
+    let transport = HttpsTransport::new(&http("127.0.0.1", port), None)
+        .unwrap()
+        .with_timeout(Duration::from_millis(200))
+        .with_clock(Arc::new(clock.clone()));
+    let request = probe_request();
+    let exchange = std::thread::spawn(move || transport.get(&request));
+
+    wait.recv().unwrap();
+    clock.step(Duration::from_millis(250));
+
+    let outcome = exchange.join().unwrap();
+    assert_eq!(
+        outcome.map_err(|e| e.reason()),
+        Err("the store timed out"),
+        "the timeout is read on the clock"
+    );
+    assert!(
+        server.join().unwrap(),
+        "the transport gave up while the store still held the connection"
+    );
+}
+
+/// On the operating system's clock, the transport's default, a silent store is still cut off at the timeout:
+/// production reads the same instants as before. The store holds the connection until the transport closes it.
+// verifies: REQ-MDL-17
+#[test]
+fn transport_on_the_operating_systems_clock_still_cuts_a_silent_store_at_its_timeout() {
+    let (asked, wait) = mpsc::channel();
+    let (port, server) = store_after_the_request(asked, closed_by_the_peer);
     let transport = HttpsTransport::new(&http("127.0.0.1", port), None)
         .unwrap()
         .with_timeout(Duration::from_millis(200));
+    let request = probe_request();
+    let exchange = std::thread::spawn(move || transport.get(&request));
 
-    let started = std::time::Instant::now();
-    let outcome = transport.get(&probe_request());
-    assert!(outcome.is_err());
-    assert!(
-        started.elapsed() < Duration::from_millis(700),
-        "{:?}",
-        started.elapsed()
+    wait.recv().unwrap();
+
+    assert_eq!(
+        exchange.join().unwrap().map_err(|e| e.reason()),
+        Err("the store timed out")
     );
-    server.join().unwrap();
+    assert!(
+        server.join().unwrap(),
+        "the transport gave up while the store still held the connection"
+    );
 }
 
 /// A request as a resolver makes it, taken from a resolver over a transport that keeps it.
@@ -392,35 +461,38 @@ fn answer_without_a_length_is_refused_unless_tls_closed_cleanly() {
 }
 
 /// A store that answers one byte at a time, each within a read's own timeout, is cut off at the deadline the
-/// lookup carries, the operation's (`REQ-MDL-11`), not held for as long as it keeps dribbling.
+/// lookup carries, the operation's (`REQ-MDL-11`), not held for as long as it keeps dribbling: the clock is
+/// stepped to the deadline while the store dribbles, and the exchange ends as timed out, not as an answer cut
+/// short by the store ending.
 // verifies: REQ-MDL-11, REQ-MDL-17
 #[test]
-fn store_dribbling_its_answer_is_cut_off_at_the_deadline() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = std::thread::spawn(move || {
-        let (mut tcp, _): (TcpStream, _) = listener.accept().unwrap();
-        let _ = tcp.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 100000\r\n\r\n");
-        let started = std::time::Instant::now();
-        while started.elapsed() < Duration::from_secs(6) {
+fn store_dribbling_its_answer_is_cut_off_when_the_clock_is_stepped_to_the_deadline() {
+    let (asked, wait) = mpsc::channel();
+    let (port, server) = store_after_the_request(asked, |mut tcp| {
+        let _ = tcp.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 100000\r\n\r\nx");
+        // It goes on a byte at a time until the transport hangs up; six seconds is only its own limit.
+        for _ in 0..60 {
             std::thread::sleep(Duration::from_millis(100));
             if tcp.write_all(b"x").is_err() {
                 break;
             }
         }
     });
+    let clock = SteppedClock::new();
     let transport = HttpsTransport::new(&http("127.0.0.1", port), None)
         .unwrap()
-        .with_timeout(Duration::from_secs(2));
+        .with_timeout(Duration::from_secs(2))
+        .with_clock(Arc::new(clock.clone()));
+    let due = clock.now() + Duration::from_millis(800);
+    let request = probe_request();
+    let exchange = std::thread::spawn(move || transport.get_until(&request, Some(due)));
 
-    let started = std::time::Instant::now();
-    let due = started + Duration::from_millis(800);
-    let outcome = transport.get_until(&probe_request(), Some(due));
-    assert!(outcome.is_err());
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "{:?}",
-        started.elapsed()
+    wait.recv().unwrap();
+    clock.step(Duration::from_secs(1));
+
+    assert_eq!(
+        exchange.join().unwrap().map_err(|e| e.reason()),
+        Err("the store timed out")
     );
     server.join().unwrap();
 }
