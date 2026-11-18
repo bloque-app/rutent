@@ -181,6 +181,7 @@ fn balance_asked(
             order: Some(id(account)),
             segment: None,
             transaction: Some(id(transaction)),
+            node: None,
         },
     )
     .expect("the wallet is asked and its answer recorded")
@@ -627,6 +628,7 @@ fn real_plain_wallets_re_serialised_answer_verifies_under_its_published_key() {
         order: Some(linked.order.clone()),
         segment: None,
         transaction: Some(id(&start.transaction)),
+        node: None,
     };
     let asked = core
         .state_by(&question, &kit::operator(), &about)

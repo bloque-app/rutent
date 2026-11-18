@@ -483,6 +483,7 @@ impl Delivering<'_> {
                 order: Some(carrying.order.clone()),
                 segment: None,
                 transaction: Some(transaction),
+                node: None,
             };
             let entry = stated_entry(
                 self.ports.evidence,
@@ -597,6 +598,7 @@ impl Delivering<'_> {
             order: Some(carrying.order.clone()),
             segment: None,
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let question = match stated_entry(
             self.ports.evidence,
@@ -891,6 +893,7 @@ impl Delivering<'_> {
             order: Some(carrying.order.clone()),
             segment: None,
             transaction: Some(flight.transaction.clone()),
+            node: None,
         };
         let at = now(parts)?;
         match stated_entry(
@@ -1141,6 +1144,7 @@ impl Delivering<'_> {
                     order: Some(linked.clone()),
                     segment: None,
                     transaction: Some(transaction),
+                    node: None,
                 };
                 let entry = match stated_entry(
                     &mut *self.ports.evidence,
@@ -1318,6 +1322,7 @@ impl Delivering<'_> {
             order: Some(flight.linked.clone()),
             segment: None,
             transaction: Some(transaction),
+            node: None,
         };
         let slot = (key(&effect.receipt), start.answer.clone());
         if !self.mover.statements.contains_key(&slot) {
@@ -1420,6 +1425,7 @@ impl Delivering<'_> {
                 order: Some(linked),
                 segment: None,
                 transaction: Some(shown.transaction.clone()),
+                node: None,
             };
             let entry = stated_entry(
                 self.ports.evidence,

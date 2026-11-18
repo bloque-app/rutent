@@ -872,6 +872,7 @@ impl Run<'_, '_> {
             order: Some(order.order.clone()),
             segment: None,
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let receipt = self.append_question(&bytes, Some(about))?;
         self.sent.push(Sent {
@@ -1089,6 +1090,7 @@ fn about_answer(order: &Id, answer: &Answer) -> Option<About> {
         order: Some(order.clone()),
         segment: None,
         transaction: Some(transaction.clone()),
+        node: None,
     })
 }
 

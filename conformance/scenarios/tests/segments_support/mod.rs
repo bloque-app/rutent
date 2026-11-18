@@ -1126,6 +1126,7 @@ fn answered_under(
                     order: Some(order.clone()),
                     segment: segment.map(id),
                     transaction: Some(id(transaction)),
+                    node: None,
                 });
                 Entry::Stated(stated)
             }

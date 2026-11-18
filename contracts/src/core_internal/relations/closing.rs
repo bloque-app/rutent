@@ -213,10 +213,23 @@ pub static CLOSING_RELATIONS: [Relation; 5] = [
                 "a replay's receipt past its exit's names a publisher's record of inner segments",
             ),
             ("about", "a replay's node record is about its order"),
+            (
+                "node",
+                "a replay's node record is of a node it replayed that recorded something",
+            ),
+            (
+                "publisher",
+                "a replay's node record states for that node's publisher, the one the replay's exit result states for",
+            ),
+            ("once", "a replay cites one record of each node"),
         ],
         // What the replay read for each private node it replayed: its publisher's `inner-segments` record, so a
-        // checker finds what was compared (`REQ-AUD-9`). That there is one for each node that recorded something is
-        // `T-020-32`'s, which writes them; which node a record is of, the log can't read from its commitment.
+        // checker finds what was compared (`REQ-AUD-9`). The record names its node (`About.node`, verified against
+        // its body by `attribute`), so the log holds it to a node the replay replayed and found a record for, to that
+        // node's publisher, and to one record per node (`T-020-36`). A node the replay replayed is bound to the
+        // publisher its exit's result states for (`private_node_of`), so that is the publisher a record must state
+        // for: a record by any other party binds and stands for nothing here. That there is one for each node that
+        // recorded something is the writer's (`T-020-32`).
         cites: |e, _| match &e.what {
             What::Replay { rests_on, .. } => rests_on
                 .iter()
@@ -226,9 +239,43 @@ pub static CLOSING_RELATIONS: [Relation; 5] = [
                 .collect(),
             _ => none(),
         },
-        answers: |e, _, t, _| {
-            let (What::Replay { order, .. }, Some(s)) = (&e.what, stated(t)) else {
+        answers: |e, _, t, h| {
+            let (
+                What::Replay {
+                    order,
+                    nodes,
+                    found,
+                    rests_on,
+                    ..
+                },
+                Some(s),
+            ) = (&e.what, stated(t))
+            else {
                 return Match::NotTarget;
+            };
+            let node = s.about.as_ref().and_then(|a| a.node.as_ref());
+            let silent = match found {
+                ReplayFound::NothingRecorded { nodes } => nodes.as_slice(),
+                _ => &[],
+            };
+            // The exit's result, verified, about the order: the publisher the replay binds its nodes to.
+            let publisher = rests_on
+                .first()
+                .and_then(|r| entry_at(r, h))
+                .and_then(stated)
+                .filter(|x| {
+                    matches!(x.attribution, Attribution::Verified { .. })
+                        && x.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                })
+                .map(|x| &x.attribution.maker().party);
+            // The node records the replay cites past its exit's, by the node each names.
+            let of_node = |n: &Id| {
+                rests_on
+                    .iter()
+                    .skip(1)
+                    .filter_map(|r| entry_at(r, h).and_then(stated))
+                    .filter(|x| x.about.as_ref().and_then(|a| a.node.as_ref()) == Some(n))
+                    .count()
             };
             judge(
                 true,
@@ -236,6 +283,9 @@ pub static CLOSING_RELATIONS: [Relation; 5] = [
                     matches!(s.attribution, Attribution::Verified { .. }),
                     s.what.statement.as_str() == crate::provider_role::INNER_SEGMENTS_SHAPE,
                     s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order),
+                    node.is_some_and(|n| nodes.contains(n) && !silent.contains(n)),
+                    publisher.is_some_and(|p| &s.attribution.maker().party == p),
+                    node.is_some_and(|n| of_node(n) == 1),
                 ],
             )
         },

@@ -61,3 +61,7 @@ directory (see `README.md`).
   evidence entry required, a report pair's tuple terms, a measure record's role, a replay's list of receipts, a
   deliver's report on its provider's own word, and a verifier's grant of a class. Its changelog names each. No file
   shared by the contracts changed. (DEC-4, DEC-20, T-020-30)
+- core-internal's round after `T-020-30`, folded into its unreleased 1.0.0 (`T-020-36`): a publisher's record of a
+  node's segments verified about an order through its segments' transactions, the record naming its node and held to
+  that node's publisher and to one per node, a late status naming its fresh transaction, and a route handed on started on the
+  holding account the hand-on named, whoever runs its first move. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-36)

@@ -512,6 +512,7 @@ impl Arrivals {
                     order: None,
                     segment: None,
                     transaction: Id::new(&transaction),
+                    node: None,
                 };
                 let (notice, _) = journal::stated(
                     &mut *desk.parts.evidence,

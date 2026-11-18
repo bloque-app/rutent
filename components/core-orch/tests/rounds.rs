@@ -112,6 +112,7 @@ fn route_is_not_offered_without_the_reserves_yes_in_the_users_session() {
             order: Some(id(ORDER)),
             segment: None,
             transaction: withdrawal.transaction.clone(),
+            node: None,
         })
     );
     // The log admits every entry: each answer follows its question, which is the operator's, verified, and the

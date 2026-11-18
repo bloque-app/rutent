@@ -1219,6 +1219,7 @@ mod tests {
             order: id("ord-17"),
             segment: id("seg-2"),
             provider: id("bridge-pay"),
+            transaction: id("tx-status-1"),
         });
         // And erasing a kept statement (`T-021-10`), the fixtures' commitment.
         let erased: DecisionRequest = fixture!("decision-request-to-erase-a-kept-statement");

@@ -1901,6 +1901,7 @@ impl Segments {
             order: Some(live.order.clone()),
             segment: Some(segment.clone()),
             transaction: Some(transaction.clone()),
+            node: None,
         };
         let question = journal::stated_entry(
             parts.evidence,
@@ -2545,6 +2546,7 @@ impl Segments {
                 order: Some(live.order.clone()),
                 segment: Some(segment.clone()),
                 transaction: Some(transaction),
+                node: None,
             };
             let received_at = now(parts.clock).map_err(LateRefused::Append)?;
             let entry = journal::stated_entry(
@@ -2933,6 +2935,7 @@ impl Segments {
                 order: Some(id_of(&at.0).map_err(|_| Unappended::Unrecordable)?),
                 segment: Some(id_of(&at.1).map_err(|_| Unappended::Unrecordable)?),
                 transaction: Some(flight.transaction.clone()),
+                node: None,
             };
             let received_at = now(parts.clock).map_err(Unappended::Append)?;
             let entry = journal::stated_entry(

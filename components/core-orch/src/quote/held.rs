@@ -352,6 +352,7 @@ impl Holds {
                 order: None,
                 segment: None,
                 transaction: Some(transaction),
+                node: None,
             }),
         )
         .map_err(|why| match why {
