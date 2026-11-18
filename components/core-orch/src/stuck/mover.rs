@@ -937,7 +937,8 @@ impl Delivering<'_> {
     /// order's accepted route, in this order, each step once:
     /// 1. the route is held to Core's own records: the linked order's own accepted route, one part, starting at the
     ///    inner node where Core's records say the part's value rests, in its asset, with no withdrawal before it, of
-    ///    an order Core doesn't follow; the node's holding account is the provider the decision names, and the value
+    ///    an order Core doesn't follow; the node's registered holding account is the provider the decision names (it
+    ///    may run no segment of the route: the route's first provider runs the first move, `T-020-33`), and the value
     ///    is all of what the part holds. Anything else fails, with the wallet asked nothing;
     /// 2. the operator's statement of the withdrawal is checked against what was decided, and recorded as the
     ///    operator's question about the linked order and the wallet's transaction, **attributed**, before the wallet
@@ -1026,10 +1027,9 @@ impl Delivering<'_> {
             return None;
         };
         let first = only.segments.first()?;
-        if first.kind == OperationKind::Withdrawal
-            || first.from != at
-            || first.provider.as_str() != by.as_str()
-        {
+        // Its first move is the route's own first provider's, whichever provider that is: the holder the decision
+        // names runs no segment of it (`T-020-33`).
+        if first.kind == OperationKind::Withdrawal || first.from != at {
             return None;
         }
         // The customer's own acceptance of the linked order, which the log holds, its decision record in the log,
@@ -1047,7 +1047,8 @@ impl Delivering<'_> {
             &route.plan,
         )
         .ok()?;
-        // The node's holding account is the provider the decision names.
+        // The holder is the node's registered holding account, and no other provider: the decision names it, the
+        // route's first provider runs the first move, and the account's own record proves the start (`REQ-ORD-40`).
         if hand.withdrawals.holder(node).as_deref() != Some(by.as_str()) {
             return None;
         }

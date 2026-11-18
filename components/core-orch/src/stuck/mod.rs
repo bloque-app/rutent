@@ -2705,28 +2705,34 @@ fn remaining(
         .collect()
 }
 
-/// Whether `resolution` moves the part's own value: through a provider of the part, in an asset it holds, all that it
-/// still holds there (`THR-77`). A part is resolved once, on its resolution's move done
+/// Whether `resolution` moves the part's own value: in an asset it holds, all that it still holds there (`THR-77`), and
+/// a deliver through a provider of the part. A part is resolved once, on its resolution's move done
 /// (`only-a-declared-stuck-part-is-resolved`), so a resolution moving less would strand the rest.
+///
+/// A hand-on's `by` names the holding account of the node where the value rests, which runs no segment of the part's
+/// route and, where the node's account is the operator's plain wallet, runs no route at all (`T-020-33`): it is no
+/// provider of the part, and what it must be, the node's registered holding account and nothing else, is the
+/// production mover's to hold the hand-on to before the account is asked anything (`Mover::plan_hand`), where
+/// Core's records of the nodes' accounts are.
 fn within(
     exposures: &Exposures,
     order: &Id,
     declared: &Declared,
     resolution: &Resolution,
 ) -> Result<(), ResolveError> {
-    let (by, asset, amount) = match resolution {
+    let (by, asset, amount, delivers) = match resolution {
         Resolution::Deliver {
             by, asset, amount, ..
-        }
-        | Resolution::HandOn {
+        } => (by, asset, amount, true),
+        Resolution::HandOn {
             by, asset, amount, ..
-        } => (by, asset, amount),
+        } => (by, asset, amount, false),
     };
     let left = remaining(exposures, order, declared)
         .into_iter()
         .find(|(a, _)| a == asset)
         .map_or_else(Amount::zero, |(_, l)| l);
-    if !declared.segments.iter().any(|(_, p)| p == by) || amount.amount() != &left {
+    if (delivers && !declared.segments.iter().any(|(_, p)| p == by)) || amount.amount() != &left {
         return Err(ResolveError::NotItsValue);
     }
     Ok(())

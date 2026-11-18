@@ -5056,6 +5056,90 @@ Branch `f-020/t-020-34-verifier-no`, from `m3` at `81be3583`. Edits `components/
   | `judged` ignoring the answer | `tuple whose verifier answered no is not offered` |
   | `offer` ignoring `eligible`'s result | T-024-12's `tuple needing a judgement is not offered without one` |
 
+## T-020-33: a hand-on through a holding account that runs no route
+
+Branch `f-020/t-020-33-hand-on-holding-account`, from `m3` at `17f98832`. Edits `components/core-orch/src/`: `stuck/`
+(`within`, `Mover::plan_hand`), `hand_on/` (`recover_starts`) and `segments/` (a new `landing.rs`, and `land_settled` in
+`mod.rs`); `conformance/scenarios/` (`F-024` files: `src/assembly/holding.rs`, a hunk of `src/assembly/mod.rs`,
+`tests/assembly_real_wallet.rs`; and `T-020-17`'s `tests/stuck_hand_on.rs`, whose stand-in wallet gains an `account`). The
+commit body says so. `contracts/` is untouched; its one conflicting rule is gap 1.
+
+- **Design.** The form's choice `hand-on-wallet-holder`, built as its applied default: **the decision's `by` names the
+  node's holding account, and the linked route's first provider runs the first move.**
+  1. *Decide* (`stuck::within`): `by` of a hand-on is no longer held to be a provider of the part's route (the account of
+     a public node, the operator's plain wallet, advertises no tuple and runs no segment); a deliver still is. The
+     amount and asset are held to what the part holds, as before. What a hand-on's `by` must be is the mover's to hold,
+     where Core's records of the nodes' accounts are.
+  2. *Move* (`Mover::plan_hand`): the check that `by` is the first segment's provider is gone; the check that `by` is
+     the node's registered holding account (`Withdrawals::holder`) stays, and is the only rule on the holder: a decision
+     naming the reserve that put the value there, or the route's first provider, is refused with the account shown
+     nothing. The first move's provider is the one the linked route names, which the customer's acceptance names too
+     (`linked_accepted`: one yes per part, from the first segment's provider).
+  3. *The start* is the holding account's own `holding_withdrawal` record (`proves_start`, unchanged: `record.by` is the
+     holder, the starting reserve the hand-on recorded from the done resolution's `by`), and `recover_starts` reads it
+     the same way: for a linked order opened by an operator's resolution, the record's holder must be the `by` of that
+     resolution's `resolve_stuck` effect and no other, and every part must start at the record's node, whoever runs
+     the first segment; for a customer's hand-on (no such effect) the holder is the route's first provider, as before.
+  4. *Landing* (`segments/landing.rs`): `Segments::land_settled(&mut dyn Landings) -> usize`, orchestration's one call
+     of `Holdings::land`, like `write_measures`: for each settled segment whose destination is an inner node the
+     `Landings` port says has a holding account, once per segment, the wallet is asked to place `amount_out` for the
+     order; `holds` false takes none. `Landed::NotNow` (the platform says nothing took effect) is asked again by the
+     next call; `Landed::Unconfirmed` (anything else) never again and is counted (`landings_unconfirmed`), because
+     asking twice could attribute twice, and the account's own rules refuse a withdrawal of more than it holds, so no
+     value leaves the account that was never confirmed in it (`INV-5`). The assembly implements the port over
+     `Holdings` and the platform, in the operator's signed statement, and calls it after each run of a part (`run_live`);
+     `Core::land_settled` is public for a scenario to show nothing lands twice. `Core::land` (by hand) stays for
+     `AC-39`, which lands where no segment settles.
+- **Tests.** `stuck_hand_on.rs` (two added): `hand on names the node's holding account while the linked route's first
+  provider runs the move`, `hand on whose start no record of the holding account proves stays refused`; the stand-in is
+  `OTHER_RESERVE`'s wallet while the linked route starts with `RESERVE`. `assembly_real_wallet.rs`: `value settled at a
+  public node held by a holding account lands in it` (added, over the real wallet, with no `Core::land`); `stuck order of
+  the assembled Core is handed on through the real plain wallet` runs with no `#[ignore]` and passes; its refusal test is
+  rewritten as `hand on through a public node's wallet names the wallet and refuses any other holder` (the wallet is
+  taken, the ramp's provider and the route's first provider are refused before the wallet is asked anything).
+  `T-020-17`'s and `T-020-26`'s tests pass unchanged (only the stand-in wallet's helper gained the `account` field,
+  defaulting to the reserve).
+- **Histories the log refused.** None in the tests that run. The one the log would refuse is gap 1.
+- **Red first.** The two `stuck_hand_on` tests failed on `decided: NotItsValue` (the old `within`) before the code. The
+  three `assembly_real_wallet` tests were written with the code (the landing test needs the new `Core::land_settled`, so
+  it could not compile before): the rule-offs below are their red.
+- **Defaults taken** (reversible, fail closed). The holder is only ever the node's registered holding account; the decide
+  step does not know the registry, so a decision naming another provider is taken and then fails at the move with the
+  wallet asked nothing, the part still held (its failure frees nothing without another party's confirmation). A landing
+  that isn't confirmed is never retried. A segment a recalculation retired lands nothing. The first move's provider is
+  whoever the route says.
+- **Gaps, with owners.**
+  1. **The log refuses the linked order's first move for a holder that runs no segment** (needs a contract change, which
+     this row doesn't make). `contracts/src/core_internal/relations.rs`, relation
+     `handed-on-route-starts-on-its-holding-record`, field `holder`, requires the `holding_withdrawal`'s `holder` to
+     equal the first `move_value`'s `origin_reserve`, which is the first segment's provider. With the holder the wallet
+     and the provider another, Core's mover hands the segment over (the experiment: the effect is built and the segment
+     settles in the kit) and the real log would not admit its effect (`core.admitted` names entry 54 and that field).
+     The shape wanted: that field's check (`&[holder == origin_reserve]`) dropped, or replaced by the record's node
+     being the first segment's `from` (which `holding-withdrawal-starts-a-handed-on-route` already holds); the
+     `holding_withdrawal`'s `holder` is then the account the record proves. Owner: `F-006`/`F-020` contract round, Pablo's
+     call; until then, `T-024-17`'s "linked order's first move in the log" stays unproven for a wallet holder, and the
+     tests here stop at the proven start.
+  2. The landing is called after `run_live` only; a segment that settles later (a late statement confirmed done,
+     `confirmed_done`) lands on the next call of `land_settled`, which the assembly doesn't make by itself yet. Owner:
+     the production assembly (`F-030`), with `write_measures`.
+  3. A segment that settled at the node and is later reversed leaves the account's attribution as landed: the reversal
+     doesn't release it. Owner: `T-020-12`'s successor.
+  4. The landing's `NotNow` and `Unconfirmed` paths are not exercised by a test (the real wallet in the kit always
+     answers). Owner: `T-020-35`'s neighbour in `segments/`, or a fake `Landings` unit test in the next `segments/` row.
+  5. `Landing` events: the wallet's deposit may add platform events that the next drain takes; none was seen in the
+     scenarios (the log admits every entry). Owner: `F-030`.
+- **Rule-off table** (each switched off alone, file restored; the tests of `stuck_hand_on.rs` and
+  `assembly_real_wallet.rs` run; none hung, hard timeout 250 s):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a hand-on's `by` held to be a provider of the part (`within`) | `hand on names the node's holding account...`, `hand on whose start no record...`, `stuck order of the assembled Core is handed on through the real plain wallet` |
+  | the holder must be the node's registered holding account (`plan_hand`) | `hand on through a public node's wallet names the wallet and refuses any other holder`, `hand on whose start no record...`, and `T-020-17`'s `hand on of a route other than the linked order's accepted one is refused` |
+  | the recovered holder is the one the resolution named (`recover_starts`) | `hand on whose start no record of the holding account proves stays refused` |
+  | the record is the holder's own (`proves_start`'s `by`) | the same |
+  | the assembly lands what settled (`run_live`) | `value settled at a public node...`, `real plain wallet's re-serialised answer verifies...`, `stuck order of the assembled Core is handed on...` |
+  | one landing per segment (`closed`) | `value settled at a public node held by a holding account lands in it` |
 
 ## T-020-36: `core-internal`'s round after `T-020-30`
 
@@ -5269,3 +5353,52 @@ consumer files named below.
   | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
 - **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
   included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.
+
+
+
+### T-020-33, after the merge of `T-020-36`'s item 4 (`e2681780`)
+
+Gap 1 above is closed by the contract: `handed-on-route-starts-on-its-holding-record` holds the first move to the
+holding record of the account the hand-on named, at the plan's first node, run by the plan's provider. The hand-on tests
+now go through the linked order's first move: `stuck_hand_on.rs`' `hand on names the node's holding account...` runs the
+linked route (settled, the first move by `RESERVE` in the log, which the kit's log admits), and `assembly_real_wallet.rs`'
+`stuck order of the assembled Core is handed on through the real plain wallet` asserts the `holding_withdrawal`
+(holder the wallet, node `sim-chain-b`) and then runs the linked order with the new `Core::run_linked` (`assembly/linked.rs`,
+an `F-024` file): the customer's authorisation of the linked order through policy (the holding account its origin reserve;
+the linked order is entered in intake's records, which policy's `Requester` source reads), then its route; the first move
+is by `sim-chain-out-b`, the wallet is asked nothing by it, and the real log admits each entry as it is appended.
+- **Rule-off:** the first move run with the wallet as its origin reserve (`Started.origin`) turns the T-024-17 scenario
+  red: the log refuses it ("a part's first move is from the origin reserve its part's yes names").
+
+### T-020-33, review round (Opus, `16c9529e`)
+
+1. *Only value still resting is held.* `Segments::land_settled` lands a settled segment's value at a held node only
+   while it rests there: where the segment out of the node settled first the value is never landed, and a landing is
+   released (`Landings::release`, `Holdings::release`) once that segment settles or the segment that brought the value is
+   reversed (`Segments::note_reversed`, called where a reversal completes). The probe (the `AC-6` order through
+   `sim-chain-b`, no fault) is `value that passes through the wallet's node is not held for the order`. A release is asked as
+   a landing is (again where nothing took effect, never where unconfirmed). Not done: a reversal of the segment *out of* the
+   node returns the value to the node, which should land it again; owner, `T-020-12`'s successor. The reversal hook has no
+   end-to-end test (no kit scenario completes a reversal of a segment that settled at a held node); `Landing::reverse` is
+   unit-tested, and switching the hook off turns nothing red.
+2. *`recover_starts`* takes the last `resolve_stuck` effect for the linked order before the `handed_on` input, the one
+   whose result was done (a part is resolved once, so none follows it), not the first: `recovered start follows the hand-on
+   that succeeded, not an earlier refused one` (the probe: the first provider named and refused, then the holding account).
+3. The stray `notes.md.bak` is deleted.
+4. *Tests of the retry rules and the error mapping:* `segments/landing.rs` unit tests, `tests/landing.rs` (a fake
+   `Landings` at the kit's ledger: landed once, passed-through never landed, asked again only where nothing took effect),
+   `assembly/holding.rs`' `answered` and its unit test.
+- Lows noted, not changed (kit code): `run_linked` authorises with the original order's destination rather than the linked
+  request's, and `given_by` isn't checked against the linked order; production refuses an unproven start.
+- **Rule-off** (each alone, file restored, none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | value that moved on is not landed (`moved_on`) | `value that passed through a held node is never landed`, `value that passes through the wallet's node is not held for the order` |
+  | the recovered holder is the done effect's, not the first | `recovered start follows the hand-on that succeeded...` |
+  | an unconfirmed landing is never asked again | the `landing.rs` unit test, `a landing is asked again only where nothing took effect` |
+  | a landing that took no effect is asked again | the same two |
+  | the wallet's error mapping (an unknown outcome is never asked again) | `only a refusal that moved nothing is asked again` |
+  | a landed, moved-on value is released | `only value still resting is held and what left is released` |
+  | the reversal hook | none (see 1) |
+

@@ -1100,8 +1100,9 @@ impl HandOn {
     ///
     /// Fail closed: the record counts only as Core's own entry, for a linked order the log opened by a
     /// `route_chosen` that names the order it was handed on from, with a `handed_on` of that order naming it, from
-    /// an inner node that is the node the record names, whose every part starts with a segment of the record's
-    /// holder; and only once for the order. Anything else proves nothing, and the order's segments are refused as
+    /// an inner node that is the node the record names, whose every part starts at that node; the record's holder is
+    /// the one the operator's resolution named (the node's holding account, which may run no segment of the route),
+    /// or, for a hand-on the customer made, the route's first provider; and only once for the order. Anything else proves nothing, and the order's segments are refused as
     /// before. The record's statement, and that one statement starts one route, are the log's own rows.
     pub fn recover_starts(segments: &mut Segments, entries: &[Entry]) -> usize {
         let mut proven = 0;
@@ -1126,6 +1127,44 @@ impl HandOn {
             {
                 continue;
             }
+            // The hand-on this record follows, and the effect it followed: the last `resolve_stuck` effect handing the
+            // order on to this linked order before the `handed_on` input, which is the one whose result was done (a
+            // part is resolved once, so none follows a done one; an earlier failed or unknown effect, perhaps naming
+            // another provider, doesn't count).
+            let handed_at = entries.iter().position(|e| {
+                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
+                    if input.subject.order.as_str() == handed_on_from.as_str()
+                        && matches!(&input.observed, Observed::HandedOn { linked_order, .. }
+                            if linked_order.as_str() == order.as_str())))
+            });
+            // The holder the operator's resolution named, where the hand-on was an operator's: the node's holding
+            // account, which may run no segment of the route (`T-020-33`). A hand-on with none was the customer's,
+            // and its starting reserve is its route's first provider.
+            let named = entries[..handed_at.unwrap_or(0)]
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    Entry::Verified(v) => match &v.what {
+                        What::Effect {
+                            action:
+                                Action::ResolveStuck {
+                                    order: resolved,
+                                    resolution:
+                                        Resolution::HandOn {
+                                            by, linked_order, ..
+                                        },
+                                    ..
+                                },
+                            ..
+                        } if resolved.as_str() == handed_on_from.as_str()
+                            && linked_order.as_str() == order.as_str() =>
+                        {
+                            Some(by)
+                        }
+                        _ => None,
+                    },
+                    Entry::Stated(_) => None,
+                });
             let opened = entries.iter().any(|e| {
                 matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
                     if input.subject.order.as_str() == order.as_str()
@@ -1133,17 +1172,12 @@ impl HandOn {
                             if from.as_str() == handed_on_from.as_str()
                                 && !parts.is_empty()
                                 && parts.iter().all(|part| part.segments.first().is_some_and(|s|
-                                    s.provider.as_str() == holder.as_str()
-                                        && matches!(&s.from.node,
-                                            rutent_contracts::provider_role::NodeRef::Inner(n) if n.as_str() == node.as_str())))
+                                    matches!(&s.from.node,
+                                        rutent_contracts::provider_role::NodeRef::Inner(n) if n.as_str() == node.as_str())
+                                        && Self::starts_with_holder(s.provider.as_str(), named.map(Id::as_str), holder.as_str())))
                         )))
             });
-            let handed = entries.iter().any(|e| {
-                matches!(e, Entry::Verified(v) if matches!(&v.what, What::Input { input }
-                    if input.subject.order.as_str() == handed_on_from.as_str()
-                        && matches!(&input.observed, Observed::HandedOn { linked_order, .. }
-                            if linked_order.as_str() == order.as_str())))
-            });
+            let handed = handed_at.is_some();
             if opened && handed {
                 seen.push(order.as_str());
                 segments.prove_start(order);
@@ -1151,6 +1185,17 @@ impl HandOn {
             }
         }
         proven
+    }
+
+    /// Whether a route handed on may start with a segment of `first`, given the `holder` a `holding_withdrawal` names: where
+    /// the operator's resolution named a holder (`named`), the holder is that one and no other, and the route's first
+    /// provider runs the first move whoever it is; where none did, the hand-on was the customer's and the holder is the
+    /// route's first provider (`T-020-33`).
+    fn starts_with_holder(first: &str, named: Option<&str>, holder: &str) -> bool {
+        match named {
+            Some(by) => by == holder,
+            None => first == holder,
+        }
     }
 
     /// Appends a start's `holding_withdrawal`, built once, and once the log takes it has the segments hand the
