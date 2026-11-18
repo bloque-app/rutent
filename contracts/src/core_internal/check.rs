@@ -699,9 +699,13 @@ impl VerifiedEntry {
 impl About {
     /// Checks that it names something.
     pub fn check(&self) -> Result<(), Violation> {
-        if self.order.is_none() && self.segment.is_none() && self.transaction.is_none() {
+        if self.order.is_none()
+            && self.segment.is_none()
+            && self.transaction.is_none()
+            && self.node.is_none()
+        {
             return Err(Violation(
-                "a stated entry's about names an order, a segment or a transaction",
+                "a stated entry's about names an order, a segment, a transaction or a node",
             ));
         }
         Ok(())
@@ -724,6 +728,17 @@ impl StatedEntry {
     pub fn check(&self) -> Result<(), Violation> {
         if let Some(about) = &self.about {
             about.check()?;
+            // A node is what a publisher's record of the segments inside it is of: no other statement names one, and
+            // such a record is about an order through its segments' transactions, never one of its own (`T-020-36`).
+            if about.node.is_some()
+                && (self.what.statement.as_str() != crate::provider_role::INNER_SEGMENTS_SHAPE
+                    || about.segment.is_some()
+                    || about.transaction.is_some())
+            {
+                return Err(Violation(
+                    "a stated entry names a node only as a publisher's record of the segments inside it, about no segment or transaction",
+                ));
+            }
         }
         // The relay is another actor than the maker; a sibling under the same publisher may relay its statement.
         let maker = &self.attribution.maker().acts;

@@ -9,7 +9,8 @@
   "action": {
     "kind": "ask_status",
     "order": "ord-1",
-    "provider": "fx-desk"
+    "provider": "fx-desk",
+    "transaction": "tx-status-1"
   },
   "at": "2026-11-10T09:00:00Z"
 }

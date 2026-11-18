@@ -5055,3 +5055,217 @@ Branch `f-020/t-020-34-verifier-no`, from `m3` at `81be3583`. Edits `components/
   | `eligible`'s call to `cites_a_refusal` | `route citing a verifier's refusal as its judgement is refused` |
   | `judged` ignoring the answer | `tuple whose verifier answered no is not offered` |
   | `offer` ignoring `eligible`'s result | T-024-12's `tuple needing a judgement is not offered without one` |
+
+
+## T-020-36: `core-internal`'s round after `T-020-30`
+
+Branch `f-020/t-020-36-core-internal-round`, from `m3` at `430b73dd` (with `T-020-30` and `T-020-27` merged). Edits
+`contracts/` (core-internal, a `DEC-20` path: it waits for the owner's click at the release into `main`), and the
+consumer files named below.
+
+- **Versioning: folded into 1.0.0, no bump** (lesson 7): core-internal 1.0.0 isn't on `develop`. The changelog's last
+  entry names each item by number; `contracts/CHANGELOG.md` takes a line.
+- **Item by item.**
+  1. *A node's record verified about an order* (`T-020-32`'s blocker). `attribute`'s step 6 verified an entry about an
+     order only through a transaction its body names at top level; an `inner-segments` body names its transactions
+     only inside `segments[]` (and denies unknown fields), so the record was never verified about the order it binds.
+     Step 6 now reads such a body (`inner_segments_of`, parsed as provider-role's `InnerSegments`): about an order, no
+     segment, no transaction, it is verified only where `about.node` is the body's `node`, `segments` isn't empty, and
+     every segment's transaction is first bound to that order (`binding_of`, the binding `transaction-belongs-to-one-
+     order` keeps) **and** asked under for it by the operator's own verified `operation` question (`asked_under`).
+     About its node alone, or about nothing, it is verified as before and binds no order. Every other shape is read as
+     before, and names no node.
+  2. *A record names its node; the replay holds it to the node's publisher, once.* `About.node: Option<Id>`, named only
+     by an `inner-segments` record, about no segment or transaction (`StatedEntry::check`, and the schema's `if`/`then`
+     on `stated-entry`), and verified against the body (item 1). `replay-cites-its-nodes-records` gains `node` (one of
+     the replay's `nodes`, not one its `found` says recorded nothing), `publisher` (its maker states for the party the
+     replay's exit result states for) and `once` (no other cited record names the node). `private_node_of`, which
+     binds a node for `reversal-rests-on-its-evidence`'s `private`, binds through an `inner-segments` record only the
+     node its `about` names.
+  3. *A late status names its transaction.* `Action::AskStatus.transaction: Id`, required. New none-other row
+     `status-is-asked-under-a-fresh-transaction`: no earlier stated entry's `about` names it, nor another `ask_status`
+     effect. `core-orch`'s `Reversals::ask_status` (`reversal/mod.rs`) now claims the transaction before policy
+     decides, so the request, the decision and the effect name it; `tests/reversal.rs`'s late-status test asserts the
+     effect names `asked.transaction`.
+- **Security reading** (the brief's weight). The widened step 6 can't verify a record about an order through another
+  order's transaction (`binding_of` fixes a transaction to the first order named, and `transaction-belongs-to-one-
+  order` refuses a later other), through one no entry binds, through one only a provider's own statement binds (Core
+  never asked under it), or vacuously (no segments). The node is the body's own, so a writer can't relabel a record of
+  one node as another's. A non-publisher's record binds no node: the replay row holds it to the exit's publisher, and
+  `private_node_of` lets a record bind only the node it names, under the publisher its key states for (attribution's
+  step 3).
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0;
+  - "of that order" is first bound to it and asked under for it by the operator's own verified `operation`, stricter
+    than the binding alone: a record of a publisher's internal transaction, or appended before Core's questions, is
+    attributed to no one about the order;
+  - a node a replay replayed belongs to the publisher its exit's result states for, as `private_node_of` already binds
+    it; a sibling provider of that publisher may sign the record;
+  - a record of a node the replay found silent is refused (`node`), beside the Rust count;
+  - an `inner-segments` record about its node alone, or about nothing, stays verifiable and binds nothing;
+  - the late status's transaction is drawn before policy decides; a refused ask leaves it unused, never drawn again;
+  - the freshness row reads stated entries' `about.transaction` and other `ask_status` effects, not hand-overs
+    (which follow the effect) nor decisions (which name the same action).
+- **Consumer lines** (to compile): `node: None` in every `About` literal: `components/core-orch/src/{arrival/confirm.rs,
+  arrival/mod.rs, quote/held.rs, reversal/mod.rs, rounds/mod.rs, segments/mod.rs, snapshot/statements.rs,
+  stuck/mover.rs}`, `components/core-orch/tests/{intake_holds.rs, quote.rs, rounds.rs}`,
+  `conformance/scenarios/tests/{assembly_real_wallet.rs, segments_support/mod.rs}` (`F-024`'s); a transaction in
+  the two `AskStatus` literals of `components/core-authz/src/{engine/mod.rs, roles/tests.rs}` (`F-021`'s). New tests in
+  `components/core-audit/tests/log.rs` (`F-022`'s).
+- **Real log's path.** `core-audit`'s `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log`
+  and `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` run the contract's world on `AuditLog`, sign each
+  record for real with its maker's statements key, keep its bytes, and append it through the general handle: fx-desk's
+  record of `ledger-in` under `tx-f1` and `tx-f2` (Core's questions for `ord-1`) is verified, one naming `ord-2`'s
+  `tx-yes-2` or an unbound transaction isn't; a replay citing the verified record is admitted, one citing the
+  unverified one, us-bank's (another publisher than the exit's fx-desk), two of one node or one of a node not
+  replayed is refused, and one record of each of two nodes is admitted.
+- **Histories the log refused, sorted.** None new: every world case, `T-020-30`'s and `T-020-27`'s tests pass with only
+  the shape's literals changed. `T-020-30`'s three `inner-segments` admission cases now name their node.
+- **Order of work.** Shapes, then the rules, then the fixtures (`scratchpad/f020zh/gen.py`) and the named tests, which
+  passed on their first run; their red is shown by the rule-offs below, each run from the committed round. The first
+  run left two rules green; each got a case (`6ba57ed0`) and went red on the second run.
+- **Gaps, with owners.**
+  1. `T-020-32` appends each record about its order and node after the operations it lists, one per order: a book
+     spanning orders, or a segment under a transaction Core never asked under, stays unverified about the order (by
+     design). Owner: `T-020-32`.
+  2. A replay's nodes are bound to its exit's publisher. A run of private nodes of two publishers, or an exit made by
+     another publisher's provider, would need each node's publisher from the catalogue's private-node declarations,
+     which the log doesn't hold. Owner: the lead, a later `F-020` round if `T-020-32` meets one; residual for
+     `T-025-05`.
+  3. `private_node_of`'s replay branch still binds through the exit's result alone; the records past it add nothing to
+     the binding while they must state for the same publisher. Owner: `T-020-32`, if its scenarios need otherwise.
+  4. The scenario suite beyond the binaries run here runs in CI.
+  5. `once` holds within one replay, not across replays of one order: two replays may each cite a record of the same
+     node. Owner: the lead, a later none-other row ("one record of a node per order") if a reader needs it (the
+     review of `d11e5a2b`).
+  6. A record's body names its maker's publisher (the review's fix), but each segment it lists isn't held to a provider
+     stating for that publisher: a provider may list another publisher's segment of the same order. Residual for
+     `T-025-05`.
+- **Rule-off table** (each switched off alone from the committed tree, its tests run under a 600 s alarm through the
+  lock, the file restored with `git checkout`; script `scratchpad/f020zh/ruleoff.py`; none hung). "Table" is
+  `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "attribution" is
+  `the_log_not_the_writer_attributes_a_stated_entry`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `attribute`: a record's transactions first bound to its order (`binding_of`) | green on the first run (the operator's question covered every case); with `--naming-a-transaction-first-bound-to-another-order` (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+  | `attribute`: asked under by the operator's own question | the same two |
+  | `attribute`: no segment transaction read at all | the same two |
+  | the same, on `core-audit`'s log | `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log` |
+  | `attribute`: at least one segment | the same two contract tests |
+  | `attribute`: `about.node` is the body's, about an order | the same two |
+  | `attribute`: `about.node` is the body's, about its node alone | the same two |
+  | `attribute`: no node on another shape | green on the first run (`StatedEntry::check` refuses first); with the in-memory probe (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `attribute`: the widening whole (records read as before) | `inner_segments_record_about_an_order_whose_transactions_are_all_of_that_order_is_verified`, attribution |
+  | `StatedEntry::check`: a node only on a record | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `every_invalid_fixture_is_rejected_by_the_rust_types_too`, `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `replay-cites-its-nodes-records`'s `node` | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | its `node`, the silent nodes alone | the same two |
+  | its `publisher` | the same two |
+  | its `once` | table, `replay_citing_two_records_of_one_node_is_refused` |
+  | its `publisher`, on `core-audit`'s log | `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` |
+  | its `once`, on `core-audit`'s log | the same |
+  | `private_node_of`: a record binds only its node | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | `status-is-asked-under-a-fresh-transaction` whole (cites none) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | its stated entry naming the transaction | the same two |
+  | its other late status's effect (before the review) | the same two |
+  | the schema's `transaction` required on `ask_status` | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `late_status_asked_without_its_transaction_is_invalid` |
+  | `core-orch`: the action names the transaction drawn (another fresh id instead) | `late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_providers_statement` |
+- **Local checks of the first round** (one lock hold, at `6ba57ed0` with these notes): `cargo fmt --all -- --check`, `cargo clippy
+  --workspace --all-targets -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test
+  -p rutent-contract-guard`, the guard against `origin/develop` ("1671 changed path(s), no violations"), plan-check
+  and tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-authz` (and its `--lib`),
+  `rutent-core-orch` and `rutent-scenarios`, and `cargo doc -D warnings` of the five: all green. `rutent-core-audit`:
+  all green but one run of `reopen.rs`'s `store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_opening`,
+  which failed opening the evidence store's files (`Unavailable`, at the test's `EvidenceStore::open`) and passed three
+  runs of its own binary after; it reads no file this row touched, so a flake for CI to confirm.
+
+### T-020-36, the review of `d11e5a2b`: changes
+
+- **Should-fix, fixed: a late status's transaction could be one a verified entry named.** The row counted stated
+  entries' `about` and other `ask_status` effects only, where the action's doc says no other entry may name it: the
+  reviewer's probe asked under `tx-h3`, named before only by a `stuck_decide` and its `resolve_stuck` effect, and was
+  admitted. The row now reads every verified shape that names a transaction (`transactions_named`: a decision's or an
+  effect's action, `ask_status`, `resolve_stuck` or an `accept_fault`'s showing; a `stuck_decide`; any hand-over item),
+  excepting the effect's own permitting decision (by its request and decision ids). Checked across `types.rs`: no
+  other verified shape names a transaction. Six refused cases: `--a-stuck-resolutions-transaction` (the probe),
+  `--a-transaction-only-a-stuck-decide-step-names`, `--a-transaction-only-a-resolve-stuck-effect-names`,
+  `--a-transaction-another-late-status-decision-names` (decided, never taken), `--a-transaction-a-hand-over-names`,
+  `--a-transaction-an-accepted-showing-names`.
+- **Low, fixed: a record's body names its maker's publisher.** `inner_segments_of` holds the body's `publisher` to the
+  party the entry claims (step 3 binds it to the key), as its `node` to `about.node`. Case
+  `unverified--an-inner-segments-record-naming-another-publisher-than-its-maker-states-for`. Going further (each listed
+  segment's provider stating for that publisher) is gap 6, a residual.
+- **Low, noted:** `once` across replays of one order, gap 5.
+- **Rule-offs of the review's rules** (from `e4c51b1e`, same script and alarm; none hung, every one red):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the row whole; its stated arm; its verified arm (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | its own permitting decision excepted (counted instead) | `every_entry_of_a_complete_log_is_admitted_on_what_came_before_it`, table, `late_status_asked_without_its_transaction_is_invalid`, `request_for_a_providers_late_status_without_its_segment_is_invalid` |
+  | a decision's action; an effect's action; a `stuck_decide`; a hand-over (each alone) | table, `late_status_asked_without_its_transaction_is_invalid`, each time |
+  | `ask_status`'s and `resolve_stuck`'s transaction; `resolve_stuck`'s alone; an accepted showing's (each alone) | the same two, each time |
+  | `attribute`: a record's publisher is its maker's | `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+- **Local checks** (one lock hold, at `e4c51b1e` with these notes): the same list as the first round's, all green,
+  `rutent-core-audit` included; the guard against `origin/develop`: "1678 changed path(s), no violations".
+
+### T-020-36, the re-review of `2b0f32b1`: changes
+
+- **Should-fix, fixed: the own-decision exception matched by ids alone.** A decision copying the permit's request and
+  decision ids, asking about p1-s1 (us-bank) under `tx-status-2`, was read as the effect's own and admitted. The
+  exception is now the entry at the permit's receipt (the same entry, `core::ptr::eq`), deciding the same action.
+  Cases `--a-decision-copying-its-own-ids-for-another-action` (the reviewer's) and
+  `--a-copy-of-its-own-decision-at-another-receipt` (pins the receipt half), both refused.
+- **Rule-offs** (from `d12dd92a` and `c0b58b6e`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the fix whole (ids alone, as before) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the receipt half alone | green from `d12dd92a` (the action half refused the reviewer's case); from `c0b58b6e`, with the copy case: table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the action half alone | none: a decision at the permit's receipt for another action is refused first by the effect's own permit rows, so this half is kept as defence and no case of this row reaches it |
+- **Local checks** (one lock hold, at `c0b58b6e` with these notes): the first round's list, all green; the guard against
+  `origin/develop`: "1680 changed path(s), no violations".
+
+### T-020-36, item 4 (added by the lead): a route handed on, whoever runs its first move
+
+- **Finding** (`T-020-33`, a hand-on through a plain wallet, the owner's form `hand-on-wallet-holder` default):
+  `handed-on-route-starts-on-its-holding-record` held the holding record's `holder` to the move's `origin_reserve`,
+  so the wallet holding the value while the linked route's first provider runs the first segment was refused on that
+  field.
+- **Design.** The record stays required. Its `holder` is the holding account the hand-on named (field `holder`): for
+  the operator's hand-on of a stuck order, the `by` of its `resolve_stuck` effect onto this order; for the customer's
+  hand-on after a failed final deposit, which names no holder, the linked route's first provider, which holds the value
+  there (`core-orch`'s `hand_on/` reads the two bases the same way). Its `node` is the inner
+  node the linked route's own plan moves this first segment from (field `node`, as
+  `holding-withdrawal-starts-a-handed-on-route` holds the node). The move's `provider` is the one that plan names for
+  the segment (field `provider`); it needn't be the holder.
+- **Default** (reversible, failing closed): the log holds no register of a node's holding accounts, so "that node's
+  holding account" is the one the hand-on named and its own record places at the node. `origin_reserve` is no longer
+  read by this row (the authorisation's rows still read it).
+- **Cases.** The contract's world had no admitted move of a route handed on (its hand-on names fx-desk, its holding
+  record us-bank's), so the cases are built from `--missing`'s history, with ord-2's own authorisation (`auth-2`, which
+  its acceptance names and the history lacked) and its own segment id (`o2-s1`: `p1-s1` is ord-1's, which
+  `segment-belongs-to-one-order` keeps): `--a-wallet-holds-and-the-plans-provider-runs-the-first-move` admitted
+  (plain-wallet named and holding at `ledger-in`, us-bank running the move); `--a-holder-the-hand-on-did-not-name`
+  (`holder`), `--node` (the record at `ledger-out`), `--a-first-move-from-another-node` (`node`), `--provider` (fx-desk
+  runs what the plan gives us-bank, decided so) refused, beside `--missing` and `--holder` (now refused on the
+  hand-on's name); for the customer's basis, `--a-customers-hand-on-held-by-its-first-provider` admitted and
+  `--a-customers-hand-on-held-by-another-than-its-first-provider` refused (`holder`).
+- **Histories the log refused, sorted.** The first version read the operator's basis alone and the end checks'
+  scenarios refused four of `rutent-scenarios`' real flows (`hand_on.rs`'s
+  `handed_on_routes_withdrawal_is_proven_by_the_holding_accounts_record`, and three of `hand_on_record.rs`), each a
+  customer's hand-on with no `resolve_stuck`: a gap in the new rule, not a Core bug; the customer's basis fixed it,
+  and both binaries pass. Test `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`.
+- **Hand-off to `T-020-33`:** its hand-on's `resolve_stuck` names the wallet as `by`, the wallet's `holding_withdrawal`
+  record names it as `holder` at the node the linked plan's first segment starts from, and the plan names the provider
+  that runs it.
+- **Rule-offs** (from the item's second commit; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `holder`: the holding account the hand-on named | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
+  | `node`: the first segment's from-node | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted` |
+  | `provider`: the plan's | the same two |
+  | `holder`, the customer's basis alone (its first provider) | the same two |
+  | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
+- **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
+  included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.

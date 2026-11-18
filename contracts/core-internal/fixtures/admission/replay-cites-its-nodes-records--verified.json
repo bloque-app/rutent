@@ -1800,7 +1800,8 @@
           "value": "f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4"
         },
         "about": {
-          "order": "ord-1"
+          "order": "ord-1",
+          "node": "ledger-in"
         }
       }
     }

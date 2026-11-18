@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:stated-entry",
   "title": "Stated entry",
-  "description": "What a party stated, apart from anything rutent verified (REQ-AUD-2): who it is attributed to, its shape, the time the maker gives it, the key it says signed it, and a salted commitment to the statement's bytes as received. The bytes, the signature's value and the salt stay in the evidence store apart from the log, so the signature stays checkable against exactly what was signed, and nothing in the log lets anyone confirm a guess of a statement's content, such as a holding account's balance (REQ-AUD-6). Its time is the maker's own, labelled so. That a relay is a party other than the maker is checked by the Rust types.",
+  "description": "What a party stated, apart from anything rutent verified (REQ-AUD-2): who it is attributed to, its shape, the time the maker gives it, the key it says signed it, and a salted commitment to the statement's bytes as received. The bytes, the signature's value and the salt stay in the evidence store apart from the log, so the signature stays checkable against exactly what was signed, and nothing in the log lets anyone confirm a guess of a statement's content, such as a holding account's balance (REQ-AUD-6). Its time is the maker's own, labelled so. That a relay is a party other than the maker is checked by the Rust types; that a node is named only by a publisher's record of a node's segments, about no segment or transaction, by both.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -71,6 +71,45 @@
     "relayed_by": {
       "description": "Who passed it on, where someone other than its maker did: the statement stays its maker's.",
       "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    }
+  },
+  "if": {
+    "required": [
+      "about"
+    ],
+    "properties": {
+      "about": {
+        "required": [
+          "node"
+        ]
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "what": {
+        "properties": {
+          "statement": {
+            "const": "urn:rutent:provider-role:inner-segments"
+          }
+        }
+      },
+      "about": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "segment"
+              ]
+            },
+            {
+              "required": [
+                "transaction"
+              ]
+            }
+          ]
+        }
+      }
     }
   },
   "$defs": {
@@ -175,7 +214,7 @@
       }
     },
     "about": {
-      "description": "What it is about, where Core knows it: at least one of an order, a segment or a transaction.",
+      "description": "What it is about, where Core knows it: at least one of an order, a segment, a transaction or a private node. A node is named only by a publisher's record of the segments inside it (provider-role's inner-segments), as its body names it, about no segment or transaction (T-020-36).",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
@@ -187,6 +226,10 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "transaction": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node a publisher's record of the segments inside it is of, as its body names it, so the log reads which node a record is of (replay-cites-its-nodes-records).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }

@@ -299,6 +299,7 @@ pub fn record_refused(
                 order: None,
                 segment: None,
                 transaction: Some(transaction),
+                node: None,
             },
         }),
     };

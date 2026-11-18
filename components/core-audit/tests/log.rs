@@ -3264,3 +3264,138 @@ fn a_class_grants_changes_are_dated_in_the_order_the_log_records_them() {
         .is_ok()
     );
 }
+
+// --- T-020-36: a publisher's record of a node's segments, on the real log ----------------------------------------
+
+/// The world's stated entry of `maker`'s about `transaction`, its receipt in `run`'s log.
+fn stated_of<S: Store>(run: &Run<S>, maker: &str, transaction: &str) -> (Receipt, StatedEntry) {
+    run.log
+        .entries()
+        .iter()
+        .find_map(|(r, e)| match e {
+            Entry::Stated(s)
+                if s.attribution.maker().acts.as_str() == maker
+                    && s.about
+                        .as_ref()
+                        .and_then(|a| a.transaction.as_ref())
+                        .is_some_and(|t| t.as_str() == transaction) =>
+            {
+                Some((r.clone(), s.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{maker}'s statement about {transaction}"))
+}
+
+/// Appends `maker`'s record of the segments inside `node` that ran under `transactions`, about the world's `ord-1` and
+/// the node, as Core hands it over: signed by `maker`'s statements key, stating for itself, its bytes kept.
+fn record_of_node<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    node: &str,
+    transactions: &[&str],
+) -> Result<Receipt, AppendFailure> {
+    let (_, like) = stated_of(run, "fx-desk", "tx-f2");
+    let mut entry = serde_json::to_value(&like).unwrap();
+    entry["attribution"] = json!({"signature": "verified", "who": provider(maker)});
+    entry["what"]["statement"] = json!(rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE);
+    entry["about"] = json!({"order": "ord-1", "node": node});
+    entry["commitment"]["value"] = json!(format!("{:064x}", run.log.len() + 0xabc));
+    let segments: Vec<Value> = transactions
+        .iter()
+        .map(|t| json!({"transaction": t, "asset_in": "COP", "amount_in": "150000", "asset_out": "USD", "amount_out": "3600", "fee": "1500"}))
+        .collect();
+    let body = json!({"node": node, "publisher": maker, "standing": "publishers_word", "segments": segments});
+    let claim = run.claim(&entry, &statements_key(maker), body);
+    run.append(claim)
+}
+
+/// A replay of `ord-1`'s `p1-s2`, its exit fx-desk's result about `tx-f2`, replaying `nodes` and citing `records`.
+fn replay_citing<S: Store>(run: &Run<S>, nodes: &[&str], records: &[&Receipt]) -> Value {
+    let (exit, _) = stated_of(run, "fx-desk", "tx-f2");
+    let mut entry = valid("verified-entry-of-a-replay-consistent-with-its-exit");
+    entry["what"]["order"] = json!("ord-1");
+    entry["what"]["segment"] = json!("p1-s2");
+    entry["what"]["nodes"] = json!(nodes);
+    let mut rests_on = vec![serde_json::to_value(&exit).unwrap()];
+    rests_on.extend(records.iter().map(|r| serde_json::to_value(r).unwrap()));
+    entry["what"]["rests_on"] = json!(rests_on);
+    entry
+}
+
+/// `T-020-32`'s blocker, on the log `core-audit` keeps: a publisher's record names its transactions only inside its
+/// segments, and is verified about the order they were asked under for, so the replay cites it as that node's.
+// verifies: REQ-ORD-41, REQ-AUD-9
+#[test]
+fn a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    // fx-desk's segments inside `ledger-in`, under the transactions Core asked under for `ord-1`.
+    let record = record_of_node(&mut run, "fx-desk", "ledger-in", &["tx-f1", "tx-f2"]).unwrap();
+    assert!(verified_at(&run, &record), "{:?}", run.at(&record));
+    // One naming a transaction of `ord-2`, or one the log never bound, is attributed to no one about `ord-1`.
+    let another = record_of_node(&mut run, "fx-desk", "ledger-in", &["tx-f1", "tx-yes-2"]).unwrap();
+    assert!(!verified_at(&run, &another));
+    let unknown = record_of_node(&mut run, "fx-desk", "ledger-in", &["tx-nowhere"]).unwrap();
+    assert!(!verified_at(&run, &unknown));
+    // The replay cites the verified record of the node it replayed, by the publisher its exit states for.
+    run.append(replay_citing(&run, &["ledger-in"], &[&record]))
+        .expect("the replay, on its exit's result and its node's record");
+    // Not the unverified one.
+    assert_eq!(
+        run.append(replay_citing(&run, &["ledger-in"], &[&another])),
+        Err(AppendFailure::Refused(Violation(
+            "a replay's node record is a verified statement"
+        )))
+    );
+}
+
+/// The record a replay cites for a node is that node's publisher's, one per node, on the log `core-audit` keeps.
+// verifies: REQ-AUD-9, REQ-ORD-3
+#[test]
+fn a_replay_on_the_log_cites_one_record_per_node_by_its_publisher() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    // us-bank's record of `ledger-in`, verified about `ord-1`: but the replay's exit is fx-desk's, so it binds its
+    // nodes to fx-desk, and us-bank's record is no record of that node's publisher.
+    let by_another = record_of_node(&mut run, "us-bank", "ledger-in", &["tx-f1"]).unwrap();
+    assert!(verified_at(&run, &by_another));
+    assert_eq!(
+        run.append(replay_citing(&run, &["ledger-in"], &[&by_another])),
+        Err(AppendFailure::Refused(Violation(
+            "a replay's node record states for that node's publisher, the one the replay's exit result states for"
+        )))
+    );
+    // Two of fx-desk's records of `ledger-in`, for a replay of two nodes: one per node.
+    let first = record_of_node(&mut run, "fx-desk", "ledger-in", &["tx-f1"]).unwrap();
+    let second = record_of_node(&mut run, "fx-desk", "ledger-in", &["tx-f2"]).unwrap();
+    let out = record_of_node(&mut run, "fx-desk", "ledger-out", &["tx-f2"]).unwrap();
+    assert_eq!(
+        run.append(replay_citing(
+            &run,
+            &["ledger-in", "ledger-out"],
+            &[&first, &second]
+        )),
+        Err(AppendFailure::Refused(Violation(
+            "a replay cites one record of each node"
+        )))
+    );
+    // A record of a node it didn't replay.
+    assert_eq!(
+        run.append(replay_citing(&run, &["ledger-in"], &[&out])),
+        Err(AppendFailure::Refused(Violation(
+            "a replay's node record is of a node it replayed that recorded something"
+        )))
+    );
+    // One of each node is admitted.
+    run.append(replay_citing(
+        &run,
+        &["ledger-in", "ledger-out"],
+        &[&first, &out],
+    ))
+    .expect("one record of each node");
+}
