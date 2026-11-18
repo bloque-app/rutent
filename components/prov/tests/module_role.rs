@@ -50,8 +50,25 @@ impl RoleProvider for Through {
     fn handle(&mut self, operation: &Statement<Operation>) -> Received<ResultBody> {
         let expected = self.twin.handle(operation);
         let handled = self.binding.handle(&self.provider, operation);
-        let Handled::Answered(answered) = handled else {
-            panic!("the platform refused an operation of the role suite: {handled:?}");
+        let answered = match handled {
+            Handled::Answered(answered) => answered,
+            // A replay of a carried out transaction from elsewhere, to a provider that declares no safe retry: the
+            // platform refuses it before the module sees it (`T-013-09`), as the replay probe expects of the module,
+            // a final refusal, which the stand-in gives in process.
+            Handled::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::DuplicateTransaction,
+            ) => {
+                let twin = serde_json::to_value(&expected.statement().statement).expect("JSON");
+                assert_eq!(
+                    twin["outcome"]["refusal"]["class"], "final",
+                    "{}: the platform refused a repeat the stand-in doesn't refuse as final: {twin}",
+                    self.provider
+                );
+                // Signed as the twin's other results are, with the key its placeholder stands for.
+                return Received::<ResultBody>::from_bytes(signed(expected.bytes()))
+                    .expect("reads back");
+            }
+            handled => panic!("the platform refused an operation of the role suite: {handled:?}"),
         };
         // The platform signs the result, and a judgement the module nested in it in the provider's name, with the
         // provider's statements key, which the stand-in's placeholder stands for. Ed25519 is deterministic, so

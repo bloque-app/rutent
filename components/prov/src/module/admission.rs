@@ -114,6 +114,10 @@ pub enum Unverified {
 ///     ) -> Result<(), Unverified> {
 ///         Ok(())
 ///     }
+///
+///     fn safe_retry(&self, _: &str) -> Option<bool> {
+///         Some(true)
+///     }
 /// }
 /// ```
 pub trait ReleaseJudge: sealed::Sealed {
@@ -128,6 +132,11 @@ pub trait ReleaseJudge: sealed::Sealed {
 
     /// Records the statement key an admitted release declared.
     fn record_statement_key(&mut self, key: &PublicKey) -> Result<(), Unverified>;
+
+    /// Whether the provider declares a repeat safe (`REQ-CAT-10`), as the advertisement the judge holds says:
+    /// `None` where it holds none, or the advertisement declares nothing (a module the operator publishes, a
+    /// verifier). The platform reads `None` as no safe retry.
+    fn safe_retry(&self, provider: &str) -> Option<bool>;
 }
 
 /// The seal: only the catalogue implements it, and it can't be named outside this module.
@@ -162,6 +171,10 @@ impl ReleaseJudge for Catalogue {
 
     fn record_statement_key(&mut self, key: &PublicKey) -> Result<(), Unverified> {
         Catalogue::record_statement_key(self, key).map_err(Unverified::StatementKey)
+    }
+
+    fn safe_retry(&self, provider: &str) -> Option<bool> {
+        self.declared_by(provider)?.safe_retry
     }
 }
 

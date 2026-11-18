@@ -49,7 +49,7 @@ fn deposit_answer(
     use rutent_prov::holding::wallet::Operator as _;
     let statement = TestOperator.statement(operation(json!({
         "kind": "deposit",
-        "transaction": format!("tx-{order}-{amount}"),
+        "transaction": format!("tx-{order}-{amount}-{node}-{asset}"),
         "provider": provider,
         "origin": node,
         "destination": { "network": provider },
