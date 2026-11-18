@@ -257,8 +257,8 @@ The Wasmtime pin bumped from 48.0.8 to 48.0.9 (`components/prov/Cargo.toml`, `Ca
 ## T-025-02
 
 Each jail layer probed alone, on Linux, with the release build scanned for a way to turn one off. **Written on macOS:
-nothing here has run on Linux. The probes' first run, the run id and the rule-offs are CI's** (`jail-probes.yml`; the
-main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touches `components/prov/src/module/` and
+the Linux evidence is `jail-probes.yml`'s runs, recorded at the end of this section** (`ci.yml`'s
+`cargo test --workspace` skips the probes, which need `--features jail-layers`; this job runs them). Row 18; touches `components/prov/src/module/` and
 `.github/workflows/`, both `DEC-20` paths, so it waits for the owner's click at the release into `main`.
 
 - **The builder.** `components/prov/src/module/layers.rs` names the layers (`Layer`, fifteen: the six namespaces,
@@ -331,10 +331,10 @@ main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touche
   already did.
 - **The release scan has a second prong that doesn't depend on the optimiser.** A provider built with the feature never
   calls the builder, so its names may fold away and can't serve as the string scan's control. The test therefore also reads
-  Cargo's resolved features: `cargo tree -e normal,build,features -p rutent-prov` (the release command line) must show no
-  `jail-layers`, while the same with `dev` must show `feature "jail-layers"` (the control, which shows the check can fail);
-  and `cargo metadata` (which parses the manifest, a multi-line array included) must show no feature but `jail-layers`
-  itself enabling it, `default` included.
+  Cargo's resolved features, in the inverted tree `cargo tree -e features -i rutent-prov` (a forward tree never lists the
+  root package's own features): for the release command line it must show `feature "default"` and no `jail-layers`, and with
+  `--features jail-layers` it must show `rutent-prov feature "jail-layers"` (the control, which shows the check can fail);
+  and `cargo metadata` over the workspace must show no feature, dependent crate or self-dependency enabling it.
 - **The composition test runs on every platform** (`unshare_arguments(ALL) == UNSHARE` and the refusals of a layer that
   can't stand alone), no longer ignored off Linux.
 - **The UTS test keeps `PLAN.md`'s name**, `hostname_change_is_refused_by_the_uts_namespace_alone`, since the row's test
@@ -361,3 +361,29 @@ main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touche
 - **A gap for `F-024`:** `ci.yml`'s evidence table (`T-024-09`) reads the results of `cargo test --workspace`, which no
   longer holds these 13 tests, so `THR-85`, `THR-79`, `GUA-5` and `REQ-MDL-11` rows they verify would read as untested
   there unless the table also reads the `jail-probes` job's results. Owner: `F-024`.
+- **The resolved-features check's control was wrong** in `19fb8314` (a forward tree can't show the root's features); it
+  reads the inverted tree now, whose two outputs were reproduced on cargo 1.98.0. `jail-probes.yml` also lints the probes:
+  `cargo clippy --locked -p rutent-prov --all-targets --features jail-layers -- -D warnings`.
+
+### T-025-02: Linux evidence
+
+Run 44242098797 (commit `19fb8314`, `jail-probes`), per probe, control then with the layer; every one as the test asserts:
+
+| Layer | Control | With the layer |
+|---|---|---|
+| user namespace | `[]`: `owner=0 switch=refused EPERM` | `[user]`: `owner=65534 switch=refused EINVAL` |
+| network namespace | `[user]`: allowed | `[user,net]`: refused `ENETUNREACH` |
+| IPC namespace | `[user]`: allowed | `[user,ipc]`: refused `EINVAL` |
+| UTS namespace | `[user]`: refused `EPERM` | `[user,uts]`: allowed, `hostname=rutent-jail-probe`, the host's unchanged (depth only) |
+| PID namespace | `[user]`: allowed | `[user,pid]`: refused `ESRCH` |
+| mount namespace and root pivot | `[user,mount]`: `entries=26 passwd=readable` | `[user,mount,empty-root]`: `entries=0 passwd=absent` |
+| `no_new_privs` | `[]`: allowed `euid=0` | `[no-new-privs]`: refused |
+| capabilities | `[user]`: allowed | `[user,caps]`: refused `EPERM` |
+| Landlock (ABI 8) | `[no-new-privs]`: allowed | `[no-new-privs,landlock]`: refused `EACCES` |
+| seccomp | `[no-new-privs]`: allowed | `[no-new-privs,seccomp]`: refused `EPERM` |
+| descriptors | `[]`: `fds=[3, 142, 145]` | `[close-before-exec]` and `[close-in-jail]`: `fds=[]` |
+| `RLIMIT_AS` | `[]`: `limit=0 past=allowed` | `[address-space]`: `limit=4294967296 small=allowed past=refused ENOMEM` |
+| `G-05`, the shipped provider's `--probe` | | `address_space_limit` 4294967296, `address_space_denied` true, `landlock_abi` 8, `open_descriptors` [] |
+
+The release scan found no layer name in the release provider. Green run's id (the whole job, with the resolved-features
+check fixed): **TO FILL after CI.**

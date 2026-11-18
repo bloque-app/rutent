@@ -45,6 +45,11 @@ jobs:
       # The release build the scan reads: no `jail-layers` feature on its command line.
       - name: Release build of the provider binary
         run: cargo build --release --locked -p rutent-prov --bin rutent-wasm-provider
+      # `required-features` hides the probes from `ci.yml`'s workspace clippy, so this job lints them.
+      - name: Clippy, with the probes
+        run: |
+          rustup component add clippy
+          cargo clippy --locked -p rutent-prov --all-targets --features jail-layers -- -D warnings
       - name: Probe each layer alone, and scan the release build
         shell: bash
         env:

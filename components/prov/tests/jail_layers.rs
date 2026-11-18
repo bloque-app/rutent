@@ -433,18 +433,10 @@ mod rig {
         // so a leak of `jail-layers` is caught here, in the resolved graph.
         let cargo = || std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        // The inverted tree lists the package's own features, which a forward tree never does.
         let tree = |extra: &[&str]| {
             let out = Command::new(cargo())
-                .args([
-                    "tree",
-                    "--locked",
-                    "-p",
-                    "rutent-prov",
-                    "-e",
-                    "normal,build,features",
-                    "--prefix",
-                    "none",
-                ])
+                .args(["tree", "--locked", "-e", "features", "-i", "rutent-prov"])
                 .args(extra)
                 .arg("--manifest-path")
                 .arg(manifest)
@@ -460,8 +452,12 @@ mod rig {
         let shipped_graph = tree(&[]);
         let control_graph = tree(&["--features", "jail-layers"]);
         assert!(
-            control_graph.contains("feature \"jail-layers\""),
-            "the control graph (the feature asked for) doesn't show it: the check would pass for nothing"
+            control_graph.contains("rutent-prov feature \"jail-layers\""),
+            "the control graph (the feature asked for) doesn't show it: the check would pass for nothing:\n{control_graph}"
+        );
+        assert!(
+            shipped_graph.contains("rutent-prov feature \"default\""),
+            "the shipped graph lists no feature of the package: the check would pass for nothing:\n{shipped_graph}"
         );
         assert!(
             !shipped_graph.contains("jail-layers"),
