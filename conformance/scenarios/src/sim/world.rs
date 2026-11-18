@@ -19,6 +19,17 @@ use rutent_prov::proxy::Caller;
 /// The world's clock until a scenario sets it: 2026-11-07T00:00:00Z.
 pub const WORLD_AT: Instant = Instant(1_794_009_600);
 
+/// What a world holds that no record may carry (`T-025-03`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Each provider's private statement key, base64url.
+    pub statement_keys: Vec<(String, String)>,
+    /// Each provider's credentials: provider, name, plaintext.
+    pub secrets: Vec<(String, String, String)>,
+    /// Each provider's own state entries: provider, key, value.
+    pub state: Vec<(String, String, String)>,
+}
+
 /// One behaviour waiting in a script.
 #[derive(Debug, Clone)]
 struct Queued {
@@ -61,6 +72,7 @@ pub struct SimWorld {
     rails: BTreeMap<String, String>,
     chains: BTreeMap<String, String>,
     statement_keys: BTreeMap<String, String>,
+    secrets: BTreeMap<(String, String), String>,
     delivered: Vec<Delivered>,
     /// Movements the networks refused to record, and why.
     pub refused_movements: Vec<(Movement, String)>,
@@ -188,6 +200,35 @@ impl SimWorld {
             .insert((provider.to_owned(), key.to_owned()), value.to_owned());
     }
 
+    /// Holds `value` as `provider`'s secret `name`, which the platform's credential lookup hands only to the
+    /// provider's outside part, once the platform judged the lookup declared (`T-025-03`).
+    pub fn hold_secret(&mut self, provider: &str, name: &str, value: &str) {
+        self.secrets
+            .insert((provider.to_owned(), name.to_owned()), value.to_owned());
+    }
+
+    /// Every private statement key the world holds, as `(provider, base64url text)`, and every state entry it
+    /// seeded, as `(provider, key, value)`: what a leak scan seeks (`T-025-03`).
+    pub fn held_secrets(&self) -> Held {
+        Held {
+            statement_keys: self
+                .statement_keys
+                .iter()
+                .map(|(p, k)| (p.clone(), k.clone()))
+                .collect(),
+            secrets: self
+                .secrets
+                .iter()
+                .map(|((p, n), v)| (p.clone(), n.clone(), v.clone()))
+                .collect(),
+            state: self
+                .seeded
+                .iter()
+                .map(|((p, k), v)| (p.clone(), k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
     /// Sets the clock the platform's records take their times from.
     pub fn set_clock(&mut self, at: Instant) {
         self.clock = Some(at);
@@ -221,8 +262,10 @@ impl SimWorld {
 }
 
 impl World for SimWorld {
-    fn secret(&mut self, _: &str, _: &str) -> Option<String> {
-        None
+    fn secret(&mut self, provider: &str, name: &str) -> Option<String> {
+        self.secrets
+            .get(&(provider.to_owned(), name.to_owned()))
+            .cloned()
     }
 
     fn state(&mut self, provider: &str, key: &str) -> Option<String> {
