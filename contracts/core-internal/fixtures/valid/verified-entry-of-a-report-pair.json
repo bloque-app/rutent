@@ -13,6 +13,7 @@
       "segment": "seg-2",
       "sent": {
         "party": "bridge-pay",
+        "segment": "seg-2",
         "amount": "1000000000",
         "asset": {
           "id": "USDC",
@@ -29,6 +30,7 @@
       },
       "received": {
         "party": "fx-desk",
+        "segment": "seg-3",
         "amount": "1000000000",
         "asset": {
           "id": "USDC",

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:report-pair",
   "title": "Segment report pair",
-  "description": "A segment's pair of reports: what one party says it sent, and what the next says it received, each with the receipt of the stated entry holding its statement, and the sending party's tuple's terms they are compared under: its fill increment and its gross or net convention (REQ-ORD-9, REQ-CAT-11). That the two are different parties', and that a gross figure's charge is no more than it, are checked by the Rust types.",
+  "description": "A segment's pair of reports: what its provider says it sent, and what the provider of the route's next segment says it received, each about its own segment and with the receipt of the stated entry holding its statement, and the sending party's tuple's terms they are compared under: its fill increment and its gross or net convention (REQ-ORD-9, REQ-CAT-11). The last segment of a route has no pair. That the two are different parties', that the pair's segment is the sent report's and the received report's another, and that a gross figure's charge is no more than it, are checked by the Rust types; that the received segment is the route's next, and each party its segment's provider, by the log's citation table.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,6 +17,7 @@
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "segment": {
+      "description": "The segment whose end the pair compares: its sent report's.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
     },
     "sent": {
@@ -24,7 +25,7 @@
       "$ref": "#/$defs/report"
     },
     "received": {
-      "description": "What the receiving party reports.",
+      "description": "What the receiving party reports, about the route's next segment after the sent one.",
       "$ref": "#/$defs/report"
     },
     "terms": {
@@ -34,18 +35,23 @@
   },
   "$defs": {
     "report": {
-      "description": "One party's report about a segment.",
+      "description": "One party's report about its own segment.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "party",
+        "segment",
         "amount",
         "asset",
         "statement"
       ],
       "properties": {
         "party": {
-          "description": "The provider that reports: its statement's maker (acts), so two adjacent providers of one publisher report a pair (REQ-ORD-9).",
+          "description": "The provider that reports: its statement's maker (acts), so two adjacent providers of one publisher report a pair (REQ-ORD-9), and the provider the log moved its segment's value with.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The segment the report is about, which its statement's about names: the sent report's is the pair's segment, the received report's the route's next segment after it (T-020-38).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "amount": {

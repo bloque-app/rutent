@@ -1,6 +1,5 @@
 {
   "row": "sent-report-is-its-partys-statement",
-  "breaks": null,
   "history": [
     {
       "receipt": {
@@ -503,7 +502,7 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "pay-group",
+            "party": "bridge-pay",
             "acts": "bridge-pay",
             "role": "provider",
             "kind": "component"
@@ -595,7 +594,7 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "pay-group",
+            "party": "fx-desk",
             "acts": "fx-desk",
             "role": "provider",
             "kind": "component"
@@ -1863,7 +1862,7 @@
         "attribution": {
           "signature": "verified",
           "who": {
-            "party": "fx-desk",
+            "party": "pay-group",
             "acts": "fx-desk",
             "role": "provider",
             "kind": "component"
@@ -2082,6 +2081,138 @@
     {
       "receipt": {
         "log": "log-main",
+        "index": 207,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "fx-desk",
+            "acts": "fx-desk",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:07Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:08Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-f2",
+          "segment": "p1-s2"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 208,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "operator",
+          "acts": "op-login-2",
+          "role": "operator",
+          "kind": "person"
+        },
+        "what": {
+          "call": "command",
+          "command": "accept_fault",
+          "order": "ord-1",
+          "subject": "p1-s2"
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 209,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "reversal_carrier",
+          "order": "ord-1",
+          "segment": "p1-s2",
+          "carrier": "operator",
+          "showing": {
+            "log": "log-main",
+            "index": 207,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+            }
+          },
+          "accepted_by": {
+            "party": "operator",
+            "acts": "op-login-2",
+            "role": "operator",
+            "kind": "person"
+          },
+          "accepted_with": {
+            "log": "log-main",
+            "index": 208,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
         "index": 139,
         "entry": {
           "algorithm": "sha-256",
@@ -2126,6 +2257,52 @@
           "status": "observed"
         }
       }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 440,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "pay-group",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-b1",
+          "segment": "p1-s1"
+        }
+      }
     }
   ],
   "entry": {
@@ -2142,7 +2319,8 @@
         "order": "ord-1",
         "segment": "p1-s1",
         "sent": {
-          "party": "bridge-pay",
+          "party": "us-bank",
+          "segment": "p1-s1",
           "amount": "1000000000",
           "asset": {
             "id": "USDC",
@@ -2150,15 +2328,16 @@
           },
           "statement": {
             "log": "log-main",
-            "index": 111,
+            "index": 440,
             "entry": {
               "algorithm": "sha-256",
-              "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+              "value": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
             }
           }
         },
         "received": {
           "party": "fx-desk",
+          "segment": "p1-s2",
           "amount": "1000000000",
           "asset": {
             "id": "USDC",
@@ -2166,10 +2345,10 @@
           },
           "statement": {
             "log": "log-main",
-            "index": 113,
+            "index": 134,
             "entry": {
               "algorithm": "sha-256",
-              "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+              "value": "2323232323232323232323232323232323232323232323232323232323232323"
             }
           }
         },

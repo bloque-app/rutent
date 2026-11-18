@@ -2089,6 +2089,52 @@
     {
       "receipt": {
         "log": "log-main",
+        "index": 440,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "us-bank",
+            "acts": "us-bank",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-06T15:04:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-06T15:04:06Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+        },
+        "about": {
+          "order": "ord-1",
+          "transaction": "tx-b1",
+          "segment": "p1-s1"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
         "index": 140,
         "entry": {
           "algorithm": "sha-256",
@@ -2109,7 +2155,8 @@
             "order": "ord-1",
             "segment": "p1-s1",
             "sent": {
-              "party": "bridge-pay",
+              "party": "us-bank",
+              "segment": "p1-s1",
               "amount": "1000000000",
               "asset": {
                 "id": "USDC",
@@ -2117,15 +2164,16 @@
               },
               "statement": {
                 "log": "log-main",
-                "index": 111,
+                "index": 440,
                 "entry": {
                   "algorithm": "sha-256",
-                  "value": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+                  "value": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
                 }
               }
             },
             "received": {
               "party": "fx-desk",
+              "segment": "p1-s2",
               "amount": "1000000000",
               "asset": {
                 "id": "USDC",
@@ -2133,10 +2181,10 @@
               },
               "statement": {
                 "log": "log-main",
-                "index": 113,
+                "index": 134,
                 "entry": {
                   "algorithm": "sha-256",
-                  "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+                  "value": "2323232323232323232323232323232323232323232323232323232323232323"
                 }
               }
             },

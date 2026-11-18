@@ -1,0 +1,43 @@
+{
+  "order": "ord-17",
+  "segment": "seg-2",
+  "sent": {
+    "party": "bridge-pay",
+    "segment": "seg-1",
+    "amount": "1000000000",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "statement": {
+      "log": "log-main",
+      "index": 60,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6161616161616161616161616161616161616161616161616161616161616161"
+      }
+    }
+  },
+  "received": {
+    "party": "fx-desk",
+    "segment": "seg-3",
+    "amount": "1000000000",
+    "asset": {
+      "id": "USDC",
+      "decimals": 6
+    },
+    "statement": {
+      "log": "log-main",
+      "index": 61,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "6262626262626262626262626262626262626262626262626262626262626262"
+      }
+    }
+  },
+  "terms": {
+    "reporting": {
+      "kind": "net"
+    }
+  }
+}
