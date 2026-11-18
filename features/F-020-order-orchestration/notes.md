@@ -5790,3 +5790,33 @@ Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/co
 
   The two tests were written after their rules, which already existed (the hold, `T-020-25`) or were one line (the
   name); the rule-offs are their check.
+
+
+### T-020-35, part two, the review of `53c32685`: changes
+
+- **Merged** `origin/m3` (`5915aa63`) and `T-020-38`'s merged-up head `89ca70e1`; notes kept both sides.
+- **Should-fix: a pair never fails a settlement.** `pair_with_previous(...)?` returned from `settle_on` after the result,
+  fees and exposure release were on the log, so `finish` and `measure_end` never ran and the part stopped; a
+  deterministic refusal would have halted it for good (ADR-0009: a comparison is a detection). `settle_on` now calls
+  `Segments::report_end`, which fails nothing: what can't be built (no sent report held, a figure that is no amount,
+  the contract refusing the pair) is parked in `Segments::unbuilt_pairs()` (`UnbuiltPair {order, segment, why}`;
+  `SegmentsError::Pair` is gone), and the settlement goes on. `Core::unbuilt_reports()` and `unpaired_reports()` (waiting
+  plus parked) surface it. Test: `pair that can't be built leaves the segment settled and the part running to its end`
+  (the sent reports lost, as a restart would: `Segments::lose_sent_reports`, doc-hidden; four settled segments,
+  the order complete, three parked pairs naming `NoSentReport`, none written) and `a pair without the sent report or
+  holding a charge above it is unbuilt` (unit: a gross charge rounded above what was sent is `Refused`).
+- **Low: a refused pair blocked the queue.** `write_pairs` parks a pair the log refuses (with the violation) and goes on to
+  the ones after it; only unavailability stops, leaving the pair and those after it waiting. Test: `a pair the log
+  refuses is parked and the pairs after it still go`.
+- **Low: the increment is carried.** `Shape.increment` (`conformance/src/role/stand_in.rs`, an `F-024` file; the commit
+  body says so); `sim-join-in` declares 10. The first test asserts pair 0's `terms.increment` is 10 in the reports'
+  unit and the others' none, so a tuple's increment goes through `report_terms` to a built pair on the running
+  platform. The two difference tests no longer set the increment; they restate only the receiving figure (nine, then
+  ten, less than the sending one), and their doc comments say so.
+- **Rule-offs** (each alone, under a 300 or 400 s alarm, restored with `git checkout`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | an unbuilt pair is not parked | `pair that can't be built leaves the segment settled and the part running to its end` |
+  | a refused pair stays at the queue's head | `a pair the log refuses is parked and the pairs after it still go` |
+  | the tuple's increment dropped from the pair's terms | the pair-with-terms test and the within-one-increment test |
