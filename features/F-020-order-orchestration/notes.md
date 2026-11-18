@@ -5269,3 +5269,80 @@ consumer files named below.
   | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
 - **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
   included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.
+
+## T-020-32: the simulated world binds each private node to its publisher
+
+Branch `f-020/t-020-32-publisher-binds-node`, from `m3` at `7bc8be82`, with `T-020-36` (`728a8d72`) merged: the first
+attempt stopped at a contract blocker (a record couldn't be verified about an order), which `T-020-36` item 1 lifted.
+Edits `components/core-orch/src/closing/` and, for the hook below, `segments/ports.rs` and `segments/mod.rs`; the
+assembly's `grading.rs` and the `Books` impls of the two closing test files (`F-024`'s); `T-024-06`'s `reversing.rs`
+only to remove its two `#[ignore]`s.
+
+- **Design.**
+  - `Books::recorded` returns `Recorded { segments, records }`: the segments `CMP-EVIDENCE` reads, and the publishers'
+    signed `inner-segments` records they came from, whole (one per provider of the node that recorded any).
+  - A receipt is the log's to give, so an entry citing a record can only follow it. `Grading` gains
+    `statements(&ToGrade) -> Vec<ToKeep>`; the segments keep and append each once (cached in the flight, so a retry
+    appends only what isn't) before grading, and hand the receipts back in `ToGrade::kept`. The default asks for none.
+  - **Entering a node.** At a segment that takes the value from a public node into a private one, closing asks for the
+    record of that node, its provider's where it lists the segment's transaction, and cites it in an extra `evidence`
+    (`<id>.node`, the public record, naming the movement into the node *with the node*, resting on the segment's result
+    and the record). That is what `Reversals::follow` and `private_node_of` bind on. The binding is made here, not at
+    the failed segment, which never reaches closing.
+  - **Leaving a node.** At an exit, each replayed node's record is asked for, and the replay's `rests_on` is the exit's
+    result then the record of each node it read, one per node (`replay-cites-its-nodes-records`).
+  - **Only what the log verifies.** A record is about its order and node alone (`About.node`) and is appended only
+    where every segment it lists is a transaction this order ran (the segments Core has seen settle, and the one being
+    graded); otherwise the log would leave it unverified about the order, and an entry citing it would be refused and
+    stall the segment. A book that spans orders therefore binds nothing for the later order (fail closed), shown by
+    `a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing`.
+- **Tests** (`conformance/scenarios/tests/publishers_binding.rs`): the plan's four, each with its tags, plus the
+  spanning-books case (`REQ-ORD-41`). `T-024-06`'s two now run and pass.
+- **Defaults** (reversible, each failing closed).
+  - A node gets **two** records about one order where a replay follows: the early one (the entering provider's book,
+    just the withdrawal) binds it, a later one (as of the exit) is what the replay read and cites. `T-020-36` gap 1
+    says "one per order"; a single early record would be stale for the replay, a checker finding what was compared
+    would read the wrong figures. The log's `once` holds within one replay. Overrule if one per node per order is wanted.
+  - Where several providers of one publisher recorded in a node, the replay cites one record per node, the exit
+    provider's where it served the node, else the first; the other providers' segments are read but their records not
+    cited (the contract's `once`).
+  - Records that list a transaction this order didn't run are skipped; so is one listing a reversal's transaction
+    (reversals run after the entering and exit reads, so none is seen there).
+  - A segment entering a private node with no public movement of its own binds nothing.
+- **Histories the log refused, sorted.** None: the sim's records were verified about their orders on the real log at
+  first use; the one refusal risk, a book spanning orders, is a test artefact the pre-check turns into "nothing bound".
+- **Order of work.** Hook and closing first; the two ignored tests were run with their ignores removed and passed, then
+  the four named tests were written and passed on their first run; their red is the rule-offs below (I did not watch
+  the four red before the code).
+- **Gaps, with owners.**
+  1. **`replay-cites-its-nodes-records` admits an entry of any provider of the publisher, and one record of a node a
+     replay didn't cite none is not required** (`T-020-30`'s low): closing now cites only the records it keeps, one per
+     node, made by the exit's provider where it served the node; the log's side (a record per node that recorded
+     something, the exit's provider) needs a contract change (`T-020-36` gap 2/5): the lead.
+  2. `Closing::recorded`'s rebuild after a restart doesn't read the records; the evidence names them. Owner: `F-030`.
+  3. The record is taken as of Core's last reading of the book, so a node's early record lists only what the book held
+     then. By design (default 1).
+  4. Reversal operations, which Core runs and the provider books, aren't listed in a record Core keeps; a record
+     listing one is skipped. Owner: none yet; the lead if a scenario needs a record after a reversal.
+  5. `Evidenced` still has to be given the hook by any other `Grading` that wants records; the production assembly's
+     (`F-030`) must wire `Books` to the publishers' signed records.
+- **Rule-off table** (each switched off alone, file restored with `git checkout`, run under a 900 s alarm through the
+  lock, script `scratchpad/f020zg/ruleoff.py`; none hung). `binding` is `publishers_binding`; `reversing` is
+  `T-024-06`'s two tests: `true_undo_…` is AC-4, `failed_segment_…` AC-6.
+
+  | Rule switched off | Red |
+  |---|---|
+  | closing: the evidence naming the node at the entering segment | binding: `publishers_inner_segments_record_…cited_by_what_binds_its_node`, `failed_providers_own_answer_…`; reversing: both |
+  | closing: asking for the record at the entering segment | the same, and `a_book_spanning_two_orders…` |
+  | closing: the replay's cited records | binding: `replay_cites_the_receipt_of_each_inner_segments_record_it_read` |
+  | closing: records of this order's transactions alone | binding: `a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing` |
+  | `grading.rs`: `Books` returns no record | binding: all four but the SamePublisher one's, and the spanning one; reversing: both |
+  | contracts' `private_node_of`, the evidence branch (the log binds the node by evidence) | binding: `failed_providers_own_answer_…`; reversing: both |
+  | `judge`: `SamePublisher` | binding: `reserves_confirmation_of_its_own_publishers_providers_reversal_stays_refused`; reversing: AC-4 |
+  | `AC-6`'s two-actor rule: Core's `SameParty`/`SameLogin` | reversing: AC-6 |
+  | the same and policy's `one_actor` | reversing: AC-6 |
+  | the same, policy's and the log's `stuck-move-carries-out-its-decide-step` `mover`/`login` (all three layers) | reversing: AC-6 |
+
+  The last three are red on the test's first refusal, `Err(SameParty)` from Core's move step, which the test asserts by
+  variant; with Core's off, the refusal that surfaces is policy's `SameActor` and then the log's, so each layer's own
+  protection isn't shown separately beyond that.
