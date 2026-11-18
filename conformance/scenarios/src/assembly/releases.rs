@@ -10,7 +10,9 @@ use rutent_contracts::core_internal::{Entry, HandedOver, What};
 use rutent_contracts::module_interface::AdmissionArtefact;
 use rutent_prov::module::types::Admitted;
 
-use super::Core;
+use rutent_core_orch::segments::{PromoteRefused, Promotion};
+
+use super::{Core, Running};
 use crate::sim::Release;
 use crate::sim::probes::{self, Probe, Probed, Reach};
 
@@ -79,5 +81,40 @@ impl Core {
     /// Hands `probe`'s module the `n`th withdrawal, and takes what the platform recorded of it.
     pub fn handle_probe(&mut self, probe: &Probe, n: usize) -> Probed {
         probes::handle(&mut self.fleet, probe, n)
+    }
+
+    /// Puts `provider`'s staged release at `version` in force, as the operator's login asks and policy decides: Core
+    /// records the effect before it calls the platform and its result after (`REQ-AUZ-6`, `T-020-08`).
+    ///
+    /// # Errors
+    ///
+    /// If nothing is staged, the version isn't the one staged, policy doesn't permit it, or the platform won't.
+    pub fn promote(&mut self, provider: &str, version: &str) -> Result<String, PromoteRefused> {
+        let readings = self.readings.clone();
+        let mut running = Running {
+            platform: &mut self.fleet.platform,
+            clock: &self.clock,
+            faults: &mut self.faults,
+            feed: &mut self.feed,
+            log: &self.log,
+            swap_to: self.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut decisions = self.policy.clone();
+        let (provider, version) = (crate::kit::id(provider), crate::kit::id(version));
+        let (caller, core) = (crate::kit::operator_login(), crate::kit::core());
+        self.segments.promote(
+            &mut self.general,
+            &mut decisions,
+            &mut running,
+            &self.clock,
+            &mut self.fresh,
+            &Promotion {
+                provider: &provider,
+                version: &version,
+                caller: &caller,
+                core: &core,
+            },
+        )
     }
 }

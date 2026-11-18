@@ -7,9 +7,12 @@
 //! and ran on is Core's own record in the log.
 
 use rutent_conformance::sim::{Role, Spec};
+use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, What};
 use rutent_contracts::module_interface::AcceptanceMode;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::OrderState;
+use rutent_core_orch::segments::PromoteRefused;
+use rutent_prov::module::lifecycle::Staging;
 use rutent_prov::module::types::Admitted;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::releases::SegmentVersion;
@@ -22,7 +25,11 @@ const OTHER: &str = "sim-reserve-b";
 
 /// Two simulated reserves, each of its own module and process. The scenarios' orders run at [`RESERVE`].
 fn two_reserves() -> Given {
-    let mut given = Given::one_reserve(Staged::AtOnce);
+    two_reserves_under(Staged::AtOnce)
+}
+
+fn two_reserves_under(staging: Staged) -> Given {
+    let mut given = Given::one_reserve(staging);
     given.providers.push(Spec::of(Role::Reserve, OTHER));
     given
 }
@@ -74,10 +81,7 @@ fn books(core: &mut Core, provider: &str) -> serde_json::Value {
 /// process and version stay as they were, and its order runs to the end exactly as it does with no upgrade at all. A
 /// release that can't be admitted leaves the version in force serving, in its process, and the next order at that
 /// provider runs on it.
-// verifies: AC-19, REQ-MDL-13, REQ-MDL-4
-#[test]
-fn upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leaves_the_previous_version()
- {
+fn upgrade_at_once() {
     // The control: the same order, with no upgrade anywhere.
     let (mut control, orders) = accepted(two_reserves(), 2);
     control.run(&orders[0]).expect("the control order runs");
@@ -166,6 +170,95 @@ fn upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leave
             .all(|s| s.began_on == "1.0.0" && s.runs_on == "1.0.0"),
         "{ran:?}"
     );
+}
+
+/// The same under staging (`ADR-0014`): a release is staged beside the version in force, takes no segment of the
+/// others and puts none of theirs out; it is put in force by the operator's promotion, which Core's policy decides and
+/// the log records, naming the version staged and no other; and a release that can't be admitted is never staged.
+fn upgrade_staged() {
+    let staging = Staging::new(1, 0, 0).expect("a staging policy");
+    let (mut core, orders) = accepted(two_reserves_under(Staged::Under(staging)), 1);
+    let a_before = core.fleet().platform.process(RESERVE).expect("A runs");
+    let staged = artefact(core.publish_release(OTHER, &Release::at("1.1.0")));
+    assert!(staged.acceptance.accepted.is_some(), "accepted, and staged");
+    assert_eq!(
+        core.fleet().platform.lifecycle().staged(OTHER),
+        Some("1.1.0")
+    );
+    assert_eq!(
+        core.fleet().platform.active_version(OTHER).as_deref(),
+        Some("1.0.0"),
+        "the staged release isn't in force"
+    );
+
+    // The order at A runs on, on A's own version, with B's staged release beside B's.
+    core.run(&orders[0]).expect("the order at A runs");
+    assert!(complete(&mut core, &orders[0]));
+    assert!(
+        at(&core, RESERVE)
+            .iter()
+            .all(|s| s.began_on == "1.0.0" && s.runs_on == "1.0.0")
+    );
+    assert_eq!(core.fleet().platform.process(RESERVE), Some(a_before));
+
+    // A promotion names the version staged: a permit to promote one release promotes no other.
+    assert!(matches!(
+        core.promote(OTHER, "1.0.5"),
+        Err(PromoteRefused::NotTheStagedVersion { .. })
+    ));
+    assert_eq!(core.promote(OTHER, "1.1.0"), Ok("1.1.0".to_owned()));
+    assert_eq!(
+        core.fleet().platform.active_version(OTHER).as_deref(),
+        Some("1.1.0")
+    );
+    assert_eq!(core.fleet().platform.process(RESERVE), Some(a_before));
+    let promoted: Vec<String> = core
+        .log()
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: CatalogueChange::Promote,
+                            provider,
+                            ..
+                        },
+                    ..
+                } => Some(provider.as_str().to_owned()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        promoted,
+        vec![OTHER.to_owned()],
+        "one promotion, recorded before it was carried out"
+    );
+
+    // A release that can't be admitted is never staged at A, and A keeps the version in force.
+    let refused = core.publish_release(RESERVE, &Release::at("1.2.0").corrupt());
+    assert!(!matches!(refused, Admitted::Artefact(_)), "{refused:?}");
+    assert_eq!(core.fleet().platform.lifecycle().staged(RESERVE), None);
+    assert_eq!(
+        core.fleet().platform.active_version(RESERVE).as_deref(),
+        Some("1.0.0")
+    );
+    assert_eq!(core.fleet().platform.process(RESERVE), Some(a_before));
+}
+
+/// A provider's module upgraded while an order waits at another: the upgrade is the provider's alone, the other's
+/// process and version stay as they were, and its order runs to the end exactly as it does with no upgrade at all. A
+/// release that can't be admitted leaves the version in force serving, in its process, and the next order at that
+/// provider runs on it. Both with an upgrade that takes effect at once and with one staged and promoted.
+// verifies: AC-19, REQ-MDL-13, REQ-MDL-4
+#[test]
+fn upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leaves_the_previous_version()
+ {
+    upgrade_at_once();
+    upgrade_staged();
 }
 
 // --- AC-21 -----------------------------------------------------------------------------------------------------------
