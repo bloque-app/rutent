@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant as StdInstant};
 
 use rutent_conformance::role::{
-    Received, RoleHarness, RoleProvider, SuiteContext, placeholder_signature,
+    BankCredit, Received, RoleHarness, RoleProvider, SuiteContext, placeholder_signature,
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
@@ -18,7 +18,8 @@ use rutent_contracts::module_interface::{
     Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
 };
 use rutent_contracts::provider_role::{
-    Advertisement, KeyPurpose, Operation, ResultBody, Signature, SignatureScheme, Statement,
+    Advertisement, ArrivalAnswer, ArrivalNotice, ArrivalQuestion, KeyPurpose, Operation,
+    ResultBody, Signature, SignatureScheme, Statement,
 };
 use rutent_evidence::{Finality, NetworkRules, ReorgRule};
 use rutent_prov::catalogue::{
@@ -67,9 +68,24 @@ impl RoleProvider for InProcess {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
     }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        self.0.arrival(question)
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.0.arrival_notice(reference)
+    }
 }
 
 impl RoleHarness for InProcess {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        self.0.credit_arrival(credit)
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.0.force_outcome_unknown()
     }

@@ -753,6 +753,63 @@ the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameA
   line is not found by the tag check, and a fixture crate the root manifest excludes but that has no `[workspace]`
   line of its own would be counted as run by the evidence table.
 
+## T-024-15: the stand-in reserve states what arrived
+
+Branch `f-024/t-024-15-reserve-kind-held`, from `m3` at `fa7fc3f3`. Readings taken without asking, each reversible.
+Closes issue #150 (`T-020-18`'s hand-off).
+
+**Tests** (`conformance/tests/role_arrivals.rs`): the three the row names.
+- `stand_in_reserve_signs_an_arrival_notice_that_passes_the_role_suite` (`REQ-ORD-14`, `REQ-ORD-23`): the suite credits the
+  reserve's bank, asks what arrived, and passes with every signature verified; the notice is in `ARRIVAL_NOTICE_SHAPE`, made
+  by the reserve, with the credit's node, asset, amount, account and holder; four flawed reserves are flagged.
+- `stand_in_reserve_answers_the_arrival_question_under_the_questions_transaction` (`REQ-ORD-1`): before any credit, nothing
+  arrived; after one, its notice under the credit's reference inside an answer under the question's transaction;
+  `check_answer` holds; asked of another account, nothing arrived.
+- `two_notices_of_one_credit_from_the_stand_in_reserve_are_one_credit` (`REQ-ORD-23`): the notice of its own accord and the
+  one the answer carries are `Credits::One`; another credit of the same figures is `Credits::Two`; two flawed reserves are
+  flagged.
+
+**Added** (`F-024`'s files only): `RoleProvider::arrival` and `arrival_notice` (default `None`) and `RoleHarness::credit_arrival`
+(default false), with `BankCredit`, the credit at the simulated bank: reference, outer node, asset with unit, amount, account
+and holder. The reserve keeps its credits and states each as a notice; node, asset, amount, account and holder are the
+credit's, not the scenario's. The role suite gains `Check::ArrivalsStated` and `Exercised::{NothingArrived, ArrivalNoticed}`
+and `probe_arrivals`, run for a reserve: nothing arrived before a credit; after one the answer's envelope, its maker and key,
+each notice as text of its own in the answer received, `check_answer`, the notice's figures against the credit, one notice
+per credit, two asks and the reserve's own notice are `Credits::One`; and no notice of another account's credit, to another
+session, or to a question not signed with the operator's key. `Signing`, `WithoutHooks`, the scenarios' `InProcess` and
+`Through` forward the new methods.
+
+**Defaults taken.** The question is answered in the holder's session only, and a question not signed with the operator's key
+is refused finally (as a balance check is, `REQ-CAT-3`, `REQ-CAT-4`). A credit's reference is the notice's transaction,
+whenever signed. `NothingArrived` is required of a reserve only once it answers the question at all, so a provider that
+cannot be asked is not made uncovered (the role suite's other tests pass unchanged); `ArrivalNoticed` is not required, since
+only a hook provokes it. The arrival question's session fault is its own builder, so `ignoring_the_session` still flags
+only `BalanceRevealsOnlySufficiency`.
+
+**Gaps, with owners.**
+- The bank's credits are left out of the stand-in's state fingerprint: they arrive by the harness's hook, which no journal holds,
+  so `Through`'s check that the journal is the books would otherwise differ. Asking changes no state the suite can see
+  there; the reserve's counter of notices is likewise outside it. Owner `F-024`.
+- The platform's binding carries operations, and the arrival question is not one, so a simulated reserve through it is
+  answered by its in-process twin, as its status is, and a reserve that does not answer the question is not flagged by the
+  suite: owner `F-014` (the binding) and `F-031` (certification's first report). No Core bug found.
+- `check_one_credit` and the suite's own comparison of a notice with its credit overlap (a fresh reference or another amount
+  is caught by both); each rule-off alone stays red elsewhere, both together red.
+
+**Rule-off table** (each switched off alone, `role_arrivals` run with `--no-fail-fast`, restored; tests were green first;
+nothing hung; the stand-in was written before the test file compiled, so "red first" is the rows below).
+
+| Switched off | Red |
+|---|---|
+| the answer's filter by account, node and asset | the answering test and the suite test |
+| the answer under the question's transaction | the same two |
+| a notice under the credit's reference | all three |
+| the holder's-session check | the suite test |
+| the operator-key check on the question | the suite test |
+| the suite's `check_answer` | the suite test |
+| `check_one_credit` and the suite's notice-against-credit check, together | the two-notices test (alone, each is caught by the other) |
+| `credit_arrival` accepting a credit | all three |
+
 ## T-024-11: `REQ-CPL-9` through the assembly, with an agent acting
 
 Readings taken without asking, each reversible; the owner's form overrules any of them.
