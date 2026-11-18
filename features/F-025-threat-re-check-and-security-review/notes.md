@@ -495,21 +495,18 @@ a test or a note that is cited, and on a CI run only where the note records its 
 |---|---|---|
 | `T-025-01`'s reading of 2026-11-17 | 94 advisories against `bytecodealliance/wasmtime`; none reachable with the engine's configuration; the AVX advisory not affected; `engines_compile_target_enables_no_avx_feature`, `engine_leaves_off_the_proposals_the_runtime_advisories_of_2026_11_16_need` | above, `T-025-01` |
 | `T-025-06` | Wasmtime 48.0.9, the release that fixes the six advisories whose ranges included 48.0.8; none names 48.0.9; `pinned_runtime_is_the_patched_release`; machine-code digests re-derived on another vendor | `ci` job `134220782586` and `rederive` job `134247456427` of run `44134656776`, at `0f523b38` (`rederive`: GenuineIntel against a reference made on AuthenticAMD, artifact `14353433711`) |
-| `T-025-02` | Each of the jail's layers refused the hostile act alone, each against a control without it; `G-05`'s `RLIMIT_AS` on the shipped provider; no layer name in the release build | `jail-probes` run `44242098797` at `19fb8314` (per probe, control then layer); green run `44243240737` at `943fad16`, 14 passed, 0 failed, with `ci` run `44243240720` green at the same commit |
-| `T-025-03` | No planted credential, secret or module state in the host's journal and snapshot, Core's log, the evidence shelf or, on three VOS replicas, the nodes' own files; the leak controls find each planted value | `stm-vos.yml` run `44266493160` at `b6f18e7a`; reference-host tests in `ci.yml` |
+| `T-025-02` | Each of the jail's layers refused the hostile act alone, each against a control without it; `G-05`'s `RLIMIT_AS` on the shipped provider; no layer name in the release build | `jail-probes` run `44242098797` at `19fb8314` (**red**: the descriptor control was fixed in `943fad16`; its per-probe table is above); green run `44243240737` at `943fad16`, 14 passed, 0 failed, with `ci` run `44243240720` green at the same commit; and at this row's head `8c1dbcb3`, `jail-probes` run `44317628090` (14 passed, 0 failed) with `ci` run `44317628245` (job `ci` success; its `rederive` job skipped, the runner being AMD, which this row does not rest on) |
+| `T-025-03` | No planted credential, secret or module state in the host's journal and snapshot, Core's log, the evidence shelf or, on three VOS replicas, the nodes' own files; the leak controls find each planted value | `stm-vos.yml` run `44266493160` at `b6f18e7a` (the run that first showed it); at `m3`'s `3d9b6a45`, the base of this row, run `44316784467` (`m3`) and run `44308204207` (`m3-next`), each with its step "No credential, secret or module state in the journal or the nodes' files of three VOS replicas (`T-025-03`)" green; reference-host tests in `ci.yml` |
 | `T-014-05` (`F-014`'s notes) | The name lookup is waited for only until the operation's deadline; abandoned lookups' threads are capped per provider | `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider` (`components/prov/tests/egress.rs`) |
 
-**At this row's commit.** Since `943fad16`, no file of the jail's layers (`components/prov/src/module/sandbox.rs`,
-`layers.rs`), of the probes (`components/prov/tests/jail_layers.rs`) or of `jail-probes.yml` has changed
-(`git diff --stat 943fad16 HEAD` over those paths and `components/prov/src/module` shows only `admission.rs` and
-`platform.rs`, the latter by `T-013-09` and its predecessors, neither a jail layer). Since `b6f18e7a`, nothing under
-`conformance/scenarios/src/secrets.rs`, `components/stm/vos-program` or `stm-vos.yml` has changed. So the two runs above
-are the runs of the probes and of the scan at this code. The row asks for both re-run at this row's commit: the probes
-need Linux and the VOS scan three VOS nodes, so they run in the PR's `jail-probes` (it triggers on `pull_request`) and
-`stm-vos.yml` (it runs on pushes to `m*` branches that touch its paths, not on this branch, and a manual dispatch works
-only once the file is on the default branch, per its own header: the orchestrator reads the `m3` run it lists). **The run ids of both at this row's head are to be added here by the
-orchestrator when they exist**, as `T-025-06` did. What did run here, on the reference host (arm64 macOS), is in
-"Run here" below.
+**At this row's commit.** This row changes no code, so its code is `m3`'s `3d9b6a45`. *The probes:* `jail-probes` ran at
+this row's head `8c1dbcb3` in run `44317628090` (14 passed, 0 failed), and `ci` in run `44317628245`. No jail-layer file
+(`sandbox.rs`, `layers.rs`), probe file or `jail-probes.yml` has changed since `943fad16` either. *The scan:* the scan's
+world did change after run `44266493160` at `b6f18e7a` (`conformance/scenarios/src/sim/*`,
+`components/prov/src/module/platform.rs`), so that run is not the scan at this code; the scan at this code is `stm-vos.yml`
+at `3d9b6a45`: run `44316784467` (`m3`) and run `44308204207` (`m3-next`), each with the `T-025-03` step green (read with
+`gh run view` on 2026-11-18). Each run's `vos` job is green; the `exit code 101` annotation each carries belongs to the
+G-54 step, whose result "is recorded and need not pass". What ran on the reference host (arm64 macOS) is in "Run here" below.
 
 ### The restatement, area by area
 
@@ -562,8 +559,8 @@ orchestrator when they exist**, as `T-025-06` did. What did run here, on the ref
   `F-030`). `THR-131` is unchanged: a checkpoint proves only that the log is self-consistent. `THR-132` stays
   detect-only: a skipped tick shows against the schedule, and the checker reports a tick the operator never published.
 
-**3. `THR-10`, `THR-135`, `THR-136` (route computation, split-gaming).** SAD §6's row stands: **detect-only, plus the
-bounds `SPEC.md` already names; no new mitigation.** Since the SAD: the router is a pure function of (request, snapshot)
+**3. `THR-10`, `THR-135`, `THR-136` (route computation, split-gaming).** SAD §6's row stands: **`THR-10` and `THR-136` detect-only,
+`THR-135` bounds, as `SPEC.md` ends them; no new mitigation.** Since the SAD: the router is a pure function of (request, snapshot)
 with ties broken on the lowest candidate id by bytes (`F-004`'s notes; `THR-10`), every result is a split of one part
 whatever the limit (`every_candidate_is_one_part_whatever_the_part_limit`, `every_result_is_a_split_of_one_part`:
 `v0`'s router sends the whole amount as one part, `DEC-8`; `THR-135`), the per-provider and per-publisher ceilings drop a candidate over a ceiling
@@ -582,7 +579,7 @@ production assembly owns calling `write_measures` (`F-030`, `T-020-31` gap 1); a
   platform's wait on a network step is bounded by the operation's deadline (`T-014-05`/`T-014-06`, slow-peer and
   store-dribbling tests); and **`T-025-03`'s scan** shows no planted credential, signing key or module state in the
   host's journal and snapshot, Core's log, the evidence shelf or three VOS replicas' files, the scan seeing a leak when one
-  is let in (`stm-vos.yml` run `44266493160` at `b6f18e7a`). *Limits, as `T-025-03` states them:* (1) production's
+  is let in (`stm-vos.yml` runs `44316784467` and `44308204207` at `3d9b6a45`; first seen in `44266493160` at `b6f18e7a`). *Limits, as `T-025-03` states them:* (1) production's
   `CredentialProxy` use records and the deployment's store are not scanned (the assembly's world is a simulation):
   `F-030` re-runs the scan against them; (2) a value encoded some other way (a cipher, a hash of a part), a leak by length
   or by timing, is not seen; (3) the module state the simulated modules also read (`book`) is not seeked; (4) the VOS

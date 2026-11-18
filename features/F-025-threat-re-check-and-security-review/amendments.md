@@ -45,7 +45,7 @@ Concrete design: unchanged (ADR-0005). Status:
 
 Concrete design: unchanged (ADR-0006). Status:
 
-> **Detect-only, as `SPEC.md` states; no new mitigation.** The record is replayable and ties break on the lowest candidate
+> **`THR-10` and `THR-136` detect-only, `THR-135` bounds, as `SPEC.md` states each; no new mitigation.** The record is replayable and ties break on the lowest candidate
 > id; `v0` sends an order as one part; ceilings per provider and publisher drop a candidate over them. Bulk measures
 > exist and orchestration calls them when a segment ends (`T-020-31`); the production assembly owns calling them
 > (`F-030`), and a failure is not measured against the market's direction, since no part holds a market figure in `M3`.
@@ -60,7 +60,7 @@ Concrete design: unchanged (ADR-0004). Status:
 > exploit of the shared proxy reaches all of them (`THR-79`'s unbounded case), accepted by `credential-proxy-scope` while the
 > roster is the operator's own; Pablo's mitigation is vault buckets separated by process role. A scan of a full simulated
 > run finds no planted credential, signing key or module state in the host's journal, Core's log, the evidence shelf or
-> three VOS replicas' files, and finds each when one is let in (`T-025-03`, `stm-vos.yml` run `44266493160`). It does not
+> three VOS replicas' files, and finds each when one is let in (`T-025-03`, `stm-vos.yml` runs `44316784467` and `44308204207` at `3d9b6a45`). It does not
 > scan production's proxy records (`F-030` re-runs it), a value encoded another way, or balances. `THR-80` is unchanged
 > (`OBL-1`). Residual either way: misuse at an allowed host, or data leaving in a request to one.
 
