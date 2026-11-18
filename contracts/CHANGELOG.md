@@ -65,3 +65,6 @@ directory (see `README.md`).
   node's segments verified about an order through its segments' transactions, the record naming its node and held to
   that node's publisher and to one per node, a late status naming its fresh transaction, and a route handed on started on the
   holding account the hand-on named, whoever runs its first move. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-36)
+- core-internal's round after `T-020-36`, folded into its unreleased 1.0.0 (`T-020-38`): each report of a pair names
+  its own segment, the received one the route's next after the sent one, each by the provider the log moved its
+  segment with. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-38)

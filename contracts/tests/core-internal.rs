@@ -78,7 +78,15 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 47] = [
+const RUST_RULES: [(&str, &str); 49] = [
+    (
+        "report-pair-whose-segment-is-not-its-sent-reports",
+        "a report pair's segment is the one its sent report is about",
+    ),
+    (
+        "report-pair-whose-two-reports-are-about-one-segment",
+        "a report pair's received report is about another segment than its sent report",
+    ),
     (
         "report-pair-whose-charge-is-above-what-was-sent",
         "a gross report's charge is no more than the amount sent",
@@ -278,7 +286,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 115] = [
+const SCHEMA_RULES: [SchemaRule; 116] = [
+    (
+        "report-pair-whose-received-report-names-no-segment",
+        &[("/received", "required")],
+        "missing field `segment`",
+    ),
     (
         "decision-request-to-ask-a-late-status-without-its-transaction",
         &[("/action", "required")],
@@ -3826,5 +3839,185 @@ fn handed_on_route_whose_first_move_another_provider_runs_from_the_holding_recor
         "provider",
     ] {
         assert_case_refused(&format!("{row}--{name}"));
+    }
+}
+
+// --- T-020-38: each report of a pair about its own segment -----------------------------------------------------
+
+/// The world's report pair, `world--pair`, as one history and its entry, the pair read out of it.
+fn the_worlds_pair() -> (Vec<(Receipt, Entry)>, VerifiedEntry, ReportPair) {
+    let case = read_json(&contract_dir().join("fixtures/admission/world--pair.json"));
+    let history = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                serde_json::from_value(h["receipt"].clone()).unwrap(),
+                serde_json::from_value(h["entry"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    let entry: VerifiedEntry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let What::ReportPair { pair } = &entry.what else {
+        panic!("a report pair");
+    };
+    let pair = pair.clone();
+    (history, entry, pair)
+}
+
+/// At a segment's end Core holds that segment's provider's own result, and the next provider's report of receiving
+/// is its own result, about the next segment: the pair names each report's segment, the sent one the pair's, and
+/// is admitted where the received one is the next segment of the route the order's plan holds, each report by the
+/// provider the log moved its segment's value with (`T-020-35`'s finding).
+// verifies: REQ-ORD-9
+#[test]
+fn report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_admitted() {
+    let (history, entry, pair) = the_worlds_pair();
+    // us-bank's result about `p1-s1` as sent, fx-desk's about `p1-s2`, the route's next segment, as received.
+    assert_eq!(
+        (
+            pair.segment.as_str(),
+            pair.sent.segment.as_str(),
+            pair.received.segment.as_str()
+        ),
+        ("p1-s1", "p1-s1", "p1-s2")
+    );
+    assert_eq!(
+        (pair.sent.party.as_str(), pair.received.party.as_str()),
+        ("us-bank", "fx-desk")
+    );
+    assert_eq!(
+        admit_entry(
+            &history,
+            &Entry::Verified(entry),
+            Through::General,
+            &deployment_operator()
+        ),
+        Ok(())
+    );
+    assert_case("world--pair");
+    // Two providers of one publisher still report a pair, each about its own segment.
+    for row in [
+        "sent-report-is-its-partys-statement",
+        "received-report-is-its-partys-statement",
+    ] {
+        assert_case(&format!("{row}--one-publishers-two-providers"));
+    }
+    // Each report is read against its own segment: the sent one about the pair's, the received one about the next.
+    assert_case_refused("sent-report-is-its-partys-statement--about-the-received-segment");
+    assert_case_refused("received-report-is-its-partys-statement--about-the-sent-segment");
+    // Each by its own segment's provider: the one the log moved that segment's value with, on a segment it moved.
+    for name in [
+        "missing",
+        "provider",
+        "a-received-report-by-another-than-its-segments-provider",
+    ] {
+        assert_case_refused(&format!("report-pair-is-by-its-segments-providers--{name}"));
+    }
+}
+
+/// A received report about any segment but the one the route runs next after the sent one is refused: a later
+/// segment of the part, another part's, the one before it, one no route of the order holds, or the first of a
+/// recalculated route, since a pair spans one plan (`REQ-ORD-9`).
+// verifies: REQ-ORD-9
+#[test]
+fn report_pair_whose_received_report_is_about_a_segment_not_next_on_the_route_is_refused() {
+    let row = "received-report-is-about-the-next-segment";
+    for name in [
+        "missing",
+        "next",
+        "a-segment-of-another-part",
+        "the-segment-before-it",
+        "the-first-segment-of-a-recalculated-route",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    // Built in memory: the world's pair with its received report moved to `p1-s3`, the segment after the next, its
+    // statement still fx-desk's about `p1-s2`. The statement row refuses it first; with a statement about `p1-s3`,
+    // the route does (`--next`).
+    let (history, mut entry, mut pair) = the_worlds_pair();
+    pair.received.segment = Id::new("p1-s3").unwrap();
+    entry.what = What::ReportPair { pair };
+    assert_eq!(
+        admit_entry(
+            &history,
+            &Entry::Verified(entry),
+            Through::General,
+            &deployment_operator()
+        ),
+        Err(Violation(
+            "a received report is about its pair's order and its own segment"
+        ))
+    );
+}
+
+/// One party can't report both sides of a pair, and a pair's two reports are about two segments, the pair's the
+/// sent one's: from the wire or built in memory (`REQ-ORD-9`).
+// verifies: REQ-ORD-9
+#[test]
+fn report_pair_whose_two_reports_are_one_partys_is_invalid() {
+    assert_accepted_by_both("report-pair-of-a-route-segment");
+    for name in [
+        "report-pair-of-one-party-reporting-both",
+        "report-pair-whose-segment-is-not-its-sent-reports",
+        "report-pair-whose-two-reports-are-about-one-segment",
+        "report-pair-whose-received-report-names-no-segment",
+    ] {
+        assert_rejected(name);
+    }
+    // The world's pair, built in memory: one party on both sides, though each report is about its own segment.
+    let (history, entry, pair) = the_worlds_pair();
+    let mut one_party = pair.clone();
+    one_party.received.party = one_party.sent.party.clone();
+    assert_eq!(
+        one_party.check(),
+        Err(Violation(
+            "a segment's two reports are by two different parties"
+        ))
+    );
+    // The two reports about one segment, or the pair naming another segment than its sent report's.
+    let mut one_segment = pair.clone();
+    one_segment.received.segment = one_segment.sent.segment.clone();
+    assert_eq!(
+        one_segment.check(),
+        Err(Violation(
+            "a report pair's received report is about another segment than its sent report"
+        ))
+    );
+    let mut elsewhere = pair;
+    elsewhere.segment = elsewhere.received.segment.clone();
+    assert_eq!(
+        elsewhere.check(),
+        Err(Violation(
+            "a report pair's segment is the one its sent report is about"
+        ))
+    );
+    // The log refuses each before any row.
+    for (pair, rule) in [
+        (
+            one_party,
+            "a segment's two reports are by two different parties",
+        ),
+        (
+            one_segment,
+            "a report pair's received report is about another segment than its sent report",
+        ),
+        (
+            elsewhere,
+            "a report pair's segment is the one its sent report is about",
+        ),
+    ] {
+        let mut built = entry.clone();
+        built.what = What::ReportPair { pair };
+        assert_eq!(
+            admit_entry(
+                &history,
+                &Entry::Verified(built),
+                Through::General,
+                &deployment_operator()
+            ),
+            Err(Violation(rule))
+        );
     }
 }

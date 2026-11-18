@@ -3399,3 +3399,112 @@ fn a_replay_on_the_log_cites_one_record_per_node_by_its_publisher() {
     ))
     .expect("one record of each node");
 }
+
+// --- T-020-38: each report of a pair about its own segment, on the real log ------------------------------------
+
+/// The report pair the world appended, as the log holds it: its receipts the log's.
+fn the_worlds_pair<S: Store>(run: &Run<S>) -> VerifiedEntry {
+    run.log
+        .entries()
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) if matches!(v.what, What::ReportPair { .. }) => Some(v.clone()),
+            _ => None,
+        })
+        .expect("the world's report pair")
+}
+
+/// `pair` with its `which` report (`sent` or `received`) moved to `maker`'s statement about `transaction`, about
+/// `segment`.
+fn reporting<S: Store>(
+    run: &Run<S>,
+    pair: &VerifiedEntry,
+    which: &str,
+    maker: &str,
+    transaction: &str,
+    segment: &str,
+) -> VerifiedEntry {
+    let (receipt, _) = stated_of(run, maker, transaction);
+    let mut entry = pair.clone();
+    let What::ReportPair { pair } = &mut entry.what else {
+        panic!("a report pair");
+    };
+    if which == "sent" {
+        pair.segment = id(segment);
+    }
+    let report = if which == "sent" {
+        &mut pair.sent
+    } else {
+        &mut pair.received
+    };
+    report.party = id(maker);
+    report.segment = id(segment);
+    report.statement = receipt;
+    entry
+}
+
+/// Appends `entry`, built in memory, through the general handle, as `core-audit`'s comparison does.
+fn append_pair<S: Store>(run: &mut Run<S>, entry: VerifiedEntry) -> Result<Receipt, AppendFailure> {
+    run.log
+        .append(&GeneralEntry::try_from(Entry::Verified(entry)).unwrap())
+}
+
+/// `T-020-35`'s finding, on the log `core-audit` keeps: a pair's sent report is its segment's provider's result
+/// about that segment, its received report the next provider's own, about the route's next segment, and the log
+/// admits that pair and refuses one whose received report is about any other segment, or by another party.
+// verifies: REQ-ORD-9
+#[test]
+fn a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_refused() {
+    let mut run = Run::new(MemoryStore::new());
+    for (place, answer) in run.world(&[]) {
+        answer.unwrap_or_else(|e| panic!("world {place}: {e:?}"));
+    }
+    // The world's pair: us-bank's result about `p1-s1` sent, fx-desk's about `p1-s2`, the next, received.
+    let pair = the_worlds_pair(&run);
+    let What::ReportPair { pair: reports } = &pair.what else {
+        unreachable!()
+    };
+    assert_eq!(
+        (
+            reports.sent.party.as_str(),
+            reports.sent.segment.as_str(),
+            reports.received.party.as_str(),
+            reports.received.segment.as_str()
+        ),
+        ("us-bank", "p1-s1", "fx-desk", "p1-s2")
+    );
+    append_pair(&mut run, pair.clone()).expect("the pair again, as the comparison records each");
+
+    // fx-desk's result about `p1-s6`, the first segment of the part's recalculated route: a pair spans one plan.
+    let recalculated = reporting(&run, &pair, "received", "fx-desk", "tx-x16", "p1-s6");
+    assert_eq!(
+        append_pair(&mut run, recalculated),
+        Err(AppendFailure::Refused(Violation(
+            "a received report is about the segment its route runs next after the sent report's"
+        )))
+    );
+    // A received report about the sent segment: fx-desk's result about `p1-s1`, the pair before this round.
+    let about_the_sent = reporting(&run, &pair, "received", "fx-desk", "tx-f1", "p1-s2");
+    assert_eq!(
+        append_pair(&mut run, about_the_sent),
+        Err(AppendFailure::Refused(Violation(
+            "a received report is about its pair's order and its own segment"
+        )))
+    );
+    // A sent report by a party that didn't move its segment: bridge-pay's result about `p1-s1`, which us-bank moved.
+    let by_another = reporting(&run, &pair, "sent", "bridge-pay", "tx-b1", "p1-s1");
+    assert_eq!(
+        append_pair(&mut run, by_another),
+        Err(AppendFailure::Refused(Violation(
+            "a report's party is the provider this log moved its segment's value with"
+        )))
+    );
+    // One party on both sides: us-bank's result about `p1-s2` as the received report.
+    let one_party = reporting(&run, &pair, "received", "us-bank", "tx-f2", "p1-s2");
+    assert_eq!(
+        append_pair(&mut run, one_party),
+        Err(AppendFailure::Refused(Violation(
+            "a segment's two reports are by two different parties"
+        )))
+    );
+}

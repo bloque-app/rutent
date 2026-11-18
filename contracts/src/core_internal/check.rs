@@ -214,12 +214,23 @@ impl PermissionChange {
 }
 
 impl ReportPair {
-    /// Checks that the pair's two reports are two parties' (`REQ-ORD-9`), and that a gross figure holds no more
-    /// charge than it states (`REQ-CAT-11`), so the comparison can take the charge off it.
+    /// Checks that the pair's two reports are two parties' (`REQ-ORD-9`), each about its own segment, the pair's
+    /// the sent one's and the received one's another (`T-020-38`), and that a gross figure holds no more charge than
+    /// it states (`REQ-CAT-11`), so the comparison can take the charge off it.
     pub fn check(&self) -> Result<(), Violation> {
         if self.sent.party == self.received.party {
             return Err(Violation(
                 "a segment's two reports are by two different parties",
+            ));
+        }
+        if self.segment != self.sent.segment {
+            return Err(Violation(
+                "a report pair's segment is the one its sent report is about",
+            ));
+        }
+        if self.sent.segment == self.received.segment {
+            return Err(Violation(
+                "a report pair's received report is about another segment than its sent report",
             ));
         }
         if let ReportedAs::Gross { charge } = &self.terms.reporting

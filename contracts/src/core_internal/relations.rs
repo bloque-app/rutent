@@ -428,7 +428,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 107] = [
+pub static RELATIONS: [Relation; 109] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -2726,19 +2726,21 @@ pub static RELATIONS: [Relation; 107] = [
             ("maker", "a sent report is its sending party's statement"),
             (
                 "about",
-                "a sent report is about its pair's order and segment",
+                "a sent report is about its pair's order and its own segment",
             ),
         ],
         cites: |e, _| match &e.what {
             What::ReportPair { pair } => alloc::vec![by_receipt(&pair.sent.statement, 0)],
             _ => none(),
         },
+        // Each report is read against its own segment (`T-020-38`): the sent one's is the pair's
+        // (`ReportPair::check`).
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
                 &pair.sent.party,
                 Some(&pair.order),
-                Some(&pair.segment),
+                Some(&pair.sent.segment),
                 h,
             ),
             _ => Match::NotTarget,
@@ -2757,22 +2759,117 @@ pub static RELATIONS: [Relation; 107] = [
             ),
             (
                 "about",
-                "a received report is about its pair's order and segment",
+                "a received report is about its pair's order and its own segment",
             ),
         ],
         cites: |e, _| match &e.what {
             What::ReportPair { pair } => alloc::vec![by_receipt(&pair.received.statement, 0)],
             _ => none(),
         },
+        // The next provider's report of receiving is its own result, about the next segment (`T-020-38`), which
+        // `received-report-is-about-the-next-segment` holds to the route.
         answers: |e, _, t, h| match &e.what {
             What::ReportPair { pair } => statement_by(
                 t,
                 &pair.received.party,
                 Some(&pair.order),
-                Some(&pair.segment),
+                Some(&pair.received.segment),
                 h,
             ),
             _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "received-report-is-about-the-next-segment",
+        spec: &["REQ-ORD-9"],
+        quantifier: Quantifier::Exists,
+        refusal: "a received report is about a segment of a route of its pair's order this log recorded",
+        fields: &[(
+            "next",
+            "a received report is about the segment its route runs next after the sent report's",
+        )],
+        // The route is the plan a decision record backs: a `route_chosen` part, a `route_recalculated` or a
+        // `destination_changed` (`input-cites-its-decision-record`). The received segment is the one that plan lists
+        // right after the sent segment, so a route's last segment has no pair, and a pair spans one plan: a
+        // recalculated route's first segment follows no segment of its own plan (a default that fails closed).
+        cites: |e, _| match &e.what {
+            What::ReportPair { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::ReportPair { pair }, Some(i)) = (&e.what, verified(t).and_then(input))
+            else {
+                return Match::NotTarget;
+            };
+            if i.subject.order.as_str() != pair.order.as_str() {
+                return Match::NotTarget;
+            }
+            // Where the plan lists the received segment, whether the segment it lists right before it is the sent one.
+            let next = |plan: &[crate::state_machine::SegmentPlan]| {
+                let at = plan
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == pair.received.segment.as_str())?;
+                Some(at.checked_sub(1).is_some_and(|before| {
+                    plan[before].segment_id.as_str() == pair.sent.segment.as_str()
+                }))
+            };
+            let listed = match &i.observed {
+                Observed::RouteChosen { parts, .. } => parts.iter().find_map(|p| next(&p.segments)),
+                Observed::RouteRecalculated { segments, .. }
+                | Observed::DestinationChanged { segments, .. } => next(segments),
+                _ => return Match::NotTarget,
+            };
+            judge(listed.is_some(), &[listed == Some(true)])
+        },
+    },
+    Relation {
+        name: "report-pair-is-by-its-segments-providers",
+        spec: &["REQ-ORD-9", "REQ-AUD-2"],
+        quantifier: Quantifier::Exists,
+        refusal: "a report is about a segment this log moved value on, for its pair's order",
+        fields: &[(
+            "provider",
+            "a report's party is the provider this log moved its segment's value with",
+        )],
+        // Each report is its own segment's provider's: the sent one the provider that moved the pair's segment, the
+        // received one the provider that moved the next. Read from the `move_value` effect, so a segment never run,
+        // a superseded plan's included, has no report.
+        cites: |e, _| match &e.what {
+            What::ReportPair { .. } => alloc::vec![
+                Cite {
+                    receipt: None,
+                    index: 0,
+                },
+                Cite {
+                    receipt: None,
+                    index: 1,
+                },
+            ],
+            _ => none(),
+        },
+        answers: |e, cite, t, _| {
+            let What::ReportPair { pair } = &e.what else {
+                return Match::NotTarget;
+            };
+            let report = if cite.index == 0 {
+                &pair.sent
+            } else {
+                &pair.received
+            };
+            match verified(t).and_then(effect_action) {
+                Some((
+                    Action::MoveValue {
+                        order,
+                        segment,
+                        provider,
+                        ..
+                    },
+                    _,
+                )) if order == &pair.order && segment == &report.segment => {
+                    judge(true, &[provider == &report.party])
+                }
+                _ => Match::NotTarget,
+            }
         },
     },
     Relation {
