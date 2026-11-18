@@ -4866,3 +4866,38 @@ Run in wave 27 after `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-2
   | R3: reversal's answer claims the presenter, not the envelope's maker | `reversal statement restated by a relay is recorded naming the relay` |
   | R4: a segment's result is handed over by its claimed maker | `segment result restated by a relay is recorded naming the relay` |
   | R5: a writer writes `relayed_by: None` | `arrival notice restated by a relay is recorded naming the relay`, `every stated entry core builds takes its relay from the one helper` |
+
+## T-020-34
+
+Branch `f-020/t-020-34-verifier-no`, from `m3` at `81be3583`. Edits `components/core-orch/src/rounds/mod.rs` only.
+
+- **Finding, as the row states it, did not reproduce through `route`.** `judged` indeed never read a judgement's answer,
+  but `rounds::route` runs `DecisionRecord::check` on every round's record, and the contract refuses a kept candidate
+  that cites a judgement of no ("a kept candidate cites no refused dry run and no judgement of no"), as the real router
+  also drops it (`Ineligible`). Probed at the assembly (four-provider route, `sim-verifier-b`, `unfit-x`, the need on the
+  route's real first tuple): not offered, the candidate dropped `Ineligible`. The offered order `T-024-12`'s review saw
+  had a need whose tuple is no tuple of the route (`kit::tuple(...)` instead of the route's own), and `offer` only
+  tests the needs whose tuple the chosen route uses; such a need is ignored, not a no. A router returning a record that
+  keeps a no is refused as `RoutingError::Router` (tried with a router that un-drops the candidate).
+- **Design (defence in depth, fail closed).** (1) `judged` now requires the cited judgement's answer to be yes. (2)
+  `offer` refuses a chosen route any of whose operations cites a judgement of no (`cites_a_refusal`), needed or not:
+  `NotOffered::NotEligible { tuple }`. Nothing a reliance rests on can then be a refusal, since a reliance is declared
+  on a judgement of an offered, accepted route.
+- **Tests** (unit, in `rounds/mod.rs`, over the contract's own fixture record with its judgement's answer set after
+  reading, since the contract refuses it earlier): `tuple whose verifier answered no is not offered`,
+  `route citing a verifier's refusal as its judgement is refused`. `T-024-12`'s tests are unchanged.
+- **Gaps, with owners.**
+  1. *The reliance writer can't see an answer.* `Reliances::write` takes `Judgement { receipt, judge }` and an
+     append-only `Log`, and `reliance-names-its-judges-statement` checks stated, verified, maker and about, never the
+     answer. A reliance on a refusal is therefore not refused at the writer or the log. Exact shape if wanted: the
+     relation reads the stated entry's judgement body and requires `answer: yes` (a new refused fixture `--answer`), or
+     `Judgement` gains the answer and the caller (the assembly's `judgement_of`) supplies it. Owner: core-internal's
+     single writer through the coordinator (contract round), then `F-020`. Not done here (`contracts/` untouched).
+  2. *A need on a tuple the chosen route doesn't use is ignored.* Reasonable, but a caller mistaking the tuple sees an
+     offered order with no judgement. Owner: `F-020` (intake could refuse a need whose tuple is no tuple of the catalogue).
+- **Rule-off table:** see below.
+
+  | Rule switched off (each alone, under a 120 s timeout, restored; none hung) | Red |
+  |---|---|
+  | `judged` ignoring the answer | `tuple whose verifier answered no is not offered` |
+  | `cites_a_refusal` always false | `route citing a verifier's refusal as its judgement is refused` |
