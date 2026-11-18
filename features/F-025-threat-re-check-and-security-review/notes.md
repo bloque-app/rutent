@@ -455,7 +455,8 @@ The scan itself, its controls and its refusals run on the reference host here an
 - **What only CI shows.** The two VOS tests (`vos journal after a full run holds no credential or module state` and its
   controls) and the step that runs them: whether the nodes' files hold the journal's bytes in a form the scan reads,
   and so whether a clean scan of them is worth anything, and whether the cluster's files fit the runner's disk and
-  time. The run id goes here.
+  time. Green on three VOS replicas in `stm-vos.yml` run `44266493160`, at `b6f18e7a`: the leak control found each planted
+  value in the nodes' own files, and a full run (seeds 1, 2, 3) left none.
 - **Rule-off table.** Each rule of the scan switched off once, on the reference host, and the test that went red:
 
 | Rule switched off | Test that went red | Seen |
