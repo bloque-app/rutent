@@ -6,6 +6,10 @@
 //! which the platform refuses to begin, so the part is stuck at the node. The wallet is the real one, built from
 //! `components/prov/guests/plain-wallet/` the way the simulated providers are, admitted to the platform on the
 //! operator's own signed release, and its release accepted in the log by a decided catalogue change.
+//!
+//! The wallet is the node's holding account, and a provider of no route: a hand-on names it as the holder, and the
+//! linked route's first provider runs the first move (`T-020-33`). The value rests in the wallet because Core landed it
+//! there when the segment that brought it settled (`Segments::land_settled`), not because a scenario said so.
 
 mod execution_support;
 
@@ -38,7 +42,7 @@ const NODE: &str = "sim-chain-b";
 const ADDRESS: &str = "0x5e11a9d0c0ffee";
 
 /// An order across the three providers, a wallet installed at the node it rests at and the order's value landed in
-/// it: stuck for want of a route from there.
+/// it by Core, where the segment that brought it settled: stuck for want of a route from there.
 struct Stuck {
     core: Core,
     order: Id,
@@ -100,8 +104,6 @@ fn stuck_at_the_public_node() -> Stuck {
     core.run(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
-    core.land(NODE, "USDC", order.as_str(), AMOUNT)
-        .expect("the wallet takes the order's value");
     Stuck {
         core,
         order,
@@ -405,15 +407,14 @@ fn linked_order_is_accepted_through_the_assembled_core_and_starts_at_an_inner_no
     assert_eq!(linked.route.acceptance, linked.acceptance);
 }
 
-/// The hand-on of a stuck part's value to a linked order through the holding account of a public node, the real plain
-/// wallet, is blocked by three of Core's rules that one provider can't meet at once, and the wallet is asked nothing
-/// (`T-024-17`'s gap, in `F-024`'s notes): the decide step takes `by` among the providers of the part's route
-/// (`stuck::within`), the mover takes it as the provider of the node's holding account and the provider of the linked
-/// route's first segment (`Mover::plan_hand`), and the wallet is no provider of any route (it advertises no tuple, and no
-/// segment runs from a node to itself). So this refuses, fail closed, each way a decision can name it.
+/// The hand-on of a stuck part's value through the holding account of a public node, the real plain wallet, names the
+/// node's holding account and no other (`T-020-33`, which fixed `T-024-17`'s gap): the decide step takes the wallet as
+/// the holder though it is a provider of no route, and a decision naming any other provider, the one that put the value
+/// at the node or the linked route's first provider, is refused by the mover before the wallet is asked anything. The
+/// part stays held and no record of a holding account starts a route.
 // verifies: REQ-ORD-43, REQ-AUZ-4
 #[test]
-fn hand_on_through_a_public_nodes_wallet_is_refused_whichever_provider_the_decision_names() {
+fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_holder() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
     stuck
@@ -426,50 +427,40 @@ fn hand_on_through_a_public_nodes_wallet_is_refused_whichever_provider_the_decis
         .expect("the linked order is accepted");
     let handled = stuck.core.operations_received(&wallet.provider);
 
-    // Naming the wallet, the holder of the node: the decide step refuses it, as no provider of the part's route.
-    let (_, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
-    assert!(
-        matches!(
-            decision,
-            Err(StepError::Resolve(
-                rutent_core_orch::stuck::ResolveError::NotItsValue
-            ))
-        ),
-        "{decision:?}"
-    );
-
-    // Naming the provider that put the value at the node, which the decide step takes: the mover refuses it before the
-    // wallet is asked, since it is neither the node's holding account nor the linked route's first provider.
-    let (bob, decision) = operator_decides(&mut stuck, &linked, RAMP_B);
-    let decision = decision.expect("asked");
-    assert_eq!(decision.outcome, Answer::Permit {}, "{decision:?}");
-    let carries_out = Decided {
-        request: decision.request.clone(),
-        decision: decision.decision.clone(),
-    };
-    let moved = stuck
-        .core
-        .move_stuck(&stuck.order, &carries_out, &bob)
-        .expect("moved");
-    assert!(
-        matches!(
-            moved,
-            Moved::CarriedOut {
-                resolved: Resolved::Failed,
-                ..
-            }
-        ),
-        "{moved:?}"
-    );
-    assert_eq!(
-        stuck.core.operations_received(&wallet.provider),
-        handled,
-        "the wallet is asked nothing"
-    );
-    assert!(
-        stuck.core.is_stuck(&stuck.order, &stuck.part),
-        "the part stays held"
-    );
+    // Neither the provider that put the value at the node nor the linked route's first provider is the node's holding
+    // account: each decision is taken, and each move is refused with the wallet asked nothing.
+    for other in [RAMP_B, OUT_B] {
+        let (bob, decision) = operator_decides(&mut stuck, &linked, other);
+        let decision = decision.expect("asked");
+        assert_eq!(decision.outcome, Answer::Permit {}, "{other}: {decision:?}");
+        let carries_out = Decided {
+            request: decision.request.clone(),
+            decision: decision.decision.clone(),
+        };
+        let moved = stuck
+            .core
+            .move_stuck(&stuck.order, &carries_out, &bob)
+            .expect("moved");
+        assert!(
+            matches!(
+                moved,
+                Moved::CarriedOut {
+                    resolved: Resolved::Failed,
+                    ..
+                }
+            ),
+            "{other}: {moved:?}"
+        );
+        assert_eq!(
+            stuck.core.operations_received(&wallet.provider),
+            handled,
+            "{other}: the wallet is asked nothing"
+        );
+        assert!(
+            stuck.core.is_stuck(&stuck.order, &stuck.part),
+            "{other}: the part stays held"
+        );
+    }
     let whats = stuck.core.verified_whats();
     assert!(
         !whats
@@ -479,16 +470,46 @@ fn hand_on_through_a_public_nodes_wallet_is_refused_whichever_provider_the_decis
     );
 }
 
+/// Value that settles at a public inner node a holding account holds lands in it, by Core (`T-020-33`;
+/// `Holdings::land`): the wallet is asked, in the operator's signed statement, to place the part's value in the
+/// account, once for the segment that brought it, and the host attributes it to the order; a node with no holding
+/// account takes none. Nothing in the scenario lands it.
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it() {
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    // The wallet was asked once, to take the value in, and the account holds it for the order, all of it.
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        1,
+        "one deposit into the account"
+    );
+    let held = stuck.core.holdings().attributions();
+    assert_eq!(
+        held,
+        [(
+            NODE.to_owned(),
+            vec![rutent_prov::holding::HeldForOrder {
+                order: stuck.order.as_str().to_owned(),
+                amount: AMOUNT.parse().unwrap(),
+            }]
+        )]
+    );
+    // Landed once for the segment, however often Core is asked to land what settled.
+    assert_eq!(stuck.core.land_settled(), 0);
+    assert_eq!(stuck.core.operations_received(&wallet.provider), 1);
+    assert_eq!(stuck.core.holdings().attributions(), held);
+}
+
 /// The stuck order's value is handed on through the real plain wallet: the operator decides and another desk moves it,
 /// the operator's question and the wallet's own answer are the log's stated entries about the linked order, the
 /// answer verified under the wallet's accepted release, the effect's result is done, and the hand-on, the linked
 /// order's `route_chosen` at the node and the holding account's withdrawal record follow, each admitted by the log.
 ///
-/// Blocked by Core (see `hand_on_through_a_public_nodes_wallet_is_refused_whichever_provider_the_decision_names`):
-/// ignored until a hand-on's holder may be a wallet that is no provider of the route.
+/// The decision names the wallet, the node's holding account, which is a provider of no route (`T-020-33`).
 // verifies: REQ-ORD-43, REQ-ORD-40
 #[test]
-#[ignore = "T-024-17's gap: a plain wallet can't be a hand-on's holder (stuck::within, Mover::plan_hand); see F-024's notes"]
 fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();

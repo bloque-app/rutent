@@ -29,7 +29,7 @@ use rutent_core_orch::hand_on::{
     Basis, HandOn, HandOnError, HandedOn, Handing, Parts as HandParts, Start,
 };
 use rutent_core_orch::rounds::Fresh;
-use rutent_core_orch::segments::{Answered, Modules};
+use rutent_core_orch::segments::{Answered, Landed, Landings, Modules};
 use rutent_core_orch::snapshot::Clock;
 use rutent_core_orch::stuck::{
     AcceptedRoute, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
@@ -37,6 +37,7 @@ use rutent_core_orch::stuck::{
 use rutent_prov::catalogue::Instant;
 use rutent_prov::holding::wallet::{HandedOnStart, Holdings, Operator, StartError, WalletError};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
+use rutent_prov::module::platform::{Platform, World};
 use rutent_prov::module::types::Events;
 use rutent_prov::module::types::Handled;
 
@@ -163,6 +164,45 @@ impl Withdrawals for HeldWallets<'_, '_> {
             operator: &operator,
         }
         .withdraw(route, order, amount, asked)
+    }
+}
+
+/// The operator's holding accounts, as the segments land the value that settles at their nodes (`T-020-33`): the wallet
+/// is asked through the platform, in a statement the operator signs.
+struct Landing<'a, W: World, O: Operator> {
+    holdings: &'a mut Holdings,
+    platform: &'a mut Platform<W>,
+    operator: &'a O,
+}
+
+impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
+    fn holds(&self, node: &str) -> bool {
+        self.holdings.account(node).is_some()
+    }
+
+    fn land(
+        &mut self,
+        node: &str,
+        asset: &str,
+        order: &str,
+        amount: &rutent_contracts::router_api::Amount,
+    ) -> Landed {
+        match self.holdings.land(
+            self.platform,
+            self.operator,
+            node,
+            asset,
+            order,
+            amount.as_str(),
+        ) {
+            Ok(()) => Landed::Placed,
+            // Nothing of the operation took effect: it can be asked again.
+            Err(WalletError::NotAnswered(
+                PlatformRefusal::Unavailable | PlatformRefusal::StatementKeyUnavailable,
+            )) => Landed::NotNow,
+            // Anything else may have moved value, or breaks the account's own rules: never asked again.
+            Err(_) => Landed::Unconfirmed,
+        }
     }
 }
 
@@ -385,9 +425,30 @@ impl Core {
         Ok(effect)
     }
 
-    /// Value arrives at the holding account of `node` for `order`, as the operator lands it (`REQ-CAT-23`): the
-    /// wallet is asked, in a statement signed with the operator's key, to place it in the account. Nothing in Core
-    /// lands value where a segment settles at a public node yet (`T-024-17`'s gap), so a scenario does.
+    /// Lands in the holding accounts the value of each segment that settled at a public node they hold, as Core does
+    /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. The assembly calls
+    /// it after each run of a part, so where the value rests is Core's own record, and a scenario calls it again to
+    /// show that nothing lands twice. Answers how many it placed now.
+    pub fn land_settled(&mut self) -> usize {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let Some(made_at) = self.clock.now().timestamp() else {
+            return 0;
+        };
+        let mut key = RealKey::assembly();
+        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let mut landing = Landing {
+            holdings: &mut self.holdings,
+            platform: &mut self.fleet.platform,
+            operator: &operator,
+        };
+        self.segments.land_settled(&mut landing)
+    }
+
+    /// Value arrives at the holding account of `node` for `order`, as the operator lands it by hand
+    /// (`REQ-CAT-23`): the wallet is asked, in a statement signed with the operator's key, to place it in the account.
+    /// For a scenario that lands value where no segment settles (`AC-39`'s account checks, `private_nodes.rs`); where a segment settles
+    /// at the node, Core lands it itself ([`Core::land_settled`]).
     ///
     /// # Errors
     ///

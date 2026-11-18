@@ -85,6 +85,7 @@ mod charges;
 mod drain;
 pub(crate) mod journal;
 mod judge;
+mod landing;
 mod measured;
 mod ports;
 mod sign;
@@ -132,6 +133,7 @@ pub use journal::{APPEND_TRIES, Unappended};
 /// What a segment that keeps its asset hands on, as the judge counts it: the quote shown reads it too (`T-020-07`).
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
+pub use landing::{Landed, Landings};
 pub use ports::{
     Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade, Uses,
 };
@@ -683,6 +685,8 @@ pub struct Segments {
     reliances: Reliances,
     /// The measure records segments' endings and completed reversals gave, for the writer (`T-020-31`).
     measuring: measured::Measuring,
+    /// The value landed in holding accounts, by segment (`T-020-33`).
+    landing: landing::Landing,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -823,6 +827,71 @@ impl Segments {
         cites: Vec<Receipt>,
     ) {
         self.measuring.reversed(order, segment, provider, at, cites);
+    }
+
+    /// Lands in the holding accounts `landings` the value of each segment that settled at a public inner node they
+    /// hold, once for the segment, and answers how many it placed now (`REQ-ORD-40`, `INV-5`, `T-020-33`). A node with
+    /// no account takes none. A landing the wallet couldn't take now is asked again by the next call; one it didn't
+    /// confirm is never asked again and is counted ([`Segments::landings_unconfirmed`]). Nothing of a segment, its
+    /// outcome, its entries or what it moved depends on this call. The assembly calls it after each of its entry
+    /// points that can settle a segment.
+    pub fn land_settled(&mut self, landings: &mut dyn Landings) -> usize {
+        let mut due = Vec::new();
+        for ((order, segment), flight) in &self.flights {
+            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
+                continue;
+            };
+            let at = (order.clone(), segment.clone());
+            if self.landing.closed(&at) {
+                continue;
+            }
+            let (Some(tracked), Some(order_id), Some(segment_id)) = (
+                self.orders.get(order.as_str()),
+                Id::new(order.as_str()),
+                Id::new(segment.as_str()),
+            ) else {
+                continue;
+            };
+            if self.retired(&order_id, &segment_id) {
+                continue;
+            }
+            let Some(to) = tracked
+                .order
+                .parts
+                .iter()
+                .flat_map(|part| part.segments.iter())
+                .find(|s| s.segment_id.as_str() == segment.as_str())
+                .map(|s| s.to.clone())
+            else {
+                continue;
+            };
+            let rutent_contracts::provider_role::NodeRef::Inner(node) = &to.node else {
+                continue;
+            };
+            if landings.holds(node) {
+                due.push((at, node.clone(), to.asset.id.clone(), amount_out.clone()));
+            }
+        }
+        let mut placed = 0;
+        for (at, node, asset, amount) in due {
+            let landed = landings.land(&node, &asset, &at.0, &amount);
+            if self.landing.close(at, landed) {
+                placed += 1;
+            }
+        }
+        placed
+    }
+
+    /// Whether the value of `segment` of `order` was landed in a holding account by [`Segments::land_settled`].
+    pub fn landed(&self, order: &Id, segment: &Id) -> bool {
+        self.landing
+            .placed(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+    }
+
+    /// How many landings the wallet didn't confirm, which are never asked again: the operator's reading of the
+    /// account shows what the account holds.
+    pub fn landings_unconfirmed(&self) -> usize {
+        self.landing.unconfirmed()
     }
 
     /// How many drains wait to be appended, whole or in part.

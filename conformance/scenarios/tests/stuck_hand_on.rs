@@ -33,8 +33,8 @@ use rutent_prov::holding::wallet::{
     HandedOnStart, Operator as WalletOperator, StartError, WalletError, WithdrawalRecord,
 };
 use segments_support::handing::{
-    from_the_ledger, hand_parts, linked_record, linked_route, prove, recorded_with_receipts,
-    wallet_answer, wallet_succeeded,
+    from_the_ledger, hand_parts, linked_record, linked_route, prove, prove_citing,
+    recorded_with_receipts, wallet_answer, wallet_succeeded,
 };
 use segments_support::rerouting::Rerouting;
 use segments_support::resolving::{
@@ -78,6 +78,8 @@ enum Script {
 struct Wallet {
     node: String,
     holder: Option<String>,
+    /// The provider whose wallet the account is: who it signs as and records its withdrawal by.
+    account: String,
     script: Script,
     key: TestKey,
     bounds: PolicyBounds,
@@ -100,6 +102,7 @@ impl Wallet {
         Wallet {
             node: ledger_node(),
             holder: Some(RESERVE.to_owned()),
+            account: RESERVE.to_owned(),
             script,
             key: TestKey(core.key.0.clone()),
             bounds: core.record.bounds.clone(),
@@ -111,6 +114,18 @@ impl Wallet {
             breaks_clock: None,
             unattributes: None,
             handed: Vec::new(),
+        }
+    }
+}
+
+impl Wallet {
+    /// [`Wallet::of`], the wallet of `account`, another provider than the reserve the linked route starts with: the
+    /// holding account of a node that runs no route (`T-020-33`).
+    fn held_by(core: &Core, script: Script, account: &str) -> Self {
+        Wallet {
+            holder: Some(account.to_owned()),
+            account: account.to_owned(),
+            ..Wallet::of(core, script)
         }
     }
 }
@@ -135,7 +150,8 @@ impl Withdrawals for Wallet {
             return Err(StartError::ValueNotAtStart(node.clone()));
         }
         self.sent += 1;
-        let transaction = format!("{RESERVE}-withdrawal-{}", self.sent);
+        let account = self.account.clone();
+        let transaction = format!("{account}-withdrawal-{}", self.sent);
         let stated = if matches!(self.script, Script::Tampers) {
             "1"
         } else {
@@ -143,7 +159,7 @@ impl Withdrawals for Wallet {
         };
         let operation = ProviderOperation::Withdrawal(Withdrawal {
             transaction: transaction.clone(),
-            provider: RESERVE.to_owned(),
+            provider: account.clone(),
             session: None,
             origin: OuterNode {
                 network: RESERVE.to_owned(),
@@ -175,14 +191,14 @@ impl Withdrawals for Wallet {
             log.borrow_mut().stop_attributing();
         }
         let mut record = WithdrawalRecord {
-            by: RESERVE.to_owned(),
+            by: account.clone(),
             node: node.clone(),
             asset: first.from.asset.id.clone(),
             order: order.to_owned(),
             amount: amount.parse().unwrap(),
-            reference: format!("{RESERVE}-withdrawal-{transaction}"),
+            reference: format!("{account}-withdrawal-{transaction}"),
         };
-        let mut outcome = wallet_succeeded(RESERVE, &transaction, amount);
+        let mut outcome = wallet_succeeded(&account, &transaction, amount);
         if let Script::AnswersOtherwise(change) = &self.script {
             change(&mut outcome);
         }
@@ -192,9 +208,9 @@ impl Withdrawals for Wallet {
             Script::Answers(error) => return Err(error.clone()),
         }
         // The wallet's own signed answer, as the plain wallet's is: a withdrawal result under its own transaction.
-        let answer = wallet_answer(RESERVE, &transaction, self.made_at.as_str(), outcome);
+        let answer = wallet_answer(&account, &transaction, self.made_at.as_str(), outcome);
         Ok(HandedOnStart {
-            reserve: RESERVE.to_owned(),
+            reserve: account.clone(),
             node: node.clone(),
             first_segment: first.segment_id.clone(),
             record,
@@ -284,8 +300,12 @@ fn stuck_with_a_linked_order() -> (World, Core, Stuck) {
 }
 
 fn hand_on_resolution() -> Resolution {
+    hand_on_resolution_by(RESERVE)
+}
+
+fn hand_on_resolution_by(by: &str) -> Resolution {
     Resolution::HandOn {
-        by: id(RESERVE),
+        by: id(by),
         linked_order: id(LINKED),
         asset: cop_unit(),
         amount: PositiveAmount::new(AMOUNT).unwrap(),
@@ -298,10 +318,32 @@ fn decide(
     policy: &mut dyn StuckOrders,
     decider: &Actor,
 ) -> Decided {
+    decide_by(core, stuck, policy, decider, RESERVE)
+}
+
+/// [`decide`], the decision naming `by` as the holder.
+fn decide_by(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    policy: &mut dyn StuckOrders,
+    decider: &Actor,
+    by: &str,
+) -> Decided {
+    try_decide_by(core, stuck, policy, decider, by).expect("decided")
+}
+
+/// [`decide_by`], where the decide step may refuse.
+fn try_decide_by(
+    core: &mut Core,
+    stuck: &mut Stuck,
+    policy: &mut dyn StuckOrders,
+    decider: &Actor,
+    by: &str,
+) -> Result<Decided, ResolveError> {
     let (order, part) = (id(ORDER), id(PART));
     let evidence = vec![digest(&"ab".repeat(32))];
-    let resolution = hand_on_resolution();
-    let decision = on_parts(core, |parts| {
+    let resolution = hand_on_resolution_by(by);
+    on_parts(core, |parts| {
         stuck.decide(
             parts,
             policy,
@@ -314,11 +356,10 @@ fn decide(
             },
         )
     })
-    .expect("decided");
-    Decided {
+    .map(|decision| Decided {
         request: decision.request.clone(),
         decision: decision.decision.clone(),
-    }
+    })
 }
 
 /// Asks the move step of the kit's order, by `by`, with the production mover over the world's platform, the holding
@@ -2021,4 +2062,226 @@ fn a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure() {
     let stated = take(&mut core, &mut world, &mut mover, &effect, &failed).expect("taken");
     assert_eq!(stated.outcome(), Some(Resolved::Failed));
     assert!(mover.withdrawn(&effect).is_none());
+}
+
+// A holding account that runs no route (`T-020-33`) ------------------------------------------------------------
+
+/// The kit's stuck order, its linked order accepted on a route whose first segment is `RESERVE`'s, and a wallet that
+/// is `OTHER_RESERVE`'s: the node's holding account is a provider that runs none of the linked route.
+fn stuck_at_another_providers_wallet() -> (World, Core, Stuck, Wallet) {
+    let (world, core, stuck) = stuck_with_a_linked_order();
+    assert_eq!(
+        accepted(&core).plan[0].segments[0].provider.as_str(),
+        RESERVE,
+        "the linked route's first move is the reserve's"
+    );
+    let wallet = Wallet::held_by(&core, Script::Pays, OTHER_RESERVE);
+    (world, core, stuck, wallet)
+}
+
+/// A hand-on names the node's holding account as its holder, and the linked route's first provider, another, runs
+/// the move: the decision takes a holder that is no provider of the part's route, the mover asks the holding account
+/// for the withdrawal (its record, its transaction and its answer are the holding account's own), the hand-on and the
+/// `holding_withdrawal` name the holding account as the linked order's starting reserve, and the route's first
+/// segment stays the reserve's.
+// verifies: REQ-ORD-43, REQ-ORD-40
+#[test]
+fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provider_runs_the_move() {
+    let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Done);
+
+    // The holding account was handed the one withdrawal decided, as its own, at the node the value rests at.
+    assert_eq!(wallet.handed.len(), 1);
+    let sent = serde_json::to_value(&wallet.handed[0].statement).unwrap();
+    assert_eq!(sent["provider"], OTHER_RESERVE);
+    assert_eq!(sent["destination"], ledger_node());
+    assert_eq!(sent["amount"], AMOUNT);
+    let withdrawn = mover.withdrawn(&effect).expect("the withdrawal is done");
+    assert_eq!(withdrawn.start.record.by, OTHER_RESERVE);
+    assert_eq!(withdrawn.start.reserve, OTHER_RESERVE);
+    let (plan, record) = (withdrawn.route.plan.clone(), withdrawn.start.record.clone());
+    let statement = withdrawn
+        .statement
+        .cloned()
+        .expect("the account's answer is on record");
+
+    // The hand-on and the start the holding account's own record proves name the holding account, and the linked
+    // route's first segment is still the reserve's.
+    let mut hand_on = HandOn::new();
+    operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
+    prove_citing(&mut core, &mut hand_on, &id(LINKED), &record, &statement)
+        .expect("the holding account's own record proves the start");
+    assert!(
+        core.log.borrow().records().iter().any(|(_, w)| matches!(w,
+            What::HoldingWithdrawal { order, holder, .. }
+                if order.as_str() == LINKED && holder.as_str() == OTHER_RESERVE)),
+        "the record names the holding account as the holder"
+    );
+    assert_eq!(plan[0].segments[0].provider.as_str(), RESERVE);
+    assert!(
+        core.segments
+            .order(&id(ORDER))
+            .is_some_and(|o| o.parts[0].state == OrderState::HandedOn),
+        "the part is handed on"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A hand-on whose start no record of the holding account proves stays refused: a record by another provider than
+/// the holding account (the linked route's first provider's, say) proves nothing and leaves the withdrawal unknown;
+/// a decision naming a provider that isn't the node's holding account, the route's first provider included, is
+/// refused before the account is asked anything; a start recovered from the log counts only for the holder the
+/// operator's resolution named; and the linked order's segments are refused until the account's own record proves it.
+// verifies: REQ-ORD-40
+#[test]
+fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
+    // The account's record is another provider's: the first provider's, as the old rule would have taken.
+    let (mut world, mut core, mut stuck, _) = stuck_at_another_providers_wallet();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let mut wallet = Wallet::held_by(
+        &core,
+        Script::PaysRecorded(|r| r.by = RESERVE.into()),
+        OTHER_RESERVE,
+    );
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Unknown);
+    assert!(mover.withdrawn(&effect).is_none());
+    still_held(&core);
+
+    // Withdrawn well by the holding account: handed on, and refused as before until its own record proves the start.
+    let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
+    let mut mover = Mover::new();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let routes = Routes(Some(accepted(&core)));
+    let moved = move_it(
+        &mut core,
+        &mut world,
+        &mut stuck,
+        &mut mover,
+        &mut policy,
+        &carries_out,
+        &bob,
+        &mut wallet,
+        &routes,
+    );
+    let (effect, resolved) = carried_out(moved);
+    assert_eq!(resolved, Resolved::Done);
+    let withdrawn = mover.withdrawn(&effect).expect("done");
+    let (plan, record) = (withdrawn.route.plan.clone(), withdrawn.start.record.clone());
+    let statement = withdrawn.statement.cloned().expect("on record");
+    let mut hand_on = HandOn::new();
+    operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
+    let linked = linked_route(&mut world, &core.clock, LINKED);
+    assert_eq!(
+        run_linked(&mut core, &mut world, &linked).map(|_| ()),
+        Err(SegmentsError::StartUnproven(id(LINKED)))
+    );
+    let mut firsts = record.clone();
+    firsts.by = RESERVE.into();
+    assert_eq!(
+        prove_citing(&mut core, &mut hand_on, &id(LINKED), &firsts, &statement),
+        Err(HandOnError::Unproven(Unproven::NotTheStartingReserves)),
+        "the first provider's record is not the holding account's"
+    );
+    assert_eq!(
+        run_linked(&mut core, &mut world, &linked).map(|_| ()),
+        Err(SegmentsError::StartUnproven(id(LINKED)))
+    );
+
+    // A restarted Core proves the start again from the log for the holder the resolution named, and for no other.
+    let all: Vec<Entry> = core
+        .log
+        .borrow()
+        .entries
+        .iter()
+        .map(|(e, _)| e.clone())
+        .collect();
+    prove_citing(&mut core, &mut hand_on, &id(LINKED), &record, &statement)
+        .expect("the holding account's own record proves it");
+    let all_proven: Vec<Entry> = core
+        .log
+        .borrow()
+        .entries
+        .iter()
+        .map(|(e, _)| e.clone())
+        .collect();
+    assert!(all.len() < all_proven.len());
+    let of_the_first_provider: Vec<Entry> = all_proven
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            if let Entry::Verified(v) = &mut e
+                && let What::HoldingWithdrawal { holder, .. } = &mut v.what
+            {
+                *holder = id(RESERVE);
+            }
+            e
+        })
+        .collect();
+    let mut restarted = rutent_core_orch::segments::Segments::new();
+    assert_eq!(
+        HandOn::recover_starts(&mut restarted, &of_the_first_provider),
+        0,
+        "the first provider isn't the holder the resolution named"
+    );
+    assert_eq!(HandOn::recover_starts(&mut restarted, &all_proven), 1);
+
+    // A decision naming a provider that isn't the node's holding account, the route's first provider included, is
+    // refused before the account is shown anything.
+    for named in [RESERVE, "sim-reserve-z"] {
+        let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
+        let mut mover = Mover::new();
+        let mut policy = PermitsEveryStep::new(&core.log);
+        let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, named);
+        let routes = Routes(Some(accepted(&core)));
+        let moved = move_it(
+            &mut core,
+            &mut world,
+            &mut stuck,
+            &mut mover,
+            &mut policy,
+            &carries_out,
+            &bob,
+            &mut wallet,
+            &routes,
+        );
+        let (_, resolved) = carried_out(moved);
+        assert_eq!(resolved, Resolved::Failed, "{named}");
+        assert_eq!(wallet.shown, 0, "{named}: the account is shown nothing");
+        still_held(&core);
+    }
 }

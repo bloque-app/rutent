@@ -1145,6 +1145,15 @@ request, since no quote is priced for it. Core's own parts (the log, policy, the
 | the linked request following the original's | the acceptance test, the refusal test, the answer test |
 | value landed in the account | the answer test |
 
+**Updated by `T-020-33`** (edits to this row's files, `assembly_real_wallet.rs` and `src/assembly/holding.rs`, with a hunk
+of `src/assembly/mod.rs`): gap 1 is closed, since Core lands the value where the segment settles (`Segments::land_settled`,
+called by the assembly after each run of a part) and the scenario no longer lands it (`Core::land` stays for `AC-39`);
+gap 2 is closed, since a hand-on's `by` names the node's holding account and the linked route's first provider runs the
+move, so the ignored test runs and passes and the refusal test is rewritten (`hand on through a public node's wallet names
+the wallet and refuses any other holder`); gaps 3 and 4 still wait on the log: `T-020-33`'s gap 1 (a contract rule holds
+the first move's reserve to the record's holder). `AC-39`'s gap 2 in `T-024-14`'s notes (the scenario lands with
+`Core::land`) holds for the private-node scenario, where no segment settles at the wallet's node.
+
 ## T-024-08: invariants over the assembled Core
 
 Branch `f-024/t-024-08-invariants`, from `m3` at `d0a7cf2c`. Edits `conformance/scenarios/` only: `src/harness.rs` (two changes to the

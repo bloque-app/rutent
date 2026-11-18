@@ -2060,6 +2060,8 @@ impl Core {
             channel: &mut channel,
         };
         let result = self.segments.run_part(&mut parts, live);
+        // What settled at a public node a holding account holds is landed in it (`T-020-33`).
+        self.land_settled();
         self.feed()?;
         Ok(result?)
     }
