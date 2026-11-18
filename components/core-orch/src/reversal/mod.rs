@@ -683,6 +683,7 @@ impl Reversals {
                 parts.clock,
                 &bytes,
                 parts.operator.clone(),
+                parts.operator,
                 about,
             )?);
             let effect = Step::new(journal::recorded(
@@ -748,8 +749,17 @@ impl Reversals {
                 segment: Some(at.segment.clone()),
                 transaction: Some(state.transaction.clone()),
             };
-            let maker = journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
-            match journal::stated(parts.evidence, parts.clock, answer, maker, about) {
+            let presenter =
+                journal::provider_maker(parts.catalogue, parts.operator, &owing.provider);
+            let maker = journal::claimed_by(parts.catalogue, parts.operator, answer, &presenter);
+            match journal::stated(
+                parts.evidence,
+                parts.clock,
+                answer,
+                maker,
+                &presenter,
+                about,
+            ) {
                 Ok(entry) => state.answer_step = Some(Step::new(entry)),
                 Err(ReversalError::Unrecordable) => state.answer = None,
                 Err(other) => return Err(other),
@@ -1091,13 +1101,22 @@ impl Reversals {
             });
         };
         if question.answer_step.is_none() {
-            let maker = journal::provider_maker(parts.catalogue, parts.operator, &question.origin);
+            let presenter =
+                journal::provider_maker(parts.catalogue, parts.operator, &question.origin);
+            let maker = journal::claimed_by(parts.catalogue, parts.operator, &answer, &presenter);
             let about = About {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
                 transaction: Some(question.transaction.clone()),
             };
-            match journal::stated(parts.evidence, parts.clock, &answer, maker, about) {
+            match journal::stated(
+                parts.evidence,
+                parts.clock,
+                &answer,
+                maker,
+                &presenter,
+                about,
+            ) {
                 Ok(entry) => question.answer_step = Some(Step::new(entry)),
                 Err(ReversalError::Unrecordable) => {
                     // Nothing can be kept of it: the question is spent, and the next call asks again.
@@ -1158,6 +1177,9 @@ impl Reversals {
         let reversal = self.reversal(at, &target.provider);
         if !reversal.reports.iter().any(|(kept, _)| kept == bytes) {
             let claimed = journal::provider_maker(parts.catalogue, parts.operator, &maker);
+            // The provider the reversal is with hands the report over.
+            let presenter =
+                journal::provider_maker(parts.catalogue, parts.operator, &target.provider);
             let about = About {
                 order: Some(at.order.clone()),
                 segment: Some(at.segment.clone()),
@@ -1168,6 +1190,7 @@ impl Reversals {
                 parts.clock,
                 bytes,
                 claimed,
+                &presenter,
                 about,
             )?);
             reversal.reports.push((bytes.to_vec(), step));
@@ -1233,7 +1256,8 @@ impl Reversals {
                 parts.evidence,
                 parts.clock,
                 bytes,
-                claimed,
+                claimed.clone(),
+                &claimed,
                 about,
             )?);
             reversal.showings.push((bytes.to_vec(), step));
@@ -1603,6 +1627,17 @@ impl Reversals {
         if !parts.segments.answered(at.order, at.segment) {
             return Err(ReversalError::NotAnswered);
         }
+        // The segment's provider hands the late result over, whoever its envelope names as its maker.
+        let presenter = {
+            let followed = parts
+                .segments
+                .order(at.order)
+                .ok_or(ReversalError::Unknown)?;
+            let (_, segment) = find(followed, at)?;
+            let provider =
+                Id::new(segment.provider.as_str()).ok_or(ReversalError::Id("a provider"))?;
+            journal::provider_maker(parts.catalogue, parts.operator, &provider)
+        };
         let kept = self.later.entry(key(at.order, at.segment)).or_default();
         if !kept.iter().any(|(b, _)| b == bytes) {
             let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
@@ -1621,6 +1656,7 @@ impl Reversals {
                 parts.clock,
                 bytes,
                 claimed,
+                &presenter,
                 about,
             )?);
             kept.push((bytes.to_vec(), step));
@@ -1777,6 +1813,7 @@ impl Reversals {
             parts.clock,
             &bytes,
             parts.operator.clone(),
+            parts.operator,
             about,
         )?);
         Ok(Question {
@@ -1951,7 +1988,8 @@ impl Reversals {
                 parts.evidence,
                 parts.clock,
                 bytes,
-                claimed,
+                claimed.clone(),
+                &claimed,
                 about,
             )?);
             kept.push(After {

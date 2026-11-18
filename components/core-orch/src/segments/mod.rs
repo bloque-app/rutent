@@ -114,6 +114,7 @@ use rutent_stm::Stm;
 
 use crate::quote::{ChargeError, Charged, Charges, Terms};
 use crate::recalc::{holds_floor, left_after};
+use crate::relay;
 use crate::reliance::{Judgement, Reliances, Rests};
 use crate::rounds::{Fresh, Issued, OperatorKey};
 use crate::snapshot::{
@@ -1745,6 +1746,7 @@ impl Segments {
             &now(parts.clock)?,
             &signed,
             live.operator.clone(),
+            live.operator,
             Some(about),
         )
         .map_err(|why| match why {
@@ -2057,7 +2059,9 @@ impl Segments {
             self.end(parts, live, at)?;
         }
         // The result's bytes are kept and appended as the provider's statement, whether or not it counts.
-        let stated = match self.stated(parts, at, &bytes) {
+        // The provider the segment ran with hands its result over, whoever its envelope names as its maker.
+        let presenter = relay::presenter(parts.catalogue, &provider, Role::Provider);
+        let stated = match self.stated(parts, at, &bytes, &presenter) {
             Ok(receipt) => receipt,
             Err(Unappended::Unrecordable) => {
                 return Ok(SegmentOutcome::NoResult(NotCounted::Unreadable));
@@ -2383,6 +2387,7 @@ impl Segments {
                 &received_at,
                 bytes,
                 maker(parts.catalogue, bytes),
+                &relay::presenter(parts.catalogue, &provider, Role::Provider),
                 Some(about),
             )
             .map_err(|why| match why {
@@ -2755,6 +2760,7 @@ impl Segments {
         parts: &mut Parts<'_>,
         at: &(String, String),
         bytes: &[u8],
+        presented_by: &Actor,
     ) -> Result<Receipt, Unappended> {
         let flight = self.flights.get_mut(at).ok_or(Unappended::Unrecordable)?;
         if !flight.steps.contains_key("stated") {
@@ -2769,6 +2775,7 @@ impl Segments {
                 &received_at,
                 bytes,
                 maker(parts.catalogue, bytes),
+                presented_by,
                 Some(about),
             )?;
             entry

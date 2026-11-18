@@ -3995,3 +3995,43 @@ fn reversal_at_a_later_inner_node_with_no_confirming_party_stays_owed_and_held()
     assert!(world.catalogue.owed().is_owed(&format!("{ORDER}/p1-s3")));
     assert!(world.reversals.completed(&order, &s3).is_none());
 }
+
+/// The stated entries of `maker`'s statements the log holds from `from` on, with who each says relayed it.
+fn stated_by(world: &World, maker: &str, from: usize) -> Vec<Option<Actor>> {
+    world.log.entries()[from..]
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The origin reserve is asked and answers with another provider's signed statement: the entry for it is the
+/// statement's maker's, unverified, and names the reserve that handed it over as its relay. The reserve's own answer
+/// names none.
+// verifies: REQ-AUD-2
+#[test]
+fn reversal_statement_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let mut world = exchange_failed();
+    let mark = world.log.len();
+    let mut relaying = Answering::replying(Reply::Confirms {
+        maker: WALLET,
+        amount: None,
+    });
+    assert_eq!(
+        why(world.confirm(&mut relaying, "p1-s2")),
+        NotCounted::NotTheOriginReserve
+    );
+    let [relayed] = stated_by(&world, WALLET, mark).try_into().unwrap();
+    let relay = relayed.expect("the relay is named");
+    assert_eq!(relay.acts, id(RESERVE));
+    assert_eq!(world.admitted_from(mark), Ok(world.log.len() - mark));
+
+    let mut world = exchange_failed();
+    let mark = world.log.len();
+    assert!(world.confirm(&mut Answering::confirming(), "p1-s2").is_ok());
+    assert_eq!(stated_by(&world, RESERVE, mark), vec![None]);
+}

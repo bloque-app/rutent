@@ -57,7 +57,8 @@ struct Claimed {
     signature: Signature,
 }
 
-/// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
+/// Keeps `bytes`, a statement as received or as Core signed it, presented by `presented_by` (named in the entry's
+/// `relayed_by` where it isn't the maker, `crate::relay`), and builds its stated entry, claimed by `maker`,
 /// unverified, received at Core's clock, about `about`; with the commitment of a statement kept before whose signed
 /// content it restates, where the evidence store finds one.
 pub(super) fn stated(
@@ -65,6 +66,7 @@ pub(super) fn stated(
     clock: &dyn Clock,
     bytes: &[u8],
     maker: Actor,
+    presented_by: &Actor,
     about: Option<About>,
 ) -> Result<(Entry, Option<Digest>), ArrivalError> {
     let claimed: Claimed = serde_json::from_slice(bytes).map_err(|_| ArrivalError::Unrecordable)?;
@@ -72,6 +74,7 @@ pub(super) fn stated(
     let made_at = Timestamp::new(claimed.made_at).ok_or(ArrivalError::Unrecordable)?;
     let received_at = now(clock)?;
     let kept = evidence.keep(bytes)?;
+    let relayed_by = crate::relay::relayed_by(&maker, presented_by);
     let entry = Entry::Stated(StatedEntry {
         kind: StatedKind::Stated,
         attribution: Attribution::Unverified { claimed_by: maker },
@@ -90,7 +93,7 @@ pub(super) fn stated(
         },
         commitment: kept.commitment.clone(),
         about,
-        relayed_by: None,
+        relayed_by,
     });
     entry.check().map_err(AppendFailure::Refused)?;
     Ok((entry, kept.restates))

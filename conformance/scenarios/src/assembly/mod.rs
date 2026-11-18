@@ -102,6 +102,27 @@ use serde_json::json;
 
 use crate::kit::{self, RealKey, Seeded, SharedClock};
 use crate::sim::{Fleet, Installed, SimWorld};
+
+/// Who hands a statement to Core in a scenario: the maker its envelope names, acting for its publisher. A scenario
+/// hands over its providers' own statements, so none is a relay's copy (`T-020-28`).
+fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
+    let acts = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v["maker"].as_str().and_then(Id::new))
+        .unwrap_or_else(|| Id::new("unknown").expect("an id"));
+    let party = match catalogue.publishers().publisher(acts.as_str()) {
+        Some(rutent_prov::catalogue::Publisher::Operator) => Id::new("operator"),
+        Some(rutent_prov::catalogue::Publisher::Party(publisher)) => Id::new(publisher),
+        None => None,
+    }
+    .unwrap_or_else(|| acts.clone());
+    Actor {
+        party,
+        acts,
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    }
+}
 use crate::{GeneralHandle, PolicyHandle};
 use durable::{Disk, LogDisk};
 use machine::{Delivery, Environment, Feed};
@@ -1528,12 +1549,14 @@ impl Core {
         }
         let log = Rc::clone(&self.log);
         let recorded = Now(&log);
+        let presented_by = handed_over_by(&self.catalogue, bytes);
         let desk = rutent_core_orch::quote::HoldDesk {
             evidence: &mut self.keeper,
             log: &mut self.general,
             recorded: &recorded,
             clock: &self.clock,
             catalogue: &self.catalogue,
+            presented_by: &presented_by,
         };
         self.holds
             .take(

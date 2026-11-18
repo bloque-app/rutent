@@ -74,7 +74,8 @@ pub enum Unappended {
     Append(AppendFailure),
 }
 
-/// Keeps `bytes`, a statement as received or as Core signed it, and builds its stated entry, claimed by `maker`,
+/// Keeps `bytes`, a statement as received or as Core signed it, presented by `presented_by` (named in the entry's
+/// `relayed_by` where it isn't the maker, `crate::relay`), and builds its stated entry, claimed by `maker`,
 /// unverified, received at `received_at`, about `about`: built once, and appended unchanged however often it is
 /// tried, so its bytes are kept once.
 pub(crate) fn stated_entry(
@@ -82,12 +83,14 @@ pub(crate) fn stated_entry(
     received_at: &Timestamp,
     bytes: &[u8],
     maker: Actor,
+    presented_by: &Actor,
     about: Option<About>,
 ) -> Result<Entry, Unappended> {
     let claimed: Claimed = serde_json::from_slice(bytes).map_err(|_| Unappended::Unrecordable)?;
     let shape = ShapeId::new(claimed.shape).ok_or(Unappended::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(Unappended::Unrecordable)?;
     let kept = evidence.keep(bytes).map_err(Unappended::Append)?;
+    let relayed_by = crate::relay::relayed_by(&maker, presented_by);
     Ok(Entry::Stated(StatedEntry {
         kind: StatedKind::Stated,
         attribution: Attribution::Unverified { claimed_by: maker },
@@ -106,7 +109,7 @@ pub(crate) fn stated_entry(
         },
         commitment: kept.commitment,
         about,
-        relayed_by: None,
+        relayed_by,
     }))
 }
 

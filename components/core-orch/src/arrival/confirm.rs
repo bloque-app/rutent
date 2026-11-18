@@ -128,6 +128,7 @@ impl Confirming {
             desk.parts.clock,
             &bytes,
             desk.operator.clone(),
+            desk.operator,
             Some(about),
         )?;
         // Only now, the question signed and kept, is the check opened: the holder's own order, not counted against
@@ -172,7 +173,10 @@ impl Confirming {
             return Ok(Confirmation::Unanswered);
         };
         if self.answer_entry.is_none() {
-            let maker = reserve_maker(desk.parts.catalogue, desk.operator, &self.reserve);
+            let presenter = reserve_maker(desk.parts.catalogue, desk.operator, &self.reserve);
+            let maker = crate::relay::claimed_by(answer, &presenter, |maker| {
+                reserve_maker(desk.parts.catalogue, desk.operator, maker)
+            });
             let about = About {
                 order: Some(self.order.clone()),
                 segment: None,
@@ -184,6 +188,7 @@ impl Confirming {
                     desk.parts.clock,
                     answer,
                     maker,
+                    &presenter,
                     Some(about),
                 )?
                 .0,

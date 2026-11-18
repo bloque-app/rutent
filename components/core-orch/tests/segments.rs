@@ -152,6 +152,8 @@ struct Fake {
     promoted: Vec<(String, String)>,
     /// Each segment ends on 1.1.0, moved there from 1.0.0 when 1.0.0 was marked stale.
     moved: bool,
+    /// The bytes the platform hands back for each operation, where set, in place of a refusal.
+    answer: Option<Vec<u8>>,
 }
 
 impl Modules for Fake {
@@ -200,7 +202,10 @@ impl Modules for Fake {
             judged("reserve-wallet", OperationKind::Deposit),
         ];
         self.judged.push((transaction, judged));
-        Answered::Refused(PlatformRefusal::Unavailable)
+        match &self.answer {
+            Some(bytes) => Answered::Bytes(bytes.clone()),
+            None => Answered::Refused(PlatformRefusal::Unavailable),
+        }
     }
 
     fn take_events(&mut self) -> Events {
@@ -261,6 +266,7 @@ fn fake() -> Fake {
         staged: None,
         promoted: Vec::new(),
         moved: false,
+        answer: None,
     }
 }
 
@@ -526,4 +532,56 @@ fn segment_record_reaches_the_log_with_each_move_when_it_ends() {
             at: Timestamp::new(Instant(1_794_200_000).rfc3339().unwrap()).unwrap(),
         }]
     );
+}
+
+/// The stated entries the log holds claimed by `maker`, each with who it says relayed it.
+fn relays_of(log: &KeptLog, maker: &str) -> Vec<Option<Actor>> {
+    log.0
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stated(stated) if stated.attribution.maker().acts == id(maker) => {
+                Some(stated.relayed_by.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A result of `maker`'s, signed by its statements key.
+fn result_of(maker: &str) -> Vec<u8> {
+    let body = json!({
+        "kind": "withdrawal",
+        "transaction": "tx-carried",
+        "outcome": { "status": "refused", "refusal": { "class": "final" } },
+    });
+    snapshot_support::sign(
+        snapshot_support::envelope(
+            &snapshot_support::deployment(),
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            maker,
+            1_794_200_000,
+            body,
+        ),
+        &snapshot_support::statements_key(maker, 1),
+    )
+}
+
+/// The segment's provider hands back a result another provider signed: the entry is that maker's, unverified, and
+/// names the provider the platform asked as its relay; the provider's own result names none.
+// verifies: REQ-AUD-2
+#[test]
+fn segment_result_restated_by_a_relay_is_recorded_naming_the_relay() {
+    let mut modules = fake();
+    modules.answer = Some(result_of("exchange-a"));
+    let (_, log) = run(&mut modules);
+    let [relayed] = relays_of(&log, "exchange-a").try_into().unwrap();
+    assert_eq!(
+        relayed.expect("the relay is named").acts,
+        id("reserve-bank-co")
+    );
+
+    let mut modules = fake();
+    modules.answer = Some(result_of("reserve-bank-co"));
+    let (_, log) = run(&mut modules);
+    assert_eq!(relays_of(&log, "reserve-bank-co"), vec![None]);
 }

@@ -245,13 +245,15 @@ fn find_nested(value: &Value, path: &mut Vec<PathStep>, found: &mut Vec<Vec<Path
 /// they name one, since the log verifies a statement naming a transaction only about that transaction. The maker
 /// acts for its publisher, or for the operator where the operator publishes it, in the provider's role either way:
 /// a module the operator publishes is a provider, and the log records a statement only in a role its maker holds
-/// (core-internal's `attribute`); a verifier's judgement is made in the verifier's role.
+/// (core-internal's `attribute`); a verifier's judgement is made in the verifier's role. `presented_by` is who handed
+/// the statement to Core: where it isn't the maker, the entry names it as the relay (`REQ-AUD-2`, `crate::relay`).
 pub fn record_refused(
     evidence: &mut dyn Evidence,
     log: &mut dyn OrchestrationLog,
     clock: &dyn Clock,
     catalogue: &Catalogue,
     refused: &RefusedStatement,
+    presented_by: &Actor,
     about: Option<About>,
 ) -> Result<Receipt, RecordError> {
     let claimed: Claimed =
@@ -276,6 +278,7 @@ pub fn record_refused(
     };
     let shape = ShapeId::new(claimed.shape).ok_or(RecordError::Unrecordable)?;
     let made_at = Timestamp::new(claimed.made_at).ok_or(RecordError::Unrecordable)?;
+    let relayed_by = crate::relay::relayed_by(&maker, presented_by);
     let attribution = Attribution::Unverified { claimed_by: maker };
     let signed_transaction = match claimed.statement.get("transaction") {
         None => None,
@@ -318,7 +321,7 @@ pub fn record_refused(
         },
         commitment: kept.commitment,
         about,
-        relayed_by: None,
+        relayed_by,
     });
     entry.check().map_err(|_| RecordError::Unrecordable)?;
     journal::append(log, &entry).map_err(RecordError::Append)
