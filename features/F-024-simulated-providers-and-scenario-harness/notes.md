@@ -920,3 +920,84 @@ written before the shapes were wired but the shapes went in first, so "red first
 | Core's hand-on of a gross segment, less its charge | seven |
 | Core's charge check reading the charge | `charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core` |
 | the operator's fee figured on what the last segment states, not what arrives | eight |
+
+## T-024-17: the assembled Core and the real plain wallet
+
+Branch `f-024/t-024-17-hand-on-real-wallet`, from `m3` at `fa7fc3f3`. Edits `conformance/scenarios/` only: `src/sim/disk.rs`
+(`wallet_guests`), `src/sim/fleet.rs` (`Fleet::install_wallet`, `InstalledWallet`), `src/assembly/holding.rs` (the wallet's
+installation, release acceptance, landing and questions), the new `src/assembly/linked.rs` (the linked order's acceptance) and
+`tests/assembly_real_wallet.rs`. `components/` and `contracts/` are untouched.
+
+**What was built.**
+1. *The real wallet on the platform.* `disk::wallet_guests()` builds `components/prov/guests/plain-wallet/build.sh` the way the
+   simulated providers are built: into a directory named by a hash of its sources, one build at a time, reusing the guests'
+   tool `guests()` built (`RUTENT_PLAIN_WALLET` overrides). `Fleet::install_wallet` records the wallet as a module the operator
+   publishes, signs its release (maker the operator's, key the assembly's operator key) and admits and accepts it; the world
+   holds its statements key. `Core::install_wallet(node, asset)` adds the node to the operator's public list and registers the
+   wallet as its holding account.
+2. *The release accepted in the log* (`Core::accept_release`): a decided `change_catalogue` of kind `accept_module` naming the
+   release's statements key, by the operator's login (permitted to it by the register), its effect and a `done` result. From it
+   the log verifies the wallet's statements as a module the operator publishes (`REQ-CAT-23`, `REQ-AUD-2`).
+3. *The wallet's questions and answers* (`Core::ask_wallet_stating`, `state_by`, `state_answer`): the operator's signed question
+   as its stated entry, then the platform's answer as the wallet's stated entry, claimed for the operator's party; the log
+   attributes it.
+4. *A linked order's acceptance* (`Core::accept_linked`): the rounds route the order from the node, so the router's record is in
+   the log; then the quote shown, and the customer's own acceptance (given, in the customer's session, the original customer
+   its requester) on the yes of the provider the route starts with (its answer to the rounds' dry run); the route kept as the
+   order's accepted route (`Core::accepted_linked`). It starts nothing: the `route_chosen` is the hand-on's.
+5. *Value landed by hand* (`Core::land`): see gap 1.
+
+**Tests** (`tests/assembly_real_wallet.rs`; the scenario is an order over `sim-chain-in`, `sim-chain-ramp-b` and
+`sim-chain-out-b`, whose deposit out of the public node `sim-chain-b` is refused its start, so the part is stuck there, the
+wallet being the node's account).
+- `release of an operator-published wallet is accepted in the log and its answers are verified`: before the release is accepted
+  the wallet's answer is recorded and attributed to no one; after, the same kind of answer is the wallet's, for the operator's
+  party, under the key the release names.
+- `linked order is accepted through the assembled Core and starts at an inner node`: the acceptance, its yes, the quote shown and
+  the router's record are the log's and the log admitted them; the route starts at the node; nothing of the order reached the
+  state machine.
+- `real plain wallet's re-serialised answer verifies under its published key`: the answer `start_handed_on` returns verifies
+  under the release's key, a changed figure doesn't, and the log attributes it (and the operator's question before it).
+- `stuck order of the assembled Core is handed on through the real plain wallet`: **ignored**, blocked by Core (gap 2).
+- `hand on through a public nodes wallet is refused whichever provider the decision names` (added): the gap as it stands today,
+  fail closed: the decide step refuses the wallet, and a provider it takes is refused by the mover before the wallet is asked
+  anything.
+
+**Defaults taken** (reversible, fail closed). The wallet's provider is `operator-wallet`, the name the kit already registers at
+public nodes. The linked order's request follows the original order's last request id, which is what makes the rounds ask no
+reserve's yes (a hand-on has no withdrawal; `T-020-10`). The linked order's quote is shown under a digest of the order and its
+request, since no quote is priced for it. Core's own parts (the log, policy, the mover) are the real ones; nothing in
+`components/` was changed.
+
+**Gaps, with owners.**
+1. *Nothing lands value in a holding account.* Where a segment settles at a public node, Core never calls `Holdings::land`; the
+   scenario lands it (`Core::land`). Owner: `F-020` (segments) with `T-020-26`'s successor; the order's value is in the wallet
+   only by the scenario's word today.
+2. *A hand-on can't name a plain wallet.* Three rules disagree for a node held by a wallet. `stuck::within` (decide)
+   requires `by` to be a provider of the part's route (`components/core-orch/src/stuck/mod.rs`, `within`); `Mover::plan_hand`
+   requires `by` to be the provider of the node's holding account and the provider of the linked route's first segment; the
+   wallet is a provider of no route (it advertises no tuple, and an advertisement may not name a module the operator
+   publishes), and no segment kind can stand for its own withdrawal in a plan (`Route` needs two nodes, `Deposit` and
+   `Withdrawal` an outer end; the router can only choose a tuple's provider). So no decision names a provider that meets all
+   three, and the real wallet is never asked. Checked by experiment: with only `within`'s membership rule switched off
+   (temporary edit, restored), the mover asked the real wallet, which answered, its answer was kept as an attributed stated
+   entry, and the move ended `done`; the next step, `HandOn::hand_on`, refused a plan led by a wallet segment as not a route
+   handed on, as the state machine's `Route` needs two nodes. The fix is Core's and wants a decision: let `by` name the node's
+   holding account and the route's first provider be the starting reserve that runs it (the record then proves the start
+   by the holder, not by the first provider: `proves_start`, `recover_starts`, `plan_hand`), or give the wallet a
+   segment kind. Owner: `T-020-17`/`T-020-13`'s successor in `F-020`; Pablo's call on the model.
+3. *The linked order's first move* is therefore not run: the row's "linked order's first move in the log" waits on gap 2.
+4. *The yes of a linked order's route is the starting reserve's dry run* (the provider of the route's first segment), not the
+   holding account's; if gap 2 is fixed so that the holder is also asked, the acceptance's relation reads the provider of the
+   first segment (`chosen-route-rests-on-its-orders-acceptance`), so nothing changes there.
+
+**Rule-off table** (each switched off alone, file restored, the tests green first; none hung):
+
+| Switched off | Red |
+|---|---|
+| the release's result `done` (`accept_release`) | the release test, the answer test |
+| the answer claimed for the operator's party | the release test, the answer test |
+| the release naming the wallet's statements key | the release test, the answer test |
+| the customer as the acceptance's maker (Core writes it instead) | the acceptance test |
+| the linked request following the original's | the acceptance test, the refusal test, the answer test |
+| value landed in the account | the answer test |
