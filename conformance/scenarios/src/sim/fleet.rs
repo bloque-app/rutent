@@ -203,10 +203,6 @@ pub struct Fleet {
     installed: BTreeMap<String, Installed>,
     /// The placeholder-key seeds in use, each with the provider that holds it.
     seeds: BTreeMap<u8, String>,
-    /// Each verifier, in process and signed for real, which answers Core's questions in place of the platform
-    /// (`T-024-12`): the simulated module refuses a question with no transaction, since it builds its provider in the
-    /// suite's default deployment and not the assembly's (`components/prov/module-guests/sim`).
-    verifiers: BTreeMap<String, Signing<InProcess>>,
 }
 
 impl Fleet {
@@ -247,7 +243,6 @@ impl Fleet {
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
-            verifiers: BTreeMap::new(),
         }
     }
 
@@ -419,12 +414,6 @@ impl Fleet {
             spec.provider
         );
         let released = self.accept(&spec.provider, &artefact);
-        if spec.role == rutent_conformance::sim::Role::Verifier {
-            self.verifiers.insert(
-                spec.provider.clone(),
-                Signing(InProcess(spec.make(&self.context))),
-            );
-        }
         let installed = Installed {
             spec: spec.clone(),
             advertisement,
@@ -523,13 +512,6 @@ impl Fleet {
             &self.catalogue,
             ADMITTED_AT,
         )
-    }
-
-    /// The result `provider`, a verifier, gives `operation`, as the bytes it sends: its own statement signed for real,
-    /// and the judgement nested in it. None for a provider that is no verifier here.
-    pub fn judge(&mut self, provider: &str, operation: &Statement<Operation>) -> Option<Vec<u8>> {
-        let verifier = self.verifiers.get_mut(provider)?;
-        Some(verifier.handle(operation).bytes().to_vec())
     }
 
     /// Hands one operation to `provider`'s module.

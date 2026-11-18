@@ -842,7 +842,7 @@ the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameA
 ## T-024-15: the stand-in reserve states what arrived
 
 Branch `f-024/t-024-15-reserve-kind-held`, from `m3` at `fa7fc3f3`. Readings taken without asking, each reversible.
-Closes issue #150 (`T-020-18`'s hand-off).
+Refs #171.
 
 **Tests** (`conformance/tests/role_arrivals.rs`): the three the row names.
 - `stand_in_reserve_signs_an_arrival_notice_that_passes_the_role_suite` (`REQ-ORD-14`, `REQ-ORD-23`): the suite credits the
@@ -1506,3 +1506,105 @@ record before the acceptance (`Records::order_parties`).
 The three-party test stays red under the first two and is held by its own exact assertions (the questions put and each
 operation's cited judgements), which no single rule-off isolates: the exact-set assertions were seen to fail while
 the route kit was being built, when two needs on one provider were refused by the one-subject rule.
+
+## T-024-18: the kit's owed items from T-024-12, T-024-15 and T-025-02
+
+Branch `f-024/t-024-18-kit-owed-items`, from `m3` at `7bc8be82` (which has `T-020-30`'s class grant). Readings taken without
+asking, each reversible; the owner's form overrules any of them. `T-024-08`'s invariants are not on `m3` yet, so item 5's
+`--test invariants` needs that row merged first (see the gaps).
+
+**Tests** (the six the row names, plus one for item 5):
+- `simulated_verifier_module_answers_a_judgement_that_names_no_transaction` (`REQ-AUZ-5`,
+  `conformance/scenarios/tests/verifier.rs`): in the assembly's deployment, through the platform and the module, a fit
+  subject is judged yes and an `unfit-` one no, each the verifier's own statement; a question made in the suite's default
+  deployment is refused. `T-024-12`'s four tests now run on the module: `Asking` no longer answers a verifier in process.
+- `verifier_judged_through_the_assembly_is_attributed_by_its_class_grant` (`REQ-AUD-2`, same file): the log's one grant of
+  the verifier names its class and one advertising key and no tuple; its judgement's entry is attributed `verified`, to the
+  verifier, in the role of a verifier.
+- `reserve_never_asked_the_arrival_question_is_reported_uncovered` and
+  `arrival_question_under_another_key_or_in_another_session_must_be_refused_finally` (`REQ-ORD-23`,
+  `conformance/tests/role_arrivals.rs`), beside `T-024-15`'s three, which pass unchanged.
+- `evidence_table_counts_the_jail_probes_jobs_results` (`GUA-5`) and `seeded_ci_step_runs_the_invariants_beside_the_assembly`
+  (`DEC-18`, `tools/records/tests/evidence.rs`).
+
+**Item 1, the module.** The sandboxed part cannot read state, and its only way out is an outside request, which the platform
+passes on only if it names the operation's own transaction; a judgement names none, so the platform's context for it held
+the empty string, which no outside request can name (an `Identifier` is non-empty), and the guest could not ask for the
+deployment at all. The guest alone could not fix it. Two changes, then:
+- **`components/prov/src/module/platform.rs` (F-013's file, a `DEC-20` path):** the operation's context names it by the
+  identifier the platform already knew it by for the world and the credential proxy, `rutent:untransacted:<sha256 of the
+  operation's JSON>` (`F-014`'s notes), where it names no transaction. Records of its state reads, limits and outbound calls
+  name that identifier too (an outbound call for an operation with no transaction used to be refused unrecorded). Nothing
+  changes for an operation that names a transaction.
+- **`components/prov/module-guests/sim/` (a `T-024-01` file):** for a verifier (an operation with no transaction) the guest asks
+  the outside part for the deployment key under that same identifier, which it computes from the bytes it was handed (a
+  `sha2` dependency, in the guests' own lock), and builds its provider in that deployment. It asks with `BEGIN`, the one
+  outside operation that reads the deployment; its script read finds nothing, a verifier having no script.
+- `Fleet::judge` and the fleet's in-process verifiers are gone, with the workaround they were.
+
+**Item 2, the class grant.** The assembly logs a verifier's grant as `ChangeCatalogue { change: grant, tuple: None, class:
+Some(c), advertising_keys }`, one grant for each class it advertises, in place of the placeholder tuple (`verifier_tuple`,
+removed). `Core::relist` skips a done class grant (the category grant in the catalogue is made where the advertisement is
+replayed, as before).
+
+**Item 3, the role suite.** `NothingArrived` is required of every reserve before the question is first put, so a reserve never
+asked it (the platform's binding carries operations and this is not one) is uncovered; a question under another session or
+not signed with the operator's key must be refused, and finally (`REQ-CAT-3`, `REQ-CAT-4`), which a notice, "nothing arrived"
+and a refusal that waits on the person each fail. These two are asked before the credit, so a reserve with no hook is held to
+them too. The `Reformatting` stand-in in `conformance/tests/role.rs` and the `Through` and `InProcess` ones in
+`components/prov/tests/module_role.rs` did not forward the arrival question, which the new rule showed; they forward it now
+(test artefacts; `Through` hands it to its twin, signed for real). The doc comment of `other_protocol_versions` is back on it (it sat on
+`elements_of`), and this file's `T-024-15` note reads `Refs #171` in place of "Closes issue #150" (the review's lows 4 and 5).
+
+**Item 4, the evidence table and the jail probes.** The probes need `--features jail-layers`, which `cargo test --workspace`
+leaves off, so `GUA-5` and `REQ-MDL-11` would read untested. A separate workflow can't hand its results to `ci.yml`'s table
+except through an artefact of an earlier run, which a push races, so `ci.yml` runs the probes itself, once more, appended to the
+results file the table reads (`tee -a`), before the table's steps. `jail-probes.yml` stays the job that records the run id for
+`F-025`'s notes. The table itself needed no change: it joins a probe's line to its target (`tests/jail_layers.rs`) and its
+name, as it does any test. The row `THR-85` and `THR-79` the probes also tag have no row in the scope file. Cost: the probes
+(and the release build their scan test makes when `RUTENT_RELEASE_PROVIDER` is unset) run twice per push, a few minutes.
+
+**Item 5, CI's seeded step.** `--test invariants` runs beside `--test assembly` under the step's seeds `11` to `15`. A `DEC-20`
+path (`.github/workflows/`), as is item 4's step: both wait for the owner's click at the release into `main`.
+
+**Defaults taken.** The verifier asks for the deployment with `BEGIN` (no new outside operation, so no declaration change);
+a question for another deployment is refused, not judged, as every module is held to the world's deployment; a verifier that
+advertises no class logs no grant.
+
+**Gaps, with owners.**
+1. `T-024-08` is not on `m3`, so `cargo test -p rutent-scenarios --test invariants` fails ("no test target") until it merges: this
+   row must merge after it. Owner: the lead (merge order).
+2. A platform record may now name `rutent:untransacted:...` as a transaction; a consumer that parses a record's transaction as an
+   order's would meet it (none in the repository does). Owner: `F-013`, to confirm the reading.
+3. `jail-probes` is still not a required check (`T-025-02`'s note); the table now reads a run of the probes in `ci`'s own job.
+   Owner: Pablo.
+
+**Rule-off table** (each switched off alone, run under a hard timeout, restored; green first, except that the tests were
+written after the code, so "red first" is the rows below):
+
+| Switched off | Red |
+|---|---|
+| the platform naming an untransacted operation's context | the module test (the guest's ask is refused) |
+| the guest's read of the deployment | the module test and `T-024-12`'s four tests, now on the module |
+| the logged class grant of a verifier | the attribution test and `T-024-12`'s four (the judgement is attributed to no one) |
+| `require` of `NothingArrived` before the first ask | the uncovered test |
+| the final refusal of the foreign questions, "nothing arrived" accepted | the foreign-question test and `T-024-15`'s suite test |
+| the final refusal, a refusal that waits accepted | the foreign-question test |
+| the jail probes' line in `ci.yml` | the jail probes test |
+| the probes' output appended to the results file | the jail probes test |
+| the seeded step's `--test invariants` | the seeded-step test |
+| a probe's `GUA-5` tag | the jail probes test |
+
+### T-024-18, after review of `abf1c85f`
+
+- **The table read no result in CI** (`tools/records/src/evidence.rs`): `CARGO_TERM_COLOR: always` puts ANSI codes in cargo's
+  `Running` and `Doc-tests` words, so no line joined its target ("232 rows: 0 verified" in run 44265372431, and on PR #206; the bug
+  dates from `T-024-09`). `Results::parse` now strips escape sequences before it reads a line; the colour setting is left as it is.
+  Test: `coloured_cargo_output_joins_each_test_to_its_target` (`DEC-17`). Run over the reviewer's saved log of that run (its
+  runner timestamps cut): **232 rows: 210 verified, 5 inspected, 1 partly met, 1 unverified** (`AC-4`, whose only test is
+  ignored), 3 M4's, 12 deferred. Rule-off: with the strip off the test is red.
+- **`expect_final_refusal`** flags a reserve that answered the question in the session but gives no answer to a foreign one
+  (`SilentToForeignQuestions` in `role_arrivals.rs`, which is red without the flag).
+- `Through` (`module_role.rs`) says in a comment that the twin answers the arrival question, not the module (`F-014`, `F-031`).
+- The guest no longer caches a provider built on a failed deployment ask: it answers that one operation as the default deployment
+  does and asks again next time (`T-024-12`'s verifier tests, rerun, are green).

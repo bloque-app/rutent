@@ -25,5 +25,6 @@ verifier = []
 [dependencies]
 wit-bindgen = { version = "=0.61.1", default-features = false, features = ["macros", "realloc", "std"] }
 serde_json = "1.0.154"
+sha2 = "0.10"
 rutent-contracts = { path = "../../../../contracts" }
 rutent-conformance = { path = "../../../../conformance" }

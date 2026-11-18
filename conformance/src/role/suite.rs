@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::provider_role::{
     ARRIVAL_QUESTION_SHAPE, Advertisement, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
-    ArrivalOutcome, ArrivalQuestion, BalanceOutcome, BalanceRefusal, BalanceVerification, Category,
-    Conversion, ConversionOutcome, Credits, Denomination, Deposit, Direction, EvidenceGrade,
-    EvidencePiece, Fee, HoldingBalanceOutcome, Inputs, JudgementOutcome, JudgementRequest,
-    JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE, Operation, OuterNode, PublicKey,
-    Refusal, ReserveMovementOutcome, ResultBody, Reversal, ReversalConfirmationOutcome,
+    ArrivalOutcome, ArrivalQuestion, BalanceOutcome, BalanceRefusal, BalanceRefused,
+    BalanceVerification, Category, Conversion, ConversionOutcome, Credits, Denomination, Deposit,
+    Direction, EvidenceGrade, EvidencePiece, Fee, HoldingBalanceOutcome, Inputs, JudgementOutcome,
+    JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE, Operation, OuterNode,
+    PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal, ReversalConfirmationOutcome,
     ReversalConfirmationRequest, ReversalConfirmationResult, ReversalOutcome, Signature,
     SignatureScheme, Slippage, Statement, StatementShape, Terms, Tracking, Transfer,
     TransferOutcome, Withdrawal, check_amounts, check_answer, check_one_credit, member,
@@ -1506,6 +1506,10 @@ impl Run<'_> {
             return;
         };
         let subject = format!("arrival questions of {}", asset.id);
+        // Required before the first ask: a reserve the question is never put to (the platform's binding carries
+        // operations and this is not one, so a reserve reached only through it is not asked) is reported uncovered, in
+        // place of passing for want of a question (`T-024-18`, after `T-024-15`'s review).
+        self.require(&subject, Exercised::NothingArrived);
         let account = self.context.account.clone();
         let session = self.context.session.clone();
         let ask = (&node, &asset, account.as_str());
@@ -1517,23 +1521,30 @@ impl Run<'_> {
             &question,
             "the question of what arrived, before any credit",
         ) {
-            // Required once the reserve answers the question at all: the platform's binding carries operations and
-            // this is not one, so a reserve reached only through it isn't asked (`T-024-15`'s gap).
-            Some(answer) => {
-                self.require(&subject, Exercised::NothingArrived);
-                match answer.statement.outcome {
-                    ArrivalOutcome::NothingArrived(_) => {
-                        self.saw(&subject, Exercised::NothingArrived)
-                    }
-                    ArrivalOutcome::Arrived(_) => self.flag(
-                        Check::ArrivalsStated,
-                        "a credit stated as arrived, with none at its bank",
-                    ),
-                    ArrivalOutcome::Refused(_) => {}
-                }
-            }
+            Some(answer) => match answer.statement.outcome {
+                ArrivalOutcome::NothingArrived(_) => self.saw(&subject, Exercised::NothingArrived),
+                ArrivalOutcome::Arrived(_) => self.flag(
+                    Check::ArrivalsStated,
+                    "a credit stated as arrived, with none at its bank",
+                ),
+                ArrivalOutcome::Refused(_) => {}
+            },
+            // A reserve that is never asked the question, or does not answer it, leaves the arrival question
+            // uncovered, never passed (`T-024-18`).
             None => return,
         }
+
+        // A question under another session, or not signed with the operator's key, it refuses, and finally, as a
+        // balance check is refused (`REQ-CAT-3`, `REQ-CAT-4`): an answer that states nothing is not a refusal. It needs no credit
+        // to refuse, so a reserve with no hook is held to it too.
+        let question = self.arrival_question(ask, &self.other_session(), true);
+        self.expect_final_refusal(provider, &question, "another session");
+        let question = self.arrival_question(ask, &session, false);
+        self.expect_final_refusal(
+            provider,
+            &question,
+            "a question not signed with the operator's key",
+        );
 
         let credit = BankCredit {
             reference: self.transaction(),
@@ -1591,18 +1602,10 @@ impl Run<'_> {
             }
         }
 
-        // What it must not state: another account's credit, to another session, to a question from elsewhere.
+        // What it must not state: another account's credit.
         let elsewhere = format!("{account}-elsewhere");
         let question = self.arrival_question((&node, &asset, &elsewhere), &session, true);
         self.expect_nothing_stated(provider, &question, "an account the credit didn't reach");
-        let question = self.arrival_question(ask, &self.other_session(), true);
-        self.expect_nothing_stated(provider, &question, "another session");
-        let question = self.arrival_question(ask, &session, false);
-        self.expect_nothing_stated(
-            provider,
-            &question,
-            "a question not signed with the operator's key",
-        );
     }
 
     /// An arrival question as the operator asks it, with the placeholder signature a stand-in doesn't check:
@@ -1760,6 +1763,44 @@ impl Run<'_> {
                 Check::ArrivalsStated,
                 format!("{what}: a credit stated as arrived"),
             );
+        }
+    }
+
+    /// A question the reserve mustn't answer at all: it refuses it, and finally. A notice, and an answer that nothing
+    /// arrived, are each flagged (the second tells the asker the account has no credit, which isn't theirs to know).
+    fn expect_final_refusal<P: RoleHarness + ?Sized>(
+        &mut self,
+        provider: &mut P,
+        question: &Statement<ArrivalQuestion>,
+        of: &str,
+    ) {
+        let what = format!("the question of what arrived, asked of {of}");
+        // The reserve answered the question in the session; one it leaves unanswered here is no refusal at all.
+        let Some(answer) = self.ask_arrival(provider, question, &what) else {
+            self.flag(
+                Check::ArrivalsStated,
+                format!("{what}: no answer, where a final refusal is due"),
+            );
+            return;
+        };
+        {
+            match answer.statement.outcome {
+                ArrivalOutcome::Refused(BalanceRefused {
+                    refusal: BalanceRefusal::Final(_),
+                }) => {}
+                ArrivalOutcome::Refused(_) => self.flag(
+                    Check::ArrivalsStated,
+                    format!("{what}: refused, but not finally"),
+                ),
+                ArrivalOutcome::Arrived(_) => self.flag(
+                    Check::ArrivalsStated,
+                    format!("{what}: a credit stated as arrived"),
+                ),
+                ArrivalOutcome::NothingArrived(_) => self.flag(
+                    Check::ArrivalsStated,
+                    format!("{what}: answered, not refused finally"),
+                ),
+            }
         }
     }
 
@@ -2099,8 +2140,6 @@ impl Run<'_> {
     }
 }
 
-/// Protocol versions other than `ours`, each with how it differs: a higher major, a higher patch, and a lower
-/// version where there is one.
 /// The texts of the elements of a JSON array as they sit in `array`, whole.
 fn elements_of(array: &[u8]) -> Vec<&[u8]> {
     let (mut depth, mut in_string, mut escaped) = (0_usize, false, false);
@@ -2142,6 +2181,8 @@ fn elements_of(array: &[u8]) -> Vec<&[u8]> {
     elements.into_iter().map(|e| e.trim_ascii_end()).collect()
 }
 
+/// Protocol versions other than `ours`, each with how it differs: a higher major, a higher patch, and a lower
+/// version where there is one.
 fn other_protocol_versions(ours: &str) -> Vec<(&'static str, String)> {
     let parts: Vec<u64> = ours.split('.').filter_map(|p| p.parse().ok()).collect();
     let [major, minor, patch] = parts[..] else {

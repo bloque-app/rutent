@@ -284,36 +284,19 @@ struct Asking<'a> {
 impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
         let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
-        // A verifier answers in process (`Fleet::judge`), and its answer is the judgement the rounds read: the
-        // verifier's own statement, which its result carries inside (`T-024-12`). A refused judgement stays the
-        // result.
-        if let Some(bytes) = self.fleet.judge(provider.as_str(), &operation) {
-            let result: Statement<ResultBody> = serde_json::from_slice(&bytes).ok()?;
-            return match result.statement {
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
+        // signed statement, is what the rounds read. A refused judgement stays the result.
+        match self.fleet.platform.handle(provider.as_str(), &operation) {
+            Handled::Answered(result) => match result.statement {
                 ResultBody::Judgement(JudgementResult {
                     outcome: JudgementOutcome::Judged(judged),
                 }) => serde_json::to_vec(&*judged.judgement).ok(),
-                _ => Some(bytes),
-            };
-        }
-        self.fleet.platform.world.set_clock(self.clock.instant());
-        match self.fleet.platform.handle(provider.as_str(), &operation) {
-            Handled::Answered(result) => serde_json::to_vec(&*result).ok(),
+                _ => serde_json::to_vec(&*result).ok(),
+            },
             Handled::Refused(_) => None,
         }
     }
-}
-
-/// The placeholder tuple a verifier's logged grant names: `tuple-` and the first 32 hex digits of SHA-256 over the
-/// canonical JSON of `{"provider", "category": "verifier"}`. No tuple stands behind it (`T-024-12`).
-fn verifier_tuple(provider: &str) -> Id {
-    let canonical = rutent_contracts::provider_role::to_canonical(&json!({
-        "provider": provider,
-        "category": "verifier",
-    }))
-    .expect("canonical JSON");
-    let digest = rutent_prov::module::wire::sha256(&canonical);
-    kit::id(&format!("tuple-{}", &digest[..32]))
 }
 
 /// Faults planted at the platform's seam, counted by the effects the segments carry out, from 0 (`T-024-02`).
@@ -1118,27 +1101,36 @@ impl Core {
         let provider = kit::id(&statement.statement.provider);
         let key = statement.signature.key.clone();
         let decider = kit::operator_login();
-        // A verifier advertises classes, not tuples, and the contract's catalogue change names a tuple exactly when it
-        // is about one, so no change of its own can be logged for it. The log trusts a provider's advertising keys by
-        // its latest grant, which a verifier's judgement needs to be attributed, so its grant is logged naming a
-        // placeholder tuple (`verifier_tuple`): a stand-in, and a gap for core-internal (`T-024-12`, `DEC-16`).
-        let tuples: Vec<(Id, Option<rutent_prov::catalogue::TupleKey>)> =
-            rutent_prov::catalogue::tuples_of(&statement.statement)
-                .into_iter()
-                .map(|t| (kit::tuple_id(provider.as_str(), &t), Some(t)))
-                .chain(
-                    (statement.statement.offers.verifier.is_some()
-                        && statement.statement.offers.reserve.is_none())
-                    .then(|| (verifier_tuple(provider.as_str()), None)),
-                )
-                .collect();
-        for (tuple_id, tuple) in tuples {
+        // A verifier advertises classes, not tuples: its grant is logged naming a class, one grant for each (`T-020-30`),
+        // and the keys that grant trusts attribute its judgements of that class (`T-024-18`).
+        let verifier_classes = statement
+            .statement
+            .offers
+            .verifier
+            .as_ref()
+            .filter(|_| statement.statement.offers.reserve.is_none())
+            .map(|v| v.classes.clone())
+            .unwrap_or_default();
+        let tuples: Vec<(
+            Option<Id>,
+            Option<Id>,
+            Option<rutent_prov::catalogue::TupleKey>,
+        )> = rutent_prov::catalogue::tuples_of(&statement.statement)
+            .into_iter()
+            .map(|t| (Some(kit::tuple_id(provider.as_str(), &t)), None, Some(t)))
+            .chain(
+                verifier_classes
+                    .iter()
+                    .map(|class| (None, Some(kit::id(class)), None)),
+            )
+            .collect();
+        for (tuple_id, class, tuple) in tuples {
             let action = Action::ChangeCatalogue {
                 change: CatalogueChange::Grant,
                 provider: provider.clone(),
                 version: None,
-                tuple: Some(tuple_id),
-                class: None,
+                tuple: tuple_id,
+                class,
                 advertising_keys: vec![key.clone()],
                 statement_key: None,
             };
@@ -1192,8 +1184,8 @@ impl Core {
         }
     }
 
-    /// Grants a verifier its category in the catalogue where the log's grant is replayed (`Core::relist`), which finds
-    /// no tuple behind the placeholder (`T-024-12`). Nothing for a provider that offers a tuple.
+    /// Grants a verifier its category in the catalogue where the log's grants are replayed (`Core::relist`), which
+    /// finds no tuple behind a class grant. Nothing for a provider that offers a tuple.
     fn grant_verifier(&mut self, installed: &Installed) {
         self.record_release(installed);
         let ad = &installed.advertisement.statement().statement;
@@ -1271,6 +1263,7 @@ impl Core {
                         change,
                         provider,
                         tuple,
+                        class,
                         ..
                     },
                 ..
@@ -1279,6 +1272,11 @@ impl Core {
                 continue;
             };
             if !done.contains(&receipt) {
+                continue;
+            }
+            // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
+            // replayed (`grant_verifier`).
+            if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
                 continue;
             }
             let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {

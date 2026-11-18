@@ -1563,10 +1563,11 @@ impl<W: World> Platform<W> {
         let json = serde_json::to_string(operation).unwrap_or_default();
         // What the world knows the operation by: its transaction, or, for one that names none (a verifier's
         // judgement), an identifier of the platform's own, from the operation's digest. The proxy resolves the
-        // statement key only for the operation it was told is being handled.
-        let handled_as = Identifier::new(transaction.clone()).or_else(|| {
-            Identifier::new(format!("rutent:untransacted:{}", sha256(json.as_bytes())))
-        });
+        // statement key only for the operation it was told is being handled. It is also what the operation's own
+        // outside requests name (`Context::transaction`): an outside request names a transaction, so an operation
+        // that names none is asked about by this one, which its module computes from the bytes it was handed
+        // (`untransacted`), and its state, egress and limit records name it too (`T-024-18`).
+        let handled_as = Identifier::new(transaction.clone()).or_else(|| untransacted(&json));
         // The world judges against the release that handles it, which the last one told may not be (`T-013-06`).
         self.tell_running(provider, &version);
         if let (Some(caller), Some(handled_as)) = (&caller, &handled_as) {
@@ -1610,7 +1611,9 @@ impl<W: World> Platform<W> {
             version,
             declaration,
             operation: operation.clone(),
-            transaction,
+            transaction: handled_as
+                .as_ref()
+                .map_or(transaction, |id| id.as_str().to_owned()),
             serving: None,
             resolved: BTreeMap::new(),
             due,
@@ -1830,6 +1833,17 @@ fn unsigned_refusal(why: proxy::SigningError) -> PlatformRefusal {
 /// records is the caller's clock or the world's ([`World::now`]), never one of its own.
 fn time_of(at: Clock) -> Option<Time> {
     at.rfc3339().and_then(Time::new)
+}
+
+/// What an operation that names no transaction (a verifier's judgement) is known by: `rutent:untransacted:` and the
+/// SHA-256 of the operation's JSON, as the platform hands it to the module. A module computes it from the bytes it
+/// was handed, to name it in an outside request.
+fn untransacted_name(operation_json: &str) -> String {
+    format!("rutent:untransacted:{}", sha256(operation_json.as_bytes()))
+}
+
+fn untransacted(operation_json: &str) -> Option<Identifier> {
+    Identifier::new(untransacted_name(operation_json))
 }
 
 /// The transaction an operation names, if it names one.
