@@ -5306,3 +5306,18 @@ consumer files named below.
   | `holder`, the operator's basis alone (its `by`) | table, `handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted`, `route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused` |
 - **Local checks** (one lock hold, at `e3650fe9` with these notes): the first round's list, all green, `rutent-scenarios`
   included; the guard against `origin/develop`: "1687 changed path(s), no violations"; tag-check 1984 tests.
+
+### T-020-33, after the merge of `T-020-36`'s item 4 (`e2681780`)
+
+Gap 1 above is closed by the contract: `handed-on-route-starts-on-its-holding-record` holds the first move to the
+holding record of the account the hand-on named, at the plan's first node, run by the plan's provider. The hand-on tests
+now go through the linked order's first move: `stuck_hand_on.rs`' `hand on names the node's holding account...` runs the
+linked route (settled, the first move by `RESERVE` in the log, which the kit's log admits), and `assembly_real_wallet.rs`'
+`stuck order of the assembled Core is handed on through the real plain wallet` asserts the `holding_withdrawal`
+(holder the wallet, node `sim-chain-b`) and then runs the linked order with the new `Core::run_linked` (`assembly/linked.rs`,
+an `F-024` file): the customer's authorisation of the linked order through policy (the holding account its origin reserve;
+the linked order is entered in intake's records, which policy's `Requester` source reads), then its route; the first move
+is by `sim-chain-out-b`, the wallet is asked nothing by it, and the real log admits each entry as it is appended.
+- **Rule-off:** the first move run with the wallet as its origin reserve (`Started.origin`) turns the T-024-17 scenario
+  red: the log refuses it ("a part's first move is from the origin reserve its part's yes names").
+

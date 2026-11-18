@@ -23,6 +23,7 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::provider_role::{BalanceVerification, Denomination, Operation};
 use rutent_contracts::router_api::{Id, PositiveAmount, Request};
 use rutent_core_authz::roles::Permission;
+use rutent_core_orch::segments::{Ran, SegmentOutcome};
 use rutent_core_orch::stuck::{Moved, Resolved};
 use rutent_scenarios::assembly::linked::{AcceptedLinked, LinkedOrder};
 use rutent_scenarios::assembly::{Core, StepError};
@@ -564,11 +565,55 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
         .expect("handed on");
     assert_eq!(node_name(&handed.at.node), NODE);
     let whats = stuck.core.verified_whats();
-    assert!(
-        whats
-            .iter()
-            .any(|w| matches!(w, What::HoldingWithdrawal { order, .. } if *order == linked.order))
+    let holding = whats
+        .iter()
+        .find_map(|w| match w {
+            What::HoldingWithdrawal {
+                order,
+                holder,
+                node,
+                ..
+            } if *order == linked.order => Some((holder.clone(), node.clone())),
+            _ => None,
+        })
+        .expect("the holding account's record starts the linked order");
+    assert_eq!(
+        holding.0.as_str(),
+        wallet.provider,
+        "the wallet is the holder"
     );
+    assert_eq!(holding.1.as_str(), NODE, "at the plan's first node");
+
+    // The linked order's first move is the plan's provider's, not the wallet's, and the log admits all of it.
+    let moves_before = stuck.core.operations_received(&wallet.provider);
+    let ran = stuck
+        .core
+        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .expect("the linked order's route runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    assert_eq!(
+        done[0].segment.as_str(),
+        linked.route.plan[0].segments[0].segment_id.as_str()
+    );
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        moves_before,
+        "the wallet is asked nothing by the first move"
+    );
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Effect { action: Action::MoveValue { order, provider, .. }, .. }
+                if *order == linked.order && provider.as_str() == OUT_B)),
+        "the first move, by the plan's provider, is in the log"
+    );
+    // The assembled Core's log is the real one, which admits each entry as it is appended: a run that returned
+    // settled has every entry of the move admitted.
 }
 
 /// What the real wallet answers a withdrawal is its own signed statement, which the platform passes on and the host

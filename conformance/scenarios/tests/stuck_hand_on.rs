@@ -2135,6 +2135,17 @@ fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provide
         "the record names the holding account as the holder"
     );
     assert_eq!(plan[0].segments[0].provider.as_str(), RESERVE);
+    // The linked order's first move is the plan's provider's, resting on the holding account's record: it is in the
+    // log, and the log admits it (`T-020-36`'s item 4).
+    let linked = linked_route(&mut world, &core.clock, LINKED);
+    let ran = run_linked(&mut core, &mut world, &linked).expect("the linked route runs");
+    assert!(settled(&ran), "{ran:?}");
+    assert!(
+        core.log.borrow().entries.iter().any(|(e, _)| matches!(e, Entry::Verified(v)
+            if matches!(&v.what, What::Effect { action: Action::MoveValue { order, provider, .. }, .. }
+                if order.as_str() == LINKED && provider.as_str() == RESERVE))),
+        "the first move, by the plan's provider, is in the log"
+    );
     assert!(
         core.segments
             .order(&id(ORDER))
