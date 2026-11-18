@@ -1559,6 +1559,7 @@ dependencies = [
  "rustls-pki-types",
  "rutent-conformance",
  "rutent-contracts",
+ "rutent-prov",
  "serde",
  "serde_json",
  "sha2",

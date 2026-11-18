@@ -26,6 +26,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use super::layers::{Layer, Layers};
+
 /// The largest frame either side accepts, in bytes.
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 
@@ -257,6 +259,47 @@ pub fn isolated(
     workdir: &Path,
     limits: Limits,
 ) -> io::Result<Command> {
+    isolated_layers(executable, args, workdir, limits, Layers::ALL)
+}
+
+/// The arguments `unshare` is given for the namespaces `layers` names, in [`UNSHARE`]'s order, ending in `--`; with
+/// every layer on, [`UNSHARE`] itself. Empty when no namespace is asked for.
+#[cfg_attr(
+    not(any(target_os = "linux", feature = "jail-layers")),
+    allow(dead_code)
+)]
+pub(super) fn unshare_args(layers: Layers) -> Vec<&'static str> {
+    let mut args = Vec::new();
+    if layers.on(Layer::User) {
+        args.extend(["--user", "--map-root-user"]);
+    }
+    for (layer, flag) in [
+        (Layer::Net, "--net"),
+        (Layer::Ipc, "--ipc"),
+        (Layer::Uts, "--uts"),
+        (Layer::Mount, "--mount"),
+    ] {
+        if layers.on(layer) {
+            args.push(flag);
+        }
+    }
+    if layers.on(Layer::Pid) {
+        args.extend(["--pid", "--fork", "--kill-child"]);
+    }
+    if !args.is_empty() {
+        args.push("--");
+    }
+    args
+}
+
+/// [`isolated`] with the layers `layers` names: all of them in a shipped build, where it is the only way in.
+pub(super) fn isolated_layers(
+    executable: &Path,
+    args: &[&str],
+    workdir: &Path,
+    limits: Limits,
+    layers: Layers,
+) -> io::Result<Command> {
     let executable: PathBuf = executable.canonicalize()?;
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -266,8 +309,14 @@ pub fn isolated(
     };
     #[cfg(target_os = "linux")]
     let mut command = {
-        let mut command = Command::new(unshare());
-        command.args(UNSHARE).arg(&executable);
+        let flags = unshare_args(layers);
+        let mut command = if flags.is_empty() {
+            Command::new(&executable)
+        } else {
+            let mut command = Command::new(unshare());
+            command.args(flags).arg(&executable);
+            command
+        };
         command
     };
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -290,7 +339,7 @@ pub fn isolated(
         // SAFETY: the closure runs in the forked child before `exec`, and calls only async-signal-safe system calls
         // on values computed before the fork.
         unsafe {
-            command.pre_exec(move || restrict(limits));
+            command.pre_exec(move || restrict(limits, layers));
         }
     }
     Ok(command)
@@ -346,11 +395,16 @@ fn close_from_3() {
 
 /// The child's own restrictions, applied between `fork` and `exec`.
 #[cfg(unix)]
-fn restrict(limits: Limits) -> io::Result<()> {
+fn restrict(limits: Limits, layers: Layers) -> io::Result<()> {
     // Every descriptor the parent left open, but the three standard streams, is closed first, close-on-exec or not:
     // nothing it holds reaches the child. That includes the pipe the standard library reports a failed `exec` on;
     // the platform then learns of a failed start from the child's silence instead.
-    close_from_3();
+    if layers.on(Layer::CloseBeforeExec) {
+        close_from_3();
+    }
+    if !layers.on(Layer::Limits) {
+        return Ok(());
+    }
     // With RLIMIT_FSIZE at 0 a write to a file would raise SIGXFSZ and kill the child; ignored, which survives
     // `exec`, the write fails with EFBIG instead.
     // SAFETY: setting a signal's disposition to ignored is async-signal-safe.
@@ -374,15 +428,20 @@ fn restrict(limits: Limits) -> io::Result<()> {
 /// jail the module's documentation describes, and an error if any of it can't be applied; elsewhere the isolation
 /// was applied before the program started, and there is nothing to do.
 pub fn confine(role: Role) -> Result<(), String> {
+    confine_layers(role, Layers::ALL)
+}
+
+/// [`confine`] with the layers `layers` names.
+pub(super) fn confine_layers(role: Role, layers: Layers) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let applied = linux::confine(role)?;
+        let applied = linux::confine(role, layers)?;
         let _ = CONFINED.set(applied);
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = role;
+        let _ = (role, layers);
         Ok(())
     }
 }
@@ -409,7 +468,7 @@ mod linux {
     use std::ffi::CString;
     use std::io;
 
-    use super::Role;
+    use super::{Layer, Layers, Role};
 
     /// What the jail applied that the kernel decides on.
     #[derive(Debug, Clone, Copy)]
@@ -764,33 +823,51 @@ mod linux {
     }
 
     /// The jail, in order; the first step that fails stops the child.
-    pub(super) fn confine(role: Role) -> Result<Applied, String> {
+    pub(super) fn confine(role: Role, layers: Layers) -> Result<Applied, String> {
         // SAFETY: getpid takes nothing.
-        if unsafe { libc::getpid() } != 1 {
+        if layers.on(Layer::Pid) && unsafe { libc::getpid() } != 1 {
             return Err(
                 "not started in a PID namespace of its own: start it through \
                         rutent_wasm_sandbox::isolated"
                     .to_owned(),
             );
         }
-        // SAFETY: plain prctl with integer arguments.
-        check(
-            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) }.into(),
-            "no_new_privs",
-        )?;
-        empty_root()?;
-        super::close_from_3();
-        rlimit(libc::RLIMIT_NPROC, 0, "RLIMIT_NPROC")?;
-        rlimit(libc::RLIMIT_CORE, 0, "RLIMIT_CORE")?;
+        if layers.on(Layer::NoNewPrivs) {
+            // SAFETY: plain prctl with integer arguments.
+            check(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) }.into(),
+                "no_new_privs",
+            )?;
+        }
+        if layers.on(Layer::EmptyRoot) {
+            empty_root()?;
+        }
+        if layers.on(Layer::CloseInJail) {
+            super::close_from_3();
+        }
+        if layers.on(Layer::Limits) {
+            rlimit(libc::RLIMIT_NPROC, 0, "RLIMIT_NPROC")?;
+            rlimit(libc::RLIMIT_CORE, 0, "RLIMIT_CORE")?;
+        }
         let space = match role {
             Role::Compiler => super::COMPILER_ADDRESS_SPACE,
             Role::Provider => super::PROVIDER_ADDRESS_SPACE,
         };
-        rlimit(libc::RLIMIT_AS, space, "RLIMIT_AS")?;
+        if layers.on(Layer::AddressSpace) {
+            rlimit(libc::RLIMIT_AS, space, "RLIMIT_AS")?;
+        }
         let address_space = current_limit(libc::RLIMIT_AS);
-        drop_capabilities()?;
-        let landlock_abi = landlock()?;
-        seccomp(role)?;
+        if layers.on(Layer::DropCaps) {
+            drop_capabilities()?;
+        }
+        let landlock_abi = if layers.on(Layer::Landlock) {
+            landlock()?
+        } else {
+            None
+        };
+        if layers.on(Layer::Seccomp) {
+            seccomp(role)?;
+        }
         Ok(Applied {
             landlock_abi,
             address_space,

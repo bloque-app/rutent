@@ -23,6 +23,8 @@
 //! - [`output`]: the check of a module's output against its schema, patterns and lengths, and what the platform
 //!   keeps of a guest's failure (`REQ-MDL-12`).
 //! - [`sandbox`]: the operating system's jail for a child, and the frames the platform and a child exchange.
+//! - `jail` (only with the `jail-layers` feature, which the package's own tests turn on): the test-only builder that
+//!   composes the jail's layers one at a time (`T-025-02`). A shipped build has no such entry point (`GUA-5`).
 //! - [`wire`]: the messages in those frames.
 //! - [`types`]: what the platform answers with.
 //!
@@ -35,6 +37,9 @@ pub mod admission;
 pub mod children;
 pub mod engine;
 pub mod host;
+#[cfg(feature = "jail-layers")]
+pub mod jail;
+mod layers;
 pub mod lifecycle;
 pub mod limits;
 pub mod output;

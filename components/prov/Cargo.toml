@@ -16,6 +16,16 @@ path = "src/module/bin/compiler.rs"
 name = "rutent-wasm-provider"
 path = "src/module/bin/provider.rs"
 
+[[bin]]
+name = "rutent-jail-probe"
+path = "src/module/bin/jail_probe.rs"
+required-features = ["jail-layers"]
+
+[features]
+# Test-only (`T-025-02`): the builder that composes the jail's layers one at a time. Never a default, and only the
+# package's own tests turn it on (the dev-dependency on itself below), so a release build has none of it.
+jail-layers = []
+
 [dependencies]
 ed25519-dalek = { version = "2.2.0", default-features = false }
 rutent-contracts = { path = "../../contracts" }
@@ -33,6 +43,7 @@ rustls-pki-types = { version = "1.12", features = ["std"] }
 jsonschema = { version = "0.60.2", default-features = false }
 
 [dev-dependencies]
+rutent-prov = { path = ".", features = ["jail-layers"] }
 rutent-conformance = { path = "../../conformance", features = ["signing"] }
 serde_json = "1.0.154"
 ed25519-dalek = "2.2.0"
