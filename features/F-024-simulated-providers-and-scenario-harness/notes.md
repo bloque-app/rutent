@@ -1290,6 +1290,140 @@ under a 420 s hard alarm, none hung; the suite is the whole `invariants` binary,
 
 **CI run.** The ten tests passed in CI's `ci` job, run `44255094117`, at `2988a310` (the branch merged up to `m3` at `f7c38c98`). CI's seeded step doesn't run this binary yet; `T-024-18` adds it.
 
+## T-024-07: authorisation, audit and module scenarios
+
+Branch `f-024/t-024-07-authz-audit-module-scenarios`, from `m3` at `d0a7cf2c`. Readings taken without asking, each
+reversible and failing closed; the owner's form overrules any of them. Nothing in `components/` or `contracts/` changed.
+Owner rulings that bind: Core is its own party; a decision is for its caller.
+
+**Tests** (`conformance/scenarios/tests/`), each on the assembled Core through the assembly's own policy engine, log
+and platform. Eight of the plan's nine are here; `AC-36`'s is not (gap 1).
+
+- `authz_scenarios.rs`: `unreachable verifier gives a refusal and nothing moves` [`AC-17`] (the order's `move_value`
+  decision needs the verifier stand-in's judgement of the payer; out of reach, every decision on the record is `not_known`
+  with `verifier_unreachable`, no effect is recorded, the reserve's books are empty, the order doesn't complete; reached
+  and silent it is refused `missing_input`, reached and saying no `not_permitted`, saying yes the same order moves, so the
+  stop is the verifier's alone); `thousand agents under one party share one limit` [`AC-18`] (a thousand agents of one
+  party, each listed and scoped, each charged a thousandth of the party's bound: 10 requests of 10 000, 1 question of 1 000;
+  the thousand together reach the bound, and the next charge by the first agent or by one that never charged is over it, on
+  the record; a second party's agent is within its own); `externally authenticated caller is still decided by policy`
+  [`AC-25`] (a test-local `Gateway` turns a credential into the actor it names and holds no rule: the listed operator login
+  is permitted by the register; the SSO "administrator" the register doesn't list, and a login stated for the customer's
+  party that nobody listed, are refused, on the record; once the register lists the stranger it is let in, so the
+  register's word and no authentication changes the answer; a scope-less agent is refused its work; and the listed login
+  is refused while the deployment's policy refuses. Core's calls take an `Actor`, never a credential: none reached the log).
+- `audit_scenarios.rs`: `rewrite with full operator access is detected by the outside checker` [`AC-22`];
+  `busy and idle periods give indistinguishable checkpoints` [`AC-37`]; and `erasure is refused in the assembled Core until
+  policy has a rule for it` (tagged `DEC-18` only: it doesn't verify `AC-36`).
+- `module_scenarios.rs`: `upgrade of one provider interrupts no order at another and a failed one leaves the previous
+  version` [`AC-19`]; `widened release needs fresh acceptance before it serves an order` [`AC-21`]; `modules in rust and
+  in c run sandboxed and read no other provider's state or secrets` [`AC-20`, `GUA-5`].
+
+**The kit added** (shared files touched only where a scenario needs them): `assembly/policy.rs` (a `Verifier` stand-in
+for policy's `Source::Verifier`, default silent as before, and `Deployment::judge_before_moving`; the default behaviour
+of every existing scenario is unchanged); `assembly/mod.rs` (two `mod` lines and one field); `assembly/audit.rs` (a
+checkpointer over Core's log, signing with a log key the operator doesn't hold, on a schedule of the scenario's start and
+an hour; the checker's inputs as bytes); `assembly/releases.rs` (`Core::publish_release`, `accept_waiting_release`,
+`promote`, `segment_versions`, `install_probe`, `handle_probe`); `sim/fleet.rs` (`Fleet::release`, `Release`);
+`sim/probes.rs` (the probe modules); `sim/world.rs` (`seed_secret`, the secrets the world handed out); `sim/disk.rs`
+(`standins()`, the module guests' `build.sh` run once into the build directory). The checkpointer only reads the log, so
+the crate's hold on it (the compile-fail doc tests) stands.
+
+**Design.**
+- *`AC-22`.* A run publishes a checkpoint at tick 0, runs an order, and publishes two ticks more; the checker is handed bytes
+  only (the history's records, the checkpoints as they were received at publication, their openings) and holds the log's
+  public key, the log's name and the schedule. Held against the copies, the untouched history is clean; one stated entry
+  rewritten (its receipt time, canonical, still an entry) fails exactly the checkpoints that committed to a history
+  holding it, `DoesNotHold` at those ticks and nowhere else; the last records removed give `HistoryShorter`; the whole
+  history rewritten (the same run with another amount) and checkpointed again from its start with the log's own key checks
+  out alone, which the test asserts as the limit, and fails every checkpoint received, the new ones sitting beside them as
+  a second word for each tick (`Equivocation`); withheld openings are a finding (`NoOpening`).
+- *`AC-37`.* Two idle ticks, a busy period (two orders, over twenty records), three ticks after it of which two idle: one
+  checkpoint per tick on the schedule's own times, all of one length and one set of members, none naming a size, a root or
+  a count; no two commitments alike, though the log didn't move in an idle period; and no unsalted commitment to a known
+  size and root (the guesses an observer holding the history would make) equals one. Altered history fails the last,
+  idle tick's checkpoint, in whose own period nothing was written.
+- *`AC-19`.* Two reserves, the order at the first. At once: the second's module upgraded to 1.1.0 (nothing widened, so
+  accepted automatically, in force, a new process) while the order waits; the first's process and version are unchanged,
+  its order runs as a control run does (same books), each segment began and ran on 1.0.0 (Core's own `hand_over` record);
+  a release whose sandboxed part is no component is refused at admission, the version in force stays in its process, and
+  the next order runs on it. Staged: the same release is staged beside the version in force, a promotion naming another
+  version is refused, the one naming the staged version is decided by policy for the operator's login, recorded as one
+  effect before it is carried out and its result after (`Core::promote`, the call `T-024-02`'s notes said nothing made),
+  and a refused release is never staged.
+- *`AC-21`.* A release declaring one destination more is admitted and waits (`Fresh`, its widening named, compared with
+  1.0.0); the version in force stays and no process of the waiting version runs; two orders run on 1.0.0; a second
+  release can't be admitted over it; the fresh acceptance puts it in force and the next order began and ran on 1.1.0.
+- *`AC-20`.* The module guests' stand-ins, in Rust and in C (`c-reserve-*`, built by clang for wasm32), carry a program in
+  the slot of their component, as the prov tests' binding writes it: each part tries to look up a secret and to read a
+  state entry under a name another provider, a simulated reserve, also uses and holds a canary in. Both modules run in the
+  platform's sandbox and answer (their results signed by the platform); the sandboxed part's lookup never reaches the
+  proxy and the outside part's is refused `not_found`; every state read finds nothing; neither canary is in the module's
+  answer, the platform's records, calls or lookups, the secrets the world handed out (the owner alone was handed its own,
+  as the control that it was there), the requests the world received, the reserve's books or any entry of Core's log; the
+  four modules are four processes; and the order at the simulated reserve runs to its end meanwhile.
+  **What every platform shows** is the WebAssembly sandbox in the platform's engine (no import gives a part another
+  provider's state or secrets; the platform judges each host call), in a process per provider. **What only Linux shows**
+  is the operating system's jail around that process (Landlock, a `seccomp` allow-list, no capabilities, `sandbox.rs`);
+  `T-025-02`'s jail-probes job covers it and nothing here depends on it.
+
+**Defaults taken.**
+- `AC-17`: an unreachable verifier gives not known, never a refusal (the engine's, and `REQ-AUZ-5`'s; `AC-17`'s wording says
+  refusal, and `F-021`'s notes keep `spec-ac17-not-known` on the owner's form). The test holds that nothing is permitted and
+  nothing moves, and the exact record the engine gives; the plan's test name is kept. The verifier is the assembly's source
+  stand-in under a deployment rule asking for the payer's judgement before any move, not the simulated verifier module
+  through the platform, which is `T-024-12`'s.
+- `AC-18`: the engine's default bounds, one thousand charges each, rather than a bound set low through a new hook.
+- `AC-25`: the authentication stand-in is the test's own and the register is the deployment's, as `F-030` would run them.
+- `AC-22`: the checkpoint store is in memory, the log's key is a fixed one the operator doesn't hold, tick 0 is the scenario's
+  start and a tick is an hour.
+- `AC-37`: one busy period, since each Core has one session of fourteen minutes (gap in `T-024-02`'s notes).
+- `AC-19`: a failed upgrade is a release the compiler refuses; a release that compiles and whose process doesn't start
+  has a stand-in only in the module guests' own probes, and is held by prov's `failed_upgrade_leaves_the_previous_version_in_force`.
+- `AC-21`: a widening is a destination more; the acceptance is the platform's `accept`, by the test reviewer.
+- `AC-20`: the probes are providers of the platform's own catalogue, beside the simulated providers, never of Core's
+  catalogue or log; they take the first build of the stand-ins (about 80 s here), cached by a hash of their sources.
+
+**Gaps, each with its owner.**
+1. **`AC-36` can't be run through Core: two missing pieces.** The plan's `erasure leaves the reference and history checks`
+   [`AC-36`] isn't written, and `AC-36` stays unverified through the assembly (`T-022-03`'s own tests hold the store's half).
+   (a) *Policy has no rule for `erase_statement`*: `roles/mod.rs` answers `None` for `Action::EraseStatement`, so every
+   decision is refused (the test shows it, with the store's own `NO_DECIDED_ERASURE` behind it); the agent's `Scope::EraseStatement`
+   exists, the operator's permission doesn't. Shape wanted: an operator login's `Permission` for it, held by the register,
+   as `change_catalogue` has `Permission::Change`. Owner: `F-021`. (b) *Nothing in Core carries an erasure out*: no module
+   of `core-orch` writes the effect, its `done` result, the `BoundStore::erase` call and the `erasure` entry (the order
+   `T-022-03`'s notes give). Owner: `F-020`. With both, the scenario is small: decide, effect, result, erase, entry, then the
+   outside checker over the history, the reference named by its entry and the statement answering `Erased`.
+2. `AC-17`'s wording against `REQ-AUZ-5`: pending on the form (`spec-ac17-not-known`); no change here.
+3. A provider's release and its acceptance aren't recorded in Core's log: the platform's `accept` is called by the kit, and
+   the decided `accept_module` catalogue change exists only for the operator's plain wallet (`Core::accept_release`).
+   `AC-21`'s fresh acceptance is shown at the platform, not as a record. Owner: `F-020` with `F-021` (`T-020-08`'s successor).
+4. An upgrade in the middle of a segment is not driven: no fault hook at the platform's seam does it, and pinned segments are
+   held by prov's lifecycle tests. Owner: `F-024`, if the form wants it.
+5. The evidence store's own findings (`missing`, `refused_erasures`, `unsettled_erasures`) still don't reach the outside
+   checker (`T-022-04`'s gap for `T-024-02`); nothing here reads them. Owner: `F-033` with the lead.
+
+**Rule-off table** (each switched off once, the file restored; the tests passed first, since the code they hold was there,
+so each rule-off stands in for seeing the test fail first; none hung; every one red on an assertion unless said):
+
+| Switched off | Red |
+|---|---|
+| an unreachable input read as yes (`engine/mod.rs`, `verdict`) | `unreachable_verifier_gives_a_refusal_and_nothing_moves` |
+| the deployment's judgement rule asking the verifier (kit) | the same |
+| the counter keyed by the actor, not the party (`parties/mod.rs`) | `thousand_agents_under_one_party_share_one_limit` |
+| the register's silence read as yes for who acts for whom (kit) | `externally_authenticated_caller_is_still_decided_by_policy` |
+| the deployment's refusal (kit) | the same |
+| the checker's `DoesNotHold` finding | `rewrite_with_full_operator_access_is_detected_by_the_outside_checker` |
+| an idle tick not issued (`checkpoint/mod.rs`) | `busy_and_idle_periods_give_indistinguishable_checkpoints` (an index past the checkpoints issued, a panic) |
+| the checkpoint's salt left zero | the same (an unsalted commitment equals a checkpoint) |
+| a widened release not needing a fresh acceptance (`platform.rs`, `admit`) | `widened_release_needs_fresh_acceptance_before_it_serves_an_order` (the release isn't admitted: `validate_release`'s own `WidenedReleaseNotFresh` also stops it, a second guard) |
+| a failed admission taking the version in force with it | `upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leaves_the_previous_version` |
+| one provider's upgrade restarting every other's process | the same |
+| the promotion's check that the version is the one staged (`segments/mod.rs`; a second check after the effect stays) | the same (two promotions recorded) |
+| the world answering a lookup by name, whoever asks (kit) | `modules_in_rust_and_in_c_run_sandboxed_and_read_no_other_providers_state_or_secrets` |
+| the world answering a state read by key, whoever asks (kit) | the same |
+| a sandboxed lookup recorded as having reached the proxy (`platform.rs`) | the same |
+
 ## T-024-12: the verifier half of `REQ-CPL-12` and of `AC-24`
 
 Readings taken without asking, each reversible; the owner's form overrules any of them. `T-020-23` (the writer of
