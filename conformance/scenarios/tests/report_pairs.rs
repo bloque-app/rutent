@@ -12,7 +12,7 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::router_api::{Amount, Id, PositiveAmount};
 use rutent_core_orch::intake::{OrderRequest, Status, Told};
-use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
+use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome, Unbuilt};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT};
 
@@ -121,10 +121,10 @@ fn segment_ending_with_two_reports_hands_core_audit_a_pair_with_its_tuples_terms
         };
         assert_eq!(&pair.received.amount, amount_out, "{pair:?}");
         assert_eq!(pair.sent.asset, pair.received.asset);
-        assert_eq!(
-            pair.terms.increment, None,
-            "the simulated tuples declare none"
-        );
+        // The first reserve's tuples declare a fill increment of 10: it is carried, in the reports' unit, into the
+        // pair; the other tuples declare none.
+        let declared = (n == 0).then(|| PositiveAmount::new(amount("10")).unwrap());
+        assert_eq!(pair.terms.increment, declared, "{pair:?}");
         match &pair.terms.reporting {
             ReportedAs::Net {} => assert_eq!(&pair.sent.amount, amount_out),
             ReportedAs::Gross { charge } => {
@@ -166,12 +166,11 @@ fn segment_ending_with_two_reports_hands_core_audit_a_pair_with_its_tuples_terms
 #[test]
 fn reports_differing_by_less_than_one_increment_on_the_running_platform_raise_nothing() {
     let (mut core, _, _) = ran_across("AC-1");
-    // The receiving party of the first pair reports taking in a little less, under a tuple that fills in increments
-    // of 10: nine apart is within one.
+    // The first reserve's tuples declare a fill increment of 10 (the pair carries it). The simulated providers agree
+    // exactly, so the receiving party of the first pair is restated as reporting nine less: within one increment.
     let mut first = true;
     let wrote = core.write_pairs_as(&mut |mut pair| {
         if std::mem::take(&mut first) {
-            pair.terms.increment = Some(PositiveAmount::new(amount("10")).unwrap());
             pair.received.amount = pair.sent.amount.checked_sub(&amount("9")).unwrap();
         }
         pair
@@ -189,10 +188,10 @@ fn reports_differing_by_less_than_one_increment_on_the_running_platform_raise_no
 #[test]
 fn reports_differing_by_one_increment_or_more_on_the_running_platform_raise_the_difference() {
     let (mut core, order, segments) = ran_across("AC-1");
+    // The same restatement, ten less: one increment apart.
     let mut first = true;
     let wrote = core.write_pairs_as(&mut |mut pair| {
         if std::mem::take(&mut first) {
-            pair.terms.increment = Some(PositiveAmount::new(amount("10")).unwrap());
             pair.received.amount = pair.sent.amount.checked_sub(&amount("10")).unwrap();
         }
         pair
@@ -215,4 +214,52 @@ fn reports_differing_by_one_increment_or_more_on_the_running_platform_raise_the_
     assert_eq!(segment, &segments[0].segment);
     assert_eq!(sent, &amount(AMOUNT));
     assert_eq!(received, &amount("999990"));
+}
+
+// verifies: REQ-ORD-9
+#[test]
+fn pair_that_cant_be_built_leaves_the_segment_settled_and_the_part_running_to_its_end() {
+    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, QUICK, OUT]);
+    // As if a restart had lost what the segments keep for their pairs.
+    core.lose_sent_reports();
+    let (order, told) = quoted(&mut core, order_across("req-unbuilt", &session));
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted")
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    let ran = core.run(&order).expect("the order ran");
+    let [Ran::Segments(segments)] = ran.as_slice() else {
+        panic!("one part ran its segments: {ran:?}");
+    };
+    // A comparison is a detection: every segment settled, and the order is complete.
+    assert_eq!(segments.len(), 4);
+    assert!(
+        segments
+            .iter()
+            .all(|s| matches!(s.outcome, SegmentOutcome::Settled { .. })),
+        "{segments:?}"
+    );
+    assert_eq!(
+        state(&mut core, &order),
+        rutent_contracts::state_machine::OrderState::Complete
+    );
+    // The pairs that couldn't be built are surfaced, each with why, and none is written.
+    let unbuilt = core.unbuilt_reports();
+    assert_eq!(unbuilt.len(), 3, "{unbuilt:?}");
+    for (n, parked) in unbuilt.iter().enumerate() {
+        assert_eq!(parked.order, order);
+        assert_eq!(parked.segment, segments[n + 1].segment);
+        assert_eq!(
+            parked.why,
+            Unbuilt::NoSentReport(segments[n].segment.clone())
+        );
+    }
+    assert_eq!(core.unpaired_reports(), 3);
+    assert_eq!(core.write_pairs(), Ok(0));
+    assert!(pairs_of(&core).is_empty());
 }

@@ -135,7 +135,7 @@ pub use journal::{APPEND_TRIES, Unappended};
 pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
-pub use pairs::Unbuilt;
+pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
     ToKeep, Uses,
@@ -364,9 +364,6 @@ pub enum SegmentsError {
     /// A settled segment's charge couldn't be checked: why. The segment is accounted for; running the part again
     /// checks it again (`REQ-QTE-5`, `T-020-14`).
     Charge(ChargeError),
-    /// A settled segment's pair of reports couldn't be built (`REQ-ORD-9`, `T-020-35`); it is built again on the
-    /// next run.
-    Pair(Unbuilt),
 }
 
 impl From<Uncarried> for SegmentsError {
@@ -2514,15 +2511,20 @@ impl Segments {
             (stated_in.as_str(), stated_fee),
         )?;
         self.check_charge(parts, live, at)?;
-        // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`).
-        self.note_report(
+        // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`): a detection, so what it
+        // can't build is parked and the settlement goes on (`ADR-0009`).
+        self.report_end(
+            live,
             at,
             operation,
             cited.terms,
             on.stated,
-            (stated_out.as_str(), stated_fee),
-        )?;
-        self.pair_with_previous(live, at, operation, on.stated, stated_in.as_str())?;
+            pairs::Figures {
+                out: stated_out.as_str(),
+                fee: stated_fee,
+                amount_in: stated_in.as_str(),
+            },
+        );
         Ok(Settle::Settled {
             amount_out,
             evidence,

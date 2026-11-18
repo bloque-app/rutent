@@ -10,8 +10,8 @@
 //! **A comparison is a detection** (`ADR-0009`). A built pair is queued, once for its segments, and handed to
 //! `core-audit`'s comparison by [`Segments::write_pairs`], the caller's call (as the measures': the segment's outcome,
 //! its entries and what it moved depend on neither the writer nor its answer). A pair that can't be built is never
-//! skipped: the segment's end answers [`SegmentsError::Pair`], naming why, and building is tried again on the next
-//! run. The only segments that make no pair are those that have none to make: the first segment of a route (a
+//! skipped, and never allowed to change the primary path: it is parked with why ([`Segments::unbuilt_pairs`]) and the
+//! settlement goes on. The only segments that make no pair are those that have none to make: the first segment of a route (a
 //! recalculated route's included: a pair spans one plan), and one run by the provider that ran the segment before it
 //! (the log's two-parties rule: one party's word compares nothing).
 
@@ -22,13 +22,15 @@ use rutent_contracts::core_internal::{Receipt, Report, ReportPair, ReportTerms, 
 use rutent_contracts::provider_role::{Denomination, Fee, Reporting, Terms, charge_in_out_unit};
 use rutent_contracts::router_api::{Amount, Id, Operation, PositiveAmount};
 
-use super::{Live, Segments, SegmentsError};
+use super::{Live, Segments};
 
 /// Why a segment's pair of reports couldn't be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unbuilt {
     /// Core holds no sent report of the segment before: its result that counted isn't in the flight.
     NoSentReport(Id),
+    /// The segment's flight isn't held.
+    NoFlight,
     /// A figure of one of the reports isn't an amount the contract carries.
     NotAnAmount(&'static str),
     /// The contract refuses the pair.
@@ -42,11 +44,24 @@ pub(super) struct Sent {
     terms: ReportTerms,
 }
 
-/// The pairs built and not yet handed over.
+/// A pair that couldn't be built, or that the log refused, with why: parked, not raised against the segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnbuiltPair {
+    /// The order.
+    pub order: Id,
+    /// The later segment of the two: the one whose end owed the pair.
+    pub segment: Id,
+    /// Why.
+    pub why: Unbuilt,
+}
+
+/// The pairs built and not yet handed over, and those parked.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Pairing {
     waiting: VecDeque<ReportPair>,
     built: BTreeSet<(String, String)>,
+    unbuilt: Vec<UnbuiltPair>,
+    lost: bool,
 }
 
 /// `amount`'s tuple increment restated from the origin's unit to the out unit, rounded down: `None` where there is
@@ -92,28 +107,62 @@ fn report_terms(
 }
 
 impl Segments {
+    /// What the settled segment `at` gives its pair (`REQ-ORD-9`): keeps its own report of what it gave out, for the
+    /// segment after it, and builds the pair it makes with the segment before it. **A comparison is a detection**
+    /// (`ADR-0009`): nothing here fails the settlement. A pair that can't be built is parked ([`Segments::unbuilt_pairs`])
+    /// with why, and the segment goes on to its outcome as it would have.
+    pub(super) fn report_end(
+        &mut self,
+        live: &Live<'_>,
+        at: &(String, String),
+        operation: &Operation,
+        terms: &Terms,
+        stated: &Receipt,
+        figures: Figures<'_>,
+    ) {
+        let kept = self.note_report(at, operation, terms, stated, figures.out, figures.fee);
+        let built = self.pair_with_previous(live, at, operation, stated, figures.amount_in);
+        for failed in [kept, built].into_iter().filter_map(Result::err) {
+            self.park(live.order, at, failed);
+        }
+    }
+
+    /// Parks a pair that couldn't be built or compared, once for its later segment and reason.
+    fn park(&mut self, order: &Id, at: &(String, String), why: Unbuilt) {
+        let Some(segment) = Id::new(&at.1) else {
+            return;
+        };
+        let parked = UnbuiltPair {
+            order: order.clone(),
+            segment,
+            why,
+        };
+        if !self.pairing.unbuilt.contains(&parked) {
+            self.pairing.unbuilt.push(parked);
+        }
+    }
+
     /// Keeps what the settled segment `at` reports having given out, with the terms it reports under, for the
     /// segment after it. `stated` is the receipt of the result that counted.
-    pub(super) fn note_report(
+    fn note_report(
         &mut self,
         at: &(String, String),
         operation: &Operation,
         terms: &Terms,
         stated: &Receipt,
-        figures: (&str, &Fee),
-    ) -> Result<(), SegmentsError> {
-        let (amount_out, fee) = figures;
-        let flight = self.flight(at)?;
-        let (provider, segment) = (
-            flight.provider.clone(),
-            Id::new(&at.1).ok_or(SegmentsError::Plan("a segment is an id"))?,
-        );
+        amount_out: &str,
+        fee: &Fee,
+    ) -> Result<(), Unbuilt> {
+        let provider = self.held(at)?.provider.clone();
+        let segment = Id::new(&at.1).ok_or(Unbuilt::NoFlight)?;
         let amount = Amount::new(amount_out.to_owned())
-            .ok_or(Unbuilt::NotAnAmount("what the segment gave out"))
-            .map_err(SegmentsError::Pair)?;
+            .ok_or(Unbuilt::NotAnAmount("what the segment gave out"))?;
         let (from, to) = (&operation.from.asset, &operation.to.asset);
-        let terms = report_terms(from, to, terms, &fee.amount).map_err(SegmentsError::Pair)?;
-        self.flight_mut(at)?.reported = Some(Sent {
+        let terms = report_terms(from, to, terms, &fee.amount)?;
+        if self.pairing.lost {
+            return Ok(());
+        }
+        self.flight_mut(at).map_err(|_| Unbuilt::NoFlight)?.reported = Some(Sent {
             report: Report {
                 party: provider,
                 amount,
@@ -126,18 +175,22 @@ impl Segments {
         Ok(())
     }
 
+    fn held(&self, at: &(String, String)) -> Result<&super::InFlight, Unbuilt> {
+        self.flights.get(at).ok_or(Unbuilt::NoFlight)
+    }
+
     /// Builds the pair of the segment before `at` and `at` itself, now that `at` settled: queued once, to be handed to
     /// the comparison ([`Segments::write_pairs`]). Nothing where `at` is its route's first segment, or the provider
-    /// that ran the one before it ran it too; an error where the pair can't be built (`REQ-ORD-9`).
-    pub(super) fn pair_with_previous(
+    /// that ran the one before it ran it too.
+    fn pair_with_previous(
         &mut self,
         live: &Live<'_>,
         at: &(String, String),
         operation: &Operation,
         stated: &Receipt,
         amount_in: &str,
-    ) -> Result<(), SegmentsError> {
-        let place = self.flight(at)?.place;
+    ) -> Result<(), Unbuilt> {
+        let place = self.held(at)?.place;
         let Some(before) = place.checked_sub(1).and_then(|p| live.segments.get(p)) else {
             return Ok(());
         };
@@ -145,54 +198,53 @@ impl Segments {
             return Ok(());
         }
         let before_at = (at.0.clone(), before.as_str().to_owned());
-        let provider = self.flight(at)?.provider.clone();
-        if self.flight(&before_at)?.provider == provider {
+        let provider = self.held(at)?.provider.clone();
+        if self.held(&before_at)?.provider == provider {
             return Ok(());
         }
-        let sent = self
-            .flights
-            .get(&before_at)
-            .and_then(|f| f.reported.clone())
-            .ok_or(SegmentsError::Pair(Unbuilt::NoSentReport(before.clone())))?;
+        let sent = self.held(&before_at)?.reported.clone();
         let received = Report {
             party: provider,
             amount: Amount::new(amount_in.to_owned())
-                .ok_or(Unbuilt::NotAnAmount("what the segment took in"))
-                .map_err(SegmentsError::Pair)?,
+                .ok_or(Unbuilt::NotAnAmount("what the segment took in"))?,
             asset: operation.from.asset.clone(),
-            segment: Id::new(&at.1).ok_or(SegmentsError::Plan("a segment is an id"))?,
+            segment: Id::new(&at.1).ok_or(Unbuilt::NoFlight)?,
             statement: stated.clone(),
         };
-        let pair = ReportPair {
-            order: live.order.clone(),
-            segment: sent.report.segment.clone(),
-            sent: sent.report,
-            received,
-            terms: sent.terms,
-        };
-        pair.check()
-            .map_err(|v| SegmentsError::Pair(Unbuilt::Refused(v.0)))?;
+        let pair = assemble(live.order, before, sent.as_ref(), received)?;
         self.pairing.built.insert(at.clone());
         self.pairing.waiting.push_back(pair);
         Ok(())
     }
 
     /// Hands the comparison the pairs built since the last call, oldest first, and answers how many it took
-    /// (`REQ-ORD-9`, `T-020-35`). A pair the log can't take now waits, with those after it, for the next call; one it
-    /// refuses stays too and is the first failure answered, so a refusal is loud and never dropped.
+    /// (`REQ-ORD-9`, `T-020-35`). A pair the log can't take now waits, with those after it, for the next call. One the
+    /// log refuses will be refused again, so it is parked with why ([`Segments::unbuilt_pairs`]) and the pairs after
+    /// it still go.
     ///
     /// # Errors
     ///
-    /// The first failure of the comparison's record, with the pairs after it left waiting.
+    /// The log's unavailability, with the pair it couldn't take and those after it left waiting.
     pub fn write_pairs(
         &mut self,
         comparisons: &mut dyn Comparisons,
     ) -> Result<usize, AppendFailure> {
         let mut written = 0;
         while let Some(pair) = self.pairing.waiting.front() {
-            comparisons.report_pair(pair)?;
+            match comparisons.report_pair(pair) {
+                Ok(_) => written += 1,
+                Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable),
+                Err(AppendFailure::Refused(violation)) => {
+                    let (order, segment) = (pair.order.clone(), pair.received.segment.clone());
+                    let parked = UnbuiltPair {
+                        order,
+                        segment,
+                        why: Unbuilt::Refused(violation.0),
+                    };
+                    self.pairing.unbuilt.push(parked);
+                }
+            }
             self.pairing.waiting.pop_front();
-            written += 1;
         }
         Ok(written)
     }
@@ -201,6 +253,45 @@ impl Segments {
     pub fn unpaired(&self) -> usize {
         self.pairing.waiting.len()
     }
+
+    /// The pairs that couldn't be built or that the log refused, each with why: surfaced, never skipped, and no
+    /// part of the primary path (`REQ-ORD-9`, `ADR-0009`).
+    pub fn unbuilt_pairs(&self) -> &[UnbuiltPair] {
+        &self.pairing.unbuilt
+    }
+
+    /// Makes the segments forget the reports they keep for the pair of the segment after them, as a restart that
+    /// lost their in-memory state would, from now on: for a scenario of the pair that can't be built.
+    #[doc(hidden)]
+    pub fn lose_sent_reports(&mut self) {
+        self.pairing.lost = true;
+    }
+}
+
+/// The figures a settled segment states, as its pair needs them.
+pub(super) struct Figures<'a> {
+    pub(super) out: &'a str,
+    pub(super) fee: &'a Fee,
+    pub(super) amount_in: &'a str,
+}
+
+/// The pair of the sent report `sent` of segment `before` and `received`, held to the contract's own check.
+fn assemble(
+    order: &Id,
+    before: &Id,
+    sent: Option<&Sent>,
+    received: Report,
+) -> Result<ReportPair, Unbuilt> {
+    let sent = sent.ok_or_else(|| Unbuilt::NoSentReport(before.clone()))?;
+    let pair = ReportPair {
+        order: order.clone(),
+        segment: sent.report.segment.clone(),
+        sent: sent.report.clone(),
+        received,
+        terms: sent.terms.clone(),
+    };
+    pair.check().map_err(|v| Unbuilt::Refused(v.0))?;
+    Ok(pair)
 }
 
 #[cfg(test)]
@@ -290,6 +381,121 @@ mod tests {
         assert_eq!(
             report_terms(&usd, &usd, &terms(Reporting::Gross, None), "x"),
             Err(Unbuilt::NotAnAmount("the charge a gross figure holds"))
+        );
+    }
+
+    fn receipt(index: u64) -> Receipt {
+        serde_json::from_value(serde_json::json!({
+            "log": "log-main",
+            "index": index,
+            "entry": { "algorithm": "sha-256", "value": "61".repeat(32) },
+        }))
+        .unwrap()
+    }
+
+    fn report(party: &str, segment: &str, amount: &str, index: u64) -> Report {
+        Report {
+            party: Id::new(party).unwrap(),
+            amount: Amount::new(amount.to_owned()).unwrap(),
+            asset: asset("USD", 2),
+            segment: Id::new(segment).unwrap(),
+            statement: receipt(index),
+        }
+    }
+
+    fn sent(amount: &str, reporting: ReportedAs) -> Sent {
+        Sent {
+            report: report("a", "s1", amount, 1),
+            terms: ReportTerms {
+                increment: None,
+                reporting,
+            },
+        }
+    }
+
+    // verifies: REQ-ORD-9
+    #[test]
+    fn a_pair_without_the_sent_report_or_holding_a_charge_above_it_is_unbuilt() {
+        let (order, before) = (Id::new("o").unwrap(), Id::new("s1").unwrap());
+        let received = report("b", "s2", "10", 2);
+        assert_eq!(
+            assemble(&order, &before, None, received.clone()),
+            Err(Unbuilt::NoSentReport(before.clone()))
+        );
+        // A gross charge rounded up above what was sent: the contract refuses the pair.
+        let gross = sent(
+            "5",
+            ReportedAs::Gross {
+                charge: amount("6"),
+            },
+        );
+        assert!(matches!(
+            assemble(&order, &before, Some(&gross), received.clone()),
+            Err(Unbuilt::Refused(_))
+        ));
+        let fine = sent("10", ReportedAs::Net {});
+        assert!(assemble(&order, &before, Some(&fine), received).is_ok());
+    }
+
+    struct Refusing {
+        refuse: usize,
+        taken: Vec<Id>,
+    }
+
+    impl Comparisons for Refusing {
+        fn report_pair(&mut self, pair: &ReportPair) -> Result<Receipt, AppendFailure> {
+            if pair.received.segment.as_str() == format!("s{}", self.refuse) {
+                return Err(AppendFailure::Refused(
+                    rutent_contracts::core_internal::Violation("refused"),
+                ));
+            }
+            self.taken.push(pair.received.segment.clone());
+            Ok(receipt(9))
+        }
+
+        fn holding_reading(
+            &mut self,
+            _: &rutent_contracts::core_internal::HoldingReading,
+        ) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+    }
+
+    // verifies: REQ-ORD-9
+    #[test]
+    fn a_pair_the_log_refuses_is_parked_and_the_pairs_after_it_still_go() {
+        let mut segments = Segments::default();
+        let order = Id::new("o").unwrap();
+        for n in 2..=4 {
+            let pair = assemble(
+                &order,
+                &Id::new(format!("s{}", n - 1)).unwrap(),
+                Some(&Sent {
+                    report: report("a", &format!("s{}", n - 1), "10", 1),
+                    terms: ReportTerms {
+                        increment: None,
+                        reporting: ReportedAs::Net {},
+                    },
+                }),
+                report("b", &format!("s{n}"), "10", 2),
+            )
+            .unwrap();
+            segments.pairing.waiting.push_back(pair);
+        }
+        let mut log = Refusing {
+            refuse: 3,
+            taken: Vec::new(),
+        };
+        assert_eq!(segments.write_pairs(&mut log), Ok(2));
+        assert_eq!(log.taken.len(), 2, "the pair after the refused one went");
+        assert_eq!(segments.unpaired(), 0);
+        assert_eq!(
+            segments.unbuilt_pairs(),
+            [UnbuiltPair {
+                order,
+                segment: Id::new("s3").unwrap(),
+                why: Unbuilt::Refused("refused"),
+            }]
         );
     }
 }

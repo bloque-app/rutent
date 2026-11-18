@@ -107,9 +107,21 @@ impl Core {
         compare.holding_reading(reading)
     }
 
-    /// How many pairs of reports the segments' ends gave wait for [`Core::write_pairs`].
+    /// How many pairs of reports the segments' ends owe the comparison: those waiting for [`Core::write_pairs`], and
+    /// those that couldn't be built or that the log refused ([`Core::unbuilt_reports`]).
     pub fn unpaired_reports(&self) -> usize {
-        self.segments.unpaired()
+        self.segments.unpaired() + self.segments.unbuilt_pairs().len()
+    }
+
+    /// The pairs that couldn't be built or that the log refused, each with why (`REQ-ORD-9`).
+    pub fn unbuilt_reports(&self) -> &[rutent_core_orch::segments::UnbuiltPair] {
+        self.segments.unbuilt_pairs()
+    }
+
+    /// Makes the segments forget the reports they keep for the pair of the segment after them, as a restart that lost
+    /// their memory would: for a scenario of a pair that can't be built.
+    pub fn lose_sent_reports(&mut self) {
+        self.segments.lose_sent_reports();
     }
 
     /// Hands `CMP-CORE-AUDIT`'s comparison the pairs of reports the segments' ends gave since the last call, and
