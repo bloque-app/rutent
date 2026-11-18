@@ -562,12 +562,25 @@ pub static RELATIONS: [Relation; 107] = [
         spec: &["REQ-ORD-40", "REQ-ORD-43", "INV-5"],
         quantifier: Quantifier::Exists,
         refusal: "a route handed on starts on its holding account's record of the withdrawal in this log",
-        fields: &[(
-            "holder",
-            "a route handed on starts on the record of its starting reserve, the holding account's provider",
-        )],
+        fields: &[
+            (
+                "holder",
+                "a route handed on starts on the record of the holding account its order's hand-on named",
+            ),
+            (
+                "node",
+                "a route handed on starts its first move from the node its holding record names",
+            ),
+            (
+                "provider",
+                "a route handed on's first move is run by the provider its own plan names for it",
+            ),
+        ],
         // A route handed on has no withdrawal of its own: the holding account's record proves its start, so its
-        // first move rests on it, by the reserve it moves from.
+        // first move rests on it. The record is the holding account's that the order handed on named (its
+        // `resolve_stuck` hand-on's `by`), at the node the first segment moves from, and the move is run by the
+        // provider the linked route's own plan names, which needn't be the holding account: a plain wallet holds and
+        // runs no segment (`T-020-33`, the owner's form `hand-on-wallet-holder`; `T-020-36`'s item 4).
         cites: |e, h| match effect_action(e) {
             Some((Action::MoveValue { order, segment, .. }, _))
                 if handed_on_from_of(order.as_str(), h).is_some()
@@ -581,7 +594,8 @@ pub static RELATIONS: [Relation; 107] = [
             let Some((
                 Action::MoveValue {
                     order,
-                    origin_reserve,
+                    segment,
+                    provider,
                     ..
                 },
                 _,
@@ -594,12 +608,38 @@ pub static RELATIONS: [Relation; 107] = [
                     order: o,
                     handed_on_from,
                     holder,
+                    node,
                     ..
-                }) => judge(
-                    o == order
-                        && handed_on_from_of(order.as_str(), h) == Some(handed_on_from.as_str()),
-                    &[holder == origin_reserve],
-                ),
+                }) => {
+                    // The holding account the order handed on named: its hand-on's `by`, onto this order.
+                    let named = h.iter().any(|(_, x)| {
+                        matches!(verified(x).and_then(effect_action), Some((Action::ResolveStuck {
+                            order: from,
+                            resolution: Resolution::HandOn { by, linked_order, .. },
+                            ..
+                        }, _)) if from == handed_on_from && linked_order == order && by == holder)
+                    });
+                    // The first segment as the linked route's own plan names it.
+                    let plan = h.iter().find_map(|(_, x)| {
+                        verified(x)
+                            .and_then(input)
+                            .filter(|i| i.subject.order.as_str() == order.as_str())
+                            .and_then(|i| planned(i, segment.as_str()))
+                    });
+                    judge(
+                        o == order
+                            && handed_on_from_of(order.as_str(), h)
+                                == Some(handed_on_from.as_str()),
+                        &[
+                            named,
+                            plan.is_some_and(|s| {
+                                matches!(&s.from.node, crate::provider_role::NodeRef::Inner(n)
+                                    if n.as_str() == node.as_str())
+                            }),
+                            plan.is_some_and(|s| s.provider.as_str() == provider.as_str()),
+                        ],
+                    )
+                }
                 _ => Match::NotTarget,
             }
         },

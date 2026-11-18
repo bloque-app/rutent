@@ -3797,3 +3797,28 @@ fn late_status_asked_without_its_transaction_is_invalid() {
         assert_case_refused(&format!("{row}--{name}"));
     }
 }
+
+// verifies: REQ-ORD-40, REQ-ORD-43
+#[test]
+fn handed_on_route_whose_first_move_another_provider_runs_from_the_holding_records_node_is_admitted()
+ {
+    let row = "handed-on-route-starts-on-its-holding-record";
+    // A plain wallet holds the value and runs no segment: the hand-on names it, its record proves the start at the
+    // node the first segment moves from, and the provider the linked route's plan names runs the move (`T-020-33`'s
+    // finding, the owner's form `hand-on-wallet-holder`).
+    assert_case(&format!(
+        "{row}--a-wallet-holds-and-the-plans-provider-runs-the-first-move"
+    ));
+    // The record still required, and held to the holding account the hand-on named, the first segment's node, and
+    // the plan's provider.
+    for name in [
+        "missing",
+        "holder",
+        "a-holder-the-hand-on-did-not-name",
+        "node",
+        "a-first-move-from-another-node",
+        "provider",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+}

@@ -898,7 +898,14 @@
      same action (the reviews of `d11e5a2b` and `2b0f32b1`). `core-orch`'s `Reversals::ask_status` draws it before policy decides. One invalid fixture
      and eleven admission cases; the status fixtures name
      `tx-status-1`. (REQ-ORD-1, REQ-ORD-38)
-  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 677 admission cases and 50 attribution cases; 107
+  4. `handed-on-route-starts-on-its-holding-record` held a route handed on's first move to a holding record whose
+     `holder` was the move's `origin_reserve`, so a plain wallet holding the value, with the linked route's first
+     provider running the move (`T-020-33`, the owner's form `hand-on-wallet-holder`), was refused. The row now holds
+     the record (still required) to the holding account the hand-on named (`holder`: its `resolve_stuck` effect's
+     `by`), at the node the first segment moves from (`node`), and the move to the provider the linked route's plan
+     names (`provider`). One admitted case and four refused ones; the old `--holder` stays refused, now on the hand-on's
+     name. (REQ-ORD-40, REQ-ORD-43)
+  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 682 admission cases and 50 attribution cases; 107
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
   transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
   literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)
