@@ -236,6 +236,7 @@ dependencies = [
  "rutent-conformance",
  "rutent-contracts",
  "serde_json",
+ "sha2",
  "wit-bindgen",
 ]
 

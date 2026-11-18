@@ -60,7 +60,7 @@ mod sandboxed {
                 .ok()
                 .and_then(|v| v["provider"].as_str().map(str::to_owned))
                 .unwrap_or_default();
-            PROVIDER.with(|cell| serve(&mut cell.borrow_mut(), &provider, &statement))
+            PROVIDER.with(|cell| serve(&mut cell.borrow_mut(), &provider, &operation, &statement))
         }
     }
 
@@ -96,17 +96,42 @@ mod sandboxed {
         })
     }
 
+    /// What the platform calls an operation that names no transaction, which an outside request about it names: the
+    /// SHA-256 of the operation's JSON as the platform handed it over (`handled`), after `rutent:untransacted:`.
+    fn untransacted(handled: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(handled.as_bytes());
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("rutent:untransacted:{hex}")
+    }
+
     fn serve(
         held: &mut Option<Simulated>,
         provider: &str,
+        handled: &str,
         operation: &Statement<Operation>,
     ) -> Vec<u8> {
         let Some(transaction) = transaction_of(&operation.statement).filter(|_| ROLE.moves_value())
         else {
-            // A verifier, and anything with no transaction to ask under, answers as its role asks.
-            return self::provider(held, provider, None)
-                .answer(operation, &Behaviour::default())
-                .body;
+            // A verifier, and anything with no transaction to ask under, answers as its role asks: in the deployment
+            // the world names, which it reads under the name the platform gives an operation that names no
+            // transaction (`T-024-18`), the deployment key read for it as for any other.
+            let deployment = (held.is_none())
+                .then(|| {
+                    ask(
+                        &untransacted(handled),
+                        BEGIN,
+                        json!({ "kind": kind_of(&operation.statement).0, "dry_run": false }),
+                    )
+                })
+                .flatten();
+            return self::provider(
+                held,
+                provider,
+                deployment.as_ref().map(|begun| &begun["deployment"]),
+            )
+            .answer(operation, &Behaviour::default())
+            .body;
         };
         let (kind, dry_run) = kind_of(&operation.statement);
         let begun = ask(

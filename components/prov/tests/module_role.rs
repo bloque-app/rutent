@@ -11,7 +11,7 @@ use rutent_conformance::role::stand_in::{Exchange, Ramp, Reserve, Verifier};
 use rutent_conformance::role::{
     Exercised, Received, RoleHarness, RoleProvider, SuiteContext, WithoutHooks, run_role_suite,
 };
-use rutent_conformance::signing::{Ed25519Verifier, Signing, real, signed_inside};
+use rutent_conformance::signing::{Ed25519Verifier, Signing, real, signed, signed_inside};
 use rutent_contracts::module_interface::Parts;
 use rutent_contracts::provider_role::{
     Advertisement, KeyPurpose, Operation, ResultBody, Statement,
@@ -74,6 +74,18 @@ impl RoleProvider for Through {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.twin.status(transaction)
     }
+
+    // What arrived is not an operation either, so the platform's binding doesn't carry the question: the twin answers
+    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it.
+    fn arrival(
+        &mut self,
+        question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalAnswer>> {
+        // Signed for real, as the suite's other signed runs are: the twin's own statements carry placeholders.
+        self.twin
+            .arrival(question)
+            .map(|r| Received::from_bytes(signed(r.bytes())).expect("reads back"))
+    }
 }
 
 impl RoleHarness for Through {}
@@ -96,6 +108,15 @@ impl RoleProvider for InProcess {
 
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
+    }
+
+    // What arrived is not an operation either, so the platform's binding doesn't carry the question: the twin answers
+    // it, and the suite, which now reports a reserve never asked as uncovered (`T-024-18`), asks it.
+    fn arrival(
+        &mut self,
+        question: &Statement<rutent_contracts::provider_role::ArrivalQuestion>,
+    ) -> Option<Received<rutent_contracts::provider_role::ArrivalAnswer>> {
+        self.0.arrival(question)
     }
 }
 
