@@ -753,6 +753,63 @@ the refusals are the two-actor rule's (`SameParty` from Core's move step, `SameA
   line is not found by the tag check, and a fixture crate the root manifest excludes but that has no `[workspace]`
   line of its own would be counted as run by the evidence table.
 
+## T-024-15: the stand-in reserve states what arrived
+
+Branch `f-024/t-024-15-reserve-kind-held`, from `m3` at `fa7fc3f3`. Readings taken without asking, each reversible.
+Closes issue #150 (`T-020-18`'s hand-off).
+
+**Tests** (`conformance/tests/role_arrivals.rs`): the three the row names.
+- `stand_in_reserve_signs_an_arrival_notice_that_passes_the_role_suite` (`REQ-ORD-14`, `REQ-ORD-23`): the suite credits the
+  reserve's bank, asks what arrived, and passes with every signature verified; the notice is in `ARRIVAL_NOTICE_SHAPE`, made
+  by the reserve, with the credit's node, asset, amount, account and holder; four flawed reserves are flagged.
+- `stand_in_reserve_answers_the_arrival_question_under_the_questions_transaction` (`REQ-ORD-1`): before any credit, nothing
+  arrived; after one, its notice under the credit's reference inside an answer under the question's transaction;
+  `check_answer` holds; asked of another account, nothing arrived.
+- `two_notices_of_one_credit_from_the_stand_in_reserve_are_one_credit` (`REQ-ORD-23`): the notice of its own accord and the
+  one the answer carries are `Credits::One`; another credit of the same figures is `Credits::Two`; two flawed reserves are
+  flagged.
+
+**Added** (`F-024`'s files only): `RoleProvider::arrival` and `arrival_notice` (default `None`) and `RoleHarness::credit_arrival`
+(default false), with `BankCredit`, the credit at the simulated bank: reference, outer node, asset with unit, amount, account
+and holder. The reserve keeps its credits and states each as a notice; node, asset, amount, account and holder are the
+credit's, not the scenario's. The role suite gains `Check::ArrivalsStated` and `Exercised::{NothingArrived, ArrivalNoticed}`
+and `probe_arrivals`, run for a reserve: nothing arrived before a credit; after one the answer's envelope, its maker and key,
+each notice as text of its own in the answer received, `check_answer`, the notice's figures against the credit, one notice
+per credit, two asks and the reserve's own notice are `Credits::One`; and no notice of another account's credit, to another
+session, or to a question not signed with the operator's key. `Signing`, `WithoutHooks`, the scenarios' `InProcess` and
+`Through` forward the new methods.
+
+**Defaults taken.** The question is answered in the holder's session only, and a question not signed with the operator's key
+is refused finally (as a balance check is, `REQ-CAT-3`, `REQ-CAT-4`). A credit's reference is the notice's transaction,
+whenever signed. `NothingArrived` is required of a reserve only once it answers the question at all, so a provider that
+cannot be asked is not made uncovered (the role suite's other tests pass unchanged); `ArrivalNoticed` is not required, since
+only a hook provokes it. The arrival question's session fault is its own builder, so `ignoring_the_session` still flags
+only `BalanceRevealsOnlySufficiency`.
+
+**Gaps, with owners.**
+- The bank's credits are left out of the stand-in's state fingerprint: they arrive by the harness's hook, which no journal holds,
+  so `Through`'s check that the journal is the books would otherwise differ. Asking changes no state the suite can see
+  there; the reserve's counter of notices is likewise outside it. Owner `F-024`.
+- The platform's binding carries operations, and the arrival question is not one, so a simulated reserve through it is
+  answered by its in-process twin, as its status is, and a reserve that does not answer the question is not flagged by the
+  suite: owner `F-014` (the binding) and `F-031` (certification's first report). No Core bug found.
+- `check_one_credit` and the suite's own comparison of a notice with its credit overlap (a fresh reference or another amount
+  is caught by both); each rule-off alone stays red elsewhere, both together red.
+
+**Rule-off table** (each switched off alone, `role_arrivals` run with `--no-fail-fast`, restored; tests were green first;
+nothing hung; the stand-in was written before the test file compiled, so "red first" is the rows below).
+
+| Switched off | Red |
+|---|---|
+| the answer's filter by account, node and asset | the answering test and the suite test |
+| the answer under the question's transaction | the same two |
+| a notice under the credit's reference | all three |
+| the holder's-session check | the suite test |
+| the operator-key check on the question | the suite test |
+| the suite's `check_answer` | the suite test |
+| `check_one_credit` and the suite's notice-against-credit check, together | the two-notices test (alone, each is caught by the other) |
+| `credit_arrival` accepting a credit | all three |
+
 ## T-024-11: `REQ-CPL-9` through the assembly, with an agent acting
 
 Readings taken without asking, each reversible; the owner's form overrules any of them.
@@ -920,3 +977,166 @@ written before the shapes were wired but the shapes went in first, so "red first
 | Core's hand-on of a gross segment, less its charge | seven |
 | Core's charge check reading the charge | `charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core` |
 | the operator's fee figured on what the last segment states, not what arrives | eight |
+
+## T-024-17: the assembled Core and the real plain wallet
+
+Branch `f-024/t-024-17-hand-on-real-wallet`, from `m3` at `fa7fc3f3`. Edits `conformance/scenarios/` only: `src/sim/disk.rs`
+(`wallet_guests`), `src/sim/fleet.rs` (`Fleet::install_wallet`, `InstalledWallet`), `src/assembly/holding.rs` (the wallet's
+installation, release acceptance, landing and questions), the new `src/assembly/linked.rs` (the linked order's acceptance) and
+`tests/assembly_real_wallet.rs`. `components/` and `contracts/` are untouched.
+
+**What was built.**
+1. *The real wallet on the platform.* `disk::wallet_guests()` builds `components/prov/guests/plain-wallet/build.sh` the way the
+   simulated providers are built: into a directory named by a hash of its sources, one build at a time, reusing the guests'
+   tool `guests()` built (`RUTENT_PLAIN_WALLET` overrides). `Fleet::install_wallet` records the wallet as a module the operator
+   publishes, signs its release (maker the operator's, key the assembly's operator key) and admits and accepts it; the world
+   holds its statements key. `Core::install_wallet(node, asset)` adds the node to the operator's public list and registers the
+   wallet as its holding account.
+2. *The release accepted in the log* (`Core::accept_release`): a decided `change_catalogue` of kind `accept_module` naming the
+   release's statements key, by the operator's login (permitted to it by the register), its effect and a `done` result. From it
+   the log verifies the wallet's statements as a module the operator publishes (`REQ-CAT-23`, `REQ-AUD-2`).
+3. *The wallet's questions and answers* (`Core::ask_wallet_stating`, `state_by`, `state_answer`): the operator's signed question
+   as its stated entry, then the platform's answer as the wallet's stated entry, claimed for the operator's party; the log
+   attributes it.
+4. *A linked order's acceptance* (`Core::accept_linked`): the rounds route the order from the node, so the router's record is in
+   the log; then the quote shown, and the customer's own acceptance (given, in the customer's session, the original customer
+   its requester) on the yes of the provider the route starts with (its answer to the rounds' dry run); the route kept as the
+   order's accepted route (`Core::accepted_linked`). It starts nothing: the `route_chosen` is the hand-on's.
+5. *Value landed by hand* (`Core::land`): see gap 1.
+
+**Tests** (`tests/assembly_real_wallet.rs`; the scenario is an order over `sim-chain-in`, `sim-chain-ramp-b` and
+`sim-chain-out-b`, whose deposit out of the public node `sim-chain-b` is refused its start, so the part is stuck there, the
+wallet being the node's account).
+- `release of an operator-published wallet is accepted in the log and its answers are verified`: before the release is accepted
+  the wallet's answer is recorded and attributed to no one; after, the same kind of answer is the wallet's, for the operator's
+  party, under the key the release names.
+- `linked order is accepted through the assembled Core and starts at an inner node`: the acceptance, its yes, the quote shown and
+  the router's record are the log's and the log admitted them; the route starts at the node; nothing of the order reached the
+  state machine.
+- `real plain wallet's re-serialised answer verifies under its published key`: the answer `start_handed_on` returns verifies
+  under the release's key, a changed figure doesn't, and the log attributes it (and the operator's question before it).
+- `stuck order of the assembled Core is handed on through the real plain wallet`: **ignored**, blocked by Core (gap 2).
+- `hand on through a public nodes wallet is refused whichever provider the decision names` (added): the gap as it stands today,
+  fail closed: the decide step refuses the wallet, and a provider it takes is refused by the mover before the wallet is asked
+  anything.
+
+**Defaults taken** (reversible, fail closed). The wallet's provider is `operator-wallet`, the name the kit already registers at
+public nodes. The linked order's request follows the original order's last request id, which is what makes the rounds ask no
+reserve's yes (a hand-on has no withdrawal; `T-020-10`). The linked order's quote is shown under a digest of the order and its
+request, since no quote is priced for it. Core's own parts (the log, policy, the mover) are the real ones; nothing in
+`components/` was changed.
+
+**Gaps, with owners.**
+1. *Nothing lands value in a holding account.* Where a segment settles at a public node, Core never calls `Holdings::land`; the
+   scenario lands it (`Core::land`). Owner: `F-020` (segments) with `T-020-26`'s successor; the order's value is in the wallet
+   only by the scenario's word today.
+2. *A hand-on can't name a plain wallet.* Three rules disagree for a node held by a wallet. `stuck::within` (decide)
+   requires `by` to be a provider of the part's route (`components/core-orch/src/stuck/mod.rs`, `within`); `Mover::plan_hand`
+   requires `by` to be the provider of the node's holding account and the provider of the linked route's first segment; the
+   wallet is a provider of no route (it advertises no tuple, and an advertisement may not name a module the operator
+   publishes), and no segment kind can stand for its own withdrawal in a plan (`Route` needs two nodes, `Deposit` and
+   `Withdrawal` an outer end; the router can only choose a tuple's provider). So no decision names a provider that meets all
+   three, and the real wallet is never asked. Checked by experiment: with only `within`'s membership rule switched off
+   (temporary edit, restored), the mover asked the real wallet, which answered, its answer was kept as an attributed stated
+   entry, and the move ended `done`; the next step, `HandOn::hand_on`, refused a plan led by a wallet segment as not a route
+   handed on, as the state machine's `Route` needs two nodes. The fix is Core's and wants a decision: let `by` name the node's
+   holding account and the route's first provider be the starting reserve that runs it (the record then proves the start
+   by the holder, not by the first provider: `proves_start`, `recover_starts`, `plan_hand`), or give the wallet a
+   segment kind. Owner: `T-020-17`/`T-020-13`'s successor in `F-020`; Pablo's call on the model.
+3. *The linked order's first move* is therefore not run: the row's "linked order's first move in the log" waits on gap 2.
+4. *The yes of a linked order's route is the starting reserve's dry run* (the provider of the route's first segment), not the
+   holding account's; if gap 2 is fixed so that the holder is also asked, the acceptance's relation reads the provider of the
+   first segment (`chosen-route-rests-on-its-orders-acceptance`), so nothing changes there.
+
+**Rule-off table** (each switched off alone, file restored, the tests green first; none hung):
+
+| Switched off | Red |
+|---|---|
+| the release's result `done` (`accept_release`) | the release test, the answer test |
+| the answer claimed for the operator's party | the release test, the answer test |
+| the release naming the wallet's statements key | the release test, the answer test |
+| the customer as the acceptance's maker (Core writes it instead) | the acceptance test |
+| the linked request following the original's | the acceptance test, the refusal test, the answer test |
+| value landed in the account | the answer test |
+
+## T-024-12: the verifier half of `REQ-CPL-12` and of `AC-24`
+
+Readings taken without asking, each reversible; the owner's form overrules any of them. `T-020-23` (the writer of
+`reliance` entries) is merged and this row runs on it: the scenarios declare which input rests on a judgement
+(`Core::rests_on`, then `run`), and the `reliance` follows by itself.
+
+**Tests** (`conformance/scenarios/tests/verifier.rs`, the four the row names, over `execution_support/` for the joined
+route). Each drives Core's own `request`, `quote`, `accept` and `run`; the verifier is the stand-in (`DEC-16`), asked by
+the order's needs (`rounds::Need`), since provider-role 3.0.0's tuples name no verifier.
+- *provider relying on a verifier's judgement leaves a reliance entry naming the verifier and the provider*
+  (`REQ-CPL-12`): one `reliance`, citing the receipt of the verifier's stated judgement, naming it as judge and the
+  reserve as the one relying, written before the first move of value; no entry but the reliance cites the judgement, and
+  neither the operator, the customer nor Core is judge or relier.
+- *false judgement is recorded as its verifier's word and its relier's reliance* (`REQ-CPL-12`): `sim-verifier-lax`
+  says yes without checking to a subject an honest verifier refuses (`unfit-`); the route cites that yes, the order runs,
+  the reliance names the lax verifier and the reserve, and no reliance names the operator or the customer. The same
+  subject put to `sim-verifier` is a no.
+- *requester beneficiary and payer are checked by the judgements their providers' rules name* (`AC-24`, `REQ-AUZ-5`):
+  over `sim-join-in`, `-exchange`, `-ramp` and `-out`, the payer is judged for the withdrawing reserve, the requester for
+  the exchange and the beneficiary for the depositing reserve, each by the verifier that rule names; the acceptance
+  records the three apart, policy was asked about each once, and each operation cites exactly its own party's judgement
+  (the ramp's none).
+- *tuple needing a judgement is not offered without one* (`REQ-AUZ-5`): a control offered with its judgement, then no
+  offer where the verifier is unknown, judges another class, or one of two needs (or the deposit's) goes unmet.
+
+**Added** (`conformance/` only; nothing in `components/` depends on it). The simulator: a verifier says no to a subject
+beginning `unfit-` and `sim-verifier-lax` (the name chooses it) says yes to any (`Verifier::saying_yes_without_checking`).
+The fleet (`sim/fleet.rs`): `Installed::released` (the accepted release) and `Fleet::judge` (a verifier answers in
+process, signed for real). The assembly: `Core::rests_on`, `Core::judgement_of` (the receipt of a verifier's stated
+judgement, read from the log: `T-020-23`'s gap 1), the verifier's logged grant and its release recorded, the `Asking`
+seam handing the rounds the judgement a verifier's result carries, and policy's `OrderParties` falling back on intake's
+record before the acceptance (`Records::order_parties`).
+
+**Defaults taken.**
+- A verifier is asked in process (`Fleet::judge`), not through the platform, and its answer reaches the rounds as the
+  nested judgement (they read a judgement, not the result around it).
+- A verifier's grant is logged naming a placeholder tuple (`verifier_tuple`) and the catalogue grant covers its category.
+- Core's person question is answered before the acceptance from intake's record of the order's parties (the log holds
+  them only from the acceptance, and routing happens before it); a read that used to find no parties before acceptance
+  now finds them.
+- One subject per relying provider is the snapshot's own rule (`all judgements about one relying provider's tuples are
+  about one subject`), so three parties are judged by three providers.
+- Only a verifier's accepted release is recorded in Core's releases; a reserve's would add its calls figure to every
+  snapshot.
+
+**Gaps, with owners.**
+1. *A verifier's grant can't be logged* (contract). The log attributes a statement under the advertising keys a grant
+   names, and `ChangeCatalogue` names a tuple exactly when it is about one, which a verifier's category grant is not
+   (`check.rs`, "a catalogue change names a tuple exactly when it is about a tuple"); without a grant in the log the
+   verifier's judgement is attributed to no one and `reliance-names-its-judges-statement` refuses a reliance on it. The
+   exact shape: a `grant` with `tuple: None` for a category grant (and `granted_advertising_keys` reading it). Owner:
+   core-internal's single writer, through the coordinator (a contract round of `F-020`/`F-021`), then `F-053`. Until it
+   lands the assembly logs a placeholder tuple.
+2. *The simulated verifier module refuses every question* (`components/prov/module-guests/sim/src/lib.rs`, `serve`): a
+   judgement names no transaction, so the guest builds its provider with no deployment (`provider(held, provider,
+   None)`) and refuses what the operator signed. Owner: `T-024-01`'s module guests; the fix reads `DEPLOYMENT_KEY` for a
+   transaction-less operation. Until then `Fleet::judge` answers in process.
+3. *No rule says which input rests on which judgement.* The scenarios declare it (`T-020-23`'s default); the
+   production rule and the verifier's need in the advertisement are `F-053`'s (`M5`, `DEC-16`).
+4. *`OrderParties` before the acceptance* is the assembly's reading of intake's record; `F-030`'s source must do the
+   same, since routing precedes acceptance.
+5. *A refused judgement doesn't stop a route*: `judged` asks for a judgement of the tuple's verifier, subject and
+   class, not that its answer be yes; a no is cited like a yes. Not mine to change (`components/`), and in v0 a
+   provider checks eligibility itself (`DEC-16`). Owner: `F-020`, if the answer is to count.
+
+**Rule-off table** (each switched off alone, under a hard timeout, restored; green first):
+
+| Switched off | Red |
+|---|---|
+| `Asking` handing the rounds the nested judgement | all four |
+| policy's `OrderParties` fallback on intake's record | all four |
+| the verifier's logged grant naming its keys | all four (the assembly refuses the grant) |
+| `sim-verifier-lax` saying yes to everyone | the false-judgement test |
+| the honest verifier's no to `unfit-` | the false-judgement test |
+| the scenario's `rests_on` declaration | the reliance test, the false-judgement test |
+| Core's `advance` writing the reliance (`T-020-23`) | the reliance test, the false-judgement test |
+| `rounds`' `judged` check of a cited judgement | the not-offered test |
+
+The three-party test stays red under the first two and is held by its own exact assertions (the questions put and each
+operation's cited judgements), which no single rule-off isolates: the exact-set assertions were seen to fail while
+the route kit was being built, when two needs on one provider were refused by the one-subject rule.

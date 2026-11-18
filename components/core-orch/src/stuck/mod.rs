@@ -650,6 +650,9 @@ pub struct ProviderView {
     pub part_state: OrderState,
     /// The segment's state.
     pub segment_state: SegmentState,
+    /// The receipt of the platform's own record that the segment's operation ended with no answer, where it did
+    /// (`REQ-ORD-1`, `REQ-MDL-8`): what an outcome unknown cites.
+    pub platform_record: Option<Receipt>,
 }
 
 /// A part Core declared stuck, or left waiting by `no_route`.
@@ -2636,6 +2639,7 @@ pub fn seen_by_provider(
         segment: segment.clone(),
         part_state: part.state,
         segment_state: seg.state,
+        platform_record: segments.platform_record(order, segment).cloned(),
     })
 }
 

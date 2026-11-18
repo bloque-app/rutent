@@ -254,6 +254,75 @@ fn built_guests() -> PathBuf {
     out
 }
 
+/// The directory holding `plain-wallet-sandboxed.wasm` and `plain-wallet-outside.wasm`, the operator's plain wallet
+/// (`T-016-02`): `RUTENT_PLAIN_WALLET` if set, else the one `guests/plain-wallet/build.sh` writes into the build
+/// directory, built the way the simulated providers' are: into a directory named by a hash of its sources, one
+/// build at a time, each moved into place whole (`T-024-17`).
+pub fn wallet_guests() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = match std::env::var_os("RUTENT_PLAIN_WALLET") {
+            Some(dir) => PathBuf::from(dir),
+            None => built_wallet(),
+        };
+        assert!(
+            dir.join("plain-wallet-sandboxed.wasm").exists(),
+            "{} holds no plain wallet: run components/prov/guests/plain-wallet/build.sh",
+            dir.display()
+        );
+        dir
+    })
+    .clone()
+}
+
+fn built_wallet() -> PathBuf {
+    let (target, _) = build_directories();
+    let root = root();
+    // The module guests' tool is the simulated providers' build's, which the wallet's build reuses where it is there.
+    let _ = guests();
+    let tool = target.join("sim-guests-build/debug/rutent-wasm-guests");
+    let guest = root.join("components/prov/guests/plain-wallet");
+    let key = key_of(&[
+        guest.clone(),
+        root.join("components/prov/module-guests"),
+        root.join("components/prov/src/module/wit"),
+        root.join("contracts/src"),
+        root.join("contracts/Cargo.toml"),
+        root.join("rust-toolchain.toml"),
+    ]);
+    let builds = target.join("rutent-wallet-guests");
+    let out = builds.join(&key);
+    std::fs::create_dir_all(&builds).expect("a directory for the plain wallet");
+    {
+        let _lock = BuildLock::take(target.join("rutent-wallet-guests.lock"));
+        if !out.join("built").exists() {
+            let unfinished = builds.join(format!("{key}.tmp-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&unfinished);
+            let mut build = Command::new(guest.join("build.sh"));
+            build
+                .arg(&unfinished)
+                .env("CARGO_TARGET_DIR", target.join("wallet-guest-build"));
+            if tool.exists() {
+                build.env("RUTENT_GUEST_TOOL", &tool);
+            }
+            let status = build
+                .status()
+                .expect("components/prov/guests/plain-wallet/build.sh runs");
+            assert!(
+                status.success(),
+                "the plain wallet's build failed: {status}"
+            );
+            let _ = std::fs::remove_dir_all(&out);
+            std::fs::rename(&unfinished, &out).expect("the build is moved into place");
+        }
+        if let Ok(marker) = std::fs::File::options().write(true).open(out.join("built")) {
+            let _ = marker.set_modified(SystemTime::now());
+        }
+        prune(&builds, &out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

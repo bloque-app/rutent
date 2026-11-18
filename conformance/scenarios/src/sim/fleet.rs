@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant as StdInstant};
 
 use rutent_conformance::role::{
-    Received, RoleHarness, RoleProvider, SuiteContext, placeholder_signature,
+    BankCredit, Received, RoleHarness, RoleProvider, SuiteContext, placeholder_signature,
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
@@ -18,7 +18,8 @@ use rutent_contracts::module_interface::{
     Parts, RELEASE_ASSERTION_SHAPE, ReleaseAssertion,
 };
 use rutent_contracts::provider_role::{
-    Advertisement, KeyPurpose, Operation, ResultBody, Signature, SignatureScheme, Statement,
+    Advertisement, ArrivalAnswer, ArrivalNotice, ArrivalQuestion, KeyPurpose, Operation,
+    ResultBody, Signature, SignatureScheme, Statement,
 };
 use rutent_evidence::{Finality, NetworkRules, ReorgRule};
 use rutent_prov::catalogue::{
@@ -67,9 +68,24 @@ impl RoleProvider for InProcess {
     fn status(&mut self, transaction: &str) -> Option<Received<ResultBody>> {
         self.0.status(transaction)
     }
+
+    fn arrival(
+        &mut self,
+        question: &Statement<ArrivalQuestion>,
+    ) -> Option<Received<ArrivalAnswer>> {
+        self.0.arrival(question)
+    }
+
+    fn arrival_notice(&mut self, reference: &str) -> Option<Received<ArrivalNotice>> {
+        self.0.arrival_notice(reference)
+    }
 }
 
 impl RoleHarness for InProcess {
+    fn credit_arrival(&mut self, credit: &BankCredit) -> bool {
+        self.0.credit_arrival(credit)
+    }
+
     fn force_outcome_unknown(&mut self) -> bool {
         self.0.force_outcome_unknown()
     }
@@ -92,6 +108,35 @@ pub struct Installed {
     pub advertisement: Received<Advertisement>,
     /// Its declaration, the one its release asserts.
     pub declaration: Declaration,
+    /// Its release as accepted, which Core records for a verifier (`T-024-12`): a judgement's origin names the
+    /// release of its maker.
+    pub released: Option<AdmissionArtefact>,
+}
+
+/// The operations a plain wallet handles.
+pub const WALLET_HANDLES: [&str; 4] = [
+    "deposit",
+    "withdrawal",
+    "balance_verification",
+    "holding_balance",
+];
+
+/// The plain wallet of a public node, admitted to the platform on the operator's own signed release (`T-024-17`).
+#[derive(Debug, Clone)]
+pub struct InstalledWallet {
+    /// Its provider identifier: the module the operator publishes.
+    pub provider: String,
+    /// The release's version.
+    pub version: String,
+    /// The release's declaration: no outside operation, and the statements key its answers are signed with.
+    pub declaration: Declaration,
+}
+
+impl InstalledWallet {
+    /// The statements key the wallet's answers are signed with, which its release declares.
+    pub fn statement_key(&self) -> rutent_contracts::provider_role::PublicKey {
+        self.declaration.outside.statement_key.clone()
+    }
 }
 
 /// The simulated public networks a provider's tuples are on (`Spec::networks`).
@@ -158,6 +203,10 @@ pub struct Fleet {
     installed: BTreeMap<String, Installed>,
     /// The placeholder-key seeds in use, each with the provider that holds it.
     seeds: BTreeMap<u8, String>,
+    /// Each verifier, in process and signed for real, which answers Core's questions in place of the platform
+    /// (`T-024-12`): the simulated module refuses a question with no transaction, since it builds its provider in the
+    /// suite's default deployment and not the assembly's (`components/prov/module-guests/sim`).
+    verifiers: BTreeMap<String, Signing<InProcess>>,
 }
 
 impl Fleet {
@@ -198,6 +247,7 @@ impl Fleet {
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
+            verifiers: BTreeMap::new(),
         }
     }
 
@@ -368,14 +418,85 @@ impl Fleet {
             "{}: a first release waits for its acceptance",
             spec.provider
         );
-        self.accept(&spec.provider, &artefact);
+        let released = self.accept(&spec.provider, &artefact);
+        if spec.role == rutent_conformance::sim::Role::Verifier {
+            self.verifiers.insert(
+                spec.provider.clone(),
+                Signing(InProcess(spec.make(&self.context))),
+            );
+        }
         let installed = Installed {
             spec: spec.clone(),
             advertisement,
             declaration,
+            released,
         };
         self.installed.insert(spec.provider, installed.clone());
         installed
+    }
+
+    /// Admits the plain wallet `provider` as a module the operator publishes: recorded as such in the platform's
+    /// catalogue, its two components asserted in a release the operator signs with its own key, admitted, and given
+    /// its first release's fresh acceptance, so it runs. The world holds the private half of its statements key, as
+    /// it does a simulated provider's, for the platform to sign its answers.
+    ///
+    /// # Panics
+    ///
+    /// If the wallet is built nowhere, or the platform refuses its release.
+    pub fn install_wallet(&mut self, provider: &str) -> InstalledWallet {
+        let version = "1.0.0".to_owned();
+        let statements = rutent_conformance::signing::statements_key(provider);
+        let operator = crate::kit::RealKey::assembly().0;
+        self.catalogue
+            .publish_operator_module(provider)
+            .expect("the operator publishes the wallet");
+        self.platform
+            .world
+            .hold_statement_key(provider, &statements);
+        let mut value = json!({
+            "provider": provider,
+            "version": version,
+            "interface": rutent_contracts::module_interface::VERSION,
+            "sandboxed": { "handles": WALLET_HANDLES },
+            "outside": {
+                "operations": [],
+                "destinations": [],
+                "secrets": [],
+                "calls": [],
+                "statement_key": public_key(&statements),
+            },
+        });
+        value["outside"]["statement_key"] = public_key(&statements).as_str().into();
+        let declaration: Declaration =
+            serde_json::from_value(value).expect("a valid wallet declaration");
+        let guests = disk::wallet_guests();
+        let binaries = Parts {
+            sandboxed: std::fs::read(guests.join("plain-wallet-sandboxed.wasm"))
+                .expect("the wallet's sandboxed part"),
+            outside: std::fs::read(guests.join("plain-wallet-outside.wasm"))
+                .expect("the wallet's outside part"),
+        };
+        let mut assertion = assertion_in(&self.context, &declaration, &binaries, &operator);
+        // The operator's release is made by the operator, not by the module.
+        assertion.maker.clone_from(&self.context.operator);
+        let assertion = sign_statement(&assertion, &operator);
+        let admitted = self.admit(&assertion, &binaries);
+        let Admitted::Artefact(artefact) = admitted else {
+            panic!("{provider}: admission refused the wallet's release: {admitted:?}");
+        };
+        if artefact.acceptance.accepted.is_none() {
+            self.accept(provider, &artefact)
+                .expect("the first release is accepted");
+        }
+        assert!(
+            self.platform.active_version(provider).is_some(),
+            "{provider}: the wallet runs"
+        );
+        InstalledWallet {
+            provider: provider.to_owned(),
+            version,
+            declaration,
+        }
     }
 
     /// Admits one release.
@@ -402,6 +523,13 @@ impl Fleet {
             &self.catalogue,
             ADMITTED_AT,
         )
+    }
+
+    /// The result `provider`, a verifier, gives `operation`, as the bytes it sends: its own statement signed for real,
+    /// and the judgement nested in it. None for a provider that is no verifier here.
+    pub fn judge(&mut self, provider: &str, operation: &Statement<Operation>) -> Option<Vec<u8>> {
+        let verifier = self.verifiers.get_mut(provider)?;
+        Some(verifier.handle(operation).bytes().to_vec())
     }
 
     /// Hands one operation to `provider`'s module.

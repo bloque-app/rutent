@@ -95,8 +95,8 @@ use rutent_contracts::core_internal::calls::{
 };
 use rutent_contracts::core_internal::{
     About, Action, Actor, ActorKind, Answer, CatalogueChange, DecisionRequest, Effect, Entry,
-    OrderRefusalClass, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, RouteEnd,
-    VerifiedEntry, What,
+    HandedOver, OrderRefusalClass, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role,
+    RouteEnd, VerifiedEntry, What,
 };
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{
@@ -227,7 +227,14 @@ pub enum UnknownBy {
     Provider(Receipt),
     /// The platform: the module passed something out, then the operation ended with no answer (`OutcomeUnknown`).
     /// What it passed out is in the drain handed over with it.
-    Platform(PlatformRefusal),
+    Platform {
+        /// What ended the operation.
+        refusal: PlatformRefusal,
+        /// The receipt of the platform's own record of it (`HandedOver::OperationUnanswered`), which the outcome
+        /// cites (`REQ-MDL-8`, `REQ-ORD-1`). `None` only where the platform reported no such record of the
+        /// operation: the answer it gave couldn't be kept, say, and nothing ended it on the platform's side.
+        record: Option<Receipt>,
+    },
 }
 
 /// How one segment was accounted for.
@@ -581,8 +588,8 @@ struct InFlight {
     carried: bool,
     answered: Option<Answered>,
     started: Option<Reading>,
-    /// What the platform reported of an operation that ended with no answer, which core-internal has no item for:
-    /// kept here, with the segment.
+    /// What the platform reported of an operation that ended with no answer: kept here, with the segment, as well as
+    /// handed to the log as `HandedOver::OperationUnanswered`.
     unknown: Vec<UnknownOutcome>,
     steps: BTreeMap<&'static str, Step>,
     evidence: Option<(Id, Timestamp)>,
@@ -620,6 +627,9 @@ struct Drain {
     who: Actor,
     raw: drain::Raw,
     appended: usize,
+    /// The receipts of the platform's records of operations that ended with no answer this drain appended, by
+    /// transaction, until they are moved to the segments' register.
+    unanswered: Vec<(String, Receipt)>,
 }
 
 /// An order whose state Core follows, and when it reached it.
@@ -636,6 +646,8 @@ struct Tracked {
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     acted: BTreeSet<String>,
+    /// The receipt of the platform's record that the operation of a transaction ended with no answer.
+    unanswered: BTreeMap<String, Receipt>,
     transactions: BTreeSet<String>,
     undelivered: Vec<Drain>,
     flights: BTreeMap<(String, String), InFlight>,
@@ -771,12 +783,21 @@ impl Segments {
             .map(|f| &f.transaction)
     }
 
-    /// What the platform reported of a segment's operation that ended with no answer (`Events::unknown`), which the
-    /// log has no item for yet: kept with the segment.
+    /// What the platform reported of a segment's operation that ended with no answer (`Events::unknown`): kept with
+    /// the segment, beside its record on the log ([`Segments::platform_record`]).
     pub fn unknown_outcomes(&self, order: &Id, segment: &Id) -> &[UnknownOutcome] {
         self.flights
             .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
             .map_or(&[], |f| f.unknown.as_slice())
+    }
+
+    /// The receipt of the platform's record that `segment`'s operation ended with no answer, once the log has it
+    /// (`REQ-MDL-8`, `REQ-ORD-1`).
+    pub fn platform_record(&self, order: &Id, segment: &Id) -> Option<&Receipt> {
+        let flight = self
+            .flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?;
+        self.unanswered.get(flight.transaction.as_str())
     }
 
     /// Appends again, in order, every drain an append failed for, each from its first item not yet appended. A drain
@@ -795,7 +816,9 @@ impl Segments {
         let mut failed = Vec::new();
         let mut kept = Vec::new();
         for mut drain in std::mem::take(&mut self.undelivered) {
-            if let Err(failure) = Self::append_drain(log, &mut drain) {
+            let done = Self::append_drain(log, &mut drain);
+            self.unanswered.extend(drain.unanswered.drain(..));
+            if let Err(failure) = done {
                 failed.push((drain.id.clone(), failure));
                 kept.push(drain);
             }
@@ -809,9 +832,19 @@ impl Segments {
         let items = drain.raw.items()?;
         let whats = drain::entries(items, &drain.id)?;
         for what in whats.into_iter().skip(drain.appended) {
+            let ended = match &what {
+                What::HandOver {
+                    item: HandedOver::OperationUnanswered { transaction, .. },
+                    ..
+                } => Some(transaction.as_str().to_owned()),
+                _ => None,
+            };
             let entry = journal::verified(&drain.who, what, &drain.at, Outcome::Observed {});
-            journal::append(log, entry)?;
+            let receipt = journal::append(log, entry)?;
             drain.appended += 1;
+            if let Some(transaction) = ended {
+                drain.unanswered.push((transaction, receipt));
+            }
         }
         Ok(())
     }
@@ -1932,6 +1965,18 @@ impl Segments {
                 // evidence, handed over with it. The segment stays in flight, held, and its effect's result is
                 // `unanswered`, the first of its two: its outcome is settled only by a report and its confirmation
                 // (`Segments::confirmed_failed`, `AC-6`).
+                // The platform's own record of it is on the log first, and the outcome cites it: where the platform
+                // reported one that the log hasn't taken yet, nothing more is written until it has (fail closed).
+                let transaction = self.flight(at)?.transaction.as_str().to_owned();
+                let reported = self
+                    .flight(at)?
+                    .unknown
+                    .iter()
+                    .any(|u| u.transaction == transaction);
+                let record = self.unanswered.get(&transaction).cloned();
+                if reported && record.is_none() {
+                    return Err(SegmentsError::Append(AppendFailure::Unavailable));
+                }
                 self.input(
                     parts,
                     live,
@@ -1941,9 +1986,10 @@ impl Segments {
                     Observed::SegmentOutcomeUnknown {},
                 )?;
                 self.result(parts, live, at, Outcome::Unanswered {})?;
-                return Ok(SegmentOutcome::Unknown(UnknownBy::Platform(
-                    PlatformRefusal::OutcomeUnknown,
-                )));
+                return Ok(SegmentOutcome::Unknown(UnknownBy::Platform {
+                    refusal: PlatformRefusal::OutcomeUnknown,
+                    record,
+                }));
             }
             Answered::Refused(refusal) => {
                 // Refused before the module passed anything out: nothing moved, so its effect failed.
@@ -2775,6 +2821,7 @@ impl Segments {
             who: live.core.clone(),
             raw,
             appended: 0,
+            unanswered: Vec::new(),
         });
         Some(id)
     }
