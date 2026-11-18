@@ -5573,9 +5573,8 @@ Branch `f-020/t-020-38-report-pair-segments`, from `m3` at `c874f7aa` (with `T-0
   2. *Hand-off to `T-020-35`*, which builds the pair in `segments/` after this round merges: the sent report from
      segment n's result and its provider, about n; the received one from n+1's, about n+1; the terms from n's tuple;
      no pair after a route's last segment, nor where one provider runs n and n+1. Owner: `T-020-35`.
-  3. *A report's shape.* Neither statement row holds the cited statement to provider-role's `result` shape (the
-     showing-of-fault row does): another statement of the same provider about the same segment could stand in. Owner:
-     the lead (a later round, a `result` field on both rows); residual for `T-025-05`.
+  3. *A report's shape.* Closed by the review of `8a6854b1` (below): both statement rows hold the statement to a
+     `result` about the report's own segment.
   4. *A report's figures.* That a report's `amount` and `asset` are what its statement's bytes state, the log can't
      read from a commitment (as before this round): Core's, on taking the result, and a checker's on
      `Evidence::fetch`. Owner: `T-020-35` (Core builds the pair from the results it took).
@@ -5604,3 +5603,30 @@ Branch `f-020/t-020-38-report-pair-segments`, from `m3` at `c874f7aa` (with `T-0
   `--strict` (0 findings, 2078 tests tagged); `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` of the two crates:
   all green. One earlier run of `core-audit`'s `reopen.rs` failed `store_whose_verified_entrys_statement_was_erased_still_opens`
   at `EvidenceStore::open` (`Unavailable`), the flake `T-020-36` saw; it passed alone and in the final run.
+
+### T-020-38, the review of `8a6854b1`: changes
+
+- **Should-fix (gap 3, worse than noted).** Both statement rows went through `statement_by` and `about_agrees`, which
+  takes a statement with no `about` on its body, so any verified statement of the right provider backed a report: on
+  the real log the reviewer had admitted, as sent, us-bank's judgement or result about nothing, and a hold or terms
+  about `tx-b1`/`p1-s1`; as received, fx-desk's judgement about nothing and an arrival notice about `tx-f2`/`p1-s2`.
+  Both rows now read `report_statement`: a new field `result` (provider-role's `result` shape) between `verified` and
+  `maker`, and `about` requiring an `about` naming the pair's order and the report's own segment, through a
+  transaction first bound to that segment (`about_the_segment`), as the showing-of-fault and charge-raise rows hold
+  theirs. Four refused cases: `--result` (a hold for the sent row, an arrival notice for the received) and
+  `--a-statement-about-nothing` (the provider's result, about nothing) on each row (`scratchpad/f020zo/gen2.py`).
+  `core-audit`'s `a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segments` runs the
+  reviewer's eight shapes on the real log, each refused (a judgement about the segment the log leaves unverified, a
+  judgement naming no transaction, so `verified` refuses it first). Gap 3 above is closed.
+- **Low.** `core-audit`'s report-pair test now refuses bridge-pay's result about `p1-s2` (appended and signed on the
+  real log) as the received report: the received side of `report-pair-is-by-its-segments-providers`.
+- **Rule-offs** (as before, from `2a7b1bca`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the statement rows' `result` (any shape) | `report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_admitted`, table, `a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segments` |
+  | their `about` required and bound (back to `about_agrees`) | the same three (on the log, us-bank's result about nothing admitted as the sent report) |
+  | `report-pair-is-by-its-segments-providers` on the received side alone | the admitted named test, table, `a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_refused` (bridge-pay's received report admitted) |
+- **Local checks** (one lock hold, at `2a7b1bca`): the same set as the first round, all green; the guard against
+  `origin/develop` "1734 changed path(s) … no violations", plan-check and tag-check `--strict` 0 findings (2079 tests
+  tagged).
