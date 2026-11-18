@@ -1020,7 +1020,8 @@ fn no_recalculation_changes_destination_or_to_asset() {
                 last.to.asset.id.clone(),
             )
         };
-        let mut ends: BTreeMap<String, Vec<((String, String, String), &str)>> = BTreeMap::new();
+        type End = (String, String, String);
+        let mut ends: BTreeMap<String, Vec<(End, &str)>> = BTreeMap::new();
         for input in &sim.run.inputs {
             let order = input.subject.order.as_str().to_owned();
             match &input.observed {

@@ -615,8 +615,11 @@ pub fn specs_of(shape: Shape) -> Vec<Spec> {
     }
 }
 
+/// One operation a provider's book says it did: the provider, the operation as stated, and the segment its publisher records.
+pub type BookSegment = (String, Value, rutent_conformance::sim::InnerSegment);
+
 /// What a provider's own book says it did: each operation that moved value, as its publisher records it.
-pub fn book_segments(sim: &Sim) -> Vec<(String, Value, rutent_conformance::sim::InnerSegment)> {
+pub fn book_segments(sim: &Sim) -> Vec<BookSegment> {
     let mut all = Vec::new();
     for spec in specs_of(sim.plan.shape) {
         let journal: Vec<BookEntry> = sim.run.books[&spec.provider]
