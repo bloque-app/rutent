@@ -19,7 +19,7 @@ use rutent_contracts::provider_role::{
 };
 use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, Timestamp};
 use rutent_core_orch::closing::{
-    Books, Closing, Evidenced, Moved, PublicRecords, Unadmitted, admits,
+    Books, Closing, Evidenced, Moved, PublicRecords, Recorded, Unadmitted, admits,
 };
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::{Graded, Grading, ProvidersWord, RaiseDesk, Short, ToGrade};
@@ -250,7 +250,7 @@ impl Kept {
 }
 
 impl Books for Kept {
-    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Vec<RecordedSegment>> {
+    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
         let kept: Vec<RecordedSegment> = self
             .0
             .get(node)?
@@ -258,7 +258,10 @@ impl Books for Kept {
             .filter(|(tx, _)| transactions.iter().any(|t| t.as_str() == tx))
             .map(|(_, s)| s.clone())
             .collect();
-        (!kept.is_empty()).then_some(kept)
+        (!kept.is_empty()).then_some(Recorded {
+            segments: kept,
+            records: Vec::new(),
+        })
     }
 }
 
@@ -733,6 +736,7 @@ impl<'a> Part<'a> {
             core: &core,
             operator: &operator,
             at: &at,
+            kept: &[],
         })
     }
 }

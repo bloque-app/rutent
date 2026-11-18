@@ -57,12 +57,12 @@ mod public_end;
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    Actor, Entry, FeeTo, MismatchKind, Outcome, PublicMovement, Receipt, ReplayFound,
+    About, Actor, Entry, FeeTo, MismatchKind, Outcome, PublicMovement, Receipt, ReplayFound,
     ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, NodeRef, ReserveMovementOutcome,
-    ResultBody, Statement, TransferOutcome,
+    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef,
+    ReserveMovementOutcome, ResultBody, Statement, TransferOutcome,
 };
 use rutent_contracts::router_api::{Amount, Id, Operation, OperationKind};
 use rutent_evidence::replay::{
@@ -75,7 +75,7 @@ use rutent_evidence::{
 };
 use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey};
 
-use crate::segments::{Graded, Grading, RaiseDesk, Short, ToGrade};
+use crate::segments::{Graded, Grading, RaiseDesk, Short, ToGrade, ToKeep};
 use crate::snapshot::RouteRefusal;
 
 /// A segment's movement on a public network, as that network ties it to the segment's transaction.
@@ -136,13 +136,23 @@ fn network_of<'r>(records: &'r dyn PublicRecords, name: &str) -> Option<Network<
     })
 }
 
-/// The private nodes' publishers' records of the segments inside their nodes (`REQ-ORD-41`). The contracts give the
-/// record no shape (`F-015`'s notes), so `CMP-EVIDENCE`'s [`RecordedSegment`] is it, and the assembly reads it from
-/// each publisher.
+/// What a private node's publisher recorded of the segments inside it, as the assembly reads it from the publishers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recorded {
+    /// The segments, as `CMP-EVIDENCE`'s [`RecordedSegment`] states each, in the order asked.
+    pub segments: Vec<RecordedSegment>,
+    /// The publisher's signed `inner-segments` records those segments were read from, whole, one for each provider of
+    /// the node that recorded any of them (`T-020-32`): what closing appends as a stated entry and cites.
+    pub records: Vec<Statement<InnerSegments>>,
+}
+
+/// The private nodes' publishers' records of the segments inside their nodes (`REQ-ORD-41`): provider-role's
+/// `inner-segments` statement, whole, so closing can append it (`T-020-32`) and `CMP-EVIDENCE`'s [`RecordedSegment`]
+/// is what the replay reads of it. The assembly reads it from each publisher.
 pub trait Books {
     /// What the publisher of private node `node` recorded of the segments inside it that ran under `transactions`,
     /// in the order they ran; `None` where it recorded nothing.
-    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Vec<RecordedSegment>>;
+    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded>;
 }
 
 /// What grading kept of one settled segment, for the segments after it.
@@ -438,6 +448,10 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
 }
 
 impl Grading for Evidenced<'_> {
+    fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
+        self.to_keep(settled)
+    }
+
     fn grade(&mut self, settled: &ToGrade<'_>) -> Graded {
         match self.graded(settled) {
             Ok(graded) => graded,
@@ -852,6 +866,35 @@ impl Evidenced<'_> {
             ));
         }
 
+        // Value entering a private node from a public one: its publisher's record of the node, appended by the
+        // segments before this grading, binds the node in the log, in an evidence naming the node whose movement is
+        // the one into it (`REQ-ORD-3`, `REQ-ORD-41`, `T-020-32`). The failed segment inside the node never reaches
+        // here, so the node is bound when the value enters it. Without a record the log can verify, or without that
+        // movement, the node stays unbound.
+        if !last && self.public(&operation.from.node) && self.private(&operation.to.node) {
+            let node = node_name(&operation.to.node);
+            if let (Some((network, moved, _)), Some(record)) = (
+                movement.as_ref(),
+                self.kept(settled, &format!("enter:{node}")),
+            ) {
+                entries.push(verified(
+                    settled.core,
+                    What::Evidence {
+                        evidence: id(&format!("{}.node", cites.as_str()))?,
+                        order: settled.order.clone(),
+                        segment: settled.segment.clone(),
+                        grade: EvidenceGrade::PublicRecord,
+                        whose: id(network)?,
+                        rests_on: vec![settled.result.clone(), record.clone()],
+                        movement: Some(public_movement(network, moved, Some(node))?),
+                        publisher: None,
+                    },
+                    settled,
+                ));
+                node_takes.push((network.clone(), moved.as_str().to_owned(), key.clone()));
+            }
+        }
+
         // Value leaving private nodes onto a public one: replay them, and, where the replay is consistent with the
         // movement out, close the segments inside them on the public movements in and out (`REQ-ORD-41`,
         // `REQ-ORD-33`).
@@ -1000,16 +1043,19 @@ impl Evidenced<'_> {
             .clone()
     }
 
-    /// The `replay` entry for the private nodes the value leaves at this segment, if it records one, and whether it
-    /// found the records consistent with the movement out.
-    fn replayed(
-        &self,
-        settled: &ToGrade<'_>,
-        operations: &[Operation],
-        movement: Option<&Checked>,
-    ) -> Result<(Option<Entry>, bool), Short> {
+    /// The receipt of the statement kept under `key` for the grading of `settled`, if it was kept.
+    fn kept<'s>(&self, settled: &'s ToGrade<'_>, key: &str) -> Option<&'s Receipt> {
+        settled
+            .kept
+            .iter()
+            .find(|k| k.key == key)
+            .map(|k| &k.receipt)
+    }
+
+    /// The private nodes the value is in at `settled`'s segment, in route order, each once, and the transactions that
+    /// ran at each.
+    fn run_nodes(&self, settled: &ToGrade<'_>, operations: &[Operation]) -> Vec<(String, Vec<Id>)> {
         let start = self.run_start(operations, settled.place);
-        // The private nodes, in route order, each once, and the segments that ran at each.
         let mut nodes: Vec<(String, Vec<Id>)> = Vec::new();
         for (place, op) in operations
             .iter()
@@ -1038,6 +1084,95 @@ impl Evidenced<'_> {
                 }
             }
         }
+        nodes
+    }
+
+    /// The statements `settled`'s grading will cite, for the segments to append first (`T-020-32`): at a segment that
+    /// takes the value into a private node, its publisher's record of the node, which binds it; at one that takes it
+    /// out onto a public node, the record of each node replayed. Each is the whole signed `inner-segments` record of
+    /// the provider that ran the segment (the exit's own where it served the node, else the first), made of the
+    /// operations of this order alone: a record that lists a segment of another order, or one this order didn't run
+    /// (a book that spans orders), the log would not verify about this order, so it is not appended, and what it
+    /// would have bound stays unbound (fail closed). It is about its order and node only.
+    fn to_keep(&self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
+        let operations = settled.operations;
+        let Some(operation) = operations.get(settled.place) else {
+            return Vec::new();
+        };
+        let ours: Vec<&Id> = self
+            .closing
+            .seen
+            .iter()
+            .filter(|((order, _), _)| order == settled.order.as_str())
+            .map(|(_, seen)| &seen.transaction)
+            .chain(std::iter::once(settled.transaction))
+            .collect();
+        let choose = |node: &str, transactions: &[Id], must: Option<&Id>| -> Option<ToKeep> {
+            let read = self.books.recorded(node, transactions)?;
+            let ofs = |r: &&Statement<InnerSegments>| {
+                r.statement.node == node
+                    && r.statement
+                        .segments
+                        .iter()
+                        .all(|s| ours.iter().any(|t| t.as_str() == s.transaction))
+                    && must.is_none_or(|t| {
+                        r.statement
+                            .segments
+                            .iter()
+                            .any(|s| s.transaction == t.as_str())
+                    })
+            };
+            let ok: Vec<&Statement<InnerSegments>> = read.records.iter().filter(ofs).collect();
+            let record = ok
+                .iter()
+                .find(|r| r.maker == settled.provider.as_str())
+                .or(ok.first())?;
+            Some(ToKeep {
+                key: String::new(),
+                bytes: serde_json::to_vec(record).ok()?,
+                about: About {
+                    order: Some(settled.order.clone()),
+                    segment: None,
+                    transaction: None,
+                    node: Id::new(node),
+                },
+            })
+        };
+        let mut keep = Vec::new();
+        if !is_final_deposit(settled)
+            && self.public(&operation.from.node)
+            && self.private(&operation.to.node)
+        {
+            let node = node_name(&operation.to.node);
+            let tx = [settled.transaction.clone()];
+            if let Some(mut one) = choose(node, &tx, Some(settled.transaction)) {
+                one.key = format!("enter:{node}");
+                keep.push(one);
+            }
+        }
+        if self.private(&operation.from.node)
+            && !self.private(&operation.to.node)
+            && self.public(&operation.to.node)
+        {
+            for (node, transactions) in self.run_nodes(settled, operations) {
+                if let Some(mut one) = choose(&node, &transactions, None) {
+                    one.key = format!("replay:{node}");
+                    keep.push(one);
+                }
+            }
+        }
+        keep
+    }
+
+    /// The `replay` entry for the private nodes the value leaves at this segment, if it records one, and whether it
+    /// found the records consistent with the movement out.
+    fn replayed(
+        &self,
+        settled: &ToGrade<'_>,
+        operations: &[Operation],
+        movement: Option<&Checked>,
+    ) -> Result<(Option<Entry>, bool), Short> {
+        let nodes = self.run_nodes(settled, operations);
         let Some((last_node, _)) = nodes.last() else {
             return Ok((None, false));
         };
@@ -1050,12 +1185,17 @@ impl Evidenced<'_> {
         let network = node_name(&operation.to.node).to_owned();
         let mut records = Vec::new();
         let mut silent = Vec::new();
+        let mut cited: Vec<Receipt> = Vec::new();
         for (node, transactions) in &nodes {
             match self.books.recorded(node, transactions) {
-                Some(segments) if !segments.is_empty() => records.push(NodeRecord {
-                    node: node.clone(),
-                    segments,
-                }),
+                Some(read) if !read.segments.is_empty() => {
+                    // Each node's record that the replay read, cited where it was kept (`REQ-AUD-9`, `T-020-32`).
+                    cited.extend(self.kept(settled, &format!("replay:{node}")).cloned());
+                    records.push(NodeRecord {
+                        node: node.clone(),
+                        segments: read.segments,
+                    });
+                }
                 _ => silent.push(id(node)?),
             }
         }
@@ -1111,8 +1251,10 @@ impl Evidenced<'_> {
                     segment: settled.segment.clone(),
                     nodes: names,
                     found,
-                    // The exit's result; the publishers' records of the nodes it read are `T-020-32`'s to add.
-                    rests_on: vec![settled.result.clone()],
+                    // The exit's result, then the record of each node it read that the log can verify, one per node.
+                    rests_on: std::iter::once(settled.result.clone())
+                        .chain(cited)
+                        .collect(),
                     movement: exit_movement,
                 },
                 settled,
