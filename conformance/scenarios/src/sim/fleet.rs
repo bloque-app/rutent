@@ -518,6 +518,107 @@ impl Fleet {
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         self.platform.handle(provider, operation)
     }
+
+    /// Admits a release of the installed provider `provider`, signed with its advertising key, as `release` says
+    /// (`T-024-07`): its parts are the provider's own, as installed, so a release that changes nothing but its
+    /// version is the same module; a widening one declares a destination more; a corrupt one carries a sandboxed part
+    /// that is no component, which the platform's compiler refuses. A release that needs a fresh acceptance waits for
+    /// it ([`Fleet::accept`]); one that doesn't is accepted automatically.
+    ///
+    /// # Panics
+    ///
+    /// If `provider` isn't installed, or its guests are missing.
+    pub fn release(&mut self, provider: &str, release: &Release) -> Admitted {
+        let installed = self
+            .installed
+            .get(provider)
+            .unwrap_or_else(|| panic!("{provider} isn't installed"))
+            .clone();
+        let placeholders = InProcess(installed.spec.make(&self.context))
+            .advertisement()
+            .into_statement()
+            .statement;
+        let advertising = placeholders
+            .keys
+            .iter()
+            .find(|k| k.purpose == KeyPurpose::Advertising)
+            .expect("an advertising key")
+            .public_key
+            .clone();
+        let mut declaration =
+            serde_json::to_value(&installed.declaration).expect("a declaration is JSON");
+        declaration["version"] = json!(release.version);
+        if release.widen {
+            declaration["outside"]["destinations"]
+                .as_array_mut()
+                .expect("destinations")
+                .push(json!({
+                    "name": "audit-sink",
+                    "scheme": "https",
+                    "host": "audit-sink.example",
+                    "port": 443,
+                    "addresses": "public",
+                }));
+        }
+        let declaration: Declaration =
+            serde_json::from_value(declaration).expect("a valid declaration");
+        let guests = disk::guests();
+        let role = format!("{:?}", installed.spec.role).to_lowercase();
+        let binaries = Parts {
+            sandboxed: if release.corrupt {
+                b"this is no component".to_vec()
+            } else {
+                std::fs::read(guests.join(format!("sim-{role}-sandboxed.wasm")))
+                    .expect("the simulated provider's sandboxed part")
+            },
+            outside: std::fs::read(guests.join("sim-outside.wasm"))
+                .expect("the simulated providers' outside part"),
+        };
+        let assertion = assertion_in(
+            &self.context,
+            &declaration,
+            &binaries,
+            &real(advertising.as_str()),
+        );
+        self.admit(&assertion, &binaries)
+    }
+}
+
+/// A release of an installed simulated provider, for [`Fleet::release`] (`T-024-07`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Release {
+    /// The version it is.
+    pub version: String,
+    /// Whether it declares a destination its provider's last release didn't, a widening of its capabilities that needs
+    /// a fresh acceptance (`REQ-MDL-3`).
+    pub widen: bool,
+    /// Whether its sandboxed part is no component, a release the platform can't start or compile.
+    pub corrupt: bool,
+}
+
+impl Release {
+    /// A release at `version` that changes nothing else.
+    pub fn at(version: &str) -> Self {
+        Release {
+            version: version.to_owned(),
+            widen: false,
+            corrupt: false,
+        }
+    }
+
+    /// This release, widened.
+    #[must_use]
+    pub fn widened(mut self) -> Self {
+        self.widen = true;
+        self
+    }
+
+    /// This release, its sandboxed part corrupt.
+    #[must_use]
+    pub fn corrupt(mut self) -> Self {
+        self.corrupt = true;
+        self
+    }
 }
 
 /// The declaration of a simulated provider's module at `version`: the four outside operations of
