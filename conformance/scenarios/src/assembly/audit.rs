@@ -10,7 +10,7 @@
 //! can reach nothing that moves value.
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Comparisons};
-use rutent_contracts::core_internal::{HoldingReading, Receipt};
+use rutent_contracts::core_internal::{HoldingReading, Receipt, ReportPair};
 use rutent_core_audit::compare::Compare;
 use rutent_core_audit::log::General;
 use rutent_core_orch::snapshot::Clock as _;
@@ -105,5 +105,69 @@ impl Core {
                 self.clock.clone(),
             );
         compare.holding_reading(reading)
+    }
+
+    /// How many pairs of reports the segments' ends gave wait for [`Core::write_pairs`].
+    pub fn unpaired_reports(&self) -> usize {
+        self.segments.unpaired()
+    }
+
+    /// Hands `CMP-CORE-AUDIT`'s comparison the pairs of reports the segments' ends gave since the last call, and
+    /// answers how many it took (`REQ-ORD-9`, `T-020-35`): each pair is recorded in Core's log and, where its figures
+    /// differ by one increment or more, raised to the operator on Core's channel. The assembly doesn't call it by
+    /// itself: its caller does, as the measures' (`Core::write_measures`). A pair the log can't take now waits.
+    ///
+    /// # Errors
+    ///
+    /// The first failure of a pair's record or its raise's, with the pairs after it left waiting.
+    pub fn write_pairs(&mut self) -> Result<usize, AppendFailure> {
+        self.write_pairs_as(&mut |pair| pair)
+    }
+
+    /// [`Core::write_pairs`], each pair restated by `restate` on its way to the comparison: for a scenario that has a
+    /// party report what the simulated providers don't (a figure a little off, under a tuple that declares an
+    /// increment), the receipts of its statements and everything else as Core built them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::write_pairs`].
+    pub fn write_pairs_as(
+        &mut self,
+        restate: &mut dyn FnMut(ReportPair) -> ReportPair,
+    ) -> Result<usize, AppendFailure> {
+        struct Restating<'a, C> {
+            inner: &'a mut C,
+            restate: &'a mut dyn FnMut(ReportPair) -> ReportPair,
+        }
+        impl<C: Comparisons> Comparisons for Restating<'_, C> {
+            fn report_pair(&mut self, pair: &ReportPair) -> Result<Receipt, AppendFailure> {
+                let restated = (self.restate)(pair.clone());
+                self.inner.report_pair(&restated)
+            }
+
+            fn holding_reading(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
+                self.inner.holding_reading(reading)
+            }
+        }
+        let channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
+        let mut compare =
+            Compare::new(
+                Compare::<
+                    super::CoreLog,
+                    rutent_core_orch::notice::Channel<'_>,
+                    crate::kit::SharedClock,
+                >::core_audit(kit::core().party),
+                General::new(&self.log),
+                channel,
+                self.clock.clone(),
+            );
+        self.segments.write_pairs(&mut Restating {
+            inner: &mut compare,
+            restate,
+        })
     }
 }

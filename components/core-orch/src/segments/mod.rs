@@ -87,6 +87,7 @@ pub(crate) mod journal;
 mod judge;
 mod landing;
 mod measured;
+mod pairs;
 mod ports;
 mod sign;
 
@@ -125,6 +126,7 @@ use crate::snapshot::{
 };
 
 pub use drain::Uncarried;
+pub use pairs::Unbuilt;
 /// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
 /// operation and the stated entry of a statement kept (`T-020-16`).
 pub(crate) use drain::{Raw as Drained, entries as drain_entries};
@@ -362,6 +364,9 @@ pub enum SegmentsError {
     /// A settled segment's charge couldn't be checked: why. The segment is accounted for; running the part again
     /// checks it again (`REQ-QTE-5`, `T-020-14`).
     Charge(ChargeError),
+    /// A settled segment's pair of reports couldn't be built (`REQ-ORD-9`, `T-020-35`); it is built again on the
+    /// next run.
+    Pair(Unbuilt),
 }
 
 impl From<Uncarried> for SegmentsError {
@@ -614,6 +619,8 @@ struct InFlight {
     /// What its provider charged, as its result that counted states it, with what the check needs of it: kept once
     /// it settled (`T-020-14`).
     charged: Option<Charged>,
+    /// What it reports having given out, for the segment after it (`T-020-35`).
+    reported: Option<pairs::Sent>,
     /// The platform's refusal to begin it, kept before its result is appended.
     begin_refused: Option<PlatformRefusal>,
     /// The first verdict on what it gave back, kept: a later try reads the same, whatever changed since.
@@ -689,6 +696,8 @@ pub struct Segments {
     reliances: Reliances,
     /// The measure records segments' endings and completed reversals gave, for the writer (`T-020-31`).
     measuring: measured::Measuring,
+    /// The pairs of reports segments' ends gave, for the comparison (`T-020-35`).
+    pairing: pairs::Pairing,
     /// The value landed in holding accounts, by segment (`T-020-33`).
     landing: landing::Landing,
 }
@@ -1989,6 +1998,7 @@ impl Segments {
                 ended: false,
                 outcome: None,
                 charged: None,
+                reported: None,
                 begin_refused: None,
                 verdict: None,
                 drains: Vec::new(),
@@ -2504,6 +2514,15 @@ impl Segments {
             (stated_in.as_str(), stated_fee),
         )?;
         self.check_charge(parts, live, at)?;
+        // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`).
+        self.note_report(
+            at,
+            operation,
+            cited.terms,
+            on.stated,
+            (stated_out.as_str(), stated_fee),
+        )?;
+        self.pair_with_previous(live, at, operation, on.stated, stated_in.as_str())?;
         Ok(Settle::Settled {
             amount_out,
             evidence,
