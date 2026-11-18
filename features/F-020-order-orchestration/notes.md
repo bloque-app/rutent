@@ -4958,3 +4958,20 @@ consumer files named below.
   | `attribute`: a record's publisher is its maker's | `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
 - **Local checks** (one lock hold, at `e4c51b1e` with these notes): the same list as the first round's, all green,
   `rutent-core-audit` included; the guard against `origin/develop`: "1678 changed path(s), no violations".
+
+### T-020-36, the re-review of `2b0f32b1`: changes
+
+- **Should-fix, fixed: the own-decision exception matched by ids alone.** A decision copying the permit's request and
+  decision ids, asking about p1-s1 (us-bank) under `tx-status-2`, was read as the effect's own and admitted. The
+  exception is now the entry at the permit's receipt (the same entry, `core::ptr::eq`), deciding the same action.
+  Cases `--a-decision-copying-its-own-ids-for-another-action` (the reviewer's) and
+  `--a-copy-of-its-own-decision-at-another-receipt` (pins the receipt half), both refused.
+- **Rule-offs** (from `d12dd92a` and `c0b58b6e`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the fix whole (ids alone, as before) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the receipt half alone | green from `d12dd92a` (the action half refused the reviewer's case); from `c0b58b6e`, with the copy case: table, `late_status_asked_without_its_transaction_is_invalid` |
+  | the action half alone | none: a decision at the permit's receipt for another action is refused first by the effect's own permit rows, so this half is kept as defence and no case of this row reaches it |
+- **Local checks** (one lock hold, at `c0b58b6e` with these notes): the first round's list, all green; the guard against
+  `origin/develop`: "1680 changed path(s), no violations".
