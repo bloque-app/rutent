@@ -321,3 +321,24 @@ main `ci.yml` runs the same file under `cargo test --workspace`). Row 18; touche
 | either descriptor close | `inherited_descriptor_is_closed_inside_the_jail` | CI only |
 | `RLIMIT_AS` | `mapping_past_the_address_space_limit_is_refused` | CI only |
 | `jail-layers` in a release build | `release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off` | CI only |
+
+### T-025-02, after review of `16dc2296`
+
+- **Compile fixes for Linux:** the duplicate `use std::time::Duration` in the tests, and an `unused_mut` in
+  `sandbox::isolated_layers` (the Linux branch). Every `cfg(target_os = "linux")` line the row added was read again by hand.
+- **Controls now differ from the jail by the one layer.** Network, IPC and PID compare `User` with `User + X`; mount
+  compares `User + Mount` (root visible) with `User + Mount + EmptyRoot` (empty). Capabilities, Landlock, seccomp and UTS
+  already did.
+- **The release scan has a second prong that doesn't depend on the optimiser.** A provider built with the feature never
+  calls the builder, so its names may fold away and can't serve as the string scan's control. The test therefore also reads
+  Cargo's resolved features: `cargo tree -e normal,build,features -p rutent-prov` (the release command line) must show no
+  `jail-layers`, while the same with `dev` must show `feature "jail-layers"` (the control, which shows the check can fail);
+  and `cargo metadata` (which parses the manifest, a multi-line array included) must show no feature but `jail-layers`
+  itself enabling it, `default` included.
+- **The composition test runs on every platform** (`unshare_arguments(ALL) == UNSHARE` and the refusals of a layer that
+  can't stand alone), no longer ignored off Linux.
+- **The UTS test keeps `PLAN.md`'s name**, `hostname_change_is_refused_by_the_uts_namespace_alone`, since the row's test
+  names are written there; what it shows is said in its comment and messages: a rename made in the namespace stays inside
+  it, and the user namespace already refuses a rename without it. The owner item stands (gap 1 above).
+- **`jail-probes` is not a required check** of the repository (a branch-protection setting, which isn't ours to change),
+  so a red run doesn't block a merge by itself. Owner: Pablo, to add it once the first run is green.

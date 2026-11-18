@@ -310,14 +310,13 @@ pub(super) fn isolated_layers(
     #[cfg(target_os = "linux")]
     let mut command = {
         let flags = unshare_args(layers);
-        let mut command = if flags.is_empty() {
+        if flags.is_empty() {
             Command::new(&executable)
         } else {
             let mut command = Command::new(unshare());
             command.args(flags).arg(&executable);
             command
-        };
-        command
+        }
     };
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut command = {

@@ -8,6 +8,13 @@
 
 #![allow(clippy::needless_return)]
 
+use rutent_prov::module::jail::{self, Layer, Layers};
+use rutent_prov::module::sandbox::{Limits, UNSHARE};
+
+fn only(layers: &[Layer]) -> Layers {
+    layers.iter().fold(Layers::none(), |set, l| set.with(*l))
+}
+
 #[cfg(target_os = "linux")]
 mod rig {
     use std::os::fd::AsRawFd;
@@ -15,12 +22,9 @@ mod rig {
     use std::process::Child;
     use std::time::{Duration, Instant};
 
+    use super::only;
     use rutent_prov::module::jail::{self, Layer, Layers};
     use rutent_prov::module::sandbox::Limits;
-
-    pub fn only(layers: &[Layer]) -> Layers {
-        layers.iter().fold(Layers::none(), |set, l| set.with(*l))
-    }
 
     pub fn run_id() -> String {
         std::env::var("GITHUB_RUN_ID").unwrap_or_else(|_| "local".to_owned())
@@ -145,7 +149,7 @@ mod rig {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
         listener.set_nonblocking(true).expect("nonblocking");
         let port = listener.local_addr().expect("addr").port().to_string();
-        let control = run(Layers::none(), "network", Some(&port));
+        let control = run(only(&[User]), "network", Some(&port));
         assert_eq!(
             control, "allowed",
             "the control can't reach the host's loopback"
@@ -179,7 +183,7 @@ mod rig {
         assert!(id >= 0, "no shared memory segment could be made");
         let _segment = Segment(id);
         let id = id.to_string();
-        let control = run(Layers::none(), "ipc", Some(&id));
+        let control = run(only(&[User]), "ipc", Some(&id));
         assert_eq!(
             control, "allowed",
             "the control can't attach the host's segment"
@@ -191,6 +195,9 @@ mod rig {
         );
     }
 
+    /// What this shows: a rename made inside the UTS namespace takes effect only there and never reaches the host.
+    /// It does not show that the namespace alone refuses anything: the user namespace already refuses the rename
+    /// (the control below), so against this jail's unprivileged process the UTS namespace is depth.
     pub fn uts() {
         let before = hostname();
         // The jail holds the power to rename a host it shares nothing of: inside it the change takes effect.
@@ -210,7 +217,7 @@ mod rig {
 
     pub fn pid() {
         let mut target = sleeper();
-        let control = run(Layers::none(), "signal", Some(&target.id().to_string()));
+        let control = run(only(&[User]), "signal", Some(&target.id().to_string()));
         assert_eq!(
             control, "allowed",
             "the control can't signal a host process"
@@ -231,7 +238,8 @@ mod rig {
     }
 
     pub fn mount() {
-        let control = run(Layers::none(), "root", None);
+        // The control has the mount namespace too, without the pivot: the pivot is what empties the root.
+        let control = run(only(&[User, Mount]), "root", None);
         assert_eq!(
             field(&control, "passwd"),
             "readable",
@@ -356,39 +364,6 @@ mod rig {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    pub fn standing_alone() {
-        use rutent_prov::module::sandbox::UNSHARE;
-        assert_eq!(
-            jail::unshare_arguments(Layers::ALL),
-            UNSHARE.to_vec(),
-            "the builder's all isn't the shipped jail's"
-        );
-        for (layers, reason) in [
-            (only(&[Net]), "user namespace"),
-            (only(&[Pid]), "user namespace"),
-            (only(&[User, EmptyRoot]), "mount namespace"),
-            (only(&[EmptyRoot]), "mount namespace"),
-            (only(&[DropCaps]), "no capability"),
-            (only(&[Seccomp]), "no_new_privs"),
-            (only(&[Landlock]), "no_new_privs"),
-        ] {
-            let why = layers
-                .check()
-                .expect_err("a composition that can't stand alone was accepted");
-            assert!(why.contains(reason), "{why}");
-            let exe = PathBuf::from(env!("CARGO_BIN_EXE_rutent-jail-probe"));
-            let refused =
-                jail::isolated(&exe, &[], &std::env::temp_dir(), Limits::PROVIDER, layers);
-            assert!(
-                refused.is_err(),
-                "the builder started a jail that can't stand alone"
-            );
-        }
-        assert!(only(&[User, Mount, EmptyRoot]).check().is_ok());
-    }
-
-    use std::time::Duration;
-
     pub fn release_scan() {
         use std::process::Command;
         let release = match std::env::var_os("RUTENT_RELEASE_PROVIDER") {
@@ -418,8 +393,9 @@ mod rig {
         };
         let shipped =
             std::fs::read(&release).unwrap_or_else(|e| panic!("{}: {e}", release.display()));
-        // The control: the probe binary, which uses the builder, carries every layer's name, so a name absent from
-        // the provider is absent for want of the code, not of the scan.
+        // The control for the string scan: the probe binary, which uses the builder, carries every layer's name, so a
+        // name absent from the provider is absent for want of the code, not of the scan. (A provider built with the
+        // feature is no control: it never calls the builder, so its names may fold away.)
         let probe =
             std::fs::read(env!("CARGO_BIN_EXE_rutent-jail-probe")).expect("the probe binary");
         let has = |haystack: &[u8], needle: &str| {
@@ -441,13 +417,72 @@ mod rig {
             has(&shipped, "pivot_root"),
             "the scan read a binary that is not the provider's jail"
         );
-        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
-            .expect("manifest");
+        // By construction, not by string: the features Cargo resolves for the release command line. The scan above
+        // can't tell a build that carries the feature from one that doesn't if the optimiser folds the names away,
+        // so a leak of `jail-layers` is caught here, in the resolved graph.
+        let tree = |edges: &str| {
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let out = Command::new(cargo)
+                .args([
+                    "tree",
+                    "--locked",
+                    "-p",
+                    "rutent-prov",
+                    "-e",
+                    edges,
+                    "--prefix",
+                    "none",
+                ])
+                .arg("--manifest-path")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+                .output()
+                .expect("cargo tree");
+            assert!(
+                out.status.success(),
+                "cargo tree: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let shipped_graph = tree("normal,build,features");
+        let test_graph = tree("normal,build,dev,features");
         assert!(
-            !manifest
-                .lines()
-                .any(|l| l.trim_start().starts_with("default") && l.contains("jail-layers")),
-            "jail-layers is a default feature"
+            test_graph.contains("feature \"jail-layers\""),
+            "the control graph (with dev-dependencies) doesn't show the feature: the check would pass for nothing"
+        );
+        assert!(
+            !shipped_graph.contains("jail-layers"),
+            "the release command line resolves the jail-layers feature:\n{shipped_graph}"
+        );
+        // No feature of the package, `default` and its chains included, enables it, so only the package's own
+        // dev-dependency can. `cargo metadata` parses the manifest, a multi-line array included.
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let meta = Command::new(cargo)
+            .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
+            .arg("--manifest-path")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .output()
+            .expect("cargo metadata");
+        assert!(meta.status.success(), "cargo metadata failed");
+        let meta: serde_json::Value = serde_json::from_slice(&meta.stdout).expect("metadata");
+        let package = meta["packages"]
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["name"] == "rutent-prov"))
+            .expect("the package");
+        for (feature, enables) in package["features"].as_object().expect("features") {
+            let leaks = enables
+                .as_array()
+                .expect("a list")
+                .iter()
+                .any(|e| e.as_str().is_some_and(|e| e.contains("jail-layers")));
+            assert!(
+                !leaks || feature == "jail-layers",
+                "feature {feature} enables jail-layers"
+            );
+        }
+        assert!(
+            package["features"].get("jail-layers").is_some(),
+            "the feature is gone: the checks mean nothing"
         );
         note(
             "release scan",
@@ -627,13 +662,35 @@ fn release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off() {
 
 // verifies: THR-85
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "the jail's layers are Linux's: the Linux job runs this"
-)]
 fn a_layer_that_cannot_stand_alone_is_refused_with_its_reason() {
-    #[cfg(target_os = "linux")]
-    rig::standing_alone();
-    #[cfg(not(target_os = "linux"))]
-    panic!("Linux only: an ignored test run by hand off Linux must not pass");
+    assert_eq!(
+        jail::unshare_arguments(Layers::ALL),
+        UNSHARE.to_vec(),
+        "the builder's all isn't the shipped jail's"
+    );
+    for (layers, reason) in [
+        (only(&[Layer::Net]), "user namespace"),
+        (only(&[Layer::Pid]), "user namespace"),
+        (only(&[Layer::User, Layer::EmptyRoot]), "mount namespace"),
+        (only(&[Layer::EmptyRoot]), "mount namespace"),
+        (only(&[Layer::DropCaps]), "no capability"),
+        (only(&[Layer::Seccomp]), "no_new_privs"),
+        (only(&[Layer::Landlock]), "no_new_privs"),
+    ] {
+        let why = layers
+            .check()
+            .expect_err("a composition that can't stand alone was accepted");
+        assert!(why.contains(reason), "{why}");
+        let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_rutent-jail-probe"));
+        let refused = jail::isolated(&exe, &[], &std::env::temp_dir(), Limits::PROVIDER, layers);
+        assert!(
+            refused.is_err(),
+            "the builder started a jail that can't stand alone"
+        );
+    }
+    assert!(
+        only(&[Layer::User, Layer::Mount, Layer::EmptyRoot])
+            .check()
+            .is_ok()
+    );
 }
