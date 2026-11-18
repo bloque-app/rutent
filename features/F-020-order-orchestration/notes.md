@@ -5402,3 +5402,55 @@ is by `sim-chain-out-b`, the wallet is asked nothing by it, and the real log adm
   | a landed, moved-on value is released | `only value still resting is held and what left is released` |
   | the reversal hook | none (see 1) |
 
+
+## T-020-35: the report pair, partly built; `T-020-25`'s two lows closed
+
+Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/core-orch/src/segments/drain.rs` and
+`conformance/scenarios/tests/recorded_ends.rs`. No contract is edited.
+
+- **The report pair is not built: a shape is missing (stopped, as the row asks).** `ReportPair` and the log's rows
+  (`sent-report-is-its-partys-statement`, `received-report-is-its-partys-statement`) need two verified statements
+  about one order **and one segment**, by two different parties, each citable with `about_agrees` (a statement about
+  another segment, or through a transaction bound to another, is refused). Orchestration holds, at a segment's end,
+  only these statements about it: the provider's own result and the operator's operation. The next party's report of
+  receiving is its own result, about the **next** segment (its own transaction); a cross-module callee's result never
+  reaches Core (`Events::calls` records the call, not the answer; `prov`'s `Platform` hands Core only the top-level
+  result); a stuck move's confirming statement is another maker's, of the move's transaction, and in the kit states no
+  figures (a `balance_verification`); an arrival notice is about the order and the reserve's own transaction, which
+  `about_agrees` refuses beside a segment. So no pair of statements that the log would admit exists to be built on
+  the running platform.
+  Exact shape wanted, for the contract round (`core-internal`, `DEC-20`): `ReportPair` (and its two rows) take the
+  receiving report as about the **next** segment of the route (e.g. `received.segment: Id`, with
+  `received-report-is-its-partys-statement` reading `about` against it and holding it to be the segment after
+  `pair.segment` in the order's route), so the provider's `amount_out` of segment n is compared with the next party's
+  `amount_in` of segment n+1, both of which Core already holds and has judged. Orchestration then builds it in
+  `segments/` where segment n+1's result counts, with segment n's tuple's terms (`quote::Terms`: increment and
+  gross/net). Owner: the lead, as the next contract round; `T-020-35`'s pair part follows it.
+  The two pair tests of the row (`segment ending with two reports hands core audit a pair with its tuple's terms`,
+  `reports differing by less than one increment on the running platform raise nothing`) are therefore not written.
+- **Closed: the wait while the log can't take the platform's record** (`T-020-25`'s gap 2). `outcome unknown waits while
+  the log can't take the platform's record and is recorded after` (`recorded_ends.rs`): the withdrawal's module passes
+  a call out and answers too late; the kit's fault queue makes a `HandOver` append unavailable for one drain's tries
+  (`On::HandOver` already existed in the kit and is unchanged); the run answers `SegmentsError::Append(Unavailable)`,
+  with no `unanswered` item and no `segment_outcome_unknown` input on the log; the next run appends the platform's
+  record, then the input citing it, and the log admits every entry.
+- **Closed: an operation with no answer and no transaction.** `prov`'s platform pushes an `UnknownOutcome` with an
+  empty transaction for an operation it ran under none (`unwrap_or_default`). `drain::of_events` now refuses it by
+  name, `Uncarried { what: "an operation that ended with no answer under no transaction" }`, in place of the bare
+  "an identifier"; the drain is kept whole and fails on every try, as any uncarried drain does. Two unit tests
+  (`drain.rs`): the refusal's name, and an operation under a transaction still carried.
+- **Defaults (reversible, failing closed).** The refusal keeps the drain whole and loud (no item is skipped); the
+  wait test uses the existing fail-closed hold unchanged.
+- **Gaps, with owners.**
+  1. The report pair (above). Owner: the lead (a contract round for the shape, then this row's pair part).
+  2. The empty transaction itself comes from `prov`'s platform (`platform.rs`, `refused_after`); whether the platform
+     should refuse an operation that has no transaction before it runs is `F-013`'s. Not edited here.
+- **Rule-off table** (each once, run under a 300 s alarm through the lock, file restored with `git checkout`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `account`'s hold while the platform's record isn't on the log (`reported && record.is_none()`) | `outcome unknown waits while the log can't take the platform's record and is recorded after` |
+  | `of_events`' refusal of an empty transaction | `operation that ended with no answer and no transaction is refused by name` |
+
+  The two tests were written after their rules, which already existed (the hold, `T-020-25`) or were one line (the
+  name); the rule-offs are their check.
