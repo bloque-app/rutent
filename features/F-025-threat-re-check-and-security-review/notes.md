@@ -386,4 +386,4 @@ Run 44242098797 (commit `19fb8314`, `jail-probes`), per probe, control then with
 | `G-05`, the shipped provider's `--probe` | | `address_space_limit` 4294967296, `address_space_denied` true, `landlock_abi` 8, `open_descriptors` [] |
 
 The release scan found no layer name in the release provider. Green run's id (the whole job, with the resolved-features
-check fixed): **TO FILL after CI.**
+check fixed): run `44243240737` (`jail-probes`, at `943fad16`: 14 passed, 0 failed), with `ci` run `44243240720` green at the same commit.
