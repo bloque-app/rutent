@@ -1070,6 +1070,7 @@ impl Core {
                 provider: provider.clone(),
                 version: None,
                 tuple: Some(kit::tuple_id(provider.as_str(), &tuple)),
+                class: None,
                 advertising_keys: vec![key.clone()],
                 statement_key: None,
             };
@@ -2104,6 +2105,7 @@ mod tests {
             provider: provider.clone(),
             version: Some(kit::id("1.0.0")),
             tuple: None,
+            class: None,
             advertising_keys: Vec::new(),
             statement_key: None,
         };

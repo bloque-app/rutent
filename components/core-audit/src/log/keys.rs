@@ -217,6 +217,16 @@ fn done(history: &History, receipt: &Receipt) -> bool {
     })
 }
 
+/// What a grant or its revocation is of, as the register keys it: its tuple, or a verifier's class in its place
+/// (`T-020-30`), kept apart from every tuple's id by a space no identifier holds.
+fn granted(tuple: &Option<Id>, class: &Option<Id>) -> Option<String> {
+    match (tuple, class) {
+        (Some(tuple), None) => Some(tuple.as_str().to_owned()),
+        (None, Some(class)) => Some(format!("class {}", class.as_str())),
+        _ => None,
+    }
+}
+
 /// The time of the grant whose advertising keys `granted_advertising_keys` answers for `provider`: the last done
 /// `grant` of the provider in `history` naming those keys.
 fn granted_at(history: &History, provider: &str, keys: &[PublicKey]) -> Option<i128> {
@@ -265,19 +275,23 @@ impl Register {
                             Action::ChangeCatalogue {
                                 change: CatalogueChange::Grant | CatalogueChange::RevokeGrant,
                                 provider,
-                                tuple: Some(tuple),
+                                tuple,
+                                class,
                                 ..
                             },
                         ..
                     },
                 when,
                 ..
-            }) => {
+            }) if granted(tuple, class).is_some() => {
+                let Some(granted) = granted(tuple, class) else {
+                    return;
+                };
                 let last = self
                     .dated
                     .entry(provider.as_str().to_owned())
                     .or_default()
-                    .entry(tuple.as_str().to_owned())
+                    .entry(granted)
                     .or_insert(i128::MIN);
                 *last = (*last).max(when.at.unix_nanos());
             }
@@ -294,6 +308,7 @@ impl Register {
                                     change,
                                     provider,
                                     tuple,
+                                    class,
                                     ..
                                 },
                             ..
@@ -304,12 +319,12 @@ impl Register {
                 else {
                     return;
                 };
-                match (change, tuple) {
-                    (CatalogueChange::Grant | CatalogueChange::RevokeGrant, Some(tuple)) => {
+                match (change, granted(tuple, class)) {
+                    (CatalogueChange::Grant | CatalogueChange::RevokeGrant, Some(granted)) => {
                         self.grants
                             .entry(provider.as_str().to_owned())
                             .or_default()
-                            .entry(tuple.as_str().to_owned())
+                            .entry(granted)
                             .or_default()
                             .push((when.at.unix_nanos(), *change == CatalogueChange::Grant));
                     }

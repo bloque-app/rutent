@@ -691,6 +691,7 @@ fn settled_after_unknown(core: &Core, transaction: &Id) -> serde_json::Value {
     let kept: Vec<serde_json::Value> = core
         .store
         .kept
+        .borrow()
         .iter()
         .filter_map(|b| serde_json::from_slice(b).ok())
         .collect();
@@ -1148,6 +1149,7 @@ fn restated(core: &Core, transaction: &Id) -> Vec<u8> {
     let mut answer = core
         .store
         .kept
+        .borrow()
         .iter()
         .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
         .rev()
@@ -1779,6 +1781,7 @@ fn answer_settled(core: &Core, transaction: &Id) -> Vec<u8> {
     let kept: Vec<serde_json::Value> = core
         .store
         .kept
+        .borrow()
         .iter()
         .filter_map(|b| serde_json::from_slice(b).ok())
         .collect();

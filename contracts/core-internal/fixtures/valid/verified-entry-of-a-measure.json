@@ -10,6 +10,7 @@
     "call": "measure",
     "record": {
       "provider": "fx-desk",
+      "role": "provider",
       "order": "ord-17",
       "segment": "seg-3",
       "measure": {

@@ -1013,7 +1013,7 @@ fn move_step_without_another_actors_decision_is_refused() {
 #[test]
 fn resolution_is_moved_once_by_another_party_on_its_decision() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
-    let mut moves = Moves::default();
+    let mut moves = Moves::stating(&core, []);
     let mut policy = PermitsEveryStep::new(&core.log);
     let resolution = back_to_origin(AMOUNT);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
@@ -1303,7 +1303,7 @@ fn to_destination(core: &Core, amount: &str) -> Resolution {
 #[test]
 fn resumed_move_never_pays_a_part_twice() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
-    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::stating(&core, []));
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let earlier = decide(
         &mut core,
@@ -1385,7 +1385,7 @@ fn resumed_move_never_pays_a_part_twice() {
 #[test]
 fn resolution_moves_the_whole_of_what_the_part_holds() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
-    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::stating(&core, []));
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     for amount in ["1", "999999", "1000001"] {
         assert_eq!(
@@ -1434,7 +1434,7 @@ fn resolution_moves_the_whole_of_what_the_part_holds() {
 #[test]
 fn replayed_receipt_moves_nothing_without_its_record() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
-    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::stating(&core, []));
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let decision = decide(
         &mut core,
@@ -1512,7 +1512,11 @@ fn replayed_receipt_moves_nothing_without_its_record() {
 fn failed_or_unknown_move_spends_its_decision() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves(Vec::new(), [Resolved::Failed, Resolved::Unknown].into());
+    let mut moves = Moves(
+        Vec::new(),
+        [Resolved::Failed, Resolved::Unknown].into(),
+        None,
+    );
     let (alice, bob, carol) = (
         staff("desk-a", "alice"),
         staff("desk-b", "bob"),
@@ -1983,7 +1987,7 @@ fn ends_followed_at_take_up_survive_a_recalculation() {
 #[test]
 fn effect_the_log_refuses_frees_the_part_and_spends_its_decision() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
-    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::stating(&core, []));
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let refused = decide(
         &mut core,
@@ -2293,7 +2297,7 @@ fn results_of(core: &Core, effect: &Receipt) -> Vec<Outcome> {
 fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
     let (alice, bob, carol) = (
         staff("desk-a", "alice"),
         staff("desk-b", "bob"),
@@ -2523,7 +2527,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
 fn confirmed_failure_frees_the_part_for_a_new_decision() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let mut moves = Moves::stating(&core, [Resolved::Unknown]);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let first = decide(
         &mut core,
@@ -2698,7 +2702,7 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         watch(&mut core, &mut stuck, &mut raises),
         Ok(Watch::Stuck(_))
     ));
-    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::default());
+    let (mut policy, mut moves) = (PermitsEveryStep::new(&core.log), Moves::stating(&core, []));
     let alice = staff("desk-a", "alice");
     assert_eq!(
         decide(
@@ -2767,7 +2771,7 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
 fn confirmation_names_the_report_it_confirms() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let first = decide(
         &mut core,
@@ -2866,7 +2870,7 @@ fn confirmation_names_the_report_it_confirms() {
 fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into());
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let first = decide(
         &mut core,
@@ -3119,7 +3123,7 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
         &evidence(),
     )
     .expect("decided once nothing of the part is in motion");
-    let mut moves = Moves::default();
+    let mut moves = Moves::stating(&core, []);
     assert!(matches!(
         moves_once(
             &mut core,
@@ -3330,7 +3334,7 @@ fn a_parts_new_destination_replaces_its_ends_and_keeps_the_others() {
 fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves::default();
+    let mut moves = Moves::stating(&core, []);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let delivery = to_destination(&core, AMOUNT);
     let to_the_old_destination = decide(
@@ -3423,7 +3427,7 @@ fn replace_the_parts_destination(core: &mut Core, stuck: &mut Stuck) {
 fn stalled_move_taken_on_after_its_parts_ends_were_replaced_moves_nothing() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let mut moves = Moves::default();
+    let mut moves = Moves::stating(&core, []);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let delivery = to_destination(&core, AMOUNT);
     let decision = decide(
@@ -3523,6 +3527,7 @@ fn settled_withdrawal_outcome() -> serde_json::Value {
     let _ = core.run(&mut world);
     core.store
         .kept
+        .borrow()
         .iter()
         .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
         .find(|v| {
@@ -3539,6 +3544,7 @@ fn later_word(core: &Core, transaction: &Id, outcome: Option<serde_json::Value>)
     let mut answer = core
         .store
         .kept
+        .borrow()
         .iter()
         .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
         .rev()

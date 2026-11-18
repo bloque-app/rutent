@@ -26,12 +26,12 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::core_internal::{
     Checkpoint, CheckpointOpening, DeploymentOperator, IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD,
-    Quantifier, STATED_RELATIONS, Through,
+    MeasuredRole, Quantifier, ReportedAs, STATED_RELATIONS, Through,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::Deployment;
-use rutent_contracts::router_api::Id;
 use rutent_contracts::router_api::Timestamp;
+use rutent_contracts::router_api::{Amount, Id};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -78,7 +78,19 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 44] = [
+const RUST_RULES: [(&str, &str); 47] = [
+    (
+        "report-pair-whose-charge-is-above-what-was-sent",
+        "a gross report's charge is no more than the amount sent",
+    ),
+    (
+        "verified-entry-of-a-replay-naming-more-records-than-nodes",
+        "a replay names at most one record for each node it replayed that recorded something",
+    ),
+    (
+        "verified-entry-of-a-replay-citing-a-record-of-a-node-that-recorded-nothing",
+        "a replay names at most one record for each node it replayed that recorded something",
+    ),
     (
         "verified-entry-of-a-public-mismatch-at-another-network",
         "a public end's mismatch is at the network its movement is on",
@@ -266,7 +278,42 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 105] = [
+const SCHEMA_RULES: [SchemaRule; 112] = [
+    (
+        "report-pair-without-its-terms",
+        &[("", "required")],
+        "missing field `terms`",
+    ),
+    (
+        "report-pair-without-its-convention",
+        &[("/terms", "required")],
+        "missing field `reporting`",
+    ),
+    (
+        "report-pair-reported-gross-without-its-charge",
+        &[("/terms/reporting", "oneOf")],
+        "missing field `charge`",
+    ),
+    (
+        "report-pair-filled-in-increments-of-nothing",
+        &[("/terms/increment", "pattern")],
+        "positive",
+    ),
+    (
+        "measure-record-without-its-role",
+        &[("", "required")],
+        "missing field `role`",
+    ),
+    (
+        "measure-record-of-a-customer",
+        &[("/role", "enum")],
+        "unknown variant `customer`",
+    ),
+    (
+        "verified-entry-of-a-replay-resting-on-no-receipt",
+        &[("/what/rests_on", "minItems")],
+        "a replay rests on its exit's result and the records it read, at least one, each once",
+    ),
     (
         "verified-entry-of-a-notice-summary-without-its-outcome",
         &[("/what", "required")],
@@ -2421,6 +2468,7 @@ fn a_value_built_in_memory_is_held_to_the_same_rules_as_one_read() {
         provider: Id::new("fx-desk").unwrap(),
         version: None,
         tuple: None,
+        class: None,
         advertising_keys: vec![],
         statement_key: None,
     };
@@ -3137,7 +3185,7 @@ fn evidence_entry_of_a_stuck_resolution_without_its_part_is_invalid() {
 #[test]
 fn stuck_resolved_citing_an_evidence_entry_that_names_another_part_is_refused() {
     assert_case("stuck-resolved-cites-its-parts-evidence--its-parts-evidence");
-    assert_case_refused("stuck-resolved-cites-its-parts-evidence--conflict");
+    assert_case_refused("stuck-resolved-cites-its-parts-evidence--part");
 }
 
 // verifies: REQ-ORD-1, REQ-ORD-23
@@ -3180,4 +3228,301 @@ fn hand_on_outcome_report_rests_on_a_statement_about_its_linked_order() {
     ] {
         assert_case_refused(&format!("{row}--{name}"));
     }
+}
+
+// --- T-020-30: core-internal's round after T-020-20 ------------------------------------------------------------
+
+// verifies: REQ-AUZ-4, REQ-ORD-39
+#[test]
+fn stuck_resolved_citing_an_evidence_id_the_log_holds_no_entry_for_is_refused() {
+    let row = "stuck-resolved-cites-its-parts-evidence";
+    // Its own part's evidence, an entry of the log's (`T-020-20` writes it).
+    assert_case(&format!("{row}--its-parts-evidence"));
+    // A bare id, an id a segment's evidence holds, and another order's or part's evidence are each refused.
+    for name in ["missing", "a-segments-evidence", "order", "part"] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+}
+
+// verifies: REQ-ORD-9
+#[test]
+fn report_pair_without_its_tuples_increment_and_convention_is_invalid() {
+    assert_accepted_by_both("report-pair-of-a-route-segment");
+    assert_accepted_by_both("report-pair-filled-in-increments");
+    assert_accepted_by_both("report-pair-reported-gross");
+    assert_accepted_by_both("verified-entry-of-a-report-pair");
+    for name in [
+        "report-pair-without-its-terms",
+        "report-pair-without-its-convention",
+        "report-pair-reported-gross-without-its-charge",
+        "report-pair-filled-in-increments-of-nothing",
+        "report-pair-whose-charge-is-above-what-was-sent",
+    ] {
+        assert_rejected(name);
+    }
+    // A pair built in memory is held to the same rule as one read.
+    let mut pair: ReportPair =
+        serde_json::from_value(fixture("valid", "report-pair-reported-gross")).unwrap();
+    assert_eq!(pair.check(), Ok(()));
+    let ReportedAs::Gross { charge } = &mut pair.terms.reporting else {
+        panic!("a gross pair")
+    };
+    *charge = Amount::new("1000005001").unwrap();
+    assert_eq!(
+        pair.check(),
+        Err(Violation(
+            "a gross report's charge is no more than the amount sent"
+        ))
+    );
+}
+
+// verifies: REQ-AUD-7
+#[test]
+fn measure_record_without_the_role_of_the_party_it_measures_is_invalid() {
+    assert_accepted_by_both("measure-record-of-an-answer");
+    assert_accepted_by_both("measure-record-of-a-quote-by-a-party-that-is-also-a-verifier");
+    assert_rejected("measure-record-without-its-role");
+    assert_rejected("measure-record-of-a-customer");
+    // One party, two roles: two records that say which.
+    let answer: MeasureRecord =
+        serde_json::from_value(fixture("valid", "measure-record-of-an-answer")).unwrap();
+    let quote: MeasureRecord = serde_json::from_value(fixture(
+        "valid",
+        "measure-record-of-a-quote-by-a-party-that-is-also-a-verifier",
+    ))
+    .unwrap();
+    assert_eq!(answer.provider, quote.provider);
+    assert_eq!(
+        (answer.role, quote.role),
+        (MeasuredRole::Verifier, MeasuredRole::Provider)
+    );
+}
+
+// verifies: REQ-AUD-9
+#[test]
+fn replays_receipts_that_name_no_record_for_a_node_it_replayed_are_invalid() {
+    assert_accepted_by_both("verified-entry-of-a-replay-consistent-with-its-exit");
+    assert_accepted_by_both("verified-entry-of-a-replay-resting-on-its-nodes-records");
+    // Its exit's result first, then at most one record for each node it replayed that recorded something.
+    for name in [
+        "verified-entry-of-a-replay-resting-on-no-receipt",
+        "verified-entry-of-a-replay-naming-more-records-than-nodes",
+        "verified-entry-of-a-replay-citing-a-record-of-a-node-that-recorded-nothing",
+    ] {
+        assert_rejected(name);
+    }
+    // Each receipt after the exit's names a publisher's verified record of inner segments about the order.
+    let row = "replay-cites-its-nodes-records";
+    assert_case(&format!("{row}--its-nodes-record"));
+    for name in ["missing", "verified", "record", "about"] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    // The exit's own result stays the first.
+    assert_case("world--replay");
+    assert_case_refused("replay-rests-on-its-exit--segment");
+}
+
+// verifies: REQ-ORD-1, REQ-AUZ-4
+#[test]
+fn deliver_reported_on_an_unrelated_makers_statement_is_refused() {
+    let row = "outcome-confirmation-cites-verified-evidence";
+    // A deliver's report rests on the moving provider's own statement, its confirmation and its decline on another
+    // maker's (`outcome-confirmation-rests-on-its-report`, `outcome-decline-rests-on-its-report`).
+    assert_case("world--report_es");
+    assert_case("world--settled_es");
+    assert_case("world--decline");
+    // An unrelated maker's word reported as the outcome, which the provider's own `succeeded` could then confirm.
+    assert_case_refused(&format!(
+        "{row}--a-deliver-reported-on-an-unrelated-makers-statement"
+    ));
+}
+
+// verifies: REQ-AUD-2, REQ-CPL-12, REQ-CAT-13
+#[test]
+fn verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_category_only() {
+    // A verifier advertises classes, not tuples: its grant names a class in a tuple's place, and only a grant or its
+    // revocation may; never both, and no change names neither where it is about a tuple.
+    let action = |extra: Value| -> Result<Action, String> {
+        let mut a = serde_json::json!({"kind": "change_catalogue", "provider": "acme-co"});
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(a).map_err(|e| e.to_string())
+    };
+    let key = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w";
+    let grant =
+        serde_json::json!({"change": "grant", "class": "kyc-basic", "advertising_keys": [key]});
+    assert!(action(grant.clone()).is_ok());
+    assert!(action(serde_json::json!({"change": "revoke_grant", "class": "kyc-basic"})).is_ok());
+    for (extra, rule) in [
+        (
+            serde_json::json!({"change": "grant", "class": "kyc-basic", "tuple": "usd-cop", "advertising_keys": [key]}),
+            "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple",
+        ),
+        (
+            serde_json::json!({"change": "set_slippage", "class": "kyc-basic"}),
+            "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple",
+        ),
+        (
+            serde_json::json!({"change": "grant", "advertising_keys": [key]}),
+            "a catalogue change names a tuple exactly when it is about a tuple",
+        ),
+    ] {
+        let got = action(extra.clone()).unwrap_err();
+        assert!(got.contains(rule), "{extra}: {got}");
+    }
+
+    // The grant carried out: its effect, and its done result.
+    let receipt = |n: u64| -> Receipt {
+        serde_json::from_value(serde_json::json!({
+            "log": "log-main", "index": n,
+            "entry": {"algorithm": "sha-256", "value": format!("{n:064x}")},
+        }))
+        .unwrap()
+    };
+    let carried_out = |n: u64, change: Value| -> Vec<(Receipt, Entry)> {
+        let mut entry = fixture("valid", "verified-entry-of-an-effect");
+        let mut a = serde_json::json!({"kind": "change_catalogue", "provider": "acme-co"});
+        a.as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        entry["what"]["action"] = a;
+        let mut result = fixture("valid", "verified-entry-of-a-result-unanswered");
+        result["what"]["effect"] = serde_json::to_value(receipt(n)).unwrap();
+        result["outcome"]["status"] = serde_json::json!("done");
+        vec![
+            (receipt(n), serde_json::from_value(entry).unwrap()),
+            (receipt(n + 100), serde_json::from_value(result).unwrap()),
+        ]
+    };
+    let classes = carried_out(1, grant);
+    let acme = Id::new("acme-co").unwrap();
+    // Its keys are the log's first trust in the verifier, as a tuple's grant's are a provider's.
+    assert_eq!(
+        granted_advertising_keys(&classes, &acme)
+            .iter()
+            .map(|k| serde_json::to_value(k).unwrap())
+            .collect::<Vec<_>>(),
+        [serde_json::json!(key)]
+    );
+
+    // A statement of the verifier's, as the evidence store keeps it: its shape, its body, and the role it claims.
+    let cases = attribution_cases();
+    let (_, base) = cases
+        .iter()
+        .find(|(name, _)| name == "verified--a-body-without-a-transaction-about-nothing")
+        .expect("the case");
+    let stating = |shape: &str, body: Value, role: Role| -> (StatedEntry, Sources) {
+        let mut claim: StatedEntry = serde_json::from_value(base["claim"].clone()).unwrap();
+        claim.what.statement = serde_json::from_value(serde_json::json!(shape)).unwrap();
+        let Attribution::Unverified { claimed_by } = &mut claim.attribution else {
+            panic!("an unverified claim")
+        };
+        claimed_by.role = role;
+        let mut source = sources(base);
+        let kept = source.kept.as_mut().unwrap();
+        let text = kept.bytes.as_str();
+        let raw: Vec<u8> = {
+            let value = |c: u8| match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'-' => 62,
+                _ => 63,
+            };
+            let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
+            for c in text.bytes() {
+                acc = (acc << 6) | u32::from(value(c));
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    out.push((acc >> bits) as u8);
+                }
+            }
+            out
+        };
+        let mut envelope: Value = serde_json::from_slice(&raw).unwrap();
+        envelope["shape"] = serde_json::json!(shape);
+        envelope["statement"] = body;
+        kept.bytes = serde_json::from_value(serde_json::json!(base64url(
+            &serde_json::to_vec(&envelope).unwrap()
+        )))
+        .unwrap();
+        (claim, source)
+    };
+    let judging = |class: &str| {
+        serde_json::json!({"subject": "subj-1", "class": class, "answer": "yes",
+                           "valid_until": "2026-12-01T00:00:00Z"})
+    };
+    let judgement = "urn:rutent:provider-role:judgement";
+    let attributed = |history: &[(Receipt, Entry)], (claim, source): (StatedEntry, Sources)| {
+        let mut store = sources_like(&source);
+        let mut keys = sources_like(&source);
+        attribute(&claim, history, &mut store, &mut keys, &source)
+    };
+    let verified = |got: &Result<StatedEntry, AppendFailure>| {
+        matches!(
+            got,
+            Ok(StatedEntry {
+                attribution: Attribution::Verified { .. },
+                ..
+            })
+        )
+    };
+    let unverified = |got: &Result<StatedEntry, AppendFailure>| {
+        matches!(
+            got,
+            Ok(StatedEntry {
+                attribution: Attribution::Unverified { .. },
+                ..
+            })
+        )
+    };
+    let result = base["claim"]["what"]["statement"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The case's own result, a provider's answer about a tuple's segment, verified as it stands.
+    let body = serde_json::json!({"kind": "balance_verification", "outcome": {"status": "answered", "sufficient": true}});
+
+    // A judgement of the class granted, as a verifier: attributed.
+    let got = attributed(
+        &classes,
+        stating(judgement, judging("kyc-basic"), Role::Verifier),
+    );
+    assert!(verified(&got), "{got:?}");
+    // Of another class, or a statement about a tuple's segments: attributed to no one.
+    let got = attributed(
+        &classes,
+        stating(judgement, judging("aml-full"), Role::Verifier),
+    );
+    assert!(unverified(&got), "{got:?}");
+    let got = attributed(&classes, stating(&result, body.clone(), Role::Provider));
+    assert!(unverified(&got), "{got:?}");
+    // Its judgement claimed in a provider's role is refused: its maker holds the verifier's alone.
+    assert_eq!(
+        attributed(
+            &classes,
+            stating(judgement, judging("kyc-basic"), Role::Provider)
+        ),
+        Err(AppendFailure::Refused(Violation(
+            IN_A_ROLE_ITS_MAKER_DOES_NOT_HOLD
+        )))
+    );
+    // A party granted a tuple as well is a provider too, and its statements are attributed as before.
+    let mut both = classes.clone();
+    both.extend(carried_out(
+        2,
+        serde_json::json!({"change": "grant", "tuple": "usd-cop", "advertising_keys": [key]}),
+    ));
+    let got = attributed(&both, stating(&result, body, Role::Provider));
+    assert!(verified(&got), "{got:?}");
+    // The class revoked, its grant attributes nothing more for it: with no grant left in force, what the log trusts
+    // is as before any grant.
+    let mut revoked = classes.clone();
+    revoked.extend(carried_out(
+        3,
+        serde_json::json!({"change": "revoke_grant", "class": "kyc-basic"}),
+    ));
+    assert!(granted_advertising_keys(&revoked, &acme).is_empty());
 }

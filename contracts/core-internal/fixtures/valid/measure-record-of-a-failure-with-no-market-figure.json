@@ -1,5 +1,6 @@
 {
   "provider": "fx-desk",
+  "role": "provider",
   "order": "ord-18",
   "segment": "seg-3",
   "measure": {

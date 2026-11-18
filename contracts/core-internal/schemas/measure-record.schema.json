@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:core-internal:measure-record",
   "title": "Measure record",
-  "description": "One record the bulk measures read, per provider or verifier: a quote against the price executed, a dry run against the outcome, a failure against the market's direction, a refusal, a reversal, or an answer towards the rate of no (REQ-AUD-7). It is rutent's record of what it measured, citing the entries it rests on.",
+  "description": "One record the bulk measures read, per provider or verifier: a quote against the price executed, a dry run against the outcome, a failure against the market's direction, a refusal, a reversal, or an answer towards the rate of no (REQ-AUD-7). It names the role it measures its party in. It is rutent's record of what it measured, citing the entries it rests on.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "provider",
+    "role",
     "order",
     "measure",
     "cites",
@@ -16,6 +17,13 @@
     "provider": {
       "description": "The provider or verifier it measures.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "role": {
+      "description": "The role it measures that party in: a party that is both a provider and a verifier is measured apart in each (REQ-AUD-7, REQ-AUD-8).",
+      "enum": [
+        "provider",
+        "verifier"
+      ]
     },
     "order": {
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"

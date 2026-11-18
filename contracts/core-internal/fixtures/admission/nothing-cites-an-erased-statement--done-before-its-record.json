@@ -2180,6 +2180,11 @@
                   "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
                 }
               }
+            },
+            "terms": {
+              "reporting": {
+                "kind": "net"
+              }
             }
           }
         },
@@ -2382,6 +2387,7 @@
           "call": "measure",
           "record": {
             "provider": "fx-desk",
+            "role": "provider",
             "order": "ord-17",
             "segment": "seg-3",
             "measure": {
@@ -3088,6 +3094,7 @@
       "call": "measure",
       "record": {
         "provider": "fx-desk",
+        "role": "provider",
         "order": "ord-17",
         "segment": "seg-3",
         "measure": {

@@ -557,7 +557,8 @@ impl Reversals {
                     rests_on,
                     ..
                 } if o == order => {
-                    if let Some(party) = party_of(rests_on) {
+                    // Bound by the exit's result, the first receipt, as the log binds it (`T-020-30`).
+                    if let Some(party) = rests_on.first().and_then(party_of) {
                         for node in nodes {
                             bound.insert(node.as_str().to_owned(), party.clone());
                         }

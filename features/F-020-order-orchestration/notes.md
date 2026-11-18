@@ -4532,3 +4532,93 @@ Branch `f-020/t-020-20-stuck-report-correction`, from `m3` at `ea6c290c`. Edits 
 - **Rule-off** (each alone, switched in code and removed): the permit bound to its confirmer, version and evidence: red on
   the retry test; the decline refused after a permit: red on the same test; `if !on.late` around the release: red on
   `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`. The seal is held by the doctest.
+
+## T-020-30: `core-internal`'s round after `T-020-20`
+
+Branch `f-020/t-020-30-core-internal-round`, from `0eaffd68` (`m3`'s tip with `T-020-20`). Edits `contracts/`
+(core-internal, a `DEC-20` path: it waits for the owner's click at the release into `main`), and the consumer files
+named below.
+
+- **Versioning: folded into 1.0.0, no bump** (lesson 7): core-internal 1.0.0 and router-api 4.0.0 aren't on
+  `develop`; the guard reads core-internal as a new contract. The changelog's last entry names each item by number,
+  and `contracts/CHANGELOG.md` takes a line.
+- **Item by item.**
+  1. *A stuck resolution's evidence exists.* `stuck-resolved-cites-its-parts-evidence` is an exists row (fields
+     `order`, `part`): a `part_evidence` with the cited id, of the input's order and part, before it. Cases:
+     `--its-parts-evidence` admitted; `--missing` (a bare id, the row's test), `--a-segments-evidence`, `--order`,
+     `--part` (was `--conflict`) refused. The admitted `stuck-resolved-follows-a-done-resolution--delivered` now holds
+     its part's evidence. Core: `T-020-20` writes the entry where a `deliver`'s done rests on a statement it took; a
+     `Resolutions` that names none leaves a bare id, which the log now refuses (stuck/'s docs say so; no code changed).
+  2. *A report pair's tuple terms.* `ReportPair.terms: ReportTerms {increment?: PositiveAmount, reporting:
+     ReportedAs (net | gross {charge})}`; `ReportPair::check` holds a gross charge to no more than the amount sent.
+     `core-audit`'s `compare_reports` (an `F-022` file) takes the charge off a gross figure, raises nothing within one
+     increment (strictly less), compares exactly with none, and names the compared (net) figure as `sent` in a
+     difference. Orchestration fills the terms "where it builds the pair": **no orchestration path builds a pair**
+     (no caller of `Comparisons::report_pair` in `core-orch` or the assembly), so `segments/` is untouched; a gap
+     below.
+  3. *A measure record's role.* `MeasureRecord.role: MeasuredRole (provider | verifier)`, required. `core-audit`'s
+     `measures::compute` (an `F-022` file) keeps each role apart: `Report.providers` and a new `Report.verifiers`.
+     Orchestration has no measure caller yet (`T-020-31` sets it).
+  4. *A replay's receipts.* `What::Replay.rests_on: Vec<Receipt>`: the exit's result first, then at most one
+     `inner-segments` record per node replayed that recorded something (Rust holds the count, the schema `minItems`
+     and `uniqueItems`). `replay-rests-on-its-exit` reads the first; a new closing row,
+     `replay-cites-its-nodes-records`, holds each after it to a verified `inner-segments` statement about the order.
+     The node binding (`private_node_of` in the log, `Reversals::follow` in `core-orch`'s `reversal/`) reads the
+     first receipt only, as before. `core-orch`'s closing writes a one-item list.
+  5. *A deliver's report on its provider's own word.* `holders_own` reads `Resolution::Deliver { by }` as it read a
+     hand-on's: a report's evidence is the moving provider's statement; confirmations and declines unchanged. The
+     world's report now cites bank-co's own result (176) and its confirmation and decline us-bank's (175), swapped in
+     every case that cites them, so each case keeps what it breaks.
+  6. *A verifier's grant of a class* (added by the coordinator from `T-024-12`'s gap 1). `Action::ChangeCatalogue`
+     gains `class: Option<Id>`: a `grant` or `revoke_grant` names a class in a tuple's place, never both, and no other
+     change names one. `granted_advertising_keys` reads class grants; `attribute` verifies a statement of a maker
+     whose grants in force are all of classes only where it is a judgement of one of them (else unverified), and
+     refuses such a maker's statement claimed in any role but the verifier's. `core-audit`'s key register
+     (`log/keys.rs`, an `F-022` file) keys a class grant apart from every tuple, so the real log trusts the verifier's
+     advertisement from it. `T-024-12`'s placeholder tuple (`verifier_tuple`, in `conformance/scenarios/`, its files)
+     is untouched and can move to the class grant once both merge.
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0 (above);
+  - a pair's increment is in the reports' unit; a caller restates the tuple's origin-unit increment into it,
+    rounding down; a gross pair carries its charge (`0` for a conversion); the receiving party's convention isn't
+    read, since its `amount_in` holds the charge whatever its tuple declares;
+  - a difference's `sent` is the compared figure, net of the charge; the pair's record keeps both as stated;
+  - `role` is required and the caller's word: the log can't tell a provider from a verifier;
+  - a replay's node records are not yet required one per node, and a node stays bound by the exit's result;
+  - a class grant's maker is a verifier alone only while every grant of it in force is of a class; one granted a
+    tuple too is attributed as before (any statement, provider or verifier role);
+  - the class grant needs no advertisement check in the log (which classes a verifier may be granted is policy's
+    and the catalogue's).
+- **Consumer lines** (to compile or to keep what they held): `components/core-orch/src/closing/mod.rs` (the
+  one-item list), `reversal/mod.rs` (the first receipt), `stuck/mod.rs` (docs), `segments/mod.rs` (`class: None` in
+  the one catalogue change Core builds; `T-020-25` edits the same file); `components/core-orch/tests/closing.rs`;
+  `components/core-authz/src/engine/mod.rs` and `roles/tests.rs` (`class: None`); `components/core-audit/src/
+  compare/report.rs`, `measures/compute.rs`, `log/keys.rs`, and its tests `compare.rs` (two tests), `measures.rs`
+  (the record helper's role, the field list, a test), `log.rs` (a replay's list, a test);
+  `conformance/scenarios/src/assembly/mod.rs` (`class: None` twice; `T-024-12` edits the same literal),
+  `tests/bulk_measures.rs` (role), `tests/segments_support/{mod.rs,resolving.rs}` (`class: None`; the kit's store is
+  shared; `answered_under` split out of `stated_results_asking`; `Moves::stating`), `tests/stuck.rs`,
+  `tests/stuck_mover.rs`, `tests/person_records.rs` (the shared store, `Moves::stating`).
+- **Histories the log refused, sorted.** All test artefacts, no Core bug:
+  - ten of `T-020-11`'s stuck tests (`conformance/scenarios/tests/stuck.rs`) recorded a `stuck_resolved` citing a
+    bare id: their `Moves` stand-in named no evidence (`T-020-20`'s gap 2, routed here). `Moves::stating` now states
+    the moving provider's word (the operator's question and its result through the resolution's transaction, signed
+    and kept) for each `deliver` it answers done, and `evidence_of` names it, as the production mover does;
+  - the contract's own cases that the new rows reached otherwise than they meant (each patched in place, its
+    expectation unchanged): the world's report (the swap above), three planless-part cases (the resolution now
+    delivered by us-bank, where a planless part's value sits), two timing cases and `--evidence-by-the-same-maker`
+    (their own statement now bank-co's), and `stuck-resolved-follows-a-done-resolution--delivered`.
+- **Order of work.** Fixtures (`scratchpad/f020zd/gen.py`, `gen2.py`) and the named tests first; with the shapes in
+  and no rule, the contract's tests went red on assertions (the bare id admitted, Rust accepting the charge above
+  what was sent and the replay's extra receipts, no row for the replay's records). Item 6's test was written after its
+  code, and the rule-offs below are its check, as are `core-audit`'s.
+- **Gaps, with owners.**
+  1. No orchestration path builds a `ReportPair` (`T-022-05`'s gap 6: no caller of `Comparisons`), so nothing fills
+     the terms. Owner: the lead (a row of `F-020`'s that calls `Comparisons::report_pair` from `segments/`).
+  2. A replay's node records aren't required one per node that recorded something, and the log can't read which node
+     a record is of. Owner: `T-020-32` (writes them; may tighten the row after, as this round did for item 1).
+  3. A `move_value`'s report is held to its segment's transaction, not by maker. Owner: the lead, if a review finds
+     a path; none found here.
+  4. A party granted both a tuple and a class is attributed as a provider for everything. Residual for `T-025-05`.
+  5. `T-024-12`'s placeholder tuple moves to the class grant once both merge. Owner: `T-024-12`'s author or the lead.
+  6. The scenario suite beyond the binaries run here (the kit changed: shared store, `Moves`) runs in CI.

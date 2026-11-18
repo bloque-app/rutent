@@ -1,5 +1,6 @@
 {
   "provider": "kyc-check",
+  "role": "verifier",
   "order": "ord-17",
   "measure": {
     "kind": "answer",

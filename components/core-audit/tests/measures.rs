@@ -16,8 +16,8 @@ use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, GeneralEntry, Log, Measures, PolicyLog, Reads as Policy,
 };
 use rutent_contracts::core_internal::{
-    Decision, Entry, MeasureRecord, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Receipt,
-    VerifiedEntry, What,
+    Decision, Entry, MeasureRecord, MeasuredRole, PermissionChange, ReadAnswer, ReadCheck,
+    ReadOutcome, Receipt, VerifiedEntry, What,
 };
 use rutent_contracts::provider_role::Deployment;
 use rutent_contracts::router_api::{Amount, Id, Timestamp};
@@ -109,10 +109,11 @@ fn citable(log: &Shared, n: usize) -> Receipt {
     log.borrow_mut().append(&entry).unwrap()
 }
 
-/// A measure record of `provider`, at `time`, citing `cite`.
+/// A measure record of `provider`, in the provider's role, at `time`, citing `cite`.
 fn record(provider: &str, time: &str, measure: Value, cite: &Receipt) -> MeasureRecord {
     serde_json::from_value(json!({
         "provider": provider,
+        "role": "provider",
         "order": "ord-1",
         "segment": "seg-1",
         "measure": measure,
@@ -327,9 +328,9 @@ fn report_of(log: &Shared, over: &Window) -> Report {
     report(log, over)
 }
 
-/// A party that is both a provider and a verifier is one key: its quotes and its answers land in one entry of the
-/// report and aren't told apart by role. The record carries one `provider` id and no role, so the limit is visible
-/// here (a role field is `T-020-30`'s to list, the next `core-internal` round).
+/// A party's records in one role are one key: its quotes and its answers, each recorded in the provider's role, land
+/// in one entry of the report. Since `T-020-30` the record names the role it measures the party in, and a party in
+/// both roles is measured apart in each (`measures_of_one_party_in_two_roles_are_kept_apart`).
 // verifies: REQ-AUD-7
 #[test]
 fn a_party_in_both_roles_is_one_key_in_the_report() {
@@ -356,6 +357,40 @@ fn a_party_in_both_roles_is_one_key_in_the_report() {
         "as a provider"
     );
     assert_eq!(both.answers.no, 1, "as a verifier, in the same entry");
+}
+
+/// One party in two roles is measured apart in each (`REQ-AUD-7`, `REQ-AUD-8`): its quote, recorded in the provider's
+/// role, counts among the providers' measures, and its answer, recorded in the verifier's, among the verifiers'.
+// verifies: REQ-AUD-7, REQ-AUD-8
+#[test]
+fn measures_of_one_party_in_two_roles_are_kept_apart() {
+    let log = bare();
+    let cite = citable(&log, 0);
+    let mut write = writer(&log);
+    write
+        .measure(&record(
+            "both",
+            "2026-11-02T00:00:00Z",
+            quote("10", "9", "COP", 2),
+            &cite,
+        ))
+        .unwrap();
+    let mut as_verifier = record("both", "2026-11-03T00:00:00Z", answer("no"), &cite);
+    as_verifier.role = MeasuredRole::Verifier;
+    write.measure(&as_verifier).unwrap();
+    let report = report(&log, &november());
+    assert_eq!(report.counted, 2);
+    let provider = &report.providers["both"];
+    assert_eq!(provider.quotes[&("COP".to_owned(), 2)].quotes, 1);
+    assert_eq!(
+        (provider.answers.yes, provider.answers.no),
+        (0, 0),
+        "no answer as a provider"
+    );
+    let verifier = &report.verifiers["both"];
+    assert_eq!(verifier.answers.no, 1, "the answer, as a verifier");
+    assert!(verifier.quotes.is_empty(), "no quote as a verifier");
+    assert_eq!((report.providers.len(), report.verifiers.len()), (1, 1));
 }
 
 /// A window reads a time by the instant, its fraction to the nanosecond, not by its text, and is half open.
@@ -493,7 +528,9 @@ fn a_measure_entry_holds_only_the_record() {
     record_keys.sort();
     assert_eq!(
         record_keys,
-        ["at", "cites", "measure", "order", "provider", "segment"]
+        [
+            "at", "cites", "measure", "order", "provider", "role", "segment"
+        ]
     );
 }
 

@@ -57,3 +57,7 @@ directory (see `README.md`).
 - core-internal's `outcome-confirmation-cites-verified-evidence` accepts, for a hand-on, a statement about the linked
   order the decision named through the transaction of the effect's own withdrawal, and holds a report to the holding
   account's own maker, so the holding account's own answer can be the evidence of a hand-on's outcome; folded into the unreleased 1.0.0 (`T-020-26`). (DEC-4, DEC-20, T-020-26)
+- core-internal's round after `T-020-20`, folded into its unreleased 1.0.0 (`T-020-30`): a stuck resolution's
+  evidence entry required, a report pair's tuple terms, a measure record's role, a replay's list of receipts, a
+  deliver's report on its provider's own word, and a verifier's grant of a class. Its changelog names each. No file
+  shared by the contracts changed. (DEC-4, DEC-20, T-020-30)

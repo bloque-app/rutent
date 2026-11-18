@@ -230,11 +230,21 @@ fn records_after_a_third_party_payment_hold_a_reference_at_most() {
     let holds =
         |bytes: &[u8], needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
     assert!(
-        segments.store.kept.iter().any(|k| holds(k, "acct-1")),
+        segments
+            .store
+            .kept
+            .borrow()
+            .iter()
+            .any(|k| holds(k, "acct-1")),
         "the scan reaches what Core signed and kept"
     );
     assert!(
-        !segments.store.kept.iter().any(|k| holds(k, PAYERS_NAME)),
+        !segments
+            .store
+            .kept
+            .borrow()
+            .iter()
+            .any(|k| holds(k, PAYERS_NAME)),
         "a payer's detail in the evidence store"
     );
     let log = serde_json::to_string(

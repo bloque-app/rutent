@@ -580,7 +580,7 @@ fn replay_on<S: Store>(run: &Run<S>) -> Value {
     let mut entry = valid("verified-entry-of-a-replay-consistent-with-its-exit");
     entry["what"]["order"] = serde_json::to_value(&about.order).unwrap();
     entry["what"]["segment"] = serde_json::to_value(&about.segment).unwrap();
-    entry["what"]["rests_on"] = serde_json::to_value(&receipt).unwrap();
+    entry["what"]["rests_on"] = serde_json::to_value([&receipt]).unwrap();
     entry
 }
 
@@ -3037,4 +3037,57 @@ fn only_the_deployment_operator_accepts_a_fault() {
     run.append(command(operator))
         .expect("the deployment operator's acceptance of the fault");
     assert_eq!(run.log.entries().len(), before + 1);
+}
+
+/// A verifier's grant names a class in a tuple's place (`T-020-30`, `T-024-12`'s gap 1): the real log takes the
+/// verifier's keys from it, as from a tuple's grant, and attributes its judgements of that class and nothing else it
+/// signs; a judgement it claims as a provider is refused.
+// verifies: REQ-AUD-2, REQ-CPL-12
+#[test]
+fn a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone() {
+    let name = "kyc-desk";
+    let mut run = Run::new(MemoryStore::new());
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": name, "class": "kyc-basic",
+               "advertising_keys": [public_key(&advertising_key(name)).as_str()]}),
+        GRANTED_AT,
+    );
+    run.advertise(name, &advertised(name, &advertising_key(name), name))
+        .unwrap();
+    let made = "2026-11-06T15:04:05Z";
+    let stating = |run: &mut Run<MemoryStore>, shape: &str, role: &str, body: Value, n: u8| {
+        set_now("2026-11-06T15:04:06Z");
+        let entry = json!({
+            "kind": "stated",
+            "attribution": {"signature": "verified", "who": actor(name, name, role, "component")},
+            "what": {"statement": shape},
+            "when": {"at": made, "source": "party_stated"},
+            "received_at": "2026-11-06T15:04:06Z",
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": ""},
+            "commitment": {"algorithm": "sha-256", "value": format!("{n:02x}").repeat(32)},
+        });
+        let claim = run.claim(&entry, &statements_key(name), body);
+        run.append(claim)
+    };
+    let judgement = |class: &str| json!({"subject": "subj-1", "class": class, "answer": "yes", "valid_until": "2026-12-01T00:00:00Z"});
+    let shape = "urn:rutent:provider-role:judgement";
+    let verified = |run: &Run<MemoryStore>, receipt: &Receipt| matches!(run.at(receipt), Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. }));
+    let of_its_class = stating(&mut run, shape, "verifier", judgement("kyc-basic"), 0xd1).unwrap();
+    assert!(verified(&run, &of_its_class), "its class, as a verifier");
+    let of_another = stating(&mut run, shape, "verifier", judgement("aml-full"), 0xd2).unwrap();
+    assert!(!verified(&run, &of_another), "another class");
+    let a_result = stating(
+        &mut run,
+        "urn:rutent:provider-role:result",
+        "provider",
+        json!({"kind": "judgement"}),
+        0xd3,
+    )
+    .unwrap();
+    assert!(!verified(&run, &a_result), "no statement but a judgement");
+    assert!(matches!(
+        stating(&mut run, shape, "provider", judgement("kyc-basic"), 0xd4),
+        Err(AppendFailure::Refused(_))
+    ));
 }

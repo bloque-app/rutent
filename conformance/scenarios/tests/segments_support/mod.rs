@@ -404,16 +404,19 @@ impl Log for General {
 
 // The evidence store ------------------------------------------------------------------------------------------------
 
-#[derive(Default)]
+/// The evidence store's stand-in: each statement's bytes, by the place they were kept at. A clone shares them, so a
+/// stand-in mover keeps what it states where the log's replay reads it (`T-020-30`).
+#[derive(Default, Clone)]
 pub struct Store {
-    pub kept: Vec<Vec<u8>>,
+    pub kept: Rc<RefCell<Vec<Vec<u8>>>>,
 }
 
 impl Evidence for Store {
     fn keep(&mut self, received: &[u8]) -> Result<Kept, AppendFailure> {
-        self.kept.push(received.to_vec());
+        let mut kept = self.kept.borrow_mut();
+        kept.push(received.to_vec());
         Ok(Kept {
-            commitment: commitment(self.kept.len() - 1),
+            commitment: commitment(kept.len() - 1),
             restates: None,
         })
     }
@@ -1053,8 +1056,43 @@ fn stated_results_asking(
     makers: &[&str],
     ask: bool,
 ) -> Vec<Receipt> {
-    let order = order.clone();
     let made_at = core.clock.now().timestamp().unwrap();
+    let (question, results) = answered_under(
+        &mut core.store,
+        &core.operator,
+        &made_at,
+        order,
+        segment,
+        transaction,
+        makers,
+        ask,
+    );
+    let mut log = core.log.borrow_mut();
+    if let Some(question) = question {
+        log.take(&question, Through::General).unwrap();
+    }
+    results
+        .iter()
+        .map(|r| log.take(r, Through::General).unwrap())
+        .collect()
+}
+
+/// The operator's question under `transaction` about `order`, where `ask` and no segment is named, and each of
+/// `makers`' results through it, about `segment` where one is named, made at `made_at`, signed and kept in `store`,
+/// as the stated entries Core would hand the log: what [`stated_results_asking`] appends, and what a stand-in mover
+/// states for a move it answers done (`resolving::Moves::stating`).
+#[allow(clippy::too_many_arguments)]
+fn answered_under(
+    store: &mut Store,
+    operator: &Actor,
+    made_at: &Timestamp,
+    order: &Id,
+    segment: Option<&str>,
+    transaction: &str,
+    makers: &[&str],
+    ask: bool,
+) -> (Option<Entry>, Vec<Entry>) {
+    let order = order.clone();
     let body = json!({ "kind": "balance_verification", "transaction": transaction });
     let mut result = |maker: &str| {
         let mut e = seed_envelope(
@@ -1077,7 +1115,7 @@ fn stated_results_asking(
             kind: ActorKind::Component,
         };
         match stated_seed(
-            &mut core.store,
+            store,
             serde_json::to_vec(&e).unwrap(),
             actor,
             &order,
@@ -1102,7 +1140,7 @@ fn stated_results_asking(
         let placeholder = SuiteContext::default().deployment.operator_key;
         let mut question = seed_envelope(
             rutent_contracts::provider_role::OPERATION_SHAPE,
-            core.operator.acts.as_str(),
+            operator.acts.as_str(),
             body.clone(),
         );
         question["made_at"] = made_at.as_str().into();
@@ -1114,21 +1152,14 @@ fn stated_results_asking(
         )
         .into();
         stated_seed(
-            &mut core.store,
+            store,
             serde_json::to_vec(&question).unwrap(),
-            core.operator.clone(),
+            operator.clone(),
             &order,
             transaction,
         )
     });
-    let mut log = core.log.borrow_mut();
-    if let Some(question) = question {
-        log.take(&question, Through::General).unwrap();
-    }
-    results
-        .iter()
-        .map(|r| log.take(r, Through::General).unwrap())
-        .collect()
+    (question, results)
 }
 
 /// Appends `entry` through `through`, as the log would take it: for a test that writes what Core never would.
@@ -1968,12 +1999,13 @@ struct Sources<'a> {
 
 impl KeptStatements for Sources<'_> {
     fn kept(&mut self, wanted: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        let place = (0..self.store.kept.len()).find(|i| &commitment(*i) == wanted);
+        let kept = self.store.kept.borrow();
+        let place = (0..kept.len()).find(|i| &commitment(*i) == wanted);
         Ok(place.map(|i| {
             serde_json::from_value(json!({
                 "commitment": wanted,
                 "salt": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "bytes": rutent_conformance::signing::base64url(&self.store.kept[i]),
+                "bytes": rutent_conformance::signing::base64url(&kept[i]),
             }))
             .unwrap()
         }))
@@ -2495,6 +2527,7 @@ pub fn release_change(
         provider: id(RESERVE),
         version: Some(id(version)),
         tuple: None,
+        class: None,
         advertising_keys: Vec::new(),
         statement_key,
     }

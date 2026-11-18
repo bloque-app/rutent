@@ -2170,6 +2170,11 @@
               "value": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
             }
           }
+        },
+        "terms": {
+          "reporting": {
+            "kind": "net"
+          }
         }
       }
     },

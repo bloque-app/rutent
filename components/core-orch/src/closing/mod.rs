@@ -1111,7 +1111,8 @@ impl Evidenced<'_> {
                     segment: settled.segment.clone(),
                     nodes: names,
                     found,
-                    rests_on: settled.result.clone(),
+                    // The exit's result; the publishers' records of the nodes it read are `T-020-32`'s to add.
+                    rests_on: vec![settled.result.clone()],
                     movement: exit_movement,
                 },
                 settled,

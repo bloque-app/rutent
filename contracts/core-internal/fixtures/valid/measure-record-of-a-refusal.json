@@ -1,5 +1,6 @@
 {
   "provider": "bank-co",
+  "role": "provider",
   "order": "ord-18",
   "measure": {
     "kind": "refusal"
