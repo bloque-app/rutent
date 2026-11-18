@@ -19,7 +19,7 @@
 //!    way a statement is verified about an order is a publisher's record of the segments inside a private node
 //!    (provider-role's `inner-segments`, [`inner_segments_of`]), which names its transactions only inside its
 //!    `segments`: about an order, no segment and no transaction, it is verified only where its `about` names the node
-//!    its body names, it lists at least one segment, and every segment's transaction is of that order in this log
+//!    its body names, its body names the publisher the entry claims, it lists at least one segment, and every segment's transaction is of that order in this log
 //!    (first bound to it, and asked under for it by the operator's own verified `operation` question), so a record
 //!    naming a transaction of another order, or one Core never asked under for this one, is never verified about it
 //!    (`REQ-ORD-41`, `T-020-36`). An `about` names a node only for such a record, and only the node its body names;
@@ -345,7 +345,8 @@ struct EnvelopeSignature {
 }
 
 /// Whether `envelope` is a publisher's record of the segments inside a private node that `about` holds it to
-/// (step 6, `T-020-36`): an `inner-segments` body, its node the one `about` names. About an order, as a node's record
+/// (step 6, `T-020-36`): an `inner-segments` body, its node the one `about` names and its publisher `publisher`, the
+/// party the entry claims (which step 3 binds to its maker's key). About an order, as a node's record
 /// is cited (`replay-cites-its-nodes-records`, an `evidence` naming the node), it names no segment and no transaction
 /// of its own, lists at least one segment, and every segment's transaction is of that order in `history`: first
 /// bound to it (`binding_of`), and asked under for it by `operator`'s own verified `operation` question, so the order
@@ -354,6 +355,7 @@ struct EnvelopeSignature {
 fn inner_segments_of(
     envelope: &Envelope,
     about: Option<&About>,
+    publisher: &Id,
     history: &History,
     operator: &Id,
 ) -> Option<bool> {
@@ -362,6 +364,10 @@ fn inner_segments_of(
     }
     let record: crate::provider_role::InnerSegments =
         serde_json::from_value(envelope.statement.clone()).ok()?;
+    // The publisher it names is the one its maker states for, as its node is the one its `about` names.
+    if record.publisher.as_str() != publisher.as_str() {
+        return Some(false);
+    }
     let Some(about) = about else {
         return Some(true);
     };
@@ -463,17 +469,18 @@ pub fn attribute(
             let bound = about.is_some_and(|a| a.order.is_some() || a.segment.is_some());
             let node = about.and_then(|a| a.node.as_ref());
             let operator = keys.operator()?;
-            let bound_as_named = match inner_segments_of(&envelope, about, history, &operator) {
-                // A publisher's record of a node's segments: about an order only through its segments' transactions.
-                Some(holds) => body_transaction.is_none() && holds,
-                None => {
-                    node.is_none()
-                        && match about_transaction {
-                            Some(about) => body_transaction == Some(about),
-                            None => body_transaction.is_none() && !bound,
-                        }
-                }
-            };
+            let bound_as_named =
+                match inner_segments_of(&envelope, about, &claimed_by.party, history, &operator) {
+                    // A publisher's record of a node's segments: about an order only through its segments' transactions.
+                    Some(holds) => body_transaction.is_none() && holds,
+                    None => {
+                        node.is_none()
+                            && match about_transaction {
+                                Some(about) => body_transaction == Some(about),
+                                None => body_transaction.is_none() && !bound,
+                            }
+                    }
+                };
             envelope.deployment == keys.deployment()?
                 && envelope.maker == claimed_by.acts.as_str()
                 && envelope.shape == claim.what.statement.as_str()

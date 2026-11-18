@@ -3694,6 +3694,8 @@ fn inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_a
         "unverified--an-inner-segments-record-about-the-order-naming-another-node",
         "unverified--an-inner-segments-record-about-the-order-naming-no-node",
         "unverified--an-inner-segments-record-about-its-node-alone-naming-another",
+        // Nor where its body names another publisher than the one its maker states for (the review of `d11e5a2b`).
+        "unverified--an-inner-segments-record-naming-another-publisher-than-its-maker-states-for",
     ] {
         assert_attribution(name);
     }
@@ -3777,4 +3779,16 @@ fn late_status_asked_without_its_transaction_is_invalid() {
     assert_case(&format!("{row}--another-late-status-under-its-own"));
     assert_case_refused(&format!("{row}--conflict"));
     assert_case_refused(&format!("{row}--the-transaction-of-another-late-status"));
+    // Nor one any verified entry before it names (the review of `d11e5a2b`): a stuck resolution's decide step or its
+    // `resolve_stuck` effect, another late status's decision never taken, a hand-over, an accepted showing.
+    for name in [
+        "a-stuck-resolutions-transaction",
+        "a-transaction-only-a-stuck-decide-step-names",
+        "a-transaction-only-a-resolve-stuck-effect-names",
+        "a-transaction-another-late-status-decision-names",
+        "a-transaction-a-hand-over-names",
+        "a-transaction-an-accepted-showing-names",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
 }

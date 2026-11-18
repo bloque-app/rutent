@@ -2308,14 +2308,15 @@ pub static RELATIONS: [Relation; 107] = [
         refusal: "a late status is asked under a fresh transaction: no entry before it names that transaction",
         fields: &[],
         // The transaction an `ask_status` effect names is the one Core asks under (`T-020-36`), so a late status is
-        // traced from the log by it: never the segment's own, nor any a stated entry already names, nor another
-        // late status's. The same effect retried is no other.
+        // traced from the log by it: never the segment's own, nor one any entry before it names, a stated entry's
+        // `about` or a verified entry's transaction ([`transactions_named`]), but for its own permitting decision.
+        // The same effect retried is no other.
         cites: |e, _| match effect_action(e) {
             Some((Action::AskStatus { .. }, _)) => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| {
-            let Some((Action::AskStatus { transaction, .. }, _)) = effect_action(e) else {
+            let Some((Action::AskStatus { transaction, .. }, permit)) = effect_action(e) else {
                 return Match::NotTarget;
             };
             let named = match t {
@@ -2324,10 +2325,11 @@ pub static RELATIONS: [Relation; 107] = [
                     .as_ref()
                     .and_then(|a| a.transaction.as_ref())
                     .is_some_and(|x| x == transaction),
-                Entry::Verified(v) => matches!(
-                    effect_action(v),
-                    Some((Action::AskStatus { transaction: x, .. }, _)) if x == transaction
-                ),
+                Entry::Verified(v) => {
+                    let own = matches!(&v.what, What::Decide { request, decision }
+                        if decision == permit.decision() && &request.request == permit.request());
+                    !own && transactions_named(v).contains(&transaction.as_str())
+                }
             };
             judge(named, &[])
         },
@@ -4949,6 +4951,40 @@ fn operator_question<'a>(statement: &'a StatedEntry, operator: &Id) -> Option<&'
         && maker_provider(statement) == operator)
         .then(|| statement.about.as_ref()?.transaction.as_ref())
         .flatten()
+}
+
+/// The transactions a decided action names: a late status's, a stuck resolution's, and the one an accepted showing
+/// of fault is about.
+fn action_transactions(action: &Action) -> Option<&str> {
+    match action {
+        Action::AskStatus { transaction, .. } | Action::ResolveStuck { transaction, .. } => {
+            Some(transaction.as_str())
+        }
+        Action::AcceptFault { showing, .. } => Some(showing.transaction.as_str()),
+        _ => None,
+    }
+}
+
+/// Every transaction a verified entry names (`status-is-asked-under-a-fresh-transaction`, `T-020-36`): a decision's
+/// or an effect's action ([`action_transactions`]), a stuck resolution's decide step, and a platform event or segment
+/// record handed over. No other verified shape names one.
+fn transactions_named(entry: &VerifiedEntry) -> Vec<&str> {
+    match &entry.what {
+        What::Decide { request, .. } => action_transactions(&request.action).into_iter().collect(),
+        What::Effect { action, .. } => action_transactions(action).into_iter().collect(),
+        What::StuckDecide { request, .. } => alloc::vec![request.transaction.as_str()],
+        What::HandOver { item, .. } => alloc::vec![match item {
+            HandedOver::OutboundCall { record } => record.transaction.as_str(),
+            HandedOver::CrossModuleCall { call } => call.transaction.as_str(),
+            HandedOver::SecretLookup { lookup, .. } => lookup.transaction.as_str(),
+            HandedOver::StateRead { transaction, .. }
+            | HandedOver::Limit { transaction, .. }
+            | HandedOver::SecretUse { transaction, .. }
+            | HandedOver::OperationUnanswered { transaction, .. }
+            | HandedOver::SegmentRecord { transaction, .. } => transaction.as_str(),
+        }],
+        _ => Vec::new(),
+    }
 }
 
 /// Whether `transaction` is a stuck resolution's in `history`: a `stuck_decide` names it.

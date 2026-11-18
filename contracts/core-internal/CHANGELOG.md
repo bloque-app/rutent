@@ -878,11 +878,12 @@
      verified an entry about an order only through a transaction its body names at its top level, which a record
      names only inside `segments`, so the record was never verified about the order it binds and
      `replay-cites-its-nodes-records` and `private_node_of` refused it. It now verifies such a record about an order,
-     no segment and no transaction, where its `about` names the node its body names, it lists at least one segment, and
+     no segment and no transaction, where its `about` names the node its body names, its body names the publisher its
+     maker states for (the review of `d11e5a2b`), it lists at least one segment, and
      every segment's transaction is first bound to that order and asked under for it by the operator's own verified
      `operation` question: one naming another order's transaction, one the log binds to none, one Core never asked
-     under, or one whose questions another maker asked, is attributed to no one about it. Twelve attribution cases
-     (three verified, nine unverified), and two tests on `core-audit`'s log. (REQ-ORD-41)
+     under, or one whose questions another maker asked, is attributed to no one about it. Thirteen attribution cases
+     (three verified, ten unverified), and two tests on `core-audit`'s log. (REQ-ORD-41)
   2. A record names its node: `About.node`, named only by an `inner-segments` record, about no segment or
      transaction (the schema's `if`/`then` and `StatedEntry::check`), and verified against its body.
      `replay-cites-its-nodes-records` gains three fields: `node` (one the replay replayed and didn't find silent),
@@ -892,10 +893,12 @@
      (REQ-AUD-9, REQ-ORD-3, REQ-ORD-41)
   3. `Action::AskStatus.transaction`, required: the fresh transaction a late status is asked under (`T-020-27`'s
      review), so it is traceable from the log; a new row, `status-is-asked-under-a-fresh-transaction` (none other),
-     refuses one an earlier stated entry or another late status's effect names. `core-orch`'s `Reversals::ask_status`
-     draws it before policy decides. One invalid fixture and three admission cases; the status fixtures name
+     refuses one any earlier entry names: a stated entry's `about`, or a verified entry's action (`ask_status`,
+     `resolve_stuck`, an `accept_fault`'s showing), `stuck_decide` or hand-over, but its own permitting decision (the
+     review of `d11e5a2b`). `core-orch`'s `Reversals::ask_status` draws it before policy decides. One invalid fixture
+     and nine admission cases; the status fixtures name
      `tx-status-1`. (REQ-ORD-1, REQ-ORD-38)
-  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 669 admission cases and 49 attribution cases; 107
+  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 675 admission cases and 50 attribution cases; 107
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
   transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
   literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)
