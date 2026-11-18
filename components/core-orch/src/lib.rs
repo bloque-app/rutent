@@ -10,6 +10,7 @@
 
 pub mod arrival;
 pub mod closing;
+pub mod erasure;
 pub mod hand_on;
 pub mod intake;
 pub mod notice;

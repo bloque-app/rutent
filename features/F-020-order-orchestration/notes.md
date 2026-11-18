@@ -4866,3 +4866,76 @@ Run in wave 27 after `T-020-19`, `T-020-23`, `T-020-24`, `T-020-25` and `T-020-2
   | R3: reversal's answer claims the presenter, not the envelope's maker | `reversal statement restated by a relay is recorded naming the relay` |
   | R4: a segment's result is handed over by its claimed maker | `segment result restated by a relay is recorded naming the relay` |
   | R5: a writer writes `relayed_by: None` | `arrival notice restated by a relay is recorded naming the relay`, `every stated entry core builds takes its relay from the one helper` |
+
+
+## T-020-37: Core carries out an erasure
+
+Branch `f-020/t-020-37-erasure`, from `m3` at `b1771c2b`. Edits a new module `components/core-orch/src/erasure.rs`
+(`pub mod erasure`), the assembly's wiring (`conformance/scenarios/src/assembly/erasure.rs`, one `mod` line, one
+register line) and two scenario files. Nothing in `contracts/`, `core-audit/` or `core-authz/` changed.
+
+- **The order, each step once** (`erasure::erase_statement`): (1) the store's `erasable` check, before anything is asked
+  of policy, so no erasure is decided that the store would refuse (`NotErasable`, nothing recorded); (2) policy's
+  `decide` of `erase_statement`, the caller the operator's login; no permit ends it (`NotPermitted`: no effect, nothing
+  erased); (3) the effect, recorded before it takes place (`INV-7`); (4) `erasable` again, since a citation may have
+  landed since (1): a store that now refuses gets the effect's result `failed` and the statement stays (`Failed`);
+  (5) the effect's `done` result, which is what `BoundStore::erase` takes and reads the decision back through; (6) the
+  store's erasure, bytes and salt gone, commitment and reference staying; (7) the `erasure` entry, by Core, `done`.
+  Core reaches the store through a port, `erasure::Statements` (`erasable`, `erase`), which the assembly implements over
+  the bound store: `core-orch` never imports `core-audit` (`DEC-2`).
+- **After the done result the erasure can't be called a failure.** The log counts a statement erased from its done
+  result (`nothing-cites-an-erased-statement`) and refuses an `erasure` entry that says `failed` after one
+  (`erasure-is-carried-out-on-its-decision`). So a store unreachable now, or an `erasure` entry the log can't take, gives
+  `NotErased::Unsettled`, which `Unsettled::settle` finishes: the store's erase of one erased already is `Ok`, the entry
+  is appended after. Until then `BoundStore::unsettled_erasures` reports it (`T-022-03`).
+- **Defaults, each reversible and failing closed.**
+  1. The effect's `who` and the `erasure` entry's are Core's own actor, as a promotion's effect is (`T-020-08`); the
+     decision's is the caller's, as the log requires (`a decision is recorded for its request's caller`).
+  2. A failed erase is recorded as the effect's result `failed`, only where the store refuses before the done result.
+     The log has no record for a failure after it, so there is none; it is a finding for the checker.
+  3. Erasing what is erased already, asked a second time, is decided and recorded again (the store's `erasable` says
+     yes to an erased statement); no rule says it shouldn't. Not held by a test.
+  4. The assembly's register lists `Permission::EraseStatement` for the operator's login (`kit::operator_login`); a
+     deployment lists its own (`T-021-10`, gap 1).
+  5. The `reason` is a label (`retention` here); nothing branches on it.
+- **Tests.** `components/core-orch/tests/erasure.rs`, over a log that admits every entry through the real `admit_entry`:
+  `erasure without a permitting decision erases nothing` [`DEC-18`]; `erase that fails leaves the statement and records
+  the failure` [`REQ-AUD-14`], as the plan tags it; and three more: the permitted path in order, a statement the store
+  would refuse is never decided, and an erasure the store can't finish now settles later. The assembled Core:
+  `erasure leaves the reference and history checks` [`AC-36`, `REQ-AUD-13`] in `conformance/scenarios/tests/audit_scenarios.rs`,
+  **an `F-024` file** (`T-024-07`'s). The outside checker, handed bytes, finds nothing before the erasure, after it
+  against the checkpoints published before, and after a later one; the history up to the erasure is byte for byte what it
+  was, the statement's entry is still in it, the four new entries are the decision, the effect, its done result and the
+  `erasure` entry naming the commitment, and the store's `missing`, `refused_erasures` and `unsettled_erasures` are
+  empty. `T-024-07`'s `erasure_is_refused_in_the_assembled_core_until_policy_has_a_rule_for_it`, which pinned today's
+  refusal, is rewritten for the fixed rules as `erasure_without_a_permitting_decision_is_refused_in_the_assembled_core`
+  [`DEC-18`]: a caller the register doesn't list is refused (only the refusal is recorded; the store refuses to erase on
+  its receipt) and a statement an entry rests on is refused before policy is asked. The review of `T-021-10`'s low, in
+  `authz_scenarios.rs`: `operator agent is refused an erasure without the erase scope or when its login is unlisted`
+  [`REQ-AUZ-8`, `DEC-18`], with the listed, scoped, permitted agent as its control.
+- **Red first.** The module and its tests were written together and the tests passed on the first full run, so each rule
+  is shown by its rule-off below instead; the log's own refusal (a decision's actor is its caller) was the one history it
+  refused, a test artefact in the policy stand-in, fixed there.
+- **Gaps, with owners.**
+  1. `T-024-07`'s gap 1 is closed. The evidence store's findings (`missing`, `refused_erasures`, `unsettled_erasures`)
+     still don't reach the outside checker: `F-033` with the lead (unchanged).
+  2. A crashed erasure between the done result and the `erasure` entry is settled by the caller calling
+     `Unsettled::settle`, which Core keeps nowhere: after a restart, binding the store reports it and the operator asks
+     again. A durable resume is `F-030`'s (production assembly), with the rest of what Core keeps in memory.
+  3. Nothing here calls `erase_statement` from an operator channel: the operator's surface is `F-030`'s.
+  4. The login-unlisted half of the agent test is held by the engine's actors source (`T-021-05`'s rows); it is not
+     switched off here on its own (see the table).
+
+**Rule-off table** (the file restored each time; the core-orch ones under `perl -e 'alarm 120'`, none hung):
+
+| Rule switched off | Red |
+|---|---|
+| `erasable` before the decision (`erasure.rs`) | `erasure_of_what_the_store_would_refuse_is_not_even_decided`, `erase_that_fails_leaves_the_statement_and_records_the_failure` |
+| the permit required (a permit minted from the answer) | `erasure_without_a_permitting_decision_erases_nothing` (the log refuses the effect) |
+| `erasable` again after the effect | `erase_that_fails_leaves_the_statement_and_records_the_failure` |
+| the `erasure` entry not appended | `a_permitted_erasure_is_decided_recorded_carried_out_and_recorded_again`, `an_erasure_the_store_cannot_finish_now_settles_later` |
+| the store asked on the effect's receipt, not the done result's | the same two |
+| the store tried once, not `APPEND_TRIES` times | `an_erasure_the_store_cannot_finish_now_settles_later` |
+| the assembly's register without `Permission::EraseStatement` for the operator's login | `erasure_leaves_the_reference_and_history_checks` |
+| `core-authz` `roles`: no permission asked of the erasing caller | `erasure_without_a_permitting_decision_is_refused_in_the_assembled_core` |
+| `core-authz` `parties`: an agent's scope refusal read as yes | `operator_agent_is_refused_an_erasure_without_the_erase_scope_or_when_its_login_is_unlisted` (and `unreachable_verifier_gives_a_refusal_and_nothing_moves`, which also meets it) |
