@@ -20,7 +20,7 @@ use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{EvidenceGrade, Operation as ProviderOperation, Statement};
 use rutent_contracts::router_api::{Amount, DecisionRecord, Id};
 use rutent_contracts::state_machine::{Observed, OrderState};
-use rutent_core_orch::closing::{Books, Closing, Evidenced, Moved, PublicRecords};
+use rutent_core_orch::closing::{Books, Closing, Evidenced, Moved, PublicRecords, Recorded};
 use rutent_core_orch::segments::{Answered, Modules, NoProxy, Ran, SegmentOutcome, Short};
 use rutent_core_orch::snapshot::RouteRefusal;
 use rutent_evidence::replay::RecordedSegment;
@@ -82,7 +82,7 @@ impl PublicRecords for World_ {
 /// Each reserve's ledger, as its publisher records the segments inside it: its book's entries for the transactions
 /// asked, replayed as `rutent_conformance::sim::recorded_segments` reads a book.
 impl Books for World_ {
-    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Vec<RecordedSegment>> {
+    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
         let reserve = node.strip_suffix("-ledger")?;
         let seen = self.0.borrow();
         let book: Vec<BookEntry> = seen
@@ -107,7 +107,10 @@ impl Books for World_ {
                     fee: s.fee,
                 })
                 .collect();
-        (!segments.is_empty()).then_some(segments)
+        (!segments.is_empty()).then_some(Recorded {
+            segments,
+            records: Vec::new(),
+        })
     }
 }
 

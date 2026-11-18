@@ -135,7 +135,8 @@ pub(crate) use judge::handed_on;
 pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
 pub use ports::{
-    Answered, Graded, Grading, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade, Uses,
+    Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
+    ToKeep, Uses,
 };
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
@@ -603,6 +604,9 @@ struct InFlight {
     evidence: Option<(Id, Timestamp)>,
     /// What the grading settled it on, built once: the evidence `segment_settled` cites, and its entries.
     graded: Option<(Id, Vec<Step>)>,
+    /// The statements its grading asked to have kept, each under its key, built once and appended before the grading
+    /// (`T-020-32`).
+    kept: Option<Vec<(String, Step)>>,
     /// Its fee records, built once, appended after `segment_settled` (`REQ-AUD-11`).
     fees: Option<Vec<Step>>,
     ended: bool,
@@ -1980,6 +1984,7 @@ impl Segments {
                 steps,
                 evidence: None,
                 graded: None,
+                kept: None,
                 fees: None,
                 ended: false,
                 outcome: None,
@@ -2408,7 +2413,7 @@ impl Segments {
             }
         };
         let transaction = flight.transaction.clone();
-        let settled = ToGrade {
+        let mut settled = ToGrade {
             evidence: &evidence,
             order: live.order,
             part: live.part,
@@ -2427,7 +2432,15 @@ impl Segments {
             core: live.core,
             operator: live.operator,
             at: &graded_at,
+            kept: &[],
         };
+        // What the grading reads and cites is kept and appended first, each once: a receipt is the log's to give.
+        let kept = if self.flight(at)?.graded.is_none() {
+            self.keep_asked(parts, live, at, &settled)?
+        } else {
+            self.kept_receipts(at)?
+        };
+        settled.kept = &kept;
         // Graded once it settles: what it settled on is kept and appended, each entry once (`INV-8`). One
         // that waits is graded again next time, since what is public may have changed (`REQ-ORD-33`).
         if self.flight(at)?.graded.is_none() {
@@ -2900,6 +2913,83 @@ impl Segments {
             );
         }
         Ok((self.step(log, at, name)?, true))
+    }
+
+    /// Keeps and appends the statements the segment's grading asks for, each once under its key, and answers each
+    /// with its receipt. Asked of the grading only the first time; a retry appends what is not appended yet.
+    fn keep_asked(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        at: &(String, String),
+        settled: &ToGrade<'_>,
+    ) -> Result<Vec<Kept>, SegmentsError> {
+        // Asked every time the segment is graded, until it settles: a statement the grading couldn't read at one try
+        // (a book empty then) is asked for again at the next, and one kept already is kept once. Only steps are cached;
+        // an empty answer caches nothing, so the grading is never left holding "asked" for what it didn't have.
+        let asked = parts.grading.statements(settled);
+        for one in asked {
+            if self
+                .flight(at)?
+                .kept
+                .iter()
+                .flatten()
+                .any(|(key, _)| *key == one.key)
+            {
+                continue;
+            }
+            let received_at = now(parts.clock)?;
+            let entry = journal::stated_entry(
+                parts.evidence,
+                &received_at,
+                &one.bytes,
+                maker(parts.catalogue, &one.bytes),
+                live.core,
+                Some(one.about),
+            )
+            .map_err(|e| match e {
+                Unappended::Append(failure) => SegmentsError::Append(failure),
+                Unappended::Unrecordable => {
+                    SegmentsError::Plan("a statement to keep is an envelope")
+                }
+            })?;
+            entry.check().map_err(AppendFailure::Refused)?;
+            let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
+            self.flight_mut(at)?
+                .kept
+                .get_or_insert_with(Vec::new)
+                .push((
+                    one.key,
+                    Step {
+                        entry,
+                        receipt: None,
+                    },
+                ));
+        }
+        if let Some(steps) = self.flight_mut(at)?.kept.as_mut() {
+            for (_, step) in steps {
+                if step.receipt.is_none() {
+                    step.receipt = Some(journal::append_general(parts.log, &step.entry)?);
+                }
+            }
+        }
+        self.kept_receipts(at)
+    }
+
+    /// The receipts of the statements the grading asked to have kept, once appended.
+    fn kept_receipts(&self, at: &(String, String)) -> Result<Vec<Kept>, SegmentsError> {
+        Ok(self
+            .flight(at)?
+            .kept
+            .iter()
+            .flatten()
+            .filter_map(|(key, step)| {
+                Some(Kept {
+                    key: key.clone(),
+                    receipt: step.receipt.clone()?,
+                })
+            })
+            .collect())
     }
 
     /// Appends the entries the segment's grading settled it on, each once, and answers the evidence its

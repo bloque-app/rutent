@@ -909,3 +909,31 @@
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
   transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
   literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)
+- Folded into 1.0.0 before its release: `core-internal`'s round after `T-020-36` (`T-020-38`), for the shape
+  `T-020-35` found missing. 1.0.0 isn't on `develop`, so `PLAN.md` §4.4 and retrospective lesson 7 fold it into the
+  unreleased major, as `T-020-30` and `T-020-36` did. A `ReportPair` held one `segment`, and both statement rows read
+  each report's `about` against it, so a pair needed two parties' verified statements about one segment; at a
+  segment's end Core holds only that segment's provider's own result, and the next provider's report of receiving is
+  its own result, about the next segment (`T-020-35`'s finding, confirmed by its review). Each change:
+  1. `Report.segment`, required: the segment each report is about. The pair's `segment` is the sent report's, and its
+     received report is about another (`ReportPair::check`), so `core-audit`'s `compare_reports` and the
+     `Difference` it raises name the segment whose end is compared, unchanged. Two invalid fixtures the Rust types
+     refuse, one the schema refuses. (REQ-ORD-9)
+  2. `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` read each report's `about`
+     against its own segment, and, after the review of `8a6854b1`, hold the statement to provider-role's `result`
+     shape (a new field, `result`) and to an `about` naming the pair's order and the report's segment through a
+     transaction first bound to it, so neither another shape nor a result about nothing backs a report. Six refused
+     cases: a sent report about the received segment, a received report about the sent one (the pair before this
+     round), and for each row another shape and a result about nothing. (REQ-ORD-9, REQ-AUD-2)
+  3. A new row, `received-report-is-about-the-next-segment` (exists): the received segment is the one a plan of the
+     pair's order lists right after the sent one (a `route_chosen` part, a `route_recalculated` or a
+     `destination_changed`, the route a decision record backs), so a route's last segment has no pair and a pair
+     spans one plan. Five refused cases: a segment no plan lists, a later one of the part, another part's, the one
+     before, and a recalculated route's first. (REQ-ORD-9)
+  4. A new row, `report-pair-is-by-its-segments-providers` (exists): each report's party is the provider this log's
+     `move_value` effect moved its segment's value with, so a pair rests neither on a party that ran neither segment
+     nor on a segment never run. Three refused cases. (REQ-ORD-9, REQ-AUD-2)
+  The world's report pair is now us-bank's result about `p1-s1` (a new stated entry, receipt 440, in every history
+  holding the pair) sent and fx-desk's about `p1-s2` received. Twenty-eight schemas, 158 valid fixtures, 165 invalid
+  ones, 698 admission cases and 50 attribution cases; 109 relations and 5 closing ones, three stated. Outside
+  `contracts/`: `core-audit`'s log tests (the pair on the real log). (DEC-4, DEC-20, T-020-38)

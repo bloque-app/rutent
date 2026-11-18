@@ -1200,15 +1200,20 @@ pub struct PersonAnswer {
 
 // --- What the log's checks read --------------------------------------------------------------------------------
 
-/// One provider's report about a segment: how much of which asset it says it sent or received, and the receipt of
-/// the stated entry that holds its statement, made by that provider. Schema:
+/// One provider's report about its own segment: how much of which asset it says it sent or received, and the
+/// receipt of the stated entry that holds its statement, made by that provider. Schema:
 /// `urn:rutent:core-internal:report-pair#/$defs/report`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
     /// The provider that reports: the statement's maker, its `acts`, so two adjacent providers of one publisher
-    /// report a pair (`REQ-ORD-9`).
+    /// report a pair (`REQ-ORD-9`), and the provider this log moved its segment's value with
+    /// (`report-pair-is-by-its-segments-providers`).
     pub party: Id,
+    /// The segment the report is about, which its statement's `about` names (`T-020-38`): at a segment's end Core
+    /// holds that segment's provider's result, and the next provider's report of receiving is its own result, about
+    /// the next segment.
+    pub segment: Id,
     /// The amount, in the asset's unit.
     pub amount: Amount,
     /// The asset.
@@ -1250,18 +1255,21 @@ pub struct ReportTerms {
     pub reporting: ReportedAs,
 }
 
-/// A segment's pair of reports: what one party says it sent, and what the next says it received (`REQ-ORD-9`),
-/// with the terms they are compared under. Schema: `urn:rutent:core-internal:report-pair`.
+/// A segment's pair of reports: what its provider says it sent, and what the provider of the route's next segment
+/// says it received (`REQ-ORD-9`), each about its own segment, with the terms they are compared under: segment n's
+/// `amount_out` against segment n+1's `amount_in`, under segment n's tuple's terms. The last segment of a route has
+/// no pair. Schema: `urn:rutent:core-internal:report-pair`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct ReportPair {
     /// The order.
     pub order: Id,
-    /// The segment.
+    /// The segment whose end the pair compares: the sent report's (`sent.segment`, [`ReportPair::check`]).
     pub segment: Id,
-    /// What the sending party reports.
+    /// What the sending party reports, about the pair's segment.
     pub sent: Report,
-    /// What the receiving party reports.
+    /// What the receiving party reports, about the route's next segment after the sent one
+    /// (`received-report-is-about-the-next-segment`).
     pub received: Report,
     /// The sending party's tuple's increment and convention, so like is compared with like within one increment.
     pub terms: ReportTerms,

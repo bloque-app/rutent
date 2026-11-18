@@ -9,8 +9,8 @@
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Log, Operator};
 use rutent_contracts::core_internal::{
-    Actor, Effect, Entry, Outcome, Receipt, RouteEnd, TimeSource, VerifiedEntry, VerifiedKind,
-    What, When,
+    About, Actor, Effect, Entry, Outcome, Receipt, RouteEnd, TimeSource, VerifiedEntry,
+    VerifiedKind, What, When,
 };
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{EvidenceGrade, Operation, Statement};
@@ -236,6 +236,31 @@ pub struct ToGrade<'a> {
     pub operator: &'a Actor,
     /// When, by Core's clock.
     pub at: &'a Timestamp,
+    /// The statements the grading asked to have kept ([`Grading::statements`]), appended before it grades, with the
+    /// receipt of each.
+    pub kept: &'a [Kept],
+}
+
+/// A statement a grading read and cites: kept and appended, about its order and, where it names one, its node, before
+/// the evidence that cites it is built (`T-020-32`). A receipt isn't known before the log gives it, so the grading
+/// asks, the segments append, and the grading cites what came back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToKeep {
+    /// What the grading finds the statement by in [`ToGrade::kept`].
+    pub key: String,
+    /// The statement's bytes, as its maker signed them.
+    pub bytes: Vec<u8>,
+    /// What it is about: its order, and a private node's record its node alone.
+    pub about: About,
+}
+
+/// A statement the grading asked to have kept, and the receipt of its entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    /// The key it was asked under.
+    pub key: String,
+    /// Its entry's receipt.
+    pub receipt: Receipt,
 }
 
 /// Why a segment's evidence doesn't settle it yet. The segment stays in flight, held, and is graded again on the
@@ -274,6 +299,14 @@ pub enum Graded {
 /// answers the entries the segment's `segment_settled` rests on, or why it doesn't settle yet. It appends nothing
 /// itself: the segments append what it answers, each entry once, and grade a segment again only while it waits.
 pub trait Grading {
+    /// The statements the grading reads and will cite, for the segments to keep and append before they grade
+    /// `settled`, each once however often it is tried; their receipts come back in [`ToGrade::kept`]. None unless a
+    /// grading says otherwise.
+    fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
+        let _ = settled;
+        Vec::new()
+    }
+
     /// Grades the evidence of `settled`.
     fn grade(&mut self, settled: &ToGrade<'_>) -> Graded;
 

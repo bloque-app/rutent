@@ -13,7 +13,7 @@ use rutent_contracts::provider_role::{
     Advertisement, InnerSegments, KeyPurpose, Statement, check_inner_segments,
 };
 use rutent_contracts::router_api::Id;
-use rutent_core_orch::closing::{Books, Moved, PublicRecords};
+use rutent_core_orch::closing::{Books, Moved, PublicRecords, Recorded};
 use rutent_evidence::replay::RecordedSegment;
 use rutent_evidence::{MovementId, NetworkRules, PublicNetwork, SimulatedNetwork, Status};
 
@@ -205,12 +205,14 @@ impl Readings {
 /// that serves in it ([`Readings::published_in`]), for the transactions asked, in the order the transactions are asked,
 /// each segment as its record states it.
 impl Books for Readings {
-    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Vec<RecordedSegment>> {
+    fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded> {
         let records = self.published_in(node);
         let mut segments = Vec::new();
+        let mut read: Vec<Statement<InnerSegments>> = Vec::new();
         for transaction in transactions {
             let before = segments.len();
             for record in &records {
+                let before_record = segments.len();
                 segments.extend(
                     record
                         .statement
@@ -225,6 +227,9 @@ impl Books for Readings {
                             fee: s.fee.clone(),
                         }),
                 );
+                if segments.len() > before_record && !read.contains(record) {
+                    read.push(record.clone());
+                }
             }
             // Every transaction asked ran inside the node, so one with no accepted segment is a record refused or
             // never made: nothing recorded for the node, never the rest of it passed off as all of it.
@@ -232,7 +237,10 @@ impl Books for Readings {
                 return None;
             }
         }
-        (!segments.is_empty()).then_some(segments)
+        (!segments.is_empty()).then_some(Recorded {
+            segments,
+            records: read,
+        })
     }
 }
 

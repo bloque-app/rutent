@@ -5454,3 +5454,231 @@ Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/co
 
   The two tests were written after their rules, which already existed (the hold, `T-020-25`) or were one line (the
   name); the rule-offs are their check.
+## T-020-32: the simulated world binds each private node to its publisher
+
+Branch `f-020/t-020-32-publisher-binds-node`, from `m3` at `7bc8be82`, with `T-020-36` (`728a8d72`) merged: the first
+attempt stopped at a contract blocker (a record couldn't be verified about an order), which `T-020-36` item 1 lifted.
+Edits `components/core-orch/src/closing/` and, for the hook below, `segments/ports.rs` and `segments/mod.rs`; the
+assembly's `grading.rs` and the `Books` impls of the two closing test files (`F-024`'s); `T-024-06`'s `reversing.rs`
+only to remove its two `#[ignore]`s.
+
+- **Design.**
+  - `Books::recorded` returns `Recorded { segments, records }`: the segments `CMP-EVIDENCE` reads, and the publishers'
+    signed `inner-segments` records they came from, whole (one per provider of the node that recorded any).
+  - A receipt is the log's to give, so an entry citing a record can only follow it. `Grading` gains
+    `statements(&ToGrade) -> Vec<ToKeep>`; the segments keep and append each once (cached in the flight, so a retry
+    appends only what isn't) before grading, and hand the receipts back in `ToGrade::kept`. The default asks for none.
+  - **Entering a node.** At a segment that takes the value from a public node into a private one, closing asks for the
+    record of that node, its provider's where it lists the segment's transaction, and cites it in an extra `evidence`
+    (`<id>.node`, the public record, naming the movement into the node *with the node*, resting on the segment's result
+    and the record). That is what `Reversals::follow` and `private_node_of` bind on. The binding is made here, not at
+    the failed segment, which never reaches closing.
+  - **Leaving a node.** At an exit, each replayed node's record is asked for, and the replay's `rests_on` is the exit's
+    result then the record of each node it read, one per node (`replay-cites-its-nodes-records`).
+  - **Only what the log verifies.** A record is about its order and node alone (`About.node`) and is appended only
+    where every segment it lists is a transaction this order ran (the segments Core has seen settle, and the one being
+    graded); otherwise the log would leave it unverified about the order, and an entry citing it would be refused and
+    stall the segment. A book that spans orders therefore binds nothing for the later order (fail closed), shown by
+    `a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing`.
+- **Tests** (`conformance/scenarios/tests/publishers_binding.rs`): the plan's four, each with its tags, plus the
+  spanning-books case (`REQ-ORD-41`). `T-024-06`'s two now run and pass.
+- **Defaults** (reversible, each failing closed).
+  - A node gets **two** records about one order where a replay follows: the early one (the entering provider's book,
+    just the withdrawal) binds it, a later one (as of the exit) is what the replay read and cites. `T-020-36` gap 1
+    says "one per order"; a single early record would be stale for the replay, a checker finding what was compared
+    would read the wrong figures. The log's `once` holds within one replay. Overrule if one per node per order is wanted.
+  - Where several providers of one publisher recorded in a node, the replay cites one record per node, the exit
+    provider's where it served the node, else the first; the other providers' segments are read but their records not
+    cited (the contract's `once`).
+  - Records that list a transaction this order didn't run are skipped; so is one listing a reversal's transaction
+    (reversals run after the entering and exit reads, so none is seen there).
+  - A segment entering a private node with no public movement of its own binds nothing.
+- **Histories the log refused, sorted.** None: the sim's records were verified about their orders on the real log at
+  first use; the one refusal risk, a book spanning orders, is a test artefact the pre-check turns into "nothing bound".
+- **Order of work.** Hook and closing first; the two ignored tests were run with their ignores removed and passed, then
+  the four named tests were written and passed on their first run; their red is the rule-offs below (I did not watch
+  the four red before the code).
+- **Gaps, with owners.**
+  1. **`replay-cites-its-nodes-records` admits an entry of any provider of the publisher, and one record of a node a
+     replay didn't cite none is not required** (`T-020-30`'s low): closing now cites only the records it keeps, one per
+     node, made by the exit's provider where it served the node; the log's side (a record per node that recorded
+     something, the exit's provider) needs a contract change (`T-020-36` gap 2/5): the lead.
+  2. `Closing::recorded`'s rebuild after a restart doesn't read the records; the evidence names them. Owner: `F-030`.
+  3. The record is taken as of Core's last reading of the book, so a node's early record lists only what the book held
+     then. By design (default 1).
+  4. Reversal operations, which Core runs and the provider books, aren't listed in a record Core keeps; a record
+     listing one is skipped. Owner: none yet; the lead if a scenario needs a record after a reversal.
+  5. `Evidenced` still has to be given the hook by any other `Grading` that wants records; the production assembly's
+     (`F-030`) must wire `Books` to the publishers' signed records.
+- **Rule-off table** (each switched off alone, file restored with `git checkout`, run under a 900 s alarm through the
+  lock, script `scratchpad/f020zg/ruleoff.py`; none hung). `binding` is `publishers_binding`; `reversing` is
+  `T-024-06`'s two tests: `true_undo_…` is AC-4, `failed_segment_…` AC-6.
+
+  | Rule switched off | Red |
+  |---|---|
+  | closing: the evidence naming the node at the entering segment | binding: `publishers_inner_segments_record_…cited_by_what_binds_its_node`, `failed_providers_own_answer_…`; reversing: both |
+  | closing: asking for the record at the entering segment | the same, and `a_book_spanning_two_orders…` |
+  | closing: the replay's cited records | binding: `replay_cites_the_receipt_of_each_inner_segments_record_it_read` |
+  | closing: records of this order's transactions alone | binding: `a_book_spanning_two_orders_binds_nothing_for_the_second_and_stops_nothing` |
+  | `grading.rs`: `Books` returns no record | binding: the four others (not the `SamePublisher` one); reversing: both |
+  | contracts' `private_node_of`, the evidence branch (the log binds the node by evidence) | binding: `failed_providers_own_answer_…`; reversing: both |
+  | `judge`: `SamePublisher` | binding: `reserves_confirmation_of_its_own_publishers_providers_reversal_stays_refused`; reversing: AC-4 |
+  | `AC-6`'s two-actor rule: Core's `SameParty`/`SameLogin` | reversing: AC-6 |
+  | the same and policy's `one_actor` | reversing: AC-6 |
+  | the same, policy's and the log's `stuck-move-carries-out-its-decide-step` `mover`/`login` (all three layers) | reversing: AC-6 |
+
+  The last three are red on the test's first refusal, `Err(SameParty)` from Core's move step, which the test asserts by
+  variant; with Core's off, the refusal that surfaces is policy's `SameActor` and then the log's, so each layer's own
+  protection isn't shown separately beyond that.
+
+### T-020-32, the review of `8e6802cd`: changes
+
+- **Should-fix, fixed: an empty answer was cached as asked.** `keep_asked` asked the grading once per flight and cached
+  the answer, so a book empty (or a record failing the orders filter) at the first pass left `kept` as an empty `Some`,
+  and a segment graded again after it waited with a `Short` was never asked again: the node stayed unbound and
+  `ask_reversal` never completed. It now asks at every grading until the segment settles, caches only the steps it
+  built (each key once) and appends what isn't appended; fail-closed holds (nothing binds until a record is there).
+  Test `a_record_missing_at_the_first_ask_is_asked_for_again_when_the_grading_waited`
+  (`conformance/scenarios/tests/publishers_record_retry.rs`, `REQ-ORD-3`): a grading whose book is empty at the first
+  ask and which waits, then holds the record and settles; the record is kept at the second grading and appended once.
+  Switched off once (the old caching restored): red (`[0, 0]` kept at the two gradings, not `[0, 1]`).
+- **Not rebuilt after a restart:** in-flight segments, and so `kept`, aren't rebuilt from the log, as `graded` isn't
+  (`F-030`'s durable `Segments`); a segment mid-flight at a restart is asked again on its next grading, and a record
+  already appended is appended a second time (a second stated entry of the same bytes' commitment is the log's to
+  accept).
+- **Residual for `T-025-05` (low):** the early record that binds a node and the later one the replay cites are never
+  compared, so a publisher's two records of one node can disagree unnoticed.
+
+## T-020-38: `core-internal`'s round after `T-020-36`, a report pair's two segments
+
+Branch `f-020/t-020-38-report-pair-segments`, from `m3` at `c874f7aa` (with `T-020-30` and `T-020-36` merged). Edits
+`contracts/` (core-internal, a `DEC-20` path: it waits for the owner's click at the release into `main`), and
+`core-audit`'s `tests/log.rs` (`F-022`'s), for the real log's path.
+
+- **The finding** (`T-020-35`, confirmed by its review). A `ReportPair` held one `segment`, and both statement rows read
+  each report's `about` against it, so a pair needed two parties' verified statements about one segment. At a
+  segment's end Core holds only that segment's provider's own result; the next provider's report of receiving is its
+  own result, about the next segment. So no caller could build a pair the log admits.
+- **Versioning: folded into 1.0.0, no bump** (lesson 7): core-internal 1.0.0 isn't on `develop`. The changelog's last
+  entry names each item; `contracts/CHANGELOG.md` takes a line.
+- **Design** (the reviewer's suggestion, taken whole).
+  1. `Report.segment: Id`, required (schema and type). `ReportPair.segment` stays, and is the sent report's
+     (`ReportPair::check`: "a report pair's segment is the one its sent report is about"); the received report's is
+     another ("… is about another segment than its sent report"). The old two-parties check stands.
+  2. `sent-report-is-its-partys-statement` and `received-report-is-its-partys-statement` read `about` against the
+     report's own segment (`sent.segment`, `received.segment`).
+  3. New exists row `received-report-is-about-the-next-segment` (`REQ-ORD-9`): a verified plan input of the pair's
+     order (a `route_chosen` part, a `route_recalculated`, a `destination_changed`: each the route a decision record
+     backs, `input-cites-its-decision-record`) lists the received segment, and lists the sent segment right before
+     it (field `next`). A route's last segment is followed by nothing, so it has no pair.
+  4. New exists row `report-pair-is-by-its-segments-providers` (`REQ-ORD-9`, `REQ-AUD-2`): for each report (two
+     citations, sent and received), a `move_value` effect of the pair's order on that report's segment, whose
+     `provider` is the report's `party` (field `provider`).
+  - The terms are segment n's: the pair compares n's `amount_out` with n+1's `amount_in` under n's tuple's increment
+    and gross or net convention (`T-020-30`). A gross `amount_in` is no matter, the charge taken off being n's.
+- **Security reading.** The received report must be about the route's actual next segment (row 3, read from the plan,
+  never from the pair) and be its own party's (the maker check, now on its own segment, and row 4, which ties the
+  party to the provider the log moved that segment with). One party can't report both sides: the check refuses equal
+  parties, so a provider running two adjacent segments has no pair, and row 4 refuses any party that didn't move its
+  segment. A report of another order is refused by the statement rows (`about`'s order, and its transaction's
+  binding); one of another route of the same order by row 3 (a plan that lists the two segments consecutively) and
+  row 4 (a segment no `move_value` ran: a superseded plan's, or a never-started one). Rule-off 3 shows the two rows
+  overlap: with row 3 off, row 4 still refuses the recalculated route's first segment, which the world never moved.
+- **`core-audit`'s `compare_reports`** (`F-022`) is untouched: it reads `pair.segment`, still the segment whose end is
+  compared, and names it in the `Difference`; `tests/compare.rs` passes on the new shape, its world pair the new one.
+- **Fixtures.** `scratchpad/f020zo/migrate.py` rewrote every fixture's pair (437 files): each report names its
+  segment (`seg-2`/`seg-3` for the hand-built pairs), and the world's pair is now us-bank's result about `p1-s1` as
+  sent and fx-desk's about `p1-s2` (134) as received. us-bank had no result about `p1-s1` in the world, so a new
+  stated entry (receipt 440, under Core's question `tx-b1`, 110) is inserted before the pair in every history that
+  holds it. `scratchpad/f020zo/gen.py` regenerated the ten statement-row cases on that base and wrote the new ones:
+  two `--about-*` cases, five for row 3, three for row 4, and three invalid pairs (two the Rust types refuse, one the
+  schema).
+- **Histories the log refused, sorted.** One, a test artefact: the world's old pair (bridge-pay's result about `p1-s1`
+  sent, fx-desk's about `p1-s1` received) under the new rows, refused for the received report's segment and, past
+  that, for bridge-pay, which never moved `p1-s1` (us-bank did). It predates the shape; rewritten as above. No Core
+  bug: no orchestration path builds a pair yet (`T-020-35`'s).
+- **Real log's path.** `core-audit`'s `a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_refused`
+  replays the world on `AuditLog` (the new statement 440 signed for real and attributed by the log), finds the
+  world's pair admitted, admits it again, and refuses, built in memory: fx-desk's `p1-s6` (the recalculated route's
+  first) as received (`next`), fx-desk's result about `p1-s1` as received for `p1-s2` (`about`), bridge-pay's
+  `p1-s1` as sent (`provider`), and us-bank on both sides (the two-parties check).
+- **Named tests** (`contracts/tests/core-internal.rs`, each `// verifies: REQ-ORD-9`):
+  `report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_admitted`,
+  `report_pair_whose_received_report_is_about_a_segment_not_next_on_the_route_is_refused`,
+  `report_pair_whose_two_reports_are_one_partys_is_invalid`. Written before the rows: the first failed on its
+  assertion (the old received row refused the world's pair, "about its pair's order and segment"), the second on its
+  missing row; the check was written with its shape, and its red is rule-offs 1 and 2. `T-020-36`'s and `T-022-05`'s
+  tests pass unchanged beside them.
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0;
+  - `pair.segment` kept, equal to `sent.segment`, so the comparison and its `Difference` read as before;
+  - "next" is the immediate successor in one plan that lists both; a pair spans one plan, so a recalculated or changed
+    route's first segment makes no pair with the settled segment it starts from;
+  - a report's party is the provider of the `move_value` effect on its segment (not the plan's provider), so a
+    segment never run has no report;
+  - a provider running two adjacent segments has no pair (one party's word compares nothing).
+- **Gaps, with owners.**
+  1. *Across a re-plan.* The settled segment a `route_recalculated` or `destination_changed` starts from and the new
+     route's first segment make no pair; if that end needs comparing, a later round can admit it, read from the part's
+     latest settled segment before the re-plan, as `recalculation-starts-from-evidenced-value` reads it. Owner: the
+     lead (a later `F-020` round), raised by `T-020-35` if its scenarios meet it.
+  2. *Hand-off to `T-020-35`*, which builds the pair in `segments/` after this round merges: the sent report from
+     segment n's result and its provider, about n; the received one from n+1's, about n+1; the terms from n's tuple;
+     no pair after a route's last segment, nor where one provider runs n and n+1. Owner: `T-020-35`.
+  3. *A report's shape.* Closed by the review of `8a6854b1` (below): both statement rows hold the statement to a
+     `result` about the report's own segment.
+  4. *A report's figures.* That a report's `amount` and `asset` are what its statement's bytes state, the log can't
+     read from a commitment (as before this round): Core's, on taking the result, and a checker's on
+     `Evidence::fetch`. Owner: `T-020-35` (Core builds the pair from the results it took).
+  5. The workspace suite, the scenarios beyond `person_records`, and `cargo doc --workspace` run in CI.
+- **Rule-off table** (each switched off alone from the committed round `2f91c3d4`, its tests run under a 300 s alarm
+  through the lock, the file restored with `git checkout`; scripts `scratchpad/f020zo/ruleoff.py` and `run_off.sh`;
+  none hung). "Table" is `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "fixtures"
+  `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, "log" `core-audit`'s
+  `a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_refused`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `ReportPair::check`: the pair's segment is the sent report's | `report_pair_whose_two_reports_are_one_partys_is_invalid`, fixtures |
+  | `ReportPair::check`: the two reports about two segments | the same two |
+  | `received-report-is-about-the-next-segment` whole (cites none) | `report_pair_whose_received_report_is_about_a_segment_not_next_on_the_route_is_refused`, table, log (row 4 then refuses the recalculated route's first segment, which the world never moved) |
+  | `report-pair-is-by-its-segments-providers` whole (cites none) | `report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_admitted`, table, log (bridge-pay's sent report admitted) |
+  | `received-report-is-its-partys-statement`: `about` against the pair's segment again | both admitted and refused named tests, table, `every_entry_of_a_complete_log_is_admitted_on_what_came_before_it`, log (the world's replay refuses its pair) |
+  | the schema's `segment` required on a report | `report_pair_whose_two_reports_are_one_partys_is_invalid`, fixtures |
+
+  The sent row's re-pointing (`sent.segment` for `pair.segment`) is no rule of its own: the check makes them equal.
+- **Local checks** (one lock hold, at `2f91c3d4`): `cargo fmt --all -- --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test -p
+  rutent-contract-guard`, the guard against `origin/develop` ("1730 changed path(s) … no violations"), `cargo test` of
+  `rutent-contracts` and `rutent-core-audit`, and, since their tests read the admission fixtures, `rutent-stm`'s
+  `log_oracle`, `rutent-core-authz --lib` and `rutent-scenarios`' `person_records`; plan-check and tag-check
+  `--strict` (0 findings, 2078 tests tagged); `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` of the two crates:
+  all green. One earlier run of `core-audit`'s `reopen.rs` failed `store_whose_verified_entrys_statement_was_erased_still_opens`
+  at `EvidenceStore::open` (`Unavailable`), the flake `T-020-36` saw; it passed alone and in the final run.
+
+### T-020-38, the review of `8a6854b1`: changes
+
+- **Should-fix (gap 3, worse than noted).** Both statement rows went through `statement_by` and `about_agrees`, which
+  takes a statement with no `about` on its body, so any verified statement of the right provider backed a report: on
+  the real log the reviewer had admitted, as sent, us-bank's judgement or result about nothing, and a hold or terms
+  about `tx-b1`/`p1-s1`; as received, fx-desk's judgement about nothing and an arrival notice about `tx-f2`/`p1-s2`.
+  Both rows now read `report_statement`: a new field `result` (provider-role's `result` shape) between `verified` and
+  `maker`, and `about` requiring an `about` naming the pair's order and the report's own segment, through a
+  transaction first bound to that segment (`about_the_segment`), as the showing-of-fault and charge-raise rows hold
+  theirs. Four refused cases: `--result` (a hold for the sent row, an arrival notice for the received) and
+  `--a-statement-about-nothing` (the provider's result, about nothing) on each row (`scratchpad/f020zo/gen2.py`).
+  `core-audit`'s `a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segments` runs the
+  reviewer's eight shapes on the real log, each refused (a judgement about the segment the log leaves unverified, a
+  judgement naming no transaction, so `verified` refuses it first). Gap 3 above is closed.
+- **Low.** `core-audit`'s report-pair test now refuses bridge-pay's result about `p1-s2` (appended and signed on the
+  real log) as the received report: the received side of `report-pair-is-by-its-segments-providers`.
+- **Rule-offs** (as before, from `2a7b1bca`; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the statement rows' `result` (any shape) | `report_pair_whose_received_report_is_about_the_next_segment_of_the_route_is_admitted`, table, `a_report_pair_on_the_log_rests_only_on_its_partys_results_about_its_own_segments` |
+  | their `about` required and bound (back to `about_agrees`) | the same three (on the log, us-bank's result about nothing admitted as the sent report) |
+  | `report-pair-is-by-its-segments-providers` on the received side alone | the admitted named test, table, `a_report_pair_of_a_segment_and_the_next_is_admitted_on_the_log_and_any_other_refused` (bridge-pay's received report admitted) |
+- **Local checks** (one lock hold, at `2a7b1bca`): the same set as the first round, all green; the guard against
+  `origin/develop` "1734 changed path(s) … no violations", plan-check and tag-check `--strict` 0 findings (2079 tests
+  tagged).
