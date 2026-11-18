@@ -881,8 +881,8 @@
      no segment and no transaction, where its `about` names the node its body names, it lists at least one segment, and
      every segment's transaction is first bound to that order and asked under for it by the operator's own verified
      `operation` question: one naming another order's transaction, one the log binds to none, one Core never asked
-     under, or one whose questions another maker asked, is attributed to no one about it. Eleven attribution cases
-     (three verified, eight unverified), and two tests on `core-audit`'s log. (REQ-ORD-41)
+     under, or one whose questions another maker asked, is attributed to no one about it. Twelve attribution cases
+     (three verified, nine unverified), and two tests on `core-audit`'s log. (REQ-ORD-41)
   2. A record names its node: `About.node`, named only by an `inner-segments` record, about no segment or
      transaction (the schema's `if`/`then` and `StatedEntry::check`), and verified against its body.
      `replay-cites-its-nodes-records` gains three fields: `node` (one the replay replayed and didn't find silent),
@@ -895,7 +895,7 @@
      refuses one an earlier stated entry or another late status's effect names. `core-orch`'s `Reversals::ask_status`
      draws it before policy decides. One invalid fixture and three admission cases; the status fixtures name
      `tx-status-1`. (REQ-ORD-1, REQ-ORD-38)
-  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 669 admission cases and 48 attribution cases; 107
+  Twenty-eight schemas, 158 valid fixtures, 162 invalid ones, 669 admission cases and 49 attribution cases; 107
   relations and 5 closing ones, three stated. Outside `contracts/`: `core-orch`'s `reversal/` (the late status's
   transaction) and every `About` literal Core and its tests build (`node: None`), `core-authz`'s two `AskStatus`
   literals, `core-audit`'s log tests, and the scenarios' two `About` literals. (DEC-4, DEC-20, T-020-36)

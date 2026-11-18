@@ -4807,3 +4807,119 @@ named below.
   `a_class_grants_changes_are_dated_in_the_order_the_log_records_them` (`core-audit`'s `tests/log.rs`): red before the
   fix on the reviewer's probe (a revocation dated the 4th behind the grant of the 5th admitted).
 
+
+## T-020-36: `core-internal`'s round after `T-020-30`
+
+Branch `f-020/t-020-36-core-internal-round`, from `m3` at `430b73dd` (with `T-020-30` and `T-020-27` merged). Edits
+`contracts/` (core-internal, a `DEC-20` path: it waits for the owner's click at the release into `main`), and the
+consumer files named below.
+
+- **Versioning: folded into 1.0.0, no bump** (lesson 7): core-internal 1.0.0 isn't on `develop`. The changelog's last
+  entry names each item by number; `contracts/CHANGELOG.md` takes a line.
+- **Item by item.**
+  1. *A node's record verified about an order* (`T-020-32`'s blocker). `attribute`'s step 6 verified an entry about an
+     order only through a transaction its body names at top level; an `inner-segments` body names its transactions
+     only inside `segments[]` (and denies unknown fields), so the record was never verified about the order it binds.
+     Step 6 now reads such a body (`inner_segments_of`, parsed as provider-role's `InnerSegments`): about an order, no
+     segment, no transaction, it is verified only where `about.node` is the body's `node`, `segments` isn't empty, and
+     every segment's transaction is first bound to that order (`binding_of`, the binding `transaction-belongs-to-one-
+     order` keeps) **and** asked under for it by the operator's own verified `operation` question (`asked_under`).
+     About its node alone, or about nothing, it is verified as before and binds no order. Every other shape is read as
+     before, and names no node.
+  2. *A record names its node; the replay holds it to the node's publisher, once.* `About.node: Option<Id>`, named only
+     by an `inner-segments` record, about no segment or transaction (`StatedEntry::check`, and the schema's `if`/`then`
+     on `stated-entry`), and verified against the body (item 1). `replay-cites-its-nodes-records` gains `node` (one of
+     the replay's `nodes`, not one its `found` says recorded nothing), `publisher` (its maker states for the party the
+     replay's exit result states for) and `once` (no other cited record names the node). `private_node_of`, which
+     binds a node for `reversal-rests-on-its-evidence`'s `private`, binds through an `inner-segments` record only the
+     node its `about` names.
+  3. *A late status names its transaction.* `Action::AskStatus.transaction: Id`, required. New none-other row
+     `status-is-asked-under-a-fresh-transaction`: no earlier stated entry's `about` names it, nor another `ask_status`
+     effect. `core-orch`'s `Reversals::ask_status` (`reversal/mod.rs`) now claims the transaction before policy
+     decides, so the request, the decision and the effect name it; `tests/reversal.rs`'s late-status test asserts the
+     effect names `asked.transaction`.
+- **Security reading** (the brief's weight). The widened step 6 can't verify a record about an order through another
+  order's transaction (`binding_of` fixes a transaction to the first order named, and `transaction-belongs-to-one-
+  order` refuses a later other), through one no entry binds, through one only a provider's own statement binds (Core
+  never asked under it), or vacuously (no segments). The node is the body's own, so a writer can't relabel a record of
+  one node as another's. A non-publisher's record binds no node: the replay row holds it to the exit's publisher, and
+  `private_node_of` lets a record bind only the node it names, under the publisher its key states for (attribution's
+  step 3).
+- **Defaults** (reversible, each failing closed):
+  - fold into 1.0.0;
+  - "of that order" is first bound to it and asked under for it by the operator's own verified `operation`, stricter
+    than the binding alone: a record of a publisher's internal transaction, or appended before Core's questions, is
+    attributed to no one about the order;
+  - a node a replay replayed belongs to the publisher its exit's result states for, as `private_node_of` already binds
+    it; a sibling provider of that publisher may sign the record;
+  - a record of a node the replay found silent is refused (`node`), beside the Rust count;
+  - an `inner-segments` record about its node alone, or about nothing, stays verifiable and binds nothing;
+  - the late status's transaction is drawn before policy decides; a refused ask leaves it unused, never drawn again;
+  - the freshness row reads stated entries' `about.transaction` and other `ask_status` effects, not hand-overs
+    (which follow the effect) nor decisions (which name the same action).
+- **Consumer lines** (to compile): `node: None` in every `About` literal: `components/core-orch/src/{arrival/confirm.rs,
+  arrival/mod.rs, quote/held.rs, reversal/mod.rs, rounds/mod.rs, segments/mod.rs, snapshot/statements.rs,
+  stuck/mover.rs}`, `components/core-orch/tests/{intake_holds.rs, quote.rs, rounds.rs}`,
+  `conformance/scenarios/tests/{assembly_real_wallet.rs, segments_support/mod.rs}` (`F-024`'s); a transaction in
+  the two `AskStatus` literals of `components/core-authz/src/{engine/mod.rs, roles/tests.rs}` (`F-021`'s). New tests in
+  `components/core-audit/tests/log.rs` (`F-022`'s).
+- **Real log's path.** `core-audit`'s `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log`
+  and `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` run the contract's world on `AuditLog`, sign each
+  record for real with its maker's statements key, keep its bytes, and append it through the general handle: fx-desk's
+  record of `ledger-in` under `tx-f1` and `tx-f2` (Core's questions for `ord-1`) is verified, one naming `ord-2`'s
+  `tx-yes-2` or an unbound transaction isn't; a replay citing the verified record is admitted, one citing the
+  unverified one, us-bank's (another publisher than the exit's fx-desk), two of one node or one of a node not
+  replayed is refused, and one record of each of two nodes is admitted.
+- **Histories the log refused, sorted.** None new: every world case, `T-020-30`'s and `T-020-27`'s tests pass with only
+  the shape's literals changed. `T-020-30`'s three `inner-segments` admission cases now name their node.
+- **Order of work.** Shapes, then the rules, then the fixtures (`scratchpad/f020zh/gen.py`) and the named tests, which
+  passed on their first run; their red is shown by the rule-offs below, each run from the committed round. The first
+  run left two rules green; each got a case (`6ba57ed0`) and went red on the second run.
+- **Gaps, with owners.**
+  1. `T-020-32` appends each record about its order and node after the operations it lists, one per order: a book
+     spanning orders, or a segment under a transaction Core never asked under, stays unverified about the order (by
+     design). Owner: `T-020-32`.
+  2. A replay's nodes are bound to its exit's publisher. A run of private nodes of two publishers, or an exit made by
+     another publisher's provider, would need each node's publisher from the catalogue's private-node declarations,
+     which the log doesn't hold. Owner: the lead, a later `F-020` round if `T-020-32` meets one; residual for
+     `T-025-05`.
+  3. `private_node_of`'s replay branch still binds through the exit's result alone; the records past it add nothing to
+     the binding while they must state for the same publisher. Owner: `T-020-32`, if its scenarios need otherwise.
+  4. The scenario suite beyond the binaries run here runs in CI.
+- **Rule-off table** (each switched off alone from the committed tree, its tests run under a 600 s alarm through the
+  lock, the file restored with `git checkout`; script `scratchpad/f020zh/ruleoff.py`; none hung). "Table" is
+  `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "attribution" is
+  `the_log_not_the_writer_attributes_a_stated_entry`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `attribute`: a record's transactions first bound to its order (`binding_of`) | green on the first run (the operator's question covered every case); with `--naming-a-transaction-first-bound-to-another-order` (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one`, attribution |
+  | `attribute`: asked under by the operator's own question | the same two |
+  | `attribute`: no segment transaction read at all | the same two |
+  | the same, on `core-audit`'s log | `a_publishers_record_of_a_nodes_segments_is_verified_about_its_order_on_the_log` |
+  | `attribute`: at least one segment | the same two contract tests |
+  | `attribute`: `about.node` is the body's, about an order | the same two |
+  | `attribute`: `about.node` is the body's, about its node alone | the same two |
+  | `attribute`: no node on another shape | green on the first run (`StatedEntry::check` refuses first); with the in-memory probe (`6ba57ed0`): `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `attribute`: the widening whole (records read as before) | `inner_segments_record_about_an_order_whose_transactions_are_all_of_that_order_is_verified`, attribution |
+  | `StatedEntry::check`: a node only on a record | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `every_invalid_fixture_is_rejected_by_the_rust_types_too`, `inner_segments_record_naming_a_transaction_of_another_order_is_not_verified_about_this_one` |
+  | `replay-cites-its-nodes-records`'s `node` | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | its `node`, the silent nodes alone | the same two |
+  | its `publisher` | the same two |
+  | its `once` | table, `replay_citing_two_records_of_one_node_is_refused` |
+  | its `publisher`, on `core-audit`'s log | `a_replay_on_the_log_cites_one_record_per_node_by_its_publisher` |
+  | its `once`, on `core-audit`'s log | the same |
+  | `private_node_of`: a record binds only its node | table, `replay_citing_a_node_record_by_another_than_that_nodes_publisher_is_refused` |
+  | `status-is-asked-under-a-fresh-transaction` whole (cites none) | table, `late_status_asked_without_its_transaction_is_invalid` |
+  | its stated entry naming the transaction | the same two |
+  | its other late status's effect | the same two |
+  | the schema's `transaction` required on `ask_status` | `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, `late_status_asked_without_its_transaction_is_invalid` |
+  | `core-orch`: the action names the transaction drawn (another fresh id instead) | `late_status_of_a_segment_is_asked_under_a_fresh_transaction_and_kept_as_the_providers_statement` |
+- **Local checks** (one lock hold, at `6ba57ed0` with these notes): `cargo fmt --all -- --check`, `cargo clippy
+  --workspace --all-targets -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test
+  -p rutent-contract-guard`, the guard against `origin/develop` ("1671 changed path(s), no violations"), plan-check
+  and tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-authz` (and its `--lib`),
+  `rutent-core-orch` and `rutent-scenarios`, and `cargo doc -D warnings` of the five: all green. `rutent-core-audit`:
+  all green but one run of `reopen.rs`'s `store_holding_a_verified_entry_no_kept_statement_bears_out_is_refused_on_opening`,
+  which failed opening the evidence store's files (`Unavailable`, at the test's `EvidenceStore::open`) and passed three
+  runs of its own binary after; it reads no file this row touched, so a flake for CI to confirm.
