@@ -105,7 +105,7 @@ impl Core {
         };
         let routed = {
             let mut asking = Asking {
-                platform: &mut self.fleet.platform,
+                fleet: &mut self.fleet,
                 clock: &self.clock,
             };
             let mut charges = self.policy.clone();

@@ -9,7 +9,7 @@
 //! | `ActsFor`, `Permissions` | the deployment's registers ([`Registers`]), which `F-030` keeps in production |
 //! | `Account`, `Holder` | the account's reserve's register of accounts, the deployment's in the assembly ([`Registers::accounts`]); no delegation is registered |
 //! | `Requester`, `OrderOrigin` | intake's record of the order (`Intake::record`), copied once the order opens |
-//! | `OrderParties` | the order's acceptance, as the log holds it |
+//! | `OrderParties` | the order's acceptance, as the log holds it; before it, intake's record of the order |
 //! | `SegmentOrder` | the plan that lists the segment: the order's `route_chosen` input, as the log holds it |
 //! | `SegmentProvider` | the effect that moved value on the segment, as the log holds it |
 //! | `Showing` | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, received no later than the acceptance is decided |
@@ -189,6 +189,14 @@ impl Records {
                 order: o, parties, ..
             } if &o == order => Some(parties),
             _ => None,
+        });
+        // Before the acceptance, the parties intake recorded when it opened the order: Core asks about a person while
+        // it routes, which is before the order is accepted (`T-024-12`).
+        let parties = parties.or_else(|| {
+            self.orders
+                .borrow()
+                .get(order.as_str())
+                .map(|record| record.parties.clone())
         });
         match parties {
             // Its requester, beneficiary or payer, as the log's `customer-read-is-of-its-own-order` holds it: the
