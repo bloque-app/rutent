@@ -387,3 +387,94 @@ Run 44242098797 (commit `19fb8314`, `jail-probes`), per probe, control then with
 
 The release scan found no layer name in the release provider. Green run's id (the whole job, with the resolved-features
 check fixed): run `44243240737` (`jail-probes`, at `943fad16`: 14 passed, 0 failed), with `ci` run `44243240720` green at the same commit.
+
+## T-025-03
+
+`EXP-1`'s `G-26` (no provider credential and no module state readable by a VOS space's operators) re-checked by a scan,
+`THR-79`, `REQ-AUD-6`. Row 24; adds a step to `.github/workflows/stm-vos.yml` and a branch to its triggers, a `DEC-20`
+path, so it waits for the owner's click at the release into `main`. **Written on macOS: the VOS run is `stm-vos.yml`'s
+(it needs VOS's toolchain and three nodes), and its run id is recorded at the end of this section once it is green.**
+The scan itself, its controls and its refusals run on the reference host here and in `ci.yml`'s `cargo test --workspace`.
+
+- **What it scans.** `rutent_scenarios::secrets` (`conformance/scenarios/src/secrets.rs`) plants a run, plays the base
+  order twice through to its end (`full_run`) and reads, while Core is still up: every order's state and journal on the
+  host, the host's whole snapshot (halted, exported, resumed), Core's log records on its disk and the evidence store's
+  shelf on it (every kept statement); then the log as read
+  back and the inputs fed to the host. On VOS (`components/stm/vos-program/scenarios/tests/secrets.rs`) it also reads
+  every regular file under the clusters' directories, which is the nodes' state, in 1 MiB chunks that overlap.
+- **What it seeks, per kind.** Credential: a value the world holds as each provider's secret `api-key`
+  (`SimWorld::hold_secret`; the platform's lookup would give it only to that provider's outside part). Secret
+  plaintext: each provider's real private statement key, in the two forms the world holds it in (the 32 bytes and their
+  base64url text), and the operator's real signing key. Module state: a private state entry (`private/notes`) the world
+  holds for each provider. Each value is sought as it is, JSON-escaped, in lower and upper hex, in base64 and
+  base64url at each of the three alignments it can take inside a longer string, as the JSON array of bytes serde_json
+  writes a byte string as, and percent-encoded; a value under 8 bytes is refused.
+- **Where module state sits (`CMP-PROV`).** In the platform's `World` (`World::state`), in the process that runs
+  `CMP-PROV`, which is Core's own: a provider's entries are asked of it only while an outside request is in flight, and
+  its books are the journal the world keeps for its rail. `Scanned::module_state` reads it off the world after each
+  run (the test prints it), and it is none of the state machine's host (the orders' rows), Core's log or the VOS
+  nodes' files: the scan finds no value of it in any of them. In production the `World` is the deployment's store behind
+  the platform (`F-030`'s assembly); this row shows that no path of the assembled Core copies it into the state machine.
+- **The controls.** A scan that finds nothing is not shown to see unless it finds a leak, so for each kind the run is
+  repeated with the boundary open once (`run_leaking`): before the surfaces are read, a copy of an input that opens an
+  order is submitted to the live host under an order id, a record id and a decision record that carry the value, which is what a Core
+  that wrote a credential into an input would do. The scan must find that value, and only that one, in the host's
+  journal and snapshot (reference host, `scan_finds_each_kind_of_value_let_through_the_state_machines_boundary`) and, on
+  three VOS replicas, **also in the nodes' own files**
+  (`scan_finds_each_kind_of_value_let_into_three_vos_replicas_journal_and_files`): if it isn't there, VOS keeps its
+  state in a form the scan can't read (compressed, encrypted) and the clean scan of those files meant nothing, so the
+  test fails. The redaction control: `SecretValue`'s `Debug` prints `<redacted>`, so a record that formats it that way
+  carries nothing, and the scan finds the plaintext in a record that wrote `as_str()` instead
+  (`scan_finds_a_secret_written_with_its_redaction_off`). The scan's own refusals (no value, a short value, no
+  surface, an empty surface) are tested, so a scan of nothing can't pass.
+- **Defaults (reversible, fail closed).** A scan with no value, a value under `MIN_LEN` (8), two values of one name, no
+  surface or an empty one fails. A clean scan of the nodes' files needs at least one file and one byte. The run must
+  complete (every order hosted, no route stopped, a non-empty log) or the scan says nothing. Three seeds (`1,2,3`)
+  for the clean run, one per kind for the controls. The leaked input rides in an order id, a record id and a payload field.
+- **Gaps and owner items.** (1) **The credential and the private state now travel** (review of `a3c3172c`). The simulated providers declare
+  the secret `api-key` on `sim.settle` and in the outside part's `secrets` (`conformance/scenarios/src/sim/fleet.rs`);
+  the guest's outside part (`components/prov/module-guests/sim/`, a `T-024-01` file) resolves it through the proxy
+  (`proxy::look-up`) for each settlement and sends it as a sensitive `authorization: Bearer` header on the rail
+  call, and reads the provider's `private/notes` at the start of each operation and hands it back to no one. The
+  platform's records of both reach Core's log (`secret_lookup`, `state_read`: `run_looks_the_planted_credential_up_and_reads_the_private_state_it_holds`),
+  and the world's rail receives the credential in a header; the clean scan finds none of the planted values in
+  the journal, the log, the shelf or the nodes' files. What still needs `F-030`: the production `CredentialProxy`'s
+  own use records and the deployment's store (the assembly's world is a simulation, `NoProxy` serves the segments),
+  so the scan shows no path of the assembled Core copies a resolved value, not that the production proxy's records
+  keep it out. Owner: `F-030` re-runs the scan against them; `T-025-04` cites this limit. The real keys flow
+  too (each provider's statement key is resolved for every statement it signs; the operator's signs every decision).
+  (2) The scan sees a plaintext value in the forms above, not one a record
+  encodes some other way (compression, a cipher, a hash of a part), and not a leak by length or by timing. Owner:
+  `T-025-05`'s review. (3) The module state the simulated modules also read (`book`, the deployment) is not
+  seeked: the book repeats what the log records (ids and amounts), so a hit would not tell a leak from the record
+  itself. (4) The VOS nodes' directories are read after Core is dropped and the cluster stopped, so the files
+  are what the nodes left, not a live read. (5) `stm-vos.yml`'s earlier scenarios step now names its test targets
+  (`--test scenarios --test wire`) so the scan's two tests run once, in their own step. (6) `REQ-AUD-6` also covers the holding-account balances and the like, which this scan does not seek (it seeks
+  credentials, secrets and module state): owner `T-025-04`, to restate that coverage with this row's limits. (7) The VOS test and the
+  workflow step are only type-checked here (`cargo check --features vos` with the stable toolchain); they have not run.
+- **What only CI shows.** The two VOS tests (`vos journal after a full run holds no credential or module state` and its
+  controls) and the step that runs them: whether the nodes' files hold the journal's bytes in a form the scan reads,
+  and so whether a clean scan of them is worth anything, and whether the cluster's files fit the runner's disk and
+  time. The run id goes here.
+- **Rule-off table.** Each rule of the scan switched off once, on the reference host, and the test that went red:
+
+| Rule switched off | Test that went red | Seen |
+|---|---|---|
+| every form but the raw one | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| base64 at alignments 1 and 2 | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| the 8-byte minimum | `scan_with_nothing_to_seek_or_nothing_to_look_in_is_refused` | red |
+| the refusal of an empty surface | `scan_with_nothing_to_seek_or_nothing_to_look_in_is_refused` | red |
+| the refusal of no surface | `scan_with_nothing_to_seek_or_nothing_to_look_in_is_refused` | red |
+| the chunks' overlap | `scan_of_a_directory_finds_a_value_in_a_file_and_across_a_chunk_boundary` | red |
+| planting (no value seeded) | `reference_run_after_planting_holds_no_credential_secret_or_module_state` | red |
+| Core's log records not read | `reference_run_after_planting_holds_no_credential_secret_or_module_state` | red |
+| both hex forms | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| the JSON-escaped form | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| the JSON byte-array form | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| the percent-encoded form | `scan_finds_a_value_in_each_form_a_record_writes_it` | red |
+| the evidence shelf not read | `reference_run_after_planting_holds_no_credential_secret_or_module_state` | red |
+| the leak's payload field | `leaked_input_carries_the_value_in_its_payload_and_not_only_in_its_ids` | red |
+| the host's snapshot not read | `scan_finds_each_kind_of_value_let_through_the_state_machines_boundary` | red |
+| the boundary opened once with no value in the input (the control's leak) | `scan_finds_each_kind_of_value_let_through_the_state_machines_boundary` | red |
+| `SecretValue`'s redaction (`contracts/`, not ours to edit) | the control formats the value both ways; the rule was not switched off | not switched |
+| the nodes' files not read, or not readable by the scan | `scan_finds_each_kind_of_value_let_into_three_vos_replicas_journal_and_files` | CI only |

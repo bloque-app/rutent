@@ -284,6 +284,24 @@ impl Scenario {
         environment: &mut dyn Environment,
         swap_to: Box<dyn Environment>,
     ) -> Run {
+        self.play_probed(seed, environment, swap_to, &mut |_| {}, &mut |_| {})
+    }
+
+    /// [`Scenario::play`], with `before` run on Core as it is put together, before any step, and `after` run on it as
+    /// the steps left it, if no planted crash stopped it, before the run is read: a test that plants something in
+    /// Core's world, or reads what Core and its state machine hold (`T-025-03`'s scan).
+    ///
+    /// # Panics
+    ///
+    /// As [`Scenario::play`].
+    pub fn play_probed(
+        &self,
+        seed: u64,
+        environment: &mut dyn Environment,
+        swap_to: Box<dyn Environment>,
+        before: &mut dyn FnMut(&mut Core),
+        after: &mut dyn FnMut(&mut Core),
+    ) -> Run {
         let config = self.config(seed);
         let mut core = Core::assemble(&config, environment).unwrap_or_else(|e| {
             panic!(
@@ -291,6 +309,7 @@ impl Scenario {
                 self.name
             )
         });
+        before(&mut core);
         core.swap_to = Some(swap_to);
         let mut orders: Vec<Id> = Vec::new();
         let mut ran: Vec<Id> = Vec::new();
@@ -347,6 +366,9 @@ impl Scenario {
                 }
                 Err(panic) => std::panic::resume_unwind(panic),
             }
+        }
+        if !crashed && !down {
+            after(&mut core);
         }
         let mut run = Run::read(self, seed, core, orders, down);
         run.crashed = crashed;

@@ -11,7 +11,7 @@ use rutent_conformance::role::{
 };
 use rutent_conformance::signing::{Signing, public_key, real, sign_statement};
 use rutent_conformance::sim::{
-    BEGIN, BOOK, CHAIN, DEPLOYMENT_KEY, SETTLE, Spec, Standin, chain_host, rail_host,
+    BEGIN, BOOK, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, SETTLE, Spec, Standin, chain_host, rail_host,
 };
 use rutent_contracts::module_interface::{
     AdmissionArtefact, BinaryFormat, BinaryPart, Declaration, Digest, DigestAlgorithm, DigestValue,
@@ -657,11 +657,11 @@ pub fn declaration(
             "operations": [
                 { "name": BEGIN, "destinations": [], "secrets": [] },
                 { "name": BOOK, "destinations": [], "secrets": [] },
-                { "name": SETTLE, "destinations": ["rail"], "secrets": [] },
+                { "name": SETTLE, "destinations": ["rail"], "secrets": [CREDENTIAL] },
                 { "name": CHAIN, "destinations": chains, "secrets": [] },
             ],
             "destinations": destinations,
-            "secrets": [],
+            "secrets": [CREDENTIAL],
             "calls": [],
             "statement_key": statement_key,
         },

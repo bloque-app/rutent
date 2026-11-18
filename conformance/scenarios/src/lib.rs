@@ -11,6 +11,7 @@
 //! - [`harness`]: scenarios as given, when and then, each accepting an `AC-*`, with faults injected and runs seeded.
 //! - [`checks`]: `T-024-02`'s four checks, which the reference host's run and the VOS replicas' run share.
 //! - [`kit`]: what every scenario kit shares.
+//! - [`secrets`]: `T-025-03`'s scan for a credential, a secret and a module's state in what a run leaves.
 //! - [`sim`]: the simulated providers' platform side (`T-024-01`).
 //!
 //! The policy calls whose rows haven't built them on the engine yet (authorisations, charges, questions about
@@ -61,6 +62,7 @@ pub mod assembly;
 pub mod checks;
 pub mod harness;
 pub mod kit;
+pub mod secrets;
 pub mod sim;
 
 use rutent_contracts::core_internal::calls::{

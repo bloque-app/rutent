@@ -61,6 +61,14 @@ pub const DEPLOYMENT_KEY: &str = "deployment";
 /// one takes the behaviour out of the queue, which is how a script is consumed.
 pub const SCRIPT_PREFIX: &str = "script/next";
 
+/// The secret a simulated provider's rail takes as a bearer header: declared on [`SETTLE`], resolved by the outside part
+/// through the credential proxy (`T-025-03`).
+pub const CREDENTIAL: &str = "api-key";
+
+/// The state key of the provider's private notes, which its outside part reads on each operation and never hands
+/// back (`T-025-03`).
+pub const PRIVATE_NOTES_KEY: &str = "private/notes";
+
 /// The state key of the journal's length, so a module can tell whether it holds the books without reading them.
 pub const BOOK_LENGTH_KEY: &str = "book/length";
 

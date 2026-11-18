@@ -215,15 +215,15 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, DEPLOYMENT_KEY, SETTLE, chain_host,
-        rail_host, script_key,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY,
+        PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 
     wit_bindgen::generate!({ world: "outside", path: "../../src/module/wit" });
 
     use rutent::binding::egress::{self, Scheme};
-    use rutent::binding::state;
+    use rutent::binding::{proxy, state};
 
     struct Part;
 
@@ -239,6 +239,9 @@ mod outside {
             let arguments = &request["arguments"];
             let body = match operation {
                 BEGIN => {
+                    // The provider's own private notes: read, and never handed back (`T-025-03`: a read of module
+                    // state the platform records, whose value no record may carry).
+                    let _ = state::read(PRIVATE_NOTES_KEY);
                     let key = script_key(
                         arguments["kind"].as_str().unwrap_or_default(),
                         arguments["dry_run"].as_bool().unwrap_or(false),
@@ -254,12 +257,16 @@ mod outside {
                 BOOK => json!({ "book": state::read(BOOK_KEY) }),
                 SETTLE => {
                     let provider = arguments["provider"].as_str().unwrap_or_default();
-                    json!({ "egress": send(operation, &rail_host(provider), &arguments["entry"]) })
+                    // The rail takes the provider's credential as a bearer header (`T-025-03`): resolved through
+                    // the proxy for this transaction and operation, as a module's outside part resolves it. A
+                    // world holding none refuses, and the call goes without it.
+                    let credential = proxy::look_up(transaction, operation, CREDENTIAL).ok();
+                    json!({ "egress": send(operation, &rail_host(provider), &arguments["entry"], credential) })
                 }
                 CHAIN => {
                     let movement = &arguments["movement"];
                     let host = chain_host(movement["network"].as_str().unwrap_or_default());
-                    json!({ "egress": send(operation, &host, movement) })
+                    json!({ "egress": send(operation, &host, movement, None) })
                 }
                 _ => json!({}),
             };
@@ -273,7 +280,7 @@ mod outside {
     }
 
     /// One outbound call to `host`, the destination the operation declares, carrying `body`; how it ended.
-    fn send(operation: &str, host: &str, body: &Value) -> &'static str {
+    fn send(operation: &str, host: &str, body: &Value, credential: Option<String>) -> &'static str {
         match egress::call(
             operation,
             Scheme::Https,
@@ -282,7 +289,14 @@ mod outside {
             &egress::Request {
                 method: egress::Method::Post,
                 path: "/".to_owned(),
-                headers: Vec::new(),
+                headers: credential
+                    .map(|value| egress::Header {
+                        name: "authorization".to_owned(),
+                        value: format!("Bearer {value}"),
+                        sensitive: true,
+                    })
+                    .into_iter()
+                    .collect(),
                 body: body.to_string(),
             },
         ) {

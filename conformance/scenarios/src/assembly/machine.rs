@@ -169,6 +169,11 @@ impl Feed {
         &*self.machine
     }
 
+    /// The machine, to call.
+    pub(crate) fn machine_mut(&mut self) -> &mut dyn Machine {
+        &mut *self.machine
+    }
+
     /// The environment it runs in now.
     pub fn environment(&self) -> &str {
         &self.environment
