@@ -85,13 +85,14 @@ mod charges;
 mod drain;
 pub(crate) mod journal;
 mod judge;
+mod measured;
 mod ports;
 mod sign;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Decisions, Evidence, GeneralEntry, Log, Operator, Reads,
+    AppendFailure, Decisions, Evidence, GeneralEntry, Log, Measures, Operator, Reads,
 };
 use rutent_contracts::core_internal::{
     About, Action, Actor, ActorKind, Answer, CatalogueChange, DecisionRequest, Effect, Entry,
@@ -618,6 +619,10 @@ struct InFlight {
     /// The judgements those inputs rest on, as declared when it was handed over: the provider's reliance on each is
     /// appended before anything of the segment is, and before its operation is sent (`REQ-CPL-12`, `T-020-23`).
     relies: Vec<Judgement>,
+    /// What its operation priced, to measure against what it came to (`T-020-31`).
+    priced: measured::Priced,
+    /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
+    heard: Vec<measured::Heard>,
 }
 
 /// One drain, kept whole until each of its items is appended.
@@ -670,6 +675,8 @@ pub struct Segments {
     /// The judgements an order's inputs rest on, and the reliance entries written for them (`REQ-CPL-12`,
     /// `T-020-23`).
     reliances: Reliances,
+    /// The measure records segments' endings and completed reversals gave, for the writer (`T-020-31`).
+    measuring: measured::Measuring,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -732,6 +739,83 @@ impl Segments {
         self.reliances
             .write(log, core, at, order, provider, judgements)
             .map(|_| ())
+    }
+
+    /// Hands `measures` the records the segments' endings and the completed reversals gave since the last call,
+    /// oldest first, and answers how many it took (`REQ-AUD-7`, `T-020-31`). A measure is a detection
+    /// (`ADR-0009`): a record the log can't take now waits, with those after it, for the caller's next call, as any
+    /// other append the caller tries again, and one it refuses is dropped ([`Segments::measures_refused`]). Nothing
+    /// of a segment, its outcome, its entries or what it moved, depends on this call or on its answer. The assembly
+    /// calls it after each of its entry points that can end a segment or complete a reversal.
+    pub fn write_measures(&mut self, measures: &mut dyn Measures) -> usize {
+        self.measuring.write(measures)
+    }
+
+    /// How many measure records wait for [`Segments::write_measures`]: the log couldn't take them yet, or the
+    /// writer isn't called.
+    pub fn unmeasured(&self) -> usize {
+        self.measuring.waiting()
+    }
+
+    /// How many measure records the log refused, which can never be written.
+    pub fn measures_refused(&self) -> usize {
+        self.measuring.refused()
+    }
+
+    /// Keeps the records the end of the segment at `at` gives, with `outcome` as how it ended and `cited` besides
+    /// its effect and its stated result as what they rest on. Nothing fails: a measure that can't be built is none.
+    fn measure_end(
+        &mut self,
+        clock: &dyn Clock,
+        at: &(String, String),
+        outcome: &SegmentOutcome,
+        cited: Option<&Receipt>,
+    ) {
+        let (Some(flight), Ok(when)) = (self.flights.get(at), now(clock)) else {
+            return;
+        };
+        let (Some(effect), Some(order), Some(segment)) = (
+            flight.effect.as_ref().map(|e| e.receipt.clone()),
+            Id::new(at.0.as_str()),
+            Id::new(at.1.as_str()),
+        ) else {
+            return;
+        };
+        let mut cites = vec![effect];
+        for receipt in flight
+            .steps
+            .get("stated")
+            .and_then(|s| s.receipt.as_ref())
+            .into_iter()
+            .chain(cited)
+        {
+            if !cites.contains(receipt) {
+                cites.push(receipt.clone());
+            }
+        }
+        let ending = measured::Ending {
+            order: &order,
+            segment: &segment,
+            provider: &flight.provider,
+            priced: &flight.priced,
+            heard: &flight.heard,
+            outcome,
+            cites,
+            at: when,
+        };
+        self.measuring.ended(&ending);
+    }
+
+    /// Keeps the record of `segment`'s reversal, completed at `at` on the entries `cites`.
+    pub(crate) fn measure_reversal(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        provider: &Id,
+        at: Timestamp,
+        cites: Vec<Receipt>,
+    ) {
+        self.measuring.reversed(order, segment, provider, at, cites);
     }
 
     /// How many drains wait to be appended, whole or in part.
@@ -1201,6 +1285,7 @@ impl Segments {
             Observed::SegmentFailed {},
         )?;
         self.finish(&at, &SegmentOutcome::Failed)?;
+        self.measure_end(clock, &at, &SegmentOutcome::Failed, Some(&result));
         Ok(result)
     }
 
@@ -1802,6 +1887,8 @@ impl Segments {
                 late: BTreeMap::new(),
                 carries,
                 relies,
+                priced: measured::Priced::of(operation),
+                heard: measured::hear(live.record, operation),
             },
         );
         self.advance(parts, live, &at, operation, true)
@@ -1954,6 +2041,7 @@ impl Segments {
         let outcome = self.account(parts, live, at)?;
         if is_final(&outcome) {
             self.finish(at, &outcome)?;
+            self.measure_end(parts.clock, at, &outcome, None);
         } else {
             self.flight_mut(at)?.outcome = Some(outcome.clone());
         }
@@ -2535,13 +2623,12 @@ impl Segments {
             }
         };
         let evidence = self.append_graded(parts.log, &at)?;
-        self.finish(
-            &at,
-            &SegmentOutcome::Settled {
-                amount_out,
-                evidence,
-            },
-        )?;
+        let settled = SegmentOutcome::Settled {
+            amount_out,
+            evidence,
+        };
+        self.finish(&at, &settled)?;
+        self.measure_end(parts.clock, &at, &settled, Some(&stated));
         self.flight(&at)?
             .steps
             .get("result: done")

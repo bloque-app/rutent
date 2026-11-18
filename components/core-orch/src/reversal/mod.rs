@@ -420,6 +420,8 @@ struct Showing {
 /// One reversal: owed, or of an undone start.
 #[derive(Debug, Clone)]
 struct Reversal {
+    /// The provider whose segment is reversed: the one measured by its reversal (`T-020-31`).
+    provider: Id,
     owing: Option<Owing>,
     carrier: Carrier,
     question: Option<Question>,
@@ -1671,6 +1673,7 @@ impl Reversals {
         self.reversals
             .entry(key(at.order, at.segment))
             .or_insert_with(|| Reversal {
+                provider: provider.clone(),
                 owing: None,
                 carrier: Carrier::Provider(provider.clone()),
                 question: None,
@@ -1904,6 +1907,17 @@ impl Reversals {
         let recorded = completion.recorded.clone();
         reversal.completion = None;
         reversal.completed = Some(done.clone());
+        // The measure of it, kept for the writer: what it rests on is the confirmation and the input that recorded
+        // it. A measure is a detection: no failure of it touches the reversal (`ADR-0009`).
+        if let Ok(when) = journal::now(parts.clock) {
+            parts.segments.measure_reversal(
+                at.order,
+                at.segment,
+                &reversal.provider,
+                when,
+                vec![done.statement.clone(), done.input.clone()],
+            );
+        }
         parts.segments.observe(parts.clock, &recorded);
         parts.exposures.release(at.order, at.segment);
         if let Some(owing) = &reversal.owing {
