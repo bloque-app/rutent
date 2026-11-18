@@ -27,7 +27,7 @@ struct LateRecord {
 impl Grading for LateRecord {
     fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
         self.asked += 1;
-        if self.asked < 2 {
+        if self.asked != 2 {
             return Vec::new();
         }
         vec![ToKeep {
