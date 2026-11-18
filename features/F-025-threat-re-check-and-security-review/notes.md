@@ -479,3 +479,169 @@ The scan itself, its controls and its refusals run on the reference host here an
 | the boundary opened once with no value in the input (the control's leak) | `scan_finds_each_kind_of_value_let_through_the_state_machines_boundary` | red |
 | `SecretValue`'s redaction (`contracts/`, not ours to edit) | the control formats the value both ways; the rule was not switched off | not switched |
 | the nodes' files not read, or not readable by the scan | `scan_finds_each_kind_of_value_let_into_three_vos_replicas_journal_and_files` | CI only |
+
+## T-025-04
+
+The threat re-check of SAD §6 (`ARCHITECTURE.md` §6, "Threat-model revisit"), re-run on 2026-11-18 at `m3`'s `3d9b6a45`,
+on the row of `T-008-04`'s draft (`experiments/2026-11-07-module-format/drafts/thr-85-recheck.md`) and the evidence
+of `T-025-01`, `T-025-02`, `T-025-03` and `T-025-06`, above, and of the rows named per area. **Docs only: no code, no
+test and no contract changes; `ARCHITECTURE.md` and `SPEC.md` are not edited.** The amendments are drafted in
+`amendments.md`, beside this file, for the owner. The reading follows `T-025-01` to `T-025-03`'s own: a status rests on
+a test or a note that is cited, and on a CI run only where the note records its id.
+
+### Evidence in one place
+
+| Evidence | What it shows | Run or place |
+|---|---|---|
+| `T-025-01`'s reading of 2026-11-17 | 94 advisories against `bytecodealliance/wasmtime`; none reachable with the engine's configuration; the AVX advisory not affected; `engines_compile_target_enables_no_avx_feature`, `engine_leaves_off_the_proposals_the_runtime_advisories_of_2026_11_16_need` | above, `T-025-01` |
+| `T-025-06` | Wasmtime 48.0.9, the release that fixes the six advisories whose ranges included 48.0.8; none names 48.0.9; `pinned_runtime_is_the_patched_release`; machine-code digests re-derived on another vendor | `ci` job `134220782586` and `rederive` job `134247456427` of run `44134656776`, at `0f523b38` (`rederive`: GenuineIntel against a reference made on AuthenticAMD, artifact `14353433711`) |
+| `T-025-02` | Each of the jail's layers refused the hostile act alone, each against a control without it; `G-05`'s `RLIMIT_AS` on the shipped provider; no layer name in the release build | `jail-probes` run `44242098797` at `19fb8314` (**red**: the descriptor control was fixed in `943fad16`; its per-probe table is above); green run `44243240737` at `943fad16`, 14 passed, 0 failed, with `ci` run `44243240720` green at the same commit; and at this row's head `8c1dbcb3`, `jail-probes` run `44317628090` (14 passed, 0 failed) with `ci` run `44317628245` (job `ci` success; its `rederive` job skipped, the runner being AMD, which this row does not rest on) |
+| `T-025-03` | No planted credential, secret or module state in the host's journal and snapshot, Core's log, the evidence shelf or, on three VOS replicas, the nodes' own files; the leak controls find each planted value | `stm-vos.yml` run `44266493160` at `b6f18e7a` (the run that first showed it); at `m3`'s `3d9b6a45`, the base of this row, run `44316784467` (`m3`) and run `44308204207` (`m3-next`), each with its step "No credential, secret or module state in the journal or the nodes' files of three VOS replicas (`T-025-03`)" green; reference-host tests in `ci.yml` |
+| `T-014-05` (`F-014`'s notes) | The name lookup is waited for only until the operation's deadline; abandoned lookups' threads are capped per provider | `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider` (`components/prov/tests/egress.rs`) |
+
+**At this row's commit.** This row changes no code, so its code is `m3`'s `3d9b6a45`. *The probes:* `jail-probes` ran at
+this row's head `8c1dbcb3` in run `44317628090` (14 passed, 0 failed), and `ci` in run `44317628245`. No jail-layer file
+(`sandbox.rs`, `layers.rs`), probe file or `jail-probes.yml` has changed since `943fad16` either. *The scan:* the scan's
+world did change after run `44266493160` at `b6f18e7a` (`conformance/scenarios/src/sim/*`,
+`components/prov/src/module/platform.rs`), so that run is not the scan at this code; the scan at this code is `stm-vos.yml`
+at `3d9b6a45`: run `44316784467` (`m3`) and run `44308204207` (`m3-next`), each with the `T-025-03` step green (read with
+`gh run view` on 2026-11-18). Each run's `vos` job is green; the `exit code 101` annotation each carries belongs to the
+G-54 step, whose result "is recorded and need not pass". What ran on the reference host (arm64 macOS) is in "Run here" below.
+
+### The restatement, area by area
+
+**1. `THR-85` (sandbox escape) and `THR-18` (build tampering).** SAD §6's row stands, with its status moved.
+
+- *`THR-85` status:* **Narrowed further; the residual stays accepted (`R72`).** What was "probed only together" is now
+  probed alone: each of the fifteen layers of the jail (the six namespaces, `no_new_privs`, the empty root, dropped
+  capabilities, Landlock, seccomp, descriptors closed before `exec` and in the jail, `RLIMIT_AS`, the other rlimits) has
+  a probe that must succeed in a control without the layer and fail with it alone, on Linux (`T-025-02`, runs
+  `44242098797` and `44243240737`); the release build of the provider holds none of the layer names and no feature
+  that turns one off (the same job; `release_build_of_the_provider_binary_has_no_way_to_turn_a_jail_layer_off`).
+  `G-05` is seen: the shipped provider's own `--probe` reports the 4 GiB limit and the refused mapping (`T-025-02`).
+  The `G-02` gap is closed: the pin was read against every advisory published to 2026-11-17 (`T-025-01`), six of the
+  2026-11-16 ones included 48.0.8 and none was reachable, and the pin moved to 48.0.9, which no advisory names
+  (`T-025-06`; `pinned_runtime_is_the_patched_release`). The AVX advisory is not affected for four reasons, one of
+  them a test that refuses an engine target with an AVX feature on.
+- *`THR-85` still open, as accepted:* unknown flaws and hardware side channels as a class; the Spectre settings are
+  Wasmtime's defaults (`G-09`); no fuzzer-made binary was admitted (`B-09`); the seccomp allow-list was written from
+  reading, not pruned from a trace. None of these four is the subject of a row of `F-025` (`T-025-01`, `-02`, `-03`, `-06`
+  touch none), so each stands as `T-008-04`'s draft stated it. **The jail's UTS namespace stops nothing alone** against an
+  unprivileged jail (the user namespace already refuses `sethostname`); the probe shows only that a rename stays inside
+  (`T-025-02`, gap 1): depth only, an owner item. **`jail-probes` is not a required check** of the repository, so a red
+  run does not block a merge by itself (`T-025-02`): an owner item. The AppArmor setting on Ubuntu 24.04 is an operator
+  obligation, placed with `F-033` and `F-030` (`M4`, `DEC-27`), not an `M3` item.
+- *`THR-18` status:* **Mitigated (detects only), the vendor gap narrowed.** The digests are the platform's own, checked
+  before load. After the bump, `rederive` re-derived them on GenuineIntel against a reference made on AuthenticAMD and
+  they matched (job `134247456427`): the draft's "no other vendor was tried" no longer holds, and the check now spans two
+  vendors. `BINDING_VERSION` stayed `0.3.0` (the compatibility hash did not change, `ci` job `134220782586`).
+  Residual: a compiler flaw that makes the same wrong code on every machine is still seen only by someone who
+  re-derives with another compiler; unchanged.
+- *Gaps recorded, no owner row:* RustSec does not yet carry the 2026-11-16 advisories, so `cargo audit` is silent on
+  them (`T-025-01`, `T-025-06`; closes itself when RustSec imports them); the x86-64 CPU-flag test was seen on code made
+  on an arm64 host, and a run on x86-64 Linux is the other half (`T-025-01`, gap 2; the notes record no run id of it);
+  the release scan is a string scan (`T-025-02`, gap 2, for `T-025-05`'s review).
+
+**2. `THR-132` and `THR-130` (checkpoints).** SAD §6's row stands, **restated as built in `F-022`**.
+
+- *Status:* **Narrowed, as the SAD said, and now in code.** A checkpoint is fixed-length (a 16-digit tick, a SHA-256
+  commitment, an Ed25519 signature) and holds no size, no root, no salt and no count; the salt and size are the
+  checkpoint's opening, kept apart (`F-022`'s notes, "What is published, and what is not"). `AC-37`'s bar is shown by
+  `checkpoints_of_busy_and_idle_periods_cant_be_told_apart` and `checkpoints_of_busy_and_idle_periods_still_cant_be_told_apart`
+  (`components/core-audit/tests/checkpoints.rs`), `a_commitment_binds_every_part_and_the_salt_is_not_guessable`, and
+  `busy_and_idle_periods_give_indistinguishable_checkpoints` (`conformance/scenarios/tests/audit_scenarios.rs`);
+  `altered_history_fails_against_a_checkpoint` shows `THR-132`'s detection. These run in `ci.yml`'s
+  `cargo test --workspace` (green at `943fad16`, run `44243240720`); no run id of these tests alone is recorded in `F-022`'s notes.
+- *Residual (`THR-130`):* **a party's receipt names the log's size when it was issued**, so a party asking for receipts
+  at two times learns how much the log grew between them: activity, which `REQ-AUD-14` keeps out of checkpoints. `F-022`'s
+  notes put it "on the form as accepted for v0". Also recorded by `F-022` for `T-025-05`: a receipt's inclusion proof
+  holds neighbours' leaf hashes (linkage, no balance); an erased file's blocks may stay on disk (the deployment's storage,
+  `F-030`). `THR-131` is unchanged: a checkpoint proves only that the log is self-consistent. `THR-132` stays
+  detect-only: a skipped tick shows against the schedule, and the checker reports a tick the operator never published.
+
+**3. `THR-10`, `THR-135`, `THR-136` (route computation, split-gaming).** SAD §6's row stands: **`THR-10` and `THR-136` detect-only,
+`THR-135` bounds, as `SPEC.md` ends them; no new mitigation.** Since the SAD: the router is a pure function of (request, snapshot)
+with ties broken on the lowest candidate id by bytes (`F-004`'s notes; `THR-10`), every result is a split of one part
+whatever the limit (`every_candidate_is_one_part_whatever_the_part_limit`, `every_result_is_a_split_of_one_part`:
+`v0`'s router sends the whole amount as one part, `DEC-8`; `THR-135`), the per-provider and per-publisher ceilings drop a candidate over a ceiling
+(`F-004`'s notes, `THR-136`, `REQ-ORD-8`), and an order of several parts closes only when each has ended
+(`an_order_of_two_parts_closes_only_when_both_have_ended`). The bulk measures (`REQ-AUD-7`) exist in `core-audit`
+(`T-022-06`) and orchestration now calls `Measures::measure` when a segment ends (`T-020-31`, merged): quotes against
+executed prices, dry runs against outcomes, refusals, reversals. **Residual:** `failure.market` stays absent, since no
+part holds a market figure in `M3` (`T-020-31`, gap 3), so "failures against market direction" is not measured; the
+production assembly owns calling `write_measures` (`F-030`, `T-020-31` gap 1); a provider still sees only its own part
+(`THR-136`, unchanged, accepted).
+
+**4. `THR-79`, `THR-80`, `THR-86` (egress, over-scope credentials, cross-module calls).**
+
+- *`THR-79` status:* **Narrowed, with the accepted concentration risk unchanged** (`credential-proxy-scope`, ADR-0004;
+  `PLAN.md` §6.2 risk 5). New in `M2`/`M3`: the proxy hands out a secret only for the caller's declared operation; the
+  platform's wait on a network step is bounded by the operation's deadline (`T-014-05`/`T-014-06`, slow-peer and
+  store-dribbling tests); and **`T-025-03`'s scan** shows no planted credential, signing key or module state in the
+  host's journal and snapshot, Core's log, the evidence shelf or three VOS replicas' files, the scan seeing a leak when one
+  is let in (`stm-vos.yml` runs `44316784467` and `44308204207` at `3d9b6a45`; first seen in `44266493160` at `b6f18e7a`). *Limits, as `T-025-03` states them:* (1) production's
+  `CredentialProxy` use records and the deployment's store are not scanned (the assembly's world is a simulation):
+  `F-030` re-runs the scan against them; (2) a value encoded some other way (a cipher, a hash of a part), a leak by length
+  or by timing, is not seen; (3) the module state the simulated modules also read (`book`) is not seeked; (4) the VOS
+  files are read after the nodes stop, not live; (5) **`REQ-AUD-6`'s other half, "no balance", is not what the scan seeks**
+  (it seeks credentials, secrets and module state): the claim this row can make is "no secret plaintext in the
+  records a full run leaves", not "no balance". Residual either way: misuse at an allowed host and data leaving in a
+  request to one.
+- *`THR-80`:* **Unchanged, Mitigated (bounds), `OBL-1`.** The credential's scope is the provider's side; rutent can only
+  bound what a declared operation does with it. Nothing in `M2` or `M3` changes it.
+- *`THR-86` status:* **Narrowed to the route, with tests.** A module can only call a provider its route names, and only
+  where it declares the call (`REQ-MDL-21`: `components/prov/tests/proxy_calls.rs`, `route_calls.rs`; the router's
+  `calls.rs` refuses `not_named_by_route`, `F-011`'s notes); a call back into a provider already running is refused on
+  purpose (`T-014-05`, re-entrance decided against the stack). The statement signer signs only what was asked
+  (`T-014-05`: `judgement_about_another_subject_than_asked_is_not_signed`).
+- *Name resolution (`T-014-05`'s residual): see "Residuals", `R-DNS`.* Bears on `THR-57` (Mitigated, bounds,
+  `REQ-MDL-11`), which SAD §6 and `SPEC.md`'s ending do not mention.
+
+**5. `THR-2`, `THR-66`, `THR-67` (operator and role-overlap compromise).** **Unchanged: Accepted, `R119`**, as ruled in
+`R115`, `R48` and `R50`. Nothing in `M2` or `M3` narrows them. The one control added since, ADR-0011's separation of
+duties for a stuck order's resolution, requires two actors where one rogue actor sufficed, and by its own text "a fully
+compromised operator account ... defeats this entirely" (ADR-0011, Consequences); it changes no ending. The `T-025-03`
+scan does not bear on these rows: it reads what a full run leaves, not what an intruder in the operator's systems does.
+
+### Residuals
+
+Each is an item on the owner's form (proposed in this row's report: the lead adds them). The ids are kebab-case.
+
+| Id | Residual | Threat | Evidence | Owner today |
+|---|---|---|---|---|
+| `R-DNS` (`name-lookup-threads`) | The lookup through `getaddrinfo` takes no timeout. `T-014-05` made the platform stop waiting at the deadline, so the **operation** is bounded (`ThreadedResolver`); the abandoned lookup's **thread** lives until the operating system's resolver returns, and is counted against its provider's cap of 4 (`MAX_LOOKUPS_IN_FLIGHT`), after which that provider's lookups are refused as `limit_reached` until a thread ends. One provider's hung resolver can use its own four, not another's. | `THR-57`, `THR-79` | `lookups_past_the_deadline_are_abandoned_and_bounded_per_provider`; `F-014`'s notes, "T-014-05, the name lookup bounded by the deadline". `retrospectives/M2.md` and `PLAN.md`'s `M3` left-over row still say the lookup is "not bounded": that is the state before the follow-up, and should be reworded | none: a fix, if chosen, is a new row |
+| `R-UTS` (`uts-namespace-depth`) | The UTS namespace stops nothing alone | `THR-85` | `T-025-02`, gap 1 | Pablo |
+| `R-JAIL-GATE` (`jail-probes-required`) | `jail-probes` is not a required check | `THR-85` | `T-025-02`, after review | Pablo (branch protection) |
+| `R-SAD-AMEND` (`recheck-amendments`) | The drafted amendments to SAD §6 and `SPEC.md` §8, for the owner to apply | all five areas | `amendments.md` | Pablo |
+| `R-BALANCE-SCAN` (`balance-scan-coverage`) | `REQ-AUD-6`'s "no balance" half is not scanned | `THR-49`, `THR-79` | `T-025-03`, gap 6 | Pablo, to say whether the SPEC test line stays one scan |
+
+Already owned elsewhere, restated and not new items: the production proxy's use records and the store behind it
+(`F-030` re-runs `T-025-03`'s scan); the AppArmor obligation (`F-033`, `F-030`, `DEC-27`); `failure.market` (a part that
+holds a market figure); `THR-130`'s receipt size (on the form, accepted for v0); RustSec's lag (closes itself); the x86-64
+CI half of `T-025-01`'s flag test; the unpruned allow-list, `G-09` and `B-09`.
+
+### Run here (reference host, arm64 macOS), 2026-11-18
+
+The commands were `cargo test -p rutent-scenarios --test secrets_scan` and
+`cargo test -p rutent-prov --features jail-layers --test jail_layers`, each under a 1500 s alarm, through the lock.
+- **`T-025-03`'s scan, reference host:** 9 passed, 0 failed (the clean run after planting, each leak control, the
+  redaction control, the scan's refusals). The VOS tests are not run here.
+- **`T-025-02`'s probes, off Linux:** 1 passed (`a_layer_that_cannot_stand_alone_is_refused_with_its_reason`), 13 ignored by
+  design ("the jail's layers are Linux's"). So the Linux probes, including `network_probe_is_refused_by_the_network_namespace_alone`,
+  are not re-run here: CI's `jail-probes` is.
+- `cargo fmt --all -- --check`, `plan-check --strict` (0 findings) and `tag-check --strict` (2057 tests, 0 findings): clean.
+
+### Defaults taken
+
+- **Statuses by what the notes record.** A status cites a test or a note; where only CI showed it, the run id the notes
+  record, and none where none is recorded (said so). A reversible default.
+- **`THR-57` is named in the re-check** though SAD §6's table does not list it, since the one residual `PLAN.md` hands to
+  this row (name resolution) is its. The draft amendment adds it as a row, for the owner to take or drop.
+- **No SPEC ending changes except two sentences** (`THR-130`, `THR-57`), drafted in `amendments.md`: every other ending
+  stands, as the draft of `T-008-04` found for `THR-85`.
+
+### Gaps
+
+- `stm-vos.yml` does not run on this branch: the scan is cited at `3d9b6a45` (this row's base, the same code), not at the row's head.
+- The first row of "Residuals" shows `PLAN.md` row 605 and `retrospectives/M2.md` out of date by the follow-up. Neither is
+  `F-025`'s file to edit. Owner: the orchestrator.
