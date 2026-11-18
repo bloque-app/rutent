@@ -602,7 +602,7 @@ the libraries' notes and the contracts' READMEs, has an owning row here, or is p
 | The cgroup that bounds what a provider may use, and the operator's rate over time | `M4`, `F-030` | Settings of the production host, which `M3` does not have |
 | The operator's runner obligation (user namespaces under AppArmor) | `M4`, `F-030`, `F-033` | `DEC-27` places it there: it binds the production host |
 | Each network's finality rules | `M4`, `F-031` | Each real network joins as its own task when it joins the catalogue (`DEC-13`) |
-| Name resolution not bounded by an operation's deadline (`getaddrinfo`) | `T-025-04` | Named as a residual in the threat re-check; a fix, if one is chosen, is a new row |
+| A name lookup's thread outlives an operation's deadline (`getaddrinfo` takes no timeout; the operation is bounded by its deadline since `T-014-05`'s follow-up, with at most 4 abandoned lookups per provider) | `T-025-04` | Named as a residual in the threat re-check (`THR-57`); on the owner's form as `name-lookup-threads` |
 
 **`DEC-27`'s rows for `F-013` and `F-014`.** `M2` closed each one. Where something is left, it has an `M3` row or an
 `M4` place.
