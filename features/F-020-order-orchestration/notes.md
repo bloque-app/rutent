@@ -5346,3 +5346,21 @@ only to remove its two `#[ignore]`s.
   The last three are red on the test's first refusal, `Err(SameParty)` from Core's move step, which the test asserts by
   variant; with Core's off, the refusal that surfaces is policy's `SameActor` and then the log's, so each layer's own
   protection isn't shown separately beyond that.
+
+### T-020-32, the review of `8e6802cd`: changes
+
+- **Should-fix, fixed: an empty answer was cached as asked.** `keep_asked` asked the grading once per flight and cached
+  the answer, so a book empty (or a record failing the orders filter) at the first pass left `kept` as an empty `Some`,
+  and a segment graded again after it waited with a `Short` was never asked again: the node stayed unbound and
+  `ask_reversal` never completed. It now asks at every grading until the segment settles, caches only the steps it
+  built (each key once) and appends what isn't appended; fail-closed holds (nothing binds until a record is there).
+  Test `a_record_missing_at_the_first_ask_is_asked_for_again_when_the_grading_waited`
+  (`conformance/scenarios/tests/publishers_record_retry.rs`, `REQ-ORD-3`): a grading whose book is empty at the first
+  ask and which waits, then holds the record and settles; the record is kept at the second grading and appended once.
+  Switched off once (the old caching restored): red (`[0, 0]` kept at the two gradings, not `[0, 1]`).
+- **Not rebuilt after a restart:** in-flight segments, and so `kept`, aren't rebuilt from the log, as `graded` isn't
+  (`F-030`'s durable `Segments`); a segment mid-flight at a restart is asked again on its next grading, and a record
+  already appended is appended a second time (a second stated entry of the same bytes' commitment is the log's to
+  accept).
+- **Residual for `T-025-05` (low):** the early record that binds a node and the later one the replay cites are never
+  compared, so a publisher's two records of one node can disagree unnoticed.

@@ -2859,13 +2859,16 @@ impl Segments {
             })?;
             entry.check().map_err(AppendFailure::Refused)?;
             let entry = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
-            self.flight_mut(at)?.kept.get_or_insert_with(Vec::new).push((
-                one.key,
-                Step {
-                    entry,
-                    receipt: None,
-                },
-            ));
+            self.flight_mut(at)?
+                .kept
+                .get_or_insert_with(Vec::new)
+                .push((
+                    one.key,
+                    Step {
+                        entry,
+                        receipt: None,
+                    },
+                ));
         }
         if let Some(steps) = self.flight_mut(at)?.kept.as_mut() {
             for (_, step) in steps {

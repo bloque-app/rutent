@@ -10,9 +10,7 @@ use rutent_contracts::provider_role::{
     INNER_SEGMENTS_SHAPE, InnerSegment, InnerSegments, Signature, SignatureScheme, Standing,
     Statement,
 };
-use rutent_core_orch::segments::{
-    Graded, Grading, NoProxy, ProvidersWord, Short, ToGrade, ToKeep,
-};
+use rutent_core_orch::segments::{Graded, Grading, NoProxy, ProvidersWord, Short, ToGrade, ToKeep};
 use segments_support::*;
 
 /// A grading that waits at its first grading and settles at its second, and whose book of the node is empty at the
