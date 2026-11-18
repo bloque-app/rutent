@@ -120,6 +120,7 @@ impl Core {
 
     /// Makes the segments forget the reports they keep for the pair of the segment after them, as a restart that lost
     /// their memory would: for a scenario of a pair that can't be built.
+    #[cfg(feature = "test-support")]
     pub fn lose_sent_reports(&mut self) {
         self.segments.lose_sent_reports();
     }

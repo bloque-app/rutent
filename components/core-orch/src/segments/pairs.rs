@@ -263,6 +263,7 @@ impl Segments {
     /// Makes the segments forget the reports they keep for the pair of the segment after them, as a restart that
     /// lost their in-memory state would, from now on: for a scenario of the pair that can't be built.
     #[doc(hidden)]
+    #[cfg(feature = "test-support")]
     pub fn lose_sent_reports(&mut self) {
         self.pairing.lost = true;
     }

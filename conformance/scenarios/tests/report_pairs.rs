@@ -263,3 +263,35 @@ fn pair_that_cant_be_built_leaves_the_segment_settled_and_the_part_running_to_it
     assert_eq!(core.write_pairs(), Ok(0));
     assert!(pairs_of(&core).is_empty());
 }
+
+// verifies: REQ-ORD-9
+#[test]
+fn adjacent_segments_of_one_provider_make_no_pair_and_leave_nothing_unbuilt() {
+    // The kit's reserve runs the withdrawal and the deposit both: one party's word compares nothing.
+    let (mut core, session) = core_with("AC-28", &[rutent_scenarios::kit::RESERVE]);
+    let order = accepted(
+        &mut core,
+        within(
+            "same",
+            &session,
+            AMOUNT,
+            rutent_scenarios::kit::RESERVE,
+            OTHER,
+        ),
+    );
+    let ran = core.run(&order).expect("the order ran");
+    let [Ran::Segments(segments)] = ran.as_slice() else {
+        panic!("one part ran its segments: {ran:?}");
+    };
+    assert_eq!(segments.len(), 2);
+    assert!(
+        segments
+            .iter()
+            .all(|s| matches!(s.outcome, SegmentOutcome::Settled { .. })),
+        "{segments:?}"
+    );
+    assert_eq!(core.unpaired_reports(), 0, "no pair owed, none parked");
+    assert!(core.unbuilt_reports().is_empty());
+    assert_eq!(core.write_pairs(), Ok(0));
+    assert!(pairs_of(&core).is_empty());
+}
