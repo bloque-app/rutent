@@ -4622,3 +4622,30 @@ named below.
   4. A party granted both a tuple and a class is attributed as a provider for everything. Residual for `T-025-05`.
   5. `T-024-12`'s placeholder tuple moves to the class grant once both merge. Owner: `T-024-12`'s author or the lead.
   6. The scenario suite beyond the binaries run here (the kit changed: shared store, `Moves`) runs in CI.
+- **Rule-off table** (each switched off alone from `bc89ce68`, its tests run under a 600 s alarm through the lock, the
+  file restored with `git checkout`; script `scratchpad/f020zd/ruleoff.py`; none hung, every one red):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `stuck-resolved-cites-its-parts-evidence`'s `order` | `stuck_resolved_citing_an_evidence_id_the_log_holds_no_entry_for_is_refused`, the citation table's |
+  | its `part` | the same two, `stuck_resolved_citing_an_evidence_entry_that_names_another_part_is_refused` |
+  | the row whole (cites nothing) | the same three |
+  | `ReportPair::check`'s gross charge no more than sent | `report_pair_without_its_tuples_increment_and_convention_is_invalid`, the two fixture tests |
+  | `What::Replay`'s receipts listed (at least one, each once) | `replays_receipts_that_name_no_record_for_a_node_it_replayed_are_invalid`, the two fixture tests |
+  | its at most one record per node that recorded something | the same three |
+  | `replay-cites-its-nodes-records` whole | `replays_receipts_that_name_no_record_for_a_node_it_replayed_are_invalid`, the citation table's |
+  | its `verified`; its `record`; its `about` (each alone) | the same two, each time |
+  | `outcome-confirmation-cites-verified-evidence`'s deliver arm of `maker` | `deliver_reported_on_an_unrelated_makers_statement_is_refused`, the citation table's |
+  | `Action::check`'s class only on a grant or its revocation, never with a tuple | `verifiers_category_grant_naming_no_tuple_attributes_its_statements_for_that_category_only` |
+  | `attribute`'s judgements of the granted class alone | the same |
+  | `attribute`'s verifier's role alone for a class grant's maker | the same |
+  | `granted_advertising_keys` reading a class grant | the same |
+  | `core-audit` measures keyed by role | `measures_of_one_party_in_two_roles_are_kept_apart` |
+  | `compare_reports` within one increment (exact instead) | `reports_differing_by_less_than_one_increment_raise_nothing`, `gross_and_net_reports_of_one_segment_are_compared_like_with_like` |
+  | `compare_reports` taking a gross figure's charge off | `gross_and_net_reports_of_one_segment_are_compared_like_with_like` |
+  | `core-audit`'s key register reading a class grant | `a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone` |
+- **Local checks** (one lock hold, at `bc89ce68`): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  -- -D warnings`, the contracts' `no_std` build (`riscv32imac-unknown-none-elf`), `cargo test -p
+  rutent-contract-guard`, the guard against `origin/develop` ("1605 changed path(s), no violations"), plan-check and
+  tag-check `--strict`, `cargo test` of `rutent-contracts`, `rutent-core-audit`, `rutent-core-authz`,
+  `rutent-core-orch` and `rutent-scenarios`, and `cargo doc -D warnings` of the five: all green.
