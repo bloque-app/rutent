@@ -6958,3 +6958,15 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
 - **Rule-off.** `read` judging at the assertion's `made_at` again turns
   `assertion_dated_before_its_cutover_but_admitted_after_it_is_refused` red.
 
+
+### T-020-45, fix round 3 (CI on `m3-next` at `f01bc669`, run 45484769309)
+
+- **The boundary check and the contracts crate's own dev-dependency.** The `rule-switches` feature reaches the
+  contract tests through the crate's dev-dependency on itself, which `tools/boundary-check` read as an edge
+  `rutent-contracts → rutent-contracts`, failing `core_reaches_libraries_only_through_their_public_contracts` and
+  `only_the_scenario_assembly_may_import_core_crates`. `violations` now takes a crate's dev-dependency on itself, by
+  its own package name, as no edge between two crates; a crate depending on itself outside its dev-dependencies, and
+  every real edge, are judged as before. The switch stays out of every shipped build. Test
+  `a_crates_dev_dependency_on_itself_is_no_boundary_crossing` [`REQ-MOD-1`, `REQ-MOD-3`]: the self dev-dependency
+  passes, a dev-dependency on another crate of ours and a normal self-dependency are each reported.
+  `tools/boundary-check/` is not a `DEC-20` path.
