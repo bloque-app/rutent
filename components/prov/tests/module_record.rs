@@ -518,3 +518,64 @@ fn a_widening_decision_the_platform_cannot_record_is_not_taken() {
     assert_eq!(s.platform.lifecycle().mark(RESERVE, "1.0.1"), None);
     assert!(s.platform.lifecycle().decisions().is_empty());
 }
+
+/// A record that fails one append, its first of `kind`, and takes every other: one that recovers in place, against
+/// `Record`'s contract.
+struct FailsOnce {
+    inner: MemoryRecord,
+    kind: &'static str,
+    failed: bool,
+}
+
+impl Record for FailsOnce {
+    fn load(&mut self) -> io::Result<Vec<String>> {
+        self.inner.load()
+    }
+
+    fn append(&mut self, line: &str) -> io::Result<()> {
+        if !self.failed && line.contains(&format!("\"entry\":\"{}\"", self.kind)) {
+            self.failed = true;
+            return Err(io::Error::other("failed once"));
+        }
+        self.inner.append(line)
+    }
+
+    fn replace(&mut self, lines: &[String]) -> io::Result<()> {
+        self.inner.replace(lines)
+    }
+}
+
+/// The platform holds itself to `Record`'s contract: after one failed write it writes nothing more, even to a
+/// record that would take it, so a decision taken unrecorded is never followed by entries that leave it out and
+/// read back as a state without it.
+// verifies: REQ-MDL-20, INV-8
+#[test]
+fn after_a_failed_write_the_platform_writes_nothing_more_even_to_a_record_that_recovered() {
+    let memory = MemoryRecord::new();
+    let mut s = opened(
+        Box::new(FailsOnce {
+            inner: memory.clone(),
+            kind: "decided",
+            failed: false,
+        }),
+        TestWorld::default(),
+        &[RESERVE],
+    );
+    admit_version(&mut s, RESERVE, "1.0.1");
+    assert_eq!(
+        s.platform
+            .declare_exploited(RESERVE, "1.0.0", "test-operator", AT),
+        Err(LifecycleRefusal::TakenUnrecorded)
+    );
+    let written = memory.lines().len();
+    // The record would take these; the platform sends it none of them.
+    assert_eq!(
+        s.platform.revoke(RESERVE, "1.0.1", "test-operator", AT),
+        Err(LifecycleRefusal::TakenUnrecorded)
+    );
+    assert_eq!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 1)),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+    assert_eq!(memory.lines().len(), written, "{:#?}", memory.lines());
+}

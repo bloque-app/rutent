@@ -539,6 +539,9 @@ pub struct Platform<W: World> {
     restarts: Vec<(String, String)>,
     /// Where what the platform carried out is kept, beyond its memory (`T-013-10`).
     record: Box<dyn Record>,
+    /// A write to the record failed: nothing more is written to it by this platform (`Record`'s contract, which the
+    /// platform holds itself to whatever the record does).
+    record_failed: bool,
 }
 
 impl<W: World> Platform<W> {
@@ -578,6 +581,7 @@ impl<W: World> Platform<W> {
             carried: BTreeMap::new(),
             restarts: Vec::new(),
             record: Box::new(MemoryRecord::new()),
+            record_failed: false,
         })
     }
 
@@ -764,10 +768,18 @@ impl<W: World> Platform<W> {
             .collect()
     }
 
-    /// Writes `entry` to the record, durably once this returns.
+    /// Writes `entry` to the record, durably once this returns. Refused, without asking the record, once a write
+    /// to it failed: a record that recovered in place would otherwise take later entries, none of which holds a
+    /// decision taken while it couldn't be written (`Record`'s contract).
     fn write(&mut self, entry: &Entry) -> std::io::Result<()> {
-        let line = entry.line()?;
-        self.record.append(&line)
+        if self.record_failed {
+            return Err(std::io::Error::other(
+                "a write to the platform's record failed: it takes no more until the platform opens on it again",
+            ));
+        }
+        let written = entry.line().and_then(|line| self.record.append(&line));
+        self.record_failed |= written.is_err();
+        written
     }
 
     /// Writes the segment of `transaction`, as it now is, to the record.

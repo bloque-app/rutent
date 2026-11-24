@@ -30,6 +30,14 @@ use rutent_contracts::module_interface::Identifier;
 
 /// Where the platform keeps its carried-out record: a sequence of lines, each one entry, which the platform writes
 /// and reads and nothing else interprets.
+///
+/// **After a write fails, every later write fails until the record is opened again.** Once an `append` or a
+/// `replace` returns an error, an implementation refuses every later `append` and `replace` on the same value: it
+/// never recovers in place. The platform relies on this: a decision it takes in memory where the record couldn't
+/// hold it (`LifecycleRefusal::TakenUnrecorded`) is written by no later entry, since each entry holds only what
+/// changed since what the platform holds, so a record that took writes again would hold a later state without the
+/// mark the platform acted on. The platform also holds itself to it, whatever the implementation does: after one
+/// failed write it sends the record nothing more until a platform opens on it again (`T-013-10`).
 pub trait Record {
     /// Every line written, in order. A line the record couldn't finish writing (a stop mid-write) is not one: the
     /// platform wrote nothing it relies on until the line was written whole.

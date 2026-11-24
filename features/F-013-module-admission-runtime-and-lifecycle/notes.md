@@ -1185,7 +1185,16 @@ The fix round 1 note that two rules had no test that turns them red no longer ho
 #### Defaults (fix round 2)
 
 - A restrictive decision the record can't hold is taken in memory and reported `TakenUnrecorded`; it is not
-  retried by the platform. The operator takes it again after the restart.
+  retried by the platform. The operator takes it again once the platform reopens on a record it can write, and
+  before the release it concerns is admitted again: a version declared exploited unrecorded is unmarked after a
+  restart, and would run once re-admitted. Owner of the start-up that makes this order hold: `T-013-11` part (3),
+  with `F-030`'s start-up.
+- `Record`'s contract says that after a failed write every later write fails until the record is opened again,
+  since each `decided` entry holds only what changed since what the platform holds, so a record that recovered in
+  place would hold later state without an unrecorded mark. The platform holds itself to it whatever the
+  implementation does (`F-030`'s included): after one failed write it sends the record nothing more. Test:
+  `after_a_failed_write_the_platform_writes_nothing_more_even_to_a_record_that_recovered` (approval lows of PR
+  #291).
 - Taken in place, retiring the version in force leaves none in force until the operator decides.
 
 #### Rule-off table (fix round 2)
