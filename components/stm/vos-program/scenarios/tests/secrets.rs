@@ -217,11 +217,11 @@ fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
         let hits = scan.find(&run.scanned.surfaces);
         assert!(
             hits.iter()
-                .any(|h| h.kind == Kind::Balance && h.surface.contains("journal of")),
+                .any(|h| h.canary == *name && h.surface.contains("journal of")),
             "`{name}`: the scan didn't find the balance in the journal the host answered: {hits:?}"
         );
         assert!(
-            looked.hits.iter().any(|h| h.kind == Kind::Balance),
+            looked.hits.iter().any(|h| h.canary == *name),
             "`{name}`: the balance let in isn't found in the nodes' files ({} files, {} bytes): the scan can't see their state",
             looked.files,
             looked.bytes

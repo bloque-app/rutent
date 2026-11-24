@@ -887,7 +887,7 @@ pub fn run_balanced(
             }
             read_core(core, &mut surfaces);
             // What the platform keeps: each provider's books and what it sent outside.
-            for provider in &reserves {
+            for provider in reserves.iter().chain(std::iter::once(&provider)) {
                 surfaces.push(Surface::of(
                     format!("the platform's journal of {provider}"),
                     serde_json::to_vec(core.world().journal(provider)),

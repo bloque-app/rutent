@@ -349,6 +349,13 @@ fn full_runs_records_hold_no_simulated_balance_outside_the_evidence_store() {
             named("platform's journal of") && named("requests the platform delivered"),
             "seed {seed}: the platform's records weren't read"
         );
+        assert!(
+            named(&format!(
+                "platform's journal of {}",
+                rutent_scenarios::kit::OPERATOR_WALLET
+            )),
+            "seed {seed}: the wallet's journal wasn't read"
+        );
     }
 }
 
