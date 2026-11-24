@@ -1,0 +1,568 @@
+//! The segments rebuilt from the log when Core reopens (`T-020-46`, finding 3 of `M3`'s milestone review; `NFR-6`,
+//! `INV-8`, `REQ-ORD-8`).
+//!
+//! The log is Core's durable record, so a Core that reopens reads its segments back from it, as `Closing::recorded`,
+//! `Holds::recorded` and the proven starts (`HandOn::recover_starts`) already do:
+//!
+//! - **The orders followed**: every order whose `route_chosen` the log holds, moved by every input recorded about it
+//!   since, in order ([`Segments::follow_recorded`]).
+//! - **The effects acted on**: every effect the log holds, whatever its action. An effect is acted on only after its
+//!   entry is in the log (`INV-7`), so the log names every one a Core acted on, and a reopened Core acts on none of them
+//!   again, by a segment or a stuck resolution alike (`INV-8`).
+//! - **The transactions**: every transaction the log names ([`Issued::recorded`]), so a fresh one is none of them.
+//! - **Each segment handed over**: its `move_value` effect, the transaction and the signed operation of the operator's
+//!   question about it (the bytes the evidence store keeps behind the question's commitment), and its outcome as the
+//!   inputs recorded about it say. A segment the log settled is settled again on what its provider's result, kept
+//!   behind its commitment, gave out, as the judge counted it when the result was received; a failed one is failed.
+//!   A segment whose effect the log holds with no final input is one whose operation may have been carried out, its
+//!   answer lost with the Core that stopped: it is never carried out again ([`SegmentsError::AlreadyActed`]), it stays
+//!   in flight, held, and its value is in motion (`part-waits-for-value-in-motion`) until its outcome is settled the
+//!   way an unknown one is. Asking the platform again under its transaction is a later choice (the notes' gaps).
+//! - **The value in flight** ([`Exposures`]): every segment in flight held at its provider at the amount its
+//!   operation moved, every stuck order marked, so a provider with a segment left unknown still shows its value in
+//!   flight and a new order respects the ceilings (`REQ-ORD-8`, `THR-74`).
+//! - **The parts resolved**: every part whose `stuck_resolved` the log holds.
+//! - **The platform's records of operations that ended with no answer**, by transaction.
+//! - **The charges checked** (`Charges::recorded`).
+//!
+//! What a reopened Core doesn't hold, it fails closed on: a segment whose decision record, question or kept bytes it
+//! can't read back is never handed over again, and is held in flight where its operation can be read.
+
+use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::{OPERATION_SHAPE, RESULT_SHAPE};
+use rutent_contracts::router_api::Operation;
+use rutent_contracts::state_machine::SegmentPlan;
+
+use super::*;
+
+/// What a Core that reopens reads beside its log (`T-020-46`): the decision records it signed, and the statements the
+/// evidence store keeps.
+pub trait Reopening {
+    /// The decision record `id`, as Core signed it, held to the digest the log names it by: `None` where Core holds
+    /// no such record, or the one it holds isn't the one the log names.
+    fn record(&self, id: &Id) -> Option<DecisionRecord>;
+
+    /// The bytes the evidence store keeps behind `commitment`, as the log reads them: `None` where it keeps none.
+    fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>>;
+}
+
+/// A segment handed over, as the log names it.
+struct Handed<'a> {
+    order: &'a Id,
+    segment: &'a Id,
+    provider: &'a Id,
+    effect: Effect,
+    at: usize,
+}
+
+impl Segments {
+    /// The segments rebuilt from `history`, the log's own entries, as a Core that reopens reads them (see the module's
+    /// docs), with what is in flight held in `exposures`. `catalogue` judges a settled segment's result again, at the
+    /// time it was received.
+    pub fn reopened(
+        clock: &dyn Clock,
+        catalogue: &Catalogue,
+        history: &[(Receipt, Entry)],
+        reading: &mut dyn Reopening,
+        exposures: &mut Exposures,
+    ) -> Self {
+        let mut segments = Segments::new();
+        let inputs: Vec<RecordedInput> = history
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Input { input },
+                    ..
+                }) => Some(input.clone()),
+                _ => None,
+            })
+            .collect();
+        for (at, input) in inputs.iter().enumerate() {
+            if matches!(input.observed, Observed::RouteChosen { .. }) {
+                segments.follow_recorded(clock, &inputs[at..]);
+            }
+        }
+        segments.transactions = Issued::recorded(history)
+            .transactions()
+            .map(str::to_owned)
+            .collect();
+        for input in &inputs {
+            if let (Observed::StuckResolved { .. }, Some(part)) =
+                (&input.observed, &input.subject.part)
+                && let (Some(order), Some(part)) = (
+                    Id::new(input.subject.order.as_str()),
+                    Id::new(part.as_str()),
+                )
+            {
+                segments.mark_resolved(&order, &part);
+            }
+        }
+        let mut holds = BTreeMap::new();
+        for (receipt, entry) in history {
+            let Entry::Verified(verified) = entry else {
+                continue;
+            };
+            match &verified.what {
+                What::Effect { action, decision } => {
+                    segments.acted.insert(key(receipt));
+                    if let Action::MoveValue {
+                        order,
+                        segment,
+                        provider,
+                        ..
+                    } = action
+                    {
+                        let handed = Handed {
+                            order,
+                            segment,
+                            provider,
+                            effect: effect_of(action.clone(), decision.clone(), receipt.clone()),
+                            at: history
+                                .iter()
+                                .position(|(r, _)| r == receipt)
+                                .unwrap_or_default(),
+                        };
+                        if let Some(held) = segments
+                            .rebuild_flight(clock, catalogue, history, &inputs, reading, &handed)
+                        {
+                            holds.insert(
+                                (order.as_str().to_owned(), segment.as_str().to_owned()),
+                                held,
+                            );
+                        }
+                    }
+                }
+                What::HandOver {
+                    item: HandedOver::OperationUnanswered { transaction, .. },
+                    ..
+                } => {
+                    segments
+                        .unanswered
+                        .insert(transaction.as_str().to_owned(), receipt.clone());
+                }
+                _ => {}
+            }
+        }
+        segments.recorded_charges(history);
+        segments.hold_in_flight(exposures, &inputs, &holds);
+        segments
+    }
+
+    /// Rebuilds the flight of one segment handed over, from what the log and the evidence store hold of it, and
+    /// answers the route's operation at the amount it moved, what it holds in flight. Where its operation can't be read
+    /// back, the segment is kept as acted on and never handed over again.
+    fn rebuild_flight(
+        &mut self,
+        clock: &dyn Clock,
+        catalogue: &Catalogue,
+        history: &[(Receipt, Entry)],
+        inputs: &[RecordedInput],
+        reading: &mut dyn Reopening,
+        handed: &Handed<'_>,
+    ) -> Option<Operation> {
+        let key_of = (
+            handed.order.as_str().to_owned(),
+            handed.segment.as_str().to_owned(),
+        );
+        if self.flights.contains_key(&key_of) {
+            return None;
+        }
+        let Some((rebuilt, held)) =
+            self.read_flight(clock, catalogue, history, inputs, reading, handed)
+        else {
+            self.unread.insert(key_of, handed.effect.receipt.clone());
+            return None;
+        };
+        self.flights.insert(key_of, rebuilt);
+        held
+    }
+
+    fn read_flight(
+        &self,
+        clock: &dyn Clock,
+        catalogue: &Catalogue,
+        history: &[(Receipt, Entry)],
+        inputs: &[RecordedInput],
+        reading: &mut dyn Reopening,
+        handed: &Handed<'_>,
+    ) -> Option<(InFlight, Option<Operation>)> {
+        let (record_id, place, plan) = plan_of(inputs, handed.order, handed.segment)?;
+        let record = reading.record(&record_id)?;
+        let operation = operation_of(&record, &plan)?.clone();
+        // The operator's question about the segment, the last before its effect: its transaction and signed bytes.
+        let (question_receipt, question, transaction) = history[..handed.at]
+            .iter()
+            .rev()
+            .find_map(|(receipt, entry)| match entry {
+                Entry::Stated(stated)
+                    if stated.what.statement.as_str() == OPERATION_SHAPE
+                        && stated.about.as_ref().is_some_and(|a| {
+                            a.order.as_ref() == Some(handed.order)
+                                && a.segment.as_ref() == Some(handed.segment)
+                        }) =>
+                {
+                    let transaction = stated.about.as_ref()?.transaction.clone()?;
+                    Some((receipt.clone(), stated.clone(), transaction))
+                }
+                _ => None,
+            })?;
+        let bytes = reading.kept(&question.commitment)?;
+        let statement: Statement<ProviderOperation> = serde_json::from_slice(&bytes).ok()?;
+        let caller = history
+            .iter()
+            .find_map(|(receipt, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Decide { request, .. },
+                    ..
+                }) if receipt == handed.effect.decision.receipt() => Some(request.caller.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| match &history[handed.at].1 {
+                Entry::Verified(v) => v.who.clone(),
+                Entry::Stated(_) => unreachable!("an effect is a verified entry"),
+            });
+        // The question as Core appended it, its maker claimed: the log attributed it on append. Its receipt is the
+        // log's, so it is never appended again.
+        let mut appended = question;
+        appended.attribution = rutent_contracts::core_internal::Attribution::Unverified {
+            claimed_by: appended.attribution.maker().clone(),
+        };
+        let mut steps = BTreeMap::new();
+        steps.insert(
+            "question",
+            Step {
+                entry: GeneralEntry::try_from(Entry::Stated(appended)).ok()?,
+                receipt: Some(question_receipt),
+            },
+        );
+        steps.insert(
+            "effect",
+            Step {
+                entry: GeneralEntry::try_from(history[handed.at].1.clone()).ok()?,
+                receipt: Some(handed.effect.receipt.clone()),
+            },
+        );
+        for (receipt, entry) in &history[handed.at..] {
+            if let Entry::Verified(v) = entry
+                && let What::Result { effect } = &v.what
+                && effect == &handed.effect.receipt
+            {
+                let name = match v.outcome {
+                    Outcome::Done {} => "result: done",
+                    Outcome::Failed {} => "result: failed",
+                    Outcome::Unanswered {} => "result: unanswered",
+                    _ => continue,
+                };
+                if let Ok(entry) = GeneralEntry::try_from(entry.clone()) {
+                    steps.insert(
+                        name,
+                        Step {
+                            entry,
+                            receipt: Some(receipt.clone()),
+                        },
+                    );
+                }
+            }
+        }
+        let outcome = outcome_of(
+            catalogue,
+            history,
+            inputs,
+            reading,
+            (handed, &transaction),
+            (&record, &operation, &statement),
+        );
+        let held = held_at(&operation, &statement.statement);
+        let flight = InFlight {
+            place,
+            transaction,
+            provider: handed.provider.clone(),
+            caller,
+            statement,
+            effect: Some(handed.effect.clone()),
+            begun: true,
+            carried: true,
+            answered: None,
+            started: Some(clock.now()),
+            unknown: Vec::new(),
+            steps,
+            evidence: None,
+            graded: None,
+            kept: None,
+            fees: None,
+            ended: outcome.as_ref().is_some_and(is_final),
+            outcome,
+            charged: None,
+            reported: None,
+            begin_refused: None,
+            verdict: None,
+            drains: Vec::new(),
+            record: None,
+            late: BTreeMap::new(),
+            carries: Vec::new(),
+            relies: Vec::new(),
+            priced: measured::Priced::of(&operation),
+            heard: measured::hear(&record, &operation),
+            record_entry: None,
+            reopened: true,
+        };
+        Some((flight, held))
+    }
+
+    /// Holds in `exposures` every segment rebuilt in flight, at the amount its operation moved, and marks every stuck
+    /// order, as a Core that ran on would hold them (`REQ-ORD-8`): a segment with no final outcome, or one that
+    /// failed or was refused, whose value stays held until its reversal or the part's resolution, unless the part was
+    /// resolved or the segment reversed.
+    fn hold_in_flight(
+        &self,
+        exposures: &mut Exposures,
+        inputs: &[RecordedInput],
+        holds: &BTreeMap<(String, String), Operation>,
+    ) {
+        let reversed = |order: &str, segment: &str| {
+            inputs.iter().any(|i| {
+                matches!(i.observed, Observed::ReversalCompleted { .. })
+                    && i.subject.order.as_str() == order
+                    && i.subject
+                        .segment
+                        .as_ref()
+                        .is_some_and(|s| s.as_str() == segment)
+            })
+        };
+        for ((order, segment), flight) in &self.flights {
+            let held = match &flight.outcome {
+                None
+                | Some(
+                    SegmentOutcome::Unknown(_)
+                    | SegmentOutcome::Failed
+                    | SegmentOutcome::Refused(_)
+                    | SegmentOutcome::WaitingOnThePerson(_)
+                    | SegmentOutcome::NoResult(_)
+                    | SegmentOutcome::AwaitsEvidence(_),
+                ) => true,
+                Some(_) => false,
+            };
+            let (Some(order_id), Some(segment_id)) = (Id::new(order), Id::new(segment)) else {
+                continue;
+            };
+            let part = self.orders.get(order.as_str()).and_then(|t| {
+                t.order
+                    .parts
+                    .iter()
+                    .find(|p| p.segments.iter().any(|s| s.segment_id.as_str() == segment))
+                    .and_then(|p| Id::new(p.part_id.as_str()))
+            });
+            let resolved = part
+                .as_ref()
+                .is_some_and(|p| self.ended_by_resolution(&order_id, p));
+            if !held || resolved || reversed(order, segment) {
+                continue;
+            }
+            let Some(held) = holds.get(&(order.clone(), segment.clone())) else {
+                continue;
+            };
+            let _ = exposures.hold(&order_id, &segment_id, held);
+        }
+        for tracked in self.orders.values() {
+            if tracked
+                .order
+                .parts
+                .iter()
+                .any(|p| p.state == OrderState::Stuck && p.resolved_to.is_none())
+                && let Some(order) = Id::new(tracked.order.order_id.as_str())
+            {
+                exposures.mark_stuck(&order);
+            }
+        }
+    }
+
+    /// Whether `segment` of `order` is one a reopened Core holds as acted on, though it couldn't read its operation
+    /// back: it is never handed over again (`INV-8`).
+    pub(super) fn unread_effect(&self, at: &(String, String)) -> Option<&Receipt> {
+        self.unread.get(at)
+    }
+}
+
+/// The decision record, the place in its part and the segment's plan, from the last input of `order` that planned
+/// `segment`: its `route_chosen`, or a `route_recalculated` or `destination_changed`.
+fn plan_of(inputs: &[RecordedInput], order: &Id, segment: &Id) -> Option<(Id, usize, SegmentPlan)> {
+    inputs
+        .iter()
+        .rev()
+        .filter(|i| i.subject.order.as_str() == order.as_str())
+        .find_map(|input| {
+            let (record, planned): (&stm::Id, Vec<&[SegmentPlan]>) = match &input.observed {
+                Observed::RouteChosen {
+                    decision_record,
+                    parts,
+                    ..
+                } => (
+                    decision_record,
+                    parts.iter().map(|p| p.segments.as_slice()).collect(),
+                ),
+                Observed::RouteRecalculated {
+                    decision_record,
+                    segments,
+                }
+                | Observed::DestinationChanged {
+                    decision_record,
+                    segments,
+                    ..
+                } => (decision_record, vec![segments.as_slice()]),
+                _ => return None,
+            };
+            planned.into_iter().find_map(|segments| {
+                let place = segments
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == segment.as_str())?;
+                Some((Id::new(record.as_str())?, place, segments[place].clone()))
+            })
+        })
+}
+
+/// The chosen route's operation a segment's plan names: its provider, kind and ends.
+fn operation_of<'a>(record: &'a DecisionRecord, plan: &SegmentPlan) -> Option<&'a Operation> {
+    record
+        .chosen()?
+        .parts
+        .iter()
+        .flat_map(|p| p.operations.iter())
+        .find(|o| {
+            o.provider.as_str() == plan.provider.as_str()
+                && o.kind == plan.kind
+                && o.from == plan.from
+                && o.to == plan.to
+        })
+}
+
+/// A rebuilt segment's outcome, as the inputs recorded about it say: settled on what its provider's result gave
+/// out, as the judge counted it when the result was received; failed; its withdrawal cancelled; its outcome unknown.
+/// `None` where the log holds no final input: it may have been carried out, and is in motion.
+fn outcome_of(
+    catalogue: &Catalogue,
+    history: &[(Receipt, Entry)],
+    inputs: &[RecordedInput],
+    reading: &mut dyn Reopening,
+    (handed, transaction): (&Handed<'_>, &Id),
+    (record, operation, statement): (&DecisionRecord, &Operation, &Statement<ProviderOperation>),
+) -> Option<SegmentOutcome> {
+    let about = |i: &&RecordedInput| {
+        i.subject.order.as_str() == handed.order.as_str()
+            && i.subject
+                .segment
+                .as_ref()
+                .is_some_and(|s| s.as_str() == handed.segment.as_str())
+    };
+    let part = |i: &&RecordedInput| {
+        i.subject.order.as_str() == handed.order.as_str()
+            && i.subject.segment.is_none()
+            && matches!(i.observed, Observed::WithdrawalCancelled {})
+    };
+    if inputs.iter().filter(part).count() > 0
+        && inputs
+            .iter()
+            .filter(about)
+            .all(|i| !matches!(i.observed, Observed::SegmentSettled { .. }))
+    {
+        return Some(SegmentOutcome::WithdrawalCancelled);
+    }
+    // An effect whose one result is `failed` with no input about its segment's outcome was refused before anything
+    // passed out (the platform wouldn't begin it, or refused it): nothing moved, and it is final. The log doesn't say
+    // which refusal, so it reads as the platform's refusal to begin.
+    let failed_alone = history[handed.at..].iter().any(|(_, entry)| {
+        matches!(entry, Entry::Verified(v)
+            if matches!(&v.what, What::Result { effect } if effect == &handed.effect.receipt)
+                && v.outcome == (Outcome::Failed {}))
+    });
+    let last = inputs.iter().rev().filter(about).find(|i| {
+        matches!(
+            i.observed,
+            Observed::SegmentSettled { .. }
+                | Observed::SegmentFailed {}
+                | Observed::SegmentOutcomeUnknown {}
+        )
+    });
+    let Some(last) = last else {
+        return failed_alone.then_some(SegmentOutcome::NotHandedOver(PlatformRefusal::Unavailable));
+    };
+    match &last.observed {
+        Observed::SegmentFailed {} => Some(SegmentOutcome::Failed),
+        Observed::SegmentOutcomeUnknown {} => {
+            let record = history.iter().find_map(|(receipt, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what:
+                        What::HandOver {
+                            item: HandedOver::OperationUnanswered { transaction: t, .. },
+                            ..
+                        },
+                    ..
+                }) if t == transaction => Some(receipt.clone()),
+                _ => None,
+            });
+            Some(SegmentOutcome::Unknown(UnknownBy::Platform {
+                refusal: PlatformRefusal::OutcomeUnknown,
+                record,
+            }))
+        }
+        Observed::SegmentSettled { evidence } => {
+            let amount_out = settled_out(
+                catalogue,
+                history,
+                reading,
+                (handed, transaction),
+                (record, operation, statement),
+            )?;
+            Some(SegmentOutcome::Settled {
+                amount_out,
+                evidence: Id::new(evidence.as_str())?,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// What a settled segment gave out, net of its charge: its provider's result about its transaction, kept behind its
+/// commitment, judged again at the time its stated entry was received, as the judge counted it then.
+fn settled_out(
+    catalogue: &Catalogue,
+    history: &[(Receipt, Entry)],
+    reading: &mut dyn Reopening,
+    (handed, transaction): (&Handed<'_>, &Id),
+    (record, operation, statement): (&DecisionRecord, &Operation, &Statement<ProviderOperation>),
+) -> Option<Amount> {
+    let cited = sign::cited(record, operation)?;
+    let units = Units {
+        origin_decimals: operation.from.asset.decimals,
+        out_decimals: operation.to.asset.decimals,
+    };
+    history[handed.at..].iter().find_map(|(_, entry)| {
+        let Entry::Stated(stated) = entry else {
+            return None;
+        };
+        if stated.what.statement.as_str() != RESULT_SHAPE
+            || stated
+                .about
+                .as_ref()
+                .is_none_or(|a| a.transaction.as_ref() != Some(transaction))
+        {
+            return None;
+        }
+        let bytes = reading.kept(&stated.commitment)?;
+        let at = rutent_prov::catalogue::Instant(
+            u64::try_from(stated.received_at.unix_nanos() / 1_000_000_000).ok()?,
+        );
+        match judge(
+            catalogue,
+            at,
+            handed.provider,
+            &statement.statement,
+            cited.terms,
+            cited.quoted.as_ref(),
+            units,
+            &bytes,
+        ) {
+            Ok(Counted::Succeeded { handed_on, .. }) => Amount::new(handed_on),
+            _ => None,
+        }
+    })
+}

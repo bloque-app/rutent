@@ -98,6 +98,7 @@ mod handing;
 mod journal;
 mod mover;
 mod party;
+mod reopen;
 mod timing;
 mod view;
 
@@ -782,8 +783,8 @@ struct Timings {
     raises: Vec<(Step, Raise, bool)>,
 }
 
-/// Core's record of stuck orders, kept across orders by the assembly, which the production assembly keeps durably
-/// (`F-030`), as it does [`Segments`].
+/// Core's record of stuck orders, kept across orders by the assembly, and rebuilt from the log by a Core that reopens
+/// ([`Stuck::reopened`], `T-020-46`), as [`Segments`] is.
 #[derive(Debug, Clone, Default)]
 pub struct Stuck {
     declared: BTreeMap<(String, String), Declared>,

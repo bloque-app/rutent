@@ -263,6 +263,22 @@ impl Scenario {
         (core, orders)
     }
 
+    /// `core`, put together for this scenario under `seed`, opened again on its disk as [`Step::Restart`] opens it
+    /// ([`Core::reopened`]): for a test that drives Core's own calls and restarts it between them (`T-020-46`).
+    ///
+    /// # Panics
+    ///
+    /// If Core can't be opened again.
+    pub fn reopen(&self, core: Core, seed: u64, environment: &mut dyn Environment) -> Core {
+        let config = self.config(seed);
+        core.reopened(&config, environment).unwrap_or_else(|e| {
+            panic!(
+                "scenario `{}`, seed {seed}: Core wasn't opened again: {e:?}",
+                self.name
+            )
+        })
+    }
+
     pub(crate) fn config(&self, seed: u64) -> Config {
         Config {
             seed,

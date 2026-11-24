@@ -209,6 +209,49 @@ impl Issued {
     pub fn contains(&self, transaction: &str) -> bool {
         self.used.contains(transaction)
     }
+
+    /// Every transaction `history`, the log's own entries, names, as a Core that reopens rebuilds them (`T-020-46`):
+    /// a question's, an answer's or any statement's `about`, a move's, a stuck resolution's, a status question's or a
+    /// hand-over's. A round appends its question, about the transaction it asks under, before the question is sent,
+    /// so every transaction a provider was asked under is here, answered or not (`T-020-45`'s gap 4). A transaction
+    /// named only in Core's memory and never sent is not, and a fresh one drawn again then is no reuse of one any
+    /// provider saw. Reading every name the log holds, whatever its kind, keeps a fresh one away from all of them.
+    pub fn recorded(history: &[(Receipt, rutent_contracts::core_internal::Entry)]) -> Self {
+        let mut used = BTreeSet::new();
+        for (_, entry) in history {
+            if let Ok(value) = serde_json::to_value(entry) {
+                transactions_in(&value, &mut used);
+            }
+        }
+        Self { used }
+    }
+
+    /// Every transaction it holds, in order.
+    pub fn transactions(&self) -> impl Iterator<Item = &str> {
+        self.used.iter().map(String::as_str)
+    }
+}
+
+/// Every text an entry names under a `transaction` key, at any depth.
+fn transactions_in(value: &serde_json::Value, into: &mut BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                if name == "transaction"
+                    && let Some(text) = field.as_str()
+                {
+                    into.insert(text.to_owned());
+                }
+                transactions_in(field, into);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                transactions_in(item, into);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// What the rounds reach. The assembly builds it; Core's catalogue, clock, exposures and releases are those

@@ -89,6 +89,7 @@ mod landing;
 mod measured;
 mod pairs;
 mod ports;
+mod reopen;
 pub mod roll_back;
 mod sign;
 
@@ -141,6 +142,7 @@ pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
     ToKeep, Uses,
 };
+pub use reopen::Reopening;
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 
@@ -636,6 +638,9 @@ struct InFlight {
     relies: Vec<Judgement>,
     /// What its operation priced, to measure against what it came to (`T-020-31`).
     priced: measured::Priced,
+    /// Rebuilt from the log by a Core that reopened (`T-020-46`): carried out, its answer, if any, gone with the Core
+    /// that stopped, so it is never carried out again, and with no final outcome it stays in flight.
+    reopened: bool,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
     /// The entry that carries those answers: the order's `decision_record` entry.
@@ -664,8 +669,8 @@ struct Tracked {
 
 /// Core's record of the segments it handed over, kept across orders by the assembly: the effects acted on, the
 /// transactions assigned, the drains not yet appended, each segment from its permit to its final outcome, and the
-/// orders followed. The production assembly keeps it durably (`F-030`): a fresh one knows nothing of the effects acted
-/// on before it, so after a restart only the kept record stops a second `move_value` on a segment.
+/// orders followed. A Core that reopens rebuilds it from the log ([`Segments::reopened`], `T-020-46`): the effects
+/// acted on are every effect the log holds, so no second `move_value` follows a restart.
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     acted: BTreeSet<String>,
@@ -698,6 +703,9 @@ pub struct Segments {
     pairing: pairs::Pairing,
     /// The value landed in holding accounts, by segment (`T-020-33`).
     landing: landing::Landing,
+    /// The segments a reopened Core holds as handed over whose operation it couldn't read back, with their effects'
+    /// receipts: never handed over again, and in motion (`T-020-46`, `INV-8`).
+    unread: BTreeMap<(String, String), Receipt>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -950,8 +958,8 @@ impl Segments {
     }
 
     /// Follows the order `inputs` open, rebuilt from the log: its `route_chosen` and every input recorded about it
-    /// since, in order, as a restart finds them (`F-030`, `T-020-11`). The effects acted on and the segments in
-    /// flight are not rebuilt; only the order's state is. False if they open no order.
+    /// since, in order, as a restart finds them (`T-020-11`). Only the order's state: [`Segments::reopened`] rebuilds
+    /// the effects acted on and the segments in flight too (`T-020-46`). False if they open no order.
     pub fn follow_recorded(&mut self, clock: &dyn Clock, inputs: &[RecordedInput]) -> bool {
         let Some((first, rest)) = inputs.split_first() else {
             return false;
@@ -1203,6 +1211,9 @@ impl Segments {
     /// in the log and its value about to move, whatever the state machine says of it yet (`INV-4`, `T-020-10`).
     pub fn handed_over(&self, order: &Id, segment: &Id) -> bool {
         self.in_flight(order, segment).is_some()
+            || self
+                .unread
+                .contains_key(&(order.as_str().to_owned(), segment.as_str().to_owned()))
     }
 
     /// The order Core follows, as the inputs recorded so far left it: where each part's value sits
@@ -1878,6 +1889,10 @@ impl Segments {
             }
             return self.advance(parts, live, &at, operation, true);
         }
+        // A segment a reopened Core holds as handed over, its operation not read back, is never handed over again.
+        if let Some(effect) = self.unread_effect(&at) {
+            return Err(SegmentsError::AlreadyActed(effect.clone()));
+        }
         let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
         ))?;
@@ -2010,6 +2025,7 @@ impl Segments {
                 priced: measured::Priced::of(operation),
                 heard: measured::hear(live.record, operation),
                 record_entry: live.record_entry.cloned(),
+                reopened: false,
             },
         );
         self.advance(parts, live, &at, operation, true)
@@ -2026,10 +2042,21 @@ impl Segments {
         operation: &rutent_contracts::router_api::Operation,
         hold: bool,
     ) -> Result<Accounted, SegmentsError> {
+        // A segment a reopened Core rebuilt from the log was carried out, and its answer, if it came, went with the
+        // Core that stopped: it is never carried out again, and its outcome is settled as an unknown one is
+        // (`T-020-46`, `INV-8`).
+        let flight = self.flight(at)?;
+        if flight.reopened && flight.answered.is_none() {
+            let effect = flight
+                .effect
+                .as_ref()
+                .map(|e| e.receipt.clone())
+                .ok_or(SegmentsError::Plan("a rebuilt segment has its effect"))?;
+            return Err(SegmentsError::AlreadyActed(effect));
+        }
         // The provider's reliance on each judgement its inputs rest on is recorded before anything of the segment is:
         // before its hold, its question, its effect and the operation. The log refusing one stops the segment here,
         // with nothing sent (`REQ-CPL-12`, `INV-7`).
-        let flight = self.flight(at)?;
         if !flight.relies.is_empty() {
             let (provider, relies) = (flight.provider.clone(), flight.relies.clone());
             let when = now(parts.clock)?;

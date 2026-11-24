@@ -57,6 +57,7 @@ pub mod measures;
 pub mod policy;
 pub mod price;
 pub mod releases;
+mod reopen;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -487,6 +488,8 @@ struct Carried {
     feed: Feed,
     fresh: Seeded,
     ties: bool,
+    /// The operator's key, with the decision records it signed (`T-020-46`): the log names each by digest.
+    signer: Signer,
 }
 
 /// Core, put together.
@@ -648,10 +651,12 @@ impl Core {
     }
 
     /// Core opened again on its disk after it stopped (`T-020-09`): what is outside Core goes on as it stands (the
-    /// platform with the providers and their networks, the state machine's host, the clock), and Core's own parts are
-    /// put together again over what the disk holds: the log and the evidence store read back, and, from the log,
-    /// what the grading took (`Closing::recorded`). The rest of Core's own record (intake's, the segments', `Issued`)
-    /// is in memory and starts empty (`F-030`); the providers are granted again on the reopened log.
+    /// platform with the providers and their networks, the state machine's host, the clock, and the operator's key with
+    /// the decision records it signed), and Core's own parts are put together again over what the disk holds: the log
+    /// and the evidence store read back, and, from the log, what the grading took (`Closing::recorded`), the held
+    /// quotes, and Core's own state, rebuilt (`T-020-46`, the `reopen` module): the transactions asked under, intake's orders,
+    /// the segments and the value in flight, the stuck orders, and what each started order runs on. The providers are
+    /// granted again on the reopened log.
     ///
     /// # Errors
     ///
@@ -668,6 +673,7 @@ impl Core {
             feed: self.feed,
             fresh: self.fresh,
             ties: self.readings.ties(),
+            signer: self.signer,
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
     }
@@ -680,42 +686,44 @@ impl Core {
     ) -> Result<Self, AssemblyError> {
         let context = context();
         let reopened = carried.is_some();
-        let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
-            Some(c) => (
-                c.fleet,
-                c.installed,
-                c.clock,
-                Some(c.feed),
-                Some(c.fresh),
-                c.ties,
-            ),
-            None => {
-                // The platform and the simulated providers, staging set explicitly.
-                let mut fleet = Fleet::with_context(config.deadline, context.clone());
-                let installed: Vec<Installed> = config
-                    .providers
-                    .iter()
-                    .map(|spec| fleet.install(spec.clone()))
-                    .collect();
-                fleet.platform.set_staging(config.staging.policy());
+        let (fleet, installed, clock, carried_feed, carried_fresh, ties, carried_signer) =
+            match carried {
+                Some(c) => (
+                    c.fleet,
+                    c.installed,
+                    c.clock,
+                    Some(c.feed),
+                    Some(c.fresh),
+                    c.ties,
+                    Some(c.signer),
+                ),
+                None => {
+                    // The platform and the simulated providers, staging set explicitly.
+                    let mut fleet = Fleet::with_context(config.deadline, context.clone());
+                    let installed: Vec<Installed> = config
+                        .providers
+                        .iter()
+                        .map(|spec| fleet.install(spec.clone()))
+                        .collect();
+                    fleet.platform.set_staging(config.staging.policy());
 
-                // First trust in a provider is its grant's, and an advertisement made before its grant rides on
-                // none: Core's clock starts before the earliest advertisement was made, for the grants.
-                let earliest = installed
-                    .iter()
-                    .filter_map(|one| {
-                        rutent_contracts::router_api::Timestamp::new(
-                            &one.advertisement.statement().made_at,
-                        )
-                    })
-                    .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
-                    .min()
-                    .unwrap_or(kit::START);
-                let clock =
-                    SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
-                (fleet, installed, clock, None, None, false)
-            }
-        };
+                    // First trust in a provider is its grant's, and an advertisement made before its grant rides on
+                    // none: Core's clock starts before the earliest advertisement was made, for the grants.
+                    let earliest = installed
+                        .iter()
+                        .filter_map(|one| {
+                            rutent_contracts::router_api::Timestamp::new(
+                                &one.advertisement.statement().made_at,
+                            )
+                        })
+                        .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
+                        .min()
+                        .unwrap_or(kit::START);
+                    let clock =
+                        SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+                    (fleet, installed, clock, None, None, false, None)
+                }
+            };
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
         let (store, log) = read_back(&disk, &clock).map_err(AssemblyError::Log)?;
@@ -846,10 +854,10 @@ impl Core {
             exposures: Exposures::new(),
             reported: rutent_core_orch::quote::Prices::new(),
             releases: Releases::new(),
-            signer: Signer {
+            signer: carried_signer.unwrap_or_else(|| Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
-            },
+            }),
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds_for(&context, &config.providers),
             prices,
@@ -873,9 +881,8 @@ impl Core {
         if reopened {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
             core.relist()?;
-            // The routes handed on whose start the holding account's record proved: proven again from the log, so
-            // their segments are handed over without the holding account being asked again (`T-020-26`).
-            core.recover_starts();
+            // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
+            core.rebuild_from_log();
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1060,6 +1067,16 @@ impl Core {
     /// decided keeps the formula its record ran under.
     pub fn set_operator_fee(&mut self, fee: rutent_contracts::router_api::FeeFormula) {
         self.bounds.operator_fee = fee;
+    }
+
+    /// Sets the most in flight at a provider in one asset (`REQ-ORD-8`): the bounds of every route decided from now on
+    /// carry it, in place of any the provider had in that asset. A deployment setting of the policy, as the operator's
+    /// fee is: a Core opened again starts from the kit's bounds, with none (`T-020-46`).
+    pub fn set_provider_ceiling(&mut self, ceiling: rutent_contracts::router_api::ProviderCeiling) {
+        self.bounds
+            .provider_ceilings
+            .retain(|c| !(c.provider == ceiling.provider && c.asset == ceiling.asset));
+        self.bounds.provider_ceilings.push(ceiling);
     }
 
     /// The holder's delegate asks `reserve` whether the account's balance covers `amount`, in `session`: a balance
