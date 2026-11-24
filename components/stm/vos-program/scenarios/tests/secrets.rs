@@ -2,12 +2,18 @@
 //! and the nodes' own files hold no provider credential, no secret's plaintext and no module state, and the scan
 //! shows it can see: each kind, let through the state machine's boundary once, is found in the journal and in the
 //! nodes' files. The scan is `rutent_scenarios::secrets`, which the reference host's run uses too.
+//! `T-024-20` adds `REQ-AUD-6`'s other half, "no balance": the same scan, seeking the balances the simulated reserves'
+//! banks and the holding account held, over a full run on three replicas, with the evidence store's shelf the one
+//! surface that may hold one.
 //! These need `../build.sh`'s binaries and `../test.sh`'s paths; without the `vos` feature this file is empty.
 
 #![cfg(feature = "vos")]
 
+use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::seeds;
-use rutent_scenarios::secrets::{Kind, Scan, Scanned, run_leaking, run_planted};
+use rutent_scenarios::secrets::{
+    Kind, Planted, Scan, Scanned, Surface, run_balanced, run_leaking, run_planted,
+};
 use rutent_scenarios_vos::{Base, Vos};
 
 /// What the nodes' files and the host's answers show of a run, for a scan of `scanned`'s values.
@@ -108,6 +114,117 @@ fn scan_finds_each_kind_of_value_let_into_three_vos_replicas_journal_and_files()
         assert!(
             looked.host.is_err(),
             "{kind:?}: the host's surfaces read clean"
+        );
+    }
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_evidence_store() {
+    for seed in seeds(&[1, 2, 3]) {
+        let base = Base::new(&format!("balances-{seed}"));
+        let run = run_balanced(&mut Vos::three(&base, "b"), seed, None);
+        let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+        assert_eq!(
+            scan.kinds(),
+            std::collections::BTreeSet::from([Kind::Balance]),
+            "seed {seed}: the scan seeks balances"
+        );
+        let nodes = scan
+            .find_in_dir(&base.0)
+            .unwrap_or_else(|e| panic!("the nodes' files couldn't be read: {e}"));
+        let (shelf, outside): (Vec<Surface>, Vec<Surface>) = run
+            .scanned
+            .surfaces
+            .iter()
+            .cloned()
+            .partition(|s| s.name.contains("evidence shelf"));
+        println!(
+            "seed {seed}: the scan looked at {} surfaces on the host, {} of them the shelf's, and {} files, {} bytes, of the nodes'",
+            run.scanned.surfaces.len(),
+            shelf.len(),
+            nodes.files,
+            nodes.bytes
+        );
+        // The reading is kept, in the shelf, so a clean scan of the rest is not a scan of a run that kept nothing.
+        assert!(
+            !scan.find(&shelf).is_empty(),
+            "seed {seed}: the holding account's reading isn't in the evidence store"
+        );
+        let report = scan.check(&outside).unwrap_or_else(|hits| {
+            panic!(
+                "seed {seed}: the journal or the log holds: {}",
+                hits.join("; ")
+            )
+        });
+        let named = |part: &str| report.looked_at.iter().any(|(n, _)| n.contains(part));
+        assert!(
+            named("its snapshot") && named("journal of") && named("Core's log, record"),
+            "seed {seed}: the scan didn't read the host's answers and the log"
+        );
+        assert!(
+            named("platform's journal of") && named("requests the platform delivered"),
+            "seed {seed}: the scan didn't read the platform's records"
+        );
+        assert!(
+            nodes.files > 0 && nodes.bytes > 0,
+            "seed {seed}: the nodes left no file to read, so the scan saw nothing of their state"
+        );
+        assert!(
+            nodes.hits.is_empty(),
+            "seed {seed}: the nodes' files hold a balance: {:?}",
+            nodes.hits
+        );
+    }
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
+    // The figures the accounts held, read from a run that has none planted, on the reference host: the accounts are
+    // the platform's and the same on any host. (A balance in Core's log, which no host touches, is the reference
+    // host's control: `secrets_scan.rs`.)
+    let clean = run_balanced(&mut Reference, 1, None);
+    let mut figures: Vec<(String, String)> = clean
+        .scanned
+        .canaries
+        .iter()
+        .map(|c| {
+            (
+                c.name.clone(),
+                String::from_utf8(c.bytes.clone()).expect("a figure"),
+            )
+        })
+        .collect();
+    figures.sort_by(|a, b| a.1.cmp(&b.1));
+    figures.dedup_by(|a, b| a.1 == b.1);
+    assert!(
+        figures.len() >= 2,
+        "the holding account and a reserve hold figures of their own: {figures:?}"
+    );
+    for (n, (name, figure)) in figures.iter().enumerate() {
+        // Into the state machine's journal, as an input the boundary let through: on the replicas' files too.
+        let base = Base::new(&format!("balances-control-{n}"));
+        let run = run_balanced(
+            &mut Vos::three(&base, "j"),
+            1,
+            Some(&Planted::InJournal(figure.clone())),
+        );
+        let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+        let looked = scan
+            .find_in_dir(&base.0)
+            .unwrap_or_else(|e| panic!("the nodes' files couldn't be read: {e}"));
+        let hits = scan.find(&run.scanned.surfaces);
+        assert!(
+            hits.iter()
+                .any(|h| h.kind == Kind::Balance && h.surface.contains("journal of")),
+            "`{name}`: the scan didn't find the balance in the journal the host answered: {hits:?}"
+        );
+        assert!(
+            looked.hits.iter().any(|h| h.kind == Kind::Balance),
+            "`{name}`: the balance let in isn't found in the nodes' files ({} files, {} bytes): the scan can't see their state",
+            looked.files,
+            looked.bytes
         );
     }
 }

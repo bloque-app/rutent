@@ -3,7 +3,9 @@
 
 use rutent_contracts::module_interface::SecretValue;
 use rutent_scenarios::assembly::machine::Reference;
-use rutent_scenarios::secrets::{Canary, Kind, MIN_LEN, Scan, Surface, run_leaking, run_planted};
+use rutent_scenarios::secrets::{
+    Canary, Kind, MIN_LEN, Planted, Scan, Surface, run_balanced, run_leaking, run_planted,
+};
 
 fn text(kind: Kind, value: &str) -> Canary {
     Canary::text(format!("{kind:?} value"), kind, value)
@@ -277,4 +279,149 @@ fn leaked_input_carries_the_value_in_its_payload_and_not_only_in_its_ids() {
         payload.contains("rutent-canary-payload"),
         "the value isn't in the input's payload: {payload}"
     );
+}
+
+/// The surfaces that are the evidence store's shelf: the one place a holding account's balance reading may be kept.
+fn is_shelf(surface: &Surface) -> bool {
+    surface.name.contains("evidence shelf")
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn full_runs_records_hold_no_simulated_balance_outside_the_evidence_store() {
+    for seed in [1, 2] {
+        let run = run_balanced(&mut Reference, seed, None);
+        let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+        assert_eq!(
+            scan.kinds(),
+            std::collections::BTreeSet::from([Kind::Balance]),
+            "seed {seed}: the scan seeks balances"
+        );
+        // The values are the ones the accounts held, read from them, and no figure the run states is one of them.
+        let names = scan.names();
+        assert!(
+            names.iter().any(|n| n.contains("holding account"))
+                && names
+                    .iter()
+                    .any(|n| n.contains("reserve") && n.contains("at the start"))
+                && names
+                    .iter()
+                    .any(|n| n.contains("reserve") && n.contains("at the end")),
+            "seed {seed}: {names:?}"
+        );
+        assert_eq!(
+            run.holding,
+            run.landed
+                .iter()
+                .map(|(_, a)| a.parse::<u128>().expect("a figure"))
+                .sum::<u128>(),
+            "seed {seed}: the holding account's balance is what the wallet was given"
+        );
+        for canary in &run.scanned.canaries {
+            let text = String::from_utf8(canary.bytes.clone()).expect("a figure");
+            assert!(
+                text.len() >= MIN_LEN && text.bytes().all(|b| b.is_ascii_digit()),
+                "seed {seed}: `{}` is not a distinctive figure",
+                canary.name
+            );
+            assert!(
+                !run.stated.contains(&text),
+                "seed {seed}: `{}` is a figure the run states",
+                canary.name
+            );
+        }
+        // Every surface but the evidence store's shelf is clean, and the scan says what it looked at.
+        let (shelf, outside): (Vec<Surface>, Vec<Surface>) =
+            run.scanned.surfaces.iter().cloned().partition(is_shelf);
+        assert!(!shelf.is_empty(), "seed {seed}: the shelf wasn't read");
+        // The reading is kept there, so a clean scan of the rest is not a scan of a run that kept nothing.
+        assert!(
+            !scan.find(&shelf).is_empty(),
+            "seed {seed}: the holding account's reading isn't in the evidence store"
+        );
+        let report = scan
+            .check(&outside)
+            .unwrap_or_else(|hits| panic!("seed {seed}: {}", hits.join("; ")));
+        let named = |part: &str| report.looked_at.iter().any(|(n, _)| n.contains(part));
+        assert!(named("its snapshot") && named("journal of") && named("Core's log, record"));
+        assert!(named("the log read back") && named("the inputs fed"));
+        assert!(
+            named("platform's journal of") && named("requests the platform delivered"),
+            "seed {seed}: the platform's records weren't read"
+        );
+    }
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn balance_planted_in_the_log_is_found_by_the_scan() {
+    let clean = run_balanced(&mut Reference, 1, None);
+    let scan = Scan::new(clean.scanned.canaries.clone()).expect("a scan");
+    for canary in &clean.scanned.canaries {
+        let value = String::from_utf8(canary.bytes.clone()).expect("a figure");
+        for (planted, surface) in [
+            (Planted::InLog(value.clone()), "Core's log, record"),
+            (Planted::InLog(value.clone()), "the log read back"),
+            (Planted::InJournal(value.clone()), "journal of"),
+        ] {
+            let run = run_balanced(&mut Reference, 1, Some(&planted));
+            let hits = scan.find(&run.scanned.surfaces);
+            let outside: Vec<_> = hits
+                .iter()
+                .filter(|h| !h.surface.contains("evidence shelf"))
+                .collect();
+            assert!(
+                outside
+                    .iter()
+                    .any(|h| h.canary == canary.name && h.surface.contains(surface)),
+                "`{}` planted ({planted:?}) wasn't found in a surface named `{surface}`: {outside:?}",
+                canary.name
+            );
+            // And it is the planted figure that is found, not another, outside the shelf: a reserve's balance at
+            // the start and at the end are one figure where its round trip left it as it was.
+            let figure = |name: &str| {
+                clean
+                    .scanned
+                    .canaries
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map(|c| c.bytes.clone())
+            };
+            assert!(
+                outside
+                    .iter()
+                    .all(|h| figure(&h.canary) == Some(canary.bytes.clone())),
+                "another figure was found too: {outside:?}"
+            );
+        }
+    }
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn holding_accounts_balance_reading_is_found_only_in_the_evidence_store() {
+    let run = run_balanced(&mut Reference, 1, None);
+    let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+    let hits = scan.find(&run.scanned.surfaces);
+    let holding = |h: &&rutent_scenarios::secrets::Hit| h.canary.contains("holding account");
+    let of_holding: Vec<_> = hits.iter().filter(holding).collect();
+    assert!(
+        !of_holding.is_empty()
+            && of_holding
+                .iter()
+                .all(|h| h.surface.contains("evidence shelf")),
+        "the reading is kept in the evidence store and nowhere else: {hits:?}"
+    );
+    assert_eq!(
+        hits.len(),
+        of_holding.len(),
+        "nothing else is found anywhere: {hits:?}"
+    );
+    // The log holds the check the reading was compared by, with the account it was of, and not the figure.
+    let log = serde_json::to_string(&run.scanned.run.log).expect("the log is JSON");
+    assert!(
+        log.contains("holding_check") && log.contains(&format!("holding-{}", run.node)),
+        "the log holds no record of the check"
+    );
+    assert!(!log.contains(&run.holding.to_string()));
 }
