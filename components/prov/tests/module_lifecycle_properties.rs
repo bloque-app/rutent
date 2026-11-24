@@ -244,8 +244,8 @@ fn transaction_identifier_never_begins_two_segments() {
 }
 
 /// A staged release, under any share, window and minimum, takes its share of the segments that begin, as near as
-/// whole segments allow, and is promoted only once both its window has passed and it has handled its minimum;
-/// until then the version in force stays, and a refused promotion changes nothing (`REQ-MDL-4`, ADR-0014).
+/// whole segments allow, and is promoted only once both its window has passed and it has answered its minimum (refusals
+/// count for nothing); until then the version in force stays, and a refused promotion changes nothing (`REQ-MDL-4`, ADR-0014).
 // verifies: DEC-18, REQ-MDL-4
 #[test]
 fn staged_release_is_promoted_only_after_its_window_and_its_minimum() {
@@ -274,8 +274,11 @@ fn staged_release_is_promoted_only_after_its_window_and_its_minimum() {
                     .expect("a segment");
                 if v == "1.1.0" {
                     taken += 1;
-                    lifecycle.observe(PROVIDER, &v, rng.chance(2));
-                    handled += 1;
+                    // Only an answer counts towards the minimum; a refusal is observed and counts for nothing
+                    // (`T-013-11`).
+                    let answered = rng.chance(2);
+                    lifecycle.observe(PROVIDER, &v, answered);
+                    handled += u64::from(answered);
                 }
                 assert_eq!(
                     taken,

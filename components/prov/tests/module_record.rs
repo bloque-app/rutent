@@ -16,10 +16,12 @@ use std::io;
 use std::path::PathBuf;
 
 use common::{TestWorld, WORLD_AT, withdrawal};
-use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
+use rutent_contracts::module_interface::{
+    Acceptance, AdmissionRefusal, Identifier, PlatformRefusal,
+};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_prov::catalogue::Instant;
-use rutent_prov::module::lifecycle::{DecisionKind, LifecycleRefusal, Mark};
+use rutent_prov::module::lifecycle::{Counts, DecisionKind, LifecycleRefusal, Mark, Staging};
 use rutent_prov::module::record::{FileRecord, MemoryRecord, Record};
 use rutent_prov::module::types::{Admitted, Handled};
 use signed::{AT, RAMP, RESERVE, Signed, release};
@@ -578,4 +580,246 @@ fn after_a_failed_write_the_platform_writes_nothing_more_even_to_a_record_that_r
         Handled::Refused(PlatformRefusal::Unavailable)
     );
     assert_eq!(memory.lines().len(), written, "{:#?}", memory.lines());
+}
+
+/// Admits `provider`'s release of `version`, handling withdrawals, as [`admit_version`] does, and answers what
+/// acceptance it was given, as the artefact says it.
+fn admitted_as(s: &mut Signed, provider: &str, version: &str) -> Acceptance {
+    let key = signed::catalogue_support::advertising_key(provider);
+    let (declaration, binaries) = release(provider, version, &["withdrawal"]);
+    let Admitted::Artefact(artefact) =
+        s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+    else {
+        panic!("the release wasn't admitted");
+    };
+    if artefact.acceptance.accepted.is_some() {
+        return artefact.acceptance;
+    }
+    s.accept(provider, &artefact.assertion_digest, "test-reviewer")
+        .expect("the release is accepted")
+        .acceptance
+}
+
+/// What a release admitted again is given, with no acceptance of the platform's own to give.
+fn readmitted(s: &mut Signed, provider: &str, version: &str) -> Admitted {
+    let key = signed::catalogue_support::advertising_key(provider);
+    let (declaration, binaries) = release(provider, version, &["withdrawal"]);
+    s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+}
+
+// verifies: REQ-MDL-4, INV-8
+#[test]
+fn release_in_force_and_staged_survives_a_platform_restart() {
+    let policy = Staging::new(100, 60, 2).expect("a policy");
+    let record = MemoryRecord::new();
+    let mut s = Signed::on(Box::new(record.clone()), TestWorld::default());
+    // The reserve's first release waits for a fresh acceptance, which a person gives; its next, asking for nothing
+    // more, is accepted by itself and staged beside it.
+    let first = admitted_as(&mut s, RESERVE, "1.0.0");
+    s.platform.set_staging(Some(policy));
+    let second = admitted_as(&mut s, RESERVE, "1.1.0");
+    assert_ne!(first, second);
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.0.0"));
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.1.0"));
+    // Three segments begin on the staged release, which answers two operations; the third stays in flight.
+    for n in 1..=3 {
+        assert_eq!(
+            s.platform
+                .begin_segment(RESERVE, &tx(RESERVE, n))
+                .as_deref(),
+            Ok("1.1.0")
+        );
+    }
+    for n in 1..=2 {
+        assert!(s.answers_as(RESERVE, "1.1.0", n));
+    }
+    let counts = s
+        .platform
+        .lifecycle()
+        .observation(RESERVE)
+        .expect("staged")
+        .staged_counts;
+    assert_eq!(
+        counts,
+        Counts {
+            segments: 3,
+            answered: 2,
+            refused: 0
+        }
+    );
+    // The ramp's release was withdrawn while it waited.
+    let key = signed::catalogue_support::advertising_key(RAMP);
+    let (declaration, binaries) = release(RAMP, "1.0.0", &["withdrawal"]);
+    let Admitted::Artefact(waiting) =
+        s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+    else {
+        panic!("the release wasn't admitted");
+    };
+    assert!(
+        s.platform
+            .withdraw(RAMP, &waiting.assertion_digest, "test-reviewer", AT)
+            .is_some()
+    );
+
+    // The platform restarts, on its record and nothing else it held. It holds each release as it was: accepted,
+    // in force, staged, counted, the third segment in flight, the ramp's version withdrawn; and no process.
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(record.clone()), world);
+    s.platform.set_staging(Some(policy));
+    let lifecycle = s.platform.lifecycle();
+    assert_eq!(lifecycle.in_force(RESERVE), Some("1.0.0"));
+    assert_eq!(lifecycle.staged(RESERVE), Some("1.1.0"));
+    assert!(lifecycle.is_accepted(RESERVE, "1.0.0") && lifecycle.is_accepted(RESERVE, "1.1.0"));
+    assert_eq!(
+        lifecycle
+            .observation(RESERVE)
+            .expect("staged")
+            .staged_counts,
+        counts
+    );
+    assert_eq!(
+        lifecycle
+            .segment(tx(RESERVE, 3).as_str())
+            .map(|segment| segment.runs_on.as_str()),
+        Some("1.1.0")
+    );
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    assert_eq!(
+        s.platform
+            .promote(RESERVE, "test-operator", Instant(AT.0 + 60)),
+        Err(LifecycleRefusal::StagedNotRunning)
+    );
+
+    // Admitted again, in the order accepted, each release is accepted by whom it was and when, and goes where it
+    // stood: neither is given an acceptance again, and the second isn't staged as a new upgrade.
+    let Admitted::Artefact(again) = readmitted(&mut s, RESERVE, "1.0.0") else {
+        panic!("the release wasn't admitted again");
+    };
+    assert_eq!(again.acceptance, first);
+    assert!(s.platform.pending(RESERVE).is_none());
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    let Admitted::Artefact(again) = readmitted(&mut s, RESERVE, "1.1.0") else {
+        panic!("the release wasn't admitted again");
+    };
+    assert_eq!(again.acceptance, second);
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.0.0"));
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.1.0"));
+    assert!(s.platform.version_process(RESERVE, "1.1.0").is_some());
+    assert_eq!(
+        s.platform
+            .lifecycle()
+            .observation(RESERVE)
+            .expect("staged")
+            .staged_counts,
+        counts,
+        "admitting again counts nothing"
+    );
+    // The withdrawn release stays withdrawn.
+    assert_eq!(
+        readmitted(&mut s, RAMP, "1.0.0"),
+        Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+    );
+    // The segment in flight runs on the staged release, and the staged release, whose two answers were counted
+    // before the restart, is promoted on them once its window has passed.
+    assert!(s.answers_as(RESERVE, "1.1.0", 3));
+    assert_eq!(
+        s.platform
+            .promote(RESERVE, "test-operator", Instant(AT.0 + 60))
+            .as_deref(),
+        Ok("1.1.0")
+    );
+    // And the promotion, taken after the restart, is held by the next.
+    let world = stop(s);
+    let s = Signed::on(Box::new(record), world);
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.1.0"));
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), None);
+}
+
+/// A record that takes every write until the test breaks it, as a disk that fills leaves a [`FileRecord`].
+struct Breakable {
+    inner: MemoryRecord,
+    broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Record for Breakable {
+    fn load(&mut self) -> io::Result<Vec<String>> {
+        self.inner.load()
+    }
+
+    fn append(&mut self, line: &str) -> io::Result<()> {
+        if self.broken.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(io::Error::other("broken"));
+        }
+        self.inner.append(line)
+    }
+
+    fn replace(&mut self, lines: &[String]) -> io::Result<()> {
+        self.inner.replace(lines)
+    }
+}
+
+// verifies: REQ-MDL-4, INV-8
+#[test]
+fn a_release_the_record_cannot_hold_is_not_accepted() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let record = Breakable {
+        inner: MemoryRecord::new(),
+        broken: broken.clone(),
+    };
+    let mut s = Signed::on(Box::new(record), TestWorld::default());
+    admit_version(&mut s, RESERVE, "1.0.0");
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.0.0"));
+
+    // An automatic acceptance the record can't hold isn't given: the release waits, nothing runs it, and the
+    // version in force stays.
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let (declaration, binaries) = release(RESERVE, "1.1.0", &["withdrawal"]);
+    let Admitted::Artefact(artefact) =
+        s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
+    else {
+        panic!("the release wasn't admitted");
+    };
+    assert_eq!(artefact.acceptance.accepted, None);
+    assert!(s.platform.pending(RESERVE).is_some());
+    assert!(!s.platform.lifecycle().is_accepted(RESERVE, "1.1.0"));
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    assert_eq!(s.platform.version_process(RESERVE, "1.1.0"), None);
+    // A person's acceptance the record can't hold isn't given either.
+    assert!(
+        s.accept(RESERVE, &artefact.assertion_digest, "test-reviewer")
+            .is_none()
+    );
+    assert!(s.platform.pending(RESERVE).is_some());
+    assert!(!s.platform.lifecycle().is_accepted(RESERVE, "1.1.0"));
+    assert_eq!(s.platform.version_process(RESERVE, "1.1.0"), None);
+}
+
+// verifies: REQ-MDL-4, INV-8
+#[test]
+fn accepted_releases_are_held_by_a_platform_restarted_at_once() {
+    let policy = Staging::new(100, 60, 2).expect("a policy");
+    let record = MemoryRecord::new();
+    let mut s = Signed::on(Box::new(record.clone()), TestWorld::default());
+    let first = admitted_as(&mut s, RESERVE, "1.0.0");
+    s.platform.set_staging(Some(policy));
+    let second = admitted_as(&mut s, RESERVE, "1.1.0");
+    // Nothing else has been written since: the acceptances and where they went are all the record holds.
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(record), world);
+    s.platform.set_staging(Some(policy));
+    let lifecycle = s.platform.lifecycle();
+    assert_eq!(lifecycle.in_force(RESERVE), Some("1.0.0"));
+    assert_eq!(lifecycle.staged(RESERVE), Some("1.1.0"));
+    assert!(lifecycle.is_accepted(RESERVE, "1.0.0") && lifecycle.is_accepted(RESERVE, "1.1.0"));
+    let Admitted::Artefact(again) = readmitted(&mut s, RESERVE, "1.0.0") else {
+        panic!("the release wasn't admitted again");
+    };
+    assert_eq!(again.acceptance, first);
+    let Admitted::Artefact(again) = readmitted(&mut s, RESERVE, "1.1.0") else {
+        panic!("the release wasn't admitted again");
+    };
+    assert_eq!(again.acceptance, second);
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.1.0"));
 }

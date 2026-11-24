@@ -1055,7 +1055,8 @@ mid-segment handed a repeat to the module again (`INV-8`).
   force or staged, the staging's counts and the withdrawn versions are not in the record, and a restart's
   re-admission re-establishes them in the order releases are admitted. The operator's marks and decisions are in it
   since the fix round below. Owner: `T-013-11`, part (3) of its row (PLAN PR #267), with `F-030`'s start-up
-  re-admitting releases.
+  re-admitting releases. **Closed by `T-013-11`** (below): the state is in the record; the re-admission stays
+  `F-030`'s.
 - The `ended` set grows by one line per transaction ever ended, in memory and in the record, as it did in memory
   before, and is rewritten whole at each opening. Owner: `F-013`, if a deployment's transaction count makes it
   matter (left as a gap by the coordinator in the fix round).
@@ -1207,3 +1208,162 @@ The fix round 1 note that two rules had no test that turns them red no longer ho
 | The record opened by its canonical path (2) | `record::tests::a_record_opened_through_a_directory_link_stays_in_the_directory_it_named` |
 | A failed directory sync an error (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |
 | `EINVAL` let through (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |
+
+
+## T-013-11: the platform's status query, promotion on answers, releases that survive a restart (`f-013/t-013-11-status-promotion-releases`)
+
+Findings 4 and 7 of `M3`'s milestone review of 2026-11-24 (PR #143), left open since `M2`, three parts, and
+`T-020-45`'s gap 6 (the platform's own call judgement).
+
+### Design (T-013-11)
+
+**(1) The status query** (`REQ-ORD-1`, `INV-4`).
+
+- `Platform::status(provider, asking, about)` (`platform.rs`). `about` is an operation the platform carried out at
+  `provider` (a record of it under its transaction, or its segment in flight there); the platform makes the question
+  from it, `Operation::StatusQuery {transaction: asking, provider, about: <its transaction>}`, in the same deployment,
+  protocol version, maker and time, and hands it through the ordinary `handle_in` on the version `about`'s segment
+  runs on, so the module is asked only if its release lists `status_query` in `handles` (else `NotHandled`, never
+  run), the answer is judged against the result schema and signed with the provider's statements key as any result is.
+- It moves nothing: `status_query` joins the kinds that only ask (`READ_ONLY_KINDS`), so it is no operation carried
+  out, no `carrying` entry, no record under its transaction; the transaction asked about, its segment and its
+  record are as they were. The test reads the record's lines for the asking transaction and finds none.
+- Refused, nothing run: `Unavailable` where the platform carried nothing out under `about` at this provider;
+  `DuplicateTransaction` where `asking` is `about`'s transaction or one the platform holds a record of, a segment
+  of, or ended (a question has a transaction of its own).
+- **Signing the nested result** (`proxy/signing.rs`, a `DEC-20` path; `T-020-45`'s gap 12 in part). The signer refused
+  every result-shaped statement nested in the provider's name (`NestedOfAnotherShape`), so a status answer carrying
+  the provider's own result, the case the question exists for, could never pass the platform. A result nested in the
+  answer to a status question is now signed if it is a result of the transaction the question names in `about`, and
+  of an operation (never a status answer or a hold); anything else, and a result nested in answer to another kind of
+  question, is `NestedNotAsked`. `nested_statements_of_others_are_kept_and_of_another_shape_refused`'s last
+  assertion moves from `NestedOfAnotherShape` to `NestedNotAsked` for the same input (it is now judged by what was
+  asked, not by its shape alone). Terms and holds nested by a provider stay `T-020-47`'s gap 12.
+- **Not edited here:** `core-orch`'s `impl Modules for Platform` (`components/core-orch/src/segments/ports.rs`) still
+  answers the trait's default, `NotHandled`, because that file belongs to the wave's `core-orch` authors. What it
+  needs is one method, owner `T-020-47` (whose row asks `Modules::status`):
+
+```rust
+fn status(&mut self, effect: &Effect, provider: &Id, asking: &Id, about: &Statement<Operation>) -> Answered {
+    let _permitted = effect;
+    let Some(asking) = Identifier::new(asking.as_str()) else { return Answered::Refused(PlatformRefusal::NotHandled) };
+    match Platform::status(self, provider.as_str(), &asking, about) {
+        Handled::Answered(result) => serde_json::to_vec(&*result)
+            .map(Answered::Bytes)
+            .unwrap_or(Answered::Refused(PlatformRefusal::OutcomeUnknown)),
+        Handled::Refused(refusal) => Answered::Refused(refusal),
+    }
+}
+```
+
+**(2) Promotion counts answers** (`REQ-MDL-4`, ADR-0014; form item `promotion-observations`, default taken).
+
+- `Lifecycle::promote` reads `staged_counts.answered`, not `handled()`. What counts as answered (`is_an_answer`,
+  `platform.rs`): the platform passed on the module's result and its outcome is not `refused`, `unknown` or
+  `not_known`: done or failed, and the answers to a question (a dry run's quote, a balance, a judgement). A refusal the
+  platform made after the module ran (bad or oversized output, a limit, a stop), a result that is the module's own
+  refusal, and an outcome unknown are counted as `refused`, reported apart in the staging's summary
+  (`Observation::staged_counts.refused`, which existed). An operation refused before it reached a running process
+  counts as neither, as before.
+- `TooFewObserved.observed` is the answers. The module's docs and `Staging::new`'s say so. ADR-0014's staging is
+  otherwise unchanged.
+- Existing tests moved: `module_lifecycle_properties.rs`'s model counts only the observations that were answers (it
+  drew them at random); no other count moved.
+
+**(3) Releases survive a restart** (`REQ-MDL-4`, `INV-8`).
+
+- **The entries** (`record.rs`). `releases`: one provider's releases as they stood after a change, the last one
+  written holding: the accepted versions with who accepted each and when, in the order they were accepted (what a
+  restart admits them again in), the version in force, the versions put in force in order, and the staged release
+  with its start, policy, share taken and the counts of the staged version and of the version in force beside it.
+  `began`: a segment as it began, with the releases entry where beginning it changed the staging's counts (the
+  segments begun and the share taken), in one write. `decided` gains `releases`: the entries a promotion, a roll
+  back or a revocation of the version in force changed, written in the decision's one entry. `ran` gains `answered`,
+  written while a release is staged: the count towards the staging, replayed on opening. The withdrawn versions
+  are the `withdrawn` decisions the record already held, read back into the provider's withdrawn set.
+- **Written before they take effect.** `accept_and_start` (replacing `launch`) starts the process, builds the next
+  lifecycle on a clone, writes the releases entry for it, and only then takes it: where the write fails the process
+  is dropped, the release isn't accepted and `accept` answers `None`, the release still waiting. An automatic
+  acceptance (`admit`) the record can't hold is left waiting as one a person gives, its artefact saying so.
+- **Opening** (`Platform::open`) reads the entries back, and `held()` writes a releases entry per provider into the
+  snapshot it replaces the record with. A restarted platform holds each provider's state (`Lifecycle::release_state`,
+  `restore_release_state`) and no process.
+- **Admitting again.** A release whose version the record holds as accepted is accepted as it was (the same
+  `Accepted {by, at}`, so the artefact is the one it was), is never refused as `ReleaseStaged`, and is put where the
+  record says it stood (`start_restored`): the version in force in its place, the staged version and a version a
+  segment in flight runs on beside it, none of them staged as a new upgrade and none counted again. A version
+  declared exploited is held and runs nothing, as in `T-013-10`. A version withdrawn while it waited is refused
+  `VersionAlreadyAdmitted`.
+- **Tests.** `module_status.rs` (the two named, and the version the question runs on); `module_lifecycle.rs` (the two
+  promotion tests); `module_record.rs` (`release_in_force_and_staged_survives_a_platform_restart`, and
+  `a_release_the_record_cannot_hold_is_not_accepted`); `proxy/tests/calls.rs` and `proxy/signing.rs` (gap 6, the
+  nested result).
+
+**Gap 6 of `T-020-45`** (the platform's call judgement). `judge_call` (`proxy/calls.rs`) refuses a status question and
+a hold request as `undeclared_kind`, however a declaration or a route names them, as it does `holding_balance`.
+
+### Defaults (T-013-11)
+
+- A result counts as an answer unless its outcome is `refused`, `unknown` or `not_known`: the form's reading of "done or
+  failed, not refused or left unanswered", wide enough to take a quote or a judgement as an answer to the question
+  that asked for one. Reversible by changing `is_an_answer`.
+- A release the record can't hold isn't accepted: the platform stays as it was and the release waits. Fail closed.
+- `Platform::status` answers `Unavailable` for a transaction the platform kept no record of at this provider: after a
+  segment ends or an unsegmented record is freed, there is nothing to ask about.
+- The staging policy is the deployment's setting at each start (`Platform::set_staging`), not the record's; the
+  counts and the staged release under it are the record's.
+- A version in force or staged in the record that doesn't start when admitted again leaves force or staging, as one
+  that doesn't start at its acceptance does, until the operator decides.
+
+### Gaps (T-013-11)
+
+- `core-orch`'s `impl Modules for Platform::status`, above. Owner: `T-020-47`.
+- Core keeps a status answer as the provider's statement only after holding it to its question with
+  `check_status_answer`; the platform checks the answer's shape, transaction and signer but not its `about`.
+  Owner: `T-020-47`.
+- The question's maker signature is the original operation's (the platform verifies none). A caller that signs its
+  own questions hands the platform the one it signed through `Platform::handle`. Owner: `T-020-47`.
+- A restart re-admits releases in the order they were accepted, as the record lists them; the start-up that does
+  it, and the order of providers, is `F-030`'s. A release the start-up never admits again has no process, and
+  operations for it are `Unavailable`; the version in force in the record is not put in force by another.
+- The record grows by one releases entry per acceptance, per promotion and per segment that changes a staging's
+  counts, and is rewritten whole at each opening, as the `ended` set is (`T-013-10`'s gap). Owner: `F-013`.
+- `Slot`'s `pending` release (waiting for its acceptance) is not in the record: it is admitted again.
+- Terms and holds a provider nests in its answers are still passed on unsigned or refused by the signer: `T-020-47`.
+- `DEC-20` paths: `components/prov/src/module/` and `components/prov/src/proxy/` wait for the owner's click at the
+  release into `main`.
+
+### Rule-off table (T-013-11)
+
+Each rule switched off alone on the tree of the row's commit's parent of this note (script `ruleoff.py`, with
+`ruleoff2.py` for the reruns, in the row's scratch folder); the named test went red on an assertion each time. The
+two status tests and the restart test passed on their first run, since their code was written beside them: what
+shows each is red is the table.
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| `status_query` among the kinds that only ask (a question is no operation carried out) | `status_question_is_handed_to_a_module_that_handles_it_and_moves_nothing` |
+| A question about a transaction the platform carried nothing out of is refused | `status_question_is_handed_to_a_module_that_handles_it_and_moves_nothing` |
+| A question has a transaction of its own (the asking one is no other's) | `status_question_is_handed_to_a_module_that_handles_it_and_moves_nothing` |
+| The question runs on the version its transaction's segment runs on | `status_question_runs_on_the_version_its_transaction_runs_on` |
+| The module's `handles` list gates the question (existing check, `handle_on`) | `module_that_handles_no_status_question_is_not_asked_one` |
+| Promotion reads the answers, not the operations handled | `staged_version_that_refuses_every_operation_is_never_promoted` |
+| A result whose outcome is a refusal, unknown or not known is no answer | `staged_version_is_promoted_on_the_operations_it_answered` |
+| `judge_call` bars `status_query` and `hold` | `status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_names` |
+| The signer signs a nested result only for the transaction asked about | `result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about` |
+| The signer refuses a nested status answer or hold | `result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about` |
+| An acceptance written to the record before it takes effect | `accepted_releases_are_held_by_a_platform_restarted_at_once` |
+| Releases entries read back | `accepted_releases_are_held_by_a_platform_restarted_at_once` |
+| A re-admitted release isn't refused as staged | `release_in_force_and_staged_survives_a_platform_restart` |
+| Counts replayed from `ran` entries | `release_in_force_and_staged_survives_a_platform_restart` |
+| A segment's counts written with it | `release_in_force_and_staged_survives_a_platform_restart` |
+| A decision's releases written with it | `release_in_force_and_staged_survives_a_platform_restart` |
+| Withdrawn versions read back from the decisions | `release_in_force_and_staged_survives_a_platform_restart` |
+| An acceptance refused where the record can't hold it | `a_release_the_record_cannot_hold_is_not_accepted` |
+| An automatic acceptance the record can't hold left waiting | `a_release_the_record_cannot_hold_is_not_accepted` |
+
+One rule-off found a hidden redundancy rather than a missing test: with the releases entries not read back, the
+restart test still passed, because a later `began` entry holds the same state. `accepted_releases_are_held_by_a_platform_restarted_at_once`
+restarts the platform with nothing after the acceptances, which is what turns it red. Likewise the question's
+"own transaction" check is three conditions that cover one another (the asked-about transaction holds a segment, a
+record, or is `asking`): the table switches the whole check off.

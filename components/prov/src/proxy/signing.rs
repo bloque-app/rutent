@@ -18,8 +18,8 @@
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::module_interface::SecretValue;
 use rutent_contracts::provider_role::{
-    Deployment, JUDGEMENT_SHAPE, Operation, PublicKey, REVERSAL_CONFIRMATION_SHAPE, ResultBody,
-    Statement, signing_input,
+    Deployment, JUDGEMENT_SHAPE, Operation, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE,
+    ResultBody, Statement, signing_input,
 };
 use serde_json::Value;
 
@@ -128,6 +128,10 @@ impl<'a> Asked<'a> {
             REVERSAL_CONFIRMATION_SHAPE => {
                 ("reversal_confirmation", &["segment", "asset", "amount"])
             }
+            // The provider's own result for the transaction a status question asks about, nested in its answer
+            // (provider-role 4.0.0, `T-013-11`): signed only in answer to a status question, and only if it is the
+            // result of the transaction asked about and of an operation, never of a status question or a hold.
+            RESULT_SHAPE => return self.asks_a_result(body),
             _ => return Err(SigningError::NestedOfAnotherShape),
         };
         let asked = self.operation.get("kind").and_then(Value::as_str) == Some(kind)
@@ -135,6 +139,22 @@ impl<'a> Asked<'a> {
                 let (asked, answered) = (self.operation.get(*field), body.get(*field));
                 asked.is_some() && asked == answered
             });
+        if asked {
+            Ok(())
+        } else {
+            Err(SigningError::NestedNotAsked)
+        }
+    }
+
+    /// Whether `body` is the result of the transaction the operation, a status question, asks about.
+    fn asks_a_result(&self, body: &Value) -> Result<(), SigningError> {
+        let asked = self.operation.get("kind").and_then(Value::as_str) == Some("status_query")
+            && self.operation.get("about").is_some()
+            && self.operation.get("about") == body.get("transaction")
+            && !matches!(
+                body.get("kind").and_then(Value::as_str),
+                Some("status_query" | "hold") | None
+            );
         if asked {
             Ok(())
         } else {
@@ -466,13 +486,59 @@ mod tests {
         let mut holder = serde_json::json!({ "inner": judged() });
         assert_eq!(
             super::sign_nested(&mut holder, &asked, &key, &declared),
-            Err(SigningError::NestedOfAnotherShape)
+            Err(SigningError::NestedNotAsked),
+            "a result nested in answer to anything but a status question"
         );
 
         let short = SecretValue::new("AAAA").expect("text");
         assert_eq!(
             sign_as(&judged(), "id-check", &judgement_asked(), &short, &declared).err(),
             Some(SigningError::MalformedKey)
+        );
+    }
+
+    /// The provider's own result for the transaction a status question asks about is signed with the provider's key,
+    /// nested in its answer; one for another transaction, one of a status question or a hold, and one nested in answer
+    /// to anything else, is not (`T-013-11`, `THR-8`).
+    // verifies: REQ-ORD-1, THR-8
+    #[test]
+    fn result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about() {
+        let (private, declared, key) = keys([11u8; 32]);
+        let answered = fixture("result-status-query-answered-with-the-providers-result");
+        let asked = asking("operation-status-query", &[]);
+        let signed = sign_as(&answered, "acme-co", &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed, &key));
+        assert!(verifies(&signed["statement"]["outcome"]["result"], &key));
+
+        // A question about another transaction than the result's.
+        let other = asking("operation-status-query", &[("about", "tx-another")]);
+        assert_eq!(
+            sign_as(&answered, "acme-co", &other, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // A result that is itself a status answer or a hold, however it names the transaction.
+        for kind in ["status_query", "hold"] {
+            let mut nested = answered.clone();
+            let refused =
+                serde_json::json!({ "status": "refused", "refusal": { "class": "final" } });
+            nested["statement"]["outcome"]["result"]["statement"] = if kind == "hold" {
+                serde_json::json!({ "kind": kind, "transaction": "tx-001", "outcome": refused })
+            } else {
+                serde_json::json!({
+                    "kind": kind, "transaction": "tx-001", "about": "tx-0", "outcome": refused
+                })
+            };
+            assert_eq!(
+                sign_as(&nested, "acme-co", &asked, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "{kind}"
+            );
+        }
+        // In answer to another kind of question.
+        let withdrawal = asking("operation-withdrawal-from-a-bank-reserve", &[]);
+        assert_eq!(
+            sign_as(&answered, "acme-co", &withdrawal, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
         );
     }
 
