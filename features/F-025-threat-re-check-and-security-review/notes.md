@@ -1059,7 +1059,7 @@ Only those the second pass changes or adds; every other residual of the first pa
 
 | Id | Change | Residual now | Evidence | Owner | v0 |
 |---|---|---|---|---|---|
-| R-BACKDATE | **Narrowed by `T-022-09`**; the owner's item `thr3-backdated-after-revocation` answered ("F-022 row") | A statement received after the revocation of every grant that would attribute it is attributed to no one, whatever its `made_at`, a genuine late result too. Left: (a) the skew window, where orchestration stamps `received_at` just before a revocation of the last 300 s; (b) the window between a revocation's effect and its `done` result (L5). Closed against a compromised provider key with an honest orchestration, save (b) | `keys.rs:401-409`, `:475-489`; `attribution.rs:309`; `a_late_statement_dated_before_a_revocation_is_not_taken`; the L5 probe | `F-022` | (a) form (`thr3-skew-window`, default accept); (b) row (low), L5 |
+| R-BACKDATE | **Narrowed by `T-022-09`**; the owner's item `thr3-backdated-after-revocation` answered ("F-022 row") | A statement received after the revocation of every grant that would attribute it is attributed to no one, whatever its `made_at`, a genuine late result too. Left: (a) the skew window, where orchestration stamps `received_at` just before a revocation of the last 300 s; (b) the window between a revocation's effect and its `done` result (L5). Closed against a compromised provider key with an honest orchestration, save (b) | `keys.rs:401-409`, `:475-489`; `attribution.rs:309`; `a_late_statement_dated_before_a_revocation_is_not_taken`; the L5 probe | `F-022` | (a) form (`thr3-skew-window`, reserved: a security residual only the owner may accept, so no default); (b) row (low), L5, `T-022-11` |
 | R-FUTURE | Unchanged in substance | The log holds no stated entry's `made_at` to its clock. Its `received_at` is now held to the clock where a later revocation of its maker exists, and nowhere else | `keys.rs:401-409` | `F-022` | accepted (low) |
 | R-KEYS | Unchanged, re-confirmed | `T-022-09` adds no input to the register: grants and revocations are still taken from `done` results of effects the log admitted, and the statement's own two times | `keys.rs:323-360` | `F-022` | accepted |
 | R-HOLDER | Widened slightly | A `resolve_stuck` effect's mover is a party to the order for evidence whatever the effect's result, as is a permitted decide step's (`relations.rs:5596-5611`) | `party_to_the_order`, `stuck/party.rs` | `F-020` | accepted |
@@ -1094,7 +1094,9 @@ to the log's file would have to write); `cat5-timing-residual` is now accepted f
   a statement as received just before a revocation that recent, and it is attributed. Options: (a) accept for v0;
   (b) an `M4` row: the log stamps `received_at` itself at the append; (c) now: hold every stated entry's `received_at` to
   the clock (six checkpoint test worlds need rewriting); Other (in notes). **Recommendation: (a), with (b) for `M4`.** It
-  needs orchestration to lie, and orchestration writes the revocation's time within the same skew.
+  needs orchestration to lie, and orchestration writes the revocation's time within the same skew. Reserved: only the owner may
+  accept this residual, so the item has no default (worded as "default accept" above until `M3`'s milestone review of
+  2026-11-24 found the two readings).
 - **`stuck-decision-digest-scope`** (on the form already). The reviewer's verdict: accept for v0, as the default says,
   on the condition that a production assembly answers `Source::Kept` from the log's stated entries (`F-030`).
 - **`batching-middle-deposit`** (group: deposits). Is a deposit at a batching reserve in the middle of a route in the
