@@ -1,10 +1,14 @@
 //! A route handed on (`T-016-03`; `REQ-ORD-40`, `REQ-ORD-16`, `REQ-CAT-17`, `INV-5`).
 //!
 //! A route handed on (`REQ-ORD-43`) starts at an inner node, where an earlier order's value rests in the node's
-//! holding account. That account counts as the route's starting reserve, and no outer reserve withdraws anything:
-//! the first segment is the account's own withdrawal, from the account to its node, and the account's own record of
-//! it proves it. At a public node the record is the operator's own module's (the plain wallet's); at a private node
-//! it would be its publisher's word, labelled as such, which is not this file's concern.
+//! holding account. That account counts as the route's starting reserve, and no outer reserve withdraws anything.
+//! The route has no withdrawal segment (state-machine's contract: a typed withdrawal goes from an outer node to an
+//! inner one, and its schema refuses one at the start of a route handed on). Its first segment is the first of the
+//! route's own, which starts at the inner node, and what proves that the value is there to start from is the
+//! account's own record of its withdrawal to the node, which the host asks of the wallet when the route starts
+//! (`REQ-ORD-40`). The record settles no segment: no segment of the route is the withdrawal, and no outcome of one
+//! is read from it. At a public node the record is the operator's own module's (the plain wallet's); at a private
+//! node it would be its publisher's word, labelled as such, which is not this file's concern.
 //!
 //! Nothing here reaches the evidence checker. The record is not a segment's outcome from a provider the route runs
 //! through, so the grading of `REQ-ORD-39` does not apply to it; it is the holding module's answer to the host's
@@ -12,7 +16,7 @@
 //! imports only the contracts).
 
 use rutent_contracts::provider_role::{EvidencePiece, NodeRef};
-use rutent_contracts::state_machine::{Id, SegmentPlan};
+use rutent_contracts::state_machine::{Id, OperationKind, SegmentPlan};
 
 use super::{Holdings, Operator, WalletError, WalletHolding};
 use crate::module::platform::{Platform, World};
@@ -34,15 +38,17 @@ pub struct WithdrawalRecord {
     pub reference: String,
 }
 
-/// A route handed on, started: its holding account stands as its origin reserve and its own record proves the
-/// withdrawal, which settles the route's first segment (`REQ-ORD-40`).
+/// A route handed on, started: its holding account stands as its origin reserve and its own record proves the start
+/// (`REQ-ORD-40`). The record settles no segment: the route has no withdrawal segment, and its first segment is the
+/// one that starts on the proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandedOnStart {
     /// The route's starting reserve: the provider of the node's holding account.
     pub reserve: String,
     /// The inner node where the value sat and the route starts.
     pub node: String,
-    /// The route's first segment, which the record settles.
+    /// The route's first segment: the first of the route's own, which starts at `node` on the proof. Not a
+    /// withdrawal, and not one the record settles.
     pub first_segment: Id,
     /// The proof of the withdrawal.
     pub record: WithdrawalRecord,
@@ -58,7 +64,8 @@ pub struct HandedOnStart {
 /// Why a route handed on could not start. Nothing moved, and the account is as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartError {
-    /// The route is empty or starts at an outer node: it is not handed on, and starts with a reserve's withdrawal.
+    /// The route is empty, starts at an outer node or starts with a withdrawal: it is not handed on, and starts
+    /// with a reserve's withdrawal from an outer node.
     NotHandedOn,
     /// The route starts at an inner node with no holding account, so no value rests there (`value_not_at_start`).
     ValueNotAtStart(String),
@@ -127,10 +134,11 @@ impl WalletHolding {
 }
 
 impl Holdings {
-    /// Starts a route handed on: `route` begins at an inner node where `order`'s value rests, the node's holding
-    /// account is its starting reserve, and the account's withdrawal of `amount` for the order, proven by the
-    /// wallet's own record, is the route's first segment (`REQ-ORD-40`). The value leaves the account for the route
-    /// and nowhere else, so rutent holds none (`INV-5`).
+    /// Starts a route handed on: `route` begins at an inner node where `order`'s value rests, with no withdrawal
+    /// segment, and the node's holding account is its starting reserve. The account's withdrawal of `amount` for the
+    /// order, proven by the wallet's own record, is the proof of the start (`REQ-ORD-40`) and settles no segment: the
+    /// route's first segment is the one that starts on it. The value leaves the account for the route and nowhere
+    /// else, so rutent holds none (`INV-5`).
     ///
     /// Refused, with nothing moved, when the route is not handed on, when its node has no holding account, or when
     /// the account refuses the withdrawal or does not record it: a failed withdrawal starts no route.
@@ -146,6 +154,10 @@ impl Holdings {
         let NodeRef::Inner(node) = &first.from.node else {
             return Err(StartError::NotHandedOn);
         };
+        if first.kind == OperationKind::Withdrawal {
+            // A route handed on has no withdrawal segment: this one starts with a reserve's, whatever node it names.
+            return Err(StartError::NotHandedOn);
+        }
         let account = self
             .accounts
             .get_mut(node)

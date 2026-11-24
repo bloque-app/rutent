@@ -340,3 +340,69 @@ Readings taken where `SPEC.md` or `PLAN.md` is silent or ambiguous, recorded per
   failed: the answer was refused (`Unavailable`) because the release had been judged against the advertisement.
   The proxy's unit test now expects the refusal, where it expected the advertisement to change nothing.
 - **`DEC-20`.** The credential proxy: `proxy/shared.rs` and `proxy/world.rs`.
+
+## T-016-05, the plain wallet across a restart, and the handed-on start's one reading
+
+Rows: findings 3 and 7 of the milestone review of 2026-11-24 (PR #143); `M2`'s items 4 and 2. No contract change and
+no module-interface change.
+
+- **The wallet's half of a restart.** A module's state is read-only through the host, and the wallet's `held` map
+  lives in its instance, so a restart empties it. Core rebuilds the record from the log (`T-020-46`); the wallet
+  answers so that Core can tell what it lacks and re-land safely:
+  - **It attributes every order it holds.** Core asks `balance_verification` per order (`account` is the order), and
+    the answer is the wallet's own word of what that order holds; the contract's `holding_balance` stays the sum. No
+    new field: `HoldingBalanceAnswer` carries the balance alone, and the per-order question already exists, so no
+    contract shape was missing. A restarted wallet answers "not covered" for every order it lost.
+  - **A repeated landing adds nothing.** The wallet keeps each landing it carried out by its transaction (order and
+    amount). The same landing again is answered as it was, with the same evidence, and adds nothing; the same
+    transaction for another order or amount is refused. A refused landing keeps no record. The record of landings
+    outlives a full release, so a repeat of a spent landing puts nothing back.
+  - **A release with no record behind it is `unknown`, never refused.** The wallet keeps the orders it took a landing
+    for (`known`, kept after a full release). A release for an order not in it answers `unknown`, since the value may
+    rest in the account and only the record be lost. A release for a known order above what it holds is still
+    refused. A malformed request, a dry run, a zero amount and another node or asset are refused first, as before.
+  - **The host tells the two apart.** `WalletError::NotKnown` is a release the wallet answered `unknown`; every other
+    answer that isn't success stays `NotSucceeded`. Core's stuck mover reads any error after the hand-over as an
+    unknown outcome, as before, so nothing there changes (`T-020-46` reads `NotKnown` to re-land first).
+- **Why the repeat is tested natively.** The platform answers or refuses a second operation under a transaction it
+  carried out before the module runs (`INV-8`), and a wallet is operator-published with no advertisement, so the
+  platform can't tell a repeat is safe and refuses it as `DuplicateTransaction`. The wallet's own check is reached
+  only when that record is gone or does not cover the repeat, which no platform test can stage through the Wasm. So
+  the record and its answers moved to `guests/plain-wallet/src/wallet.rs` (the guest's `lib.rs` keeps the instance
+  and the exports), and `tests/holding_wallet_record.rs` compiles that same file natively and drives it. The Wasm
+  build is exercised as before by `holding_wallet.rs`, which carries the restart test.
+- **The handed-on start, one reading.** State-machine's contract stands: a route handed on starts at the inner node
+  with no withdrawal segment, and the account's record proves the start (`REQ-ORD-40`) and settles no segment.
+  `handed_on.rs`'s module docs, `HandedOnStart` and its `first_segment` now say so: `first_segment` is the first
+  segment of the route's own, the one that starts on the proof. `start_handed_on` also refuses, as `NotHandedOn`, a
+  route whose first segment is a withdrawal even from an inner node, which the contract has no such segment for.
+- **Tests** (written first, each watched failing on an assertion):
+  - `landing an order the wallet already holds adds nothing`, `holding_wallet_record.rs`: failed with the balance 200
+    for 100 (the repeat doubled it).
+  - `release the wallet holds no record of is not known, never refused`, `holding_wallet.rs`: failed on the release
+    after the wallet's restart, which was refused.
+  - `handed on route's start is proven by the holding record and settles no segment`, `holding_handed_on.rs`: failed
+    on the route that starts with a withdrawal, which started.
+  - Two earlier tests pinned a release of a never-landed order as refused (`holding_wallet.rs`); they now expect
+    `unknown`, the same release now being the not-known case.
+- **Rule-offs, each watched going red and restored:**
+
+  | Rule switched off | Test that went red |
+  |---|---|
+  | repeat of a landing under its transaction answered done, adds nothing | `landing an order the wallet already holds adds nothing` (balance 200) |
+  | release of an order with no record answers `unknown` | `release the wallet holds no record of is not known, never refused` |
+  | the host maps the wallet's `unknown` release to `NotKnown` | the same test, on its `NotKnown` assertion |
+  | a first segment that is a withdrawal is not a route handed on | `handed on route's start is proven by the holding record and settles no segment` |
+
+- **Defaults taken, reversible, failing closed.** A repeat under the same transaction for another order or amount is
+  refused. The landing record outlives a full release for the instance's life (a repeat can't re-add spent value).
+  An order released in full stays known, so a second release of it is refused, not unknown. A release at another node
+  or asset with no record is `unknown` and fixes nothing.
+- **Gaps and owners.**
+  - Core's re-landing before a release, and its use of `NotKnown` and the per-order attribution: `T-020-46`. The
+    host's `Holdings` ledger and its transaction counter (`{provider}-deposit-{n}`) are also in memory; a Core that
+    reopens and mints `…-deposit-1` again meets the platform's record of that transaction as `DuplicateTransaction`
+    (the platform's durable record is `T-013-10`'s), so the re-landing needs its own transaction ids: `T-020-46`.
+  - Core-orch's docs that still read the handed-on withdrawal as the route's first segment (`core-orch`'s `stuck`
+    and `reversal`, which this row doesn't edit): `T-020-46`'s or `T-020-45`'s files, for whoever next touches them.
+- **`DEC-20`.** No `DEC-20` path is touched.
