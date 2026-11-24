@@ -871,9 +871,10 @@ impl Arrivals {
         else {
             // One that ended is told how, to its customer alone.
             return match self.ended.iter().find(|r| &r.order == order) {
-                Some(run) if desk.actors.acts_for(&by.acts, &by.party, by.kind)
-                    && by.role == Role::Customer
-                    && by.party == run.record().parties.requester =>
+                Some(run)
+                    if desk.actors.acts_for(&by.acts, &by.party, by.kind)
+                        && by.role == Role::Customer
+                        && by.party == run.record().parties.requester =>
                 {
                     run.outcome().ok_or(ArrivalError::NotNow)
                 }

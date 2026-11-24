@@ -2996,7 +2996,13 @@ fn automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer() 
         "{:?}",
         quote.price.no_firm_rate
     );
-    let log = env.book.borrow().verified().into_iter().cloned().collect::<Vec<_>>();
+    let log = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
     assert!(log.iter().any(|w| matches!(
         w,
         What::Shown { order: o, shown, shown_as: rutent_contracts::core_internal::ShownAs::QuoteWithoutFirmRate }
@@ -3043,18 +3049,31 @@ fn customers_acceptance_of_the_slow_route_starts_it() {
 
     // Not the quote shown: nothing is recorded.
     let before = env.len();
-    let other: rutent_contracts::module_interface::Digest = serde_json::from_value(
-        json!({ "algorithm": "sha-256", "value": "77".repeat(32) }),
-    )
-    .unwrap();
+    let other: rutent_contracts::module_interface::Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "77".repeat(32) }))
+            .unwrap();
     assert_eq!(
-        accept_slow(&mut env, &mut providers, &mut arrivals, &order, &customer(), &other),
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &other
+        ),
         Err(ArrivalError::NotTheQuoteShown)
     );
     // Not the order's customer: the reserve filing it, a stranger, or a customer of another party.
     for who in [reserve_filer(), impostor()] {
         assert_eq!(
-            accept_slow(&mut env, &mut providers, &mut arrivals, &order, &who, &digest),
+            accept_slow(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &order,
+                &who,
+                &digest
+            ),
             Err(ArrivalError::NotTheFiler),
             "{who:?}"
         );
@@ -3095,7 +3114,15 @@ fn customers_acceptance_of_the_slow_route_starts_it() {
         unreachable!()
     };
     assert_eq!(
-        (id_of, accepted_order, quote, basis, yeses.len(), session, held),
+        (
+            id_of,
+            accepted_order,
+            quote,
+            basis,
+            yeses.len(),
+            session,
+            held
+        ),
         (
             &acceptance,
             &order,
@@ -3111,7 +3138,14 @@ fn customers_acceptance_of_the_slow_route_starts_it() {
     // The same acceptance again is told the same and records nothing.
     let before = env.len();
     assert_eq!(
-        accept_slow(&mut env, &mut providers, &mut arrivals, &order, &customer(), &digest),
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &digest
+        ),
         Ok(Filed::Started {
             order: order.clone(),
             acceptance
@@ -3159,7 +3193,12 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
             .borrow()
             .verified()
             .into_iter()
-            .filter(|w| matches!(w, What::Effect { .. } | What::Input { .. } | What::Acceptance { .. }))
+            .filter(|w| {
+                matches!(
+                    w,
+                    What::Effect { .. } | What::Input { .. } | What::Acceptance { .. }
+                )
+            })
             .count()
     };
     assert_eq!(moved(&env), 0);
@@ -3238,7 +3277,14 @@ fn slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted() {
 
     // The old quote isn't the one shown any more; the new one is accepted.
     assert_eq!(
-        accept_slow(&mut env, &mut providers, &mut arrivals, &order, &customer(), &first),
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &first
+        ),
         Err(ArrivalError::NotTheQuoteShown)
     );
     let accepted = accept_slow(
@@ -3262,7 +3308,9 @@ fn slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted() {
 // verifies: REQ-ORD-15, REQ-ORD-42
 #[test]
 fn a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part() {
-    use rutent_contracts::core_internal::{DeploymentOperator, Through, VerifiedEntry, admit_entry};
+    use rutent_contracts::core_internal::{
+        DeploymentOperator, Through, VerifiedEntry, admit_entry,
+    };
     use rutent_contracts::state_machine::{Id as StmId, RecordId};
 
     let mut env = crate::env();

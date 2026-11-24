@@ -34,7 +34,13 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
     };
     let asked = within("req-deposit", &session, AMOUNT, SLOW, OTHER);
     let filed = core
-        .file(filing("deposit-slow", filer.clone(), arrival, &session, asked))
+        .file(filing(
+            "deposit-slow",
+            filer.clone(),
+            arrival,
+            &session,
+            asked,
+        ))
         .expect("the filing is taken");
     let Filed::Waiting {
         order: Some(order),
@@ -72,7 +78,10 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
     };
     assert_eq!(moved(&core), 0);
     assert!(core.world().journal(SLOW).is_empty(), "nothing moved");
-    assert!(core.run(&order).is_err(), "an order not accepted has no route to run");
+    assert!(
+        core.run(&order).is_err(),
+        "an order not accepted has no route to run"
+    );
 
     // The customer accepts the slow route: it starts, on the customer's own acceptance of it.
     let started = core
