@@ -28,10 +28,10 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The prefixes of the identifiers the table covers.
 /// Where a scenario's test lives: the only place an acceptance criterion's verifier may be (`DEC-18`).
 const SCENARIO_TESTS: &str = "conformance/scenarios/tests/";
 
+/// The prefixes of the identifiers the table covers.
 const FAMILIES: [&str; 5] = ["REQ-", "INV-", "AC-", "NFR-", "GUA-"];
 
 /// The checks a row verified by inspection may name: the documentation, boundary and licence checks.

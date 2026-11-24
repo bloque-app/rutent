@@ -4424,17 +4424,79 @@ fn stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_re
     assert!(admitted.is_ok(), "{admitted:?}");
 }
 
-/// A statement by a provider of the order's one route backs a resolution (`confirmer-evidence-party`, `T-020-40`):
-/// the order was given one route, through two reserves of two parties, and left it when the recalculation found no
-/// other; the deposit's provider, whose segment was never handed over, is still a party to the order, and its word
-/// confirms the move the withdrawal's reported, on which the part resolves. The log admits every entry. The order has
-/// no second route here: the kit's routes are two segments to the one destination, so no provider of a first route is
-/// left off a second (`F-024`'s notes, `T-024-24`).
+/// The kit's order given two routes and left none: its first route withdraws at [`origin_reserve`] and deposits at
+/// [`last_reserve`], whose deposit is never handed over; the recalculation from the ledger, where the value sits, finds
+/// a second route of the deposit alone, which leaves the withdrawal's provider off it; policy refuses that deposit
+/// too, the reserve then refuses every dry run of it, and the second recalculation offers no route. Recorded, the part
+/// is stuck on its second route.
+fn stuck_after_a_second_route() -> (World, Core, Stuck) {
+    let mut world = World::two_parties();
+    let mut core = Core::over(&mut world);
+    let mut watched = Watched::new(&mut world.fleet.platform);
+    watched.refuse_begin = Some(1);
+    let ran = core.run_over(&world.catalogue, &mut watched);
+    drop(watched);
+    let done = segments(&ran);
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    assert!(
+        matches!(done[1].outcome, SegmentOutcome::NotHandedOver(_)),
+        "{done:?}"
+    );
+    let mut rerouting = Rerouting::of(&core);
+    let Ok(Recalculation::Recalculated(second)) = rerouting.recalculate(&mut core, &mut world)
+    else {
+        panic!("the second route is found");
+    };
+    assert_eq!(
+        second.segments.len(),
+        1,
+        "the second route is the deposit alone: the withdrawal's provider is not on it"
+    );
+    // Policy refuses the second route's deposit, so nothing of it is handed over either.
+    let refuser = core.policy.refuser();
+    refuser.set(Some(
+        rutent_contracts::core_internal::RefusalClass::NotPermitted,
+    ));
+    let ran = Rerouting::run(
+        &mut core,
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &second,
+    )
+    .expect("ran");
+    refuser.set(None);
+    assert!(
+        matches!(segments(&ran)[0].outcome, SegmentOutcome::NotPermitted(_)),
+        "{ran:?}"
+    );
+    world
+        .fleet
+        .world()
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
+    let outcome = rerouting
+        .recalculate(&mut core, &mut world)
+        .expect("the recalculation runs");
+    assert!(
+        matches!(outcome, Recalculation::NoRoute { .. }),
+        "{outcome:?}"
+    );
+    stuck_by_no_route_in((world, core, outcome))
+}
+
+/// A statement by a provider on an earlier route of the order backs a resolution (`confirmer-evidence-party`,
+/// `T-020-40`): the order was given a second route, of the deposit alone, which leaves the withdrawal's provider off
+/// it, and the part is stuck on that second route. The value rests at the withdrawal's provider's ledger, so it moves the
+/// value back, and its statement, the report, is a statement by a provider on the first route only, which is still a
+/// party to the order; the deposit's provider, on the second route, confirms, and the part resolves. The log admits
+/// every entry.
 // verifies: REQ-AUZ-4, REQ-ORD-1
 #[test]
-fn statement_by_a_provider_of_the_orders_one_route_backs_a_resolution() {
+fn statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution() {
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let (world, mut core, mut stuck) = stuck_by_no_route();
+    let (world, mut core, mut stuck) = stuck_after_a_second_route();
     assert_ne!(
         origin_reserve(),
         last_reserve(),
@@ -4458,7 +4520,8 @@ fn statement_by_a_provider_of_the_orders_one_route_backs_a_resolution() {
     else {
         panic!("unknown");
     };
-    // The withdrawal's provider reports, the deposit's, which only the order's first route named, confirms.
+    // The withdrawal's provider, which only the order's first route named, moves the value back and reports it (a
+    // resolution's report is the moving provider's own); the deposit's, on the second route, confirms.
     let (result, earlier) = results_after_the_resolution(&mut core);
     assert_eq!(second_reserve(), last_reserve());
     assert_eq!(

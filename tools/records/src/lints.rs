@@ -47,31 +47,45 @@ pub fn sub_workspaces(root: &Path) -> std::io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// The steps of a workflow: the lines from each `- name:`, `- uses:` or `- run:` item to the next.
+/// The steps of a workflow that can cover a directory: the lines from each `- name:`, `- uses:` or `- run:` item to
+/// the next, with the `#` comment lines left out (a commented-out command runs nothing, and a comment block above the
+/// next step belongs to no step), and a step with an `if:` or a `continue-on-error:` left out altogether: it may not
+/// run, or may fail unseen.
 fn steps(workflow: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, bool)> = Vec::new();
     for line in workflow.lines() {
         let item = line.trim_start();
+        if item.starts_with('#') {
+            continue;
+        }
         if ["- name:", "- uses:", "- run:"]
             .iter()
             .any(|p| item.starts_with(p))
         {
-            out.push(String::new());
+            out.push((String::new(), true));
         }
-        if let Some(step) = out.last_mut() {
+        if let Some((step, covers)) = out.last_mut() {
+            if item.starts_with("if:") || item.starts_with("continue-on-error:") {
+                *covers = false;
+            }
             step.push_str(line);
             step.push('\n');
         }
     }
-    out
+    out.into_iter()
+        .filter(|(_, covers)| *covers)
+        .map(|(step, _)| step)
+        .collect()
 }
 
-/// True when `text` names `dir` as a whole path (not as the head or the tail of a longer name).
+/// True when `text` names `dir` exactly: not as the head or the tail of a longer path, so a nested workspace's
+/// directory (`a/b/client`) is not its parent's (`a/b`).
 fn names(text: &str, dir: &str) -> bool {
-    let part = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    let part = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/');
     text.match_indices(dir).any(|(at, _)| {
+        let tail = &text[at + dir.len()..];
         !text[..at].chars().next_back().is_some_and(part)
-            && !text[at + dir.len()..].chars().next().is_some_and(part)
+            && (tail.starts_with("/Cargo.toml") || !tail.chars().next().is_some_and(part))
     })
 }
 

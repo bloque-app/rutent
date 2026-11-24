@@ -136,6 +136,11 @@ fn every_test_the_plan_names_is_a_test_of_the_workspace() {
         let text = std::fs::read_to_string(&path).expect("source is readable");
         tests.extend(scan_tests("", &text).into_iter().map(|t| t.name));
     }
+    // A floor, so that a plan whose tables changed shape and names nothing is not a pass.
+    assert!(
+        rutent_records::names::named_tests(&plan, Some(38)).len() > 500,
+        "the plan names its tests in its task rows' Tests cells"
+    );
     // Waves 39 and later are rows other branches write; the exit's third run holds them to the whole plan.
     let drift: Vec<String> = check_names(&plan, &tests, Some(38))
         .iter()

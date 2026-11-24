@@ -84,3 +84,46 @@ fn documentation_lint_covers_every_sub_workspace() {
         .collect();
     assert!(found.is_empty(), "{found:#?}");
 }
+
+// verifies: NFR-7
+#[test]
+fn a_commented_out_or_conditional_or_failure_tolerant_doc_step_covers_nothing() {
+    let covering = [
+        "        run: cargo doc --manifest-path components/guests/Cargo.toml --no-deps",
+        "        env:",
+        "          RUSTDOCFLAGS: -D warnings",
+    ];
+    let with = |extra: &[&str]| -> Vec<String> {
+        let mut w = vec!["      - name: Documentation check, guests"];
+        w.extend_from_slice(extra);
+        w.extend_from_slice(&covering);
+        gaps(&["components/guests"], &w)
+    };
+    assert!(with(&[]).is_empty());
+    // A step with its `cargo doc` line commented out, and the comment block above the next step.
+    let commented = [
+        "      - name: Documentation check, guests",
+        "        run: |",
+        "          # cargo doc --manifest-path components/guests/Cargo.toml --no-deps",
+        "        env:",
+        "          RUSTDOCFLAGS: -D warnings",
+    ];
+    assert_eq!(gaps(&["components/guests"], &commented).len(), 1);
+    assert_eq!(with(&["        if: false"]).len(), 1);
+    assert_eq!(with(&["        if: github.event_name == 'push'"]).len(), 1);
+    assert_eq!(with(&["        continue-on-error: true"]).len(), 1);
+}
+
+// verifies: NFR-7
+#[test]
+fn a_step_naming_a_nested_workspace_does_not_cover_its_parent() {
+    let workflow = [
+        "      - name: Documentation check, the client",
+        "        run: cd components/vos/client && cargo doc --workspace --no-deps",
+        "        env:",
+        "          RUSTDOCFLAGS: -D warnings",
+    ];
+    let found = gaps(&["components/vos", "components/vos/client"], &workflow);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("components/vos is"), "{found:?}");
+}

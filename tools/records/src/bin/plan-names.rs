@@ -53,7 +53,8 @@ fn main() -> ExitCode {
                 findings.len(),
                 if strict { "strict" } else { "report" }
             );
-            if strict && !findings.is_empty() {
+            // A plan that names no test at all (its tables changed shape) would pass for want of anything to hold.
+            if strict && (!findings.is_empty() || named == 0) {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS

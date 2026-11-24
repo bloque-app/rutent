@@ -1784,21 +1784,21 @@ The Lows of `M3`'s milestone review of 2026-11-24 (PR #143), one by one.
 1. **Three tests that claimed more than they checked.**
    - `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` (`core-orch/tests/arrival.rs`) now
      reads the reserve's book. The test's `Reserve` double keeps one on request (`book`, the holder's account at the
-     reserve, set to the deposit's 1 000): at the wait's start, while it stands and after it ends (both ways it ends)
-     the test asserts the balance, asks the reserve to verify 1 000 (it answers sufficient) and 1 001 (it doesn't), and
-     the answers follow the book. The limit is plain: nothing Core can do in this harness debits the book (every
-     question it asks a provider is a verification or a dry run), so the read pins the double and the log together and
-     would go red on a harness that let a move reach the book, not on Core alone.
+     reserve, set to the deposit's 1 000), and the double debits it itself when it is asked a value-moving question (a
+     withdrawal or a transfer that is not a dry run). At the wait's start, while it stands and after it ends (both ways
+     it ends) the test asserts the balance, that the reserve confirms 1 000 and that it refuses 1 001. Fix round 1 of the
+     review of PR #293 added the debit: before, nothing could change the book, and the reads could not go red because of
+     Core. The rule-off (below) makes Core ask one live withdrawal and the test goes red.
    - `statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution` (`scenarios/tests/stuck.rs`) gave the
-     order one route, which the review saw. **Not fixed as the row asks; renamed instead**
-     (`statement_by_a_provider_of_the_orders_one_route_backs_a_resolution`, `PLAN.md`'s `T-020-40` row and the doc comment
-     with it) so it claims what it checks. Giving the order a second route that leaves its first deposit's provider off
-     it needs a recalculated route to the same destination through another provider, and the kit's routes are two
-     segments from one reserve to the destination's own: a second route ends at the same destination reserve, so a
-     provider only on the first would have to be a ramp or an exchange of a longer first route, which the kit's
-     `chosen_route` and `route_end` (two tuples, one pair of ends per thread) can't build. A world with a three-segment
-     first route (the `sim-join` group's, `AC-1`) and the kit's ends read from its route is the work; owner: the next
-     row that edits the kit, or the lead. The test's claim about "an earlier route" stays unverified until then.
+     order one route. It now gives it two, with no kit change: in `World::two_parties()` the withdrawal settles and the
+     deposit is not handed over, the recalculation from the ledger finds a second route of the deposit alone (one
+     segment; the withdrawal's provider is off it), policy refuses that deposit, the reserve then refuses every dry run
+     of it, the second recalculation offers no route and the part is stuck on the second route. The value rests at the
+     withdrawal's provider's ledger, so that provider moves it back and its statement is the resolution's report (the
+     moving provider's own: the log refuses another's); the deposit's provider, on the second route, confirms. So the
+     statement by a provider on the first route only is the report, not the confirmation: the confirmer cannot be the
+     withdrawal's provider while the value rests at its own ledger. (My first reading, that the kit could not give a
+     second route, was wrong; the review of PR #293 built one.)
    - The source-text scan `the_assembly_no_longer_checks_charges_itself` (`scenarios/tests/charge_check.rs`) is tagged
      `REQ-QTE-5`, not `AC-14`: it is no scenario, and `AC-14` has scenarios of its own that call Core's check.
 2. **`AC-*` rows need a scenario.** The evidence table counts, for an `M3` row of the `AC` family, only tagged tests under
@@ -1818,8 +1818,8 @@ The Lows of `M3`'s milestone review of 2026-11-24 (PR #143), one by one.
      so the rule is gone and the test is `roll back without its permission is refused`, tagged `REQ-AUZ-6`),
      `T-022-09` (three names without their leading "a"), `T-010-01` (a CI step, named as such and not as a test), `T-024-10` (a run of the evidence table, likewise),
      `T-010-06` (the one name of the G-54 test stood for four, now named; and `store's memory`, the test says
-     `store memory`). Also `T-020-40`'s name, above.
-   - **Strict at the exit.** `T-024-10`'s third run is `plan-names --strict` over every row of `M1` to `M3`. At this commit,
+     `store memory`). `T-020-40`'s name is the test's own again (restored in fix round 1).
+   - **Strict at the exit.** `T-024-10`'s third run is `plan-names --strict` over every row of `M1` to `M3`, without `--through-wave`: that unrestricted run comes from `T-024-10`'s third run and from nowhere before it (no workflow runs the check; the records test holds waves up to 38). `--strict` also fails where the plan names no test at all, and the records test holds a floor of 500 named tests. At this commit,
      with `--through-wave 38`, it reports nothing; without it, it reports the names of rows the other branches of wave 39
      and later are writing (`T-013-10`, `T-013-11`, `T-016-05`, `T-020-45` to `T-020-54`, `T-021-15`, `T-021-16`,
      `T-022-11`, `T-023-04`, `T-024-21` to `T-024-23`), which each of those rows must make true when it lands. The records
@@ -1837,10 +1837,10 @@ The Lows of `M3`'s milestone review of 2026-11-24 (PR #143), one by one.
    release into `main`. The new lint found one broken link in the module guests (`sim/src/lib.rs`, a link to a type the
    crate root doesn't import), now plain code. A records test, `documentation_lint_covers_every_sub_workspace`, finds every
    directory with a `[workspace]` of its own (not `experiments/`, not a root `exclude`, which is a fixture) and requires a
-   workflow step that runs `cargo doc`, denies warnings and names the directory. **Not run here:** the VOS step's two
-   commands need VOS's checkout, so they are CI-only and unseen; `stm-vos.yml` runs on pushes of `m*` and `develop`, not
-   of this branch, so the first run is at the merge into `m3`. Owner: whoever merges this row, who reads that run, and
-   fixes a rustdoc warning in the VOS crates there if one shows.
+   workflow step that runs `cargo doc`, denies warnings and names the directory exactly (a nested workspace's path is
+   not its parent's). A step's `#` comment lines are ignored, and a step with an `if:` or a `continue-on-error:` covers
+   nothing. The VOS program's and its client's workspace have a step each in `stm-vos.yml`. **Not run here:** the VOS steps need VOS's checkout, so they are CI-only and unseen; the coordinator reads their first
+   run on `m3-next`, before `m3` moves, and fixes a rustdoc warning in the VOS crates there if one shows.
 
 **Defaults taken.** The names check reads two-word phrases only (a one-word backtick is a path, a type or an id). A row in
 no wave is held to the code. `--through-wave` is a report-mode aid; the exit's strict run omits it. The VOS doc step is in
@@ -1860,6 +1860,10 @@ the VOS workflow, with its sources, not the ci job.
 | the module guests' and wallet's doc steps absent (before they were written) | `documentation_lint_covers_every_sub_workspace` |
 | the plan's nine drifted names (before they were fixed) | `every_test_the_plan_names_is_a_test_of_the_workspace` |
 | the reserve's book at another figure than the deposit | `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` |
+| Core asks the reserve one live withdrawal while the order waits (`arrival/confirm.rs`, injected) | the same test |
+| the plain wallet's doc command commented out (`ci.yml`) | `documentation_lint_covers_every_sub_workspace` |
+| a false `if:` on the plain wallet's doc step | the same |
+| the program's doc step deleted (`stm-vos.yml`) | the same |
 
 Seen red before their code: the names check's fixtures (against a stub that reported nothing), the real-plan test (nine
 findings, above) and the lint's real-repository test (four sub-workspaces uncovered). Not seen red before their code:

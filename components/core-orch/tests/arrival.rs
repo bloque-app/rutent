@@ -77,7 +77,8 @@ struct Reserve {
     /// The maker its answers to them name, where another provider's than the reserve's: a relay's copy.
     speaks_as: Option<&'static str>,
     /// What the reserve's book holds for the holder's account, where a test keeps one: its answers to balance
-    /// verifications follow it, and only a move out of it changes it. `None` keeps no book, and every verification
+    /// verifications follow it, and a question that moves value (a withdrawal or a transfer that isn't a dry run)
+    /// debits it, so a Core that moved the holder's funds would be read here. `None` keeps no book, and every verification
     /// is answered by `insufficient` alone.
     book: Option<u64>,
 }
@@ -134,6 +135,19 @@ impl Providers for Reserve {
         let value: Value = serde_json::from_slice(question).unwrap();
         let operation = value["statement"].clone();
         if operation["kind"] != "balance_verification" {
+            // A question that moves value (a withdrawal or a transfer not asked as a dry run) takes it out of the
+            // reserve's book, if the test keeps one: the double is what a move out of the holder's account reaches.
+            if matches!(operation["kind"].as_str(), Some("withdrawal" | "transfer"))
+                && operation["dry_run"] == false
+                && let (Some(held), Some(amount)) = (
+                    self.book.as_mut(),
+                    operation["amount"]
+                        .as_str()
+                        .and_then(|a| a.parse::<u64>().ok()),
+                )
+            {
+                *held = held.saturating_sub(amount);
+            }
             return self.sim.ask(provider, question);
         }
         self.verifications.push(operation.clone());
