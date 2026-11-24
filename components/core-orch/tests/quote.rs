@@ -93,6 +93,7 @@ fn shown_entries(env: &Env) -> Vec<(Id, rutent_contracts::module_interface::Dige
                 order,
                 shown,
                 shown_as,
+                ..
             } => Some((order.clone(), shown.clone(), *shown_as)),
             _ => None,
         })

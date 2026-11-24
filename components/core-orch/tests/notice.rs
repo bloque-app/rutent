@@ -2931,3 +2931,73 @@ fn a_summary_refused_for_a_conflict_is_not_among_the_refused() {
     assert_eq!(journal.summaries().len(), 2);
     assert!(journal.summaries().iter().all(|s| s["last_try"] == 1));
 }
+
+/// An order filed on a deposit that waits for its customer to accept a slow route is told to that customer and the
+/// operator, from the log's `shown` that says so: the quote's digest, until when it stands and which segments are
+/// slow by their place, and no provider, amount or account. A second quote of the order (asked again past its
+/// validity) is another notice; the same one again is sent to no one and held once by a receiver (`REQ-QTE-10`,
+/// `REQ-ORD-20`, `REQ-AUZ-7`).
+// verifies: REQ-QTE-10, REQ-ORD-20
+#[test]
+fn an_order_waiting_for_its_customers_acceptance_is_told_to_the_customer_and_the_operator() {
+    let shown = |digest: &str, valid_until: &str, at: usize| {
+        verified(
+            json!({
+                "call": "shown",
+                "order": "ord-w",
+                "shown": {"algorithm": "sha-256", "value": digest.repeat(32)},
+                "shown_as": "quote_without_firm_rate",
+                "awaiting": {
+                    "requester": ALICE,
+                    "valid_until": valid_until,
+                    "slow": [{"position": 1, "declared_seconds": 345_600}, {"position": 2}]
+                }
+            }),
+            &time(at),
+        )
+    };
+    let first = shown("a1", "2026-11-12T11:00:00Z", 1);
+    let again = shown("b2", "2026-11-12T12:00:00Z", 2);
+    let log = receipted(vec![first.clone()]);
+    held_to_the_log(&log, &unbuilt_refusals());
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut notices = notices();
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(0));
+
+    let mut alice = inbox(customer(ALICE), &key);
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 1);
+    assert_eq!(wire.to(&operator()).len(), 1);
+    assert_eq!(alice.take(&Ed25519, &told[0]), Ok(Taken::Event));
+    assert_eq!(alice.take(&Ed25519, &told[0]), Ok(Taken::Repeat));
+    let about = said(&told[0])["about"].clone();
+    assert_eq!(
+        about,
+        json!({
+            "about": "waiting",
+            "order": "ord-w",
+            "at": time(1),
+            "quote": {"algorithm": "sha-256", "value": "a1".repeat(32)},
+            "valid_until": "2026-11-12T11:00:00Z",
+            "slow": [{"position": 1, "declared_seconds": 345_600}, {"position": 2}]
+        }),
+        "the digest, the validity and the slow places, and nothing of a provider or an amount"
+    );
+    // Nobody else is told; another party's inbox refuses it.
+    assert_eq!(
+        inbox(customer(BOB), &key).take(&Ed25519, &told[0]),
+        Err(NotTaken::ForAnother)
+    );
+
+    // The route asked again past the validity is another quote: told anew, and held as the one the order waits on.
+    let log = receipted(vec![first, again]);
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 2);
+    assert_eq!(alice.take(&Ed25519, &told[1]), Ok(Taken::Event));
+    let held = alice.waiting_on(&id("ord-w")).expect("it waits");
+    assert!(
+        matches!(held, About::Waiting { valid_until: Some(v), .. } if v.as_str() == "2026-11-12T12:00:00Z")
+    );
+}

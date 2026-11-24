@@ -73,3 +73,5 @@ directory (see `README.md`).
   rule on a statement received after its grants' revocation, folded into its unreleased 1.0.0; provider-role's
   deposit payouts, folded into its unreleased 3.1.0; router-api's `batched_payout`, folded into its unreleased 4.0.0.
   Each contract's changelog names the changes. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-39)
+- core-internal's quote awaiting its customer (`T-020-41`): `shown` gains an optional `awaiting`, folded into its
+  unreleased 1.0.0. Its changelog names the change. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-41)

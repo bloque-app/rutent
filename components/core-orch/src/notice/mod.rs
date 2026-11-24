@@ -34,6 +34,13 @@
 //! account or a provider's text (`REQ-AUZ-7`, `REQ-ORD-18`). A raise and a charge counted far ahead are the
 //! operator's alone. A push asks policy nothing; asking for the current state does.
 //!
+//! **An order waiting for its customer** (`T-020-41`, `REQ-QTE-10`). A `shown` the log holds with `awaiting` says an
+//! order filed on an automatic deposit waits for the customer to accept a route with no firm rate: the customer it
+//! names, and the operator, are sent [`About::Waiting`] (the quote's digest, until when it stands, which segments are
+//! slow by their place; nothing else of the quote), once for each quote shown, a quote asked again included. The order
+//! has no state before its acceptance, so such a notice has no sequence; the order's changes are counted from its
+//! start as ever.
+//!
 //! **Authenticated for its receiver.** Each notice is sealed for one receiver: the deployment, the receiver's party
 //! and role, and what it is about, signed with the deployment's notice key ([`NoticeKey`], over
 //! [`wire::signing_input`]). A receiver takes it only once that checks and it is addressed to it ([`Inbox::take`]),
@@ -75,8 +82,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
 use rutent_contracts::core_internal::{
-    Actor, Charge, Entry, NoticeEnd, Outcome, Raise, ReadCheck, ReadOutcome, Receipt, Role, What,
+    Actor, Awaiting, Charge, Entry, NoticeEnd, Outcome, Raise, ReadCheck, ReadOutcome, Receipt,
+    Role, What,
 };
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::{self as stm, Observed, RecordedInput, StateMachine};
 use rutent_stm::Stm;
@@ -353,6 +362,16 @@ impl Notices {
                 }
             }
             if let Entry::Verified(v) = entry
+                && let What::Shown {
+                    order,
+                    shown,
+                    awaiting: Some(awaiting),
+                    ..
+                } = &v.what
+            {
+                sent += self.waiting(order, shown, awaiting, &v.when.at, notice_key, transport)?;
+            }
+            if let Entry::Verified(v) = entry
                 && let What::Acceptance { order, parties, .. } = &v.what
             {
                 self.requesters
@@ -367,6 +386,43 @@ impl Notices {
             }
             self.read += 1;
             self.last = Some(receipt.clone());
+        }
+        Ok(sent)
+    }
+
+    /// An order waiting for its customer's acceptance of a slow route (`REQ-QTE-10`), told to the customer it waits
+    /// for and to the operator, each once for each quote shown, as the log holds it. The order has no state yet, so it
+    /// has no sequence, and the notice has no place in the log's summaries: a restart tells it again, which a
+    /// receiver holds once. Answers how many were sent.
+    fn waiting(
+        &mut self,
+        order: &Id,
+        quote: &Digest,
+        awaiting: &Awaiting,
+        at: &Timestamp,
+        key: &mut dyn NoticeKey,
+        transport: &mut dyn Transport,
+    ) -> Result<usize, NoticeError> {
+        let customer = Receiver {
+            party: awaiting.requester.clone(),
+            role: Role::Customer,
+        };
+        let mut sent = 0;
+        for to in [self.operator.clone(), customer] {
+            let notice = Notice {
+                deployment: self.deployment.clone(),
+                to: to.clone(),
+                about: About::Waiting {
+                    order: order.clone(),
+                    at: At::from(at),
+                    quote: quote.clone(),
+                    valid_until: awaiting.valid_until.clone(),
+                    slow: awaiting.slow.clone(),
+                },
+                current: false,
+            };
+            let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
+            sent += usize::from(self.send(transport, to, None, sealed).is_some());
         }
         Ok(sent)
     }

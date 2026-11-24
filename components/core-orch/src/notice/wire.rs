@@ -10,7 +10,10 @@
 //! about: an order's change, at its sequence, or an event for the operator alone. So a notice taken by anyone but
 //! its receiver, or at another deployment, fails its check ([`super::Inbox::take`]).
 
-use rutent_contracts::core_internal::{Afterwards, OrderRefusalClass, Raise, Role, Work};
+use rutent_contracts::core_internal::{
+    Afterwards, OrderRefusalClass, Raise, Role, SlowSegment, Work,
+};
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::to_canonical;
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine as stm;
@@ -169,6 +172,23 @@ pub enum About {
         /// The order's state after it.
         view: View,
     },
+    /// An order filed on an automatic deposit waits for its customer to accept a route with no firm rate
+    /// (`REQ-QTE-10`, `REQ-ORD-20`): the quote's digest, until when it stands and which of its segments are slow, by
+    /// their place in the route. Nothing else of the quote: no provider, amount or account (`REQ-AUZ-7`). The order
+    /// has no state yet, so there is no sequence; a later quote of the same order is another notice.
+    Waiting {
+        /// The order.
+        order: Id,
+        /// When the quote was shown.
+        at: At,
+        /// The quote's digest: what the acceptance names.
+        quote: Digest,
+        /// When it stops standing, where any figure it rests on states a validity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_until: Option<Timestamp>,
+        /// The slow segments.
+        slow: Vec<SlowSegment>,
+    },
     /// A difference raised to the operator, and nothing that moves value (ADR-0009). The operator's alone.
     Raise {
         /// The raise.
@@ -206,6 +226,7 @@ impl About {
     pub fn order(&self) -> Option<&str> {
         match self {
             About::Order { order, .. } => Some(order.as_str()),
+            About::Waiting { order, .. } => Some(order.as_str()),
             About::Raise { .. }
             | About::Ahead { .. }
             | About::Heartbeat { .. }

@@ -626,6 +626,7 @@ impl Intake {
                 order: order.clone(),
                 shown: digest.clone(),
                 shown_as,
+                awaiting: None,
             },
         )?;
         kept.status = Status::Quoted {

@@ -769,6 +769,7 @@ impl Prices {
                     order: priced.order.clone(),
                     shown: digest.clone(),
                     shown_as: ShownAs::Price,
+                    awaiting: None,
                 },
                 &journal::now(clock)?,
                 Outcome::Observed {},

@@ -3674,6 +3674,7 @@ pub static RELATIONS: [Relation; 109] = [
                     order: o,
                     shown,
                     shown_as,
+                    ..
                 } => judge(shown == quote, &[o == order, *shown_as != ShownAs::Price]),
                 _ => Match::NotTarget,
             }

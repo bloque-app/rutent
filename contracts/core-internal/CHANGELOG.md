@@ -980,3 +980,11 @@
   Twenty-eight schemas, 160 valid fixtures, 168 invalid ones, 728 admission cases and 56 attribution cases; 109
   relations and 5 closing ones, three stated. Outside `contracts/`: the consumer edits the shapes force, named in the
   round's commit. (DEC-4, DEC-20, T-020-39)
+- Folded into 1.0.0 before its release: the quote an order filed on an automatic deposit waits on its customer to
+  accept (`T-020-41`, item `deposit-no-firm-rate`, "Wait for the customer"). `shown` gains an optional `awaiting`
+  (`Awaiting`: the party it waits for, until when the quote stands, and its slow segments, `SlowSegment`: place and
+  declared seconds, no provider or amount), written only for such a quote, so the notices tell the customer from the
+  log alone (`REQ-ORD-20`). Its check: only on a quote shown without a firm rate, naming at least one slow segment,
+  each once; absent, a `shown` reads and writes as before. One valid fixture and two invalid ones, the Rust types
+  refusing both. Twenty-eight schemas, 161 valid fixtures and 170 invalid ones. 1.0.0 isn't on `develop`, so it folds
+  into the unreleased major and no version moves. (DEC-4, DEC-20, T-020-41)

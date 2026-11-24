@@ -7,16 +7,37 @@
 
 mod execution_support;
 
+use ed25519_dalek::{Signer, SigningKey};
 use execution_support::*;
 use rutent_conformance::sim::SLOW_SECONDS;
+use rutent_contracts::core_internal::Role as RoleOf;
 use rutent_contracts::core_internal::{AcceptanceBasis, Action, Role, ShownAs, What};
 use rutent_contracts::state_machine::{Observed, OrderState};
 use rutent_core_orch::arrival::{Arrived, Filed, FiledWait};
+use rutent_core_orch::notice::{About, Notice, NoticeKey, Notices, Receiver, Transport};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::component;
-use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::kit::{self, AMOUNT, id};
 
 const SLOW: &str = "sim-reserve-slow";
+
+struct Key(SigningKey);
+
+impl NoticeKey for Key {
+    fn sign(&mut self, input: &[u8]) -> Option<[u8; 64]> {
+        Some(self.0.sign(input).to_bytes())
+    }
+}
+
+#[derive(Default)]
+struct Wire(Vec<(Receiver, Vec<u8>)>);
+
+impl Transport for Wire {
+    fn send(&mut self, to: &Receiver, notice: &[u8]) -> bool {
+        self.0.push((to.clone(), notice.to_vec()));
+        true
+    }
+}
 
 // verifies: REQ-QTE-10, REQ-ORD-15, AC-13, GUA-1
 #[test]
@@ -52,7 +73,12 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
 
     // The quote is shown with each slow segment named, and nothing is authorised to move: no start, no acceptance,
     // no effect, and the reserve holds the funds as it did.
-    let (quote, digest) = core.awaiting(&order).expect("its quote is shown");
+    let waiting = core.awaiting(&order).expect("its quote is shown");
+    let (quote, digest) = (waiting.quote.clone(), waiting.digest.clone());
+    assert!(
+        waiting.valid_until.is_some() && !waiting.expired,
+        "it is shown until when it stands"
+    );
     assert_eq!(quote.shown_as, ShownAs::QuoteWithoutFirmRate);
     assert_eq!(quote.price.no_firm_rate.len(), 2, "both its segments");
     assert!(
@@ -81,6 +107,47 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
     assert!(
         core.run(&order).is_err(),
         "an order not accepted has no route to run"
+    );
+
+    // The customer is told the order waits for it, from the log alone: the digest, until when the quote stands and the
+    // slow segments by their place, and nothing of a provider; the operator is told too.
+    let log = core.log().entries().to_vec();
+    let mut notices = Notices::new(id("deployment-1"), kit::operator().party);
+    let (mut key, mut wire) = (Key(SigningKey::from_bytes(&[7u8; 32])), Wire::default());
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    let customer = Receiver {
+        party: kit::customer().party,
+        role: RoleOf::Customer,
+    };
+    let told: Vec<_> = wire.0.iter().filter(|(to, _)| to == &customer).collect();
+    assert_eq!(told.len(), 1, "the customer is told once");
+    let sealed: serde_json::Value = serde_json::from_slice(&told[0].1).expect("a sealed notice");
+    let notice: Notice = serde_json::from_value(sealed["notice"].clone()).expect("a notice");
+    let About::Waiting {
+        order: told_order,
+        quote: told_quote,
+        valid_until,
+        slow,
+        ..
+    } = notice.about
+    else {
+        panic!("a waiting notice: {:?}", notice.about);
+    };
+    assert_eq!(
+        (told_order, told_quote, valid_until),
+        (order.clone(), digest.clone(), waiting.valid_until.clone())
+    );
+    let told_slow: Vec<_> = slow
+        .iter()
+        .map(|s| (u64::from(s.position), s.declared_seconds.map(u64::from)))
+        .collect();
+    assert_eq!(
+        told_slow,
+        [(1, Some(SLOW_SECONDS)), (2, Some(SLOW_SECONDS))]
+    );
+    assert!(
+        !String::from_utf8_lossy(&told[0].1).contains(SLOW),
+        "no provider in the notice"
     );
 
     // The customer accepts the slow route: it starts, on the customer's own acceptance of it.

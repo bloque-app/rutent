@@ -46,8 +46,8 @@
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    AcceptanceBasis, Answer, ArrivalMatch, Authorisation, DestinationOutcome, Entry,
-    OrderRefusalClass, Receipt, RefusalClass, Role, What,
+    AcceptanceBasis, Answer, ArrivalMatch, Authorisation, Awaiting, Count, DestinationOutcome,
+    Entry, OrderRefusalClass, Receipt, RefusalClass, Role, SlowSegment, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -91,6 +91,20 @@ struct Offered {
     /// When the figures the route stands on stop being usable, in nanoseconds since the Unix epoch, where any states a
     /// validity: the quote is asked again past it (`REQ-QTE-15`).
     expires: Option<i128>,
+}
+
+/// A quote an order waits on its customer to accept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaited<'a> {
+    /// The quote, its slow segments named.
+    pub quote: &'a Quote,
+    /// Its digest: what the acceptance names.
+    pub digest: &'a Digest,
+    /// When it stops standing, to the whole second below, where any figure it rests on states a validity.
+    pub valid_until: Option<rutent_contracts::router_api::Timestamp>,
+    /// Whether it stopped standing already: accepting it asks the route again, and the customer accepts the quote
+    /// shown anew.
+    pub expired: bool,
 }
 
 /// One permitted filing, kept from policy's permit: what it asked, the order it opened, the authorisation policy
@@ -544,12 +558,18 @@ impl Run {
             }))
     }
 
-    /// The quote the order waits on its customer to accept, with its digest.
-    pub(super) fn awaiting(&self) -> Option<(&Quote, &Digest)> {
+    /// The quote the order waits on its customer to accept, as of `now`.
+    pub(super) fn awaiting(&self, now: i128) -> Option<Awaited<'_>> {
         if self.step != Step::Customer || self.outcome.is_some() {
             return None;
         }
-        self.offered.as_ref().map(|o| (&o.quote, &o.digest))
+        let offered = self.offered.as_ref()?;
+        Some(Awaited {
+            quote: &offered.quote,
+            digest: &offered.digest,
+            valid_until: offered.expires.and_then(timestamp_of),
+            expired: offered.expires.is_some_and(|at| at <= now),
+        })
     }
 
     /// Ends it, recorded, with no login of its party left to carry it on.
@@ -878,7 +898,12 @@ impl Run {
         // ruling `deposit-no-firm-rate`, "Wait for the customer"). Asked once, every quote of it is, a requoted one
         // too, firm or not.
         self.asks_the_customer |= !price.no_firm_rate.is_empty();
-        let expires = chosen.record.earliest_expiry(&candidate);
+        // The whole second below it, so the quote shown and the one asked again past it agree on the instant.
+        let expires = chosen
+            .record
+            .earliest_expiry(&candidate)
+            .map(|nanos| nanos.div_euclid(1_000_000_000) * 1_000_000_000);
+        let slow = price.no_firm_rate.clone();
         let shown_as = price.shown_as;
         let quote = Quote {
             order: self.order.clone(),
@@ -894,10 +919,22 @@ impl Run {
         let Some(digest) = digest_of(&quote) else {
             return self.end(desk, OrderRefusalClass::NoRouteRightNow);
         };
+        // A quote the order waits on its customer to accept says so, for the customer's notice (`REQ-ORD-20`): whom
+        // it waits for, until when it stands and which segments are slow, no provider among them.
+        let awaiting = if self.asks_the_customer {
+            Some(Awaiting {
+                requester: self.filing.parties.requester.clone(),
+                valid_until: expires.and_then(timestamp_of),
+                slow: slow_places(&quote.price, &slow),
+            })
+        } else {
+            None
+        };
         let shown = What::Shown {
             order: self.order.clone(),
             shown: digest.clone(),
             shown_as,
+            awaiting,
         };
         self.pending
             .push(journal::build(desk.parts.clock, desk.core, shown)?);
@@ -974,6 +1011,37 @@ impl Run {
         input.check().map_err(|_| ArrivalError::NotNow)?;
         Ok(input)
     }
+}
+
+/// `nanos` since the Unix epoch, as a timestamp of whole seconds.
+fn timestamp_of(nanos: i128) -> Option<rutent_contracts::router_api::Timestamp> {
+    let seconds = u64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+    rutent_contracts::router_api::Timestamp::new(
+        rutent_prov::catalogue::Instant(seconds).rfc3339()?,
+    )
+}
+
+/// The slow segments of `price`'s route by their place in it, part after part, counted from 1.
+fn slow_places(
+    price: &crate::quote::Shown,
+    slow: &[crate::quote::SlowSegment],
+) -> Vec<SlowSegment> {
+    let mut places = Vec::new();
+    for named in slow {
+        let before = price
+            .segments
+            .iter()
+            .position(|s| s.part == named.part && s.operation == named.operation);
+        if let Some(index) = before
+            && let Some(position) = Count::new(index as u64 + 1)
+        {
+            places.push(SlowSegment {
+                position,
+                declared_seconds: named.declared_seconds.and_then(Count::new),
+            });
+        }
+    }
+    places
 }
 
 /// The digest of the quote: SHA-256 of its RFC 8785 canonical JSON, intake's own rule for the quote it shows.

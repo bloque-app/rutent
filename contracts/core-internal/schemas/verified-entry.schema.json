@@ -1549,6 +1549,55 @@
             "quote_without_firm_rate",
             "price"
           ]
+        },
+        "awaiting": {
+          "description": "Where the quote is one an order filed on an automatic deposit waits on its customer to accept: whom it waits for, until when the quote stands, which segments are slow (REQ-QTE-10, REQ-ORD-20, T-020-41). Only on a quote shown without a firm rate, which the Rust types check.",
+          "$ref": "#/$defs/awaiting"
+        }
+      }
+    },
+    "awaiting": {
+      "description": "What an order waiting for its customer's acceptance of a slow route tells the customer: the party it waits for, when the quote stops standing and which segments are slow. No provider, amount or account (REQ-AUZ-7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requester",
+        "slow"
+      ],
+      "properties": {
+        "requester": {
+          "description": "The party whose acceptance it waits for: the order's requester, receiving as its customer.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "valid_until": {
+          "description": "When the quote stops standing, where any figure it rests on states a validity.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "slow": {
+          "description": "The segments over three days, at least one, each once, which the Rust types check.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/slow_segment"
+          }
+        }
+      }
+    },
+    "slow_segment": {
+      "description": "A slow segment of the route shown, by its place in it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ],
+      "properties": {
+        "position": {
+          "description": "Its place in the route, counted from 1, part after part.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
+        },
+        "declared_seconds": {
+          "description": "The time its provider declared, in seconds, where it declared one.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
         }
       }
     },

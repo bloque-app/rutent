@@ -38,6 +38,19 @@ impl FiledOrders for FiledOn {
     }
 }
 
+/// A quote a filed order waits on its customer to accept, owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaited {
+    /// The quote, its slow segments named.
+    pub quote: rutent_core_orch::intake::Quote,
+    /// Its digest.
+    pub digest: rutent_contracts::module_interface::Digest,
+    /// Until when it stands.
+    pub valid_until: Option<rutent_contracts::router_api::Timestamp>,
+    /// Whether it stopped standing.
+    pub expired: bool,
+}
+
 /// The orders open, as read before the call.
 struct Open(Vec<OpenOrder>);
 
@@ -163,17 +176,16 @@ impl Core {
         Ok(filed?)
     }
 
-    /// The quote the filed order `order` waits on its customer to accept, with its digest (`T-020-41`).
-    pub fn awaiting(
-        &self,
-        order: &Id,
-    ) -> Option<(
-        rutent_core_orch::intake::Quote,
-        rutent_contracts::module_interface::Digest,
-    )> {
-        self.arrivals
-            .awaiting(order)
-            .map(|(quote, digest)| (quote.clone(), digest.clone()))
+    /// The quote the filed order `order` waits on its customer to accept, as of Core's clock (`T-020-41`): the quote,
+    /// its digest, until when it stands and whether it stopped standing.
+    pub fn awaiting(&self, order: &Id) -> Option<Awaited> {
+        let now = self.clock.timestamp();
+        self.arrivals.awaiting(order, &now).map(|a| Awaited {
+            quote: a.quote.clone(),
+            digest: a.digest.clone(),
+            valid_until: a.valid_until,
+            expired: a.expired,
+        })
     }
 
     /// The customer `by` accepts the slow route of the filed order `order`, the quote of digest `quote`; once it

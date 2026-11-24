@@ -55,10 +55,11 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Id, PositiveAmount, Request, Router};
 use rutent_contracts::state_machine::RecordedInput;
 
-use crate::intake::{Desk, OrderRecord, Quote};
+use crate::intake::{Desk, OrderRecord};
 use crate::rounds::{Need, RoutingError};
 
 use confirm::{Confirmation, Confirming};
+pub use filing::Awaited;
 
 /// The orders open at a reserve, as the assembly reads them from intake's records and the orders the segments follow:
 /// an order accepted and started whose first segment hasn't settled.
@@ -847,9 +848,18 @@ impl Arrivals {
         }
     }
 
-    /// The quote a filed order waits on its customer to accept, with its digest, or `None` where it waits on none.
-    pub fn awaiting(&self, order: &Id) -> Option<(&Quote, &Digest)> {
-        self.runs.values().find(|r| &r.order == order)?.awaiting()
+    /// The quote a filed order waits on its customer to accept, as of `now`: with its digest, until when it stands,
+    /// and whether it stopped standing already (`REQ-QTE-15`), or `None` where the order waits on none. An expired
+    /// quote is no more accepted than any: accepting it asks the route again.
+    pub fn awaiting(
+        &self,
+        order: &Id,
+        now: &rutent_contracts::router_api::Timestamp,
+    ) -> Option<Awaited<'_>> {
+        self.runs
+            .values()
+            .find(|r| &r.order == order)?
+            .awaiting(now.unix_nanos())
     }
 
     /// The customer `by` accepts the route of the filed order `order` that waits for its customer, the quote of digest

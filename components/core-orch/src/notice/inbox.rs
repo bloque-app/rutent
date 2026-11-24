@@ -71,6 +71,7 @@ pub struct Inbox {
     key: PublicKey,
     orders: BTreeMap<String, Held>,
     events: BTreeMap<String, About>,
+    waits: BTreeMap<String, About>,
     beat: Option<(Id, u64)>,
 }
 
@@ -83,6 +84,7 @@ impl Inbox {
             key,
             orders: BTreeMap::new(),
             events: BTreeMap::new(),
+            waits: BTreeMap::new(),
             beat: None,
         }
     }
@@ -108,6 +110,10 @@ impl Inbox {
                 view,
                 ..
             } => self.order(order.as_str(), sequence, view, sealed.notice.current),
+            about @ About::Waiting { .. } => {
+                let order = about.order().unwrap_or_default().to_owned();
+                self.waiting(&order, about)
+            }
             About::Heartbeat { run, beat, .. } => {
                 self.beat = Some((run, beat));
                 Taken::Beat
@@ -122,6 +128,22 @@ impl Inbox {
                 }
             }
         })
+    }
+
+    /// An order waiting for its customer: held once per quote, the latest taken the one held.
+    fn waiting(&mut self, order: &str, about: About) -> Taken {
+        match self.waits.get(order) {
+            Some(held) if held == &about => Taken::Repeat,
+            _ => {
+                self.waits.insert(order.to_owned(), about);
+                Taken::Event
+            }
+        }
+    }
+
+    /// The quote `order` waits on its customer to accept, as the latest notice told it.
+    pub fn waiting_on(&self, order: &Id) -> Option<&About> {
+        self.waits.get(order.as_str())
     }
 
     fn order(&mut self, order: &str, sequence: u64, view: View, current: bool) -> Taken {
@@ -198,5 +220,8 @@ pub(super) fn event_key(about: &About) -> String {
         About::Order {
             order, sequence, ..
         } => serde_json::to_string(&("order", order.as_str(), sequence)).unwrap_or_default(),
+        About::Waiting { order, quote, .. } => {
+            serde_json::to_string(&("waiting", order.as_str(), quote)).unwrap_or_default()
+        }
     }
 }
