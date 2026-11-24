@@ -1207,6 +1207,65 @@ pub(super) fn staging_is_rolled_back_only_on_an_effect() {
     );
 }
 
+/// The five lifecycle actions on a release (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`, core-internal's
+/// `LIFECYCLE_ACTIONS`) are each listed as carrying out the change of its own on the platform, not as carrying out
+/// none, so in orchestration each is called only where the effect it rests on is in hand; and the rule finds a call
+/// of each planted without one, in orchestration and outside it (`T-021-15`).
+pub(super) fn lifecycle_actions_are_carried_out_only_on_an_effect() {
+    use rutent_contracts::core_internal::LIFECYCLE_ACTIONS;
+
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    for (name, change) in LIFECYCLE_ACTIONS {
+        let change = serde_json::to_value(change).unwrap();
+        let action = format!("change_catalogue: {}", change.as_str().unwrap());
+        let on_the_platform = |list: &[(&str, &str, &str)]| {
+            list.iter()
+                .filter(|(n, f, a)| {
+                    *n == name && *f == "prov/src/module/platform.rs" && *a == action
+                })
+                .count()
+        };
+        assert_eq!(
+            on_the_platform(CARRY_OUT),
+            1,
+            "`{name}` is a carried out action, `{action}`"
+        );
+        assert!(
+            CARRIES_OUT_NOTHING
+                .iter()
+                .all(|(n, f, _)| !(*n == name && *f == "prov/src/module/platform.rs")),
+            "`{name}` is no method that carries out nothing"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn go(&mut self) {{ self.platform.{name}(\"p\", \"v\", \"op\"); }}"
+            )),
+            [format!(
+                "go: carries out `{name}` without the effect it rests on"
+            )]
+        );
+        assert_eq!(
+            orch(&format!(
+                "fn go(&mut self, effect: &Effect) {{ self.platform.{name}(\"p\", \"v\", self.by(effect)); }}"
+            )),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            found_outside(&format!(
+                "fn f(&mut self) {{ self.platform.{name}(\"p\", \"v\", \"op\"); }}"
+            )),
+            [format!("f: carries out `{name}` outside orchestration")]
+        );
+    }
+}
+
 fn found_outside(source: &str) -> Vec<String> {
     let mut scan = Scan::default();
     scan_source(Crate::Authz, "planted.rs", false, source, &mut scan);

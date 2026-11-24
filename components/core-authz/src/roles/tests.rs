@@ -3,6 +3,7 @@
 //! decision recorded with who acted, against a log that holds every entry to core-internal's admission.
 
 use super::*;
+use rutent_contracts::core_internal::SettingKind;
 use rutent_contracts::core_internal::calls::{
     AppendFailure, DecisionEntry, Decisions, GeneralEntry, Log, PolicyLog,
 };
@@ -560,8 +561,8 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             | CatalogueChange::SetSlippage
             | CatalogueChange::Promote
             | CatalogueChange::RollBack => {}
-            // An operator's setting has no rule until `T-021-15`, which lists it (`T-020-45`).
-            CatalogueChange::SetSetting => unreachable!(),
+            // An operator's setting is a permission of its own for each setting, listed below (`T-021-15`).
+            CatalogueChange::SetSetting => unreachable!("one permission for each setting, below"),
         }
         let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
         request.request = id(&format!("req-{change:?}").to_lowercase());
@@ -583,12 +584,87 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
         };
         asked.push((Permission::Change(change), request));
     }
+    // Each of the operator's settings (`T-020-45`), a permission of its own apiece (`T-021-15`).
+    for (kind, request) in every_setting_asked(caller) {
+        asked.push((Permission::Setting(kind), request));
+    }
     // Erasing a statement that later entries cite, the override of `T-021-13`: a permission of its own.
     asked.push((
         Permission::EraseOverridingCitations,
         overriding_erasure_asked(caller),
     ));
     asked
+}
+
+/// Each of the operator's settings, by its kind, as `caller` asks to set it: one fixture of the contract for each. The
+/// match has no catch-all, so a setting a contract bump adds fails this build until it is listed.
+fn every_setting_asked(caller: &Actor) -> Vec<(SettingKind, DecisionRequest)> {
+    let fixtures = [
+        (
+            SettingKind::OperatorFee,
+            "decision-request-to-set-the-operators-fee",
+        ),
+        (
+            SettingKind::SlippageLimit,
+            "decision-request-to-set-a-tuples-slippage-limit",
+        ),
+        (
+            SettingKind::EvidenceFloor,
+            "decision-request-to-set-a-tuples-evidence-floor",
+        ),
+        (
+            SettingKind::PublicNode,
+            "decision-request-to-set-a-public-nodes-settings",
+        ),
+        (
+            SettingKind::ProviderCeiling,
+            "decision-request-to-set-a-providers-ceiling",
+        ),
+        (
+            SettingKind::PublisherCeiling,
+            "decision-request-to-set-a-publishers-ceiling",
+        ),
+        (
+            SettingKind::Cadence,
+            "decision-request-to-set-a-jobs-cadence",
+        ),
+        (
+            SettingKind::Cutover,
+            "decision-request-to-set-a-protocol-versions-cutover",
+        ),
+    ];
+    fixtures
+        .into_iter()
+        .map(|(kind, name)| {
+            match kind {
+                SettingKind::OperatorFee
+                | SettingKind::SlippageLimit
+                | SettingKind::EvidenceFloor
+                | SettingKind::PublicNode
+                | SettingKind::ProviderCeiling
+                | SettingKind::PublisherCeiling
+                | SettingKind::Cadence
+                | SettingKind::Cutover => {}
+            }
+            let path = format!(
+                "{}/../../contracts/core-internal/fixtures/valid/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut request: DecisionRequest =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            let Action::ChangeCatalogue {
+                setting: Some(setting),
+                ..
+            } = &request.action
+            else {
+                panic!("{name} sets a setting");
+            };
+            assert_eq!(setting.kind(), kind, "{name}");
+            request.request = id(&format!("req-set-{kind:?}").to_lowercase());
+            request.caller = caller.clone();
+            (kind, request)
+        })
+        .collect()
 }
 
 /// The engine of these tests: the fixed rules, a deployment's policy that permits what they let through, and `register`,
@@ -747,7 +823,7 @@ fn suggested_route_has_no_standing_until_posted_and_names_its_suggester() {
 fn every_permission_held() -> Vec<Permission> {
     let mut all = vec![Permission::PostRoute];
     for (permission, _) in every_permission(&operator()) {
-        if let Permission::Change(_) = permission {
+        if let Permission::Change(_) | Permission::Setting(_) = permission {
             all.push(permission);
         }
     }
@@ -770,6 +846,7 @@ fn every_permission_held() -> Vec<Permission> {
         match permission {
             Permission::PostRoute
             | Permission::Change(_)
+            | Permission::Setting(_)
             | Permission::CarryOnward
             | Permission::ActForUser
             | Permission::ReadOrderState
@@ -1189,9 +1266,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 25, "every permission of the register's");
+    assert_eq!(all.len(), 33, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 28, "every call a permission lets through");
+    assert_eq!(calls.len(), 36, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3132,26 +3209,281 @@ fn operator_with_the_override_permission_alone_is_refused() {
     }
 }
 
-/// An operator's setting (core-internal's `set_setting`, `T-020-45`) has no rule until `T-021-15` gives each setting
-/// its permission: the fixed rule refuses it whoever asks, the operator's login holding every permission there is and
-/// `Change(SetSetting)` itself included, before the deployment's policy is asked (`REQ-AUZ-1`, `REQ-AUZ-6`).
-// verifies: REQ-AUZ-1
+/// An operator's setting (core-internal's `set_setting`, `T-020-45`) is a permission of its own for each setting
+/// (`Permission::Setting`, `T-021-15`), held login by login: an operator's login holding every other permission there
+/// is, every other setting's, `Change(SetSetting)` and the erase permission among them, is refused, and so is Core's
+/// own actor even holding all of them, the fixed rule refusing before the deployment's policy is asked, and the log
+/// takes no effect on it. The login holding the one permission is permitted, recorded with its actor and the action,
+/// the setting and its value held whole, and the log admits the effect; Core's actor holding it is still refused,
+/// and a request that names no setting is no request at all (`REQ-AUZ-1`, `REQ-AUZ-6`, `REQ-AUD-8`).
+// verifies: REQ-AUZ-6
 #[test]
-fn operator_setting_is_refused_while_no_rule_answers_it() {
+fn operator_setting_without_its_permission_is_refused() {
+    for (kind, _) in every_setting_asked(&operator()) {
+        let own = Permission::Setting(kind);
+        let mut every_other: Vec<Permission> = every_permission(&operator())
+            .into_iter()
+            .map(|(p, _)| p)
+            .filter(|p| *p != own)
+            .collect();
+        every_other.push(Permission::Change(CatalogueChange::SetSetting));
+        every_other.push(Permission::EraseStatement);
+        every_other.push(Permission::CarryOnward);
+        let setting_of = |caller: &Actor| {
+            every_setting_asked(caller)
+                .into_iter()
+                .find(|(k, _)| *k == kind)
+                .unwrap()
+                .1
+        };
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &every_other).and_holding(&core(), &every_other),
+        );
+        for caller in [operator(), core()] {
+            let asked = setting_of(&caller);
+            let decision = policy.decide(&asked).unwrap();
+            assert_eq!(decision.outcome, NOT_PERMITTED, "{kind:?} by {caller:?}");
+            assert!(decision.permit().is_none());
+            let entry = policy.log().entry_of(&decision).clone();
+            assert_eq!(entry.who, caller, "recorded with its actor");
+            assert!(
+                matches!(&entry.what, What::Decide { request, .. } if request == &asked),
+                "recorded with its action, the setting and its value whole"
+            );
+            assert_eq!(
+                policy.log.effect(&asked, forged(&decision)),
+                no_permitting_decision(),
+                "{kind:?} by {caller:?}"
+            );
+        }
+        assert_eq!(
+            policy.policy.1.ruled, 0,
+            "none reached the deployment's policy"
+        );
+
+        // Held alone by the operator's login it permits; Core's own actor holding it is still refused.
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &[own]).and_holding(&core(), &[own]),
+        );
+        let asked = setting_of(&operator());
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{kind:?}");
+        let entry = policy.log().entry_of(&decision).clone();
+        assert_eq!(entry.who, operator());
+        assert!(matches!(&entry.what, What::Decide { request, .. } if request == &asked));
+        assert!(
+            policy
+                .log
+                .effect(&asked, decision.permit().unwrap())
+                .is_ok()
+        );
+        assert_eq!(
+            policy.decide(&setting_of(&core())).unwrap().outcome,
+            NOT_PERMITTED,
+            "Core's own actors set no setting"
+        );
+    }
+
+    // `Change(SetSetting)` names no setting, so it permits none, held with nothing else; and a request that names no
+    // setting fails its check, whatever is held.
     let mut every: Vec<Permission> = every_permission(&operator())
         .into_iter()
         .map(|(p, _)| p)
         .collect();
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(
+            &operator(),
+            &[Permission::Change(CatalogueChange::SetSetting)],
+        ),
+    );
+    for (kind, request) in every_setting_asked(&operator()) {
+        assert_eq!(
+            policy.decide(&request).unwrap().outcome,
+            NOT_PERMITTED,
+            "{kind:?}"
+        );
+    }
     every.push(Permission::Change(CatalogueChange::SetSetting));
     let mut policy = engine(
         Kept::with_a_decision_record(),
         Register::holding(&operator(), &every),
     );
-    let mut request: DecisionRequest = valid!("decision-request-to-set-the-operators-fee");
-    request.caller = operator();
-    assert_eq!(policy.decide(&request).unwrap().outcome, NOT_PERMITTED);
+    let mut nameless = every_setting_asked(&operator()).remove(0).1;
+    let Action::ChangeCatalogue { setting, .. } = &mut nameless.action else {
+        panic!("a catalogue change");
+    };
+    *setting = None;
+    assert!(
+        policy.decide(&nameless).is_err(),
+        "a setting change naming no setting fails its check, so nothing is decided"
+    );
     assert_eq!(
         policy.policy.1.ruled, 0,
         "it never reached the deployment's policy"
+    );
+}
+
+/// The lifecycle actions on a release, `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale`
+/// (core-internal's five changes of their own, `LIFECYCLE_ACTIONS`, `T-020-45`), are each a permission of its own,
+/// `Permission::Change`, held login by login: an operator's login holding every other permission there is, the
+/// other four lifecycle actions, every setting and promotion among them, is refused, and so is Core's own actor
+/// holding all of them (a version declared exploited is never carried onward), the fixed rule refusing before the
+/// deployment's policy is asked, the attempt recorded with its actor and the version it names, and the log taking no
+/// effect on it. The login holding the one permission is permitted, and the log admits the effect on its permit
+/// (`REQ-AUZ-1`, `REQ-MDL-20`).
+// verifies: REQ-AUZ-1, REQ-MDL-20
+#[test]
+fn lifecycle_action_without_its_permission_is_refused() {
+    for (name, change) in rutent_contracts::core_internal::LIFECYCLE_ACTIONS {
+        let own = Permission::Change(change);
+        let asked_by = |caller: &Actor| {
+            every_permission(caller)
+                .into_iter()
+                .find(|(p, _)| *p == own)
+                .unwrap()
+                .1
+        };
+        let mut every_other: Vec<Permission> = every_permission(&operator())
+            .into_iter()
+            .map(|(p, _)| p)
+            .filter(|p| *p != own)
+            .collect();
+        every_other.push(Permission::Change(CatalogueChange::SetSetting));
+        every_other.push(Permission::CarryOnward);
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &every_other).and_holding(&core(), &every_other),
+        );
+        for caller in [operator(), core()] {
+            let asked = asked_by(&caller);
+            let Action::ChangeCatalogue { version, .. } = &asked.action else {
+                panic!("a catalogue change");
+            };
+            assert!(version.is_some(), "{name} names its version");
+            let decision = policy.decide(&asked).unwrap();
+            assert_eq!(decision.outcome, NOT_PERMITTED, "{name} by {caller:?}");
+            assert!(decision.permit().is_none());
+            let entry = policy.log().entry_of(&decision).clone();
+            assert_eq!(entry.who, caller, "recorded with its actor");
+            assert!(
+                matches!(&entry.what, What::Decide { request, .. } if request == &asked),
+                "recorded with the action and the version"
+            );
+            assert_eq!(
+                policy.log.effect(&asked, forged(&decision)),
+                no_permitting_decision(),
+                "{name} by {caller:?}"
+            );
+        }
+        assert_eq!(
+            policy.policy.1.ruled, 0,
+            "none reached the deployment's policy"
+        );
+
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &[own]).and_holding(&core(), &[own]),
+        );
+        let asked = asked_by(&operator());
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{name}");
+        assert_eq!(policy.log().entry_of(&decision).who, operator());
+        assert!(
+            policy
+                .log
+                .effect(&asked, decision.permit().unwrap())
+                .is_ok()
+        );
+        assert_eq!(
+            policy.decide(&asked_by(&core())).unwrap().outcome,
+            NOT_PERMITTED,
+            "{name} is never carried onward by Core's actors"
+        );
+    }
+}
+
+/// A publisher never marks its own version stale (`REQ-MDL-5`): the provider that published the version, asking in its
+/// own role, holding the permission in the register, is refused by the fixed rule before the register or the
+/// deployment's policy is asked, and so is its login stating the operator's role, which the register of actors binds
+/// to the operator's logins alone; no effect rests on either. The operator's login holding the permission marks it
+/// (`REQ-MDL-5`, `REQ-AUZ-6`).
+// verifies: REQ-MDL-5
+#[test]
+fn publisher_is_refused_marking_its_own_version_stale() {
+    let own = Permission::Change(CatalogueChange::MarkStale);
+    let publisher = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    let claimed = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Operator,
+        ActorKind::Component,
+    );
+    let stale = |caller: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
+        request.request = id(&format!("req-stale-{:?}", caller.role).to_lowercase());
+        request.caller = caller.clone();
+        let Action::ChangeCatalogue { provider, .. } = &request.action else {
+            panic!("a catalogue change");
+        };
+        assert_eq!(
+            provider.as_str(),
+            "bridge-pay",
+            "the publisher's own version"
+        );
+        request
+    };
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&publisher, &[own])
+            .and_holding(&claimed, &[own])
+            .and_holding(&operator(), &[own])
+            .listing(&publisher)
+            .listing(&operator()),
+    );
+    let asked = stale(&publisher);
+    let decision = policy.decide(&asked).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED);
+    assert_eq!(policy.log().entry_of(&decision).who.role, Role::Provider);
+    assert_eq!(
+        policy.log.effect(&asked, forged(&decision)),
+        no_permitting_decision()
+    );
+    assert!(
+        policy.sources.asked.is_empty(),
+        "a provider holds no permission"
+    );
+    assert_eq!(policy.policy.1.ruled, 0);
+
+    // Its login stating the operator's role: the register of actors says that login is not the operator's.
+    let asked = stale(&claimed);
+    let decision = policy.decide(&asked).unwrap();
+    assert!(
+        matches!(decision.outcome, Answer::Refuse { .. }),
+        "a stated operator's role: {decision:?}"
+    );
+    assert!(decision.permit().is_none());
+    assert_eq!(
+        policy.log.effect(&asked, forged(&decision)),
+        no_permitting_decision()
+    );
+    assert_eq!(policy.policy.1.ruled, 0);
+
+    // The operator's login holding the permission marks it.
+    let asked = stale(&operator());
+    let decision = policy.decide(&asked).unwrap();
+    assert_eq!(decision.outcome, Answer::Permit {});
+    assert!(
+        policy
+            .log
+            .effect(&asked, decision.permit().unwrap())
+            .is_ok()
     );
 }
