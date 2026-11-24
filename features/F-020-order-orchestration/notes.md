@@ -7063,3 +7063,29 @@ Edits `components/core-orch/` (`segments/`, `stuck/`, `rounds/`, `intake/`) and 
      `Stuck` and `follow_recorded` now say what is rebuilt. Owner: the reviewer, to point at any left.
 - **Tests first.** Not kept: the rebuild was written before the tests. Each test was then watched red on an assertion
   by switching its rebuild off (the table below), which is the base's behaviour.
+- **Rule-off table** (each switched off alone from `6c6b532b`, `reopened` run through the lock, the file restored with
+  `git checkout`; script `ruleoff.py` in the row's scratch folder):
+
+  | Rule switched off | Red |
+  |---|---|
+  | no segment's flight rebuilt (each held unread instead) | `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log`, `exposures_are_rebuilt_from_the_log_so_routes_respect_the_ceiling_after_a_restart` |
+  | no flight rebuilt and none held unread | the same two |
+  | no hold for a segment rebuilt in flight | the exposures test |
+  | an effect failed alone read as in motion | the stuck test (`ValueInMotion`) |
+  | no resting hold for a stuck part | the stuck test |
+  | no decision kept | the stuck test |
+  | a `done` move not counted as moved | none: the part it moved is resolved, so what remains isn't read; a partial move after a reopen is untested |
+  | `order_opened` not written | none: no test runs a started order on after a reopen (the `NFR-6` test is blocked) |
+  | `Issued::recorded` | not switched off: no test draws a fresh transaction after a reopen against a logged one |
+
+  `no_value_moves_twice_after_core_reopens` stays green with every Core-side rule off: the log's own
+  `part-waits-for-value-in-motion` refuses a second `move_value` for a segment whose effect has no final result, as the
+  review noted. The test pins the outcome; Core's rebuild is the first of the two guards.
+- **Local checks** (through the lock, at `6c6b532b`): `cargo fmt --all -- --check`; `cargo clippy --workspace
+  --all-targets -- -D warnings`; `cargo test -p rutent-core-orch` (all pass, `order_opened` broke nothing);
+  `cargo test -p rutent-core-authz --lib` (140 passed, after the entry-points scan's finding on a literal
+  `Outcome::Permitted` comparison was fixed with `matches!`); `rutent-scenarios`' `reopened`, `assembly`,
+  `assembly_hand_on`, `assembly_intake`, `assembly_real_wallet`, `assembly_stuck`, `assembly_wiring`, `charge_check`,
+  `closing`, `hand_on_record`, `holds`, `invariants`, `stuck_hand_on` (all pass); the doc check; plan-check and
+  tag-check `--strict` (0 findings, 2255 tests tagged). One `cargo fmt --all` ran outside the lock (it compiles
+  nothing).
