@@ -1054,8 +1054,8 @@ mid-segment handed a repeat to the module again (`INV-8`).
 - A restarted platform holds no release until each is admitted again: which releases were accepted, which was in
   force or staged, the staging's counts and the withdrawn versions are not in the record, and a restart's
   re-admission re-establishes them in the order releases are admitted. The operator's marks and decisions are in it
-  since the fix round below. Owner: the `F-013` row the coordinator opens for durable releases (id to be assigned),
-  with `F-030`'s start-up re-admitting releases.
+  since the fix round below. Owner: `T-013-11`, part (3) of its row (PLAN PR #267), with `F-030`'s start-up
+  re-admitting releases.
 - The `ended` set grows by one line per transaction ever ended, in memory and in the record, as it did in memory
   before, and is rewritten whole at each opening. Owner: `F-013`, if a deployment's transaction count makes it
   matter (left as a gap by the coordinator in the fix round).
@@ -1109,7 +1109,7 @@ each became:
    `restore_decision`), and `Lifecycle::started` never puts a marked version in force or staging, so an exploited
    release admitted again after a restart runs nothing. Tests:
    `segment_restored_after_a_restart_refuses_a_version_declared_exploited`,
-   `a_decision_the_platform_cannot_record_is_not_taken`. Releases themselves stay a gap (above).
+   `a_decision_the_platform_cannot_record_is_not_taken`. Releases themselves stay a gap (above), owned by `T-013-11`.
 4. **Another name got past the lock, and a missing record was made silently** (low). `FileRecord::create` makes a new
    record (refused where anything is at the path); `FileRecord::open` refuses a missing one (`NotFound`), a path that
    is a symbolic link or names a file with a second name (`nlink` above 1, on Unix) (`InvalidInput`), and locks
