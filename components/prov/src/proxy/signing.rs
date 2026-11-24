@@ -45,6 +45,9 @@ pub enum SigningError {
     /// of another subject or class, a confirmation of another segment, asset or amount, or either one in answer
     /// to an operation of another kind.
     NestedNotAsked,
+    /// A status answer that names another question's transaction, or another transaction asked about, than the
+    /// question it answers (`T-013-11`): the platform never signs a statement about something it wasn't asked.
+    AnswerOfAnotherQuestion,
     /// The statement has no signing input under the contract's rule, or doesn't read back once signed.
     NoSigningInput,
 }
@@ -61,6 +64,21 @@ pub struct Answering<'a> {
     pub protocol_version: &'a str,
     /// The operation the result answers.
     pub operation: &'a Operation,
+    /// For a status question: what the platform holds of the operation it asked about (`T-013-11`). `None` for any
+    /// other question, and for a status question about an operation the platform holds nothing of, in which case no
+    /// result is nested.
+    pub about: Option<AboutAsked<'a>>,
+}
+
+/// The operation a status question asks about, and the final answer the platform already holds for it, if any.
+#[derive(Debug, Clone, Copy)]
+pub struct AboutAsked<'a> {
+    /// The operation the platform carried out under the transaction asked about: a nested result must be of its
+    /// kind, and a nested judgement or confirmation is judged against it.
+    pub operation: &'a Operation,
+    /// The platform's own record of the provider's answer to it, if it holds one: a nested result that differs
+    /// from a final one (`succeeded` or `failed`) is not signed.
+    pub held: Option<&'a ResultBody>,
 }
 
 /// `statement`, the answer to `answering`'s operation, signed with `key`, the private half of `declared`: the
@@ -72,6 +90,12 @@ pub fn sign_result(
     declared: &PublicKey,
 ) -> Result<Statement<ResultBody>, SigningError> {
     let signing = signing_key(key, declared)?;
+    if let (Operation::StatusQuery(question), ResultBody::StatusQuery(answer)) =
+        (answering.operation, &statement.statement)
+        && (question.transaction != answer.transaction || question.about != answer.about)
+    {
+        return Err(SigningError::AnswerOfAnotherQuestion);
+    }
     let asked = Asked::of(answering)?;
     let mut value = serde_json::to_value(statement).map_err(|_| SigningError::NoSigningInput)?;
     if let Value::Object(map) = &mut value {
@@ -106,6 +130,8 @@ struct Asked<'a> {
     deployment: Value,
     protocol_version: &'a str,
     operation: Value,
+    /// The operation a status question asks about, and the final answer held for it.
+    about: Option<(Value, Option<Value>)>,
 }
 
 impl<'a> Asked<'a> {
@@ -117,6 +143,22 @@ impl<'a> Asked<'a> {
             deployment: json(serde_json::to_value(answering.deployment))?,
             protocol_version: answering.protocol_version,
             operation: json(serde_json::to_value(answering.operation))?,
+            about: answering
+                .about
+                .map(|about| -> Result<_, SigningError> {
+                    let held = about
+                        .held
+                        .map(|held| json(serde_json::to_value(held)))
+                        .transpose()?
+                        .filter(|held| {
+                            matches!(
+                                held["outcome"]["status"].as_str(),
+                                Some("succeeded" | "failed")
+                            )
+                        });
+                    Ok((json(serde_json::to_value(about.operation))?, held))
+                })
+                .transpose()?,
         })
     }
 
@@ -134,9 +176,15 @@ impl<'a> Asked<'a> {
             RESULT_SHAPE => return self.asks_a_result(body),
             _ => return Err(SigningError::NestedOfAnotherShape),
         };
-        let asked = self.operation.get("kind").and_then(Value::as_str) == Some(kind)
+        // In answer to a status question, a statement the provider's own result nests is judged against the operation
+        // asked about, which that result answers (`T-013-11`).
+        let target = self
+            .about
+            .as_ref()
+            .map_or(&self.operation, |(about, _)| about);
+        let asked = target.get("kind").and_then(Value::as_str) == Some(kind)
             && fields.iter().all(|field| {
-                let (asked, answered) = (self.operation.get(*field), body.get(*field));
+                let (asked, answered) = (target.get(*field), body.get(*field));
                 asked.is_some() && asked == answered
             });
         if asked {
@@ -146,20 +194,59 @@ impl<'a> Asked<'a> {
         }
     }
 
-    /// Whether `body` is the result of the transaction the operation, a status question, asks about.
+    /// Whether `body` is the result of the transaction the operation, a status question, asks about: of the kind of
+    /// the operation the platform carried out under it, never a status answer or a hold, and, where the platform
+    /// holds a final answer for it, the same.
     fn asks_a_result(&self, body: &Value) -> Result<(), SigningError> {
+        let Some((about, held)) = &self.about else {
+            return Err(SigningError::NestedNotAsked);
+        };
+        let kind = body.get("kind").and_then(Value::as_str);
         let asked = self.operation.get("kind").and_then(Value::as_str) == Some("status_query")
             && self.operation.get("about").is_some()
             && self.operation.get("about") == body.get("transaction")
-            && !matches!(
-                body.get("kind").and_then(Value::as_str),
-                Some("status_query" | "hold") | None
-            );
+            && kind.is_some()
+            && kind != Some("status_query")
+            && kind != Some("hold")
+            && about
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|k| k.to_owned())
+                == kind.map(str::to_owned)
+            && about.get("transaction") == body.get("transaction")
+            && held
+                .as_ref()
+                .is_none_or(|held| unsigned(held) == unsigned(body));
         if asked {
             Ok(())
         } else {
             Err(SigningError::NestedNotAsked)
         }
+    }
+}
+
+/// `value` with every signature's value taken out, so two statements are compared by what they say.
+fn unsigned(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, inner)| {
+                    let inner = match (key.as_str(), inner) {
+                        ("signature", Value::Object(signature)) => Value::Object(
+                            signature
+                                .iter()
+                                .filter(|(name, _)| name.as_str() != "value")
+                                .map(|(name, v)| (name.clone(), v.clone()))
+                                .collect(),
+                        ),
+                        _ => unsigned(inner),
+                    };
+                    (key.clone(), inner)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(unsigned).collect()),
+        other => other.clone(),
     }
 }
 
@@ -322,6 +409,7 @@ mod tests {
                 deployment: &deployment,
                 protocol_version: &version,
                 operation,
+                about: None,
             },
             key,
             declared,
@@ -481,6 +569,7 @@ mod tests {
             deployment: &deployment,
             protocol_version: "2.0.1",
             operation: &operation,
+            about: None,
         })
         .expect("asked");
         let mut holder = serde_json::json!({ "inner": judged() });
@@ -497,25 +586,77 @@ mod tests {
         );
     }
 
+    /// [`sign_as`], for a status question about `about`, the operation the platform carried out, whose answer it
+    /// holds as `held`.
+    fn sign_about(
+        result: &Value,
+        question: &Operation,
+        about: &Operation,
+        held: Option<&ResultBody>,
+        key: &SecretValue,
+        declared: &PublicKey,
+    ) -> Result<Value, SigningError> {
+        let statement: Statement<ResultBody> =
+            serde_json::from_value(result.clone()).expect("a result");
+        let deployment = deployment(result);
+        let version = result["protocol_version"].as_str().expect("a version");
+        sign_result(
+            &statement,
+            &Answering {
+                provider: "acme-co",
+                deployment: &deployment,
+                protocol_version: version,
+                operation: question,
+                about: Some(crate::proxy::AboutAsked {
+                    operation: about,
+                    held,
+                }),
+            },
+            key,
+            declared,
+        )
+        .map(|signed| serde_json::to_value(&signed).expect("JSON"))
+    }
+
     /// The provider's own result for the transaction a status question asks about is signed with the provider's key,
-    /// nested in its answer; one for another transaction, one of a status question or a hold, and one nested in answer
-    /// to anything else, is not (`T-013-11`, `THR-8`).
+    /// nested in its answer, only if it is the result of that transaction, of the kind of the operation the platform
+    /// carried out under it, and the same as the final answer the platform holds; the answer itself must be to the
+    /// question asked (`T-013-11`, `THR-8`, `REQ-ORD-1`).
     // verifies: REQ-ORD-1, THR-8
     #[test]
     fn result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about() {
         let (private, declared, key) = keys([11u8; 32]);
         let answered = fixture("result-status-query-answered-with-the-providers-result");
         let asked = asking("operation-status-query", &[]);
-        let signed = sign_as(&answered, "acme-co", &asked, &private, &declared).expect("signed");
+        let carried = asking("operation-withdrawal-from-a-bank-reserve", &[]);
+        let sign = |result: &Value, question: &Operation, about: &Operation| {
+            sign_about(result, question, about, None, &private, &declared)
+        };
+        let signed = sign(&answered, &asked, &carried).expect("signed");
         assert!(verifies(&signed, &key));
         assert!(verifies(&signed["statement"]["outcome"]["result"], &key));
+        // No operation the platform holds of the transaction asked about, no nested result.
+        assert_eq!(
+            sign_as(&answered, "acme-co", &asked, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
 
         // A question about another transaction than the result's.
         let other = asking("operation-status-query", &[("about", "tx-another")]);
         assert_eq!(
-            sign_as(&answered, "acme-co", &other, &private, &declared).err(),
-            Some(SigningError::NestedNotAsked)
+            sign(&answered, &other, &carried).err(),
+            Some(SigningError::AnswerOfAnotherQuestion)
         );
+        // An answer about another transaction than the question asks about, or to another question.
+        for (field, value) in [("about", "tx-another"), ("transaction", "tx-status-2")] {
+            let mut lying = answered.clone();
+            lying["statement"][field] = value.into();
+            assert_eq!(
+                sign(&lying, &asked, &carried).err(),
+                Some(SigningError::AnswerOfAnotherQuestion),
+                "{field}"
+            );
+        }
         // A result that is itself a status answer or a hold, however it names the transaction.
         for kind in ["status_query", "hold"] {
             let mut nested = answered.clone();
@@ -529,15 +670,88 @@ mod tests {
                 })
             };
             assert_eq!(
-                sign_as(&nested, "acme-co", &asked, &private, &declared).err(),
+                sign(&nested, &asked, &carried).err(),
                 Some(SigningError::NestedNotAsked),
                 "{kind}"
             );
         }
+        // A result of another kind than the operation carried out: a second signed result for the transaction.
+        let mut transfer = answered.clone();
+        transfer["statement"]["outcome"]["result"]["statement"] = serde_json::json!({
+            "kind": "transfer", "transaction": "tx-001",
+            "outcome": { "status": "unknown" }
+        });
+        assert_eq!(
+            sign(&transfer, &asked, &carried).err(),
+            Some(SigningError::NestedNotAsked)
+        );
         // In answer to another kind of question.
         let withdrawal = asking("operation-withdrawal-from-a-bank-reserve", &[]);
         assert_eq!(
-            sign_as(&answered, "acme-co", &withdrawal, &private, &declared).err(),
+            sign(&answered, &withdrawal, &carried).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+    }
+
+    /// Where the platform holds a final answer for the transaction asked about, a nested result that says anything
+    /// else is not signed; one it holds as not final, or the same, is (`T-013-11`).
+    // verifies: REQ-ORD-1, INV-4
+    #[test]
+    fn nested_result_that_differs_from_a_final_answer_the_platform_holds_is_not_signed() {
+        let (private, declared, _) = keys([12u8; 32]);
+        let answered = fixture("result-status-query-answered-with-the-providers-result");
+        let asked = asking("operation-status-query", &[]);
+        let carried = asking("operation-withdrawal-from-a-bank-reserve", &[]);
+        let nested: ResultBody =
+            serde_json::from_value(answered["statement"]["outcome"]["result"]["statement"].clone())
+                .expect("a result body");
+        let sign = |held: Option<&ResultBody>| {
+            sign_about(&answered, &asked, &carried, held, &private, &declared)
+        };
+        // The same final answer, signed or not signed in the held copy.
+        assert!(sign(Some(&nested)).is_ok());
+        // Another final answer: the same withdrawal failed instead of succeeded.
+        let mut failed = serde_json::to_value(&nested).expect("JSON");
+        let evidence = failed["outcome"]["evidence"].clone();
+        failed["outcome"] = serde_json::json!({ "status": "failed", "evidence": evidence });
+        let failed: ResultBody = serde_json::from_value(failed).expect("a failed withdrawal");
+        assert_eq!(
+            sign(Some(&failed)).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // One that isn't final doesn't hold the provider to it.
+        let mut unknown = serde_json::to_value(&nested).expect("JSON");
+        unknown["outcome"] = serde_json::json!({ "status": "unknown" });
+        let unknown: ResultBody = serde_json::from_value(unknown).expect("an unknown outcome");
+        assert!(sign(Some(&unknown)).is_ok());
+    }
+
+    /// A reversal confirmation nested in a status answer about a reversal confirmation is judged against that
+    /// operation's segment, asset and amount, as it is in answer to the question itself (`T-013-11`).
+    // verifies: REQ-ORD-1, THR-8
+    #[test]
+    fn confirmation_nested_in_a_status_answer_is_judged_against_the_operation_asked_about() {
+        let (private, declared, key) = keys([13u8; 32]);
+        let confirmed = fixture("result-reversal-confirmed-by-the-origin-reserve");
+        let carried = asking("operation-reversal-confirmation-for-one-credit", &[]);
+        let mut answered = fixture("result-status-query-answered-with-the-providers-result");
+        answered["statement"]["about"] = "tx-015".into();
+        answered["statement"]["outcome"]["result"] = confirmed;
+        let asked = asking("operation-status-query", &[("about", "tx-015")]);
+        let signed =
+            sign_about(&answered, &asked, &carried, None, &private, &declared).expect("signed");
+        assert!(verifies(&signed, &key));
+        assert!(verifies(
+            &signed["statement"]["outcome"]["result"]["statement"]["outcome"]["confirmation"],
+            &key
+        ));
+        // Another credit than the operation asked about: not signed.
+        let other = asking(
+            "operation-reversal-confirmation-for-one-credit",
+            &[("amount", "7")],
+        );
+        assert_eq!(
+            sign_about(&answered, &asked, &other, None, &private, &declared).err(),
             Some(SigningError::NestedNotAsked)
         );
     }

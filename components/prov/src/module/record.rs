@@ -381,6 +381,10 @@ pub(crate) enum Entry {
     /// by whom, the version in force, the staged one and its counts (`T-013-11`). The last one written for a
     /// provider holds.
     Releases(Box<ReleasesEntry>),
+    /// The platform was dropped with its record whole: every decision it took is in the record. A record whose last
+    /// entry isn't this one ended some other way, and what the platform held in memory beyond it, a restrictive
+    /// decision it couldn't write, isn't known (`T-013-11`).
+    Closed,
     /// The transaction ended: its segment ended, or its record was freed after its provider's evidence window. It
     /// never begins or carries out anything again.
     Ended { transaction: String },
@@ -403,6 +407,10 @@ pub(crate) enum Entry {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AcceptedEntry {
     pub(crate) version: String,
+    /// The digest of the assertion that was accepted: only a release with this assertion is accepted again after a
+    /// restart, never another under the same version (`REQ-MDL-1`, `REQ-MDL-3`).
+    #[serde(default)]
+    pub(crate) assertion_digest: String,
     pub(crate) by: Option<String>,
     pub(crate) at: u64,
 }
@@ -581,6 +589,7 @@ pub(crate) enum DecisionKindEntry {
     MarkedStale,
     DeclaredExploited,
     Reinstated,
+    Confirmed,
 }
 
 impl From<&Decision> for DecisionEntry {
@@ -596,6 +605,7 @@ impl From<&Decision> for DecisionEntry {
                 DecisionKind::MarkedStale => DecisionKindEntry::MarkedStale,
                 DecisionKind::DeclaredExploited => DecisionKindEntry::DeclaredExploited,
                 DecisionKind::Reinstated => DecisionKindEntry::Reinstated,
+                DecisionKind::Confirmed => DecisionKindEntry::Confirmed,
             },
             by: decision.by.as_str().to_owned(),
             at: decision.at.0,
@@ -618,6 +628,7 @@ impl TryFrom<DecisionEntry> for Decision {
                 DecisionKindEntry::MarkedStale => DecisionKind::MarkedStale,
                 DecisionKindEntry::DeclaredExploited => DecisionKind::DeclaredExploited,
                 DecisionKindEntry::Reinstated => DecisionKind::Reinstated,
+                DecisionKindEntry::Confirmed => DecisionKind::Confirmed,
             },
             by: Identifier::new(decision.by).ok_or_else(|| {
                 io::Error::new(
@@ -642,6 +653,10 @@ pub(crate) struct CarriedEntry {
     /// When, in seconds of the world's clock, the record may be freed: its provider's evidence window after it was
     /// carried out, for one no segment held. `None` is never: a segment's record is freed when it ends.
     pub(crate) free_at: Option<u64>,
+    /// The version of the provider that carried it out, so a question about it later runs on that one, which knows it
+    /// (`T-013-11`). `None` where the record was written without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<String>,
 }
 
 /// A segment in flight.

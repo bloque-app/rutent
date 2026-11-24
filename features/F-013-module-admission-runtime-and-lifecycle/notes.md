@@ -1367,3 +1367,79 @@ restart test still passed, because a later `began` entry holds the same state. `
 restarts the platform with nothing after the acceptances, which is what turns it red. Likewise the question's
 "own transaction" check is three conditions that cover one another (the asked-about transaction holds a segment, a
 record, or is `asking`): the table switches the whole check off.
+
+### Fix round 1 (T-013-11): the security review of `5039ba3a` (PR #298)
+
+One blocker and four should-fixes, each reproduced by a probe, and two lows. What each became:
+
+1. **Blocker: a restored acceptance wasn't bound to the release accepted.** `AcceptedEntry` holds the accepted
+   assertion's digest. A release is restored only if its assertion's digest is the recorded one; any other
+   assertion under a version the record holds as accepted is refused `VersionAlreadyAdmitted` (a version names one
+   release), so it never inherits the person's acceptance and its attribution. Test:
+   `a_different_release_under_an_accepted_version_is_refused_after_a_restart`.
+2. **A version declared exploited unrecorded came back after a restart.** The platform now writes a `closed` entry
+   when it is dropped with a record it could write to the end and nothing waiting. `Platform::open` on a record whose
+   last entry isn't `closed` (and isn't empty) holds every provider with a release in force or staged out of force:
+   nothing of it runs (`handle`, `begin_segment`, a started process), whatever is admitted again, until the operator
+   takes any restrictive decision again and calls the new `Platform::confirm(provider, by, at)`, a recorded decision
+   (`DecisionKind::Confirmed`), after which the releases start. A platform dropped with a provider unconfirmed writes
+   no `closed`, so the next opening finds the same. Tests:
+   `an_exploit_declaration_the_record_could_not_hold_is_not_undone_by_a_restart`,
+   `releases_of_a_platform_that_ended_unclean_run_once_the_operator_confirms_them`. **Cost:** any end the record
+   can't vouch for (a crash, a full disk) now takes the operator's confirmation, not only the one with an exploit
+   unrecorded: the record can't tell them apart. `a_repeat_after_the_platform_restarts_moves_nothing_twice` (its
+   stopped-while-the-module-ran half) confirms after reopening, the one existing test that changed.
+3. **Status answers counted towards promotion.** A status question counts for nothing: neither observed nor written
+   as `answered` in `ran`. The module's docs say that a dry run a staged version answers counts as an answer, as the
+   form's reading takes it. Test: `status_questions_count_for_nothing_towards_a_promotion`.
+4. **`handle` skipped `status`'s checks.** `Platform::handle` refuses a status question (`NotHandled`, the module
+   not run); `Platform::status` is the one way in. A caller that signs its own questions has no path yet (gap,
+   `T-020-47`). Test: `status_question_handed_to_handle_is_refused_and_the_module_not_run`.
+5. **The signer tied a status answer to the transaction id only.**
+   - (a) The answer's `about` and its own transaction must be the question's: `result_matches` (platform) and
+     `sign_result` (`SigningError::AnswerOfAnotherQuestion`).
+   - (b) `Answering` carries `about: Option<AboutAsked>`: the operation the platform carried out under the
+     transaction asked about, taken from its record (the caller's only where a segment holds it and no record does),
+     and the final answer it holds. A nested result must be of that operation's kind and transaction; with no
+     operation held, none is nested.
+   - (c) Where the held answer is final (`succeeded` or `failed`), a nested result that says anything else (compared
+     without signature values) isn't signed.
+   Tests: `result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about` (other `about`, other
+   `transaction`, other kind, status or hold nested, no operation held),
+   `nested_result_that_differs_from_a_final_answer_the_platform_holds_is_not_signed`,
+   `a_status_answer_about_another_transaction_is_no_result_of_the_question`. The call into the signer from
+   `handle_on` is exercised end to end by the role stand-in only for a refusal; an answer nesting a result needs a
+   module that does, which none of the stand-ins is: the signer's own tests are the evidence.
+6. **Low: an unsegmented question ran on the version in force now.** `Carried` and its record entry keep the version
+   that carried the operation out; the question runs on it, and is `Unavailable` where the record doesn't keep it or
+   no process runs it. Test: `status_question_about_an_unsegmented_transaction_runs_on_the_version_that_carried_it`.
+   `status_question_runs_on_the_version_its_transaction_runs_on` now reads `Platform::operations_run_on`, since the
+   status question no longer counts.
+7. **Low: a status answer about a reversal confirmation.** Supported: a statement nested in a status answer is judged
+   against the operation asked about, so a nested confirmation is signed for its segment, asset and amount. Test:
+   `confirmation_nested_in_a_status_answer_is_judged_against_the_operation_asked_about`.
+
+Defaults: the operator's confirmation after an unclean end is per provider and recorded; reversible by confirming.
+
+#### Rule-off table (fix round 1)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| A restored release is accepted only if its assertion is the one accepted (1) | `a_different_release_under_an_accepted_version_is_refused_after_a_restart` |
+| A record not closed whole holds the releases out of force (2) | `an_exploit_declaration_the_record_could_not_hold_is_not_undone_by_a_restart` |
+| An unconfirmed provider's segments are refused (2) | same |
+| An unconfirmed release isn't started on admission (2) | same |
+| The clean close is written (2) | `releases_of_a_platform_that_ended_unclean_run_once_the_operator_confirms_them` |
+| A status question counts for nothing towards a promotion (3) | `status_questions_count_for_nothing_towards_a_promotion` |
+| `handle` refuses a status question (4) | `status_question_handed_to_handle_is_refused_and_the_module_not_run` |
+| A status answer is about the transaction asked about, in `result_matches` (5a) | `a_status_answer_about_another_transaction_is_no_result_of_the_question` |
+| A status answer is to the question asked, in the signer (5a) | `result_nested_in_a_status_answer_is_signed_only_for_the_transaction_asked_about` |
+| A nested result is of the kind of the operation carried out (5b) | same |
+| A nested result is the final answer held (5c) | `nested_result_that_differs_from_a_final_answer_the_platform_holds_is_not_signed` |
+| A nested confirmation is judged against the operation asked about (7) | `confirmation_nested_in_a_status_answer_is_judged_against_the_operation_asked_about` |
+| An unsegmented question runs on the version that carried it (6) | `status_question_about_an_unsegmented_transaction_runs_on_the_version_that_carried_it` |
+
+One rule has no test of its own: the refusal of an unconfirmed provider's operations in `handle_in` stays green with it
+off, because an unconfirmed provider has no process to run (the start on admission is refused too). It is a second
+layer for a process that exists some other way, not a rule a test can reach. The first draft of the final-answer test
+parsed no failed result and passed vacuously; it parses one now.

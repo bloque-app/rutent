@@ -233,6 +233,8 @@ struct Carried {
     /// carried out, where no segment held its transaction. `None` is never; a segment's record is freed as the
     /// segment ends (`REQ-CAT-10`).
     free_at: Option<u64>,
+    /// The version of the provider that carried it out: a question about it later runs on that one (`T-013-11`).
+    version: Option<String>,
 }
 
 impl Carried {
@@ -244,6 +246,7 @@ impl Carried {
             operation: self.operation.clone(),
             answer: self.answer.as_deref().cloned(),
             free_at: self.free_at,
+            version: self.version.clone(),
         }
     }
 }
@@ -549,6 +552,22 @@ pub struct Platform<W: World> {
     /// record with the releases' state, and what a release admitted again after a restart is accepted as
     /// (`T-013-11`).
     acceptances: BTreeMap<String, Vec<AcceptedEntry>>,
+    /// The providers whose restored releases wait for the operator's confirmation: the record the platform opened on
+    /// didn't end with the platform's clean close, so a restrictive decision it took and couldn't write isn't known
+    /// (`T-013-10`'s `TakenUnrecorded`). Nothing of such a provider runs until [`Platform::confirm`] (`T-013-11`).
+    unconfirmed: BTreeSet<String>,
+    /// The question [`Platform::status`] is putting to a module, while it does.
+    status_run: Option<StatusRun>,
+}
+
+/// What a status question needs beyond the question itself while the module answers it.
+struct StatusRun {
+    /// The version that carried out the transaction asked about, where no segment holds it.
+    version: Option<String>,
+    /// The operation the platform carried out under that transaction.
+    about: Operation,
+    /// What the platform holds of the provider's answer to it.
+    held: Option<ResultBody>,
 }
 
 impl<W: World> Platform<W> {
@@ -590,6 +609,8 @@ impl<W: World> Platform<W> {
             record: Box::new(MemoryRecord::new()),
             record_failed: false,
             acceptances: BTreeMap::new(),
+            unconfirmed: BTreeSet::new(),
+            status_run: None,
         })
     }
 
@@ -628,6 +649,25 @@ impl<W: World> Platform<W> {
                 .and_then(|entry| platform.read_back(entry))
                 .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
         }
+        // A record that doesn't end with the platform's clean close can't vouch for a decision the platform took and
+        // couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`).
+        let closed = lines
+            .last()
+            .is_none_or(|line| matches!(Entry::read(line), Ok(Entry::Closed)));
+        if !closed {
+            platform.unconfirmed = platform
+                .lifecycle
+                .providers()
+                .filter(|p| {
+                    platform
+                        .lifecycle
+                        .in_force(p)
+                        .or_else(|| platform.lifecycle.staged(p))
+                        .is_some()
+                })
+                .map(str::to_owned)
+                .collect();
+        }
         platform.free_spent();
         let lines = platform
             .held()
@@ -659,6 +699,7 @@ impl<W: World> Platform<W> {
                             operation: *operation,
                             answer: None,
                             free_at: None,
+                            version: None,
                         });
                 }
             }
@@ -703,6 +744,7 @@ impl<W: World> Platform<W> {
                 }
             }
             Entry::Releases(release) => self.restore_releases(&release)?,
+            Entry::Closed => {}
             Entry::Ended { transaction } => {
                 self.carried.remove(&transaction);
                 self.lifecycle.spend(&transaction);
@@ -772,6 +814,7 @@ impl<W: World> Platform<W> {
                 operation: carried.operation,
                 answer: carried.answer.map(Box::new),
                 free_at: carried.free_at,
+                version: carried.version,
             },
         );
     }
@@ -1204,6 +1247,7 @@ impl<W: World> Platform<W> {
         let mut acceptances = self.acceptances.get(provider).cloned().unwrap_or_default();
         acceptances.push(AcceptedEntry {
             version: version.clone(),
+            assertion_digest: artefact.assertion_digest.value.as_str().to_owned(),
             by: by.map(|by| by.as_str().to_owned()),
             at: at.0,
         });
@@ -1239,7 +1283,8 @@ impl<W: World> Platform<W> {
     /// staged release or the staging's counts changed. A version that doesn't start is out of force and out of
     /// staging, as one that failed to start at its acceptance is.
     fn start_restored(&mut self, provider: &str, version: &str) {
-        if !self.lifecycle.wanted(provider).contains(version) {
+        if !self.lifecycle.wanted(provider).contains(version) || self.unconfirmed.contains(provider)
+        {
             return;
         }
         let Some((process, artefact)) = self.spawn(provider, version) else {
@@ -2424,7 +2469,10 @@ fn result_matches(result: &ResultBody, operation: &Operation) -> bool {
     ) else {
         return false;
     };
-    result["kind"] == operation["kind"] && result["transaction"] == operation["transaction"]
+    // A status answer is to the transaction it was asked about too, as to the one it was asked under.
+    result["kind"] == operation["kind"]
+        && result["transaction"] == operation["transaction"]
+        && result["about"] == operation["about"]
 }
 
 fn unique() -> u64 {
@@ -2440,6 +2488,11 @@ fn placeholder_signature() -> String {
 
 impl<W: World> Drop for Platform<W> {
     fn drop(&mut self) {
+        // A record this platform could write to the end, and whose releases nothing waits on, ends whole: the next
+        // opening knows every decision this one took (`T-013-11`).
+        if self.unconfirmed.is_empty() && !self.record_failed {
+            let _ = self.write(&Entry::Closed);
+        }
         // Every provider's process is killed and reaped as its slot drops.
         self.providers.clear();
         let _ = std::fs::remove_dir_all(&self.workdir);
@@ -2500,7 +2553,7 @@ impl<W: World> Platform<W> {
         let version = declaration.version.as_str().to_owned();
         // A release the platform's record holds as accepted, which a restart now admits again: accepted as it was,
         // by whom and when, and put where the record says it stood, never staged as a new upgrade (`T-013-11`).
-        let restored = self
+        let held = self
             .lifecycle
             .is_accepted(&provider, &version)
             .then(|| {
@@ -2595,6 +2648,20 @@ impl<W: World> Platform<W> {
                 return Admitted::Refused(AdmissionRefusal::AdmissionPending);
             }
         }
+        // A version the record holds as accepted names the one release that was accepted: only an assertion of the
+        // digest it recorded is that release, accepted as it was; any other under the version is refused, since a
+        // version names one release and the acceptance a person gave isn't theirs to lend (`REQ-MDL-1`, `REQ-MDL-3`,
+        // `REQ-AUD-1`, `T-013-11`).
+        let restored = if self.lifecycle.is_accepted(&provider, &version) {
+            match held {
+                Some(held) if held.assertion_digest == artefact.assertion_digest.value.as_str() => {
+                    Some(held)
+                }
+                _ => return Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted),
+            }
+        } else {
+            None
+        };
         // While a release is staged, no other is admitted: its staging ends first, promoted or rolled back
         // (ADR-0014). And a release asserted before the provider's last accepted one is an older signed release,
         // which publishing never reinstates (`REQ-MDL-4`, `THR-17`).
@@ -2824,6 +2891,11 @@ impl<W: World> Platform<W> {
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         self.restart_ended();
         self.free_spent();
+        // A status question is put through [`Platform::status`] alone, which holds it to the transaction it asks about
+        // (`T-013-11`): handed here, it would run on the version in force and be signed for anything the module nests.
+        if matches!(operation.statement, Operation::StatusQuery(_)) {
+            return Handled::Refused(PlatformRefusal::NotHandled);
+        }
         let transaction = transaction_of(&operation.statement);
         self.handle_in(provider, operation, transaction.as_deref(), false)
     }
@@ -2854,18 +2926,35 @@ impl<W: World> Platform<W> {
         let Some(asked_about) = transaction_of(&about.statement) else {
             return Handled::Refused(PlatformRefusal::Unavailable);
         };
-        let carried_here = self
+        let record = self
             .carried
             .get(&asked_about)
             .and_then(|scopes| scopes.get(TOP_LEVEL))
-            .is_some_and(|carried| carried.provider == provider)
-            || self
-                .lifecycle
-                .segment(&asked_about)
-                .is_some_and(|segment| segment.provider == provider);
-        if !carried_here {
+            .filter(|carried| carried.provider == provider);
+        let in_a_segment = self
+            .lifecycle
+            .segment(&asked_about)
+            .is_some_and(|segment| segment.provider == provider);
+        if record.is_none() && !in_a_segment {
             return Handled::Refused(PlatformRefusal::Unavailable);
         }
+        // What the platform holds is what it asks about: the operation it carried out, and the answer it holds, not
+        // what the caller says of them. On the version the transaction's segment runs on, or, where none holds it, the
+        // one that carried it out; where the record doesn't keep which, nothing is asked.
+        let operation = record.map_or_else(
+            || about.statement.clone(),
+            |carried| carried.operation.statement.clone(),
+        );
+        let held =
+            record.and_then(|carried| carried.answer.as_deref().map(|a| a.statement.clone()));
+        let version = if in_a_segment {
+            None
+        } else {
+            match record.and_then(|carried| carried.version.clone()) {
+                Some(version) => Some(version),
+                None => return Handled::Refused(PlatformRefusal::Unavailable),
+            }
+        };
         let own = asking.as_str();
         if own == asked_about
             || self.carried.contains_key(own)
@@ -2880,9 +2969,48 @@ impl<W: World> Platform<W> {
             provider: provider.to_owned(),
             about: asked_about.clone(),
         });
-        // On the version the transaction asked about runs on: the one that carried it out, which is the one that knows
-        // it.
-        self.handle_in(provider, &question, Some(&asked_about), false)
+        self.status_run = Some(StatusRun {
+            version,
+            about: operation,
+            held,
+        });
+        let handled = self.handle_in(provider, &question, Some(&asked_about), false);
+        self.status_run = None;
+        handled
+    }
+
+    /// The operator's confirmation, by `by` at the caller's clock `at`, of the provider's releases as the platform's
+    /// record holds them, after a restart whose record didn't end with the platform's clean close (`T-013-11`). Until
+    /// then nothing of the provider runs: a restrictive decision the platform took and couldn't write before it stopped
+    /// (`LifecycleRefusal::TakenUnrecorded`) isn't in the record, and a release it declared exploited would otherwise
+    /// run again. The operator takes such a decision again first, then confirms; the versions the record holds in force,
+    /// staged or under a segment in flight then run, unless marked. Written to the record before it is taken, and
+    /// refused as `Unrecorded` where it can't be. Refused as `NoSuchVersion` where nothing of the provider waits.
+    pub fn confirm(&mut self, provider: &str, by: &str, at: Clock) -> Result<(), LifecycleRefusal> {
+        self.restart_ended();
+        if !self.unconfirmed.contains(provider) {
+            return Err(LifecycleRefusal::NoSuchVersion);
+        }
+        self.decide(|lifecycle| lifecycle.confirmed(provider, by, at), None)?;
+        self.unconfirmed.remove(provider);
+        let admitted: Vec<String> = self
+            .lifecycle
+            .wanted(provider)
+            .into_iter()
+            .filter(|version| {
+                self.providers.get(provider).is_some_and(|slot| {
+                    slot.accepted
+                        .iter()
+                        .any(|a| a.declaration().version.as_str() == version.as_str())
+                        && slot.active.as_deref() != Some(version.as_str())
+                        && !slot.others.contains_key(version)
+                })
+            })
+            .collect();
+        for version in admitted {
+            self.start_restored(provider, &version);
+        }
+        Ok(())
     }
 
     /// [`Platform::handle`], in the segment of `transaction` if one holds it, and on the version in force for
@@ -2898,9 +3026,27 @@ impl<W: World> Platform<W> {
             .operations_received
             .entry(provider.to_owned())
             .or_default() += 1;
-        let version = match self.lifecycle.version_for(provider, transaction) {
-            Ok(version) => version,
-            Err(refusal) => return Handled::Refused(refusal),
+        if self.unconfirmed.contains(provider) {
+            return Handled::Refused(PlatformRefusal::Unavailable);
+        }
+        // A status question about a transaction no segment holds runs on the version that carried it out.
+        let carried_on = match (&operation.statement, called) {
+            (Operation::StatusQuery(_), false) => {
+                self.status_run.as_ref().and_then(|run| run.version.clone())
+            }
+            _ => None,
+        };
+        let version = match carried_on {
+            Some(version) => match self.lifecycle.mark(provider, &version) {
+                Some(lifecycle::Mark::Exploited) => {
+                    return Handled::Refused(PlatformRefusal::VersionExploited);
+                }
+                _ => version,
+            },
+            None => match self.lifecycle.version_for(provider, transaction) {
+                Ok(version) => version,
+                Err(refusal) => return Handled::Refused(refusal),
+            },
         };
         // A callee's record has the callee's own scope, so a transaction a module asks another provider about is no
         // collision with the transaction's own (`T-013-09`).
@@ -2944,13 +3090,16 @@ impl<W: World> Platform<W> {
         let before = self.runs.get(&key).copied().unwrap_or_default();
         let handled = self.handle_on(provider, operation, declaration, version.clone());
         if self.runs.get(&key).copied().unwrap_or_default() > before {
+            // A status question asks about an operation that was counted when it ran, so it counts for nothing: a version
+            // that answers every operation as unknown would otherwise reach its minimum on the questions about them
+            // (`T-013-11`).
+            let asks_status = matches!(operation.statement, Operation::StatusQuery(_));
             let answered = is_an_answer(&handled);
-            let counted = self
-                .lifecycle
-                .staged(provider)
-                .is_some()
-                .then_some(answered);
-            self.lifecycle.observe(provider, &version, answered);
+            let counted =
+                (!asks_status && self.lifecycle.staged(provider).is_some()).then_some(answered);
+            if !asks_status {
+                self.lifecycle.observe(provider, &version, answered);
+            }
             // The module ran: whatever it came to, the operation was carried out (`T-013-09`). A first outcome
             // unknown is the case a repeat is least safe in.
             let mut kept = None;
@@ -2971,6 +3120,7 @@ impl<W: World> Platform<W> {
                         operation: operation.clone(),
                         answer,
                         free_at,
+                        version: Some(version.clone()),
                     };
                     kept = Some(Box::new(first.entry(&transaction, &scope)));
                     carried.insert(scope, first);
@@ -3048,6 +3198,14 @@ impl<W: World> Platform<W> {
             .sum()
     }
 
+    /// How many operations the provider's `version` ran: its process took the operation and said something of it.
+    pub fn operations_run_on(&self, provider: &str, version: &str) -> u64 {
+        self.runs
+            .get(&(provider.to_owned(), version.to_owned()))
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// [`Platform::handle`] on `version`, whose declaration is `declaration`.
     fn handle_on(
         &mut self,
@@ -3113,6 +3271,13 @@ impl<W: World> Platform<W> {
                 deployment: &self.envelope.deployment,
                 protocol_version: &self.envelope.protocol_version,
                 operation: &operation.statement,
+                about: match (&operation.statement, &self.status_run) {
+                    (Operation::StatusQuery(_), Some(run)) => Some(proxy::AboutAsked {
+                        operation: &run.about,
+                        held: run.held.as_ref(),
+                    }),
+                    _ => None,
+                },
             },
             &private,
             &statement_key,
@@ -3165,6 +3330,9 @@ impl<W: World> Platform<W> {
     ) -> Result<String, PlatformRefusal> {
         self.restart_ended();
         self.free_spent();
+        if self.unconfirmed.contains(provider) {
+            return Err(PlatformRefusal::Unavailable);
+        }
         if self.carried.contains_key(transaction.as_str()) {
             return Err(PlatformRefusal::DuplicateTransaction);
         }
@@ -3439,6 +3607,7 @@ mod tests {
                     operation: first.clone(),
                     answer: None,
                     free_at: None,
+                    version: None,
                 },
             );
         }
@@ -3500,6 +3669,30 @@ mod tests {
         }
     }
 
+    /// A status answer is a result of the question only if it is about the transaction asked about as well as under
+    /// the question's own (`T-013-11`).
+    // verifies: REQ-ORD-1
+    #[test]
+    fn a_status_answer_about_another_transaction_is_no_result_of_the_question() {
+        let fixture = |name: &str| -> serde_json::Value {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../contracts/provider-role/fixtures/valid")
+                .join(format!("{name}.json"));
+            serde_json::from_slice(&std::fs::read(path).expect("the fixture")).expect("JSON")
+        };
+        let question: rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        > = serde_json::from_value(fixture("operation-status-query")).expect("a question");
+        let answer = fixture("result-status-query-not-known");
+        let body = |value: &serde_json::Value| -> rutent_contracts::provider_role::ResultBody {
+            serde_json::from_value(value["statement"].clone()).expect("a result")
+        };
+        assert!(super::result_matches(&body(&answer), &question.statement));
+        let mut other = answer.clone();
+        other["statement"]["about"] = "tx-another".into();
+        assert!(!super::result_matches(&body(&other), &question.statement));
+    }
+
     /// A result that can't be signed although its key was checked before the module ran nests a statement the
     /// operation didn't ask for: malformed output, never `Unavailable`, which would say no module runs. A key that
     /// doesn't sign is the key's misconfiguration (`REQ-MDL-12`, `THR-4`).
@@ -3512,6 +3705,7 @@ mod tests {
             NestedOfAnotherVersion,
             NestedOfAnotherShape,
             NestedNotAsked,
+            AnswerOfAnotherQuestion,
             NoSigningInput,
         ] {
             assert_eq!(

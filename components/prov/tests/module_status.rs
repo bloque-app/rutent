@@ -147,12 +147,14 @@ fn module_that_handles_no_status_question_is_not_asked_one() {
     assert_eq!(s.platform.operations_received(RESERVE), received + 1);
 }
 
-// verifies: REQ-ORD-1
-#[test]
-fn status_question_runs_on_the_version_its_transaction_runs_on() {
+/// A release staged on every new segment, beside the version in force, both handling status questions, and a
+/// segment begun on the staged one in which a withdrawal was carried out.
+fn staged_with_a_segment() -> (
+    Signed,
+    rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation>,
+) {
     let mut s = Signed::new();
     admit(&mut s, RESERVE, "1.0.0", &["withdrawal", "status_query"]);
-    // A release staged on every new segment, beside the version in force.
     s.platform
         .set_staging(Some(Staging::new(100, 0, 1).expect("a policy")));
     admit(&mut s, RESERVE, "1.1.0", &["withdrawal", "status_query"]);
@@ -167,19 +169,108 @@ fn status_question_runs_on_the_version_its_transaction_runs_on() {
         s.platform.handle(RESERVE, &about),
         Handled::Answered(_)
     ));
-    let handled = |s: &Signed| {
-        let observed = s.platform.lifecycle().observation(RESERVE).expect("staged");
-        (
-            observed.staged_counts.handled(),
-            observed.in_force_counts.handled(),
-        )
-    };
-    assert_eq!(handled(&s), (1, 0));
-    // The version in force is not the one that carried it out, and is not asked: the staged one is, which is
-    // where the segment runs.
+    (s, about)
+}
+
+// verifies: REQ-ORD-1
+#[test]
+fn status_question_runs_on_the_version_its_transaction_runs_on() {
+    let (mut s, about) = staged_with_a_segment();
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.1.0"), 1);
     assert!(matches!(
         s.platform.status(RESERVE, &id("status-question-1"), &about),
         Handled::Answered(_)
     ));
-    assert_eq!(handled(&s), (2, 0));
+    // Not the version in force, which didn't carry the transaction out: the staged one, where the segment runs.
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.1.0"), 2);
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.0.0"), 0);
+}
+
+// verifies: REQ-MDL-4, REQ-ORD-1
+#[test]
+fn status_questions_count_for_nothing_towards_a_promotion() {
+    let (mut s, about) = staged_with_a_segment();
+    let counted = |s: &Signed| {
+        let counts = s
+            .platform
+            .lifecycle()
+            .observation(RESERVE)
+            .expect("staged")
+            .staged_counts;
+        (counts.answered, counts.refused)
+    };
+    let before = counted(&s);
+    for n in 1..=3 {
+        let asking = id(&format!("status-question-{n}"));
+        assert!(matches!(
+            s.platform.status(RESERVE, &asking, &about),
+            Handled::Answered(_)
+        ));
+    }
+    assert_eq!(counted(&s), before);
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.1.0"), 4);
+}
+
+/// `about`'s status question, as a caller that signed its own would hand it: the question itself.
+fn question(
+    provider: &str,
+    asking: &str,
+    about: &str,
+) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
+    let mut value = serde_json::to_value(withdrawal(provider, 1)).expect("JSON");
+    value["statement"] = serde_json::json!({
+        "kind": "status_query", "transaction": asking, "provider": provider, "about": about
+    });
+    serde_json::from_value(value).expect("a status question")
+}
+
+// verifies: REQ-ORD-1
+#[test]
+fn status_question_handed_to_handle_is_refused_and_the_module_not_run() {
+    let mut s = Signed::new();
+    admit(&mut s, RESERVE, "1.0.0", &["withdrawal", "status_query"]);
+    let carried = withdrawal(RESERVE, 1);
+    assert!(matches!(
+        s.platform.handle(RESERVE, &carried),
+        Handled::Answered(_)
+    ));
+    let run = s.platform.operations_run(RESERVE);
+    // About a transaction carried out here, and about one never carried out anywhere: the same refusal, because the
+    // checks are `Platform::status`'s alone.
+    for about in [&format!("tx-{RESERVE}-1"), "tx-elsewhere-7"] {
+        assert_eq!(
+            s.platform
+                .handle(RESERVE, &question(RESERVE, "status-question-1", about)),
+            Handled::Refused(PlatformRefusal::NotHandled),
+            "{about}"
+        );
+    }
+    assert_eq!(s.platform.operations_run(RESERVE), run);
+}
+
+// verifies: REQ-ORD-1, INV-8
+#[test]
+fn status_question_about_an_unsegmented_transaction_runs_on_the_version_that_carried_it() {
+    let mut s = Signed::new();
+    admit(&mut s, RESERVE, "1.0.0", &["withdrawal", "status_query"]);
+    let about = withdrawal(RESERVE, 1);
+    assert!(matches!(
+        s.platform.handle(RESERVE, &about),
+        Handled::Answered(_)
+    ));
+    // Asked of the version that carried it out, which is in force: it runs.
+    assert!(matches!(
+        s.platform.status(RESERVE, &id("status-question-1"), &about),
+        Handled::Answered(_)
+    ));
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.0.0"), 2);
+    // The next release is put in force at once and nothing runs the first any longer: the question is refused, not
+    // put to the version in force now, which never saw the transaction.
+    admit(&mut s, RESERVE, "1.1.0", &["withdrawal", "status_query"]);
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.1.0"));
+    assert_eq!(
+        s.platform.status(RESERVE, &id("status-question-2"), &about),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+    assert_eq!(s.platform.operations_run_on(RESERVE, "1.1.0"), 0);
 }

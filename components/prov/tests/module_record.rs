@@ -199,7 +199,14 @@ fn a_repeat_after_the_platform_restarts_moves_nothing_twice() {
     let handled = s.platform.handle(RESERVE, &withdrawal(RESERVE, 2));
     assert!(matches!(handled, Handled::Answered(_)), "{handled:?}");
     let world = stop(s);
-    let mut s = opened(Box::new(memory), world, &[RESERVE]);
+    // A platform that stopped with its record cut short ended no way the record can vouch for: the operator
+    // confirms what it holds before anything runs (`T-013-11`).
+    let mut s = Signed::on(Box::new(memory), world);
+    admit_version(&mut s, RESERVE, "1.0.0");
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
     assert_eq!(
         s.platform.handle(RESERVE, &withdrawal(RESERVE, 2)),
         Handled::Refused(PlatformRefusal::DuplicateTransaction)
@@ -822,4 +829,145 @@ fn accepted_releases_are_held_by_a_platform_restarted_at_once() {
     assert_eq!(again.acceptance, second);
     assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
     assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.1.0"));
+}
+
+// verifies: REQ-MDL-1, REQ-MDL-3, REQ-AUD-1
+#[test]
+fn a_different_release_under_an_accepted_version_is_refused_after_a_restart() {
+    let record = MemoryRecord::new();
+    let mut s = Signed::on(Box::new(record.clone()), TestWorld::default());
+    admit_version(&mut s, RESERVE, "1.0.0");
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(record), world);
+
+    // Another assertion under the version a person accepted: it handles more, and is no release they saw.
+    let key = signed::catalogue_support::advertising_key(RESERVE);
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal", "status_query"]);
+    let other = s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries);
+    assert_eq!(
+        other,
+        Admitted::Refused(AdmissionRefusal::VersionAlreadyAdmitted)
+    );
+    assert!(s.platform.pending(RESERVE).is_none());
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    // The release that was accepted is the one that is accepted again.
+    let Admitted::Artefact(again) = readmitted(&mut s, RESERVE, "1.0.0") else {
+        panic!("the release wasn't admitted again");
+    };
+    assert_eq!(
+        again
+            .acceptance
+            .accepted
+            .and_then(|a| a.by)
+            .map(|by| by.as_str().to_owned()),
+        Some("test-reviewer".to_owned())
+    );
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+}
+
+// verifies: REQ-MDL-20, INV-8
+#[test]
+fn an_exploit_declaration_the_record_could_not_hold_is_not_undone_by_a_restart() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inner = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(Breakable {
+            inner: inner.clone(),
+            broken: broken.clone(),
+        }),
+        TestWorld::default(),
+    );
+    admit_version(&mut s, RESERVE, "1.0.0");
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        s.platform
+            .declare_exploited(RESERVE, "1.0.0", "test-operator", AT),
+        Err(LifecycleRefusal::TakenUnrecorded)
+    );
+    let world = stop(s);
+
+    // The record doesn't know the version was declared exploited, and ended no way it can vouch for: nothing of the
+    // provider runs, whatever is admitted again, until the operator takes the decision again and confirms.
+    let mut s = Signed::on(Box::new(inner.clone()), world);
+    assert_eq!(s.platform.lifecycle().mark(RESERVE, "1.0.0"), None);
+    assert!(matches!(
+        readmitted(&mut s, RESERVE, "1.0.0"),
+        Admitted::Artefact(_)
+    ));
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    assert_eq!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 5)),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+    assert_eq!(
+        s.platform.begin_segment(RESERVE, &tx(RESERVE, 5)),
+        Err(PlatformRefusal::Unavailable)
+    );
+    s.platform
+        .declare_exploited(RESERVE, "1.0.0", "test-operator", AT)
+        .expect("declared again");
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(s.platform.version_process(RESERVE, "1.0.0"), None);
+    assert!(!matches!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 5)),
+        Handled::Answered(_)
+    ));
+    let world = stop(s);
+    // Confirmed and ended whole, it is held: the next restart asks nothing more.
+    let s = Signed::on(Box::new(inner), world);
+    assert_eq!(
+        s.platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Exploited)
+    );
+}
+
+// verifies: REQ-MDL-20, INV-8
+#[test]
+fn releases_of_a_platform_that_ended_unclean_run_once_the_operator_confirms_them() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inner = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(Breakable {
+            inner: inner.clone(),
+            broken: broken.clone(),
+        }),
+        TestWorld::default(),
+    );
+    admit_version(&mut s, RESERVE, "1.0.0");
+    // A platform whose record failed ends with nothing of the closing written.
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(inner.clone()), world);
+    assert!(matches!(
+        readmitted(&mut s, RESERVE, "1.0.0"),
+        Admitted::Artefact(_)
+    ));
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    // Nothing waits on a provider the record holds nothing of.
+    assert_eq!(
+        s.platform.confirm(RAMP, "test-operator", AT),
+        Err(LifecycleRefusal::NoSuchVersion)
+    );
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    assert!(s.answers_as(RESERVE, "1.0.0", 7));
+    assert!(
+        s.platform
+            .lifecycle()
+            .decisions()
+            .iter()
+            .any(|d| d.kind == DecisionKind::Confirmed && d.by.as_str() == "test-operator")
+    );
+    // Confirmed and ended whole, the next restart asks nothing more of the operator.
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(inner), world);
+    assert!(matches!(
+        readmitted(&mut s, RESERVE, "1.0.0"),
+        Admitted::Artefact(_)
+    ));
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
 }

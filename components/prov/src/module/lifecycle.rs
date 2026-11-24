@@ -14,7 +14,9 @@
 //!   balance, a judgement). Never one the platform refused after the module ran (a bad or oversized output, a limit,
 //!   a stop), and never one the module answered with a refusal of its own or with an outcome unknown or not known:
 //!   those are refusals, reported apart in [`Counts::refused`], so a version that refuses everything never reaches
-//!   its minimum. An operation refused before it reached a running process counts as neither. [`Lifecycle::roll_back`] ends the staging instead, and the version in force stays.
+//!   its minimum. An operation refused before it reached a running process counts as neither, and so does a status
+//!   question, which asks about an operation already counted. A dry run a staged version answers counts as an answer,
+//!   as the form's reading takes it. [`Lifecycle::roll_back`] ends the staging instead, and the version in force stays.
 //!   While a release is staged no other is admitted, and no version is marked stale, since a stale mark would move
 //!   segments past the staging (`THR-16`).
 //! - **Segments.** A segment begins on one version ([`Lifecycle::begin_segment`]) and runs on it until it ends,
@@ -192,6 +194,8 @@ pub enum DecisionKind {
     DeclaredExploited,
     /// The version was put back in force, the one in force having been revoked.
     Reinstated,
+    /// The operator confirmed a provider's releases after a restart the record couldn't vouch for (`T-013-11`).
+    Confirmed,
 }
 
 /// One recorded lifecycle decision.
@@ -762,6 +766,30 @@ impl Lifecycle {
             by,
             at,
         });
+    }
+
+    /// Records that `by` confirmed the provider's releases as the record holds them.
+    pub fn confirmed(
+        &mut self,
+        provider: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        let by = Identifier::new(by).ok_or(LifecycleRefusal::NoActor)?;
+        // The version the confirmation is recorded against: the one in force, else the staged one, else the last put in
+        // force (the operator may have taken the one in force out before confirming).
+        let version = self
+            .in_force(provider)
+            .or_else(|| self.staged(provider))
+            .map(str::to_owned)
+            .or_else(|| {
+                self.providers
+                    .get(provider)
+                    .and_then(|releases| releases.history.last().cloned())
+            })
+            .ok_or(LifecycleRefusal::NoSuchVersion)?;
+        self.record(provider, &version, DecisionKind::Confirmed, by, at);
+        Ok(())
     }
 
     /// Records that the provider's release of `version`, waiting for its fresh acceptance, was withdrawn by `by`.
