@@ -633,9 +633,16 @@ fn each_permission_alone_allows_only_its_own_action() {
         "posting a route, eleven catalogue changes and the erasure that overrides citations"
     );
     for (held, _) in &all {
+        // The override asks the erase permission beside its own (`T-021-13`): its pair is the one set held for it, and
+        // the erase permission is no entry of this list, so nothing else is allowed by the pair.
+        let holds = if *held == Permission::EraseOverridingCitations {
+            vec![Permission::EraseStatement, *held]
+        } else {
+            vec![*held]
+        };
         let mut policy = engine(
             Kept::with_a_decision_record(),
-            Register::holding(&operator(), &[*held]),
+            Register::holding(&operator(), &holds),
         );
         for (permission, request) in &all {
             let decision = policy.decide(request).unwrap();
@@ -1836,20 +1843,21 @@ fn overriding_erasure_asked(caller: &Actor) -> DecisionRequest {
 }
 
 /// An erasure that overrides the statement's citations is permitted only to an operator's login the register lists
-/// for the permission of its own, `Permission::EraseOverridingCitations`: the decision's entry holds the request
-/// whole, so it names the statement and the override, and the permit it gives is one the log takes the effect on.
-/// Every other caller is refused: the same login without it, another login of its party, Core's own actors and every
-/// other role, even listed for it, before the deployment's policy is asked, and the log takes no effect on a refusal.
-/// The permission allows the override only: the plain erasure and every other action stay refused it (`REQ-AUD-13`,
-/// `REQ-AUZ-6`, `REQ-AUZ-1`).
+/// for both the permission to erase and the permission of its own, `Permission::EraseOverridingCitations`: the
+/// decision's entry holds the request whole, so it names the statement and the override, and the permit it gives is
+/// one the log takes the effect on. Every other caller is refused: the same login without the override permission,
+/// another login of its party, Core's own actors and every other role, even listed for both, before the deployment's
+/// policy is asked, and the log takes no effect on a refusal. The pair allows the plain erasure and the override and
+/// no other action (`REQ-AUD-13`, `REQ-AUZ-6`, `REQ-AUZ-1`).
 // verifies: REQ-AUD-13, REQ-AUZ-6
 #[test]
 fn erasure_overriding_citations_is_permitted_only_with_its_own_permission() {
     let own = Permission::EraseOverridingCitations;
+    let pair = [Permission::EraseStatement, own];
     let asked = overriding_erasure_asked(&operator());
     let mut policy = engine(
         Kept::with_a_decision_record(),
-        Register::holding(&operator(), &[own]),
+        Register::holding(&operator(), &pair),
     );
     let decision = policy.decide(&asked).unwrap();
     assert_eq!(decision.outcome, Answer::Permit {});
@@ -1885,9 +1893,9 @@ fn erasure_overriding_citations_is_permitted_only_with_its_own_permission() {
         "the override's effect rests on the permit"
     );
 
-    // Holding it permits no plain erasure and no other action.
+    // The pair permits the plain erasure too, and no other action.
     let plain = erasure_asked(&operator());
-    assert_eq!(policy.decide(&plain).unwrap().outcome, NOT_PERMITTED);
+    assert_eq!(policy.decide(&plain).unwrap().outcome, Answer::Permit {});
     for (permission, request) in every_permission(&operator()) {
         if permission != own {
             assert_eq!(
@@ -1898,7 +1906,8 @@ fn erasure_overriding_citations_is_permitted_only_with_its_own_permission() {
         }
     }
 
-    // Without it, and in any other role, even listed for it, an override is refused before the policy is asked.
+    // Without the override permission, and in any other role, even listed for both, an override is refused before
+    // the policy is asked.
     let mut every_but: Vec<Permission> = every_permission(&operator())
         .into_iter()
         .map(|(p, _)| p)
@@ -1923,7 +1932,7 @@ fn erasure_overriding_citations_is_permitted_only_with_its_own_permission() {
     ];
     let mut register = Register::holding(&operator(), &every_but);
     for other in &others {
-        register = register.and_holding(other, &[own]);
+        register = register.and_holding(other, &pair);
     }
     let other_login = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
     let mut policy = engine(Kept::with_a_decision_record(), register);
@@ -1975,5 +1984,42 @@ fn operator_with_the_erase_permission_alone_is_refused_an_override() {
         // Without the override, the plain permission still answers it.
         let plain = erasure_asked(&operator());
         assert_eq!(policy.decide(&plain).unwrap().outcome, Answer::Permit {});
+    }
+}
+
+/// An operator's login holding the override permission alone, without the permission to erase, is refused an erasure
+/// that overrides citations, and the plain erasure too, before the deployment's policy is asked: the override is a
+/// permission to exempt an erasure from the citation check, never one that erases by itself, even holding every other
+/// permission there is (`REQ-AUZ-1`, `REQ-AUZ-6`, `REQ-AUD-13`).
+// verifies: REQ-AUZ-1
+#[test]
+fn operator_with_the_override_permission_alone_is_refused() {
+    let own = Permission::EraseOverridingCitations;
+    let mut every_but_erase: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every_but_erase.push(Permission::CarryOnward);
+    for held in [vec![own], every_but_erase] {
+        assert!(!held.contains(&Permission::EraseStatement));
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &held),
+        );
+        for asked in [
+            overriding_erasure_asked(&operator()),
+            erasure_asked(&operator()),
+        ] {
+            let decision = policy.decide(&asked).unwrap();
+            assert_eq!(decision.outcome, NOT_PERMITTED, "{} held", held.len());
+            assert_eq!(
+                policy.log.effect(&asked, forged(&decision)),
+                no_permitting_decision()
+            );
+        }
+        assert_eq!(
+            policy.policy.1.ruled, 0,
+            "it never reached the deployment's policy"
+        );
     }
 }

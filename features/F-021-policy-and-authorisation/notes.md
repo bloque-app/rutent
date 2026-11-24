@@ -1617,40 +1617,46 @@ Branch `f-021/t-021-12-13-rollback-override`, after `T-021-12`. Edits `component
 path: it waits for the owner's click at the release into `main`.
 
 - **What changed.** `Permission::EraseOverridingCitations` joins the operator's permissions. An `Action::EraseStatement`
-  whose `overrides_citations` is set is asked of an operator's login the register lists for it (`operator_holds`), and of
-  no other role, Core's own actors included; a register that says nothing gives a missing input and so a refusal. The
-  erasure without the override still asks `EraseStatement` alone, as `T-021-10` built it. The decision's entry records the
+  whose `overrides_citations` is set is asked of an operator's login the register lists for both `EraseStatement` and
+  `EraseOverridingCitations`, and of no other role, Core's own actors included; a register that says nothing gives a
+  missing input and so a refusal. The erasure without the override still asks `EraseStatement` alone, as `T-021-10`
+  built it. The decision's entry records the
   request whole, so it names the commitment (the statement) and the override. The log's and the store's default, a cited
   statement is kept (`erasure-waits-while-anything-rests-on-the-statement`, `EVIDENCE_RESTED_ON`), is untouched: policy
   only decides who may ask for the override.
 - **Tests.** `erasure_overriding_citations_is_refused_while_no_rule_answers_it` is replaced by `erasure overriding citations
   is permitted only with its own permission` and `operator with the erase permission alone is refused an override`.
   `every_permission` lists the override as a thirteenth pair, so `each_permission_alone_allows_only_its_own_action` runs
-  over it (12 to 13); the tests that hold every other permission now also hold it where it isn't their subject, and
+  over it (12 to 13), holding the erase permission beside the override's, the pair being what the override needs;
+  `operator_with_the_override_permission_alone_is_refused` holds that the override permission alone is refused; the tests that hold every other permission now also hold it where it isn't their subject, and
   `T-021-10`'s tests pass unchanged. The engine's counts are untouched: the override is the same action.
 - **Defaults, reversible, each failing closed.**
-  - The two permissions are held apart in both directions: the override permission alone permits the override and no plain
-    erasure; the erase permission alone permits the plain erasure and no override. (Owner choice assumed: the plan's "a
-    separate permission", "apart from the erase permission", read as independent, not as additional to it. To require both,
-    list both in the arm's needs.)
+  - The override needs both permissions (fix round 1, the reviewer's finding: the contract exempts an erasure from the
+    citation check wherever its permitting decision sets `overrides_citations`, cited or not, so an override permission
+    that stood alone would erase any kept statement without the erase permission, the stronger permission under a
+    weaker name). This is the owner's form default for `override-permission-shape`, "Both permissions". The round-0
+    reading, two independent permissions, is withdrawn.
   - It is an operator's login alone, never carried onward by Core's actors.
   - Policy doesn't read whether the statement is cited: whether anything rests on it is the log's and the store's.
 - **Gaps, with owners.**
   1. The deployment's register must list `EraseOverridingCitations` for the operator logins that may override:
      configuration, owner `F-021`'s register docs / the deployment.
   2. The store's carrying out of an override on that permit, and orchestration's asking for it only where the operator asked:
-     `T-022-10` and `T-020-42`.
+     `T-022-10` and `T-020-42`. The conformance assembly's register (`conformance/scenarios/src/assembly/mod.rs:741`)
+     lists only `EraseStatement` for the operator's login: `T-020-42`'s scenarios need it to list
+     `EraseOverridingCitations` beside it, or they are refused.
 - **Red first.** The permitted test failed on its outcome assertion (`Refuse` for `Permit`) and `each permission alone` on
-  its count; the refused test passes against the stub (the behaviour before the row) and is held by the rule-offs. The enum
+  its count; the refused tests pass against the stub (the behaviour before the row) and is held by the rule-offs. The enum
   variant was added first so the tests compile.
-- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+- **Rule-off, fix round 1** (`cargo test -p rutent-core-authz --lib`, file restored each time; the table of round 0, with
+  its independent reading, is withdrawn):
 
   | Rule switched off | Tests that went red |
   |---|---|
+  | the erase permission is no longer asked beside the override's | `operator_with_the_override_permission_alone_is_refused` |
+  | the override permission is no longer asked | `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `operator_with_the_erase_permission_alone_is_refused_an_override` |
+  | any role listed for both may override (no operator-only restriction) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
   | the override arm answers no rule (`None`) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
-  | the erase permission stands for the override | `operator_with_the_erase_permission_alone_is_refused_an_override`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `caller_without_the_erase_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
-  | any role listed may override (no operator-only restriction) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
-  | the override permission also permits a plain erasure | `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `operator_with_the_erase_permission_alone_is_refused_an_override`, `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission` |
 
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
