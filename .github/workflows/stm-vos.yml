@@ -194,8 +194,17 @@ jobs:
           export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
           . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
           sources_git_config "$VOS_DIR"
+          # Each member from its own directory, as the lint step above does, so rustup picks its toolchain: the client
+          # and the host server build on the node's nightly, the scenarios and their wire on the guest one (the
+          # scenarios link the conformance crate and wasmtime, which need a newer rustc than the node's).
           (cd components/stm/vos-program/client && CARGO_TARGET_DIR="$BUILD/client-target" \
-            cargo doc --locked --workspace --no-deps --features vos)
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios/serve" && CARGO_TARGET_DIR="$BUILD/client-target" \
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios" && CARGO_TARGET_DIR="$BUILD/scenarios-target" \
+            cargo doc --locked --no-deps --features vos)
+          (cd "$PROGRAM/scenarios/wire" && CARGO_TARGET_DIR="$BUILD/scenarios-target" \
+            cargo doc --locked --no-deps)
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Documentation check, the program (T-024-24)
