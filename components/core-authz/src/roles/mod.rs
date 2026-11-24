@@ -9,8 +9,9 @@
 //! (`Source::ActsFor`). A fixed rule, the first asked, holds every actor a request names to it, on every call: who
 //! asks, gives, decides, moves, reads, grants or asks about a person, a route's suggester and a permission's grantee.
 //! The register binds the kind of actor too (`T-021-05`), so an agent's login can't state itself a person or a
-//! component and so escape the scope its party set. An actor the register says acts for another party, or is
-//! another kind, acts for no accountable party, and is refused so
+//! component and so escape the scope its party set, and the role it acts in (`T-021-14`), so a customer's login can't
+//! state itself the operator, a regulator or a checker and be taken for one. An actor the register says acts for
+//! another party, or is another kind, or acts in another role, acts for no accountable party, and is refused so
 //! (`REQ-AUZ-8`), whatever else the request would pass; one the register says nothing of is a missing input. So every
 //! rule that reads a stated party, the sessions' and reads' of `T-021-02` among them, reads one the register has
 //! bound to its actor.
@@ -62,6 +63,23 @@
 //! itself, and the erase permission alone leaves the default, a cited statement is kept, in force; an override is a
 //! decision of its own that names the statement and the override (`REQ-AUD-13`). Core's actors never carry it
 //! onward.
+//!
+//! # Granting and revoking a read
+//!
+//! A regulator's or a checker's read rests on a permission granted to it (`REQ-AUZ-7`, `REQ-AUD-12`), so who grants
+//! one, and who revokes it, decides who reads the whole trail. Granting a read and revoking one are each a
+//! [`Permission`] of its own, [`Permission::GrantRead`] and [`Permission::RevokeRead`], held actor by actor as each
+//! catalogue change is, so a login listed for one holds not the other (`REQ-AUZ-6`). Only an operator's login is asked
+//! the register; every other role is refused before the deployment's policy is asked. The login must also be the
+//! deployment operator's by the register, in its party or reaching it (`Source::OfOperator`), as a stuck order's
+//! decider is, so a login of another party the register lists in the operator's role grants nothing. The grantee is a
+//! regulator or a checker by its request's shape (`PermissionChange::check`), and the register of actors binds that
+//! role to its login as it binds every actor's, so a grant to a login stating a role it isn't listed in is refused as
+//! acting for no accountable party. A grantee is never the operator's own: the register's word that its login is the
+//! deployment operator's (`Source::OfOperator`) refuses the grant, the grantor granting itself included, since a
+//! regulator or a checker is outside the operator. A revocation names a grant made, its permission, grantee and scope
+//! (`Register`, in `session`). Each decision's entry records the change whole, its grantor and grantee each in its
+//! role.
 //!
 //! # Acting for a user
 //!
@@ -146,21 +164,29 @@ pub enum Permission {
     /// [`Permission::EraseStatement`], never in its place, so it erases nothing alone (`REQ-AUZ-6`, `REQ-AUD-13`).
     /// Asked by `T-021-13`'s rule.
     EraseOverridingCitations,
+    /// An operator's login granting a regulator or a checker a read permission (`REQ-AUZ-7`, `REQ-AUD-12`), a
+    /// permission of its own. Asked by `T-021-14`'s rule.
+    GrantRead,
+    /// An operator's login revoking a read permission granted (`REQ-AUZ-7`), a permission of its own, apart from
+    /// granting. Asked by `T-021-14`'s rule.
+    RevokeRead,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
-/// empty, inputs at least one of which must say yes, every one of them given.
+/// empty, inputs at least one of which must say yes, every one of them given; and inputs that must each say no
+/// (`none`).
 #[derive(Debug, Default)]
 struct Needs {
     all: Vec<Need>,
     any: Vec<Need>,
+    none: Vec<Need>,
 }
 
 impl From<Vec<Need>> for Needs {
     fn from(all: Vec<Need>) -> Self {
         Needs {
             all,
-            any: Vec::new(),
+            ..Needs::default()
         }
     }
 }
@@ -315,6 +341,7 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                         declared(&a.origin_reserve, NO_USER_WITHDRAWAL),
                         declared(&a.origin_reserve, AUTOMATIC_DEPOSIT),
                     ],
+                    none: Vec::new(),
                 }),
                 // The order's origin reserve itself, which declared it starts routes on automatic deposits.
                 Role::Provider if by.party == a.origin_reserve => Some(
@@ -329,6 +356,24 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 }
             }
         }
+        // Granting or revoking a read permission (`REQ-AUZ-7`, `T-021-14`): an operator's login the register lists for
+        // the one permission the call is, of the deployment operator by the register, in its party or reaching it,
+        // and no other role. Who the grantee is, a regulator or a checker, its request's shape holds
+        // (`PermissionChange::check`), and the register of actors binds the role it states to its login, as every
+        // actor's ([`acts_for`]).
+        // A grantee is never the operator's own (`T-021-14`, fix round 1): a regulator or a checker is outside the
+        // operator, so the register's word that the grantee's login is the operator's refuses the grant, the grantor
+        // granting itself among them.
+        Asked::GrantPermission(change) => {
+            of_operator_holds(&change.by, Permission::GrantRead).map(|mut needs| {
+                needs.none.push(Need {
+                    input: change.grantee.acts.clone(),
+                    from: Source::OfOperator,
+                });
+                needs
+            })
+        }
+        Asked::RevokePermission(change) => of_operator_holds(&change.by, Permission::RevokeRead),
         _ => Some(Needs::default()),
     }
 }
@@ -337,6 +382,19 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
 /// role holds one.
 fn operator_holds(caller: &Actor, permission: Permission) -> Option<Vec<Need>> {
     (caller.role == Role::Operator).then(|| vec![listed(caller, permission)])
+}
+
+/// The register's word that `caller` holds `permission` and is the deployment operator's (`Source::OfOperator`), asked
+/// only of a caller in the operator's role: a login of another party listed for it, or in the operator's role, is not
+/// the operator's.
+fn of_operator_holds(caller: &Actor, permission: Permission) -> Option<Needs> {
+    operator_holds(caller, permission).map(|mut needs| {
+        needs.push(Need {
+            input: caller.acts.clone(),
+            from: Source::OfOperator,
+        });
+        needs.into()
+    })
 }
 
 /// The register's word that the actor `caller` names, by its `acts` within its party, holds `permission`.
@@ -377,11 +435,18 @@ fn declared(reserve: &Id, declaration: &str) -> Need {
 /// What the fixed rule needs for `asked`: nothing for a call it refuses outright, or one it doesn't hold.
 pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
     let needs = needs_of(asked).unwrap_or_default();
-    Reply::Given(needs.all.into_iter().chain(needs.any).collect())
+    Reply::Given(
+        needs
+            .all
+            .into_iter()
+            .chain(needs.any)
+            .chain(needs.none)
+            .collect(),
+    )
 }
 
 /// The fixed rule's ruling over what [`needs_of`] names: every input of `all` says yes and, where `any` names some, at
-/// least one of them does. A no refuses, and an input not given is missing. A call no rule lets its caller make is
+/// least one of them does, and every input of `none` says no. A no refuses, and an input not given is missing. A call no rule lets its caller make is
 /// refused, and every call the rule doesn't hold passes.
 pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     let Some(needs) = needs_of(asked) else {
@@ -401,6 +466,13 @@ pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
         match said(need) {
             Some(Said::Yes) => any_yes = true,
             Some(Said::No) => {}
+            None => return Reply::Missing,
+        }
+    }
+    for need in &needs.none {
+        match said(need) {
+            Some(Said::No) => {}
+            Some(Said::Yes) => refused = true,
             None => return Reply::Missing,
         }
     }
@@ -445,6 +517,7 @@ fn acts_for(asked: Asked<'_>) -> Vec<Need> {
                 acts: actor.acts.clone(),
                 party: actor.party.clone(),
                 kind: actor.kind,
+                role: actor.role,
             },
         };
         if !needs.contains(&need) {

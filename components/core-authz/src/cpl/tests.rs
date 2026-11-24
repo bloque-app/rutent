@@ -288,7 +288,9 @@ impl Sources for Register {
         use crate::engine::Said;
         let said = |yes: bool| Reply::Given(if yes { Said::Yes } else { Said::No });
         match &need.from {
-            Source::ActsFor { acts, party, kind } => {
+            Source::ActsFor {
+                acts, party, kind, ..
+            } => {
                 if self.acts_for.iter().any(|(a, _, _)| a == acts) {
                     said(
                         self.acts_for

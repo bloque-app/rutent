@@ -6,7 +6,7 @@
 //!
 //! | Source | Record |
 //! |---|---|
-//! | `ActsFor`, `Permissions` | the deployment's registers ([`Registers`]), which `F-030` keeps in production |
+//! | `ActsFor`, `Permissions` | the deployment's registers ([`Registers`]), which `F-030` keeps in production; `ActsFor` binds each login's party, kind and role (`T-021-14`) |
 //! | `Account`, `Holder` | the account's reserve's register of accounts, the deployment's in the assembly ([`Registers::accounts`]); no delegation is registered |
 //! | `Requester`, `OrderOrigin` | intake's record of the order (`Intake::record`), copied once the order opens |
 //! | `OrderParties` | the order's acceptance, as the log holds it; before it, intake's record of the order |
@@ -33,7 +33,7 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest,
     Entry, PermissionChange, PersonAnswer, PersonQuestion, ReadAnswer, ReadCheck, RefusalClass,
-    SessionAnswer, SessionRequest, What,
+    Role, SessionAnswer, SessionRequest, What,
 };
 use rutent_contracts::provider_role::ReserveDeclaration;
 use rutent_contracts::router_api::Id;
@@ -52,6 +52,8 @@ use crate::PolicyHandle;
 pub struct Registers {
     /// Each actor, by its `acts`, the party it acts for and the kind of actor it is (`T-021-05`).
     pub actors: BTreeMap<String, (String, ActorKind)>,
+    /// Each actor's roles, by its `acts`: the roles it is listed in for its party, as that kind (`T-021-14`).
+    pub roles: BTreeMap<String, Vec<Role>>,
     /// Each agent's scope, by its party and its `acts`: the calls its party lets it make (`T-021-05`).
     pub scopes: Vec<(String, String, Scope)>,
     /// Each permission an actor holds, by its `acts`.
@@ -61,12 +63,19 @@ pub struct Registers {
 }
 
 impl Registers {
-    /// Lists `actor` as acting for its party, as the kind of actor it is.
+    /// Lists `actor` as acting for its party, as the kind of actor it is, in its role. Listed again for the same party
+    /// and kind, it acts in that role too; listed for another party or kind, it acts in that role alone.
     pub fn list(&mut self, actor: &Actor) {
-        self.actors.insert(
-            actor.acts.as_str().to_owned(),
-            (actor.party.as_str().to_owned(), actor.kind),
-        );
+        let acts = actor.acts.as_str().to_owned();
+        let listed = (actor.party.as_str().to_owned(), actor.kind);
+        if self.actors.get(&acts) != Some(&listed) {
+            self.roles.remove(&acts);
+        }
+        self.actors.insert(acts.clone(), listed);
+        let roles = self.roles.entry(acts).or_default();
+        if !roles.contains(&actor.role) {
+            roles.push(actor.role);
+        }
     }
 
     /// Lets the agent `agent` make the call `scope` for its party.
@@ -104,6 +113,18 @@ impl Registers {
                 .any(|c| c == core);
             let cores_own = p.as_str() == core && *k == ActorKind::Component;
             p.as_str() == party.as_str() && *k == kind && (!reaches_core || cores_own)
+        })
+    }
+
+    /// Whether `acts` acts for `party` as the kind of actor `kind`, in the role `role`, where the register lists it at
+    /// all: policy's word (`Source::ActsFor`), which binds the role too, so a customer's login can't state itself the
+    /// operator, a regulator or a checker (`T-021-14`).
+    pub fn acts_in(&self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> Option<bool> {
+        self.acts_as(acts, party, kind).map(|yes| {
+            yes && self
+                .roles
+                .get(acts.as_str())
+                .is_some_and(|roles| roles.contains(&role))
         })
     }
 
@@ -363,7 +384,12 @@ impl authz::Sources for Records {
         let input = &need.input;
         let registers = self.registers.borrow().clone();
         match &need.from {
-            Source::ActsFor { acts, party, kind } => match registers.acts_as(acts, party, *kind) {
+            Source::ActsFor {
+                acts,
+                party,
+                kind,
+                role,
+            } => match registers.acts_in(acts, party, *kind, *role) {
                 Some(yes) => said(yes),
                 None => Reply::Missing,
             },

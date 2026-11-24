@@ -425,6 +425,11 @@ fn regulators_permitted_read_is_recorded() {
     record(&core, &run, None);
     core.registers().list(&regulator());
     core.registers().list(&grantor());
+    // Granting and revoking a read are each a permission of the operator's login's own (`T-021-14`).
+    core.registers()
+        .permit(&grantor(), rutent_core_authz::roles::Permission::GrantRead);
+    core.registers()
+        .permit(&grantor(), rutent_core_authz::roles::Permission::RevokeRead);
     let now = || {
         let log = core.log();
         match &log.entries().last().unwrap().1 {

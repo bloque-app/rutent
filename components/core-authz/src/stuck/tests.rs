@@ -276,7 +276,9 @@ impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let said = |yes: bool| Reply::Given(if yes { Said::Yes } else { Said::No });
         match &need.from {
-            Source::ActsFor { acts, party, kind } => {
+            Source::ActsFor {
+                acts, party, kind, ..
+            } => {
                 if !self.acts_for.iter().any(|(a, _, _)| a == acts) {
                     return Reply::Missing;
                 }

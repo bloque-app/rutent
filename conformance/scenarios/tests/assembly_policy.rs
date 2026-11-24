@@ -323,3 +323,187 @@ fn question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_lo
         "the refusal is recorded"
     );
 }
+
+/// A read of the whole trail granted to, or revoked from, `grantee` by `by`, under `permission`, at the last entry's
+/// time.
+fn trail_change(
+    core: &Core,
+    request: &str,
+    permission: &str,
+    grantee: &Actor,
+    by: &Actor,
+) -> rutent_contracts::core_internal::PermissionChange {
+    serde_json::from_value(serde_json::json!({
+        "request": request,
+        "permission": permission,
+        "grantee": grantee,
+        "scope": {"kind": "trail"},
+        "by": by,
+        "at": last(core).when.at,
+    }))
+    .unwrap()
+}
+
+/// A read of the whole trail by `reader`, naming `permission`, at the last entry's time.
+fn trail_check(
+    core: &Core,
+    request: &str,
+    reader: &Actor,
+    permission: &str,
+) -> rutent_contracts::core_internal::ReadCheck {
+    serde_json::from_value(serde_json::json!({
+        "request": request,
+        "reader": reader,
+        "reads": {"kind": "trail"},
+        "permission": permission,
+        "at": last(core).when.at,
+    }))
+    .unwrap()
+}
+
+/// The probe of finding 1 of `M3`'s milestone review, through the assembly (`T-021-14`): the customer's own login,
+/// listed for its party in the customer's role and holding nothing, states the operator's role and grants itself a
+/// read of the trail as a regulator, reads the trail by it and revokes it. Each is refused, and recorded refused; the
+/// deployment's policy, which permits whatever the fixed rules let through, never permits it. The operator's login,
+/// listed for the permissions to grant and to revoke a read, grants nothing to the customer's login stating a
+/// regulator's role, grants a listed regulator the trail, the regulator reads it, other logins of the regulator's party
+/// read nothing by it, the operator's login listed as a regulator too is granted nothing, and the customer's login
+/// stating the operator's role can't revoke it; the operator's login revokes it.
+// verifies: REQ-AUZ-7, REQ-AUD-12, THR-7
+#[test]
+fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads;
+    use rutent_core_authz::roles::Permission;
+
+    let core = accepted();
+    let customer = kit::customer();
+    let as_operator = Actor {
+        role: Role::Operator,
+        ..customer.clone()
+    };
+    let as_regulator = Actor {
+        role: Role::Regulator,
+        ..customer.clone()
+    };
+    let mut policy = core.policy();
+
+    let probe = trail_change(
+        &core,
+        "req-probe",
+        "perm-probe",
+        &as_regulator,
+        &as_operator,
+    );
+    let granted = policy.grant_permission(&probe).unwrap();
+    assert!(granted.permit().is_none(), "{granted:?}");
+    assert!(matches!(last(&core).outcome, Outcome::Refused { .. }));
+    assert_eq!(
+        last(&core).who,
+        as_operator,
+        "recorded with the role it stated"
+    );
+    let read = policy
+        .check_read(&trail_check(
+            &core,
+            "req-probe-read",
+            &as_regulator,
+            "perm-probe",
+        ))
+        .unwrap();
+    assert!(matches!(read.outcome, ReadOutcome::Refused { .. }));
+    let revoked = policy.revoke_permission(&probe).unwrap();
+    assert!(revoked.permit().is_none());
+
+    // The operator's login listed for both permissions, and a regulator listed in its role.
+    let operator = kit::operator_login();
+    let regulator = Actor {
+        party: id("fin-regulator"),
+        acts: id("examiner-3"),
+        role: Role::Regulator,
+        kind: ActorKind::Person,
+    };
+    core.registers().list(&regulator);
+    core.registers().permit(&operator, Permission::GrantRead);
+    core.registers().permit(&operator, Permission::RevokeRead);
+    // Not to the customer's login stating a regulator's role: the register binds the role to the login.
+    let to_the_customer = trail_change(&core, "req-to-cust", "perm-cust", &as_regulator, &operator);
+    let granted = policy.grant_permission(&to_the_customer).unwrap();
+    assert_eq!(
+        granted.outcome,
+        Answer::Refuse {
+            class: RefusalClass::NoAccountableParty
+        }
+    );
+    let grant = trail_change(&core, "req-grant", "perm-reg-1", &regulator, &operator);
+    let granted = policy.grant_permission(&grant).unwrap();
+    assert!(granted.permit().is_some(), "{granted:?}");
+    let read = policy
+        .check_read(&trail_check(&core, "req-read", &regulator, "perm-reg-1"))
+        .unwrap();
+    assert_eq!(read.outcome, ReadOutcome::Allowed {});
+    // Fix round 1, findings 1 and 2: other logins of the regulator's party, each listed in its own role, read nothing
+    // by its grant; the operator's login, listed as a regulator too, is granted nothing.
+    for (acts, role, kind) in [
+        ("fr-bot", Role::Verifier, ActorKind::Component),
+        ("fr-ops", Role::Operator, ActorKind::Person),
+    ] {
+        let reader = Actor {
+            acts: id(acts),
+            role,
+            kind,
+            ..regulator.clone()
+        };
+        core.registers().list(&reader);
+        let read = policy
+            .check_read(&trail_check(
+                &core,
+                &format!("req-{acts}"),
+                &reader,
+                "perm-reg-1",
+            ))
+            .unwrap();
+        assert!(
+            matches!(read.outcome, ReadOutcome::Refused { .. }),
+            "{acts}: {read:?}"
+        );
+    }
+    let operator_as_regulator = Actor {
+        role: Role::Regulator,
+        ..operator.clone()
+    };
+    core.registers().list(&operator_as_regulator);
+    let itself = trail_change(
+        &core,
+        "req-itself",
+        "perm-itself",
+        &operator_as_regulator,
+        &operator,
+    );
+    assert!(policy.grant_permission(&itself).unwrap().permit().is_none());
+    let stolen = trail_change(&core, "req-steal", "perm-reg-1", &regulator, &as_operator);
+    assert!(
+        policy
+            .revoke_permission(&stolen)
+            .unwrap()
+            .permit()
+            .is_none()
+    );
+    let revoke = trail_change(&core, "req-revoke", "perm-reg-1", &regulator, &operator);
+    assert!(
+        policy
+            .revoke_permission(&revoke)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    let read = policy
+        .check_read(&trail_check(
+            &core,
+            "req-read-after",
+            &regulator,
+            "perm-reg-1",
+        ))
+        .unwrap();
+    assert!(matches!(read.outcome, ReadOutcome::Refused { .. }));
+}

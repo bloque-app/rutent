@@ -126,6 +126,7 @@ fn policys_sources_answer_from_the_records() {
         acts: id(acts),
         party: id(party),
         kind,
+        role: customer.role,
     };
     let acts = |acts: &str, party: &str| acts_as(acts, party, customer.kind);
     assert_eq!(sources.supply(&need("x", acts("user-1", party))), yes());
@@ -146,6 +147,20 @@ fn policys_sources_answer_from_the_records() {
         )),
         no()
     );
+    // The register binds the role too (`T-021-14`): the customer's login stating the operator's role, or a
+    // regulator's, is no one's.
+    for role in [
+        rutent_contracts::core_internal::Role::Operator,
+        rutent_contracts::core_internal::Role::Regulator,
+    ] {
+        let stated = Source::ActsFor {
+            acts: id("user-1"),
+            party: id(party),
+            kind: customer.kind,
+            role,
+        };
+        assert_eq!(sources.supply(&need("x", stated)), no(), "{role:?}");
+    }
     // An agent's scope, as its party set it (`T-021-05`).
     let agent = rutent_contracts::core_internal::Actor {
         acts: id("agent-1"),
@@ -416,16 +431,22 @@ fn policys_sources_answer_from_the_records() {
     assert_eq!(sources.supply(&need("bob", meets("bob", "dan"))), no());
     // Nothing but Core's own components is listed under Core's party, or reaches it: anyone else listed there acts for
     // no one.
-    let acts_as = |acts: &str, party: &Id, kind| Source::ActsFor {
+    let acts_as = |acts: &str, party: &Id, kind, role| Source::ActsFor {
         acts: id(acts),
         party: party.clone(),
         kind,
+        role,
     };
     use rutent_contracts::core_internal::ActorKind;
     assert_eq!(
         sources.supply(&need(
             core_actor.acts.as_str(),
-            acts_as(core_actor.acts.as_str(), &core_actor.party, core_actor.kind)
+            acts_as(
+                core_actor.acts.as_str(),
+                &core_actor.party,
+                core_actor.kind,
+                core_actor.role
+            )
         )),
         yes()
     );
@@ -453,14 +474,24 @@ fn policys_sources_answer_from_the_records() {
     assert_eq!(
         sources.supply(&need(
             "intruder",
-            acts_as("intruder", &core_actor.party, ActorKind::Person)
+            acts_as(
+                "intruder",
+                &core_actor.party,
+                ActorKind::Person,
+                customer.role
+            )
         )),
         no()
     );
     assert_eq!(
         sources.supply(&need(
             "helper-bot",
-            acts_as("helper-bot", &id("helper"), ActorKind::Component)
+            acts_as(
+                "helper-bot",
+                &id("helper"),
+                ActorKind::Component,
+                customer.role
+            )
         )),
         no()
     );
