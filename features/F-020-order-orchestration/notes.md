@@ -6642,3 +6642,62 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
   | the look after the effect on an override is the plain override check | the core-orch late-citation test |
   | `reconcile` reports every citation of an overridden statement | the override scenario (on the rebound store) |
   | the look after the effect is given the effect's receipt in place of the decision's | both core-orch override tests (the fake store records the receipt it is given) |
+
+## T-020-44: a hand-on retried under another linked order
+
+Branch `f-020/t-020-44-hand-on-retry`, from `2d62f1b9`. Fixes finding 2 of M3's milestone review (PR #143, review
+6043265441) and two Lows beside it. Edits `components/core-orch/src/hand_on/` (`mod.rs`, `rule.rs`),
+`components/stm/src/hand_on.rs`, `contracts/src/core_internal/relations.rs` and `contracts/core-internal/`.
+
+- **Design.**
+  1. *The retry.* A pending hand-on is keyed by the first order's part and built for one linked order. Once its
+     `handed_on` is in the log, a retry skipped `linked_is_free`, appended the pending `route_chosen`, and inserted
+     `self.linked[handing.linked]` with that pending order's data: the log opened `ord-2`, Core's map said `ord-3` held
+     `ord-2`'s start, and the caller was told `ord-3` was handed on. `HandOn::hand_on` now compares the retry's linked
+     order with the one the pending hand-on was built for, before anything is appended, and refuses a different one
+     with `HandOnError::PendingForAnother { pending }`, naming the pending order. Refusing, not answering with the
+     pending order, because an answer naming `ord-2` to a caller who asked for `ord-3` could be taken for `ord-3`'s
+     success; the refusal names the one to retry and records nothing. The same holds before the `handed_on` is in the
+     log (a retry then could be rebuilt, but one rule is simpler and fails closed). A hand-on stranded on a refusal
+     keeps its own answer (`LinkedRefused`, naming the order the log refused).
+  2. *One start per linked order.* `prove_start` keeps what the log took, by linked order (`Started`: record, statement,
+     publisher, receipt). A second call for the order passes the very record, statement and publisher and is answered
+     with the receipt it had, nothing appended; any other is refused with `Unproven::AlreadyStarted`, nothing
+     recorded. A start built and kept while the log was unavailable becomes the taken one when its retry lands. The
+     log gets the matching row, `one-start-per-linked-order` (core-internal): a `holding_withdrawal` of an order is
+     refused when another of that order cites a record of another transaction. It is disjoint from
+     `one-start-per-holding-record` (same transaction, another entry), and a record naming no transaction conflicts with
+     none. Folded into the unreleased 1.0.0: README row, changelog line, two admission fixtures
+     (`--conflict`, `--the-same-start-again`), no version moves. The contract guard against `origin/develop` is green.
+  3. *`holds_value_for`.* It accepted a part waiting for the customer whatever the cause; `after_handed_on` takes a
+     waiting part only after a failed final deposit (`deposit_failed_at` set, `INV-10`). It now matches, and its doc and
+     the rule's say a floor wait holds none. Core never relied on it for that: `build_hand_on` runs the transition
+     itself and refuses on its answer; the fix keeps a caller that reads the rule alone from being told otherwise.
+- **Tests (red first).** In `conformance/scenarios/tests/hand_on.rs`:
+  `a_pending_hand_on_retried_for_another_linked_order_is_refused` (the log took `ord-2`'s `handed_on`, its
+  `route_chosen` unavailable; a retry for `ord-3` was answered `Ok`, now refused, nothing recorded; the retry for `ord-2`
+  completes, `ord-3` stays unfollowed, the log admits every entry) and `a_started_linked_order_takes_no_second_start`
+  (another record, another statement of the same record: refused; the same entry again: the one receipt, one
+  `holding_withdrawal`). In `components/stm/tests/transitions.rs`:
+  `the_rule_across_two_orders_finds_no_value_to_hand_on_at_a_part_waiting_at_its_floor` (also pins the part waiting after
+  a failed deposit as still holding value). In `contracts/tests/core-internal.rs`:
+  `a_second_holding_record_of_another_transaction_for_the_same_order_is_refused_by_the_log`. The first three were
+  watched failing on their assertions before the code (`Ok` for `PendingForAnother`, `Ok` for `AlreadyStarted`, `Ok(())`
+  for `NoValueToHandOn`).
+- **Defaults taken (reversible, fail closed).** A retry for another linked order is refused, not answered with the
+  pending one. An identical start retried after it was taken is answered with the first receipt rather than appended
+  again. The log row is keyed by the order and the transaction the record names.
+- **Gaps, with owners.**
+  1. `HandOn`'s `started`, `spent` and pending maps are in memory, like the rest of it: after a restart a second record
+     for the order is refused by the log's new row, not by Core. The durable record is `F-030`'s. Owner: `F-030`.
+  2. The contract row waits for the owner's `DEC-20` click with M3's other contract changes. Owner: the owner.
+  3. A pending hand-on whose `handed_on` is not in the log yet could be dropped and rebuilt for the new linked order;
+     it is refused as well. Operator choice, if wanted: a row, not a defect.
+- **Rule-offs** (each restored):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the retry's linked order compared with the pending one | `a_pending_hand_on_retried_for_another_linked_order_is_refused` |
+  | the start taken answered from `started` (second record or statement refused, same entry answered) | `a_started_linked_order_takes_no_second_start` |
+  | `holds_value_for` takes any waiting part | `the_rule_across_two_orders_finds_no_value_to_hand_on_at_a_part_waiting_at_its_floor` |
+  | the log row `one-start-per-linked-order` cites nothing | the contract's `a_second_holding_record_...` test and `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |

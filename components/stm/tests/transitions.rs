@@ -924,6 +924,34 @@ fn a_part_waiting_at_its_floor_is_neither_handed_on_nor_sent_to_another_destinat
     assert!(same_but_last_input(&before, other.order()));
 }
 
+// verifies: REQ-ORD-27, REQ-ORD-43, INV-4, INV-10
+#[test]
+fn the_rule_across_two_orders_finds_no_value_to_hand_on_at_a_part_waiting_at_its_floor() {
+    // The same part the transition refuses to hand on (above): the cross-order rule agrees, so a caller that reads it
+    // alone is never told a floor-waiting part holds value for a linked order.
+    let floor = at_its_floor("ord-floor-rule");
+    let mut second = Run::new("ord-floor-second");
+    second.choose(
+        vec![part("q1", handed_on_route("q1", "ledger"))],
+        Some("ord-floor-rule"),
+    );
+    assert_eq!(
+        handed_on_route_starts_where_value_sits(floor.order(), second.order()),
+        Err(HandOnRefusal::NoValueToHandOn)
+    );
+    // After a failed final deposit, the same part waits for the customer's choice and does hold value for it.
+    let failed = waiting("ord-floor-rule-failed").order().clone();
+    let mut linked = Run::new("ord-floor-linked");
+    linked.choose(
+        vec![part("q1", handed_on_route("q1", "ledger"))],
+        Some("ord-floor-rule-failed"),
+    );
+    assert_eq!(
+        handed_on_route_starts_where_value_sits(&failed, linked.order()),
+        Ok(())
+    );
+}
+
 /// An order whose exchange is in flight when its part is declared stuck over time.
 fn stuck_in_flight(order: &str) -> Run {
     let mut run = Run::opened(order);

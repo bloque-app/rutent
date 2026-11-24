@@ -991,3 +991,10 @@
   valid fixtures and a summary's, and three invalid ones, the Rust types refusing all three. Twenty-eight schemas, 163
   valid fixtures and 171 invalid ones. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version
   moves. (DEC-4, DEC-20, T-020-41)
+- Folded into 1.0.0 before its release: a linked order starts once (`T-020-44`, M3's milestone review). The log held one
+  start per record (`one-start-per-holding-record`), not one per linked order, so a second, different holding record
+  of the same order was admitted. A new row, `one-start-per-linked-order`, refuses a `holding_withdrawal` of an order
+  when another of that order cites a record of another transaction; the same record again stays the first row's and a
+  retry. Admitted: the same start again. Refused: a second record of another transaction for ord-2. Two admission
+  cases. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version moves. (DEC-4, DEC-20,
+  REQ-ORD-40, INV-5, INV-4, T-020-44)

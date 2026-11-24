@@ -135,6 +135,13 @@ pub enum HandOnError {
     /// The linked order is taken already: Core follows it, the log holds its `route_chosen` or a `handed_on` naming
     /// it, or another hand-on pending here names it. An order is opened once (`order-is-opened-once`).
     AlreadyOpened,
+    /// A hand-on of this part is pending, built for another linked order (`pending`): a retry names that one. The
+    /// first order's `handed_on` may be in the log already, so what was built is never recorded under another's id
+    /// (`INV-4`); nothing was recorded.
+    PendingForAnother {
+        /// The linked order the pending hand-on was built for.
+        pending: Id,
+    },
     /// The log refused the linked order's `route_chosen` outright after the first order's `handed_on` went in: the
     /// refusal is recorded as the linked order's, so the part isn't left handed on to an order that silently never
     /// opened. The state machine has no input that takes a hand-on back: an item for the contract's author.
@@ -475,7 +482,19 @@ pub struct HandOn {
     starts: BTreeMap<String, KeptStart>,
     /// The holding accounts' records spent, by provider and reference, with the linked order each proved.
     spent: BTreeMap<(String, String), String>,
+    /// The starts the log took, by linked order: a linked order has one start, so a second, different record or
+    /// statement is refused, and the same entry again is answered with its receipt.
+    started: BTreeMap<String, Started>,
     linked: BTreeMap<String, Linked>,
+}
+
+/// A linked order's start as the log took it.
+#[derive(Debug, Clone)]
+struct Started {
+    record: WithdrawalRecord,
+    statement: Receipt,
+    publisher: Option<Id>,
+    receipt: Receipt,
 }
 
 impl HandOn {
@@ -742,6 +761,15 @@ impl HandOn {
         {
             self.hand_ons.remove(&at);
             return Err(taken);
+        }
+        // A hand-on pending was built for one linked order, its `handed_on` perhaps in the log already: a retry names
+        // that one. It is never recorded under another's id (`INV-4`); the caller isn't told another was handed on.
+        let pending = self.hand_ons.get(&at).ok_or(HandOnError::Unknown)?;
+        if pending.route_chosen.1.subject.order.as_str() != handing.linked.as_str() {
+            return Err(HandOnError::PendingForAnother {
+                pending: Id::new(pending.route_chosen.1.subject.order.as_str())
+                    .ok_or(HandOnError::Id("a linked order"))?,
+            });
         }
         let pending = self.hand_ons.get_mut(&at).ok_or(HandOnError::Unknown)?;
         // The first order's record first: the linked order's points back to it (`handed-on-route-points-back`).
@@ -1028,6 +1056,17 @@ impl HandOn {
         start: Start<'_>,
     ) -> Result<Receipt, HandOnError> {
         let (linked, record) = (start.linked, start.record);
+        // A linked order has one start: the entry the log took, retried, is answered with its receipt; another
+        // record or statement of it is refused, nothing recorded (`one-start-per-linked-order`).
+        if let Some(taken) = self.started.get(linked.as_str()) {
+            if &taken.record == record
+                && &taken.statement == start.statement
+                && taken.publisher.as_ref() == start.publisher
+            {
+                return Ok(taken.receipt.clone());
+            }
+            return Err(HandOnError::Unproven(Unproven::AlreadyStarted));
+        }
         // A start built and not yet taken is appended as built.
         if let Some(kept) = self.starts.get_mut(linked.as_str()) {
             if &kept.record != record
@@ -1036,7 +1075,20 @@ impl HandOn {
             {
                 return Err(HandOnError::Unproven(Unproven::AnotherStart));
             }
-            return Self::record_start(parts, &mut kept.step, linked);
+            let receipt = Self::record_start(parts, &mut kept.step, linked)?;
+            let kept = self.starts.remove(linked.as_str());
+            if let Some(kept) = kept {
+                self.started.insert(
+                    linked.as_str().to_owned(),
+                    Started {
+                        record: kept.record,
+                        statement: kept.statement,
+                        publisher: kept.publisher,
+                        receipt: receipt.clone(),
+                    },
+                );
+            }
+            return Ok(receipt);
         }
         let held = self
             .linked
@@ -1074,8 +1126,17 @@ impl HandOn {
         )?;
         let taken = Self::record_start(parts, &mut step, linked);
         match &taken {
-            Ok(_) => {
+            Ok(receipt) => {
                 self.spent.insert(spent, linked.as_str().to_owned());
+                self.started.insert(
+                    linked.as_str().to_owned(),
+                    Started {
+                        record: record.clone(),
+                        statement: start.statement.clone(),
+                        publisher: start.publisher.cloned(),
+                        receipt: receipt.clone(),
+                    },
+                );
             }
             Err(HandOnError::Append(AppendFailure::Unavailable)) => {
                 self.spent.insert(spent, linked.as_str().to_owned());

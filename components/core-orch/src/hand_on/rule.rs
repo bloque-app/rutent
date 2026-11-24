@@ -66,6 +66,9 @@ pub enum Unproven {
     /// A start built from another record, or another statement of it, is kept for this linked order: a retry passes
     /// what the start was built from, or is refused.
     AnotherStart,
+    /// The linked order's start is proven already, by another record or another statement of it: the log holds one
+    /// start per linked order, and a retry passes the very record and statement that proved it.
+    AlreadyStarted,
 }
 
 /// Whether `part`'s value sits where a failed final deposit left it: the part's last segment is a deposit that
