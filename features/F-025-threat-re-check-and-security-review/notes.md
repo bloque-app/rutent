@@ -890,3 +890,238 @@ builds its own release provider instead (`jail_layers.rs:380-402`), as `F-024`'s
 - **`thr3-backdated-after-revocation`:** the `THR-3` residual this row recorded becomes `T-022-09`.
 - **`T-025-05` runs again** in wave 36, over what the answers' rows change on `DEC-20`'s paths, against the commit
   of its first review.
+
+## T-025-05, second pass (2026-11-24)
+
+The second pass the row asks for, over what the owner's answers of 2026-11-18 changed on `DEC-20`'s paths, by a
+reviewer that wrote none of it and none of the first pass. Branch `f-025/t-025-05-second-pass`, cut from `m3` at
+`2caa6f55` (waves 33 to 35 merged: `T-020-39` to `T-020-43`, `T-021-11` to `T-021-13`, `T-022-09`, `T-022-10`,
+`T-024-20`). The diff is `e63afbeb..2caa6f55`: `e63afbeb` is the first pass's tip on `m3` (it holds `0e3f68db`, the
+commit the first pass read, and the `T-024-19` addendum). The rows' reviews and fix rounds are on pull requests #243 and
+#256 to #264, and their notes in `F-020`, `F-021`, `F-022` and `F-024`. **Docs only: no code, test, contract or
+decision changes; `PLAN.md`, `ARCHITECTURE.md` and `SPEC.md` are not edited** (the row records the pass's verdicts
+here, and names nothing for `PLAN.md` to record).
+
+**The paths.** `DEC-20`'s prefixes, as in the first pass: 92 paths, 33 of them code, schemas, docs and tests, and 59 new
+contract fixtures. Each is in `t-025-05-paths.md`, section "Second pass", with its verdict. No workflow,
+`components/prov/`, `tools/boundary-check/`, `tools/contract-guard/`, `tools/licence-check/` or `licences/` path changed,
+so no `M3` workflow edit is new since the first pass. `conformance/evidence/v0-scope` changed by one line, `REQ-CAT-5`.
+
+**How far it was read.** Read whole: the contract round's Rust (`attribution.rs`, `calls.rs`, `check.rs`, `types.rs`, the
+`relations.rs` hunks, `provider_role/types.rs` and `validate.rs`, `router_api/check.rs`), `core-audit`'s `log/keys.rs`
+and `receipts/store.rs` hunks, `core-authz`'s `roles/mod.rs`, `funds/mod.rs`, `engine/mod.rs` and `entry_points.rs`
+hunks, the scope file's line. Read on the orchestration side, outside `DEC-20`, for the areas the brief names:
+`stuck/party.rs` whole, `stuck/mod.rs`'s hunks, `segments/roll_back.rs` whole and `Segments::promote`, `erasure.rs`,
+`arrival/filing.rs`'s hunks, the notice hunks (`notice/mod.rs`, `inbox.rs`, `summary.rs`), and the assembly's wiring
+(`assembly/erasure.rs`, `releases.rs`, `mod.rs`, `policy.rs`'s `kept`). Read by name and purpose: the test files, the
+contract tests, the changelogs and the README's tables. Fixtures: all 59 are new (`A`), grouped by row, searched for key
+material (none: the keys in them are the suites' fixed public test keys), and taken as `contracts/tests/` reads them.
+
+### Named tests and probes, at `2caa6f55`
+
+Run through the lock on the reference host (arm64 macOS), each under a 1500 s alarm; the tree restored after the probe.
+
+| Test | Crate, binary | Result |
+|---|---|---|
+| `every value moving action is refused when policy denies` [`REQ-AUZ-1`] (17 actions now, roll back among them) | `rutent-core-authz --lib` | 1 passed |
+| `rewrite with full operator access is detected by the checker` [`REQ-AUD-9`] | `rutent-core-audit --test checkpoints` | 1 passed |
+| `statement signed by a key not current at its making is refused before the record` [`THR-3`] | `rutent-core-orch --test snapshot_statements` | 1 passed |
+| `no_public_entry_point_of_core_reaches_an_effect_without_a_decision`, `staging_is_rolled_back_only_on_a_permitted_decisions_effect` | `rutent-core-authz --lib` | 2 passed |
+| `T-022-09`'s five key tests (refused after, attributed before, made again, another grant stands, ties) | `rutent-core-audit --test log` | 5 passed |
+| `T-022-10`'s four store tests and `the_override_is_read_from_the_permitting_decision` | `rutent-core-audit --test receipts`, `--lib` | 5 passed |
+| `stuck::party`'s four tests (the walk over every admission case among them) | `rutent-core-orch --lib` | 4 passed |
+| `roll_back`'s five seam tests; `erasure`'s nine (`T-020-37`'s and `T-020-42`'s) | `rutent-core-orch --test roll_back`, `--test erasure` | 14 passed |
+
+Probe (L5, written for this pass, not committed): with a grant's `revoke_grant` effect appended and its `done` result
+not yet, a statement made before the revocation and received ten seconds after the effect's time is attributed
+`verified`; the same statement appended after the `done` result is not (`PROBE between=true after=false`).
+
+No finding is high or critical, so no new test is owed by `DEC-20`'s rule for this pass.
+
+### Findings
+
+None high or critical, none medium. Numbered on from the first pass. Each is routed to its owning feature; none is
+fixed here.
+
+| # | Severity | Area | Where | Scenario | Owner, item |
+|---|---|---|---|---|---|
+| L5 | Low | The received-time hold (`T-022-09`), between a revocation's effect and its result | `components/core-audit/src/log/keys.rs:323-360` (the register takes a grant or revocation only from its `done` result), `:459-489`; `contracts/src/core_internal/attribution.rs:151-161`, `:309` (the contract reads only changes "this log holds done") | A `revoke_grant` is admitted as an effect (dated within the skew), carried out on the catalogue, and only then resulted. A statement the log appends in between, made inside the grant's window and received after the effect's time, is attributed `verified`, and stays so on the opening and for an outside checker, both reading the history as it stood (probe above). The window is the time between the effect and its `done` result: within one call in the assembly, longer where the result's append is unavailable and retried. Orchestration's catalogue check doesn't close it: it reads the key at `made_at`, as the first pass recorded | `F-022` with a `core-internal` item: count a revocation from its admitted effect until a `failed` result undoes it, or hold the maker's statements unavailable while a `revoke_grant` of it has no result. `M4`, before an outside provider is granted |
+| L6 | Low | The roll-back seam (`T-021-12`'s review low), and `promote` beside it | `components/core-orch/src/segments/roll_back.rs:134-148`, `:76-84`; `components/core-orch/src/segments/mod.rs:2789-2803` | `Segments::roll_back`, as `promote`, reads the staging before it asks policy: a caller policy would refuse learns that nothing is staged, or, through `NotTheStagedVersion { staged }`, the version staged, and its attempt leaves no decision in the log, where a refusal policy gives would be recorded, so such a probe goes unrecorded. The staged version is in the log already, for a checker, and the callers are the operator's logins through the assembly, so it discloses little | `F-020` (the seam) with `F-021`: ask policy first and check the staging after the permit, as `carry_out_roll_back` does again before the platform, with one answer for "nothing to do" and "not permitted". `M4`, or `M3` at the lead's call; it changes no contract |
+| L7 | Low | `REQ-QTE-10` for an automatic deposit (`T-020-41`) | `components/core-orch/src/arrival/filing.rs:900`, `:782-790`; `contracts/src/core_internal/relations.rs:3665` (`acceptance-is-of-the-quote-shown` cites only an acceptance given in a session) | The rule that a route with no firm rate starts only on its customer's acceptance is orchestration's (`asks_the_customer`). The log admits an `automatic_deposit` acceptance of a quote it shows `quote_without_firm_rate`, or with `awaiting`, as of any quote, so a filing that skipped the wait would start a slow route on the deposit alone. Defence in depth: as built, orchestration holds it, and its tests pin it | `F-020`, an item for the next `core-internal` round: an `automatic_deposit` acceptance's quote is no `shown` without a firm rate (a row, or a field of `automatic-deposit-rests-on-its-arrival`). `M4` |
+
+Informational, no severity: `carry_out_roll_back` (`segments/roll_back.rs:103`) is `pub` and ends a staging on any
+`Effect` it is handed, which anyone can build; the scan holds it to an `Effect` by name only. It is the shape of the
+`Modules` port (`promote`, `carry_out`), and only the assembly reaches `core-orch` (`tools/boundary-check`), which holds
+the platform directly anyway. `F-020` may narrow it to the crate when its tests move inside.
+
+### The areas the brief names, with their verdicts
+
+- **The contract round (`T-020-39`).** Sound.
+  - *The party rule for a stuck order's evidence* (`relations.rs:5494`, `linked_orders`; `:5563`, `party_to_the_order`):
+    a maker is a party where a route the log gave the order, or an order a hand-on joins it to, has a segment of its
+    provider; where a move or a resolution of the order went to it; where it is an arrival's reserve, a permitted decide
+    step's mover or a holding withdrawal's holder; or where its party is a holding withdrawal's publisher or the
+    publisher a replay or evidence of the order binds a crossed node to. The review's two should-fixes hold: no holding
+    check names a party, and a refused decide step names no one and joins no orders. It reads only what the log
+    admitted under its own rows. Residual R-MOVER below (a permitted decide's mover is a party whoever it is).
+  - *The erasure override* (`relations.rs:212`, `overrides_citations`; `:3586`): read from the permitting decision's own
+    action, by the effect's permit receipt, never from the effect's word, and, for the `erasure` record, through a
+    `done` erase effect of its commitment. A permitting decision is itself held to the effect's action
+    (`effect-permits-a-decided-action`), so an effect can't add the flag. The log lifts every citation under an
+    override, the store only those before the decision (below).
+  - *`given_on_deposit`* (`check.rs:452-468`; `types.rs`, `on_a_deposit`, `in_a_session`): no yes, a session; it rests on
+    the deposit's arrival at its origin reserve, and, as `given` does, on a `shown` of its quote and on a session the
+    log opened for the requester, still open. Low L7 for what the log doesn't hold.
+  - *Batched payouts* (provider-role 3.1.0, router-api 4.0.0): only a deposit tuple declares `payouts`, absent reads per
+    order; the candidate's half bounds the named operation (`router_api/check.rs:297`) before the record's half indexes it
+    (`:1572`). A reserve that declares falsely harms only its own orders, which wait (`movement-evidences-one-segment`).
+  - *Revocation at receipt* (`attribution.rs:309`): every grant in force at `made_at`, by each grant's last change at or
+    before it, the later effect on a tie, revoked after `made_at` and no later than `received`; false where none was in
+    force. The register's reading (`keys.rs:475`) agrees on the cases and is a port, not a call: no test runs the
+    contract's function against the register over the attribution fixtures (an `F-022` gap to note, no finding).
+  - *The waiting notice's shapes* (`types.rs`, `Awaiting`, `SlowSegment`, `NoticeOf::Waiting`): the requester, a
+    validity and slow places, no provider, amount or account (`REQ-AUZ-7`); checked for shape alone (`check.rs:599`).
+    Residual R-AWAITING.
+- **Core's party check port (`stuck/party.rs`, `T-020-40`).** Sound. It is the contract's rule ported line for line,
+  and held to it by a walk over every admission case that cites stuck evidence, both ways (admitted: each cited maker a
+  party; refused on `party`: one not), with floors on the counts. It requires the attribution `verified`, which the
+  contract leaves to other fields, so it is the stricter. A confirmation or decline on the reporter's own party is
+  refused (`from_a_party`, `stuck/mod.rs:2842`). The history is the caller's word (`decide` and the seven others take
+  it), which the assembly gives from the log; a forged one would only pass to the log, which refuses it.
+  `digests_from_a_party` fails open on a digest the history holds no statement for (owed item, below).
+- **The received-time hold in core-audit (`T-022-09`).** Sound with two residual windows. A stated entry whose maker
+  has a revocation dated after its `received_at` must have that time within the skew of the log's clock
+  (`keys.rs:401-409`); later it is unavailable, and a retry must carry the new time, which attributes it to no one.
+  Elsewhere `received_at` stays the writer's word, where it decides nothing. Left: the skew window (owed item, below)
+  and the effect-to-result window (L5).
+- **The erasure override end to end (`T-020-42`, `T-021-13`, `T-022-10`).** Sound. Policy permits an override only to
+  an operator's login listed for both `EraseStatement` and `EraseOverridingCitations`, no other role and never Core's
+  own actors (`roles/mod.rs:216`). Orchestration sets the flag only on the operator's call
+  (`erase_statement_overriding`), looks before the decision and again after the effect, the second time refusing a
+  citation made after the decision (`erasable_overriding_since`, `store.rs:726`). The store reads the override from the
+  permitting decision (`store.rs:797`), keeps every other rule (kept, named by a stated entry, never an advertisement),
+  and reports a citation made after the decision as `ERASED_YET_CITED` (`cited`, `store.rs:574`). The assembly's
+  operator holds the override's permission in no scenario that doesn't grant it. Residual R-OVERRIDE.
+- **The roll-back seam and its operator wiring (`T-021-12`, `T-020-42`).** Sound, with low L6. Policy decides
+  `CatalogueChange::RollBack` under `Change(RollBack)` alone (17 decided actions; `each permission alone` over it); Core
+  appends the effect on the permit before the platform is called and its result after; `carry_out_roll_back` acts only
+  on a `roll_back` effect naming the version staged at that moment; the scan lists `roll_back` as carrying out
+  (`entry_points.rs:84`) and its completeness check would catch a new unlisted platform method. The assembly's
+  `Core::roll_back_as` is the only caller, and the operator's login holds `Change(RollBack)` there; a deployment's
+  register must list it (`T-021-12`'s gap 2, configuration).
+- **The origin held by policy (`T-021-11`).** Sound. `origin_in_force` keeps the first account named, and a part none
+  named yet may have one named once, by the payer (`funds/mod.rs:310`, `:472`); restating the account in force still
+  passes; the payer check and the account register (`Source::Account`) still guard the naming. Policy is narrower than
+  `core-internal`'s rule, so the two agree on every log policy wrote (`T-021-11`'s gap 1 is a log policy never wrote).
+  Orchestration never moves the origin (`hand_on/rule.rs`, `ChangesOrigin`).
+- **The new public entry points, and core-authz's scan.** Sound. New: `BoundStore::erasable_overriding` and
+  `erasable_overriding_since` (answers, no effect), `erase_statement_overriding`, `Segments::roll_back` and
+  `carry_out_roll_back`, `Arrivals::awaiting` and `accept` (the customer's acceptance asks policy for the customer's own
+  authorisation and records `given_on_deposit`), `Inbox::waiting_on`, the assembly's `roll_back_as`,
+  `erase_statement_overriding_as` and `rebound_store`, and `revoked_before_receipt` in the contract (a pure reading). Each
+  that carries out does so on a permit's effect; the scan's three rules pass at `2caa6f55`, its new test pins
+  `roll_back`'s listing and a planted bypass. Informational note on `carry_out_roll_back` above.
+- **`conformance/evidence/v0-scope`'s `REQ-CAT-5` row**, against the first pass's commit. Sound. The row moves from
+  `partly | form:cat5-timing-residual` to `m3`, citing the owner's acceptance of 2026-11-18 and `SPEC.md` 0.4.2's
+  accepted limit of `THR-47`, which is in `SPEC.md` (§8, `THR-47`'s row). No other line changed; one `strict:` line
+  (`strict: on`, set by `T-024-10`); no row is reclassified away from `m3`. The ratchet against `develop` still starts
+  once the file reaches `develop`.
+
+### The owed items
+
+- **`T-021-12`'s low, a refused caller tells "nothing staged" from "not permitted".** Confirmed, and wider: the version
+  staged is in the refusal, and the attempt goes unrecorded. Low L6.
+- **`T-020-40`'s fail-open digest** (on the form as `stuck-decision-digest-scope`, default accept). Accept for v0. In the
+  assembled Core it is closed by policy: every digest of a stuck decision must be one the store keeps
+  (`Source::Kept`, `Said::Yes`, else `missing_input`; `core-authz/src/stuck/mod.rs:223-230`), and the assembly answers
+  `Kept` only for a commitment a stated entry of the log holds (`assembly/policy.rs:301-318`). So every digest names a
+  logged statement, and orchestration then holds that statement to a verified party. The condition, for `F-030`: a
+  production assembly's `Source::Kept` reads the log's stated entries as the kit's does, or orchestration fails closed.
+- **`T-022-09`'s skew window.** Confirmed: within the skew (300 s by default) of the log's clock, orchestration can stamp
+  a statement received a few minutes before a revocation that recent, and it is attributed. It needs orchestration to
+  lie about `received_at`, which it writes for every statement; the revocation's own time is orchestration's within
+  the same skew. For a compromised key alone, the owner's case, the rule holds. Accept for v0 (form item below); the
+  narrowing for later is the log stamping `received_at` itself at the append.
+- **`T-020-41`'s two lows.** Not security findings. `wait_ended` has no summary in the log, so a restart with no
+  ledger sends it again; a receiver's inbox takes a repeat as `Repeat` (`inbox.rs`, by the entry's index). A `shown`
+  and its refusal in one unread batch send `wait_ended` with no waiting notice before it (`notice/mod.rs:403-420`): the
+  customer is told a wait ended that it was never told of, its own order, with no provider, amount or account. Accept
+  for v0; `F-023`/`F-020` may add the summary and order the two.
+- **`T-020-43`'s gap 4, a batching deposit in the middle of a route.** No security finding: it fails closed. The
+  middle deposit's movement evidences one segment (`movement-evidences-one-segment`), so a second order on it waits on
+  evidence and closes nothing wrongly; no value moves twice. A liveness question for the owner's scope (form item
+  below).
+
+### Residuals, after the second pass
+
+Only those the second pass changes or adds; every other residual of the first pass's table stands as recorded there
+(R-HANDLES, R-LABEL, R-PERSONAL and R-FUZZ still wait on the form; the rest as accepted or routed).
+
+| Id | Change | Residual now | Evidence | Owner | v0 |
+|---|---|---|---|---|---|
+| R-BACKDATE | **Narrowed by `T-022-09`**; the owner's item `thr3-backdated-after-revocation` answered ("F-022 row") | A statement received after the revocation of every grant that would attribute it is attributed to no one, whatever its `made_at`, a genuine late result too. Left: (a) the skew window, where orchestration stamps `received_at` just before a revocation of the last 300 s; (b) the window between a revocation's effect and its `done` result (L5). Closed against a compromised provider key with an honest orchestration, save (b) | `keys.rs:401-409`, `:475-489`; `attribution.rs:309`; `a_late_statement_dated_before_a_revocation_is_not_taken`; the L5 probe | `F-022` | (a) form (`thr3-skew-window`, default accept); (b) row (low), L5 |
+| R-FUTURE | Unchanged in substance | The log holds no stated entry's `made_at` to its clock. Its `received_at` is now held to the clock where a later revocation of its maker exists, and nowhere else | `keys.rs:401-409` | `F-022` | accepted (low) |
+| R-KEYS | Unchanged, re-confirmed | `T-022-09` adds no input to the register: grants and revocations are still taken from `done` results of effects the log admitted, and the statement's own two times | `keys.rs:323-360` | `F-022` | accepted |
+| R-HOLDER | Widened slightly | A `resolve_stuck` effect's mover is a party to the order for evidence whatever the effect's result, as is a permitted decide step's (`relations.rs:5596-5611`) | `party_to_the_order`, `stuck/party.rs` | `F-020` | accepted |
+| R-MOVER | New | A stuck decide step's mover (`resolution.by`) is a party to the order once policy permits the step, and policy doesn't hold the mover to the order (`core-authz/src/stuck/mod.rs`: only that the decider isn't it or its chain). So the operator's decider can make an outside provider's word evidence for a later report or confirmation. Bounded: the decider is the operator's, holding `DecideStuck`; the confirmer is another actor, not the customer, and not of the reporter's party | `relations.rs:5596-5611`, `stuck/party.rs` | `F-021` (policy may hold `by` to a holder the order involves) | accepted (`R119`, operator) |
+| R-OVERRIDE | New | An operator's login holding both `EraseStatement` and `EraseOverridingCitations` erases the bytes of a statement a value-moving decision rested on; the commitment and the citing entries stay and the history checks, but the decision's basis can't be re-verified after. The log lifts every citation under an override; the store lifts those before the decision and reports one made after as `ERASED_YET_CITED`, which orchestration's look after the effect refuses first (a citation landing after that look is erased and reported, not prevented) | `relations.rs:3586`, `store.rs:574`, `:726`, `:797`; `roles/mod.rs:216` | `F-021` (the register's lists) | accepted (the owner's ruling `erasure-of-cited-evidence`, `REQ-AUD-13`) |
+| R-AWAITING | New | `shown.awaiting` is checked for its shape alone: the log binds neither its requester to the arrival's holder nor its slow places to the quote. Orchestration fills it from the filing it held to the arrival, and a wrong requester would send another party a waiting notice (order, quote digest, validity, slow places; no provider, amount or account) | `check.rs:599`, `filing.rs:924-930`, `notice/mod.rs:403` | `F-020`, a `core-internal` item | accepted (low) |
+| R-DIGEST | New (`T-020-40`'s item) | Orchestration lets a stuck decision's digest that names no logged statement pass; policy's `Kept` closes it where the assembly answers it from the log | `stuck/mod.rs:2866`, `core-authz/src/stuck/mod.rs:223-230`, `assembly/policy.rs:301-318` | `F-020`; `F-030` for the production assembly | form (`stuck-decision-digest-scope`, accept) |
+| R-MIDDLE | New (`T-020-43`'s gap 4) | A route through a batching reserve's deposit mid-route isn't dropped; a second order on its shared movement waits | `F-020`'s notes, `T-020-43` | `F-020` | form (scope, below); fails closed |
+
+Restated, not new: R-NODE (a private node crossed with no replay or evidence binds no publisher, so its publisher's word
+is refused: `T-020-40`'s gap 1, failing closed); R-REOPEN (an override is one more decided path a forger with full access
+to the log's file would have to write); `cat5-timing-residual` is now accepted for v0 (`SPEC.md` 0.4.2, `THR-47`).
+
+### Items for `M4`, with owners
+
+| Item | Owner | From |
+|---|---|---|
+| A revocation counts from its admitted effect, or the maker's statements wait while a `revoke_grant` of it has no result | `F-022`, with a `core-internal` item | L5 |
+| `promote` and `roll_back` ask policy before they read the staging, one answer for nothing to do and not permitted | `F-020` with `F-021` (`M3` at the lead's call) | L6 |
+| The log refuses an `automatic_deposit` acceptance of a quote shown without a firm rate | `F-020`, next `core-internal` round | L7 |
+| The production assembly answers `Source::Kept` from the log's stated entries, or orchestration's digest check fails closed | `F-030` | R-DIGEST |
+| The log stamps a statement's `received_at` at the append (where the owner wants the skew window closed) | `F-022` | R-BACKDATE (a) |
+| Policy holds a stuck decide step's mover to a holder the order involves | `F-021` | R-MOVER |
+| `shown.awaiting`'s requester held to the arrival's holder | `F-020`, a `core-internal` item | R-AWAITING |
+| `wait_ended` summarised in the log; a waiting notice sent before its end in one batch | `F-023` with `F-020` | `T-020-41`'s lows |
+| A test running the contract's `revoked_before_receipt` against the register over the attribution fixtures | `F-022` | the port's drift |
+| `carry_out_roll_back` narrowed to the crate | `F-020` | informational |
+
+### For the owner's form
+
+- **`thr3-skew-window`** (group: authority and evidence). Within the log's clock skew (300 s), orchestration can stamp
+  a statement as received just before a revocation that recent, and it is attributed. Options: (a) accept for v0;
+  (b) an `M4` row: the log stamps `received_at` itself at the append; (c) now: hold every stated entry's `received_at` to
+  the clock (six checkpoint test worlds need rewriting); Other (in notes). **Recommendation: (a), with (b) for `M4`.** It
+  needs orchestration to lie, and orchestration writes the revocation's time within the same skew.
+- **`stuck-decision-digest-scope`** (on the form already). The reviewer's verdict: accept for v0, as the default says,
+  on the condition that a production assembly answers `Source::Kept` from the log's stated entries (`F-030`).
+- **`batching-middle-deposit`** (group: deposits). Is a deposit at a batching reserve in the middle of a route in the
+  scope of the ruling `shared-movement-reading`? Options: (a) out of scope for v0: it fails closed, the second order
+  waiting on evidence; (b) the router drops such routes too, and Core's guard refuses them (an `F-020` row); Other (in
+  notes). **Recommendation: (a).** No value moves wrongly either way.
+
+### Verdict for `M3`'s exit
+
+No high or critical finding is open, from either pass; the second pass adds three lows and one informational note, each
+routed. From this review's side `M3` may exit. What the exit still needs is `T-024-10`'s strict run at the tip (CI at
+`2caa6f55` was pending when this pass started) and the owner's `DEC-20` click at the release into `main`, which this
+record is the security review for.
+
+### Defaults taken
+
+- **The base** is `e63afbeb`, the first pass's tip on `m3`, as the brief gives it; the row says "against the commit of
+  its first review" (`0e3f68db`). Between the two, `e63afbeb`'s own `DEC-20` paths are `T-024-19`'s `ci.yml` line, which
+  the first pass's addendum reviewed, so nothing is left out. A reversible default.
+- **The residual table** is restated only where it changes, beside the first pass's, so the first record stays as it
+  was read.
+- **Severity by reach**, as in the first pass: L5 and L7 need orchestration to misbehave or a narrow timing, so they are
+  low and routed to `M4`.
+
+### Gaps
+
+- A reading at `2caa6f55`, the tests above and one probe; CI at that commit was pending. The orchestration side
+  (`core-orch`, the assembly) was read for the areas named, not whole.
+- The contract's 59 new fixtures were read as data, not one by one; the walk in `stuck::party` and `contracts/tests/`
+  are their evidence.
