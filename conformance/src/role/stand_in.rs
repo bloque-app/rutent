@@ -548,6 +548,7 @@ impl Reserve {
                                 Reporting::Net,
                                 &["payer.bank_account"],
                             ),
+                            payouts: None,
                         },
                         ReserveTuple {
                             origin: NodeRef::Inner(ledger.to_owned()),
@@ -565,6 +566,7 @@ impl Reserve {
                                 Reporting::Net,
                                 &["beneficiary.bank_account"],
                             ),
+                            payouts: None,
                         },
                     ],
                     declaration: ReserveDeclaration {

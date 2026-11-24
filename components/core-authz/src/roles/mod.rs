@@ -162,6 +162,12 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 Action::PostRoute { .. } => {
                     operator_holds(caller, Permission::PostRoute).map(Needs::from)
                 }
+                // Rolling a staging back (`T-020-39`'s `roll_back`) is a permission of its own from `T-021-12`;
+                // until then no rule answers it, so policy refuses it whoever asks.
+                Action::ChangeCatalogue {
+                    change: CatalogueChange::RollBack,
+                    ..
+                } => None,
                 Action::ChangeCatalogue { change, .. } => {
                     operator_holds(caller, Permission::Change(*change)).map(Needs::from)
                 }

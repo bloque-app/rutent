@@ -205,6 +205,45 @@ fn erasing(entry: &VerifiedEntry) -> Option<&crate::module_interface::Digest> {
     }
 }
 
+/// Whether the erasure `entry` decides, carries out or records rests on a permitting decision whose action sets
+/// `overrides_citations` (`erasure-of-cited-evidence`, `T-020-39`): a decision's own action; an effect's permitting
+/// decision, by its permit's receipt, never the effect's own word; and an erasure record's, through the erase effect
+/// of its commitment that this log holds done.
+fn overrides_citations(entry: &VerifiedEntry, history: &History) -> bool {
+    let sets = |action: &Action| {
+        matches!(
+            action,
+            Action::EraseStatement {
+                overrides_citations: true,
+                ..
+            }
+        )
+    };
+    let decided = |permit: &Permit| {
+        entry_at(permit.receipt(), history)
+            .and_then(permitted)
+            .is_some_and(
+                |d| matches!(&d.what, What::Decide { request, .. } if sets(&request.action)),
+            )
+    };
+    match &entry.what {
+        What::Decide { request, .. } => sets(&request.action),
+        What::Effect {
+            action: Action::EraseStatement { .. },
+            decision,
+        } => decided(decision),
+        What::Erasure { evidence } => history.iter().any(|(_, e)| {
+            verified(e).is_some_and(|effect| {
+                matches!(&effect.what, What::Effect {
+                    action: Action::EraseStatement { commitment, .. },
+                    decision,
+                } if commitment == evidence && decided(decision) && result_done(effect, history))
+            })
+        }),
+        _ => false,
+    }
+}
+
 /// Whether `entry` is one that can rest on a statement: anything but the erasure's own path (its decision, effect
 /// and record) and a read of a statement or a permission over one, which rest on nothing they name.
 fn rests_on_statements(entry: &VerifiedEntry) -> bool {
@@ -912,7 +951,7 @@ pub static RELATIONS: [Relation; 109] = [
                     let part = part_of_segment(order.as_str(), segment.as_str(), h);
                     let first = first_segment_part(e, h).is_some();
                     let covered = first
-                        || *basis == AcceptanceBasis::AutomaticDeposit
+                        || basis.on_a_deposit()
                         || part.is_none_or(|p| yeses.iter().any(|y| y.part.as_str() == p));
                     judge(o == order, &[a == authorisation, covered])
                 }
@@ -929,11 +968,10 @@ pub static RELATIONS: [Relation; 109] = [
             "reserve",
             "an automatic deposit's arrival is at the acceptance's origin reserve",
         )],
+        // An automatic deposit's acceptance, and one its customer gave on the deposit for a route with no firm rate
+        // (`given_on_deposit`, `REQ-QTE-10`, `T-020-39`): each rests on the deposit, in place of a yes.
         cites: |e, _| match &e.what {
-            What::Acceptance {
-                basis: AcceptanceBasis::AutomaticDeposit,
-                ..
-            } => by_fields(0),
+            What::Acceptance { basis, .. } if basis.on_a_deposit() => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
@@ -1046,12 +1084,13 @@ pub static RELATIONS: [Relation; 109] = [
                 return Match::NotTarget;
             };
             match &t.what {
-                // An automatic deposit's order moves on no yes (`REQ-ORD-32`).
+                // An automatic deposit's order moves on no yes (`REQ-ORD-32`), nor one its customer accepted on the
+                // deposit (`REQ-QTE-10`): from its origin reserve, which holds the deposit.
                 What::Acceptance {
-                    order: o,
-                    basis: AcceptanceBasis::AutomaticDeposit,
-                    ..
-                } if o == order => judge(true, &[true, provider == origin_reserve]),
+                    order: o, basis, ..
+                } if o == order && basis.on_a_deposit() => {
+                    judge(true, &[true, provider == origin_reserve])
+                }
                 What::Acceptance {
                     order: o,
                     basis: AcceptanceBasis::Given,
@@ -1493,6 +1532,10 @@ pub static RELATIONS: [Relation; 109] = [
                 "made",
                 "an outcome's evidence was made no earlier than its move",
             ),
+            (
+                "party",
+                "an outcome's evidence is made by a party its order involves: a provider on any of its routes, a holder of a holding account its value rested at, or a publisher of a node it crossed",
+            ),
         ],
         cites: |e, _| match &e.what {
             What::ReportOutcome { request, .. } => alloc::vec![by_receipt(&request.evidence, 0)],
@@ -1535,6 +1578,12 @@ pub static RELATIONS: [Relation; 109] = [
             let made = moved
                 .and_then(verified)
                 .is_some_and(|m| s.when.at.unix_nanos() >= m.when.at.unix_nanos());
+            // Made by a party the moved order involves, never an outside provider's word (`confirmer-evidence-party`,
+            // `T-020-39`).
+            let party = moved
+                .and_then(verified)
+                .and_then(|m| moved_part(m, h))
+                .is_some_and(|(order, _)| party_to_the_order(s, order, h));
             judge(
                 true,
                 &[
@@ -1545,6 +1594,7 @@ pub static RELATIONS: [Relation; 109] = [
                     about,
                     after,
                     made,
+                    party,
                 ],
             )
         },
@@ -2134,7 +2184,7 @@ pub static RELATIONS: [Relation; 109] = [
                     // A given acceptance names a yes for each part of the plan, in its order, and no other; an
                     // automatic deposit's names none (`REQ-ORD-32`).
                     &[
-                        *basis == AcceptanceBasis::AutomaticDeposit
+                        basis.on_a_deposit()
                             || (yeses.len() == parts.len()
                                 && yeses
                                     .iter()
@@ -3154,6 +3204,10 @@ pub static RELATIONS: [Relation; 109] = [
                 "about",
                 "a stuck part's evidence rests on statements about its own part's resolution: its order and the transaction its resolve_stuck effect names, no segment",
             ),
+            (
+                "party",
+                "a stuck part's evidence rests on statements made by a party its order involves: a provider on any of its routes, a holder of a holding account its value rested at, or a publisher of a node it crossed",
+            ),
         ],
         // Its own part's, through the resolution's own transaction, as an outcome's evidence about a stuck
         // resolution is (`about_the_resolution`): a statement about another part's resolution of the order, or about
@@ -3187,6 +3241,8 @@ pub static RELATIONS: [Relation; 109] = [
                         resolutions
                             .iter()
                             .any(|(transaction, _)| about_the_resolution(s, order, transaction, h)),
+                        // Never an outside provider's word (`confirmer-evidence-party`, `T-020-39`).
+                        party_to_the_order(s, order, h),
                     ],
                 )
             }
@@ -3524,9 +3580,11 @@ pub static RELATIONS: [Relation; 109] = [
         fields: &[],
         // Refused while cited (the owner's default): its decision, its effect and its record, so the log holds no
         // done erasure the store must refuse, and no erase effect a citation made since its decision would block.
-        cites: |e, _| match erasing(e) {
-            Some(_) => by_fields(0),
-            None => none(),
+        // The operator's override is a decision of its own (`overrides_citations`, `T-020-39`): where the permitting
+        // decision's action sets it, the erasure goes ahead while cited, and the citing entries stay.
+        cites: |e, h| match erasing(e) {
+            Some(_) if !overrides_citations(e, h) => by_fields(0),
+            _ => none(),
         },
         answers: |e, _, t, h| match (erasing(e), verified(t)) {
             (Some(commitment), Some(t)) => judge(
@@ -3602,11 +3660,9 @@ pub static RELATIONS: [Relation; 109] = [
                 "an acceptance's quote was shown as a quote, not a price",
             ),
         ],
+        // Every acceptance its customer gave, on a deposit too (`REQ-QTE-10`): an automatic deposit is shown nothing.
         cites: |e, _| match &e.what {
-            What::Acceptance {
-                basis: AcceptanceBasis::Given,
-                ..
-            } => by_fields(0),
+            What::Acceptance { basis, .. } if basis.in_a_session() => by_fields(0),
             _ => none(),
         },
         answers: |e, _, t, _| {
@@ -4940,14 +4996,15 @@ fn resolved_to(
     from_origin.then_some(crate::state_machine::ResolvedTo::Origin)
 }
 
-/// Whether `order` was accepted on an automatic deposit in `history`.
+/// Whether `order` was accepted on an automatic deposit in `history`: the deposit's own acceptance, or its customer's
+/// on it (`given_on_deposit`, `T-020-39`).
 fn deposited(order: &str, history: &History) -> bool {
     history.iter().any(|(_, e)| {
         matches!(&verified(e).map(|v| &v.what), Some(What::Acceptance {
             order: o,
-            basis: AcceptanceBasis::AutomaticDeposit,
+            basis,
             ..
-        }) if o.as_str() == order)
+        }) if o.as_str() == order && basis.on_a_deposit())
     })
 }
 
@@ -5427,6 +5484,153 @@ fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &Stated
         }) => maker_provider(statement) == by,
         _ => true,
     }
+}
+
+/// The orders `order` is joined to by hand-ons in `history`, itself first: the orders it handed value on to and the
+/// ones it was handed on from, by the hand-on inputs, the stuck resolutions, the holding accounts' records and the
+/// routes handed on, each way, and theirs in turn (`T-020-39`).
+fn linked_orders<'a>(order: &'a str, history: &'a History) -> Vec<&'a str> {
+    let mut orders: Vec<&str> = alloc::vec![order];
+    // Each pair of orders a hand-on joins, read from what this log recorded.
+    let pairs: Vec<(&str, &str)> = history
+        .iter()
+        .filter_map(|(_, e)| verified(e))
+        .flat_map(|v| {
+            let mut out: Vec<(&str, &str)> = Vec::new();
+            if let Some(i) = input(v) {
+                match &i.observed {
+                    Observed::HandedOn { linked_order, .. } => {
+                        out.push((i.subject.order.as_str(), linked_order.as_str()))
+                    }
+                    Observed::RouteChosen {
+                        handed_on_from: Some(from),
+                        ..
+                    } => out.push((from.as_str(), i.subject.order.as_str())),
+                    _ => {}
+                }
+            }
+            match &v.what {
+                What::HoldingWithdrawal {
+                    order,
+                    handed_on_from,
+                    ..
+                } => out.push((handed_on_from.as_str(), order.as_str())),
+                What::Effect {
+                    action:
+                        Action::ResolveStuck {
+                            order,
+                            resolution: Resolution::HandOn { linked_order, .. },
+                            ..
+                        },
+                    ..
+                } => out.push((order.as_str(), linked_order.as_str())),
+                What::StuckDecide { request, .. } => {
+                    if let Resolution::HandOn { linked_order, .. } = &request.resolution {
+                        out.push((request.order.as_str(), linked_order.as_str()));
+                    }
+                }
+                _ => {}
+            }
+            out
+        })
+        .collect();
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (from, to) in &pairs {
+            for (a, b) in [(from, to), (to, from)] {
+                if orders.contains(a) && !orders.contains(b) {
+                    orders.push(b);
+                    grew = true;
+                }
+            }
+        }
+    }
+    orders
+}
+
+/// Whether `statement` is made by a party `order` involves (`confirmer-evidence-party`, `T-020-39`): its maker is a
+/// provider of a segment on any route this log gave the order or an order a hand-on joins it to, the first chosen,
+/// a recalculated or a changed destination's alike, or the one a move of its went to; or the holder of a holding
+/// account its value rested at (the reserve its value arrived at, a stuck resolution's mover, a holding account a
+/// check or a route handed on names); or the party it states for is the publisher of a private node one of those
+/// routes crossed, as this log binds the node to it (`private_node_of`). An outside provider's word, however
+/// verified, is no evidence about the order. No customer signs a statement.
+fn party_to_the_order(statement: &StatedEntry, order: &Id, history: &History) -> bool {
+    let maker = maker_provider(statement);
+    let party = &statement.attribution.maker().party;
+    let orders = linked_orders(order.as_str(), history);
+    let ours = |o: &Id| orders.contains(&o.as_str());
+    let mut nodes: Vec<&str> = Vec::new();
+    let involved = history.iter().filter_map(|(_, e)| verified(e)).any(|v| {
+        if let Some(i) = input(v).filter(|i| orders.contains(&i.subject.order.as_str())) {
+            let plan: Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+                Observed::RouteChosen { parts, .. } => {
+                    parts.iter().flat_map(|p| p.segments.iter()).collect()
+                }
+                Observed::RouteRecalculated { segments, .. }
+                | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+                _ => Vec::new(),
+            };
+            for s in &plan {
+                for end in [&s.from.node, &s.to.node] {
+                    if let crate::provider_role::NodeRef::Inner(node) = end {
+                        nodes.push(node.as_str());
+                    }
+                }
+            }
+            if plan.iter().any(|s| s.provider.as_str() == maker.as_str()) {
+                return true;
+            }
+        }
+        match &v.what {
+            What::Effect {
+                action: Action::MoveValue {
+                    order: o, provider, ..
+                },
+                ..
+            } => ours(o) && provider == maker,
+            What::Effect {
+                action:
+                    Action::ResolveStuck {
+                        order: o,
+                        resolution: Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. },
+                        ..
+                    },
+                ..
+            } => ours(o) && by == maker,
+            What::StuckDecide { request, .. } => {
+                ours(&request.order)
+                    && matches!(&request.resolution,
+                        Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } if by == maker)
+            }
+            What::Arrival {
+                reserve,
+                order: Some(o),
+                ..
+            } => ours(o) && reserve == maker,
+            What::HoldingCheck {
+                provider, orders: held, ..
+            } => provider == maker && held.iter().any(ours),
+            What::HoldingWithdrawal {
+                order: o,
+                handed_on_from,
+                holder,
+                publisher,
+                ..
+            } => {
+                (ours(o) || ours(handed_on_from))
+                    && (holder == maker || publisher.as_ref() == Some(party))
+            }
+            _ => false,
+        }
+    });
+    involved
+        || nodes.iter().any(|node| {
+            orders
+                .iter()
+                .any(|o| private_node_of(o, node, party, history))
+        })
 }
 
 /// The evidence an outcome's report, confirmation or decline cites, and what it is cited for.

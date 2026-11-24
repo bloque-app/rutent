@@ -68,3 +68,8 @@ directory (see `README.md`).
 - core-internal's round after `T-020-36`, folded into its unreleased 1.0.0 (`T-020-38`): each report of a pair names
   its own segment, the received one the route's next after the sent one, each by the provider the log moved its
   segment with. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-38)
+- The contract round for the owner's answers of 2026-11-18 (`T-020-39`): core-internal's roll back, a confirmer's
+  evidence from a party to the order, an erasure overriding its citations, an acceptance given on a deposit and the
+  rule on a statement received after its grants' revocation, folded into its unreleased 1.0.0; provider-role's
+  deposit payouts, folded into its unreleased 3.1.0; router-api's `batched_payout`, folded into its unreleased 4.0.0.
+  Each contract's changelog names the changes. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-39)

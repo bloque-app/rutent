@@ -452,7 +452,15 @@ impl What {
                 ..
             } => {
                 let given = *basis == AcceptanceBasis::Given;
-                if given != !yeses.is_empty() || given != session.is_some() {
+                // Given on a deposit (`REQ-QTE-10`, `T-020-39`): the customer's session, as given, and no yes, as an
+                // automatic deposit: it rests on the deposit's arrival.
+                if *basis == AcceptanceBasis::GivenOnDeposit {
+                    if !yeses.is_empty() || session.is_none() {
+                        return Err(Violation(
+                            "an acceptance given on a deposit names the session it was asked in and no reserve's yes",
+                        ));
+                    }
+                } else if given != !yeses.is_empty() || given != session.is_some() {
                     return Err(Violation(
                         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
                     ));

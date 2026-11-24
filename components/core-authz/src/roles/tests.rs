@@ -438,6 +438,8 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             | CatalogueChange::WithdrawRelease
             | CatalogueChange::SetSlippage
             | CatalogueChange::Promote => {}
+            // Not listed above: no rule answers it until `T-021-12` gives it its own permission, which lists it.
+            CatalogueChange::RollBack => unreachable!("not listed until T-021-12"),
         }
         let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
         request.request = id(&format!("req-{change:?}").to_lowercase());
@@ -1725,4 +1727,59 @@ fn caller_without_the_erase_permission_is_refused() {
             "{permission:?}"
         );
     }
+}
+
+/// Rolling a release's staging back, core-internal's `roll_back` (`T-020-39`), is refused while no rule answers it:
+/// whoever asks, an operator's login holding every permission there is, the change's own among them, or Core's own
+/// actor, the fixed rule finds no rule for it and refuses before the deployment's policy is asked, and the log takes
+/// no effect on it. `T-021-12` gives it a permission of its own (`REQ-AUZ-1`, ADR-0014).
+// verifies: REQ-AUZ-1
+#[test]
+fn roll_back_is_refused_while_no_rule_answers_it() {
+    let rolled_back = |caller: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-roll-back-a-staged-release");
+        request.request = id(&format!("req-roll-back-{}", caller.acts.as_str()));
+        request.caller = caller.clone();
+        request
+    };
+    let mut every: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every.push(Permission::Change(CatalogueChange::RollBack));
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every).and_holding(&core(), &every),
+    );
+    for caller in [operator(), core()] {
+        let asked = rolled_back(&caller);
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{caller:?}");
+        assert!(decision.permit().is_none());
+        let entry = policy.log().entry_of(&decision).clone();
+        assert!(
+            matches!(&entry.what, What::Decide { request, .. } if request == &asked),
+            "recorded with its action"
+        );
+        assert_eq!(
+            policy.log.effect(&asked, forged(&decision)),
+            no_permitting_decision(),
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+    // The promotion it stands beside is still answered by its own permission.
+    let promote = Permission::Change(CatalogueChange::Promote);
+    let (_, promoted) = every_permission(&operator())
+        .into_iter()
+        .find(|(p, _)| *p == promote)
+        .unwrap();
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[promote]),
+    );
+    assert_eq!(policy.decide(&promoted).unwrap().outcome, Answer::Permit {});
 }

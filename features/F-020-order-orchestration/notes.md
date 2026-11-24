@@ -5862,3 +5862,170 @@ together as: in v0 the origin stays as the first authorisation set it. Read agai
   judgement left: the operator bears it, then recovers under contract, the reliance record (`T-020-23`) naming the
   judge and the provider that relied on it. From whom it recovers is not decided: form item
   `false-judgement-recovery`.
+
+## T-020-39: the contract round for the owner's answers of 2026-11-18
+
+Branch `f-020/t-020-39-contract-round-1118`, from `m3` at `391f92c4`. Edits `contracts/` (core-internal,
+provider-role, router-api) and `components/core-authz/` and `components/core-audit/` (`DEC-20` paths: they wait for
+the owner's click at the release into `main`), and the consumer files below.
+
+- **Versioning: folded, no bump.** core-internal 1.0.0 isn't on `develop`; provider-role's 3.1.0 and router-api's
+  4.0.0 are unreleased (`develop` holds 3.0.0 of each). Each changelog's entry names its items; `contracts/CHANGELOG.md`
+  takes a line.
+- **Item by item.**
+  1. `rollback-permission`: `CatalogueChange::RollBack` (`roll_back`), about one release (`is_about_a_release`), naming
+     the staged version it ends. `core-authz`'s `roles/mod.rs` answers it with no rule (`None`), so the fixed rule
+     refuses it whoever asks, before the deployment's policy, until `T-021-12`. In `engine/mod.rs`'s
+     `every_decided_action` and `roles/tests.rs`'s `every_permission` it sits in the match as `unreachable!`, not in
+     the arrays, so their counts stay; `T-021-12` lists it and moves them by one.
+  2. `confirmer-evidence-party`: `outcome-confirmation-cites-verified-evidence` (a report's, confirmation's and
+     decline's evidence) and `part-evidence-rests-on-statements` gain a field `party`, read by `party_to_the_order`:
+     the statement's maker is a provider of a segment on any plan this log holds for the order or an order a hand-on
+     joins it to (`route_chosen`, `route_recalculated`, `destination_changed`; `linked_orders` closes over hand-on
+     inputs, `resolve_stuck` hand-ons and their decide steps, holding withdrawals and routes handed on, both ways), or
+     the provider a `move_value` of those orders went to; a holder of a holding account its value rested at (the
+     reserve of an `arrival` of the order, a stuck resolution's `by`, a `holding_check`'s provider, a
+     `holding_withdrawal`'s holder); or it states for the publisher of a private node those plans cross, as
+     `private_node_of` binds it, or the publisher a `holding_withdrawal` names.
+  3. `erasure-of-cited-evidence`: `Action::EraseStatement.overrides_citations: bool`, `#[serde(default)]` and skipped
+     when false, so every earlier request, entry and digest reads and writes as before. The schema's property is a
+     boolean. `erasure-waits-while-anything-rests-on-the-statement` cites nothing where `overrides_citations` (the
+     helper) holds: a decide entry's own action, an effect's permitting decision through its permit's receipt (never
+     the effect's own word), an erasure record's through an erase effect of its commitment this log holds `done`,
+     whose decision sets it. `nothing-cites-an-erased-statement` is unchanged: once erased, nothing new cites it.
+  4. `deposit-no-firm-rate`: `AcceptanceBasis::GivenOnDeposit` (`given_on_deposit`), with `on_a_deposit()` and
+     `in_a_session()`. Its check: a session, no yes (its own message). The deposit rows read `on_a_deposit`
+     (`automatic-deposit-rests-on-its-arrival`, `move-rests-on-its-orders-acceptance`, `first-move-rests-on-its-parts-yes`,
+     `chosen-route-rests-on-its-orders-acceptance`, `deposited` for `split-deposit-arrival-names-its-part`); the quote
+     row reads `in_a_session` (`acceptance-is-of-the-quote-shown`), and the session row already cites any session.
+  5. `shared-movement-reading`, provider-role: `ReserveTuple.payouts: Option<Payouts {PerOrder, Batched}>`,
+     `ReserveTuple::payouts()` reading absent as per order; `RuleViolation::PayoutsOnAWithdrawal` in `validate`
+     (the schema states the enum, the Rust validation the direction, as for a ramp within one node).
+  6. router-api: `DropReason::BatchedPayout {part, operation}`; `Candidate::check` holds it to the part's last
+     operation, the record's check to a deposit tuple of the snapshot whose `payouts()` is batched. The snapshot's
+     `reserve_tuple` figure is provider-role's shape by reference, so it carries `payouts` with no field of
+     router-api's own.
+  7. `thr3-backdated-after-revocation`: `StatementKeys::signs_for(maker, key, at, received)`; `attribute`'s step 8
+     passes the entry's `received_at`. The rule is the contract's function `revoked_before_receipt(history, maker,
+     made_at, received)`: each grant (tuple or class) of the maker in force at `made_at`, by effect times of changes
+     held `done` as `classes_alone` reads them, revoked after `made_at` and no later than `received`. The trait's doc,
+     `calls.rs`'s sentence that called it a residual and the README's "Whose keys" state the rule.
+- **Differences from the row, reported.**
+  - The row's "and the decision's own" is read as `part-evidence-rests-on-statements`, the stuck resolution's own
+    evidence entry that `stuck_resolved` cites. `StuckDecide.evidence` is a list of digests no row holds to any
+    statement, so there was no row of the decide step's own to widen (gap 1).
+  - router-api's snapshot needed no field and `core-orch`'s `snapshot/` no edit: the tuple figure already is
+    provider-role's tuple, so `payouts` rides on it.
+  - No exhaustive match on drop reasons exists outside `contracts/` (`DropReason` is `#[non_exhaustive]`):
+    `intake/class.rs`, `arrival/filing.rs` and the router's are `matches!`, where `batched_payout` reads as "no route
+    right now", which is right for it; `rounds/`, `recalc/`, `components/router/` and the router suite hold none. No
+    edit there.
+  - No exhaustive match on `AcceptanceBasis` exists in `core-orch` or the assembly (only `==`), so none was edited.
+    `hand_on/rule.rs`'s `customers_own` and `hand-on-input-rests-on-the-linked-orders-acceptance`'s `given` still mean
+    `given` alone.
+  - No `ReserveTuple` literal exists in the guests; the workspace's are `conformance/src/role/stand_in.rs`'s two.
+  - The rule of item 7 is a contract function the key sources call, not a step `attribute` applies itself:
+    applied in `attribute`, `core-audit`'s `a_verifiers_class_grant_is_read_at_its_statements_own_time` ("its class,
+    made inside the window", received five seconds after the revocation, asserted verified) would go red at this
+    round's commit, which the row forbids. `core-audit`'s register ignores the new argument until `T-022-09` (gap 2).
+- **Consumer edits** (to compile, no behaviour changed): `overrides_citations: false` in
+  `components/core-orch/src/erasure.rs` and `conformance/scenarios/tests/authz_scenarios.rs`; `RollBack` in
+  `components/core-authz/src/engine/mod.rs` and `roles/tests.rs` (`unreachable!`) and `roles/mod.rs` (no rule);
+  `payouts: None` in `conformance/src/role/stand_in.rs`; `signs_for`'s fourth argument in
+  `components/core-audit/src/log/keys.rs` (ignored) and the fakes of `components/core-orch/tests/{intake_support/mod.rs,
+  reversal.rs, rounds_support/mod.rs, snapshot_statements.rs}` and `conformance/scenarios/tests/segments_support/mod.rs`.
+- **Named tests.** `contracts/tests/core-internal.rs`: `roll_back_is_a_catalogue_change_of_its_own` [`REQ-AUZ-6`],
+  `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log` [`REQ-AUZ-4`],
+  `erasure_of_a_cited_statement_is_admitted_only_on_a_decision_that_overrides_the_citations` [`REQ-AUD-13`],
+  `customers_acceptance_of_a_filed_orders_slow_route_has_a_basis_of_its_own` [`REQ-QTE-10`],
+  `statement_received_after_its_grants_revocation_is_unattributed_by_the_contracts_rule` [`THR-3`];
+  `contracts/tests/provider-role.rs`: `deposit_tuples_payouts_are_read_as_per_order_where_undeclared`,
+  `deposit_tuple_declaring_batched_payouts_is_valid` [`REQ-ORD-33`]; `contracts/tests/router-api.rs`:
+  `candidate_dropped_for_a_batched_payout_names_its_reason` [`REQ-AUD-4`]; `components/core-authz/src/roles/tests.rs`:
+  `roll_back_is_refused_while_no_rule_answers_it` [`REQ-AUZ-1`]. Written before the rules, on the shapes: the
+  erasure, acceptance and evidence tests and the citation table failed on their assertions (an override refused while
+  cited; a deposit acceptance with no arrival admitted; no field `party`), router-api's three on Rust accepting both
+  invalid fixtures. The shape-only tests (roll back, the payouts pair, the revocation rule written with its helper)
+  show their red in the rule-offs.
+- **Fixtures** (`scratchpad/f020zp/gen.py`, `gen2.py`, from the world's cases): core-internal 2 valid, 3 invalid, 16
+  admission cases (4 refused and 2 admitted for `party`; 3 admitted and 1 refused for the override; 2 admitted and 4
+  refused for the new basis), 6 attribution cases; provider-role 1 valid, 2 invalid; router-api 1 valid, 2 patched
+  invalid.
+- **Histories the log refused, sorted.** None: every world case and earlier admission case passed under the new rows
+  unchanged (the world's outcome evidence is us-bank's, fx-desk's, eu-bank's or bank-co's, each on a route of `ord-1`
+  or the resolution's mover).
+- **Defaults** (reversible, each failing closed):
+  - fold into each contract's unreleased version;
+  - a decline's evidence is held to a party too (the row's own field), so an outside provider's word can't decline
+    either;
+  - "a party the order involves" includes the reserve of its arrival, a stuck resolution's mover (`by`, decided or
+    effected), a holding check's provider and a holding withdrawal's holder and publisher, and the orders a hand-on
+    joins, both ways and transitively; and nothing else: not the authorisation's destination reserve unless a plan
+    or a move names it, never the customer;
+  - a node's publisher is read only where the log binds it (`private_node_of`: a replay or evidence of the order);
+  - `overrides_citations` is written only when true; an explicit `false` on the wire reads as unset;
+  - the override is read from the permitting decision, an erasure record's from an erase effect held `done`;
+  - `given_on_deposit` is cited by the quote row (the customer accepts a quote shown, `T-020-07`'s slow segments
+    named), and is no customer's `given` for a hand-on;
+  - a revocation at the very instant of receipt counts as before it (unattributed); a grant made again after the
+    revocation attributes only what is made under it;
+  - `payouts` on a withdrawal tuple is a Rust rule, the schema only stating the two values;
+  - router-api's record check holds a `batched_payout` reason to its tuple but doesn't yet refuse a kept candidate
+    ending at a batched tuple (the router doesn't drop one until `T-020-43`).
+- **Gaps, with owners.**
+  1. `StuckDecide.evidence` digests are held to no statement by any row; orchestration's `stuck/` is to hold them to
+     a party (`T-020-40`), and a row for the decide step's digests is the lead's to add if a reader needs it.
+  2. `core-audit`'s register holds the rule from `T-022-09`; that row must turn
+     `a_verifiers_class_grant_is_read_at_its_statements_own_time`'s "its class, made inside the window" case
+     (received after the revocation) to expect it unattributed. Owner: `T-022-09`.
+  3. A kept candidate ending at a batched tuple: the router's search and Core's route guard are `T-020-43`'s; a
+     router-api rule refusing such a kept candidate could follow there.
+  4. The log can't read that a `given_on_deposit` acceptance's route has no firm rate; `T-020-41` holds it in
+     `arrival/`.
+  5. A private node crossed with no replay or evidence yet binds no publisher, so its publisher's word is refused
+     until one does. Owner: `T-020-40` if its scenarios meet it, else the lead.
+  6. Policy's separate permission for the override is `T-021-13`'s, the store's `T-022-10`'s, orchestration's
+     `T-020-42`'s; roll back's permission `T-021-12`'s.
+  7. The workspace suite runs in CI.
+  8. No case moves a later segment, chooses a route or splits an order accepted given on a deposit, so the three rows
+     that widen for it there are shown by no red. `T-020-41` builds that flow and its scenarios exercise them.
+- **Contract guard.** Against `origin/develop` (`fb883e01`): "1778 changed path(s) … no violations". CI's guard runs
+  against the pull request's base, `m3`, where the three folded versions equal the base's and it fails, as it did on
+  `T-020-38`'s #237: the fold is lesson 7's, read against `develop`, the milestone's base.
+- **Local checks** (through the lock): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -D
+  warnings`, `cargo test -p rutent-contracts`, `cargo test -p rutent-core-authz --lib`, plan-check and tag-check
+  `--strict` (0 findings, 2105 tests tagged), the guard as above. The suites of `rutent-core-orch`,
+  `rutent-core-audit` and `rutent-scenarios` run in CI on #256.
+- **Rule-off table** (each switched off alone from a committed checkpoint, its tests run through the lock, the file
+  restored with `git checkout`; script `scratchpad/f020zp/ruleoff.py`; none hung). "Table" is
+  `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`, "fixtures" the two
+  `every_valid_fixture_…`/`every_invalid_fixture_…` tests of the contract, "evidence"
+  `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log`, "erasure", "basis", "revocation",
+  "per order", "batched" and "dropped" the other named tests.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `roles/mod.rs`: `roll_back` answered by no rule (falls to its change's permission) | `roll_back_is_refused_while_no_rule_answers_it` |
+  | `outcome-confirmation-cites-verified-evidence`'s `party` | evidence, table |
+  | `part-evidence-rests-on-statements`'s `party` | evidence, table |
+  | `party_to_the_order`: providers of the order's plans | evidence, table |
+  | `party_to_the_order`: providers its moves went to | none: every move's provider is a plan's (`move-segment-is-in-its-orders-plan`); kept as defence |
+  | `party_to_the_order`: a resolution's mover, its effect's arm alone | none: its decide step names the same mover |
+  | the same, the effect's and the decide step's arms | evidence ("the resolution's mover", with the arrival taken out), table |
+  | `party_to_the_order`: publishers of a node crossed (`private_node_of`) | evidence |
+  | `linked_orders`: the hand-on closure | evidence ("a provider of the linked order's route") |
+  | the erasure's override whole (cited as before) | erasure, table |
+  | an effect's override read from its own action, not its decision's | none: `effect-permits-a-decided-action` makes the two equal first; kept as the row's own reading |
+  | an erasure record's override from any erase effect, not its decision's | erasure (its decision unset, its effect still claiming it) |
+  | `check.rs`: `given_on_deposit`'s session and no yes | basis, fixtures |
+  | `automatic-deposit-rests-on-its-arrival` citing `automatic_deposit` alone | basis, table |
+  | `acceptance-is-of-the-quote-shown` citing `given` alone | basis, table |
+  | `first-move-rests-on-its-parts-yes`: the deposit arm `automatic_deposit` alone | basis, table |
+  | `move-rests-on-its-orders-acceptance`, `chosen-route-rests-on-its-orders-acceptance`, `deposited`: `automatic_deposit` alone (each alone) | none: no case yet moves a later segment, chooses a route or splits an order accepted given on a deposit; each is a widening, so off it refuses more (gap 8) |
+  | `revoked_before_receipt` never holds | revocation, `the_log_not_the_writer_attributes_a_stated_entry` |
+  | `attribute` asking with `made_at` as the receipt | the same two |
+  | a revocation counted before the making too | green on the first run; with `verified--a-statement-made-after-its-grant-was-made-again` (checkpoint 6): the same two |
+  | `validate`: payouts on a withdrawal tuple | per order, fixtures |
+  | `payouts()` reading absent as batched | per order, batched |
+  | `Candidate::check`: a batched payout names the part's last operation | none: the record's half refuses the earlier operation's tuple first; kept as defence |
+  | the record's check: the deposit tuple pays out in batches | dropped, fixtures |

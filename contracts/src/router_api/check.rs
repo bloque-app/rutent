@@ -292,6 +292,19 @@ impl Candidate {
                     ));
                 }
             }
+            // Its part's last operation, the deposit; that its tuple pays out in batches is the record's to check
+            // against the snapshot (`T-020-39`).
+            Some(DropReason::BatchedPayout { part, operation }) => {
+                let last = self
+                    .parts
+                    .get(*part as usize)
+                    .is_some_and(|p| *operation as usize + 1 == p.operations.len());
+                if !last {
+                    return Err(Violation(
+                        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
+                    ));
+                }
+            }
             Some(DropReason::Outranked { by }) if by == &self.candidate_id => {
                 return Err(Violation("a candidate isn't outranked by itself"));
             }
@@ -1532,6 +1545,20 @@ impl DecisionRecord {
                 if named.to == request.to {
                     return Err(Violation(
                         "a nothing-delivered reason names an operation short of the destination",
+                    ));
+                }
+                Ok(())
+            }
+            // A route ending at a reserve that pays out in batches (`REQ-ORD-33`, `T-020-39`): the part's last
+            // operation, its deposit, at a reserve tuple that declares `batched`.
+            DropReason::BatchedPayout { part, operation } => {
+                let named = &candidate.parts[*part as usize].operations[*operation as usize];
+                let batched = matches!(&self.tuple_of(named)?.value, FigureValue::ReserveTuple { tuple }
+                        if tuple.direction() == Some(crate::provider_role::ReserveDirection::Deposit)
+                            && tuple.payouts() == crate::provider_role::Payouts::Batched);
+                if !batched {
+                    return Err(Violation(
+                        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
                     ));
                 }
                 Ok(())

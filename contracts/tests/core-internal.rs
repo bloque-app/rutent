@@ -14,9 +14,9 @@ use rutent_contracts::core_internal::calls::{
     StuckOrders, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Action, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
+    Action, Actor, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
     RELATIONS, Role, STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry,
-    attribute, granted_advertising_keys, release_statement_keys,
+    attribute, granted_advertising_keys, release_statement_keys, revoked_before_receipt,
 };
 use rutent_contracts::core_internal::{
     Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest, Effect, Entry, HandedOver,
@@ -78,7 +78,19 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 49] = [
+const RUST_RULES: [(&str, &str); 52] = [
+    (
+        "decision-request-to-roll-back-naming-no-version",
+        "a catalogue change names a version exactly when it is about a module release",
+    ),
+    (
+        "verified-entry-of-an-acceptance-given-on-a-deposit-without-its-session",
+        "an acceptance given on a deposit names the session it was asked in and no reserve's yes",
+    ),
+    (
+        "verified-entry-of-an-acceptance-given-on-a-deposit-naming-a-yes",
+        "an acceptance given on a deposit names the session it was asked in and no reserve's yes",
+    ),
     (
         "report-pair-whose-segment-is-not-its-sent-reports",
         "a report pair's segment is the one its sent report is about",
@@ -1565,6 +1577,9 @@ struct Sources {
     /// The maker the operator signs as.
     operator: String,
     signature: bool,
+    /// The log's history, which the contract's rule on a statement received after its grants' revocation reads
+    /// (`revoked_before_receipt`, `T-020-39`).
+    history: Vec<(Receipt, Entry)>,
 }
 
 impl KeptStatements for Sources {
@@ -1596,11 +1611,15 @@ impl StatementKeys for Sources {
         maker: &Id,
         key: &SignedWith,
         at: &Timestamp,
+        received: &Timestamp,
     ) -> Result<bool, AppendFailure> {
+        // The case's keys, and the contract's rule over the case's history: a statement received after the
+        // revocation of every grant that would attribute it is no one's (`T-020-39`, `THR-3`).
         Ok(self
             .keys
             .iter()
-            .any(|(m, k, t)| m == maker.as_str() && k == key && t == at))
+            .any(|(m, k, t)| m == maker.as_str() && k == key && t == at)
+            && !revoked_before_receipt(&self.history, maker, at, received))
     }
 }
 
@@ -1643,6 +1662,7 @@ fn sources(case: &Value) -> Sources {
             .unwrap_or_default(),
         operator: case["operator"].as_str().unwrap_or("operator").to_string(),
         signature: case["signature"].as_bool().unwrap(),
+        history: case_history(case),
     }
 }
 
@@ -1832,6 +1852,7 @@ fn a_reserves_yes_its_writer_calls_verified_is_not_the_reserves() {
         )],
         operator: "operator".to_string(),
         signature: false,
+        history: Vec::new(),
     };
     let signatures = sources_like(&source);
     let mut keys = sources_like(&source);
@@ -1901,6 +1922,7 @@ fn signed_sources(yes: &StatedEntry, transaction: &str) -> Sources {
         )],
         operator: "operator".to_string(),
         signature: true,
+        history: Vec::new(),
     }
 }
 
@@ -2336,6 +2358,7 @@ fn sources_like(s: &Sources) -> Sources {
         publishers: s.publishers.clone(),
         operator: s.operator.clone(),
         signature: s.signature,
+        history: s.history.clone(),
     }
 }
 
@@ -4030,4 +4053,404 @@ fn report_pair_whose_two_reports_are_one_partys_is_invalid() {
             Err(Violation(rule))
         );
     }
+}
+
+/// Ending a release's staging with the version in force kept, the platform's `roll_back`, is a catalogue change of
+/// its own, apart from promotion and every other change: about one release, it names the staged version it ends, and
+/// one naming none is refused (`REQ-AUZ-6`, ADR-0014, item `rollback-permission`, `T-020-39`).
+// verifies: REQ-AUZ-6
+#[test]
+fn roll_back_is_a_catalogue_change_of_its_own() {
+    let name = "decision-request-to-roll-back-a-staged-release";
+    assert_accepted_by_both(name);
+    assert_rejected("decision-request-to-roll-back-naming-no-version");
+    let rolled: DecisionRequest = serde_json::from_value(fixture("valid", name)).unwrap();
+    let promoted: DecisionRequest = serde_json::from_value(fixture(
+        "valid",
+        "decision-request-to-promote-a-staged-release",
+    ))
+    .unwrap();
+    let (
+        Action::ChangeCatalogue {
+            change, version, ..
+        },
+        Action::ChangeCatalogue {
+            change: promotion, ..
+        },
+    ) = (&rolled.action, &promoted.action)
+    else {
+        panic!("two catalogue changes");
+    };
+    assert_eq!(serde_json::to_value(change).unwrap(), "roll_back");
+    assert_ne!(change, promotion, "not a promotion");
+    assert!(change.is_about_a_release() && !change.is_about_a_tuple());
+    assert_eq!(version.as_ref().map(Id::as_str), Some("2.2.0"));
+    assert_eq!(rolled.check(), Ok(()));
+    // The schema lists it among the changes, as the Rust type does.
+    let listed = schema("common")["$defs"]["catalogue_change"]["enum"].clone();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("roll_back")),
+        "{listed}"
+    );
+    // A permit to roll back moves no promotion: the log admits only the effect of the action decided.
+    let mut decided: Value = fixture("valid", "verified-entry-of-a-decision");
+    decided["what"]["request"] = fixture("valid", name);
+    let decided: Entry = serde_json::from_value(decided).unwrap();
+    let receipt: Receipt = serde_json::from_value(serde_json::json!({
+        "log": "log-main", "index": 1, "entry": {"algorithm": "sha-256", "value": "01".repeat(32)},
+    }))
+    .unwrap();
+    let mut effect: Value = fixture("valid", "verified-entry-of-an-effect");
+    effect["what"]["action"] =
+        fixture("valid", "decision-request-to-promote-a-staged-release")["action"].clone();
+    let Entry::Verified(VerifiedEntry {
+        what: What::Decide { decision, request },
+        ..
+    }) = &decided
+    else {
+        panic!("a decision");
+    };
+    effect["what"]["decision"] = serde_json::json!({
+        "request": request.request, "decision": decision, "answer": "permit", "receipt": receipt,
+    });
+    let effect: Entry = serde_json::from_value(effect).unwrap();
+    assert_eq!(
+        admit_entry(
+            &[(receipt, decided)],
+            &effect,
+            Through::General,
+            &deployment_operator()
+        ),
+        Err(Violation(
+            "an effect's action is the one its decide entry decided"
+        ))
+    );
+}
+
+/// The evidence a stuck resolution rests on, a report's, a confirmation's or a decline's and the part's own
+/// evidence entry, is made by a party its order involves: a provider of a segment on any route the order was given, a
+/// recalculated one's too, the holder of a holding account its value rested at, or the publisher of a node it
+/// crossed. An outside provider's word is no evidence about the order, however verified (item
+/// `confirmer-evidence-party`, `T-020-39`).
+// verifies: REQ-AUZ-4
+#[test]
+fn stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log() {
+    let row = "outcome-confirmation-cites-verified-evidence";
+    for name in [
+        "party",
+        "a-move-values-report-on-an-outside-providers-statement",
+        "a-decline-on-an-outside-providers-statement",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    assert_case_refused("part-evidence-rests-on-statements--party");
+    // A provider on the order's route, or only on a route recalculated since; the holder the resolution names
+    // (bank-co, which delivers p3's value); a hand-on's linked order's: each admitted.
+    for name in [
+        "outcome-confirmation-cites-verified-evidence--a-confirmation-on-another-provider-of-its-route",
+        "outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-only-a-recalculated-route-names",
+        "outcome-confirmation-cites-verified-evidence--a-hand-ons-confirmation-on-another-makers-statement",
+        "world--settled_es",
+        "world--report_es",
+        "world--decline",
+        "world--part_evidence",
+    ] {
+        assert_case(name);
+        assert_eq!(
+            expected(name, &read_admission(name)),
+            Ok(()),
+            "{name} is admitted"
+        );
+    }
+    // Built in memory: the resolution's mover alone, bank-co with the order's arrival at it taken out, is a holder its
+    // value rested at; a provider only on the route of the order a hand-on joins it to is a party to it too.
+    let case = read_admission("world--report_es");
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let no_arrival: Vec<(Receipt, Entry)> = case_history(&case)
+        .into_iter()
+        .filter(|(_, e)| {
+            !matches!(
+                e,
+                Entry::Verified(VerifiedEntry {
+                    what: What::Arrival { .. },
+                    ..
+                })
+            )
+        })
+        .collect();
+    assert_eq!(
+        admit_entry(&no_arrival, &entry, Through::Policy, &deployment_operator()),
+        Ok(()),
+        "the resolution's mover"
+    );
+    let case = read_admission(&format!(
+        "{row}--a-hand-ons-confirmation-on-another-makers-statement"
+    ));
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let mut linked = case_history(&case);
+    for (r, e) in linked.iter_mut() {
+        match (r.index.get(), e) {
+            (311, Entry::Stated(s)) => {
+                s.attribution = Attribution::Verified {
+                    who: Actor {
+                        party: Id::new("ord2-bank").unwrap(),
+                        acts: Id::new("ord2-bank").unwrap(),
+                        role: Role::Provider,
+                        kind: ActorKind::Component,
+                    },
+                }
+            }
+            (187, Entry::Verified(v)) => {
+                let mut value = serde_json::to_value(&*v).unwrap();
+                value["what"]["input"]["observed"]["parts"][0]["segments"][0]["provider"] =
+                    Value::from("ord2-bank");
+                *v = serde_json::from_value(value).unwrap();
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        admit_entry(&linked, &entry, Through::Policy, &deployment_operator()),
+        Ok(()),
+        "a provider of the linked order's route"
+    );
+    // Built in memory: a confirmation on the word of a provider stating for the publisher of the node the order
+    // crossed, `ledger-in`, which a replay of the order binds to that publisher; with no such binding, refused.
+    let case = read_admission(&format!("{row}--party"));
+    let mut history = case_history(&case);
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let publishers = |acts: &str| Actor {
+        party: Id::new("wallet-co").unwrap(),
+        acts: Id::new(acts).unwrap(),
+        role: Role::Provider,
+        kind: ActorKind::Component,
+    };
+    let at = history
+        .iter()
+        .position(|(r, _)| r.index.get() == 175)
+        .unwrap();
+    let Entry::Stated(evidence) = &mut history[at].1 else {
+        panic!("the confirmation's statement");
+    };
+    evidence.attribution = Attribution::Verified {
+        who: publishers("wallet-desk"),
+    };
+    let refused = admit_entry(&history, &entry, Through::Policy, &deployment_operator());
+    assert_eq!(
+        refused,
+        Err(Violation(
+            "an outcome's evidence is made by a party its order involves: a provider on any of its routes, a holder of a holding account its value rested at, or a publisher of a node it crossed"
+        ))
+    );
+    let replay = read_admission("world--replay");
+    let mut exit: StatedEntry = serde_json::from_value(
+        replay["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["receipt"]["index"] == 143)
+            .unwrap()["entry"]
+            .clone(),
+    )
+    .unwrap();
+    exit.attribution = Attribution::Verified {
+        who: publishers("wallet-ops"),
+    };
+    let receipt = |n: u64| -> Receipt {
+        serde_json::from_value(serde_json::json!({
+            "log": "log-main", "index": n, "entry": {"algorithm": "sha-256", "value": format!("{n:064x}")},
+        }))
+        .unwrap()
+    };
+    let mut replayed = replay["entry"].clone();
+    replayed["what"]["rests_on"] = serde_json::json!([receipt(451)]);
+    let mut bound = history.clone();
+    bound.push((receipt(451), Entry::Stated(exit)));
+    bound.push((receipt(452), serde_json::from_value(replayed).unwrap()));
+    assert_eq!(
+        admit_entry(&bound, &entry, Through::Policy, &deployment_operator()),
+        Ok(()),
+        "the publisher of a node the order crossed"
+    );
+}
+
+/// An erasure is refused while a later entry cites the statement, the owner's default, unless its permitting decision
+/// sets `overrides_citations`: then its decision, its effect and its record are admitted, the citing entries staying.
+/// The flag is the decision's, never the effect's alone, and false unless set (`REQ-AUD-13`, item
+/// `erasure-of-cited-evidence`, `T-020-39`).
+// verifies: REQ-AUD-13
+#[test]
+fn erasure_of_a_cited_statement_is_admitted_only_on_a_decision_that_overrides_the_citations() {
+    let row = "erasure-waits-while-anything-rests-on-the-statement";
+    for name in ["conflict", "decided-while-cited", "effect"] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    for name in [
+        "a-decision-overriding-the-citations",
+        "an-effect-on-a-decision-overriding-the-citations",
+        "an-erasure-on-a-decision-overriding-the-citations",
+    ] {
+        let name = format!("{row}--{name}");
+        assert!(read_admission(&name)["breaks"].is_null(), "{name}");
+        assert_case(&name);
+    }
+    // An effect that overrides on a decision that doesn't: refused, for its action isn't the one decided.
+    assert_case_refused(
+        "erasure-waits-while-anything-rests-on-the-statement--an-effect-overriding-on-a-decision-that-does-not",
+    );
+    // Its record, after an effect whose decision doesn't override, is refused while cited, whatever the record says.
+    let case = read_admission(&format!(
+        "{row}--an-erasure-on-a-decision-overriding-the-citations"
+    ));
+    let mut history = case_history(&case);
+    let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
+    let at = history
+        .iter()
+        .position(|(r, _)| r.index.get() == 157)
+        .unwrap();
+    let Entry::Verified(VerifiedEntry {
+        what: What::Decide { request, .. },
+        ..
+    }) = &mut history[at].1
+    else {
+        panic!("the erasure's decision");
+    };
+    let Action::EraseStatement {
+        overrides_citations,
+        ..
+    } = &mut request.action
+    else {
+        panic!("an erasure");
+    };
+    *overrides_citations = false;
+    assert_eq!(
+        admit_entry(&history, &entry, Through::General, &deployment_operator()),
+        Err(Violation(
+            "no statement is erased while an entry of this log rests on it"
+        ))
+    );
+    // False unless set: the plain erasure reads it false, and writes nothing for it.
+    let plain = fixture("valid", "decision-request-to-erase-a-kept-statement");
+    let read: DecisionRequest = serde_json::from_value(plain.clone()).unwrap();
+    assert!(matches!(
+        read.action,
+        Action::EraseStatement {
+            overrides_citations: false,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_value(&read).unwrap(), plain);
+}
+
+/// A customer's acceptance of the slow route of an order filed on an automatic deposit, whose route has no firm rate,
+/// has a basis of its own, `given_on_deposit`: in the customer's session, as `given` is, and resting on the deposit's
+/// arrival at the order's origin reserve in place of each part's yes, as `automatic_deposit` does. Its first move is
+/// the origin reserve's (`REQ-QTE-10`, item `deposit-no-firm-rate`, `T-020-39`).
+// verifies: REQ-QTE-10
+#[test]
+fn customers_acceptance_of_a_filed_orders_slow_route_has_a_basis_of_its_own() {
+    use rutent_contracts::core_internal::AcceptanceBasis;
+    let name = "verified-entry-of-an-acceptance-given-on-a-deposit";
+    assert_accepted_by_both(name);
+    let entry: VerifiedEntry = serde_json::from_value(fixture("valid", name)).unwrap();
+    let What::Acceptance {
+        basis,
+        session,
+        yeses,
+        ..
+    } = &entry.what
+    else {
+        panic!("an acceptance");
+    };
+    assert_eq!(*basis, AcceptanceBasis::GivenOnDeposit);
+    assert_ne!(*basis, AcceptanceBasis::Given);
+    assert_ne!(*basis, AcceptanceBasis::AutomaticDeposit);
+    assert!(basis.on_a_deposit() && basis.in_a_session());
+    assert!(session.is_some() && yeses.is_empty());
+    for name in [
+        "verified-entry-of-an-acceptance-given-on-a-deposit-without-its-session",
+        "verified-entry-of-an-acceptance-given-on-a-deposit-naming-a-yes",
+    ] {
+        assert_rejected(name);
+    }
+    // On the log: on the deposit's arrival, in an open session of its requester, of a quote shown.
+    assert_case("automatic-deposit-rests-on-its-arrival--given-on-a-deposit");
+    for name in [
+        "automatic-deposit-rests-on-its-arrival--given-on-a-deposit-with-no-arrival",
+        "acceptance-is-asked-in-the-users-session--given-on-a-deposit-in-no-session",
+        "acceptance-is-of-the-quote-shown--given-on-a-deposit-of-a-quote-not-shown",
+    ] {
+        assert_case_refused(name);
+    }
+    // Its first move is the origin reserve's, on no yes.
+    assert_case("first-move-rests-on-its-parts-yes--given-on-a-deposit");
+    assert_case_refused("first-move-rests-on-its-parts-yes--given-on-a-deposit-by-anyone");
+}
+
+/// A statement the log receives after the revocation of every grant that would attribute it is attributed to no
+/// one, whatever its `made_at`: the rule is the contract's, read from the history alone (the grants and revocations
+/// the log carried out, and the entry's own `made_at` and `received_at`), and `attribute` asks the key source with the
+/// received time beside the made time (`THR-3`, item `thr3-backdated-after-revocation`, `T-020-39`).
+// verifies: THR-3
+#[test]
+fn statement_received_after_its_grants_revocation_is_unattributed_by_the_contracts_rule() {
+    let cases: Vec<(String, Value)> = attribution_cases()
+        .into_iter()
+        .filter(|(n, _)| n.contains("grants-revocation") || n.contains("grant-was-made-again"))
+        .collect();
+    assert_eq!(
+        cases.len(),
+        6,
+        "{:?}",
+        cases.iter().map(|c| &c.0).collect::<Vec<_>>()
+    );
+    for (name, case) in &cases {
+        let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+        let history = case_history(case);
+        let got = attribute(
+            &claim,
+            &history,
+            &mut sources(case),
+            &mut sources(case),
+            &sources(case),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let verified = matches!(got.attribution, Attribution::Verified { .. });
+        assert_eq!(verified, case["expect"] == "verified", "{name}");
+        // The rule itself, from the history and the entry's two times.
+        let maker = claim.attribution.maker().acts.clone();
+        assert_eq!(
+            revoked_before_receipt(&history, &maker, &claim.when.at, &claim.received_at),
+            !verified,
+            "{name}"
+        );
+        // Made and received at once, before any revocation, the same statement is attributed: only the receipt moved.
+        assert!(
+            !revoked_before_receipt(&history, &maker, &claim.when.at, &claim.when.at),
+            "{name}"
+        );
+    }
+    // No grant in force at the making: not this rule's to refuse (the key register's own trust is).
+    let none = Id::new("nobody").unwrap();
+    let (_, case) = &cases[0];
+    let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+    assert!(!revoked_before_receipt(
+        &case_history(case),
+        &none,
+        &claim.when.at,
+        &claim.received_at
+    ));
+}
+
+/// The admission case `name`, as read.
+fn read_admission(name: &str) -> Value {
+    read_json(
+        &contract_dir()
+            .join("fixtures")
+            .join("admission")
+            .join(format!("{name}.json")),
+    )
 }

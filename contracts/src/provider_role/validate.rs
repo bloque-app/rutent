@@ -5,7 +5,7 @@ use alloc::{format, string::String, vec::Vec};
 use core::cmp::Ordering;
 
 use super::envelope::{Signature, Statement};
-use super::types::{Advertisement, Band, Category, KeyPurpose, PublicKey, Terms};
+use super::types::{Advertisement, Band, Category, KeyPurpose, PublicKey, ReserveDirection, Terms};
 
 /// A rule an advertisement breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,11 @@ pub enum RuleViolation {
     /// A ramp tuple whose origin and destination are one node (`REQ-CAT-13`).
     RampWithinOneNode {
         /// Index into `offers.ramp.tuples`.
+        tuple: usize,
+    },
+    /// A withdrawal tuple declaring how it pays out: only a deposit tuple pays out (`REQ-ORD-33`, `T-020-39`).
+    PayoutsOnAWithdrawal {
+        /// Index into `offers.reserve.tuples`.
         tuple: usize,
     },
     /// An amount band whose minimum is above its maximum (`REQ-CAT-11`).
@@ -241,6 +246,7 @@ fn made_after(later: &str, earlier: &str) -> bool {
 /// leading zeros, so they compare by length and then by text.
 ///
 /// - A ramp's origin and destination are different nodes (`REQ-CAT-13`).
+/// - Only a deposit tuple declares how it pays out (`REQ-ORD-33`).
 /// - Every amount band has its minimum at or below its maximum (`REQ-CAT-11`).
 /// - No offer lists one tuple twice (`REQ-CAT-11`).
 pub fn validate(advertisement: &Advertisement) -> Result<(), Vec<RuleViolation>> {
@@ -249,6 +255,9 @@ pub fn validate(advertisement: &Advertisement) -> Result<(), Vec<RuleViolation>>
 
     if let Some(reserve) = &offers.reserve {
         for (i, tuple) in reserve.tuples.iter().enumerate() {
+            if tuple.payouts.is_some() && tuple.direction() != Some(ReserveDirection::Deposit) {
+                violations.push(RuleViolation::PayoutsOnAWithdrawal { tuple: i });
+            }
             check_bands(Category::Reserve, i, &tuple.terms, &mut violations);
         }
         check_repeats(

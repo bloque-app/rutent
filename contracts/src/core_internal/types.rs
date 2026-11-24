@@ -339,6 +339,11 @@ pub enum CatalogueChange {
     /// version decided on, but the platform promotes whatever is staged, so Core checks that the staged version is
     /// the permit's before it carries the promotion out (`T-020-08`).
     Promote,
+    /// Ending a release's staging with the version in force kept (ADR-0014): the platform's `roll_back`, a decided
+    /// change of its own apart from promotion, naming the staged version it ends (item `rollback-permission`,
+    /// `T-020-39`). Policy decides it under a permission of its own from `T-021-12`; until then no rule answers it,
+    /// and it is refused.
+    RollBack,
 }
 
 impl CatalogueChange {
@@ -353,6 +358,7 @@ impl CatalogueChange {
                 | CatalogueChange::Reinstate
                 | CatalogueChange::WithdrawRelease
                 | CatalogueChange::Promote
+                | CatalogueChange::RollBack
         )
     }
 
@@ -499,6 +505,14 @@ pub enum Action {
         commitment: Digest,
         /// Why, as a token: a label to read, which no decision branches on.
         reason: Token,
+        /// Whether the erasure goes ahead while later entries cite the statement: false unless set, and then the
+        /// log refuses it while anything rests on the statement (`erasure-waits-while-anything-rests-on-the-statement`,
+        /// the owner's default). Set, it is the operator's override, a decision of its own that policy holds under a
+        /// permission apart from a plain erasure (`T-021-13`), and the log admits the erasure, its effect and its
+        /// record only where the permitting decision's action sets it (item `erasure-of-cited-evidence`,
+        /// `T-020-39`). The citing entries stay, naming a commitment whose bytes are gone.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        overrides_citations: bool,
     },
     /// Moving a stuck order's value as its decide step named, outside the order's authorisation, which a
     /// resolution back to the origin needn't keep to (`REQ-AUZ-4`, ADR-0011). It travels only as an effect on a
@@ -1858,6 +1872,30 @@ pub enum AcceptanceBasis {
     Given,
     /// A reserve that declared it started the route on an automatic deposit, which counts as acceptance.
     AutomaticDeposit,
+    /// Its customer, or the customer's agent, accepted the quote shown for an order filed on an automatic deposit
+    /// whose route has no firm rate, which the deposit alone can't accept (`REQ-QTE-10`): named with the session it
+    /// was asked in, as `given` is, and resting on the reserve's automatic deposit, its arrival, in place of each
+    /// part's yes, as `automatic_deposit` does (item `deposit-no-firm-rate`, `T-020-39`; `T-020-41` builds it).
+    GivenOnDeposit,
+}
+
+impl AcceptanceBasis {
+    /// Whether it rests on the reserve's automatic deposit, its arrival, in place of each part's yes:
+    /// `automatic_deposit` and `given_on_deposit`.
+    pub fn on_a_deposit(self) -> bool {
+        matches!(
+            self,
+            AcceptanceBasis::AutomaticDeposit | AcceptanceBasis::GivenOnDeposit
+        )
+    }
+
+    /// Whether its customer gave it in a session: `given` and `given_on_deposit`.
+    pub fn in_a_session(self) -> bool {
+        matches!(
+            self,
+            AcceptanceBasis::Given | AcceptanceBasis::GivenOnDeposit
+        )
+    }
 }
 
 /// An order's three parties, by reference, recorded apart (`REQ-ORD-17`). A third-party payer's details stay at
@@ -2248,11 +2286,13 @@ pub enum What {
         /// The order's origin reserve: the one whose yes it rests on, or whose automatic deposit started it.
         origin_reserve: Id,
         /// Each part's yes, keyed by part: the receipt of its origin reserve's stated yes to the part's route, each
-        /// part once. Present exactly when its basis is given; an automatic deposit carries none (`REQ-ORD-32`). A
-        /// split order has one per part, so no part moves on another's yes.
+        /// part once. Present exactly when its basis is given; an automatic deposit carries none, nor an acceptance
+        /// given on one (`REQ-ORD-32`, `REQ-QTE-10`). A split order has one per part, so no part moves on another's
+        /// yes.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         yeses: Vec<PartYes>,
-        /// The user's session it was asked in: present exactly when its basis is given (`REQ-ORD-32`).
+        /// The user's session it was asked in: present exactly when its customer gave it, `given` or
+        /// `given_on_deposit` (`REQ-ORD-32`, `REQ-QTE-10`).
         #[serde(
             default,
             deserialize_with = "some",

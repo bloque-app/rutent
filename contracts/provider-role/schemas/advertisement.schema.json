@@ -273,6 +273,13 @@
         },
         "terms": {
           "$ref": "#/$defs/terms"
+        },
+        "payouts": {
+          "description": "How a deposit tuple pays its deposits out: per_order, one movement per order, or batched, several orders' deposits in one movement (REQ-ORD-33). Absent reads as per_order. Only a deposit tuple declares it, which the Rust validation checks.",
+          "enum": [
+            "per_order",
+            "batched"
+          ]
         }
       },
       "oneOf": [

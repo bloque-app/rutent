@@ -27,7 +27,11 @@
 //! 8. its key signs the maker's statements at its `made_at` (`THR-3`): for a module the operator publishes, a
 //!    statement key that a release of it the log accepted names ([`release_statement_keys`]); for any other maker,
 //!    one [`StatementKeys::signs_for`] answers, whose first trust in a provider is the advertising keys of its latest
-//!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold;
+//!    grant in the log ([`granted_advertising_keys`]), never a deployment setting the log doesn't hold. It is asked
+//!    with the entry's `received_at` beside its `made_at`, and answers no for a statement the log received after the
+//!    revocation of every grant that would attribute it ([`revoked_before_receipt`]), whatever its `made_at`: a
+//!    revoked key can't sign a statement backdated into its grant's window (item `thr3-backdated-after-revocation`,
+//!    `T-020-39`);
 //! 9. where its maker has held a verifier's class's grant, in place of a tuple, and no tuple's grant of it was in
 //!    force at the statement's own `made_at`, it is a judgement of a class whose grant was in force then: a category
 //!    grant attributes its maker's statements for that category alone, never for a tuple, and a revocation widens
@@ -286,7 +290,71 @@ fn signed_by_its_maker(
             release_statement_keys(history, maker, transaction).contains(&&claim.signed_with.key)
         );
     }
-    keys.signs_for(maker, &claim.signed_with, &claim.when.at)
+    keys.signs_for(
+        maker,
+        &claim.signed_with,
+        &claim.when.at,
+        &claim.received_at,
+    )
+}
+
+/// Whether every grant of `maker` in force at `made_at`, a statement's own time, was revoked no later than
+/// `received`, the time the log received it: the contract's rule for a statement received after its grants'
+/// revocation (item `thr3-backdated-after-revocation`, `T-020-39`, `THR-3`), which [`StatementKeys::signs_for`]
+/// answers no for, whatever the `made_at`. A grant is a tuple's or a verifier's class, read as
+/// [`classes_alone`] reads them: by each effect's time, of a change this log holds done, the latest at or before
+/// `made_at` in force where it is a grant. A grant made again after its revocation is a new grant, which attributes
+/// only what is made under it. False where no grant of `maker` was in force at `made_at`, which the key register's
+/// own trust refuses apart, and false while any grant in force then stands at `received`.
+pub fn revoked_before_receipt(
+    history: &History,
+    maker: &Id,
+    made_at: &Timestamp,
+    received: &Timestamp,
+) -> bool {
+    let (made, received) = (made_at.unix_nanos(), received.unix_nanos());
+    let changes = || {
+        dated_catalogue_changes(history).filter_map(|(action, when)| {
+            let Action::ChangeCatalogue {
+                change,
+                provider,
+                tuple,
+                class,
+                ..
+            } = action
+            else {
+                return None;
+            };
+            let granted = match (tuple, class) {
+                (Some(tuple), None) => Granted::Tuple(tuple),
+                (None, Some(class)) => Granted::Class(class),
+                _ => return None,
+            };
+            let grant = match change {
+                CatalogueChange::Grant => true,
+                CatalogueChange::RevokeGrant => false,
+                _ => return None,
+            };
+            (provider == maker).then_some((granted, when, grant))
+        })
+    };
+    // The grants in force at the statement's making: each one's last change at or before it, by its effect's time,
+    // the later in the log on a tie.
+    let mut last: Vec<(Granted<'_>, i128, bool)> = Vec::new();
+    for (granted, when, grant) in changes().filter(|(_, when, _)| *when <= made) {
+        match last.iter_mut().find(|(g, ..)| *g == granted) {
+            Some(change) if change.1 > when => {}
+            Some(change) => *change = (granted, when, grant),
+            None => last.push((granted, when, grant)),
+        }
+    }
+    let mut in_force = last.iter().filter(|(.., grant)| *grant).peekable();
+    // Each of them revoked after the making and no later than the receipt.
+    in_force.peek().is_some()
+        && in_force.all(|(granted, ..)| {
+            changes()
+                .any(|(g, when, grant)| g == *granted && !grant && when > made && when <= received)
+        })
 }
 
 /// The refusal of a stated entry whose kept bytes bear its claim out, made in a role its maker doesn't hold.

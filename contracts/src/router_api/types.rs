@@ -672,6 +672,16 @@ pub enum DropReason {
         /// The operation within the part, by index: the part's last.
         operation: u32,
     },
+    /// One of its parts would end on a deposit at a reserve tuple that pays its deposits out in batches
+    /// (provider-role's `payouts: batched`), whose one movement no order's close can rest on alone (`REQ-ORD-33`,
+    /// `REQ-AUD-4`; item `shared-movement-reading`, `T-020-39`; the router's search drops it from `T-020-43`). It
+    /// names the part's last operation, that deposit. The part is listed whole.
+    BatchedPayout {
+        /// The part, by index.
+        part: u32,
+        /// The operation within the part, by index: the part's last, its deposit.
+        operation: u32,
+    },
     /// Its value in flight, its parts counted together, would pass a ceiling (`REQ-ORD-8`).
     OverCeiling {
         /// Which kind of ceiling.
