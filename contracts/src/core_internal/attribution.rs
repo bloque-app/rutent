@@ -302,7 +302,7 @@ fn signed_by_its_maker(
 /// `received`, the time the log received it: the contract's rule for a statement received after its grants'
 /// revocation (item `thr3-backdated-after-revocation`, `T-020-39`, `THR-3`), which [`StatementKeys::signs_for`]
 /// answers no for, whatever the `made_at`. A grant is a tuple's or a verifier's class, read as
-/// [`classes_alone`] reads them: by each effect's time, of a change this log holds done, the latest at or before
+/// `classes_alone` reads them: by each effect's time, of a change this log holds done, the latest at or before
 /// `made_at` in force where it is a grant. A grant made again after its revocation is a new grant, which attributes
 /// only what is made under it. False where no grant of `maker` was in force at `made_at`, which the key register's
 /// own trust refuses apart, and false while any grant in force then stands at `received`.
