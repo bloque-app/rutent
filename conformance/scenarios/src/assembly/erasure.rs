@@ -5,7 +5,9 @@
 use rutent_contracts::core_internal::Token;
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::module_interface::Digest;
-use rutent_core_orch::erasure::{Erased, Erasure, NotErased, Statements, erase_statement};
+use rutent_core_orch::erasure::{
+    Erased, Erasure, NotErased, Statements, erase_statement, erase_statement_overriding,
+};
 
 use super::{BoundStore, Core, LogDisk, LogsRead};
 use crate::kit;
@@ -19,6 +21,18 @@ impl Statements for Bound<'_> {
         self.0.erasable(commitment)
     }
 
+    fn erasable_overriding(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.0.erasable_overriding(commitment)
+    }
+
+    fn erasable_overriding_since(
+        &mut self,
+        commitment: &Digest,
+        decision: &rutent_contracts::core_internal::Receipt,
+    ) -> Result<(), AppendFailure> {
+        self.0.erasable_overriding_since(commitment, decision)
+    }
+
     fn erase(
         &mut self,
         result: &rutent_contracts::core_internal::Receipt,
@@ -28,6 +42,17 @@ impl Statements for Bound<'_> {
 }
 
 impl Core {
+    /// The evidence store bound again to the log as the disk holds it now: what binding finds of an erasure carried
+    /// out (the statements missing, the erasures refused or left unsettled), as a restart reads it (`T-022-04`).
+    ///
+    /// # Errors
+    ///
+    /// If the log or the store won't open or bind.
+    pub fn rebound_store(&self) -> Result<BoundStore<LogDisk, LogsRead>, AppendFailure> {
+        let (store, log) = super::read_back(&self.disk, &self.clock)?;
+        store.bind(log)
+    }
+
     /// Erases the statement kept under `commitment`, as `caller` asks and policy decides: the decision, the effect,
     /// its done result, the store's erasure and the `erasure` entry (`REQ-AUD-13`, `DEC-18`). The commitment stays in
     /// the log, and the statement's bytes go from the store alone.
@@ -57,6 +82,51 @@ impl Core {
                 core: &core,
             },
         )
+    }
+
+    /// [`Core::erase_statement_as`] where the operator asked to override the citations of later entries
+    /// (`T-020-42`, item `erasure-of-cited-evidence`): policy is asked for an `erase_statement` that sets
+    /// `overrides_citations`, which it permits an operator's login holding both `EraseStatement` and
+    /// `EraseOverridingCitations` alone (`T-021-13`). The entries citing the statement stay as they are.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing was erased, or not yet ([`NotErased`]).
+    pub fn erase_statement_overriding_as(
+        &mut self,
+        caller: &rutent_contracts::core_internal::Actor,
+        commitment: &Digest,
+        reason: &str,
+    ) -> Result<Erased, Box<NotErased>> {
+        let reason = Token::new(reason).expect("a token");
+        let mut decisions = self.policy.clone();
+        let core = kit::core();
+        erase_statement_overriding(
+            &mut self.general,
+            &mut decisions,
+            &mut Bound(&self.bound),
+            &self.clock,
+            &mut self.fresh,
+            &Erasure {
+                commitment,
+                reason: &reason,
+                caller,
+                core: &core,
+            },
+        )
+    }
+
+    /// [`Core::erase_statement_overriding_as`] by the operator's login.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing was erased, or not yet ([`NotErased`]).
+    pub fn erase_statement_overriding(
+        &mut self,
+        commitment: &Digest,
+        reason: &str,
+    ) -> Result<Erased, Box<NotErased>> {
+        self.erase_statement_overriding_as(&kit::operator_login(), commitment, reason)
     }
 
     /// [`Core::erase_statement_as`] by the operator's login.

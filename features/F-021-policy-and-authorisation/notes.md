@@ -1610,6 +1610,7 @@ with one `pub mod roll_back;` line in `segments/mod.rs`, a `DEC-20` path: it wai
   1. Nothing calls `Segments::roll_back` yet outside its tests: the assembly's wiring of an operator command to it, as
      `promote` has through the assembly's `releases.rs`, isn't part of this row. Owner: the assembly row that wires the
      operator's catalogue commands (`T-024-*`'s scenario kit), to be named by the plan's owner; no row exists for it yet.
+     **Closed by `T-020-42`**, which wires `Core::roll_back` in the assembly's `releases.rs` and holds a scenario for it.
   2. The deployment's register must list `Change(RollBack)` for the operator logins that may roll back:
      configuration, owner `F-021`'s register docs / the deployment.
 - **Red first.** The new roll back test failed on its permitted assertion (`Refuse` for `Permit`), `each permission
@@ -1669,7 +1670,7 @@ path: it waits for the owner's click at the release into `main`.
   2. The store's carrying out of an override on that permit, and orchestration's asking for it only where the operator asked:
      `T-022-10` and `T-020-42`. The conformance assembly's register (`conformance/scenarios/src/assembly/mod.rs:741`)
      lists only `EraseStatement` for the operator's login: `T-020-42`'s scenarios need it to list
-     `EraseOverridingCitations` beside it, or they are refused.
+     `EraseOverridingCitations` beside it, or they are refused (`T-020-42` leaves the default register without it and grants it in the scenarios that need it).
 - **Red first.** The permitted test failed on its outcome assertion (`Refuse` for `Permit`) and `each permission alone` on
   its count; the refused tests pass against the stub (the behaviour before the row) and is held by the rule-offs. The enum
   variant was added first so the tests compile.

@@ -1776,3 +1776,29 @@ fn the_logs_read_and_orchestrations_handle_each_answer_one_call() {
     let _: &dyn Evidence = &EvidenceStore::in_memory().keeper(Box::new(Policy::default()));
     let _: &dyn KeptStatements = &EvidenceStore::in_memory().for_the_log();
 }
+
+/// An override lifts the citations made before its decision alone: asked since a decision made after the citing
+/// entry the statement is erasable, and since one made before it a citation counts and refuses (`REQ-AUD-13`).
+// verifies: REQ-AUD-13
+#[test]
+fn override_check_since_its_decision_refuses_a_later_citation() {
+    let dir = TempDir::new("since");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    let citing = run.append(&measure_citing(&at, "seg-1")).unwrap();
+    assert_eq!(run.store.erasable_overriding_since(&cited, &citing), Ok(()));
+    assert_eq!(
+        run.store.erasable_overriding_since(&cited, &at),
+        Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+    );
+    // Every other rule holds: a statement no entry names is refused whatever the decision.
+    let unnamed = run
+        .keeper
+        .keep(&judgement("bank-co", json!({"kind": "judgement"})))
+        .unwrap();
+    assert_eq!(
+        run.store
+            .erasable_overriding_since(&unnamed.commitment, &citing),
+        Err(AppendFailure::Refused(Violation(NAMED_BY_NO_ENTRY)))
+    );
+}

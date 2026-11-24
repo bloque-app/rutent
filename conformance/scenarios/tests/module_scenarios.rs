@@ -7,7 +7,7 @@
 //! and ran on is Core's own record in the log.
 
 use rutent_conformance::sim::{Role, Spec};
-use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, What};
+use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, Outcome, What};
 use rutent_contracts::module_interface::AcceptanceMode;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::OrderState;
@@ -259,6 +259,116 @@ fn upgrade_of_one_provider_interrupts_no_order_at_another_and_a_failed_one_leave
  {
     upgrade_at_once();
     upgrade_staged();
+}
+
+/// A staged release rolled back (`T-021-12`, `T-020-42`, ADR-0014): the operator's login asks, policy decides, and a
+/// permitted roll back ends the provider's staging, keeping the version in force, with its effect recorded before
+/// its result. A refused one (a login the register doesn't list for it, or a version that isn't the one staged) moves
+/// nothing and records no effect.
+// verifies: REQ-AUZ-6
+#[test]
+fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
+    use rutent_core_orch::segments::roll_back::RollBackRefused;
+
+    let staging = Staging::new(1, 0, 0).expect("a staging policy");
+    let (mut core, _) = accepted(two_reserves_under(Staged::Under(staging)), 1);
+    artefact(core.publish_release(OTHER, &Release::at("1.1.0")));
+    assert_eq!(
+        core.fleet().platform.lifecycle().staged(OTHER),
+        Some("1.1.0")
+    );
+    let recorded = |core: &Core| -> Vec<String> {
+        core.log()
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action:
+                            Action::ChangeCatalogue {
+                                change: CatalogueChange::RollBack,
+                                ..
+                            },
+                        ..
+                    } => Some("effect".to_owned()),
+                    What::Decide { request, .. }
+                        if matches!(
+                            request.action,
+                            Action::ChangeCatalogue {
+                                change: CatalogueChange::RollBack,
+                                ..
+                            }
+                        ) =>
+                    {
+                        Some("decide".to_owned())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+            .collect()
+    };
+
+    // Refused: a customer is no operator's login, and 1.0.5 isn't the version staged. Nothing moves.
+    assert!(matches!(
+        core.roll_back_as(&kit::customer(), OTHER, "1.1.0"),
+        Err(RollBackRefused::NotPermitted(_))
+    ));
+    assert!(matches!(
+        core.roll_back(OTHER, "1.0.5"),
+        Err(RollBackRefused::NotTheStagedVersion { .. })
+    ));
+    assert_eq!(
+        core.fleet().platform.lifecycle().staged(OTHER),
+        Some("1.1.0"),
+        "the staging stays"
+    );
+    assert_eq!(recorded(&core), ["decide"], "only the refusal is recorded");
+
+    // Permitted: the staging ends, the version in force stays, and the effect is recorded.
+    assert_eq!(core.roll_back(OTHER, "1.1.0"), Ok("1.1.0".to_owned()));
+    assert_eq!(core.fleet().platform.lifecycle().staged(OTHER), None);
+    assert_eq!(
+        core.fleet().platform.active_version(OTHER).as_deref(),
+        Some("1.0.0")
+    );
+    assert_eq!(recorded(&core), ["decide", "decide", "effect"]);
+    let effect_at = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(r, e)| match e {
+            Entry::Verified(v)
+                if matches!(
+                    &v.what,
+                    What::Effect {
+                        action: Action::ChangeCatalogue {
+                            change: CatalogueChange::RollBack,
+                            ..
+                        },
+                        ..
+                    }
+                ) =>
+            {
+                Some(r.clone())
+            }
+            _ => None,
+        })
+        .expect("the roll back's effect");
+    assert!(
+        core.log()
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, Entry::Verified(v)
+            if v.outcome == Outcome::Done {}
+                && matches!(&v.what, What::Result { effect } if *effect == effect_at))),
+        "the roll back effect's result is done"
+    );
+    assert_eq!(
+        core.roll_back(OTHER, "1.1.0"),
+        Err(RollBackRefused::NothingStaged),
+        "nothing is staged now"
+    );
 }
 
 // --- AC-21 -----------------------------------------------------------------------------------------------------------
