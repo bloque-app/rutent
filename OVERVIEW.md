@@ -1,6 +1,6 @@
 ---
 name: rutent overview
-status: informative. Digests SPEC.md v0.4.1, accepted by the owner on 2026-11-05 (R142). SPEC.md decides
+status: informative. Digests SPEC.md v0.4.1, accepted by the owner on 2026-11-05 (R142); v0.4.2 (2026-11-23) applies the owner's answers of 2026-11-18 and adds no identifier. SPEC.md decides
 date: 2026-11-03
 ---
 

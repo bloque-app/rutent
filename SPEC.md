@@ -1,11 +1,12 @@
 ---
 name: rutent specification
-version: 0.4.1
-status: accepted by the lead on 2026-11-05 (R142); v0.4.1 renames the quoting engine to the router, at the lead's request (R143)
+version: 0.4.2
+status: accepted by the lead on 2026-11-05 (R142); v0.4.1 renames the quoting engine to the router, at the lead's request (R143); v0.4.2 applies the owner's decision-form answers of 2026-11-18 (items recheck-amendments, spec-ac17-not-known, holding-balance-evidence, false-judgement-stuck-bearer, cat5-timing-residual, stuck-same-actor-reaches)
 profile: oss-ledger (project-local stand-in, profile.oss-ledger.md)
 level: STEP-1
 input: PRODUCT.md
 date: 2026-11-05
+updated: 2026-11-23
 ---
 
 # rutent: specification
@@ -226,7 +227,7 @@ Normative. Each has a statement, what it derives from, and how it is verified. `
 | `REQ-ORD-25` | An origin approval arriving after its order ended MUST start nothing, MUST be recorded, and MUST be visible to the customer. | `THR-119` | Test: late approval after the customer paid again. |
 | `REQ-ORD-26` | A place a provider sends a person or agent to approve MUST be labelled as that provider's statement, and MUST pass `REQ-MDL-12`. | `THR-104` | Test with an altered response. |
 | `REQ-ORD-27` | A customer MAY set a worst acceptable outcome. It MUST be checked at each settled segment, against the value evidenced at the node and the quotes still ahead. Past it, the order MUST wait for the customer. | `PS-109`, `PS-160` | Test at the floor. |
-| `REQ-ORD-28` | With no route left, an order MUST become stuck. The operator resolves and bears it, and its processing MUST be recorded (`REQ-AUZ-4`). In normal conditions an order MUST NOT be rolled back: a failed segment is met by recalculation. | `PS-97`, `PS-93`, `PS-166` | Simulation test: no alternatives remain. |
+| `REQ-ORD-28` | With no route left, an order MUST become stuck. The operator resolves and bears it, whatever left it stuck, a false judgement included (`REQ-CPL-12`), and its processing MUST be recorded (`REQ-AUZ-4`). In normal conditions an order MUST NOT be rolled back: a failed segment is met by recalculation. | `PS-97`, `PS-93`, `PS-166` | Simulation test: no alternatives remain. |
 | `REQ-ORD-29` | An order MUST become stuck when funds take longer than twice the p99 to traverse a segment at that provider, or twice its advertised time until it has history, and the operator MUST be warned. The stuck state MUST be recorded. The figure MAY be calculated outside the core. | `PS-73`, `PS-81`, `PS-144` | Simulation test at the boundary. |
 | `REQ-ORD-30` | Evidence about an undone starting segment MUST be recorded as it arrives, even in pieces. After the route has started, the origin reserve carries that loss, and the customer keeping what was delivered doesn't change that. | `PS-116`, `THR-31`, `PS-137` | Test: partial evidence is kept. |
 | `REQ-ORD-31` | A destination reporting complete and later returned MUST be recorded and notified under `REQ-ORD-20`. The order stays complete. | `PS-121`, `PS-35` | Test: return after complete. |
@@ -252,7 +253,7 @@ Normative. Each has a statement, what it derives from, and how it is verified. `
 | `REQ-AUD-3` | Records made before a compromise MUST NOT be alterable or removable without the operator's own review noticing. This claims nothing against someone with full operator control. | `PS-21`, `THR-20` | Test: alter and remove records, then review. |
 | `REQ-AUD-4` | A route's decision record MUST hold the request, every candidate and why each was dropped, each input with its age and origin, the objective, and policy and module versions, enough to recompute the choice without calling a provider. | `PS-21`, `PS-75`, `PS-83`, `THR-10` | Test: recompute from the record alone. |
 | `REQ-AUD-5` | Each party MUST be able to obtain and keep evidence of what it stated and what it was told about its own part of an order. | `PS-21`, `PS-93`, `THR-32` | Test: a party's evidence against a changed record. |
-| `REQ-AUD-6` | Records and logs MUST hold no secret plaintext and no balance. Identity MUST appear only as a reference. | `PS-30`, `PS-31`, `PS-85` | Test: scan the records from a full simulated run. |
+| `REQ-AUD-6` | Records and logs MUST hold no secret plaintext and no balance. Identity MUST appear only as a reference. A holding account's balance, read to verify it (`REQ-AUD-15`), MAY be kept only as evidence held outside the log, never in the log or a record. | `PS-30`, `PS-31`, `PS-85` | Test: scan the records from a full simulated run. |
 | `REQ-AUD-7` | Per provider and per verifier, these MUST be measurable in bulk: quotes against executed prices, dry-run against outcome, failures against market direction, refusals, reversals, and rates of no. | `PS-21`, `PS-71`, `PS-95`, `THR-27` | Test: each measure from simulated runs. |
 | `REQ-AUD-8` | Each role MUST be recorded separately, even where one party holds several. | `PS-102` | Test: one party with several roles. |
 | `REQ-AUD-9` | History MUST NOT be rewritable without a checker outside the operator seeing it. This claims nothing about what was never recorded, or about whether an entry is true. Retention and erasure are `REQ-AUD-13`. | `PS-104` | Test: rewrite history with full operator access; the checker detects it. |
@@ -278,7 +279,7 @@ Normative. Each has a statement, what it derives from, and how it is verified. `
 | `REQ-CPL-9` | Where a reserve demands a person's presence, the reserve decides what an agent may do, and rutent MUST only report the outcome. | `PS-103` | Test: presence demanded of an agent. |
 | `REQ-CPL-10` | Each provider MUST know a person under a different subject reference. Only the operator MUST be able to join them. A subject reference MUST be usable only by parties entitled to it. | `PS-30`, `PS-145`, `THR-48` | Test: two providers can't match a person's references; an unentitled party can't resolve one. |
 | `REQ-CPL-11` | Personal details of a payer who isn't a customer MUST stay with the provider that received them, and rutent's records MUST hold a reference at most. | `THR-113` | Test: scan the records after a third-party payment. |
-| `REQ-CPL-12` | The loss from a false judgement by a verifier or reserve MUST fall on the provider that relied on it. Records MUST show whose judgement it was and who relied on it, so that provider can recover under contract, which is outside this document. | `PS-156`, `THR-91` | Inspection: no path charges that loss to the operator or a customer; test: the record names the judgement's maker and the provider relying on it. |
+| `REQ-CPL-12` | The loss from a false judgement by a verifier or reserve MUST fall on the provider that relied on it. Records MUST show whose judgement it was and who relied on it, so that provider can recover under contract, which is outside this document. Where the false judgement leaves an order stuck, `REQ-ORD-28` governs: the operator bears the loss, then recovers it under contract (`OBL-2`), the records naming the judgement's maker and the provider that relied on it. From whom it recovers is open (form item `false-judgement-recovery`). | `PS-156`, `THR-91` | Inspection: no path charges that loss to a customer, nor to the operator except on a stuck order (`REQ-ORD-28`); test: the record names the judgement's maker and the provider relying on it. |
 
 ### `REQ-AUZ-*`: authorisation and policy
 
@@ -412,7 +413,7 @@ Normative scenarios. Each names what it accepts. The worked examples are deploym
 | `AC-14` | Given a charge known only after execution, when a provider charges above its formula's maximum, then that is flagged to the operator. | `REQ-QTE-5` |
 | `AC-15` | Given a balance check, then the answer is yes or no for the stated amount, and the check is logged and counted. A dry-run that reveals the same counts too. | `REQ-CAT-3`, `REQ-CAT-4`, `INV-9` |
 | `AC-16` | Given a shortlisted route, then only its providers are asked, each verifier receives a person and a class only, and a no brings a recalculation. | `REQ-CPL-6`, `REQ-CPL-4` |
-| `AC-17` | Given an unreachable verifier, then the decision is a refusal, and no value moves. | `REQ-AUZ-5` |
+| `AC-17` | Given an unreachable verifier, then the decision is "not known", and no value moves. | `REQ-AUZ-5` |
 | `AC-18` | Given a thousand agents under one accountable party, then limits on work and on asking about people bind them together. | `REQ-AUZ-8`, `REQ-OPS-1` |
 | `AC-19` | Given an upgrade of one provider's module, then orders at other providers aren't interrupted, and a failed upgrade leaves the previous version in force. | `REQ-MDL-13`, `REQ-MDL-4` |
 | `AC-20` | Given a module from each of two languages, when admitted, then both run in the sandbox, and neither part can read another provider's state or secrets. | `REQ-MDL-15`, `REQ-MDL-9` |
@@ -606,14 +607,14 @@ ruling), Confidential (commercially or operationally sensitive), Internal, Publi
 | `THR-44` | Anyone who can force a no | Each no brings a new shortlist (R35), so more providers learn of the same person with each recalculation | R35's privacy wears away; person | `PS-95`, R35 | Mitigated (bounds): `REQ-CPL-5` |
 | `THR-45` | Third party | Asks a verifier about people it has no order for: who is eligible, who is flagged | Compliance status of people leaks | `PS-78`, `PS-95` | Mitigated (prevents): `REQ-CPL-2` |
 | `THR-46` | Shortlisted provider | Trades ahead or reprices on what it saw at the check or dry-run | Worse price; customer | `PS-71`, `PS-78`, [routing] | Mitigated (detects only): `REQ-AUD-7`. Operator sees it statistically, not per order |
-| `THR-47` | Provider | Learns a rival's quote, or that a rival was asked | Quiet collusion; customers | `PS-16`, [routing] | Mitigated (prevents): `REQ-CAT-5` |
+| `THR-47` | Provider | Learns a rival's quote, or that a rival was asked | Quiet collusion; customers | `PS-16`, [routing] | Mitigated (prevents): `REQ-CAT-5`. The timing of one customer's asks can still link them (accepted for v0, `cat5-timing-residual`). |
 | `THR-48` | Operator, or whoever breaches it | Joins one person's activity across providers through a shared reference. Stopping that also stops anyone catching fronting | A full history of a person | `PS-30`, [compliance], [verifier] | Mitigated (bounds): `REQ-CPL-10`. The operator can still join them |
 | `THR-49` | Intruder at the operator | Takes the audit trail and route records in bulk | Every customer's routes; a provider-by-provider map | `PS-21`, `PS-88` | Mitigated (bounds): `REQ-AUD-6` |
 | `THR-50` | A bug or a module | Puts secret plaintext or a raw provider response into logs, errors or the trail | Credential theft; provider, operator | `PS-85`, R37 | Mitigated (bounds): `REQ-AUD-6`, `REQ-MDL-12`. A raw provider response isn't covered by name |
 | `THR-51` | Customer, provider, or someone posing as a regulator | Reads orders or records that aren't theirs | Confidentiality; other customers | `PS-13`, `PS-88` | Mitigated (prevents): `REQ-AUZ-7` |
 | `THR-113` | Provider, or whoever holds the records | Keeps the personal details of a payer who isn't a customer | That person's data, with no relationship behind it | `PS-30`, `PS-120` | Mitigated (bounds): `REQ-CPL-11`, `REQ-AUD-6` |
 | `THR-114` | Provider | Its failure text, with markup or other parties' names, reaches a customer | Disclosure, and a reason nobody can act on | `PS-85` | Mitigated (prevents): `REQ-ORD-18` |
-| `THR-130` | Anyone watching the checkpoints | Infers how busy the operator is from their timing or size | Volumes reach rivals; operator, providers | `PS-155` | Mitigated (prevents): `REQ-AUD-14` |
+| `THR-130` | Anyone watching the checkpoints | Infers how busy the operator is from their timing or size | Volumes reach rivals; operator, providers | `PS-155` | Mitigated (prevents): `REQ-AUD-14`. Checkpoints reveal no size or timing of activity. A party's receipt names the log's size when it was issued, so that party can learn growth between two receipts (accepted for v0). |
 | `THR-133` | Anyone holding the log after an erasure | Links one person's orders through the reference that stays | Some linkage survives erasure; that person | `PS-154`, `PS-30` | Mitigated (bounds): `REQ-AUD-13`, `REQ-AUD-6`. The identity is gone, and the link between its orders stays |
 
 #### Denial of service
@@ -625,7 +626,7 @@ ruling), Confidential (commercially or operationally sensitive), Internal, Publi
 | `THR-54` | Attacker | Uses up an account's check allowance so the owner's own orders fail. Checks only happen in a session, and the owner's own don't count | Victim is blocked | `PS-87` | Mitigated (prevents): `REQ-CAT-3` |
 | `THR-55` | Attacker | Takes a verifier down so eligibility passes by default | Eligibility bypassed; providers, operator | `PS-78`, `PS-95` | Mitigated (prevents): `REQ-AUZ-5` |
 | `THR-56` | Verifier or vouching provider | Says no falsely: blocks a lawful user, or steers a route away from a rival, since a no forces a recalculation | User; the rival | R35, [verifier] | Mitigated (detects only): `REQ-AUD-7`. Operator sees rates of no by maker |
-| `THR-57` | Provider or module | Exhausts CPU, memory, outbound calls or state, or advertises so many tuples that routing slows. Never answering leaves work pending forever, since calls don't time out | Other providers; operator | `PS-18`, `PS-20`, `PS-70`, `PS-81` | Mitigated (bounds): `REQ-MDL-11`, `REQ-CAT-1` |
+| `THR-57` | Provider or module | Exhausts CPU, memory, outbound calls or state, or advertises so many tuples that routing slows. Never answering leaves work pending forever, since calls don't time out | Other providers; operator | `PS-18`, `PS-20`, `PS-70`, `PS-81` | Mitigated (bounds): `REQ-MDL-11`, `REQ-CAT-1`. A name lookup is given up at the deadline; its thread lives until the resolver returns, at most four per provider. |
 | `THR-58` | Attacker with many small orders on a slow provider | Fills the manual queue, so a large theft hides and warnings turn to noise | Operator; resolution is "mostly manual" | `PS-73`, `PS-81` | Mitigated (bounds): `REQ-OPS-2` |
 | `THR-59` | Attacker | Suppresses the warning to the operator | Stuck orders go unseen while the operator carries the risk | `PS-73`, `PS-93` | Mitigated (detects only): `REQ-ORD-7`. Operator notices the warning path is down |
 | `THR-60` | Absent customer, agent or person | Lets value wait between segments: for consent, for presence, for a route. The stuck rule covers only traversing a segment, so this is never stuck | Silent stall; customer | `PS-73`, `PS-81` | Mitigated (detects only): `REQ-ORD-5`. Operator and customer see age. |
@@ -667,7 +668,7 @@ ruling), Confidential (commercially or operationally sensitive), Internal, Publi
 | `THR-88` | Insider | Declares a version "actively exploited" falsely to halt a rival, or sits on a true one | Stranded orders, or continued loss | `PS-86`, R31 | Mitigated (detects only): `REQ-AUZ-6`, `REQ-AUD-1`. Operator's review sees who declared and when |
 | `THR-89` | Attacker | Exploits a flawed version while in-flight orders finish on it, until someone declares | Those orders' value | `PS-86`, R31 | Accepted, R31 |
 | `THR-90` | Provider | Posts a route, or has its suggestion treated as the operator's | Breaks `PS-80`; customers | `PS-74`, `PS-80` | Mitigated (prevents): `REQ-AUZ-2` |
-| `THR-91` | Reserve or verifier | Says yes without checking, or checks wrongly. No signature shows a failure of truth | Provider, and the people it should have stopped. The provider that relied on it carries the loss (`REQ-CPL-12`) | `PS-22`, `PS-78`, [compliance] | Accepted, R72 |
+| `THR-91` | Reserve or verifier | Says yes without checking, or checks wrongly. No signature shows a failure of truth | Provider, and the people it should have stopped. The provider that relied on it carries the loss (`REQ-CPL-12`), or the operator where it leaves an order stuck, which bears it, then recovers it under contract (`REQ-ORD-28`) | `PS-22`, `PS-78`, [compliance] | Accepted, R72 |
 | `THR-92` | Verified person | Fronts for others, or runs many agents. Possession of a credential doesn't show who benefits | Providers; regulators' view of them | `PS-2`, `PS-22`, [compliance] | Accepted, R72 |
 | `THR-93` | Person | A yes outlives the facts, or is withdrawn mid-order. Yet "orders are not failible" | Value in flight for someone no longer eligible; operator | `PS-92`, `PS-95`, [verifier] | Accepted, R119, as ruled in R64 |
 | `THR-94` | Customer | Passes a check, then spends the funds, or passes two orders on one balance. A yes is no reservation (R41). The withdrawal then fails, and the order is cancelled | Free work for the attacker; maybe a stuck order the operator pays for | `PS-77`, `PS-92`, R41 | Mitigated (bounds): `REQ-ORD-40`, `REQ-OPS-1`. It can't become a stuck order, but the work is still done |
@@ -692,7 +693,7 @@ Accepted by the owner under R72. rutent states these and doesn't solve them.
 |---|---|
 | Limit of `THR-15` | Two adjacent providers agreeing their reports can't be detected from inside. |
 | Limit of `THR-92` | A verified person can front for others, or run many agents. |
-| Limit of `THR-91` | A verifier or reserve can state something false. The provider that relied on it carries that loss (`REQ-CPL-12`). |
+| Limit of `THR-91` | A verifier or reserve can state something false. The provider that relied on it carries that loss (`REQ-CPL-12`); where it leaves an order stuck, the operator bears it, then recovers it under contract (`REQ-ORD-28`). |
 | Limit of `THR-42` | A verifier learns something just by being asked. |
 | Limit of `THR-75` | Customers rely on the operator's solvency for stuck orders. |
 | Limit of `THR-81` | A stolen credential can be used outside rutent. |
@@ -700,7 +701,7 @@ Accepted by the owner under R72. rutent states these and doesn't solve them.
 
 ### Accepted under earlier rulings
 
-Each was ruled on its own item, and the lead confirmed them together under R119.
+Each was ruled on its own item, and the lead confirmed them together under R119. The last row was accepted by the owner on the decision form on 2026-11-18.
 
 | Threat | Ruling | What is accepted |
 |---|---|---|
@@ -718,6 +719,7 @@ Each was ruled on its own item, and the lead confirmed them together under R119.
 | Limit of `THR-30` | R109 | A dispute where the operator acted has only the operator's record |
 | Limit of `THR-2` | R115 | A stolen session acts as the user at those reserves |
 | Limit of `THR-129` | R92 | A friendly checker: customers and providers can judge it, and nothing stops one |
+| Limit of `THR-47` | `cat5-timing-residual` | In v0, the timing of one customer's questions can link them, at one provider or across colluding ones, though each is its own transaction (`REQ-CAT-5`): jitter of a few hundred milliseconds won't break a link between asks seconds apart at v0's volume. Revisited when volume gives cover |
 
 ### What can't be mitigated
 
@@ -790,7 +792,7 @@ The split `oss-ledger-2` requires. What rutent itself guarantees, against what w
 | ID | The operator must | Source |
 |---|---|---|
 | `OBL-1` | The operator MUST hold, for each provider, the narrowest credential that provider offers, and record what it allows. | `PS-83`, `oss-ledger-2`, `THR-80` |
-| `OBL-2` | The operator MUST resolve stuck orders and bear them. How it recovers from a provider is contract, outside this document. | `PS-93` |
+| `OBL-2` | The operator MUST resolve stuck orders and bear them. How it recovers from a provider is contract, outside this document. Its own staff and agents MUST include two actors whose chains of accountable parties meet nowhere below the operator, each holding the permissions for a stuck order's two steps, since actors whose chains meet there count as one (`REQ-AUZ-4`, ADR-0011); without them, no stuck order can be resolved. | `PS-93` |
 | `OBL-3` | The operator MUST check a provider's ability to pay for reversals before granting entry. | `PS-105` |
 | `OBL-4` | The operator MUST appoint a checker, and name it to customers and providers. | `PS-118`, `PS-140` |
 | `OBL-5` | The operator SHOULD set ceilings on value in flight, and watch its exposure on stuck orders. Customers rely on its solvency (`THR-75`). | `PS-93`, `THR-74` |

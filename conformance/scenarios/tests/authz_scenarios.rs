@@ -402,11 +402,11 @@ fn order_under_judgement(verifier: Verifier) -> Moved {
 /// permit, so no effect is recorded, the reserve moves nothing and the order doesn't complete. Reached and silent,
 /// reached and saying no, are refusals, and nothing moves on them either; reached and saying yes, the same order
 /// moves, so the stop above is the verifier's and nothing else's. The engine answers a verifier it can't reach "not
-/// known" with its own cause and not "refused" (`REQ-AUZ-5`, core-internal's README), which `AC-17`'s wording doesn't
-/// say; the form's `spec-ac17-not-known` has it (`F-021`'s notes), and the test holds that either way nothing moves.
+/// known" with its own cause and not "refused" (`REQ-AUZ-5`, core-internal's README), as `AC-17` says since the owner
+/// settled `spec-ac17-not-known` on 2026-11-18 (`SPEC.md` 0.4.2).
 // verifies: AC-17, REQ-AUZ-5
 #[test]
-fn unreachable_verifier_gives_a_refusal_and_nothing_moves() {
+fn unreachable_verifier_gives_not_known_and_nothing_moves() {
     let mut out_of_reach = order_under_judgement(Verifier::Unreachable);
     assert!(
         !out_of_reach.decisions.is_empty(),

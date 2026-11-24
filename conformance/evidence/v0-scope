@@ -55,7 +55,7 @@ REQ-CAT-1 | m3
 REQ-CAT-2 | m3
 REQ-CAT-3 | m3
 REQ-CAT-4 | m3
-REQ-CAT-5 | partly | form:cat5-timing-residual | timing correlation of questions is a residual only the owner can accept
+REQ-CAT-5 | m3 | | the timing correlation of a customer's questions is a v0 residual the owner accepted on 2026-11-18 (cat5-timing-residual; SPEC.md, accepted limit of THR-47)
 REQ-CAT-6 | m3
 REQ-CAT-7 | m3
 REQ-CAT-8 | m3

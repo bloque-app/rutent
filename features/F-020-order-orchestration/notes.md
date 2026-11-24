@@ -5820,3 +5820,45 @@ Branch `f-020/t-020-35-report-pair-built`, from `933a7ad9`. Edits `components/co
   | an unbuilt pair is not parked | `pair that can't be built leaves the segment settled and the part running to its end` |
   | a refused pair stays at the queue's head | `a pair the log refuses is parked and the pairs after it still go` |
   | the tuple's increment dropped from the pair's terms | the pair-with-terms test and the within-one-increment test |
+
+## The owner's answers of 2026-11-18, in the plan (2026-11-23)
+
+`PLAN.md` gains `T-020-39` to `T-020-43` (waves 33 and 34, and `T-020-42` in 35) for the items `rollback-permission`,
+`confirmer-evidence-party`, `erasure-of-cited-evidence`, `deposit-no-firm-rate` and `shared-movement-reading`, with
+`T-020-39` the contract round that carries their shapes. The router's half of `shared-movement-reading` is
+`T-020-43`'s, not an `F-011` row: an `M2` feature's row can't wait on an `M3` one (`plan-check`), so the router's search
+is an outer library's code that `T-020-43`'s Work names, as `T-020-02` edited the router's `quote` module.
+
+### The origin check of 2026-11-23
+
+The owner answered `origin-account-change` "Payer only" and `third-party-payer-authorises` "Requester only", read
+together as: in v0 the origin stays as the first authorisation set it. Read against `m3` at `e63afbeb`:
+
+- **Orchestration holds to it.** Core builds an authorisation in three places, each the order's first or a carry-on
+  of it: intake (`components/core-orch/src/intake/mod.rs:863`, the origin account from the order's inputs at `:870`),
+  a carry-on by another login of the requester's party, which reuses the accepted authorisation whole
+  (`intake/mod.rs:691`), and arrival's filing (`components/core-orch/src/arrival/filing.rs:283`, the arrival's own
+  account at `:287`; its carry-on at `:383`, `..self.authorisation.clone()` at `:387`). The one path for new terms,
+  the customer's choice after a failed final deposit (`hand_on/mod.rs:232`), refuses any change of the origin reserve
+  or account (`components/core-orch/src/hand_on/rule.rs:119` to `:121`, `Refused::ChangesOrigin`). No path of
+  `core-orch` moves an origin account.
+- **Policy is wider.** `core-authz` lets the order's payer move a part's origin account after the first authorisation:
+  `origin_in_force` takes each later authorisation the payer gave (`components/core-authz/src/funds/mod.rs:306`), and
+  a move is refused only where the giver isn't the payer (`funds/mod.rs:466` to `:470`, `by_the_payer` at `:201`).
+  The log's row `only-the-payer-moves-the-origin-account` is the same rule
+  (`contracts/src/core_internal/relations.rs:4988` and `:4999`). "Requester only" holds: a customer-role actor
+  authorises only for the order's requester (`components/core-authz/src/roles/mod.rs:270`; `funds/mod.rs:68`), so a
+  third-party payer gives no authorisation. But where the payer is the requester, the common case, policy and the
+  log would permit a move of the origin account, and only orchestration's own guard stops it.
+- **So the code holds to the reading only through orchestration**, not through the decision call. `T-021-11` makes
+  policy refuse any move of an origin account once one is in force, the payer's included, so the decision call holds
+  what orchestration already does. A part whose authorisation in force names no account yet may have one named once
+  (`origin_in_force` answers `Some(None)` there, `funds/mod.rs:303`; `sets_account` at `:476`), and it is held from
+  then. The reading is the owner's own, not one for the form: the notes on both items say the origin is fixed at the
+  first authorisation and nobody changes it in v0, and to widen both together later. That is also why the contract's
+  `only-the-payer-moves-the-origin-account` stays as it is: it is the widened rule, kept for then, and policy holds
+  within it until both are widened.
+- **`false-judgement-stuck-bearer`'s open half.** `SPEC.md` 0.4.2 has `REQ-ORD-28` govern a stuck order a false
+  judgement left: the operator bears it, then recovers under contract, the reliance record (`T-020-23`) naming the
+  judge and the provider that relied on it. From whom it recovers is not decided: form item
+  `false-judgement-recovery`.
