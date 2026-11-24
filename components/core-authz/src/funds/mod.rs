@@ -58,17 +58,19 @@
 //! - **The customer gives new terms** (`by_the_customer`): one acting for the order's requester, the party its
 //!   acceptance names, in the customer's role. A stated role alone is not the customer, nor is the requester's party
 //!   in another role. Only its authorisation replaces a part's terms in force.
-//! - **Only the payer moves the origin account** (`only-the-payer-moves-the-origin-account`): a part's origin account
-//!   is set by the first permitted authorisation speaking for it, then only by the payer's, one acting for the party
-//!   the acceptance names as payer, in the customer's role. Anyone else's naming another account than the one in force
-//!   is refused, so a requester can't redirect a payer's refund. And an authorisation that sets or moves an origin
-//!   account is held to the payer's own accounts (core-internal's README, "Who moves the origin account"): the
-//!   account's register must say the payer holds it (`Source::Account`), which the log can't.
+//! - **The origin account is held once set** (`T-021-11`; within core-internal's
+//!   `only-the-payer-moves-the-origin-account`): a part's origin account is the first one a permitted authorisation
+//!   speaking for it names, and from then no authorisation names another, the payer's included. The owner's reading
+//!   (`origin-account-change` "Payer only" with `third-party-payer-authorises` "Requester only"): in v0 the origin
+//!   stays as the first authorisation set it, and both are widened together later, when this narrows back to the
+//!   log's wider rule. A part whose authorisations name none yet may have one named once, by the payer's
+//!   authorisation, the only one the log admits for it. An authorisation that sets an origin account is held to
+//!   the payer's own accounts (core-internal's README, "Who moves the origin account"): the account's register must
+//!   say the payer holds it (`Source::Account`), which the log can't.
 //!
-//! Default, reversible: `T-021-03`'s fixed rule still lets a customer-role actor authorise only for the order's
-//! requester, so a payer that isn't the requester gives no authorisation at all, and on such an order no one moves the
-//! origin account once it is set. The contract lets that payer move it; letting it through needs a word on the payer
-//! that a fixed rule can read, a source or a change to that rule, which is the coordinator's to place.
+//! Default, reversible: `T-021-03`'s fixed rule lets a customer-role actor authorise only for the order's requester, so
+//! a payer that isn't the requester gives no authorisation at all, and on such an order no one names the origin
+//! account after the first authorisation that leaves it unnamed.
 //!
 //! Intake records an order's acceptance before it asks policy for the authorisation it gives (the coordinator's
 //! ruling on the payer gap), so the first authorisation has its payer too. A filing on an automatic deposit asks before
@@ -300,22 +302,19 @@ impl Authorised {
             .map(|(terms, _)| terms)
     }
 
-    /// The origin account in force for `part` of `order`, its payer `payer`: the one the first permitted authorisation
-    /// speaking for the part names, then each later one the payer gave. `None` where no authorisation speaks for it;
-    /// `Some(None)` where the one in force names no account. Core-internal's `origin_account_in_force`.
-    fn origin_in_force(
-        &self,
-        order: &Id,
-        part: Option<&Id>,
-        payer: Option<&Id>,
-    ) -> Option<Option<&Id>> {
+    /// The origin account in force for `part` of `order`: the first one a permitted authorisation speaking for the
+    /// part names, held from then (`T-021-11`: in v0 nobody moves it). `None` where no authorisation speaks for the
+    /// part; `Some(None)` where those that do name no account yet. Narrower than core-internal's
+    /// `origin_account_in_force`, which also follows each later one the payer gave: policy permits none, so the two
+    /// agree on every log policy wrote.
+    fn origin_in_force(&self, order: &Id, part: Option<&Id>) -> Option<Option<&Id>> {
         let mut current: Option<Option<&Id>> = None;
         for a in self
             .permitted
             .iter()
             .filter(|a| &a.order == order && speaks_for(a, part))
         {
-            if current.is_none() || by_the_payer(a, payer) {
+            if current.is_none() || current == Some(None) {
                 current = Some(a.origin_account.as_ref());
             }
         }
@@ -462,22 +461,28 @@ impl Authorised {
         if anew && !by_the_customer(a, requester) {
             return Some(RefusalClass::NotPermitted);
         }
-        // Only the payer moves a part's origin account once one is in force.
-        let moves_the_account = self.held(a).into_iter().any(|part| {
-            self.origin_in_force(&a.order, part, payer)
-                .is_some_and(|current| current != a.origin_account.as_ref())
-        });
-        (moves_the_account && !by_the_payer(a, payer)).then_some(RefusalClass::NotPermitted)
+        // In v0 nobody moves a part's origin account once one is in force, the payer included (`T-021-11`). A part
+        // whose authorisations name none yet may have one named once, by the payer alone: the log's
+        // `only-the-payer-moves-the-origin-account` admits no other's.
+        let moves_the_account =
+            self.held(a)
+                .into_iter()
+                .any(|part| match self.origin_in_force(&a.order, part) {
+                    Some(Some(current)) => a.origin_account.as_ref() != Some(current),
+                    Some(None) => a.origin_account.is_some() && !by_the_payer(a, payer),
+                    None => false,
+                });
+        moves_the_account.then_some(RefusalClass::NotPermitted)
     }
 
     /// The account `a` sets or moves as a part's origin account, where it does: one it names that isn't the one in
     /// force for a part it is held to, or for a part with none in force yet.
-    fn sets_account<'a>(&self, a: &'a Authorisation, payer: Option<&Id>) -> Option<&'a Id> {
+    fn sets_account<'a>(&self, a: &'a Authorisation) -> Option<&'a Id> {
         let account = a.origin_account.as_ref()?;
         self.held(a)
             .into_iter()
             .any(|part| {
-                self.origin_in_force(&a.order, part, payer)
+                self.origin_in_force(&a.order, part)
                     .is_none_or(|current| current != Some(account))
             })
             .then_some(account)
@@ -580,7 +585,7 @@ impl<L: PolicyLog + Recorded + Receipted, P, S: Sources> Engine<L, P, S> {
             return held(consulted, Some(class));
         }
         let payer = parties.as_ref().map(|p| &p.payer);
-        let Some(account) = self.authorised.sets_account(a, payer) else {
+        let Some(account) = self.authorised.sets_account(a) else {
             return consulted;
         };
         // An order the log holds no acceptance of, and no record knows, names no payer: refused as one not the
