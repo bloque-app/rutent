@@ -828,7 +828,8 @@ fn inputs_of(
 /// holds half of, and the holding account's withdrawal its mover kept (the effect, its `done` result, the linked
 /// order's acceptance and decision record, the wallet's own answer): asked again, it appends the linked order's
 /// `route_chosen` and the holding account's record of its start, each once, and the `handed_on` stays the one the log
-/// took (`REQ-ORD-43`, `INV-4`).
+/// took; the route it logged is the one the linked order was accepted on, so its first move runs and settles
+/// (`REQ-ORD-43`, `INV-4`).
 // verifies: REQ-ORD-43, INV-4
 #[test]
 fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
@@ -920,6 +921,19 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     assert_eq!(
         starts, 1,
         "the holding account's record starts the linked order once"
+    );
+    // The route the reopened Core logged is the one the linked order was accepted on, segment by segment: its first
+    // move runs on it and settles.
+    let ran = stuck
+        .core
+        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .expect("the linked order's route runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
     );
 }
 
