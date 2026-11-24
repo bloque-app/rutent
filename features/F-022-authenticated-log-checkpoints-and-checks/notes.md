@@ -1271,13 +1271,13 @@ admitted effect until a `failed` result undoes it.
   kept, and on reopening `refused_erasures` reports the decided erasure the store refused (`EVIDENCE_RESTED_ON`) while
   `unsettled_erasures` is empty. `reconcile`'s `ERASED_YET_CITED` check stays, a defence for a log whose store erased
   before this rule.
-- **(3) The drift test.** `log::keys::tests::contracts_revoked_before_receipt_and_the_registers_agree_over_the_attribution_fixtures`
+- **(3) The drift test.** `log::keys::tests::contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures`
   (a unit test, since the register is private to the log) reads every history-bearing fixture of core-internal's
   `fixtures/attribution`, renumbers its receipts to their places (the log numbers them so; results still name their
   effects), feeds the entries to a `Register` through `record`, and compares the register's `revoked_before_receipt`
   with the contract's at five received times per fixture (the claim's own, the made time, and +1 s, +1 day, +30 days).
-- **Tests (`tests/log.rs`).** `a_statement_received_between_a_revocations_effect_and_its_result_is_unattributed`
-  [`THR-3`] and `a_revocation_whose_result_failed_attributes_again` [`THR-3`], seen red on their assertions before the
+- **Tests (`tests/log.rs`).** `statement_received_between_a_revocations_effect_and_its_result_is_unattributed`
+  [`THR-3`] and `revocation_whose_result_failed_attributes_again` [`THR-3`], seen red on their assertions before the
   code; the store test above, red on its first assertion before the code. The drift test passes on first run (written
   after the code); its red was watched by the rule-offs below.
 - **Defaults.** (1) A revocation whose effect has no result yet counts, as the contract reads it. (2) The drift test is
@@ -1291,6 +1291,24 @@ admitted effect until a `failed` result undoes it.
   | Rule switched off | Red |
   |---|---|
   | R1: a revocation counts from its `done` result only | both log tests, the drift test |
-  | R2: a `failed` result does not undo a revocation | `a_revocation_whose_result_failed_attributes_again`, `a_grant_trusts_only_the_keys_it_names_once_done`, the drift test |
+  | R2: a `failed` result does not undo a revocation | `revocation_whose_result_failed_attributes_again`, `a_grant_trusts_only_the_keys_it_names_once_done`, the drift test |
   | R3: `erase` calls `erasable_overriding`, not `..._since` | the store refusal test |
   | R4: the receipt bound `<= received` becomes `< received` | the drift test, `a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time` |
+
+### Fix round 1 (`T-022-11`, after the review of `13b6415e`)
+
+- **Names.** The three tests carry the plan's names (`statement_received_between_a_revocations_effect_and_its_result_is_unattributed`,
+  `revocation_whose_result_failed_attributes_again`, `contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures`).
+  `T-022-10`'s row named `citation made after an override's decision is still reported`, the test this row turned into
+  `store refuses an override erasure of a statement cited after its decision`: the row now names the new one (a
+  PLAN-only edit).
+- **An erased statement answers `Ok`.** `erasable_overriding_since` answers `Ok` for a statement erased already, after
+  the other rules, so a retried override erase after an erasure carried out under the older rule isn't refused (INV-8):
+  `a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok` (the reviewer's probe, as far as an admitting log lets it be built: it refuses a citation once an erasure has begun, so
+  the state of an erasure carried out under the older rule can't be reached, and the check is asked with an earlier
+  decision instead, which cites the same way). Rule-off F6 (drop the early `Ok`) turns it red.
+- **Drift test.** It asserts each fixture's receipt indices are unique and every result's effect is found, and compares
+  at the claimed `made_at` and at the time of every change in the history (ties with a grant's or a class's time).
+- **Residual for `T-025-05`.** Orchestration writes the results, so a `failed` it writes can undo a revocation policy
+  permitted. Before this row it could withhold `done` and so keep the revocation from counting: the power is the same,
+  moved from "withhold" to "undo". A revocation's effect still needs policy's permit; its result doesn't.

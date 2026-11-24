@@ -525,7 +525,7 @@ impl Register {
 
     /// Whether every grant of `provider` in force at `made_at` was revoked after it and no later than `received`,
     /// the time the log received the statement: core-internal's `revoked_before_receipt` (`THR-3`, `T-020-39`),
-    /// read from the register's done changes as the contract reads them from the history. Each grant, a tuple's or
+    /// read from the register's grants done and revocations admitted (not undone) as the contract reads them from the history. Each grant, a tuple's or
     /// a verifier's class, is in force at `made_at` where its latest change at or before it, by the effect's time and
     /// the later one on a tie, granted; a grant made again after its revocation is a new grant and holds nothing
     /// made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
@@ -760,21 +760,24 @@ mod tests {
         out
     }
 
-    fn history_of(case: &Value) -> Vec<(Receipt, Entry)> {
+    fn history_of(name: &str, case: &Value) -> Vec<(Receipt, Entry)> {
         let items = case["history"].as_array().cloned().unwrap_or_default();
-        let places: BTreeMap<u64, usize> = items
-            .iter()
-            .enumerate()
-            .map(|(place, i)| (i["receipt"]["index"].as_u64().unwrap(), place))
-            .collect();
+        let mut places: BTreeMap<u64, usize> = BTreeMap::new();
+        for (place, i) in items.iter().enumerate() {
+            let index = i["receipt"]["index"].as_u64().unwrap();
+            assert!(
+                places.insert(index, place).is_none(),
+                "{name}: receipt index {index} is not unique"
+            );
+        }
         items
             .into_iter()
             .enumerate()
             .map(|(place, mut item)| {
                 item["receipt"]["index"] = place.into();
-                if let Some(effect) = item["entry"]["what"].get_mut("effect")
-                    && let Some(at) = effect["index"].as_u64().and_then(|i| places.get(&i))
-                {
+                if let Some(effect) = item["entry"]["what"].get_mut("effect") {
+                    let at = effect["index"].as_u64().and_then(|i| places.get(&i));
+                    let at = at.unwrap_or_else(|| panic!("{name}: a result's effect is not found"));
                     effect["index"] = (*at).into();
                 }
                 (
@@ -801,44 +804,57 @@ mod tests {
     }
 
     /// The contract's `revoked_before_receipt` and the register's reading of it agree over every attribution
-    /// fixture, at the claim's received time and at three others around it, so the port can't drift from the rule
-    /// (`THR-3`, the review's Low on the register).
+    /// fixture, at the claim's own times and at the time of each change in its history (so a tie in time between a
+    /// claim and a change, a grant's or a class's, is compared), each with five received times around the making, so
+    /// the port can't drift from the rule (`THR-3`, the review's Low on the register).
     // verifies: THR-3
     #[test]
-    fn contracts_revoked_before_receipt_and_the_registers_agree_over_the_attribution_fixtures() {
-        let mut compared = 0;
-        let mut revoked = 0;
+    fn contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures() {
+        let (mut compared, mut revoked) = (0, 0);
         for (name, case) in fixtures() {
             if case["history"].as_array().is_none_or(|h| h.is_empty()) {
                 continue;
             }
             let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
-            let history = history_of(&case);
+            let history = history_of(&name, &case);
             let register = register_of(&case, &history);
             let maker = claim.attribution.maker().acts.clone();
-            let made = claim.when.at.clone();
-            let at = |seconds: i128| {
-                Timestamp::new(rfc3339(made.unix_nanos() + seconds * 1_000_000_000)).unwrap()
-            };
-            for received in [
-                claim.received_at.clone(),
-                made.clone(),
-                at(1),
-                at(86_400),
-                at(30 * 86_400),
-            ] {
-                let theirs = contracts_rule(&history, &maker, &made, &received);
-                let ours = register.revoked_before_receipt(
-                    maker.as_str(),
-                    made.unix_nanos(),
-                    received.unix_nanos(),
-                );
-                assert_eq!(ours, theirs, "{name}, received {}", received.as_str());
-                compared += 1;
-                revoked += usize::from(theirs);
+            let mut mades = vec![claim.when.at.clone()];
+            for (_, entry) in &history {
+                if let Entry::Verified(v) = entry {
+                    mades.push(v.when.at.clone());
+                }
+            }
+            for made in mades {
+                let at = |seconds: i128| {
+                    Timestamp::new(rfc3339(made.unix_nanos() + seconds * 1_000_000_000)).unwrap()
+                };
+                for received in [
+                    claim.received_at.clone(),
+                    made.clone(),
+                    at(1),
+                    at(86_400),
+                    at(30 * 86_400),
+                ] {
+                    let theirs = contracts_rule(&history, &maker, &made, &received);
+                    let ours = register.revoked_before_receipt(
+                        maker.as_str(),
+                        made.unix_nanos(),
+                        received.unix_nanos(),
+                    );
+                    assert_eq!(
+                        ours,
+                        theirs,
+                        "{name}, made {}, received {}",
+                        made.as_str(),
+                        received.as_str()
+                    );
+                    compared += 1;
+                    revoked += usize::from(theirs);
+                }
             }
         }
-        assert!(compared >= 50, "{compared}");
+        assert!(compared >= 200, "{compared}");
         assert!(revoked >= 8, "the fixtures revoke: {revoked}");
     }
 

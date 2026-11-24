@@ -1574,7 +1574,8 @@ fn store_erases_a_cited_statement_on_a_decided_override_and_history_still_checks
 }
 
 /// An override lifts the citations made before its decision alone: a citation the log took between the decision and
-/// the effect refuses the erasure, and nothing is erased, so nothing is left to report (`REQ-AUD-13`, `INV-7`).
+/// the effect refuses the erasure, and nothing is erased; on reopening the refused erasure is the one finding the
+/// store reports (`REQ-AUD-13`, `INV-7`).
 // verifies: REQ-AUD-13, INV-7
 #[test]
 fn store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision() {
@@ -1606,6 +1607,38 @@ fn store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision() {
         run.store.refused_erasures(),
         [(done, Violation(EVIDENCE_RESTED_ON))]
     );
+    assert!(run.store.unsettled_erasures().is_empty());
+}
+
+/// A statement erased already answers `Ok` to an override erase asked again, though a citation stands after the
+/// decision the check is given: the retry is idempotent, so orchestration can append its `erasure` entry (`INV-8`,
+/// `REQ-AUD-13`). The log refuses a citation once an erasure has begun, so the state of an erasure carried out under
+/// the older rule, with a citation after its decision, can't be built through it: the check is asked with an earlier
+/// decision, as `override_check_since_its_decision_refuses_a_later_citation` does, for the same effect.
+// verifies: INV-8, REQ-AUD-13
+#[test]
+fn a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok() {
+    let dir = TempDir::new("override-retry");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    // Not yet erased: a citation after `at` refuses.
+    assert_eq!(
+        run.store.erasable_overriding_since(&cited, &at),
+        Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+    );
+    let done = run.decide_override(&cited, |_| {}).unwrap();
+    run.store.erase(&done).unwrap();
+    assert!(run.store.is_erased(&cited));
+    // Erased: the same question, and the erase asked again, answer `Ok`.
+    assert_eq!(run.store.erasable_overriding_since(&cited, &at), Ok(()));
+    assert_eq!(run.store.erase(&done), Ok(()));
+    run.append(&erasure(&cited, "done")).unwrap();
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&cited));
+    assert!(run.store.refused_erasures().is_empty());
     assert!(run.store.unsettled_erasures().is_empty());
 }
 

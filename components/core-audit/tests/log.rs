@@ -1718,7 +1718,7 @@ fn a_statement_after_a_grant_made_again_is_attributed_only_from_the_new_grant() 
 /// `T-020-45`'s rule).
 // verifies: THR-3
 #[test]
-fn a_statement_received_between_a_revocations_effect_and_its_result_is_unattributed() {
+fn statement_received_between_a_revocations_effect_and_its_result_is_unattributed() {
     let mut run = Run::new(MemoryStore::new());
     run.admit_providers();
     let at = "2026-11-07T00:00:00Z";
@@ -1757,7 +1757,7 @@ fn a_statement_received_between_a_revocations_effect_and_its_result_is_unattribu
 /// again (`THR-3`).
 // verifies: THR-3
 #[test]
-fn a_revocation_whose_result_failed_attributes_again() {
+fn revocation_whose_result_failed_attributes_again() {
     let mut run = Run::new(MemoryStore::new());
     run.admit_providers();
     let at = "2026-11-07T00:00:00Z";
