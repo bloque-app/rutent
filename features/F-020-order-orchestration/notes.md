@@ -6122,3 +6122,59 @@ the owner's click at the release into `main`), and the consumer files below.
 - **Local checks** (through the lock, at the fix commit): fmt, clippy `--workspace --all-targets -D warnings`,
   `rutent-contracts`, `rutent-core-authz --lib`, the three `stuck*` scenario binaries (19 failing as above, the rest
   passing), plan-check and tag-check `--strict`, the guard against `origin/develop`.
+
+### T-020-39, fix round 2: the scenario kit's second party
+
+`m3` takes only a green `ci`, so the 19 stuck scenarios of round 1's gap 9 are ported in this row (the coordinator,
+fix round 2). The log rule is unchanged.
+
+- **The world** (`conformance/scenarios/tests/segments_support/mod.rs`, `World::two_parties`; `T-020-40` reuses it
+  for "statement by a provider on an earlier route of the order backs a resolution"). Two simulated reserves of two
+  publishers on one public ledger (`conformance/src/sim/mod.rs`): `sim-duo-in`, between its bank and
+  `sim-duo-in-ledger`, which the operator lists public, and `sim-duo-out`, between that ledger and its own bank. The
+  kit's route withdraws at the first and deposits at the second, so the order's route was given through two
+  providers of two parties, and the second's result about the order is a party's word however the route ends: in the
+  no-route worlds the order is recalculated after `sim-duo-out` refuses, so it is a provider on an earlier route.
+  The kit reads the world's two ends from a thread-local every `World` sets (`origin_reserve()`, `last_reserve()`,
+  `second_reserve()`, the confirming party: the last reserve where it isn't the origin, `OTHER_RESERVE` otherwise),
+  so every other world reads as before: the route's withdrawal, the arrival, the authorisation's origin and the
+  reserve's yes at the origin; its deposit, the destination, a linked order's route and its yes at the last
+  (`chosen_route`, `route_end`, `seed`, `seed_linked`, `handing::route_from_the_ledger`, `rerouting`, `resolving`).
+- **Ported, each keeping its intent and its assertions** (its confirmer or decliner now `sim-duo-out`'s result, a
+  provider of a segment on a route the order was given, whose party isn't the reporter's):
+  - `stuck.rs`: the no-route world (`left_no_route`, `stuck_by_no_route`) and the silent-move worlds are two-party:
+    `confirmation_names_the_report_it_confirms`, `confirmed_failure_frees_the_part_for_a_new_decision`,
+    `unknown_move_takes_its_known_outcome_once_on_two_actors_word` (no route), and
+    `declined_report_of_a_silent_move_is_followed_by_a_new_one_that_stands_until_it_is_confirmed`,
+    `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`,
+    `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once`,
+    `segments_move_confirmed_done_with_no_graded_evidence_settles_nothing`,
+    `silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part` (a silent withdrawal, the other party
+    the route's deposit provider). The file's other 32 scenarios run in the same worlds, unchanged in intent.
+  - `stuck_mover.rs`: `stuck_by_no_route` is two-party: `confirmation_of_a_declined_report_is_refused`,
+    `decline_by_the_reporters_own_party_is_refused`, `decline_or_confirmation_the_log_refuses_is_a_refusal_that_changes_nothing`,
+    `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result`,
+    `part_stays_held_while_its_report_is_declined`,
+    `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it`,
+    `report_declined_by_its_confirmer_is_followed_by_a_new_report_that_stands_until_it_is_confirmed`,
+    `report_whose_evidence_states_another_outcome_than_the_one_reported_is_refused`,
+    `stuck_resolved_cites_an_evidence_entry_the_log_holds`. The four that deliver on to the destination
+    (`decided_delivery_to_the_destination_is_carried_out_on_the_platform`, `failed_move_leaves_the_value_held_and_the_part_stuck`,
+    `stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination`,
+    `stuck_delivery_of_an_input_resting_on_a_judgement_leaves_a_reliance_before_the_send`) stay at one reserve
+    (`stuck_by_no_route_at_one_reserve`): only the reserve holding the value can pay it out, the simulated
+    `sim-duo-out` holds none of it, and none of the four needs a second party's word.
+  - `stuck_hand_on.rs`: `hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_partys_confirmation`
+    and `hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated_answer` run
+    `left_unknown_of_two_parties`: the linked order's route starts with the kit route's deposit, `sim-duo-out`'s,
+    which says its yes and stands as its origin; the holding account stays `sim-duo-in`. The file's other scenarios
+    keep the one-reserve world.
+  - None of the 19 was about a confirmer from outside the order, so none became a refused case; the refused outside
+    confirmation is pinned in the new scenario below.
+- **The consequence, pinned** (`stuck.rs`, `silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party`,
+  [`REQ-AUZ-4`, `INV-2`]): an order whose whole route one reserve ran, its resolution silent and reported done on that
+  reserve's word. A confirmation on `OTHER_RESERVE`'s word, installed beside the route and running nothing of it, is
+  the entry the log refuses (`Core::admitted` fails at it with the `party` message); with the log refusing it on
+  append, it changes nothing; one on the reporter's own maker's word is refused; the part stays held and can't be
+  decided again. The coordinator puts the consequence on the owner's form; until he rules, the test pins it.
+- **`PLAN.md`**: the row's Work says it also gives the kit a second party and ports the stuck scenarios.

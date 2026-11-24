@@ -40,9 +40,9 @@ pub fn destination(core: &Core) -> Destination {
 /// The order's origin: the payer's account at the reserve's bank, where its value came from.
 pub fn origin() -> Destination {
     Destination {
-        reserve: id(super::RESERVE),
+        reserve: id(super::origin_reserve()),
         node: OuterNode {
-            network: format!("{}-bank", super::RESERVE),
+            network: format!("{}-bank", super::origin_reserve()),
         },
         account: id("acct-1"),
     }
@@ -430,7 +430,7 @@ pub fn on_settling<T>(
         id(&core.named.order),
         id(PART),
         id(&core.named.authorisation()),
-        id(super::RESERVE),
+        id(super::origin_reserve()),
         super::route_end(),
     );
     let segments = [id(&core.named.withdrawal), id(&core.named.deposit)];

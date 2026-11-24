@@ -59,7 +59,17 @@ fn is_hand_over(what: &What) -> bool {
 /// ledger, where its value sits, and offered no route: the reserve refuses every dry run of the deposit. Recorded,
 /// the part is stuck, its value resting at the ledger.
 fn stuck_by_no_route() -> (World, Core, Stuck) {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    stuck_by_no_route_in(World::two_parties())
+}
+
+/// [`stuck_by_no_route`] at one reserve, which runs the whole route: for a delivery on to the destination, which
+/// only the reserve holding the value can make, and which no other party need confirm.
+fn stuck_by_no_route_at_one_reserve() -> (World, Core, Stuck) {
+    stuck_by_no_route_in(World::of(&[RESERVE, OTHER_RESERVE]))
+}
+
+/// The kit's order stuck by no route, in `world`.
+fn stuck_by_no_route_in(mut world: World) -> (World, Core, Stuck) {
     let mut core = Core::over(&mut world);
     // The log attributes each statement, as the real one does: its receipt is of the entry it recorded.
     core.log.borrow_mut().attribute_from_now();
@@ -75,7 +85,7 @@ fn stuck_by_no_route() -> (World, Core, Stuck) {
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let mut rerouting = Rerouting::of(&core);
     let outcome = rerouting
         .recalculate(&mut core, &mut world)
@@ -111,16 +121,18 @@ fn stuck_by_no_route() -> (World, Core, Stuck) {
 
 fn to_origin(amount: &str) -> Resolution {
     Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         to: origin(),
         asset: cop_unit(),
         amount: PositiveAmount::new(amount).unwrap(),
     }
 }
 
+/// The stuck value delivered on to the order's destination, by the reserve that serves it: the route's last
+/// reserve, which deposits from the ledger the value rests at (`T-020-39`'s two-party world).
 fn to_destination(core: &Core, amount: &str) -> Resolution {
     Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(last_reserve()),
         to: destination(core),
         asset: cop_unit(),
         amount: PositiveAmount::new(amount).unwrap(),
@@ -295,13 +307,13 @@ fn sent(delivered: &Delivered) -> serde_json::Value {
 // verifies: REQ-AUZ-4, REQ-ORD-28
 #[test]
 fn decided_delivery_to_the_destination_is_carried_out_on_the_platform() {
-    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let (mut world, mut core, mut stuck) = stuck_by_no_route_at_one_reserve();
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let resolution = to_destination(&core, AMOUNT);
     let permitted = decide(&mut core, &mut stuck, &mut policy, &alice, &resolution).expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let delivered = deliver(
         &mut core,
         &mut world,
@@ -323,19 +335,19 @@ fn decided_delivery_to_the_destination_is_carried_out_on_the_platform() {
     assert_eq!(resolved, Resolved::Done);
     assert!(result.is_some());
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1,
         "the reserve is handed one operation"
     );
     let transaction = decided_transaction(&core);
     let operation = sent(&delivered);
     assert_eq!(operation["kind"], "deposit");
-    assert_eq!(operation["provider"], RESERVE);
+    assert_eq!(operation["provider"], origin_reserve());
     assert_eq!(operation["transaction"], transaction.as_str());
-    assert_eq!(operation["origin"], format!("{RESERVE}-ledger"));
+    assert_eq!(operation["origin"], format!("{}-ledger", origin_reserve()));
     assert_eq!(
         operation["destination"]["network"],
-        format!("{RESERVE}-bank")
+        format!("{}-bank", origin_reserve())
     );
     assert_eq!(operation["asset"], "COP");
     assert_eq!(operation["amount"], AMOUNT);
@@ -357,7 +369,11 @@ fn decided_delivery_to_the_destination_is_carried_out_on_the_platform() {
                 rutent_contracts::provider_role::OPERATION_SHAPE,
                 true
             ),
-            (RESERVE, rutent_contracts::provider_role::RESULT_SHAPE, true),
+            (
+                origin_reserve(),
+                rutent_contracts::provider_role::RESULT_SHAPE,
+                true
+            ),
         ]
     );
     assert!(
@@ -412,7 +428,7 @@ fn decided_delivery_back_to_the_origin_account_is_carried_out_on_the_platform() 
     );
     let operation = sent(&delivered);
     assert_eq!(operation["kind"], "deposit");
-    assert_eq!(operation["origin"], format!("{RESERVE}-ledger"));
+    assert_eq!(operation["origin"], format!("{}-ledger", origin_reserve()));
     assert_eq!(
         operation["destination"]["network"],
         origin().node.network.as_str()
@@ -450,7 +466,7 @@ fn resolution_is_carried_out_only_on_a_move_policy_permitted() {
         &to_origin(AMOUNT),
     )
     .expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let asked = policy.asked;
     for (by, why) in [
         (&alice_again, ResolveError::SameParty),
@@ -500,7 +516,7 @@ fn resolution_is_carried_out_only_on_a_move_policy_permitted() {
     );
     assert!(delivered.carried.is_empty());
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "the provider is handed nothing"
     );
@@ -530,7 +546,7 @@ fn resolution_is_carried_out_only_on_a_move_policy_permitted() {
         delivered.moved
     );
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1
     );
     core.admitted(&world.catalogue)
@@ -557,7 +573,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "deposit", Behaviour::act(Act::Unknown));
     let permitted = decide(
         &mut core,
         &mut stuck,
@@ -566,7 +582,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
         &to_origin(AMOUNT),
     )
     .expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let delivered = deliver(
         &mut core,
         &mut world,
@@ -627,7 +643,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
     // Not taken: a statement of another transaction; one signed by a key its maker never published.
     let mut other = late.clone();
     other["statement"]["transaction"] = "tx-another".into();
-    resign(&mut other, RESERVE);
+    resign(&mut other, origin_reserve());
     assert_eq!(
         take(
             &mut core,
@@ -653,7 +669,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
     assert_eq!(stated.outcome(), Some(Resolved::Done));
     let again = take(&mut core, &mut world, &mut mover, &bytes).expect("taken again");
     assert_eq!(again, stated, "a statement tried again is one entry");
-    let another = result_without_a_question(&mut core, OTHER_RESERVE, transaction.as_str());
+    let another = result_without_a_question(&mut core, second_reserve(), transaction.as_str());
     let reported = report_and_confirm(
         &mut core,
         &mut stuck,
@@ -676,7 +692,7 @@ fn move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result() 
     );
     assert_eq!(resolved_to(&core), vec![ResolvedTo::Origin]);
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1,
         "the provider is handed the operation once, never again for its outcome"
     );
@@ -715,7 +731,7 @@ fn settled_after_unknown(core: &Core, transaction: &Id) -> serde_json::Value {
         .clone();
     answer["statement"]["outcome"] = settled;
     answer["made_at"] = core.clock.now().timestamp().unwrap().as_str().into();
-    resign(&mut answer, RESERVE);
+    resign(&mut answer, origin_reserve());
     answer
 }
 
@@ -797,7 +813,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
         &to_origin(AMOUNT),
     )
     .expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let failing = |core: &Core, on: On| {
         for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
             core.log
@@ -825,7 +841,10 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
     failing(&core, On::Effect);
     let tried = try_move(&mut core, &mut world, &mut stuck, &mut mover, &mut policy);
     assert!(matches!(tried.moved, Err(ResolveError::Append(_))));
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     // The question can't be appended: still nothing is handed over.
     failing(&core, On::StatedOperation);
     let tried = try_move(&mut core, &mut world, &mut stuck, &mut mover, &mut policy);
@@ -835,7 +854,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
         tried.moved
     );
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "nothing is handed over before the question is on record"
     );
@@ -849,7 +868,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
     );
     assert_eq!(tried.carried.len(), 1);
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1
     );
     // The answer can't be appended: it is kept, and nothing is handed over again.
@@ -884,7 +903,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
     );
     assert!(tried.carried.is_empty());
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1,
         "the provider is handed the operation exactly once"
     );
@@ -911,7 +930,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
         Err(ResolveError::NotStuck)
     );
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1
     );
     core.admitted(&world.catalogue)
@@ -924,7 +943,7 @@ fn resolution_acted_on_once_is_not_acted_on_again_after_a_retried_append() {
 // verifies: INV-2
 #[test]
 fn failed_move_leaves_the_value_held_and_the_part_stuck() {
-    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let (mut world, mut core, mut stuck) = stuck_by_no_route_at_one_reserve();
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
@@ -933,7 +952,7 @@ fn failed_move_leaves_the_value_held_and_the_part_stuck() {
 
     let dest = to_destination(&core, AMOUNT);
     let second = decide(&mut core, &mut stuck, &mut policy, &alice, &dest).expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let (order, actor) = (id(&core.named.order), segments_support::core());
     let carries_out = decided(&second);
     let mut watched = Watched::new(&mut world.fleet.platform);
@@ -968,7 +987,10 @@ fn failed_move_leaves_the_value_held_and_the_part_stuck() {
         panic!("failed: {moved:?}");
     };
     assert_eq!(results_of(&core, &effect), vec![Outcome::Failed {}]);
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
     assert!(resolved_to(&core).is_empty());
     assert_eq!(core.exposures.stuck().len(), held_before);
@@ -1019,7 +1041,7 @@ fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_i
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_for(origin_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let first = decide(
         &mut core,
         &mut stuck,
@@ -1028,7 +1050,7 @@ fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_i
         &to_origin(AMOUNT),
     )
     .expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let delivered = deliver(
         &mut core,
         &mut world,
@@ -1088,7 +1110,7 @@ fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_i
     .expect("taken");
     drop(watched);
     assert_eq!(stated.outcome(), Some(Resolved::Failed));
-    let another = result_without_a_question(&mut core, OTHER_RESERVE, transaction.as_str());
+    let another = result_without_a_question(&mut core, second_reserve(), transaction.as_str());
     let confirmed = report_and_confirm(
         &mut core,
         &mut stuck,
@@ -1135,7 +1157,7 @@ fn provider_stated_failure_does_not_free_the_part_until_another_party_confirms_i
         })
     ));
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 2,
         "one operation for each decision"
     );
@@ -1156,11 +1178,11 @@ fn restated(core: &Core, transaction: &Id) -> Vec<u8> {
         .find(|v| {
             v["statement"]["transaction"] == transaction.as_str()
                 && v["shape"] == rutent_contracts::provider_role::RESULT_SHAPE
-                && v["maker"] == RESERVE
+                && v["maker"] == origin_reserve()
         })
         .expect("the reserve's answer is kept");
     answer["made_at"] = core.clock.now().timestamp().unwrap().as_str().into();
-    resign(&mut answer, RESERVE);
+    resign(&mut answer, origin_reserve());
     serde_json::to_vec(&answer).unwrap()
 }
 
@@ -1183,7 +1205,7 @@ fn move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again() {
         &to_origin(AMOUNT),
     )
     .expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
         core.log
             .borrow_mut()
@@ -1201,7 +1223,7 @@ fn move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again() {
     );
     assert!(matches!(first.moved, Err(ResolveError::Append(_))));
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1
     );
     // The platform restarted too, so it can't say the transaction began already: only the mover's own rule holds.
@@ -1247,7 +1269,7 @@ fn move_taken_on_by_a_mover_with_no_memory_of_it_is_never_handed_over_again() {
         again.moved
     );
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled + 1
     );
     assert!(resolved_to(&core).is_empty());
@@ -1390,7 +1412,7 @@ fn move_the_provider_cant_be_asked_fails_before_anything_is_handed_over() {
     )
     .expect("asked");
     let transaction = decided_transaction(&core);
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let receipts = [
         core.log.borrow().receipt_at(0),
         core.log.borrow().receipt_at(1),
@@ -1400,7 +1422,7 @@ fn move_the_provider_cant_be_asked_fails_before_anything_is_handed_over() {
             order: id(ORDER),
             carries_out: decided(&permitted),
             resolution: Resolution::Deliver {
-                by: id(RESERVE),
+                by: id(origin_reserve()),
                 to: origin(),
                 asset: Denomination {
                     id: "COP".into(),
@@ -1445,7 +1467,10 @@ fn move_the_provider_cant_be_asked_fails_before_anything_is_handed_over() {
     assert_eq!(said, Ok(Resolved::Failed));
     assert!(watched.carried.is_empty());
     drop(watched);
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
 }
 
 /// A move that stopped before anything was handed over (the log couldn't take the operator's question) and is taken
@@ -1454,13 +1479,13 @@ fn move_the_provider_cant_be_asked_fails_before_anything_is_handed_over() {
 // verifies: REQ-AUZ-3, REQ-AUZ-4
 #[test]
 fn stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_destination() {
-    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let (mut world, mut core, mut stuck) = stuck_by_no_route_at_one_reserve();
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let dest = to_destination(&core, AMOUNT);
     let permitted = decide(&mut core, &mut stuck, &mut policy, &alice, &dest).expect("asked");
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
         core.log
             .borrow_mut()
@@ -1504,7 +1529,10 @@ fn stalled_move_before_any_hand_over_is_dropped_when_the_customer_replaced_the_d
         Err(ResolveError::ElsewhereThanItsEnds)
     );
     assert!(again.carried.is_empty());
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     assert!(resolved_to(&core).is_empty());
     assert_eq!(open_effects(&core), 0, "the effect is closed");
     core.admitted(&world.catalogue)
@@ -1616,11 +1644,11 @@ fn question_place(core: &Core) -> usize {
 // verifies: REQ-CPL-12
 #[test]
 fn stuck_delivery_of_an_input_resting_on_a_judgement_leaves_a_reliance_before_the_send() {
-    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    let (mut world, mut core, mut stuck) = stuck_by_no_route_at_one_reserve();
     let (_, theirs) = results_after_the_move(&mut core, None, "tx-judged");
     let judgement = rutent_core_orch::reliance::Judgement {
         receipt: theirs,
-        judge: id(OTHER_RESERVE),
+        judge: id(second_reserve()),
     };
     // The deposit's segment was handed over (and never begun) already: the declaration is late for it, and stands.
     assert_eq!(
@@ -1657,7 +1685,7 @@ fn stuck_delivery_of_an_input_resting_on_a_judgement_leaves_a_reliance_before_th
     assert_eq!(held.len(), 1, "{held:?}");
     assert_eq!(
         (held[0].1.clone(), held[0].2.as_str(), held[0].3.as_str()),
-        (judgement.receipt, OTHER_RESERVE, RESERVE)
+        (judgement.receipt, second_reserve(), origin_reserve())
     );
     assert!(
         held[0].0 < question_place(&core),
@@ -1677,7 +1705,7 @@ fn stuck_delivery_whose_reliance_the_log_refuses_sends_nothing() {
     let (_, theirs) = results_after_the_move(&mut core, None, "tx-judged");
     let wrong = rutent_core_orch::reliance::Judgement {
         receipt: theirs,
-        judge: id(RESERVE),
+        judge: id(origin_reserve()),
     };
     let _ = core
         .segments
@@ -1736,7 +1764,7 @@ fn refused_move() -> Refused {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_for(origin_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let permitted = decide(
         &mut core,
         &mut stuck,
@@ -1791,7 +1819,7 @@ fn answer_settled(core: &Core, transaction: &Id) -> Vec<u8> {
         .find(|v| {
             v["statement"]["transaction"] == transaction.as_str()
                 && v["shape"] == rutent_contracts::provider_role::RESULT_SHAPE
-                && v["maker"] == RESERVE
+                && v["maker"] == origin_reserve()
         })
         .expect("the reserve's answer is kept")
         .clone();
@@ -1804,7 +1832,7 @@ fn answer_settled(core: &Core, transaction: &Id) -> Vec<u8> {
         .expect("a settled withdrawal")["statement"]["outcome"]
         .clone();
     answer["made_at"] = core.clock.now().timestamp().unwrap().as_str().into();
-    resign(&mut answer, RESERVE);
+    resign(&mut answer, origin_reserve());
     serde_json::to_vec(&answer).unwrap()
 }
 
@@ -1855,7 +1883,7 @@ impl Refused {
     /// Another maker's statement about the order and the transaction: it states nothing of the move.
     fn others(&mut self) -> Stated {
         Stated::for_tests(
-            result_without_a_question(&mut self.core, OTHER_RESERVE, self.transaction.as_str()),
+            result_without_a_question(&mut self.core, second_reserve(), self.transaction.as_str()),
             None,
         )
     }
@@ -2229,7 +2257,7 @@ fn part_stays_held_while_its_report_is_declined() {
         "its value is still counted among the stuck"
     );
     // The move is not carried out again for the declined report either.
-    let handled = m.world.fleet.platform.operations_received(RESERVE);
+    let handled = m.world.fleet.platform.operations_received(origin_reserve());
     let again = deliver(
         &mut m.core,
         &mut m.world,
@@ -2240,7 +2268,10 @@ fn part_stays_held_while_its_report_is_declined() {
         &bob,
     );
     assert!(again.moved.is_err() || again.carried.is_empty());
-    assert_eq!(m.world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        m.world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     m.admitted();
 }
 
@@ -2383,7 +2414,7 @@ fn stuck_resolved_cites_an_evidence_entry_the_log_holds() {
     assert!(at < resolved[0].0, "the entry reaches the log first");
     assert_eq!(
         (order.as_str(), part.as_str(), whose.as_str()),
-        (ORDER, PART, RESERVE)
+        (ORDER, PART, origin_reserve())
     );
     assert_eq!(rests_on.len(), 1);
     assert!(
@@ -2425,7 +2456,7 @@ fn stuck_resolved_cites_an_evidence_entry_the_log_holds() {
     };
     assert_eq!(cited.as_str(), resolved[0].1);
     assert!(evidence[0].0 < resolved[0].0);
-    assert_eq!(whose.as_str(), RESERVE);
+    assert_eq!(whose.as_str(), origin_reserve());
     assert_eq!(
         rests_on,
         &vec![settled.receipt().clone()],

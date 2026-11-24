@@ -442,6 +442,18 @@ pub fn shape_of(provider: &str) -> Shape {
             rail_unserved: true,
             ..Shape::default()
         },
+        // Two reserves of two publishers on one public ledger (`T-020-39`): `sim-duo-in` between its bank and the
+        // ledger `sim-duo-in-ledger`, which the operator lists public, and `sim-duo-out` between that ledger and its own
+        // bank, so a route withdraws at the one and deposits at the other and its order involves two parties.
+        "sim-duo-in" => Shape {
+            public_node: true,
+            ..Shape::default()
+        },
+        "sim-duo-out" => Shape {
+            node: Some("sim-duo-in-ledger".to_owned()),
+            public_node: true,
+            ..Shape::default()
+        },
         // A reserve whose node no publisher declares and the operator doesn't list (`REQ-CAT-22`).
         "sim-ghost" => Shape {
             node: Some("sim-ghost-ledger".to_owned()),
