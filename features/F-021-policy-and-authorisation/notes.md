@@ -1565,6 +1565,124 @@ path: it waits for the owner's click at the release into `main`.
   | the first naming is the payer's alone | `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
   | the account is held from the first naming (later ones followed) | `a_move_the_log_already_holds_is_not_followed` |
 
+## T-021-12
+
+Branch `f-021/t-021-12-13-rollback-override`, from `m3` at `a3bc16b4`. Edits `components/core-authz/` (`roles/`, the
+engine's scan and its list of decided actions) and, from fix round 1, `components/core-orch/src/segments/roll_back.rs`
+with one `pub mod roll_back;` line in `segments/mod.rs`, a `DEC-20` path: it waits for the owner's click at the release into
+`main`.
+
+- **What changed.** `CatalogueChange::RollBack` is answered by the one arm every catalogue change has: an operator's
+  login the register lists for `Permission::Change(RollBack)`, a permission of its own, apart from promotion's and every
+  other. The special arm that answered no rule is gone. Core's own actors, and every other role, are refused before the
+  deployment's policy is asked; the decision's entry records the request whole, so it names the actor and the change
+  (`REQ-AUD-8`). The scan (`engine/entry_points.rs`) moves `roll_back` from `CARRIES_OUT_NOTHING` to `CARRY_OUT`
+  (`change_catalogue: roll_back`), so in orchestration it may be called only where the effect it rests on is in hand
+  (rule 3). `engine/mod.rs`'s note that `AC-17`'s reading is pending now says the owner settled it as "not known"
+  (`spec-ac17-not-known`, 2026-11-18).
+- **Tests.** `roll_back_is_refused_while_no_rule_answers_it` is replaced by `roll back without its permission is
+  refused` (`roll_back_without_its_permission_is_refused`), which also holds the permitted case: the operator's login
+  holding the one permission is permitted, recorded with its actor and action, and the log admits the effect; the same
+  permission held by Core's actor, and every other permission held by the operator, are refused. `every_permission` lists
+  `RollBack` (its `unreachable!` is gone), so `each_permission_alone_allows_only_its_own_action` runs over it (11 to 12)
+  and the erase and promotion tests' loops over `every_permission` take it in unchanged. `every_decided_action` lists
+  it, so `T-021-01`'s two counts move by the one action (16 to 17, `3 * 16` to `3 * 17`): the only edits to them.
+  `staging_is_rolled_back_only_on_a_permitted_decisions_effect` pins the scan's side; the seam's own tests are
+  `core-orch`'s `tests/roll_back.rs` (a permitted roll back ends the staging and records its effect and result; a refused or
+  not-known decision, a log that can't take the effect, another version or nothing staged, ends nothing; the platform's
+  refusal records `failed`; an effect of another action rolls nothing back).
+- **Defaults, reversible, each failing closed.**
+  - The permission is an operator's alone: Core's own actors don't roll a staging back, even holding it (there is no
+    `CarryOnward` path), as for the erasure.
+  - Policy reads nothing of the release or the staging (that one is in force, that a staging is open): `roll_back`
+    keeps the version in force and the platform answers a roll back with nothing staged.
+- **The seam (fix round 1, the reviewer's finding 1).** `segments/roll_back.rs` carries `roll_back` out as `promote` is, in
+  a file of its own so `segments/mod.rs` takes only its `mod` line. `Segments::roll_back` asks the decision for a
+  `change_catalogue` of `roll_back` naming the provider and the staged version, by the caller; on a permit it records the
+  effect, calls the platform through `RollsBack` (a port of its own, so no `Modules` implementation changes), and
+  records the result `done` or `failed`; the effect is marked acted on only once the staging ended. The public
+  `carry_out_roll_back` takes the `Effect` itself and checks the permitted action, which the scan, matching names only,
+  can't: an effect whose action isn't a `roll_back` of a named version asks nothing of the platform
+  (`NotARollBack`), and the version is compared again with the one staged right before the platform is asked, so a
+  permit to roll one release back ends no other staging. `promote`'s `carry_promotion` reads only the provider off its
+  effect and doesn't check the change; that is left as it is, outside this row.
+- **Gaps, with owners.**
+  1. Nothing calls `Segments::roll_back` yet outside its tests: the assembly's wiring of an operator command to it, as
+     `promote` has through the assembly's `releases.rs`, isn't part of this row. Owner: the assembly row that wires the
+     operator's catalogue commands (`T-024-*`'s scenario kit), to be named by the plan's owner; no row exists for it yet.
+  2. The deployment's register must list `Change(RollBack)` for the operator logins that may roll back:
+     configuration, owner `F-021`'s register docs / the deployment.
+- **Red first.** The new roll back test failed on its permitted assertion (`Refuse` for `Permit`), `each permission
+  alone` on `Change(RollBack) allows itself`, the engine's two counts on 16 against 17, and the scan test on its
+  `CARRY_OUT` assertion.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the roll back arm answers no rule (`None`) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | promotion's permission stands for it | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | no permission asked (any caller passes) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | `roll_back` left out of the scan's `CARRY_OUT` | `staging_is_rolled_back_only_on_a_permitted_decisions_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+
+- **Rule-off of the seam, fix round 1** (`cargo test -p rutent-core-orch --test roll_back`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the effect's action isn't checked to be a `roll_back` | `effect_of_another_action_rolls_nothing_back` |
+  | the staged version isn't compared again before the platform is asked | `effect_of_another_action_rolls_nothing_back` |
+  | a platform refusal records the result `done` | `platform_refusal_records_the_result_failed` |
+  | a decision that doesn't permit still yields an effect | `refused_or_unknown_roll_back_ends_nothing` |
+
+  Red first: with the action check missing (the shape of `carry_promotion`) `effect_of_another_action_rolls_nothing_back`
+  failed on its assertion; the other four seam tests passed against that stub and are held by the rule-offs above.
+
+## T-021-13
+
+Branch `f-021/t-021-12-13-rollback-override`, after `T-021-12`. Edits `components/core-authz/` only (`roles/`), a `DEC-20`
+path: it waits for the owner's click at the release into `main`.
+
+- **What changed.** `Permission::EraseOverridingCitations` joins the operator's permissions. An `Action::EraseStatement`
+  whose `overrides_citations` is set is asked of an operator's login the register lists for both `EraseStatement` and
+  `EraseOverridingCitations`, and of no other role, Core's own actors included; a register that says nothing gives a
+  missing input and so a refusal. The erasure without the override still asks `EraseStatement` alone, as `T-021-10`
+  built it. The decision's entry records the
+  request whole, so it names the commitment (the statement) and the override. The log's and the store's default, a cited
+  statement is kept (`erasure-waits-while-anything-rests-on-the-statement`, `EVIDENCE_RESTED_ON`), is untouched: policy
+  only decides who may ask for the override.
+- **Tests.** `erasure_overriding_citations_is_refused_while_no_rule_answers_it` is replaced by `erasure overriding citations
+  is permitted only with its own permission` and `operator with the erase permission alone is refused an override`.
+  `every_permission` lists the override as a thirteenth pair, so `each_permission_alone_allows_only_its_own_action` runs
+  over it (12 to 13), holding the erase permission beside the override's, the pair being what the override needs;
+  `operator_with_the_override_permission_alone_is_refused` holds that the override permission alone is refused; the tests that hold every other permission now also hold it where it isn't their subject, and
+  `T-021-10`'s tests pass unchanged. The engine's counts are untouched: the override is the same action.
+- **Defaults, reversible, each failing closed.**
+  - The override needs both permissions (fix round 1, the reviewer's finding: the contract exempts an erasure from the
+    citation check wherever its permitting decision sets `overrides_citations`, cited or not, so an override permission
+    that stood alone would erase any kept statement without the erase permission, the stronger permission under a
+    weaker name). This is the owner's form default for `override-permission-shape`, "Both permissions". The round-0
+    reading, two independent permissions, is withdrawn.
+  - It is an operator's login alone, never carried onward by Core's actors.
+  - Policy doesn't read whether the statement is cited: whether anything rests on it is the log's and the store's.
+- **Gaps, with owners.**
+  1. The deployment's register must list `EraseOverridingCitations` for the operator logins that may override:
+     configuration, owner `F-021`'s register docs / the deployment.
+  2. The store's carrying out of an override on that permit, and orchestration's asking for it only where the operator asked:
+     `T-022-10` and `T-020-42`. The conformance assembly's register (`conformance/scenarios/src/assembly/mod.rs:741`)
+     lists only `EraseStatement` for the operator's login: `T-020-42`'s scenarios need it to list
+     `EraseOverridingCitations` beside it, or they are refused.
+- **Red first.** The permitted test failed on its outcome assertion (`Refuse` for `Permit`) and `each permission alone` on
+  its count; the refused tests pass against the stub (the behaviour before the row) and is held by the rule-offs. The enum
+  variant was added first so the tests compile.
+- **Rule-off, fix round 1** (`cargo test -p rutent-core-authz --lib`, file restored each time; the table of round 0, with
+  its independent reading, is withdrawn):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the erase permission is no longer asked beside the override's | `operator_with_the_override_permission_alone_is_refused` |
+  | the override permission is no longer asked | `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `operator_with_the_erase_permission_alone_is_refused_an_override` |
+  | any role listed for both may override (no operator-only restriction) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
+  | the override arm answers no rule (`None`) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

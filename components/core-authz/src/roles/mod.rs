@@ -37,7 +37,8 @@
 //! # The operator's permissions
 //!
 //! Granting, accepting a module, revoking, marking stale, declaring a version exploited, setting a tuple's slippage,
-//! and every other catalogue change, promotion of a staged release included, are each a [`Permission`] of its own
+//! and every other catalogue change, promotion of a staged release and rolling its staging back included
+//! (`CatalogueChange::RollBack`, `T-021-12`, ADR-0014), are each a [`Permission`] of its own
 //! (`REQ-AUZ-6`), and so is posting a route. Each is held actor by actor, not by the operator's party, since every
 //! login of the operator acts for that one party: a permission held by the party would let each of them make every
 //! change, which is the insider `THR-88` names. The fixed rule refuses a catalogue change asked in any role but the
@@ -54,6 +55,13 @@
 //! the register lists for it is permitted; every other role is refused before the deployment's policy is asked, Core's
 //! own actors too, and a register that says nothing gives a missing input and so a refusal. The decision's entry holds
 //! the request whole, naming the commitment and the actor, which the evidence store's erase reads as its permit.
+//!
+//! An erasure that overrides the citations a later entry makes of the statement (`overrides_citations`, `T-021-13`)
+//! asks a permission of its own beside the erase permission, [`Permission::EraseOverridingCitations`]: both, for an
+//! operator's login alone. The override permission exempts an erasure from the citation check and erases nothing by
+//! itself, and the erase permission alone leaves the default, a cited statement is kept, in force; an override is a
+//! decision of its own that names the statement and the override (`REQ-AUD-13`). Core's actors never carry it
+//! onward.
 //!
 //! # Acting for a user
 //!
@@ -133,6 +141,11 @@ pub enum Permission {
     /// log, a permission of its own as each catalogue change is (`REQ-AUZ-1`, `REQ-AUD-13`, `DEC-18`). Asked by
     /// `T-021-10`'s rule.
     EraseStatement,
+    /// An operator's login erasing a kept statement's bytes although a later entry cites it (`T-020-39`'s
+    /// `overrides_citations`), a permission of its own, never carried onward and asked beside
+    /// [`Permission::EraseStatement`], never in its place, so it erases nothing alone (`REQ-AUZ-6`, `REQ-AUD-13`).
+    /// Asked by `T-021-13`'s rule.
+    EraseOverridingCitations,
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
@@ -162,12 +175,6 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 Action::PostRoute { .. } => {
                     operator_holds(caller, Permission::PostRoute).map(Needs::from)
                 }
-                // Rolling a staging back (`T-020-39`'s `roll_back`) is a permission of its own from `T-021-12`;
-                // until then no rule answers it, so policy refuses it whoever asks.
-                Action::ChangeCatalogue {
-                    change: CatalogueChange::RollBack,
-                    ..
-                } => None,
                 Action::ChangeCatalogue { change, .. } => {
                     operator_holds(caller, Permission::Change(*change)).map(Needs::from)
                 }
@@ -199,13 +206,22 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // actors included. The decision's entry records the request whole, so it names the commitment erased
                 // and who asked. That the log's statement is one it keeps, and that its erasure is decided, the log holds
                 // (`BoundStore::erase`).
-                // An erasure overriding the statement's citations (`T-020-39`'s `overrides_citations`) is a permission
-                // of its own from `T-021-13`; until then no rule answers it, so policy refuses it whoever asks, as it
-                // refuses `roll_back` until `T-021-12`.
+                // An erasure overriding the statement's citations (`T-020-39`'s `overrides_citations`, `T-021-13`): an
+                // operator's login the register lists for both the erase permission and a permission of its own, and no
+                // other role, Core's own actors included. The override exempts an erasure from the citation check; it
+                // never erases by itself, so the permission to erase is asked beside it. The default, that an erasure
+                // waits while a later entry cites the statement, is the log's and the store's
+                // (`erasure-waits-while-anything-rests-on-the-statement`), and an erasure without the override never
+                // reaches this arm.
                 Action::EraseStatement {
                     overrides_citations: true,
                     ..
-                } => None,
+                } => operator_holds(caller, Permission::EraseStatement)
+                    .map(|mut needs| {
+                        needs.push(listed(caller, Permission::EraseOverridingCitations));
+                        needs
+                    })
+                    .map(Needs::from),
                 Action::EraseStatement { .. } => {
                     operator_holds(caller, Permission::EraseStatement).map(Needs::from)
                 }
