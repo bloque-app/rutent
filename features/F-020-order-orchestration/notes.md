@@ -6964,9 +6964,10 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
 Branch `f-020/t-020-50-deposit-destination`, from `f01bc669` (the review round's batch with `T-020-45`'s `destination`
 field). Finding 5 of the milestone review of 2026-11-24; the owner's answer `automatic-deposit-destination`: the
 destination comes from the user's standing instruction, which the reserve sets from parameters the customer configured
-through the integrator or the operator. Edits `components/core-orch/src/arrival/` (`mod.rs`, `filing.rs`), `core-internal`
-(a `DEC-20` path, folded into its unreleased 1.0.0), the stand-in reserve (`conformance/src/role/stand_in.rs`, an
-`F-024` file, kept to one optional instruction) and a scenario (`conformance/scenarios/tests/deposit_destination.rs`).
+through the integrator or the operator. Edits `components/core-orch/src/arrival/` (`mod.rs`, `filing.rs`),
+`core-internal` (a `DEC-20` path, folded into its unreleased 1.0.0), the stand-in reserve
+(`conformance/src/role/stand_in.rs`, an `F-024` file, kept to one optional instruction) and a scenario
+(`conformance/scenarios/tests/deposit_destination.rs`).
 
 - **What a filing does.** `Recorded` (an arrival Core took) keeps the destination its notice names, read from the signed
   bytes with the other figures. `open_run`, before any order opens:
@@ -6996,12 +6997,12 @@ through the integrator or the operator. Edits `components/core-orch/src/arrival/
   set_for)` and names that destination (its own node, the credit's asset) in the notices of `set_for`'s credits, never
   another holder's. The scenarios hand-sign their notices as `assembly_arrivals.rs` does, so they don't read it; its own
   test is in `role_arrivals.rs`, and the role suite holds what it signs.
-- **Defaults taken (reversible, fail closed).** (a) The destination's owner must still be the holder (on the owner's form as `standing-instruction-third-party`): a standing
-  instruction naming an account another party owns is `destination_refused`, until an owner choice says an instruction
-  may pay a third party. (b) A filing naming another destination than the notice's is `malformed_request`, not
-  silently replaced by the notice's: the filer states what it files, and Core holds it to the reserve's word. (c) A
-  notice whose bytes the store no longer keeps (erased, `REQ-AUD-13`) can't be filed on: refused, permanently for that
-  request identifier, free again under another.
+- **Defaults taken (reversible, fail closed).** (a) The destination's owner must still be the holder (on the owner's
+  form as `standing-instruction-third-party`): a standing instruction naming an account another party owns is
+  `destination_refused`, until an owner choice says an instruction may pay a third party. (b) A filing naming another
+  destination than the notice's is `malformed_request`, not silently replaced by the notice's: the filer states what it
+  files, and Core holds it to the reserve's word. (c) A notice whose bytes the store no longer keeps (erased,
+  `REQ-AUD-13`) can't be filed on: refused, permanently for that request identifier, free again under another.
 - **Gaps.**
   - 10 and 11 of `T-020-45` are closed as far as the log can: its rows can't read a notice's body, so `arrival.holder`
     and `.destination` remain Core's entry, tied to the order's requester and authorisation by the rows above and to the
@@ -7047,10 +7048,10 @@ through the integrator or the operator. Edits `components/core-orch/src/arrival/
 - **3, low (gap): Core checks `set_for`, not `set_by`.** Who set the parameters (the customer, an integrator, the
   operator, an agent) is recorded in the arrival entry and read by nothing: whether that party may set them for the
   holder is the real reserve's to check before it names a destination. Owner `T-031-01`.
-- **4, low:** the `core-orch` test also replaces the kept notice (`SharedKept::replaces`, new in `intake_support`: the store
-  answers another statement, another holder, under the commitment of the one kept; `alters`, one byte more, is the
-  same statement and agrees) and
-  expects the same refusal before an order opens; renamed `..._is_erased_or_replaced_is_refused_...`.
+- **4, low:** the `core-orch` test also replaces the kept notice (`SharedKept::replaces`, new in `intake_support`: the
+  store answers another statement, another holder, under the commitment of the one kept; `alters`, one byte more, is the
+  same statement and agrees) and expects the same refusal before an order opens; renamed
+  `..._is_erased_or_replaced_is_refused_...`.
 - **5, low:** default (a) is named above as `standing-instruction-third-party`.
 - **6, low:** the fixture `--holder` is `--requester`, as the field it breaks.
 - **Rule-offs of the round.**
@@ -7061,5 +7062,5 @@ through the integrator or the operator. Edits `components/core-orch/src/arrival/
   | the stand-in names the instruction's destination (`Reserve::notice_of`) | the same, and `stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice` |
   | `open_run`: the kept notice agrees | `filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before_an_order_opens` |
   | `kept_notice_agrees`: the holder compared | the same, at its replaced step |
-- **Correction found after the first push of this round** (`61e6ea10`): its replaced-notice step used `alters`, which keeps the
-  statement and so was green; the follow-up commit carries `replaces` and the rule-off above.
+- **Correction found after the first push of this round** (`61e6ea10`): its replaced-notice step used `alters`, which
+  keeps the statement and so was green; the follow-up commit carries `replaces` and the rule-off above.
