@@ -460,6 +460,11 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
         };
         asked.push((Permission::Change(change), request));
     }
+    // Erasing a statement that later entries cite, the override of `T-021-13`: a permission of its own.
+    asked.push((
+        Permission::EraseOverridingCitations,
+        overriding_erasure_asked(caller),
+    ));
     asked
 }
 
@@ -624,8 +629,8 @@ fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission(&operator());
     assert_eq!(
         all.len(),
-        12,
-        "posting a route and eleven catalogue changes"
+        13,
+        "posting a route, eleven catalogue changes and the erasure that overrides citations"
     );
     for (held, _) in &all {
         let mut policy = engine(
@@ -1814,49 +1819,161 @@ fn roll_back_without_its_permission_is_refused() {
     assert_eq!(policy.decide(&promoted).unwrap().outcome, NOT_PERMITTED);
 }
 
-/// An erasure that overrides the statement's citations, core-internal's `overrides_citations` (`T-020-39`), is
-/// refused while no rule answers it: the operator's login holding the permission to erase, and every other, is
-/// refused before the deployment's policy is asked, and the log takes no effect on it; the same erasure without the
-/// override is still permitted on the plain permission. `T-021-13` gives the override a permission of its own and
-/// replaces this test (`REQ-AUZ-1`, `REQ-AUD-13`, the review of `27b0f6b9`).
-// verifies: REQ-AUZ-1, REQ-AUD-13
-#[test]
-fn erasure_overriding_citations_is_refused_while_no_rule_answers_it() {
-    let overriding = |caller: &Actor| {
-        let mut request = erasure_asked(caller);
-        request.request = id(&format!("req-erase-over-{}", caller.acts.as_str()));
-        let Action::EraseStatement {
-            overrides_citations,
-            ..
-        } = &mut request.action
-        else {
-            panic!("an erasure");
-        };
-        *overrides_citations = true;
-        request
+/// A kept statement's erasure that overrides its citations, as `caller` asks it: the plain erasure with
+/// core-internal's `overrides_citations` set (`T-020-39`).
+fn overriding_erasure_asked(caller: &Actor) -> DecisionRequest {
+    let mut request = erasure_asked(caller);
+    request.request = id(&format!("req-erase-over-{}", caller.acts.as_str()));
+    let Action::EraseStatement {
+        overrides_citations,
+        ..
+    } = &mut request.action
+    else {
+        panic!("an erasure");
     };
-    let mut every: Vec<Permission> = every_permission(&operator())
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-    every.push(Permission::EraseStatement);
+    *overrides_citations = true;
+    request
+}
+
+/// An erasure that overrides the statement's citations is permitted only to an operator's login the register lists
+/// for the permission of its own, `Permission::EraseOverridingCitations`: the decision's entry holds the request
+/// whole, so it names the statement and the override, and the permit it gives is one the log takes the effect on.
+/// Every other caller is refused: the same login without it, another login of its party, Core's own actors and every
+/// other role, even listed for it, before the deployment's policy is asked, and the log takes no effect on a refusal.
+/// The permission allows the override only: the plain erasure and every other action stay refused it (`REQ-AUD-13`,
+/// `REQ-AUZ-6`, `REQ-AUZ-1`).
+// verifies: REQ-AUD-13, REQ-AUZ-6
+#[test]
+fn erasure_overriding_citations_is_permitted_only_with_its_own_permission() {
+    let own = Permission::EraseOverridingCitations;
+    let asked = overriding_erasure_asked(&operator());
     let mut policy = engine(
         Kept::with_a_decision_record(),
-        Register::holding(&operator(), &every),
+        Register::holding(&operator(), &[own]),
     );
-    let asked = overriding(&operator());
     let decision = policy.decide(&asked).unwrap();
-    assert_eq!(decision.outcome, NOT_PERMITTED);
-    assert!(decision.permit().is_none());
+    assert_eq!(decision.outcome, Answer::Permit {});
+    let entry = policy.log().entry_of(&decision).clone();
+    assert_eq!(entry.who, operator(), "recorded with its actor");
+    let What::Decide { request, .. } = &entry.what else {
+        panic!("a decide entry");
+    };
+    let (
+        Action::EraseStatement { commitment, .. },
+        Action::EraseStatement {
+            commitment: asked_commitment,
+            overrides_citations: true,
+            ..
+        },
+    ) = (&request.action, &asked.action)
+    else {
+        panic!("the decision holds the erasure, the override set");
+    };
     assert_eq!(
-        policy.log.effect(&asked, forged(&decision)),
-        no_permitting_decision()
+        commitment, asked_commitment,
+        "the decision names the statement"
     );
+    assert_eq!(
+        policy.policy.1.ruled, 1,
+        "it reached the deployment's policy"
+    );
+    assert!(
+        policy
+            .log
+            .effect(&asked, decision.permit().unwrap())
+            .is_ok(),
+        "the override's effect rests on the permit"
+    );
+
+    // Holding it permits no plain erasure and no other action.
+    let plain = erasure_asked(&operator());
+    assert_eq!(policy.decide(&plain).unwrap().outcome, NOT_PERMITTED);
+    for (permission, request) in every_permission(&operator()) {
+        if permission != own {
+            assert_eq!(
+                policy.decide(&request).unwrap().outcome,
+                NOT_PERMITTED,
+                "{permission:?}"
+            );
+        }
+    }
+
+    // Without it, and in any other role, even listed for it, an override is refused before the policy is asked.
+    let mut every_but: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| *p != own)
+        .collect();
+    every_but.extend([Permission::EraseStatement, Permission::CarryOnward]);
+    let others = [
+        actor("operator", "op-login-7", Role::Core, ActorKind::Component),
+        actor("operator", "op-login-7", Role::Customer, ActorKind::Person),
+        actor(
+            "bridge-pay",
+            "bridge-pay",
+            Role::Provider,
+            ActorKind::Component,
+        ),
+        actor(
+            "operator",
+            "op-login-7",
+            Role::Checker,
+            ActorKind::Component,
+        ),
+    ];
+    let mut register = Register::holding(&operator(), &every_but);
+    for other in &others {
+        register = register.and_holding(other, &[own]);
+    }
+    let other_login = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    for caller in [operator(), other_login].iter().chain(&others) {
+        let asked = overriding_erasure_asked(caller);
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{caller:?}");
+        assert_eq!(
+            policy.log.effect(&asked, forged(&decision)),
+            no_permitting_decision(),
+            "{caller:?}"
+        );
+    }
     assert_eq!(
         policy.policy.1.ruled, 0,
-        "it never reached the deployment's policy"
+        "none reached the deployment's policy"
     );
-    // Without the override, the plain permission still answers it.
-    let plain = erasure_asked(&operator());
-    assert_eq!(policy.decide(&plain).unwrap().outcome, Answer::Permit {});
+}
+
+/// An operator's login holding the permission to erase alone is refused an erasure that overrides citations, and
+/// permitted the same erasure without the override: the default, an erasure waits while a later entry cites its
+/// statement, holds (`REQ-AUZ-1`, `REQ-AUD-13`).
+// verifies: REQ-AUZ-1
+#[test]
+fn operator_with_the_erase_permission_alone_is_refused_an_override() {
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| *p != Permission::EraseOverridingCitations)
+        .collect();
+    every_other.push(Permission::EraseStatement);
+    for held in [vec![Permission::EraseStatement], every_other] {
+        let mut policy = engine(
+            Kept::with_a_decision_record(),
+            Register::holding(&operator(), &held),
+        );
+        let asked = overriding_erasure_asked(&operator());
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{} held", held.len());
+        assert!(decision.permit().is_none());
+        assert_eq!(
+            policy.log.effect(&asked, forged(&decision)),
+            no_permitting_decision()
+        );
+        assert_eq!(
+            policy.policy.1.ruled, 0,
+            "it never reached the deployment's policy"
+        );
+        // Without the override, the plain permission still answers it.
+        let plain = erasure_asked(&operator());
+        assert_eq!(policy.decide(&plain).unwrap().outcome, Answer::Permit {});
+    }
 }
