@@ -1524,6 +1524,47 @@ engine's list of decided actions and its counts).
   | another permission (`PostRoute`) stands for it | `caller_without_the_erase_permission_is_refused`, `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies` |
   | no permission asked of the operator | `caller_without_the_erase_permission_is_refused`, `every_value_moving_action_is_refused_when_policy_denies` |
 
+## T-021-11
+
+Branch `f-021/t-021-11-origin-held`, from `m3` at `4a48ac54`. Edits `components/core-authz/` only (`funds/`), a `DEC-20`
+path: it waits for the owner's click at the release into `main`.
+
+- **Design.** The origin account is the first one a permitted authorisation speaking for the part names, held from then:
+  `origin_in_force` no longer follows later authorisations the payer gave. `refuses` answers `not_permitted` for any
+  authorisation naming another account than the one in force for a part it covers (naming none included), whoever
+  gives it, the payer too. Where the authorisations so far name none (`Some(None)`), an account may be named once,
+  and only by the payer's authorisation; from then it is held. Restating the account in force stays permitted, from
+  any giver the other rules let through. `sets_account` and its register check (the payer holds the account) are
+  unchanged, minus the payer argument. Core-internal's `only-the-payer-moves-the-origin-account` is untouched.
+- **Defaults, reversible, each failing closed.**
+  - Naming a first account on a part with none yet is the payer's alone, not "any giver policy otherwise permits":
+    the log's rule refuses any other's, so a wider policy would permit what the log then refuses to admit. To widen
+    it, widen the log's rule with it.
+  - An authorisation naming no account where one is in force counts as a move and is refused (as it was for a
+    non-payer before).
+  - A log that already holds a payer's move (core-internal admits it; policy wrote none) is read as holding the first
+    account: policy does not follow the move.
+- **Gaps, with owners.**
+  1. In such a log, policy and core-internal's `origin_account_in_force` disagree on the account in force, so a delivery
+     back to the origin (`resolved_to`) follows the log's account, not policy's. No log policy wrote has one. Owner:
+     the later widening of both items, or a contract round that narrows the log's rule.
+  2. The widening later: lift the refusal in `refuses`, restore the payer's moves in `origin_in_force`, and give a
+     third-party payer a way to authorise (`third-party-payer-authorises`). Owner: the owner's later word.
+  3. Test seeding of the log-holds-a-move case uses the register's frozen snapshot, not entries run through
+     `admit_entry`; the pair is admitted by the log's rule by reading, not by run. Owner: `T-021-11`'s reviewer.
+  4. Policy doesn't hold `origin_reserve`: today `hand_on/rule.rs` refuses a change of it (`ChangesOrigin`), and the later
+     widening owns it.
+- **Red first.** The changed `only the payer moves the origin account` and the two named tests of moving and of naming
+  once failed on their outcome assertions (`Permit` for `Refuse`); the restating test passes before and after, and
+  is held by the rule-offs below (the first of them).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a move is refused where an account is in force | `authorisation_moving_the_origin_account_once_one_is_in_force_is_refused_even_from_the_payer`, `only_the_payer_moves_the_origin_account`, `origin_account_named_for_the_first_time_is_set_once_and_then_held`, `a_move_the_log_already_holds_is_not_followed`, `reopened_engine_still_refuses_a_move_of_the_origin_account`, `split_orders_parts_each_hold_their_origin_account` |
+  | the first naming is the payer's alone | `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
+  | the account is held from the first naming (later ones followed) | `a_move_the_log_already_holds_is_not_followed` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as
