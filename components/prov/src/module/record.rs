@@ -25,7 +25,8 @@ use rutent_contracts::provider_role::{Operation, ResultBody, Statement};
 use serde::{Deserialize, Serialize};
 
 use crate::catalogue::Instant;
-use crate::module::lifecycle::{Move, MoveReason, SegmentRecord};
+use crate::module::lifecycle::{Decision, DecisionKind, Mark, Move, MoveReason, SegmentRecord};
+use rutent_contracts::module_interface::Identifier;
 
 /// Where the platform keeps its carried-out record: a sequence of lines, each one entry, which the platform writes
 /// and reads and nothing else interprets.
@@ -82,22 +83,72 @@ impl Record for MemoryRecord {
     }
 }
 
-/// A record on a file: one entry per line, each appended and synced to disk before the platform goes on. A lock
-/// file beside it (its name and `.lock`) is held for as long as the record is open, so two platforms never share
-/// one record: a second opening is refused while the first holds it.
+/// A record on a file: one entry per line, each appended and synced to disk before the platform goes on.
+///
+/// - **Created once, then opened.** [`FileRecord::create`] makes a new, empty record and refuses a path where
+///   anything is already; [`FileRecord::open`] opens one that exists and refuses a missing one, so a mistyped or
+///   lost path never opens as a fresh platform with nothing carried out.
+/// - **One name, one holder.** The record is opened by its canonical path, every directory's symbolic link
+///   resolved, and refused where the path is itself a symbolic link or, on Unix, the file has another name (a hard
+///   link): a lock file beside the canonical path (its name and `.lock`) is held for as long as the record is open,
+///   so two platforms never share one record, whatever name they reach it by.
+/// - **A write that fails leaves the record whole.** An append cut short (a full disk, an I/O error) is cut back to
+///   the last whole line, and every later write is refused until the record is opened again, so no entry is ever
+///   glued to a fragment and a later opening reads every entry written before it. The platform refuses each
+///   operation it then can't record (`Unavailable`).
+/// - **A replacement is durable or refused.** [`Record::replace`] writes the new lines to `<name>.replacing`,
+///   syncs it, renames it over the record and syncs the directory; a directory sync that fails refuses it (only a
+///   system that can't sync a directory at all is let through).
 #[derive(Debug)]
 pub struct FileRecord {
     path: PathBuf,
     file: File,
     /// Held, never read: the lock is released when it drops.
     _lock: File,
+    /// A write failed: every later one is refused until the record is opened again.
+    broken: bool,
+    /// The tests' short write: the next append writes this many bytes of its line, and fails.
+    #[cfg(test)]
+    cut_next: Option<usize>,
 }
 
 impl FileRecord {
-    /// Opens the record at `path`, creating it if it doesn't exist, and takes its lock. Refused, as
-    /// `WouldBlock`, while another record holds it.
+    /// Creates a new, empty record at `path`, durably, and opens it. Refused, as `AlreadyExists`, where anything
+    /// is at `path` already, a symbolic link included.
+    pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+            .sync_all()?;
+        sync_directory_of(path)?;
+        Self::open(path)
+    }
+
+    /// Opens the record at `path`, which [`FileRecord::create`] made, and takes its lock. Refused as `NotFound`
+    /// where there is none, as `InvalidInput` where `path` is a symbolic link, isn't a file, or names a file with
+    /// another name, and as `WouldBlock` while another record holds it.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
+        let given = path.as_ref();
+        let meta = fs::symlink_metadata(given)?;
+        if meta.file_type().is_symlink() {
+            return Err(refused(
+                given,
+                "is a symbolic link: open the record by its own path",
+            ));
+        }
+        if !meta.is_file() {
+            return Err(refused(given, "is not a file"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            if meta.nlink() != 1 {
+                return Err(refused(given, "has another name (a hard link)"));
+            }
+        }
+        let path = fs::canonicalize(given)?;
         let lock = OpenOptions::new()
             .write(true)
             .create(true)
@@ -113,23 +164,67 @@ impl FileRecord {
             }
             Err(TryLockError::Error(e)) => return Err(e),
         }
-        let file = appending(&path)?;
+        let file = OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
             path,
             file,
             _lock: lock,
+            broken: false,
+            #[cfg(test)]
+            cut_next: None,
         })
     }
 
-    /// The file it is kept in.
+    /// The file it is kept in, by its canonical path.
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Refused once a write failed.
+    fn usable(&self) -> io::Result<()> {
+        if self.broken {
+            return Err(io::Error::other(format!(
+                "{}: a write to this record failed; it takes no more until it is opened again",
+                self.path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Writes `bytes` at the end of the file.
+    fn write_end(&mut self, bytes: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(cut) = self.cut_next.take() {
+            self.file.write_all(&bytes[..cut.min(bytes.len())])?;
+            return Err(io::Error::other("the write was cut short"));
+        }
+        self.file.write_all(bytes)
+    }
 }
 
-/// The file `path` opened for appending, created if it doesn't exist.
-fn appending(path: &Path) -> io::Result<File> {
-    OpenOptions::new().append(true).create(true).open(path)
+/// `path` refused for `why`.
+fn refused(path: &Path, why: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{}: {why}", path.display()),
+    )
+}
+
+/// Syncs the directory `path` is in, so a name just made or renamed in it survives a stop. A system that can't
+/// sync a directory at all (`Unsupported`, `EINVAL`) is let through; any other failure is an error.
+fn sync_directory_of(path: &Path) -> io::Result<()> {
+    /// `EINVAL`, the same on Linux and macOS: the descriptor can't be synced.
+    const EINVAL: i32 = 22;
+    let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    match File::open(dir).and_then(|d| d.sync_all()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::Unsupported || e.raw_os_error() == Some(EINVAL) => {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// `path` with `suffix` added to its name.
@@ -163,26 +258,51 @@ impl Record for FileRecord {
     }
 
     fn append(&mut self, line: &str) -> io::Result<()> {
-        self.file.write_all(&text_of([line])?)?;
-        self.file.sync_data()
+        self.usable()?;
+        let bytes = text_of([line])?;
+        let before = self.file.metadata()?.len();
+        let written = self.write_end(&bytes).and_then(|()| self.file.sync_data());
+        if let Err(e) = written {
+            // No later entry is glued to what this one left: the record takes nothing more until it is opened
+            // again, and is cut back to its last whole line. A cut that fails too leaves a fragment with no line
+            // break at the end, which an opening doesn't read.
+            self.broken = true;
+            let _ = self
+                .file
+                .set_len(before)
+                .and_then(|()| self.file.sync_data());
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn replace(&mut self, lines: &[String]) -> io::Result<()> {
-        let text = text_of(lines.iter().map(String::as_str))?;
-        let next = beside(&self.path, ".replacing");
-        {
-            let mut file = File::create(&next)?;
-            file.write_all(&text)?;
-            file.sync_all()?;
+        self.usable()?;
+        let replaced = (|| {
+            let text = text_of(lines.iter().map(String::as_str))?;
+            let next = beside(&self.path, ".replacing");
+            {
+                let mut file = File::create(&next)?;
+                file.write_all(&text)?;
+                file.sync_all()?;
+            }
+            fs::rename(&next, &self.path)?;
+            // The rename is durable once the directory is.
+            sync_directory_of(&self.path)?;
+            // Appends go to the new file.
+            OpenOptions::new().append(true).open(&self.path)
+        })();
+        match replaced {
+            Ok(file) => {
+                self.file = file;
+                Ok(())
+            }
+            Err(e) => {
+                // Which file the record's lines are in is no longer certain: nothing more is written to it.
+                self.broken = true;
+                Err(e)
+            }
         }
-        fs::rename(&next, &self.path)?;
-        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            // The rename is durable once the directory is: best effort where the system can't sync one.
-            let _ = File::open(dir).and_then(|d| d.sync_all());
-        }
-        // Appends go to the new file.
-        self.file = appending(&self.path)?;
-        Ok(())
     }
 }
 
@@ -230,6 +350,123 @@ pub(crate) enum Entry {
     /// The transaction ended: its segment ended, or its record was freed after its provider's evidence window. It
     /// never begins or carries out anything again.
     Ended { transaction: String },
+    /// An operator's decision, written before the platform takes it: the marks it set on versions (stale,
+    /// revoked, declared exploited), the segments it moved, and the decisions recorded with their actors. A mark
+    /// written later replaces one written before for the same version.
+    Decided {
+        marks: Vec<MarkEntry>,
+        segments: Vec<SegmentEntry>,
+        decisions: Vec<DecisionEntry>,
+    },
+}
+
+/// The operator's mark on a provider's version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MarkEntry {
+    pub(crate) provider: String,
+    pub(crate) version: String,
+    pub(crate) mark: MarkKind,
+}
+
+/// [`Mark`], as the record writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MarkKind {
+    Revoked,
+    Exploited,
+    Stale,
+}
+
+impl From<Mark> for MarkKind {
+    fn from(mark: Mark) -> Self {
+        match mark {
+            Mark::Revoked => Self::Revoked,
+            Mark::Exploited => Self::Exploited,
+            Mark::Stale => Self::Stale,
+        }
+    }
+}
+
+impl From<MarkKind> for Mark {
+    fn from(mark: MarkKind) -> Self {
+        match mark {
+            MarkKind::Revoked => Self::Revoked,
+            MarkKind::Exploited => Self::Exploited,
+            MarkKind::Stale => Self::Stale,
+        }
+    }
+}
+
+/// One recorded lifecycle decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DecisionEntry {
+    pub(crate) provider: String,
+    pub(crate) version: String,
+    pub(crate) kind: DecisionKindEntry,
+    pub(crate) by: String,
+    pub(crate) at: u64,
+}
+
+/// [`DecisionKind`], as the record writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DecisionKindEntry {
+    Withdrawn,
+    Promoted,
+    RolledBack,
+    Revoked,
+    MarkedStale,
+    DeclaredExploited,
+    Reinstated,
+}
+
+impl From<&Decision> for DecisionEntry {
+    fn from(decision: &Decision) -> Self {
+        Self {
+            provider: decision.provider.clone(),
+            version: decision.version.clone(),
+            kind: match decision.kind {
+                DecisionKind::Withdrawn => DecisionKindEntry::Withdrawn,
+                DecisionKind::Promoted => DecisionKindEntry::Promoted,
+                DecisionKind::RolledBack => DecisionKindEntry::RolledBack,
+                DecisionKind::Revoked => DecisionKindEntry::Revoked,
+                DecisionKind::MarkedStale => DecisionKindEntry::MarkedStale,
+                DecisionKind::DeclaredExploited => DecisionKindEntry::DeclaredExploited,
+                DecisionKind::Reinstated => DecisionKindEntry::Reinstated,
+            },
+            by: decision.by.as_str().to_owned(),
+            at: decision.at.0,
+        }
+    }
+}
+
+impl TryFrom<DecisionEntry> for Decision {
+    type Error = io::Error;
+
+    fn try_from(decision: DecisionEntry) -> io::Result<Self> {
+        Ok(Self {
+            provider: decision.provider,
+            version: decision.version,
+            kind: match decision.kind {
+                DecisionKindEntry::Withdrawn => DecisionKind::Withdrawn,
+                DecisionKindEntry::Promoted => DecisionKind::Promoted,
+                DecisionKindEntry::RolledBack => DecisionKind::RolledBack,
+                DecisionKindEntry::Revoked => DecisionKind::Revoked,
+                DecisionKindEntry::MarkedStale => DecisionKind::MarkedStale,
+                DecisionKindEntry::DeclaredExploited => DecisionKind::DeclaredExploited,
+                DecisionKindEntry::Reinstated => DecisionKind::Reinstated,
+            },
+            by: Identifier::new(decision.by).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a decision's actor is no identifier",
+                )
+            })?,
+            at: Instant(decision.at),
+        })
+    }
 }
 
 /// What was carried out under a transaction in one scope.
@@ -338,12 +575,27 @@ mod tests {
         dir.join("record")
     }
 
+    /// A `carrying` entry for one of provider-role's operation fixtures, as one line.
+    fn carrying(transaction: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/provider-role/fixtures/valid/operation-withdrawal-from-a-bank-reserve.json");
+        let text = fs::read_to_string(path).expect("the fixture reads");
+        Entry::Carrying {
+            transaction: transaction.to_owned(),
+            scope: String::new(),
+            provider: "reserve".to_owned(),
+            operation: Box::new(serde_json::from_str(&text).expect("an operation")),
+        }
+        .line()
+        .expect("a line")
+    }
+
     // verifies: INV-8, NFR-6
     #[test]
     fn a_file_record_reads_back_what_it_appended_and_drops_a_line_cut_off() {
         let path = scratch("cut");
         {
-            let mut record = FileRecord::open(&path).expect("opens");
+            let mut record = FileRecord::create(&path).expect("is created");
             record.append("one").expect("appends");
             record.append("two").expect("appends");
         }
@@ -363,11 +615,48 @@ mod tests {
         let _ = fs::remove_dir_all(path.parent().expect("a directory"));
     }
 
+    /// An append cut short (a full disk, an I/O error) leaves no fragment for a later entry to be glued to: the
+    /// record is cut back to its last whole line and takes nothing more until it is opened again, and an opening
+    /// reads every whole entry back, the `carrying` one before the failure included.
+    // verifies: INV-8, NFR-6
+    #[test]
+    fn a_write_cut_short_leaves_every_whole_entry_readable_and_the_record_takes_no_more() {
+        let path = scratch("short");
+        let mut record = FileRecord::create(&path).expect("is created");
+        let first = carrying("tx-1");
+        record.append(&first).expect("appends");
+        record.cut_next = Some(10);
+        record
+            .append(&carrying("tx-2"))
+            .expect_err("the write was cut short");
+        assert_eq!(
+            fs::read(&path).expect("reads").len(),
+            first.len() + 1,
+            "cut back to the last whole line"
+        );
+        // Nothing more is written to it, glued or not, until it is opened again.
+        record.append(&carrying("tx-3")).expect_err("refused");
+        record.replace(&[]).expect_err("refused");
+        drop(record);
+        let mut record = FileRecord::open(&path).expect("reopens");
+        let lines = record.load().expect("loads");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0], first);
+        assert!(matches!(
+            Entry::read(&lines[0]).expect("reads back"),
+            Entry::Carrying { transaction, .. } if transaction == "tx-1"
+        ));
+        // Reopened, it takes entries again.
+        record.append(&carrying("tx-4")).expect("appends");
+        assert_eq!(record.load().expect("loads").len(), 2);
+        let _ = fs::remove_dir_all(path.parent().expect("a directory"));
+    }
+
     // verifies: INV-8
     #[test]
     fn a_file_record_is_held_by_one_platform_at_a_time() {
         let path = scratch("lock");
-        let mut first = FileRecord::open(&path).expect("opens");
+        let mut first = FileRecord::create(&path).expect("is created");
         let second = FileRecord::open(&path).expect_err("held");
         assert_eq!(second.kind(), io::ErrorKind::WouldBlock);
         // Still held once replaced, which swaps the file the entries are kept in.
@@ -376,8 +665,60 @@ mod tests {
             FileRecord::open(&path).expect_err("held").kind(),
             io::ErrorKind::WouldBlock
         );
+        // Through another name of its directory too: the lock is the canonical path's.
+        let dir = path.parent().expect("a directory");
+        let alias = dir.with_file_name(format!(
+            "{}-alias",
+            dir.file_name().expect("a name").to_string_lossy()
+        ));
+        let _ = fs::remove_file(&alias);
+        std::os::unix::fs::symlink(dir, &alias).expect("a link to the directory");
+        assert_eq!(
+            FileRecord::open(alias.join("record"))
+                .expect_err("held")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
         drop(first);
         FileRecord::open(&path).expect("free once the first is dropped");
+        let _ = fs::remove_file(&alias);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A record is opened by its own name only: a symbolic link to it, or a second name of its file, would take a
+    /// lock of its own. And a missing record is refused, never made: creating one is a step of its own.
+    // verifies: INV-8
+    #[test]
+    fn a_record_is_opened_by_its_own_name_and_never_made_by_opening() {
+        let path = scratch("names");
+        assert_eq!(
+            FileRecord::open(&path).expect_err("none yet").kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!path.exists(), "opening made nothing");
+        drop(FileRecord::create(&path).expect("is created"));
+        assert_eq!(
+            FileRecord::create(&path).expect_err("there already").kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let link = path.with_file_name("link");
+        std::os::unix::fs::symlink(&path, &link).expect("a symbolic link");
+        assert_eq!(
+            FileRecord::open(&link).expect_err("a link").kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let hard = path.with_file_name("hard");
+        fs::hard_link(&path, &hard).expect("a second name");
+        for name in [&path, &hard] {
+            assert_eq!(
+                FileRecord::open(name).expect_err("two names").kind(),
+                io::ErrorKind::InvalidInput,
+                "{}",
+                name.display()
+            );
+        }
+        fs::remove_file(&hard).expect("one name again");
+        FileRecord::open(&path).expect("opens by its own name");
         let _ = fs::remove_dir_all(path.parent().expect("a directory"));
     }
 

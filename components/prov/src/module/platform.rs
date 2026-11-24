@@ -47,7 +47,7 @@ use crate::module::limits::{
     within as within_bound,
 };
 use crate::module::output;
-use crate::module::record::{CarriedEntry, Entry, MemoryRecord, Record};
+use crate::module::record::{CarriedEntry, DecisionEntry, Entry, MarkEntry, MemoryRecord, Record};
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent, UnknownOutcome,
@@ -580,8 +580,10 @@ impl<W: World> Platform<W> {
     /// A platform as [`Platform::new`] makes it, on `record`, which holds what an earlier platform carried out
     /// (`T-013-10`; `INV-8`, `NFR-6`). It reads every entry back: what was carried out under each transaction, and
     /// its answer if it gave one, an operation written as handed over and never answered being carried out with no
-    /// answer; the segments in flight, on the versions they ran on; the transactions that ended; and how many
-    /// operations each provider's version ran. Then it frees what its evidence window let go of, and replaces the
+    /// answer; the segments in flight, on the versions they ran on; the transactions that ended; the operator's
+    /// marks on versions and the decisions recorded; and how many operations each provider's version ran. A version
+    /// marked before the restart stays marked when its release is admitted again: one declared exploited runs
+    /// nothing, and no marked version is put back in force by starting. Then it frees what its evidence window let go of, and replaces the
     /// record with what it holds. From then on it writes each to the record before it acts on it, so a repeat
     /// after the platform restarts is answered as one in the same run is: refused, or from the first answer.
     ///
@@ -601,9 +603,9 @@ impl<W: World> Platform<W> {
             .load()
             .map_err(|e| format!("the platform's record can't be read: {e}"))?;
         for (n, line) in lines.iter().enumerate() {
-            let entry = Entry::read(line)
+            Entry::read(line)
+                .and_then(|entry| platform.read_back(entry))
                 .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
-            platform.read_back(entry);
         }
         platform.free_spent();
         let lines = platform
@@ -617,7 +619,7 @@ impl<W: World> Platform<W> {
     }
 
     /// Takes one entry of the record back into what the platform holds.
-    fn read_back(&mut self, entry: Entry) {
+    fn read_back(&mut self, entry: Entry) -> std::io::Result<()> {
         match entry {
             Entry::Carrying {
                 transaction,
@@ -672,7 +674,24 @@ impl<W: World> Platform<W> {
                 self.carried.remove(&transaction);
                 self.lifecycle.spend(&transaction);
             }
+            Entry::Decided {
+                marks,
+                segments,
+                decisions,
+            } => {
+                for mark in marks {
+                    self.lifecycle
+                        .restore_mark(&mark.provider, &mark.version, mark.mark.into());
+                }
+                for segment in segments {
+                    self.lifecycle.restore_segment(segment.into());
+                }
+                for decision in decisions {
+                    self.lifecycle.restore_decision(decision.try_into()?);
+                }
+            }
         }
+        Ok(())
     }
 
     /// Holds `carried` as the record of its transaction in its scope, unless the transaction ended.
@@ -697,6 +716,24 @@ impl<W: World> Platform<W> {
         let ended = self.lifecycle.ended().map(|transaction| Entry::Ended {
             transaction: transaction.to_owned(),
         });
+        let decided = std::iter::once(Entry::Decided {
+            marks: self
+                .lifecycle
+                .marks()
+                .map(|(provider, version, mark)| MarkEntry {
+                    provider: provider.to_owned(),
+                    version: version.to_owned(),
+                    mark: mark.into(),
+                })
+                .collect(),
+            segments: Vec::new(),
+            decisions: self
+                .lifecycle
+                .decisions()
+                .iter()
+                .map(DecisionEntry::from)
+                .collect(),
+        });
         let segments = self
             .lifecycle
             .segments()
@@ -715,6 +752,7 @@ impl<W: World> Platform<W> {
                 count: *count,
             });
         ended
+            .chain(decided)
             .chain(segments)
             .chain(carried)
             .chain(runs)
@@ -737,6 +775,50 @@ impl<W: World> Platform<W> {
             }
             None => Ok(()),
         }
+    }
+
+    /// Takes an operator's decision, `decide`, on the lifecycle, once what it changes is in the platform's record:
+    /// the marks it sets, the segments it moves and the decisions it records, in one entry written before the
+    /// platform holds any of it (`T-013-10`). A decision the lifecycle refuses changes nothing; one the record can't
+    /// hold is refused as `Unrecorded` and changes nothing either, so a restart never loses an exploited or
+    /// revoked mark the platform acted on.
+    fn decide<T>(
+        &mut self,
+        decide: impl FnOnce(&mut Lifecycle) -> Result<T, LifecycleRefusal>,
+    ) -> Result<T, LifecycleRefusal> {
+        let mut next = self.lifecycle.clone();
+        let made = decide(&mut next)?;
+        let marks: Vec<MarkEntry> = next
+            .marks()
+            .filter(|mark| !self.lifecycle.marks().any(|held| held == *mark))
+            .map(|(provider, version, mark)| MarkEntry {
+                provider: provider.to_owned(),
+                version: version.to_owned(),
+                mark: mark.into(),
+            })
+            .collect();
+        let segments: Vec<_> = next
+            .segments()
+            .filter(|segment| self.lifecycle.segment(&segment.transaction) != Some(*segment))
+            .map(Into::into)
+            .collect();
+        let decisions: Vec<DecisionEntry> = next
+            .decisions()
+            .get(self.lifecycle.decisions().len()..)
+            .unwrap_or_default()
+            .iter()
+            .map(DecisionEntry::from)
+            .collect();
+        if !(marks.is_empty() && segments.is_empty() && decisions.is_empty()) {
+            self.write(&Entry::Decided {
+                marks,
+                segments,
+                decisions,
+            })
+            .map_err(|_| LifecycleRefusal::Unrecorded)?;
+        }
+        self.lifecycle = next;
+        Ok(made)
     }
 
     /// The world's clock, in whole seconds, or `None` where it gives no time the platform can read.
@@ -2630,9 +2712,10 @@ impl<W: World> Platform<W> {
     /// where the platform can't tell, where the first was another provider's, and whatever the kind or the
     /// envelope: the platform verifies no signature, so a changed key or protocol version is a retry (`INV-8`,
     /// `REQ-CAT-10`). Where the provider declares a repeat safe, an operation of other terms or another envelope is
-    /// no repeat of the first but a second operation under one identifier, refused as `DuplicateTransaction` too
-    /// (`REQ-MDL-14`, `T-013-10`): a declared safe retry covers the same operation asked again, nothing else. Only
-    /// there does the module run again: the same operation, where its first run gave no answer.
+    /// no repeat of the first but a second operation under one identifier, refused as `DuplicateTransaction` too,
+    /// at the top level and in a callee's scope alike (`REQ-MDL-14`, `T-013-10`): a declared safe retry covers the
+    /// same operation asked again, nothing else. Only there does the module run again: the same operation, where
+    /// its first run gave no answer, and the same call into a callee.
     fn repeated(
         &self,
         provider: &str,
@@ -2645,18 +2728,25 @@ impl<W: World> Platform<W> {
         if first.provider != provider || !safe {
             return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
         }
-        // A callee that declares a repeat safe runs the call again: each call is an operation of its own, within its
-        // budgets, and the declaration says it may.
+        // Only the same operation is a repeat, in any scope: its deployment, protocol version, shape, maker,
+        // signature scheme and key, and its whole statement. Its `made_at` and signature value are left out, since a
+        // retry is the same operation made again later and signed again, and the platform verifies no signature
+        // (`REQ-MDL-14`, `T-013-10`).
+        let (before, now) = (&first.operation, operation);
+        let same = before.deployment == now.deployment
+            && before.protocol_version == now.protocol_version
+            && before.shape == now.shape
+            && before.maker == now.maker
+            && before.signature.scheme == now.signature.scheme
+            && before.signature.key == now.signature.key
+            && before.statement == now.statement;
+        if !same {
+            return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
+        }
+        // A callee that declares a repeat safe runs the same call again: each call is an operation of its own,
+        // within its budgets, and the declaration says it may.
         if scope != TOP_LEVEL {
             return None;
-        }
-        let (before, now) = (&first.operation, operation);
-        if before.deployment != now.deployment
-            || before.protocol_version != now.protocol_version
-            || before.signature.key != now.signature.key
-            || before.statement != now.statement
-        {
-            return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
         }
         first.answer.clone().map(Handled::Answered)
     }
@@ -2818,6 +2908,9 @@ impl<W: World> Platform<W> {
     /// under `assertion_digest`, accepted or not since: one refused on being judged again stays waiting until it
     /// is withdrawn. The provider's next release may then be admitted, under another version. The withdrawn
     /// artefact, or `None` if no release waits under that digest or `by` names no one.
+    ///
+    /// Written to the platform's record before it is taken; `None`, nothing changed, where it can't be
+    /// (`T-013-10`).
     pub fn withdraw(
         &mut self,
         provider: &str,
@@ -2827,14 +2920,16 @@ impl<W: World> Platform<W> {
     ) -> Option<AdmissionArtefact> {
         self.restart_ended();
         Identifier::new(by)?;
-        let slot = self.providers.get_mut(provider)?;
-        if &slot.pending.as_ref()?.0.assertion_digest != assertion_digest {
+        let (waiting, _, _) = self.providers.get(provider)?.pending.as_ref()?;
+        if &waiting.assertion_digest != assertion_digest {
             return None;
         }
+        let version = waiting.declaration().version.as_str().to_owned();
+        self.decide(|lifecycle| lifecycle.withdrawn(provider, &version, by, at))
+            .ok()?;
+        let slot = self.providers.get_mut(provider)?;
         let (artefact, _, _) = slot.pending.take()?;
-        let version = artefact.declaration().version.as_str().to_owned();
-        slot.withdrawn.insert(version.clone());
-        self.lifecycle.withdrawn(provider, &version, by, at).ok()?;
+        slot.withdrawn.insert(version);
         Some(artefact)
     }
 
@@ -2842,6 +2937,9 @@ impl<W: World> Platform<W> {
     /// passed and it has handled its minimum (`REQ-MDL-4`, ADR-0014). Segments in flight stay where they run.
     /// Refused as `StagedNotRunning` while the staged version has no live process, so a promotion never leaves the
     /// provider with no version in force.
+    ///
+    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
+    /// can't be (`T-013-10`).
     pub fn promote(
         &mut self,
         provider: &str,
@@ -2859,13 +2957,16 @@ impl<W: World> Platform<W> {
                 return Err(LifecycleRefusal::StagedNotRunning);
             }
         }
-        let promoted = self.lifecycle.promote(provider, by, at)?;
+        let promoted = self.decide(|lifecycle| lifecycle.promote(provider, by, at))?;
         self.reconcile(provider);
         Ok(promoted)
     }
 
     /// Rolls the provider's staged release back, by `by`: the version in force stays, and segments on the staged
     /// one finish on it.
+    ///
+    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
+    /// can't be (`T-013-10`).
     pub fn roll_back(
         &mut self,
         provider: &str,
@@ -2873,7 +2974,7 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<String, LifecycleRefusal> {
         self.restart_ended();
-        let rolled_back = self.lifecycle.roll_back(provider, by, at)?;
+        let rolled_back = self.decide(|lifecycle| lifecycle.roll_back(provider, by, at))?;
         self.reconcile(provider);
         Ok(rolled_back)
     }
@@ -2881,6 +2982,9 @@ impl<W: World> Platform<W> {
     /// Revokes the provider's `version`, by `by`: it takes no new segment, and those in flight on it finish on it
     /// (`REQ-MDL-20`). Revoking the version in force puts the one before it back in force, a recorded decision; the
     /// version put back, if any.
+    ///
+    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
+    /// can't be (`T-013-10`).
     pub fn revoke(
         &mut self,
         provider: &str,
@@ -2889,13 +2993,16 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
         self.restart_ended();
-        let back = self.lifecycle.revoke(provider, version, by, at)?;
+        let back = self.decide(|lifecycle| lifecycle.revoke(provider, version, by, at))?;
         self.reconcile(provider);
         Ok(back)
     }
 
     /// Declares the provider's `version` actively exploited, by `by`: its process is stopped and its segments are
     /// refused as `VersionExploited`, not moved (`REQ-MDL-20`). The version put back in force, if any.
+    ///
+    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
+    /// can't be (`T-013-10`).
     pub fn declare_exploited(
         &mut self,
         provider: &str,
@@ -2904,9 +3011,8 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
         self.restart_ended();
-        let back = self
-            .lifecycle
-            .declare_exploited(provider, version, by, at)?;
+        let back =
+            self.decide(|lifecycle| lifecycle.declare_exploited(provider, version, by, at))?;
         self.reconcile(provider);
         Ok(back)
     }
@@ -2914,6 +3020,9 @@ impl<W: World> Platform<W> {
     /// Marks the provider's `version` stale, by `by`, the operator's decision and never the publisher's: its
     /// segments in flight move to the version in force, each move recorded in its segment's record (`REQ-MDL-5`,
     /// `REQ-MDL-19`). Refused while a release is staged (ADR-0014). How many segments moved.
+    ///
+    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
+    /// can't be (`T-013-10`).
     pub fn mark_stale(
         &mut self,
         provider: &str,
@@ -2922,18 +3031,7 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<usize, LifecycleRefusal> {
         self.restart_ended();
-        let moved = self.lifecycle.mark_stale(provider, version, by, at)?;
-        // Each segment that moved, as it now runs, in the platform's record: one that can't be written runs on its
-        // old version after a restart, which the operator can mark stale again.
-        let segments: Vec<String> = self
-            .lifecycle
-            .segments()
-            .filter(|segment| segment.provider == provider && !segment.moves.is_empty())
-            .map(|segment| segment.transaction.clone())
-            .collect();
-        for transaction in segments {
-            let _ = self.write_segment(&transaction);
-        }
+        let moved = self.decide(|lifecycle| lifecycle.mark_stale(provider, version, by, at))?;
         self.reconcile(provider);
         Ok(moved)
     }
@@ -2948,6 +3046,108 @@ impl<W: World> Platform<W> {
 #[cfg(test)]
 mod tests {
     use super::{PlatformRefusal, proxy, reenters, told_after, unsigned_refusal};
+
+    /// A world with nothing in it: `repeated` asks it nothing.
+    struct Empty;
+
+    impl super::World for Empty {
+        fn secret(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+
+        fn state(&mut self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+
+        fn route(
+            &mut self,
+            _: &super::Endpoint,
+        ) -> Option<(std::net::IpAddr, Option<super::Endpoint>)> {
+            None
+        }
+
+        fn deliver(&mut self, _: &super::Endpoint, _: &str) {}
+    }
+
+    /// A call into a callee that declares a repeat safe runs again only where it is the same call: one under the
+    /// same transaction with other terms, or of another maker or shape, is a second operation under one
+    /// identifier, refused before the callee runs, as at the top level (`REQ-MDL-14`, `INV-8`, `T-013-10`). The
+    /// boundary suite's stand-ins make each call from the caller's own operation, so this is judged here, on the
+    /// record the platform keeps.
+    // verifies: REQ-MDL-14, INV-8
+    #[test]
+    fn a_call_with_other_terms_into_a_safe_retry_callee_under_one_transaction_is_refused() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../contracts/provider-role/fixtures/valid/operation-withdrawal-from-a-bank-reserve.json",
+        );
+        let first: rutent_contracts::provider_role::Statement<
+            rutent_contracts::provider_role::Operation,
+        > = serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture reads"))
+            .expect("an operation");
+        let mut platform = super::Platform::new(
+            super::Paths {
+                compiler: std::path::PathBuf::new(),
+                provider: std::path::PathBuf::new(),
+            },
+            Empty,
+            super::Envelope {
+                deployment: first.deployment.clone(),
+                protocol_version: first.protocol_version.clone(),
+            },
+        )
+        .expect("a platform");
+        let callee = "callee";
+        platform
+            .providers
+            .entry(callee.to_owned())
+            .or_default()
+            .safe_retry = Some(true);
+        for scope in [callee, super::TOP_LEVEL] {
+            platform.carried.entry("tx".to_owned()).or_default().insert(
+                scope.to_owned(),
+                super::Carried {
+                    provider: callee.to_owned(),
+                    operation: first.clone(),
+                    answer: None,
+                    free_at: None,
+                },
+            );
+        }
+        let changed = |change: fn(&mut serde_json::Value)| {
+            let mut v = serde_json::to_value(&first).expect("JSON");
+            change(&mut v);
+            serde_json::from_value(v).expect("an operation")
+        };
+        let others: [(&str, rutent_contracts::provider_role::Statement<_>); 3] = [
+            (
+                "amount",
+                changed(|v| v["statement"]["amount"] = "999999".into()),
+            ),
+            ("maker", changed(|v| v["maker"] = "someone-else".into())),
+            (
+                "shape",
+                changed(|v| v["shape"] = "urn:rutent:provider-role:other".into()),
+            ),
+        ];
+        for scope in [callee, super::TOP_LEVEL] {
+            for (what, other) in &others {
+                assert_eq!(
+                    platform.repeated(callee, "tx", scope, other),
+                    Some(super::Handled::Refused(
+                        PlatformRefusal::DuplicateTransaction
+                    )),
+                    "{scope:?}: {what}"
+                );
+            }
+        }
+        // The same call runs again, as the callee's declaration allows, and so does the top-level operation whose
+        // first run gave no answer.
+        assert_eq!(platform.repeated(callee, "tx", callee, &first), None);
+        assert_eq!(
+            platform.repeated(callee, "tx", super::TOP_LEVEL, &first),
+            None
+        );
+    }
 
     /// Every reason an operation with no answer could end for is told as itself only where its module passed
     /// nothing out; once it passed something out, every one is an outcome unknown (`REQ-ORD-1`).

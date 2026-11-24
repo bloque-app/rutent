@@ -189,9 +189,10 @@ impl RoleProvider for Through {
         let handled = self.fleet.handle(&self.spec.provider, operation);
         let answered = match handled {
             Handled::Answered(answered) => answered,
-            // A replay of a carried out transaction from elsewhere, to a provider that declares no safe retry: the
-            // platform refuses it before the module sees it (`T-013-09`), as the replay probe expects of the module,
-            // a final refusal, which the twin gives in process.
+            // A replay of a carried out transaction from elsewhere, or under another envelope or other terms: the
+            // platform refuses it before the module sees it, whatever the provider declares of safe retry
+            // (`T-013-09`, `T-013-10`), as the replay probe expects of the module, a final refusal, which the twin
+            // gives in process.
             Handled::Refused(PlatformRefusal::DuplicateTransaction) => {
                 let twin = serde_json::to_value(&expected.statement().statement).expect("JSON");
                 assert_eq!(

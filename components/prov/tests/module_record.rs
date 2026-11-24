@@ -19,9 +19,10 @@ use common::{TestWorld, WORLD_AT, withdrawal};
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_prov::catalogue::Instant;
+use rutent_prov::module::lifecycle::{DecisionKind, Mark};
 use rutent_prov::module::record::{FileRecord, MemoryRecord, Record};
 use rutent_prov::module::types::{Admitted, Handled};
-use signed::{RAMP, RESERVE, Signed, release};
+use signed::{AT, RAMP, RESERVE, Signed, release};
 
 /// How long the ramp's advertisement says evidence of an outcome stays available: 30 days.
 const RAMP_EVIDENCE: u64 = 2_592_000;
@@ -29,8 +30,17 @@ const RAMP_EVIDENCE: u64 = 2_592_000;
 /// Admits `provider`'s first release, handling withdrawals, and gives it its acceptance: it runs. A restarted
 /// platform holds no release until one is admitted again, as a deployment's start does.
 fn admit(s: &mut Signed, provider: &str) {
+    admit_version(s, provider, "1.0.0");
+    assert_eq!(
+        s.platform.active_version(provider).as_deref(),
+        Some("1.0.0")
+    );
+}
+
+/// Admits `provider`'s release of `version`, handling withdrawals, and gives it its acceptance.
+fn admit_version(s: &mut Signed, provider: &str, version: &str) {
     let key = signed::catalogue_support::advertising_key(provider);
-    let (declaration, binaries) = release(provider, "1.0.0", &["withdrawal"]);
+    let (declaration, binaries) = release(provider, version, &["withdrawal"]);
     let Admitted::Artefact(artefact) =
         s.admit(&signed::assertion(&declaration, &binaries, &key), &binaries)
     else {
@@ -40,10 +50,6 @@ fn admit(s: &mut Signed, provider: &str) {
         s.accept(provider, &artefact.assertion_digest, "test-reviewer")
             .expect("the release is accepted");
     }
-    assert_eq!(
-        s.platform.active_version(provider).as_deref(),
-        Some("1.0.0")
-    );
 }
 
 /// A platform on `record` over `world`, with each of `providers`' first release running.
@@ -134,6 +140,8 @@ impl Record for StopsAt {
 #[test]
 fn a_repeat_after_the_platform_restarts_moves_nothing_twice() {
     let path = scratch("restart");
+    // The deployment's first start makes its record; every start after opens it.
+    drop(FileRecord::create(&path).expect("the record is created"));
     let file = || Box::new(FileRecord::open(&path).expect("the record opens"));
     let mut s = opened(file(), TestWorld::default(), &[RESERVE, RAMP]);
     // The reserve's transaction is held in a segment, as Core holds it; the ramp's isn't.
@@ -224,7 +232,7 @@ fn an_operation_the_platform_cannot_record_is_not_handed_to_the_module() {
 #[test]
 fn a_record_another_platform_holds_is_not_opened() {
     let path = scratch("held");
-    let held = FileRecord::open(&path).expect("the record opens");
+    let held = FileRecord::create(&path).expect("the record is created");
     assert_eq!(
         FileRecord::open(&path).expect_err("held").kind(),
         io::ErrorKind::WouldBlock
@@ -361,4 +369,71 @@ fn unsegmented_operations_record_is_freed_after_its_evidence_window() {
         "{:#?}",
         memory.lines()
     );
+}
+
+/// The operator's marks are in the record: a segment restored after a restart on a version declared exploited is
+/// refused, not run, once that version's release is admitted again, and a marked version is never put back in
+/// force by starting (`REQ-MDL-20`, `T-013-10`).
+// verifies: INV-8, REQ-MDL-20
+#[test]
+fn segment_restored_after_a_restart_refuses_a_version_declared_exploited() {
+    let memory = MemoryRecord::new();
+    let mut s = opened(Box::new(memory.clone()), TestWorld::default(), &[RESERVE]);
+    s.platform
+        .begin_segment(RESERVE, &tx(RESERVE, 1))
+        .expect("a segment");
+    admit_version(&mut s, RESERVE, "1.0.1");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.1"));
+    s.platform
+        .declare_exploited(RESERVE, "1.0.0", "test-operator", AT)
+        .expect("declared");
+    assert_eq!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 1)),
+        Handled::Refused(PlatformRefusal::VersionExploited)
+    );
+
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(memory), world);
+    assert_eq!(
+        s.platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Exploited)
+    );
+    assert!(
+        s.platform
+            .lifecycle()
+            .decisions()
+            .iter()
+            .any(|d| d.kind == DecisionKind::DeclaredExploited && d.version == "1.0.0")
+    );
+    // The exploited release admitted again runs nothing: it isn't put in force, and no process runs it.
+    admit_version(&mut s, RESERVE, "1.0.0");
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    assert_eq!(s.platform.version_process(RESERVE, "1.0.0"), None);
+    admit_version(&mut s, RESERVE, "1.0.1");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.1"));
+    assert_eq!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 1)),
+        Handled::Refused(PlatformRefusal::VersionExploited)
+    );
+    assert_eq!(s.platform.operations_run(RESERVE), 0);
+}
+
+/// An operator's decision the record can't hold isn't taken: a restart would lose it.
+// verifies: REQ-MDL-20
+#[test]
+fn a_decision_the_platform_cannot_record_is_not_taken() {
+    let memory = MemoryRecord::new();
+    let mut s = opened(
+        Box::new(StopsAt::new(&memory, "decided")),
+        TestWorld::default(),
+        &[RESERVE],
+    );
+    admit_version(&mut s, RESERVE, "1.0.1");
+    assert_eq!(
+        s.platform
+            .declare_exploited(RESERVE, "1.0.0", "test-operator", AT),
+        Err(rutent_prov::module::lifecycle::LifecycleRefusal::Unrecorded)
+    );
+    assert_eq!(s.platform.lifecycle().mark(RESERVE, "1.0.0"), None);
+    assert!(s.platform.lifecycle().decisions().is_empty());
 }

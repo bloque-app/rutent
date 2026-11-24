@@ -267,6 +267,9 @@ pub enum LifecycleRefusal {
     AlreadyMarked,
     /// The staged version has no live process, so it can't be put in force.
     StagedNotRunning,
+    /// The platform couldn't write the decision to its record, so it wasn't taken: a restart would lose it
+    /// (`T-013-10`). Nothing changed.
+    Unrecorded,
 }
 
 #[derive(Debug, Clone)]
@@ -383,7 +386,9 @@ impl Lifecycle {
     pub fn started(&mut self, provider: &str, version: &str, placement: Placement, at: Instant) {
         let policy = self.policy;
         let releases = self.providers.entry(provider.to_owned()).or_default();
-        if !releases.accepted.contains(version) {
+        // A version the operator marked, as a restarted platform reads it back before the release is admitted
+        // again, is never put back in force or staged by starting: only a decision does that (`T-013-10`).
+        if !releases.accepted.contains(version) || releases.marks.contains_key(version) {
             return;
         }
         match (placement, policy) {
@@ -627,6 +632,32 @@ impl Lifecycle {
         if !self.ended.contains(&record.transaction) {
             self.segments.insert(record.transaction.clone(), record);
         }
+    }
+
+    /// Every mark the operator set: each provider's version and its mark.
+    pub fn marks(&self) -> impl Iterator<Item = (&str, &str, Mark)> {
+        self.providers.iter().flat_map(|(provider, releases)| {
+            releases
+                .marks
+                .iter()
+                .map(move |(version, mark)| (provider.as_str(), version.as_str(), *mark))
+        })
+    }
+
+    /// Holds `mark` on the provider's `version`, as the platform's record says the operator set it, before or
+    /// whether or not that version's release is admitted again (`T-013-10`): a version marked exploited runs
+    /// nothing, one revoked takes no new segment, and neither is put in force by starting.
+    pub fn restore_mark(&mut self, provider: &str, version: &str, mark: Mark) {
+        self.providers
+            .entry(provider.to_owned())
+            .or_default()
+            .marks
+            .insert(version.to_owned(), mark);
+    }
+
+    /// Holds `decision` as one recorded before the platform restarted (`T-013-10`).
+    pub fn restore_decision(&mut self, decision: Decision) {
+        self.decisions.push(decision);
     }
 
     /// Drops the segment of `transaction` that just began, which the platform couldn't record: as if it never

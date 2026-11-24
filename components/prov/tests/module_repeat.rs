@@ -273,7 +273,11 @@ fn repeat_with_other_terms_under_a_carried_out_transaction_is_refused_even_with_
     let mut s = running(RAMP);
     let first = s.platform.handle(RAMP, &withdrawal(RAMP, 1));
     assert!(matches!(first, Handled::Answered(_)), "{first:?}");
-    let changes: [(&str, Change); 5] = [
+    let changes: [(&str, Change); 7] = [
+        ("maker", |v| v["maker"] = "someone-else".into()),
+        ("shape", |v| {
+            v["shape"] = "urn:rutent:provider-role:other".into();
+        }),
         ("amount", |v| v["statement"]["amount"] = "2000".into()),
         ("asset", |v| v["statement"]["asset"] = "USD".into()),
         ("protocol version", |v| {
