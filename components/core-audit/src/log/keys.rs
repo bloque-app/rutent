@@ -565,6 +565,10 @@ impl StatementKeys for Keys<'_> {
         maker: &Id,
         key: &SignedWith,
         at: &Timestamp,
+        // The statement's receipt: core-internal's rule on a statement received after its grants' revocation
+        // (`revoked_before_receipt`, `T-020-39`) is `T-022-09`'s to hold here; until then the key is trusted at
+        // `at` alone.
+        _received: &Timestamp,
     ) -> Result<bool, AppendFailure> {
         let settings = self.settings;
         if maker == &settings.operator {

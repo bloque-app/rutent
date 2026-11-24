@@ -1,0 +1,9 @@
+{
+  "base": "decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve",
+  "patch": [
+    {
+      "op": "remove",
+      "path": "/statement/snapshot/figures/10/value/tuple/payouts"
+    }
+  ]
+}

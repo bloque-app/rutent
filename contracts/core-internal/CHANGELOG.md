@@ -937,3 +937,46 @@
   holding the pair) sent and fx-desk's about `p1-s2` received. Twenty-eight schemas, 158 valid fixtures, 165 invalid
   ones, 698 admission cases and 50 attribution cases; 109 relations and 5 closing ones, three stated. Outside
   `contracts/`: `core-audit`'s log tests (the pair on the real log). (DEC-4, DEC-20, T-020-38)
+- Folded into 1.0.0 before its release: the contract round for the owner's decision-form answers of 2026-11-18
+  (`T-020-39`). 1.0.0 isn't on `develop`, so it folds into the unreleased major, as `T-020-30`, `T-020-36` and
+  `T-020-38` did. Each change, by its form item:
+  1. Item `rollback-permission`: `CatalogueChange::RollBack` (`roll_back`), a release's staging ended with the version
+     in force kept (ADR-0014), a decided change of its own about one release, naming the staged version. One valid
+     fixture and one invalid (no version, which the Rust types refuse). Policy has no rule for it until `T-021-12`.
+     (REQ-AUZ-6, REQ-AUZ-1)
+  2. Item `confirmer-evidence-party`: `outcome-confirmation-cites-verified-evidence` (a report's, a confirmation's and
+     a decline's evidence) and `part-evidence-rests-on-statements` (the stuck resolution's own evidence entry) gain a
+     field, `party`: the statement's maker is a provider of a segment on any route this log gave the order or an
+     order a hand-on joins it to, recalculated and changed routes included, or the one a move of it went to; the
+     holder of a holding account its value rested at (its arrival's reserve, a stuck resolution's mover, a route
+     handed on's holder); or it states for the publisher of a private node those routes crossed,
+     as `private_node_of` binds the node. An outside provider's word is no evidence about the order. Four refused
+     cases (a confirmation, a move's report, a decline and a part's evidence, each on an outside provider's result)
+     and two admitted (another provider of the route; one only a recalculated route names). (REQ-AUZ-4)
+  3. Item `erasure-of-cited-evidence`: `Action::EraseStatement.overrides_citations`, false unless set and written only
+     when set. `erasure-waits-while-anything-rests-on-the-statement` cites nothing for an erasure whose permitting
+     decision's action sets it: the decision's own, an effect's through its permit's receipt, an erasure record's
+     through the erase effect of its commitment this log holds done. Three admitted cases (the decision, the effect
+     and the record while cited) and one refused (an effect setting it on a decision that doesn't, refused as not
+     the action decided). (REQ-AUD-13)
+  4. Item `deposit-no-firm-rate`: `AcceptanceBasis::GivenOnDeposit` (`given_on_deposit`), the customer's acceptance of
+     an order filed on an automatic deposit whose route has no firm rate: in a session, as `given`, and with no yes,
+     resting on the deposit's arrival, as `automatic_deposit` (`on_a_deposit`, `in_a_session`). Its check, and the rows
+     `automatic-deposit-rests-on-its-arrival`, `acceptance-is-of-the-quote-shown`, `move-rests-on-its-orders-acceptance`,
+     `first-move-rests-on-its-parts-yes`, `chosen-route-rests-on-its-orders-acceptance` and the deposited test
+     `split-deposit-arrival-names-its-part` reads, take it. One valid fixture, two invalid ones the Rust types refuse,
+     two admitted cases and four refused. (REQ-QTE-10, REQ-ORD-32)
+  5. Item `thr3-backdated-after-revocation`: `StatementKeys::signs_for` takes the statement's received time beside
+     its `made_at`, and `attribute`'s step 8 passes the entry's `received_at`. The rule is the contract's,
+     `revoked_before_receipt`: every grant of the maker in force at its `made_at` revoked, by an effect the log holds
+     done, no later than its receipt, whatever the `made_at`; a key source answers no there. The trait's sentence
+     calling the backdating a residual (`THR-3`) states the rule instead, and so does the README. Six attribution
+     cases: before the revocation, with another grant standing, and made after the grant was made again, verified;
+     after the revocation, at its instant, and made before it but received after the grant was made again,
+     unverified. The log's register holds it from `T-022-09`. (THR-3, REQ-AUD-2)
+  After the review of `27b0f6b9`: the `party` field reads no `holding_check` (no row ties one to the order) and a
+  `stuck_decide` only where policy permitted it, in `party_to_the_order` and the hand-on closure alike; fourteen more
+  admission cases, one per way a maker is made a party, alone.
+  Twenty-eight schemas, 160 valid fixtures, 168 invalid ones, 728 admission cases and 56 attribution cases; 109
+  relations and 5 closing ones, three stated. Outside `contracts/`: the consumer edits the shapes force, named in the
+  round's commit. (DEC-4, DEC-20, T-020-39)

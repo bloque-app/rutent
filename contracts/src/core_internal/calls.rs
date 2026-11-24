@@ -196,7 +196,9 @@ pub trait KeptStatements {
 /// the state machine holds is state orchestration drives, so `T-022-01`'s log takes a provider's keys only from
 /// advertisements it recorded itself under permitted `change_catalogue` effects; never from orchestration, which
 /// could otherwise name its own key a provider's and sign that provider's word. A key is current at the statement's
-/// own `made_at`, so a key revoked since still verifies a statement dated before (`THR-3`, a residual).
+/// own `made_at`, and a statement the log receives after the revocation of every grant that would attribute it is
+/// attributed to no one, whatever that `made_at` says, so a revoked key can't sign a statement backdated to before
+/// its revocation (`THR-3`; [`revoked_before_receipt`](super::revoked_before_receipt), `T-020-39`).
 pub trait StatementKeys {
     /// This deployment, which every statement made for it names (`REQ-PRT-1`).
     fn deployment(&mut self) -> Result<Deployment, AppendFailure>;
@@ -214,18 +216,28 @@ pub trait StatementKeys {
     /// statement's `party` is this, never the writer's word.
     fn publisher(&mut self, maker: &Id) -> Result<Option<Id>, AppendFailure>;
 
-    /// Whether `key` signs `maker`'s statements at `at`: a `statements` key of the provider's advertisement
-    /// current at `at`, or, for the operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`). The log's
-    /// first trust in a provider's advertisements is the advertising keys its latest grant in the log names
+    /// Whether `key` signs `maker`'s statements at `at`, the statement's own `made_at`, for a statement the log
+    /// received at `received`: a `statements` key of the provider's advertisement current at `at`, or, for the
+    /// operator, the deployment's `operator_key` (`REQ-AUD-2`, `THR-3`). The log's first trust in a provider's
+    /// advertisements is the advertising keys its latest grant in the log names
     /// ([`granted_advertising_keys`](super::granted_advertising_keys)), never a deployment setting such as
-    /// `first_trust`, so a checker outside the operator recomputes every attribution from the history alone. A
-    /// module the operator publishes isn't asked here: [`attribute`](super::attribute) holds it to the statement
-    /// key of a release of it the log accepted ([`release_statement_keys`](super::release_statement_keys)).
+    /// `first_trust`, so a checker outside the operator recomputes every attribution from the history alone.
+    ///
+    /// A statement the log receives after the revocation of every grant that would attribute it is attributed to
+    /// no one, whatever its `made_at` (item `thr3-backdated-after-revocation`, `T-020-39`): its maker chooses its
+    /// `made_at`, so a key whose grant was revoked could otherwise sign a statement backdated to before the
+    /// revocation. The answer is no wherever [`revoked_before_receipt`](super::revoked_before_receipt) holds of
+    /// `maker`, `at` and `received` over the log's history: each grant in force at `at` was revoked, by an effect
+    /// the log holds done, no later than `received`. Both times are the stated entry's own, so a checker recomputes
+    /// the rule from the history alone. A module the operator publishes isn't asked here:
+    /// [`attribute`](super::attribute) holds it to the statement key of a release of it the log accepted
+    /// ([`release_statement_keys`](super::release_statement_keys)).
     fn signs_for(
         &mut self,
         maker: &Id,
         key: &SignedWith,
         at: &Timestamp,
+        received: &Timestamp,
     ) -> Result<bool, AppendFailure>;
 }
 

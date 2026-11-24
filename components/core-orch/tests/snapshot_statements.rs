@@ -540,7 +540,13 @@ impl StatementKeys for LogSources<'_> {
         )
     }
 
-    fn signs_for(&mut self, _: &Id, _: &SignedWith, _: &Timestamp) -> Result<bool, AppendFailure> {
+    fn signs_for(
+        &mut self,
+        _: &Id,
+        _: &SignedWith,
+        _: &Timestamp,
+        _: &Timestamp,
+    ) -> Result<bool, AppendFailure> {
         // The catalogue's verification below ties the key to its maker at its `made_at`.
         Ok(true)
     }

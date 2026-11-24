@@ -309,6 +309,10 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement/keys/0/purpose", "enum")],
         ),
         (
+            "advertisement-deposit-tuple-declaring-payouts-of-no-kind",
+            vec![("/statement/offers/reserve/tuples/1/payouts", "enum")],
+        ),
+        (
             "operation-signed-with-a-non-canonical-alias-of-the-operator-key",
             vec![("/signature/key", "pattern")],
         ),
@@ -824,6 +828,10 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "advertisement-ramp-within-one-node",
             advertisement(RuleViolation::RampWithinOneNode { tuple: 0 }),
+        ),
+        (
+            "advertisement-withdrawal-tuple-declaring-payouts",
+            advertisement(RuleViolation::PayoutsOnAWithdrawal { tuple: 0 }),
         ),
         (
             "advertisement-band-with-min-above-max",
@@ -2338,4 +2346,86 @@ fn a_value_and_its_text_have_one_canonical_form() {
     let pretty = serde_json::to_vec_pretty(&statement).expect("json");
     assert_eq!(provider_role::canonicalize(&pretty), Ok(from_value.clone()));
     assert_eq!(provider_role::canonicalize(&from_value), Ok(from_value));
+}
+
+/// The reserve tuples of one advertisement, read through the Rust types.
+fn reserve_tuples(name: &str) -> Vec<provider_role::ReserveTuple> {
+    let statement: Statement<Advertisement> =
+        serde_json::from_value(fixture("valid", name)).unwrap();
+    statement.statement.offers.reserve.unwrap().tuples
+}
+
+/// A deposit tuple that declares nothing about its payouts is read as paying each order out on its own, as every
+/// reserve was built before the declaration existed; a withdrawal declares none, and one that does is refused
+/// (`REQ-ORD-33`, item `shared-movement-reading`, `T-020-39`).
+// verifies: REQ-ORD-33
+#[test]
+fn deposit_tuples_payouts_are_read_as_per_order_where_undeclared() {
+    let tuples = reserve_tuples("advertisement-reserve-starting-routes-on-automatic-deposits");
+    let deposit = tuples
+        .iter()
+        .find(|t| t.direction() == Some(provider_role::ReserveDirection::Deposit))
+        .expect("a deposit tuple");
+    assert_eq!(deposit.payouts, None);
+    assert_eq!(deposit.payouts(), provider_role::Payouts::PerOrder);
+    // Undeclared, it stays undeclared on the wire.
+    let value = fixture(
+        "valid",
+        "advertisement-reserve-starting-routes-on-automatic-deposits",
+    );
+    assert!(
+        value["statement"]["offers"]["reserve"]["tuples"][1]
+            .get("payouts")
+            .is_none()
+    );
+    assert_eq!(
+        through_rust("advertisement", &value).unwrap(),
+        value,
+        "nothing added on the way through"
+    );
+    // A withdrawal tuple declaring payouts breaks the Rust validation, which the schema leaves to it.
+    let name = "advertisement-withdrawal-tuple-declaring-payouts";
+    let withdrawal = fixture("invalid", name);
+    assert!(
+        shape_errors("advertisement", &withdrawal).is_empty(),
+        "{name}"
+    );
+    assert_eq!(
+        rust_rules("advertisement", &withdrawal),
+        Err(format!(
+            "{:?}",
+            vec![RuleViolation::PayoutsOnAWithdrawal { tuple: 0 }]
+        ))
+    );
+    // A declaration of another kind than per order or batched: refused by both.
+    assert_schema_rejects("advertisement-deposit-tuple-declaring-payouts-of-no-kind");
+}
+
+/// A reserve that pays several orders' deposits with one movement says so on its deposit tuple, `batched`, and its
+/// advertisement is valid: it is routing's to drop a route ending there (`REQ-ORD-33`, `T-020-39`, `T-020-43`).
+// verifies: REQ-ORD-33
+#[test]
+fn deposit_tuple_declaring_batched_payouts_is_valid() {
+    let name = "advertisement-reserve-paying-out-deposits-in-batches";
+    let value = fixture("valid", name);
+    assert!(shape_errors("advertisement", &value).is_empty(), "{name}");
+    assert_eq!(through_rust("advertisement", &value).unwrap(), value);
+    assert_eq!(rust_rules("advertisement", &value), Ok(()));
+    let tuples = reserve_tuples(name);
+    let deposit = tuples
+        .iter()
+        .find(|t| t.direction() == Some(provider_role::ReserveDirection::Deposit))
+        .expect("a deposit tuple");
+    assert_eq!(deposit.payouts, Some(provider_role::Payouts::Batched));
+    assert_eq!(deposit.payouts(), provider_role::Payouts::Batched);
+    // Its withdrawal tuple declares nothing, and reads as per order.
+    let withdrawal = tuples
+        .iter()
+        .find(|t| t.direction() == Some(provider_role::ReserveDirection::Withdrawal))
+        .expect("a withdrawal tuple");
+    assert_eq!(withdrawal.payouts(), provider_role::Payouts::PerOrder);
+    assert_eq!(
+        serde_json::to_value(provider_role::Payouts::Batched).unwrap(),
+        "batched"
+    );
 }

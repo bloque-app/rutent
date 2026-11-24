@@ -1192,6 +1192,8 @@ mod tests {
                 | CatalogueChange::WithdrawRelease
                 | CatalogueChange::SetSlippage
                 | CatalogueChange::Promote => {}
+                // Not listed above: no rule answers it until `T-021-12` gives it its own permission, which lists it.
+                CatalogueChange::RollBack => unreachable!("not listed until T-021-12"),
             }
             actions.push(Action::ChangeCatalogue {
                 change,

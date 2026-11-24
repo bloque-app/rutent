@@ -1569,7 +1569,13 @@ impl StatementKeys for Sources<'_> {
         )
     }
 
-    fn signs_for(&mut self, _: &Id, _: &SignedWith, _: &Timestamp) -> Result<bool, AppendFailure> {
+    fn signs_for(
+        &mut self,
+        _: &Id,
+        _: &SignedWith,
+        _: &Timestamp,
+        _: &Timestamp,
+    ) -> Result<bool, AppendFailure> {
         Ok(true)
     }
 }

@@ -53,7 +53,7 @@ fn cop_unit() -> Denomination {
 }
 
 fn ledger_node() -> String {
-    format!("{RESERVE}-ledger")
+    format!("{}-ledger", origin_reserve())
 }
 
 // The holding account -----------------------------------------------------------------------------------------
@@ -101,8 +101,8 @@ impl Wallet {
     fn of(core: &Core, script: Script) -> Self {
         Wallet {
             node: ledger_node(),
-            holder: Some(RESERVE.to_owned()),
-            account: RESERVE.to_owned(),
+            holder: Some(origin_reserve().to_owned()),
+            account: origin_reserve().to_owned(),
             script,
             key: TestKey(core.key.0.clone()),
             bounds: core.record.bounds.clone(),
@@ -162,7 +162,7 @@ impl Withdrawals for Wallet {
             provider: account.clone(),
             session: None,
             origin: OuterNode {
-                network: RESERVE.to_owned(),
+                network: origin_reserve().to_owned(),
             },
             destination: node.clone(),
             asset: first.from.asset.id.clone(),
@@ -252,7 +252,12 @@ fn accepted(core: &Core) -> AcceptedRoute {
 /// The kit's order with its withdrawal settled and its deposit never begun, then left no route: stuck, its value
 /// resting at the reserve's ledger; and the linked order `ord-2` accepted by the original customer.
 fn stuck_with_a_linked_order() -> (World, Core, Stuck) {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    stuck_with_a_linked_order_in(World::of(&[RESERVE, OTHER_RESERVE]))
+}
+
+/// [`stuck_with_a_linked_order`], in `world`: in the two-party world ([`World::two_parties`], `T-020-39`) the
+/// route's deposit is another party's, whose word about the hand-on is a party's word.
+fn stuck_with_a_linked_order_in(mut world: World) -> (World, Core, Stuck) {
     let mut core = Core::over(&mut world);
     // The log attributes each statement, as the real one does.
     core.log.borrow_mut().attribute_from_now();
@@ -267,7 +272,7 @@ fn stuck_with_a_linked_order() -> (World, Core, Stuck) {
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let outcome = Rerouting::of(&core)
         .recalculate(&mut core, &mut world)
         .expect("the recalculation runs");
@@ -300,7 +305,7 @@ fn stuck_with_a_linked_order() -> (World, Core, Stuck) {
 }
 
 fn hand_on_resolution() -> Resolution {
-    hand_on_resolution_by(RESERVE)
+    hand_on_resolution_by(origin_reserve())
 }
 
 fn hand_on_resolution_by(by: &str) -> Resolution {
@@ -318,7 +323,7 @@ fn decide(
     policy: &mut dyn StuckOrders,
     decider: &Actor,
 ) -> Decided {
-    decide_by(core, stuck, policy, decider, RESERVE)
+    decide_by(core, stuck, policy, decider, origin_reserve())
 }
 
 /// [`decide`], the decision naming `by` as the holder.
@@ -556,7 +561,7 @@ fn operators_hand_on_is_carried_out_by_the_holding_accounts_withdrawal_for_the_l
     assert_eq!(sent["kind"], "withdrawal");
     assert_eq!(sent["amount"], AMOUNT);
     assert_eq!(sent["destination"], ledger_node());
-    assert_eq!(sent["provider"], RESERVE);
+    assert_eq!(sent["provider"], origin_reserve());
 
     // The question is on record before the result: the operator's, about the linked order and the wallet's
     // transaction.
@@ -625,7 +630,8 @@ fn run_linked(
         id(&named.order),
         id(PART),
         id(&named.authorisation()),
-        id(RESERVE),
+        // A route handed on starts at the kit route's last reserve, which runs its first move (`T-020-39`).
+        id(last_reserve()),
         route_end(),
     );
     let segments = [id(SEGMENT)];
@@ -703,7 +709,7 @@ fn hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused() {
             "a first segment of another provider than the decision names",
             |_, r| {
                 r.plan[0].segments[0].provider =
-                    rutent_contracts::state_machine::Id::new(OTHER_RESERVE).unwrap();
+                    rutent_contracts::state_machine::Id::new(second_reserve()).unwrap();
             },
         ),
         ("a route of two parts", |_, r| {
@@ -741,12 +747,16 @@ fn hand_on_of_a_route_other_than_the_linked_orders_accepted_one_is_refused() {
     }
     // No accepted route at all; no holding account at the node; another provider's holding account.
     for (why, routes, holder) in [
-        ("no accepted route", false, Some(RESERVE.to_owned())),
+        (
+            "no accepted route",
+            false,
+            Some(origin_reserve().to_owned()),
+        ),
         ("no holding account", true, None),
         (
             "another provider's account",
             true,
-            Some(OTHER_RESERVE.to_owned()),
+            Some(second_reserve().to_owned()),
         ),
     ] {
         let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
@@ -870,7 +880,7 @@ fn hand_on_keeps_the_original_customer_as_requester_and_records_the_operator_act
     let mut mover = Mover::new();
     let (order, part) = (id(ORDER), id(PART));
     let resolution = Resolution::HandOn {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         linked_order: id("ord-3"),
         asset: cop_unit(),
         amount: PositiveAmount::new(AMOUNT).unwrap(),
@@ -928,8 +938,8 @@ fn hand_on_keeps_the_original_customer_as_requester_and_records_the_operator_act
 fn hand_on_with_an_unproven_start_is_refused() {
     type Wrong = fn(&mut WithdrawalRecord);
     let wrong: [Wrong; 5] = [
-        |r| r.by = OTHER_RESERVE.into(),
-        |r| r.node = format!("{OTHER_RESERVE}-ledger"),
+        |r| r.by = second_reserve().into(),
+        |r| r.node = format!("{}-ledger", second_reserve()),
         |r| r.asset = "USD".into(),
         |r| r.order = "ord-7".into(),
         |r| r.amount -= 1,
@@ -992,12 +1002,15 @@ fn hand_on_with_an_unproven_start_is_refused() {
     let mut hand_on = HandOn::new();
     operator_hand_on(&mut core, &mut hand_on, &plan, &effect, &bob).expect("handed on");
     let linked = linked_route(&mut world, &core.clock, LINKED);
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     assert_eq!(
         run_linked(&mut core, &mut world, &linked).map(|_| ()),
         Err(SegmentsError::StartUnproven(id(LINKED)))
     );
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     let mut short = record.clone();
     short.amount -= 1;
     assert_eq!(
@@ -1303,7 +1316,7 @@ fn hand_on_to_a_linked_order_the_customer_did_not_accept_is_refused_before_the_w
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let outcome = Rerouting::of(&core)
         .recalculate(&mut core, &mut world)
         .expect("the recalculation runs");
@@ -1516,7 +1529,7 @@ fn a_call_that_stopped_after_the_wallet_was_asked_never_asks_it_again() {
 
 /// The wallet's transaction for the move: its own, `{provider}-withdrawal-{n}`, not the one the decision named.
 fn wallets_transaction() -> String {
-    format!("{RESERVE}-withdrawal-1")
+    format!("{}-withdrawal-1", origin_reserve())
 }
 
 /// `maker`'s later signed answer under the wallet's transaction, made now.
@@ -1571,7 +1584,37 @@ fn left_unknown() -> (
     Receipt,
     Wallet,
 ) {
-    let (mut world, mut core, mut stuck) = stuck_with_a_linked_order();
+    left_unknown_in(stuck_with_a_linked_order())
+}
+
+/// [`left_unknown`] in the two-party world, where another party of the order can confirm the holder's word
+/// (`T-020-39`).
+fn left_unknown_of_two_parties() -> (
+    World,
+    Core,
+    Stuck,
+    Mover,
+    PermitsEveryStep,
+    Decided,
+    Receipt,
+    Wallet,
+) {
+    left_unknown_in(stuck_with_a_linked_order_in(World::two_parties()))
+}
+
+/// The hand-on left unknown, from the stuck order `stuck`.
+fn left_unknown_in(
+    (mut world, mut core, mut stuck): (World, Core, Stuck),
+) -> (
+    World,
+    Core,
+    Stuck,
+    Mover,
+    PermitsEveryStep,
+    Decided,
+    Receipt,
+    Wallet,
+) {
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
@@ -1620,16 +1663,16 @@ fn left_unknown() -> (
 #[test]
 fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated_answer() {
     let (mut world, mut core, mut stuck, mut mover, mut policy, carries_out, effect, wallet) =
-        left_unknown();
+        left_unknown_of_two_parties();
     let transaction = wallets_transaction();
     let amount = AMOUNT;
     let before = stated_about(&core, LINKED).len();
     // Not taken.
     let other = wallet_answer(
-        RESERVE,
+        origin_reserve(),
         "sim-reserve-a-withdrawal-9",
         core.clock.now().timestamp().unwrap().as_str(),
-        wallet_succeeded(RESERVE, "sim-reserve-a-withdrawal-9", amount),
+        wallet_succeeded(origin_reserve(), "sim-reserve-a-withdrawal-9", amount),
     );
     assert_eq!(
         take(&mut core, &mut world, &mut mover, &effect, &other),
@@ -1637,8 +1680,8 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     );
     let mut forged: serde_json::Value = serde_json::from_slice(&later_answer(
         &core,
-        RESERVE,
-        wallet_succeeded(RESERVE, &transaction, amount),
+        origin_reserve(),
+        wallet_succeeded(origin_reserve(), &transaction, amount),
     ))
     .unwrap();
     forged["signature"]["value"] = rutent_conformance::signing::base64url(&[7u8; 64]).into();
@@ -1652,7 +1695,11 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
         ),
         Err(NotTaken::Unattributable)
     );
-    let short = later_answer(&core, RESERVE, wallet_succeeded(RESERVE, &transaction, "1"));
+    let short = later_answer(
+        &core,
+        origin_reserve(),
+        wallet_succeeded(origin_reserve(), &transaction, "1"),
+    );
     assert_eq!(
         take(&mut core, &mut world, &mut mover, &effect, &short),
         Err(NotTaken::NotCounted),
@@ -1660,11 +1707,11 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     );
     let no_record = later_answer(
         &core,
-        RESERVE,
+        origin_reserve(),
         serde_json::json!({
             "status": "succeeded", "amount_in": amount, "amount_out": amount,
             "fee": { "asset": "COP", "amount": "0" },
-            "evidence": [{ "grade": 4, "reference": "elsewhere", "by": RESERVE }],
+            "evidence": [{ "grade": 4, "reference": "elsewhere", "by": origin_reserve() }],
         }),
     );
     assert_eq!(
@@ -1682,8 +1729,8 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     // Taken: the holding account's own answer, once however often it is tried.
     let bytes = later_answer(
         &core,
-        RESERVE,
-        wallet_succeeded(RESERVE, &transaction, amount),
+        origin_reserve(),
+        wallet_succeeded(origin_reserve(), &transaction, amount),
     );
     let stated = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
     assert_eq!(stated.outcome(), Some(Resolved::Done));
@@ -1701,7 +1748,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     assert_eq!(withdrawn.statement, Some(stated.receipt()));
     assert_eq!(
         withdrawn.start.record.reference,
-        format!("{RESERVE}-withdrawal-{transaction}")
+        format!("{}-withdrawal-{transaction}", origin_reserve())
     );
     assert_eq!(withdrawn.start.transaction, transaction);
     assert_eq!(withdrawn.route, &accepted(&core));
@@ -1734,8 +1781,8 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     };
     let bytes = later_answer(
         &core,
-        OTHER_RESERVE,
-        wallet_succeeded(OTHER_RESERVE, &transaction, amount),
+        second_reserve(),
+        wallet_succeeded(second_reserve(), &transaction, amount),
     );
     let others = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("another maker's");
     let confirmed = on_parts(&mut core, |parts| {
@@ -1815,8 +1862,8 @@ fn a_statement_for_a_hand_on_the_wallet_was_never_asked_is_taken_for_no_move() {
     assert_eq!(resolved, Resolved::Failed);
     let bytes = later_answer(
         &core,
-        RESERVE,
-        wallet_succeeded(RESERVE, &wallets_transaction(), AMOUNT),
+        origin_reserve(),
+        wallet_succeeded(origin_reserve(), &wallets_transaction(), AMOUNT),
     );
     assert_eq!(
         take(&mut core, &mut world, &mut mover, &effect, &bytes),
@@ -1834,7 +1881,7 @@ fn a_statement_for_a_hand_on_the_wallet_was_never_asked_is_taken_for_no_move() {
 fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_partys_confirmation()
  {
     let (mut world, mut core, mut stuck, mut mover, mut policy, carries_out, effect, _wallet) =
-        left_unknown();
+        left_unknown_of_two_parties();
     let (alice, bob, carol) = (
         staff("desk-a", "alice"),
         staff("desk-b", "bob"),
@@ -1843,9 +1890,9 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     let transaction = wallets_transaction();
     let failed = serde_json::json!({
         "status": "failed",
-        "evidence": [{ "grade": 4, "reference": format!("{RESERVE}-failed-{transaction}"), "by": RESERVE }],
+        "evidence": [{ "grade": 4, "reference": format!("{}-failed-{transaction}", origin_reserve()), "by": origin_reserve() }],
     });
-    let bytes = later_answer(&core, RESERVE, failed);
+    let bytes = later_answer(&core, origin_reserve(), failed);
     let holders = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("taken");
     assert_eq!(holders.outcome(), Some(Resolved::Failed));
     assert!(
@@ -1897,7 +1944,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     // Another party's confirmation, on another maker's statement, frees it.
     let bytes = later_answer(
         &core,
-        OTHER_RESERVE,
+        second_reserve(),
         serde_json::json!({ "status": "failed" }),
     );
     let others = take(&mut core, &mut world, &mut mover, &effect, &bytes)
@@ -1973,7 +2020,7 @@ fn hand_on_whose_answer_does_not_bear_out_its_record_is_left_unknown() {
         ("a failure", |o| {
             *o = serde_json::json!({
                 "status": "failed",
-                "evidence": [{ "grade": 4, "reference": "x", "by": RESERVE }],
+                "evidence": [{ "grade": 4, "reference": "x", "by": origin_reserve() }],
             });
         }),
     ];
@@ -2046,17 +2093,17 @@ fn a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure() {
     let transaction = wallets_transaction();
     let done = later_answer(
         &core,
-        RESERVE,
-        wallet_succeeded(RESERVE, &transaction, AMOUNT),
+        origin_reserve(),
+        wallet_succeeded(origin_reserve(), &transaction, AMOUNT),
     );
     take(&mut core, &mut world, &mut mover, &effect, &done).expect("taken");
     assert!(mover.withdrawn(&effect).is_some());
     let failed = later_answer(
         &core,
-        RESERVE,
+        origin_reserve(),
         serde_json::json!({
             "status": "failed",
-            "evidence": [{ "grade": 4, "reference": "x", "by": RESERVE }],
+            "evidence": [{ "grade": 4, "reference": "x", "by": origin_reserve() }],
         }),
     );
     let stated = take(&mut core, &mut world, &mut mover, &effect, &failed).expect("taken");
@@ -2066,16 +2113,16 @@ fn a_known_start_is_given_to_no_hand_on_once_the_holder_has_stated_a_failure() {
 
 // A holding account that runs no route (`T-020-33`) ------------------------------------------------------------
 
-/// The kit's stuck order, its linked order accepted on a route whose first segment is `RESERVE`'s, and a wallet that
-/// is `OTHER_RESERVE`'s: the node's holding account is a provider that runs none of the linked route.
+/// The kit's stuck order, its linked order accepted on a route whose first segment is `origin_reserve()`'s, and a wallet that
+/// is `second_reserve()`'s: the node's holding account is a provider that runs none of the linked route.
 fn stuck_at_another_providers_wallet() -> (World, Core, Stuck, Wallet) {
     let (world, core, stuck) = stuck_with_a_linked_order();
     assert_eq!(
         accepted(&core).plan[0].segments[0].provider.as_str(),
-        RESERVE,
+        origin_reserve(),
         "the linked route's first move is the reserve's"
     );
-    let wallet = Wallet::held_by(&core, Script::Pays, OTHER_RESERVE);
+    let wallet = Wallet::held_by(&core, Script::Pays, second_reserve());
     (world, core, stuck, wallet)
 }
 
@@ -2091,7 +2138,7 @@ fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provide
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, second_reserve());
     let routes = Routes(Some(accepted(&core)));
     let moved = move_it(
         &mut core,
@@ -2110,12 +2157,12 @@ fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provide
     // The holding account was handed the one withdrawal decided, as its own, at the node the value rests at.
     assert_eq!(wallet.handed.len(), 1);
     let sent = serde_json::to_value(&wallet.handed[0].statement).unwrap();
-    assert_eq!(sent["provider"], OTHER_RESERVE);
+    assert_eq!(sent["provider"], second_reserve());
     assert_eq!(sent["destination"], ledger_node());
     assert_eq!(sent["amount"], AMOUNT);
     let withdrawn = mover.withdrawn(&effect).expect("the withdrawal is done");
-    assert_eq!(withdrawn.start.record.by, OTHER_RESERVE);
-    assert_eq!(withdrawn.start.reserve, OTHER_RESERVE);
+    assert_eq!(withdrawn.start.record.by, second_reserve());
+    assert_eq!(withdrawn.start.reserve, second_reserve());
     let (plan, record) = (withdrawn.route.plan.clone(), withdrawn.start.record.clone());
     let statement = withdrawn
         .statement
@@ -2131,10 +2178,10 @@ fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provide
     assert!(
         core.log.borrow().records().iter().any(|(_, w)| matches!(w,
             What::HoldingWithdrawal { order, holder, .. }
-                if order.as_str() == LINKED && holder.as_str() == OTHER_RESERVE)),
+                if order.as_str() == LINKED && holder.as_str() == second_reserve())),
         "the record names the holding account as the holder"
     );
-    assert_eq!(plan[0].segments[0].provider.as_str(), RESERVE);
+    assert_eq!(plan[0].segments[0].provider.as_str(), origin_reserve());
     // The linked order's first move is the plan's provider's, resting on the holding account's record: it is in the
     // log, and the log admits it (`T-020-36`'s item 4).
     let linked = linked_route(&mut world, &core.clock, LINKED);
@@ -2143,7 +2190,7 @@ fn hand_on_names_the_nodes_holding_account_while_the_linked_routes_first_provide
     assert!(
         core.log.borrow().entries.iter().any(|(e, _)| matches!(e, Entry::Verified(v)
             if matches!(&v.what, What::Effect { action: Action::MoveValue { order, provider, .. }, .. }
-                if order.as_str() == LINKED && provider.as_str() == RESERVE))),
+                if order.as_str() == LINKED && provider.as_str() == origin_reserve()))),
         "the first move, by the plan's provider, is in the log"
     );
     assert!(
@@ -2169,11 +2216,11 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
-    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, second_reserve());
     let mut wallet = Wallet::held_by(
         &core,
-        Script::PaysRecorded(|r| r.by = RESERVE.into()),
-        OTHER_RESERVE,
+        Script::PaysRecorded(|r| r.by = origin_reserve().into()),
+        second_reserve(),
     );
     let routes = Routes(Some(accepted(&core)));
     let moved = move_it(
@@ -2196,7 +2243,7 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
     let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
-    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, second_reserve());
     let routes = Routes(Some(accepted(&core)));
     let moved = move_it(
         &mut core,
@@ -2222,7 +2269,7 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
         Err(SegmentsError::StartUnproven(id(LINKED)))
     );
     let mut firsts = record.clone();
-    firsts.by = RESERVE.into();
+    firsts.by = origin_reserve().into();
     assert_eq!(
         prove_citing(&mut core, &mut hand_on, &id(LINKED), &firsts, &statement),
         Err(HandOnError::Unproven(Unproven::NotTheStartingReserves)),
@@ -2258,7 +2305,7 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
             if let Entry::Verified(v) = &mut e
                 && let What::HoldingWithdrawal { holder, .. } = &mut v.what
             {
-                *holder = id(RESERVE);
+                *holder = id(origin_reserve());
             }
             e
         })
@@ -2273,7 +2320,7 @@ fn hand_on_whose_start_no_record_of_the_holding_account_proves_stays_refused() {
 
     // A decision naming a provider that isn't the node's holding account, the route's first provider included, is
     // refused before the account is shown anything.
-    for named in [RESERVE, "sim-reserve-z"] {
+    for named in [origin_reserve(), "sim-reserve-z"] {
         let (mut world, mut core, mut stuck, mut wallet) = stuck_at_another_providers_wallet();
         let mut mover = Mover::new();
         let mut policy = PermitsEveryStep::new(&core.log);
@@ -2310,7 +2357,7 @@ fn recovered_start_follows_the_hand_on_that_succeeded_not_an_earlier_refused_one
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let routes = Routes(Some(accepted(&core)));
     // First naming the route's first provider: refused by the mover, the part still held.
-    let wrong = decide_by(&mut core, &mut stuck, &mut policy, &alice, RESERVE);
+    let wrong = decide_by(&mut core, &mut stuck, &mut policy, &alice, origin_reserve());
     let moved = move_it(
         &mut core,
         &mut world,
@@ -2326,7 +2373,7 @@ fn recovered_start_follows_the_hand_on_that_succeeded_not_an_earlier_refused_one
     assert_eq!(resolved, Resolved::Failed);
     still_held(&core);
     // Then the holding account: done, handed on and proven.
-    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, OTHER_RESERVE);
+    let carries_out = decide_by(&mut core, &mut stuck, &mut policy, &alice, second_reserve());
     let moved = move_it(
         &mut core,
         &mut world,

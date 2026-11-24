@@ -511,6 +511,7 @@ fn operator_agent_is_refused_an_erasure_without_the_erase_scope_or_when_its_logi
             }))
             .expect("a digest"),
             reason: Token::new("retention").expect("a token"),
+            overrides_citations: false,
         },
         at: core.clock.timestamp(),
     };

@@ -1271,10 +1271,11 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "basis": {
-          "description": "How it was accepted: given by its customer or the customer's agent, as who says, or a reserve's automatic deposit, which counts as acceptance (REQ-ORD-13, REQ-ORD-15).",
+          "description": "How it was accepted: given by its customer or the customer's agent, as who says; a reserve's automatic deposit, which counts as acceptance (REQ-ORD-13, REQ-ORD-15); or given by its customer on an order filed on an automatic deposit whose route has no firm rate, in a session as given is and resting on the deposit's arrival in place of each part's yes (REQ-QTE-10).",
           "enum": [
             "given",
-            "automatic_deposit"
+            "automatic_deposit",
+            "given_on_deposit"
           ]
         },
         "parties": {
@@ -1285,7 +1286,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "yeses": {
-          "description": "Each part's yes, keyed by part: its origin reserve and the receipt of that reserve's stated yes to the part's route, each part once, which the Rust types check. Present exactly when the basis is given (REQ-ORD-32).",
+          "description": "Each part's yes, keyed by part: its origin reserve and the receipt of that reserve's stated yes to the part's route, each part once, which the Rust types check. Present exactly when the basis is given, and never for given_on_deposit (REQ-ORD-32).",
           "type": "array",
           "minItems": 1,
           "items": {
@@ -1293,7 +1294,7 @@
           }
         },
         "session": {
-          "description": "The user's session it was asked in: present exactly when its basis is given (REQ-ORD-32).",
+          "description": "The user's session it was asked in: present exactly when its basis is given or given_on_deposit (REQ-ORD-32, REQ-QTE-10).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "held": {
