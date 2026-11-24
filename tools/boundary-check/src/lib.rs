@@ -61,14 +61,19 @@ fn allowed(krate: &str) -> &'static [&'static str] {
 /// Reports the dependencies of the crates named in `krates` that the boundary does not allow.
 ///
 /// Every edge counts, whatever its kind; only the conformance suites may be a dev-dependency of
-/// any crate, and nothing but the scenario assembly may depend on them otherwise.
+/// any crate, and nothing but the scenario assembly may depend on them otherwise. A crate's
+/// dev-dependency on itself, by its own package name, is no edge between two crates: cargo builds
+/// the same crate for its own tests, as the contracts crate does to turn on its test-only
+/// `rule-switches` feature (`T-020-45`). Only a dev-dependency: a crate depending on itself
+/// otherwise is reported, as any edge the boundary doesn't allow.
 pub fn violations(graph: &Graph, krates: &[&str]) -> Vec<Violation> {
     let mut found = Vec::new();
     for &krate in krates {
         for dep in graph.get(krate).map(Vec::as_slice).unwrap_or_default() {
             let permitted = (krate == SCENARIOS && dep.name != SCENARIOS)
                 || allowed(krate).contains(&dep.name.as_str())
-                || (dep.dev && dep.name == "rutent-conformance");
+                || (dep.dev && dep.name == "rutent-conformance")
+                || (dep.dev && dep.name == krate);
             if !permitted {
                 found.push(Violation {
                     krate: krate.to_string(),
