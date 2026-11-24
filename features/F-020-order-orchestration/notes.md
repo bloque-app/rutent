@@ -6460,3 +6460,117 @@ assembly's `arrivals.rs`; no `contracts/` or `DEC-20` path.
   | the inbox keeps the first notice, not the latest | the inbox test |
   | the inbox keeps the wait after the order starts | the inbox test |
 
+## T-020-40: a stuck order's evidence comes from a party to the order
+
+Branch `f-020/t-020-40-confirmer-party`, from `m3` at `a3bc16b4`. Edits `components/core-orch/src/stuck/` and the
+scenario kit; no `contracts/` edit.
+
+- **Design.** `stuck/party.rs` reads, from the log's history, whether a statement's maker is a party to an order, as
+  `core-internal`'s `party_to_the_order` does (a port, since the contract's function is private): a provider of a
+  segment on any route the order, or an order a hand-on joins it to, was given (chosen, recalculated, destination
+  changed), the provider a move or a resolution went to, the holder of a holding account its value rested at (an
+  arrival's reserve, a permitted decide step's or an effect's mover, a holding withdrawal's holder and publisher),
+  or the publisher of a node crossed, as a replay or evidence of the order binds it. Never a holding check, a refused
+  decide step, or an order no hand-on joins.
+  Every step that names a statement now takes the history (`Recorded`, `&[(Receipt, Entry)]`, as the log holds it) as
+  a trailing argument: `decide`, `known_outcome`, `confirm_outcome`, `decline_outcome`, `report_segment_outcome`,
+  `confirm_segment_outcome`, `confirm_segment_done`, `decline_segment_outcome`. A report, confirmation or decline
+  whose evidence is by a maker the order doesn't involve is `ResolveError::OutsideTheOrder`; a confirmation or decline
+  on another statement of the party that made the report's own is `ReportersOwnParty`. Both come before policy is
+  asked or anything is built, so nothing is recorded. The log's rule stays the guard.
+- **Decide step's digests** (T-020-39 gap 1): a digest of `Deciding::evidence` that names a stated entry the history
+  holds (its commitment) must be by a party, else `OutsideTheOrder`.
+- **Kit low finding** (`segments_support/mod.rs`): the ends stay on the thread, but a live `World` holds a guard;
+  building a world with other ends while one lives panics, and `World::two_parties` sets its ends in one step.
+  The first guard hit was my own test, fixed.
+- **Consumer edits:** `conformance/scenarios/src/assembly/mod.rs` (`decide_stuck` passes the log's entries), and the
+  scenarios `stuck.rs`, `stuck_mover.rs`, `stuck_hand_on.rs`, `hand_on.rs` (the history argument, `Core::recorded`).
+- **Named tests** (`stuck.rs`): `stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_refused`
+  [`REQ-AUZ-4`], `statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution` [`REQ-AUZ-4`,
+  `REQ-ORD-1`], `confirmation_naming_an_outside_providers_word_frees_nothing` [`INV-2`, `AC-6`] (T-020-39's pin of
+  the one-party order, now refused by Core). Added: `silent_move_reported_confirmed_or_declined_on_an_outside_providers_word_is_refused`,
+  `decline_resting_on_an_outside_providers_word_or_the_reporters_own_party_is_refused` (`stuck_mover.rs`), the kit's
+  two world tests, and `party.rs`'s three differential tests over the contract's admission cases.
+- **Red first:** with the three checks off, the four scenario tests and the party tests failed on assertions
+  (outside word accepted, `Declined`, `AwaitsConfirmation`); the earlier-route test passes then, red only in its rule-off.
+- **Defaults** (reversible): a digest naming no statement the history holds is a document and passes; evidence the
+  history doesn't hold is refused; the reporter's own party is read by the statements' makers' parties, as the log does.
+- **Gaps.** (1) A private node crossed with no replay or evidence binds no publisher, so its publisher's word is
+  refused (T-020-39 gap 5): left to the lead. (2) `party.rs` ports the log's rule; drift is guarded by the differential
+  tests over the contract's cases only. (3) The part with one party only stays held (T-020-39 gap 9), on the owner's form.
+- **Rule-off table** below.
+
+Rule-offs (each switched off alone from commit `833f27fa`, its tests run through the lock, the file restored with
+`git checkout`; script `scratchpad/ruleoff.py`). "Scenarios" is `stuck` and `stuck_mover`; "lib" `core-orch`'s `party`
+tests. The four scenario tests are named by their first words: `confirmation_naming…`, `decline_resting…`,
+`silent_move_reported…`, `stuck_resolution_resting…`.
+
+| Rule switched off | Red |
+|---|---|
+| `from_a_party`: the party check | all four |
+| `from_a_party`: the reporter's own party | `confirmation_naming…`, `decline_resting…` |
+| `from_a_party`: a statement the history lacks refused | all four |
+| `digests_from_a_party` whole | `stuck_resolution_resting…` |
+| the digests' limit to provider results | none in scenarios: `assembly_stuck` and `assembly_hand_on` go red on it (the first statement about their order is Core's question), as seen before the limit was added |
+| the kit's live-world guard | `second_world_with_other_ends_is_refused_while_the_first_lives` (a `should_panic` failure, not matched by the script's pattern) |
+| `involves`: plans' providers | lib `the_makers_the_log_admits…`; scenarios: five silent-move tests (`silent_move_on_a_stuck_part_settles…`, `segments_move_confirmed_done_*`, `declined_report_of_a_silent_move…`) |
+| `involves`: moves' providers | none: a subset of the plans' (`move-segment-is-in-its-orders-plan`), kept as defence |
+| `involves`: resolve effect's mover, permitted decide's mover, arrival's reserve, holding withdrawal's holder, its publisher, hand-on closure | lib `the_makers_the_log_admits…` |
+| `involves`: node publishers | lib `the_publisher_of_a_node…` |
+| `involves`: a decide step read whatever policy answered | lib `the_makers_the_log_refuses…` |
+
+### T-020-40, fix round 1 (the review of `66cf48df`)
+
+- **1. Every kind of statement a decision's digests name is held to a party** (`stuck/mod.rs`
+  `digests_from_a_party`): the limit to result shapes is gone. Only Core's own questions (`OPERATION_SHAPE`,
+  `ARRIVAL_QUESTION_SHAPE`) are skipped, explicitly, so `assembly_stuck` and `assembly_hand_on`, which decide on
+  Core's question, are unchanged. The probe is `decision_evidence_digests_are_held_to_a_verified_party_whatever_their_kind`
+  (`party.rs`): the contract's outside result, relabelled a judgement, is refused; a party's judgement passes.
+- **2. The differential test walks the contract's folder** (`orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case`):
+  every admission case whose entry cites evidence (report, confirmation, decline, part evidence; both rows and the
+  worlds), the log's verdict computed with `admit_entry` through either handle. Admitted: each cited maker reads as a
+  party. Refused on `party` (the two rows): one does not. Floors on the number of cases read, so a silently skipped
+  folder is red. A new or changed contract case reaches it with no edit here.
+- **3. Verified attribution is required** for the digest check, and for the evidence of a report, confirmation or
+  decline (`party::verified_party`). The kit's history (`Core::recorded`) reads each statement verified, as the real
+  log's does.
+- **4. Defaults that fail open, named.** A digest naming no statement the history holds passes: it fails open. It
+  can't fail closed here: the evidence store may hold documents, and about thirty scenario sites decide on a
+  placeholder digest. Owner: the lead (a row on what a decision's digest may name). The shape limit no longer exists.
+- **5. Doc lines** on the eight entry points: `history` is taken as the log's own entries.
+- **Rule-offs of the round** (from the fix commit, as above; "walk" is the differential test, "probe" the digest
+  probe, "assembly" `assembly_stuck` and `assembly_hand_on`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | digests: Core's questions not skipped | `assembly_stuck`, `assembly_hand_on` |
+  | digests: held to results only (the old limit) | probe |
+  | digests: verified attribution not required | probe |
+  | `involves`: always a party | walk, probe, the publisher test |
+  | `involves`: never a party | walk, probe, the publisher test |
+  | `involves`: arrival's reserve arm | walk (the round-1 test had it on a named case only) |
+  | `involves`: node publishers | the publisher test |
+
+  The verified-attribution requirement on a report's, confirmation's or decline's evidence has no rule-off red:
+  `Core::recorded` reads every kit statement verified, and no scenario builds an unverified one; the probe covers the
+  digests' half only.
+
+### T-020-40, fix round 2 (the re-review of `9bb5de85`)
+
+- **1. No statement is exempt by its shape.** No log rule ties an `operation` or `arrival-question` statement to the
+  operator, so the skip is gone (`digests_from_a_party` holds every named statement to a verified party). The two
+  assembly tests' `evidence_about` now names a provider's result about the order. The probe at `party.rs` expects an
+  outsider's verified statement in question shape refused.
+- **2. The walk takes the log's own verdict both ways.** Admitted: each cited maker reads as a party. Refused with
+  the party rule's message, whatever the fixture says it breaks: some cited maker reads as no party. Every case
+  without `breaks` must be admitted live, so a dropped case fails.
+- **3. `evidence_of_an_outcome_must_be_a_verified_statement_of_another_party_than_the_reporters`** calls
+  `from_a_party` with an unverified statement and with the report's own evidence.
+- Left as is: "a digest naming nothing in the log passes" (on the owner's form).
+- **Rule-offs** (from the fix commit):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the contract's arrival-reserve arm of `party_to_the_order` (`relations.rs`, restored) | the walk |
+  | question shapes skipped again | the digest probe |
+  | `from_a_party`: verified attribution not required | the unverified-evidence test |

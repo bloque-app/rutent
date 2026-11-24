@@ -97,6 +97,7 @@
 mod handing;
 mod journal;
 mod mover;
+mod party;
 mod timing;
 mod view;
 
@@ -136,6 +137,7 @@ pub use handing::{
 pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
 pub use mover::{Delivering, Mover, NotTaken, Ports, Stated, Withdrawn};
+pub use party::Recorded;
 pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
 
@@ -520,6 +522,14 @@ pub enum ResolveError {
     /// The source of fresh identifiers repeats ones Core used: no transaction of its own is drawn for the
     /// resolution, and nothing is decided.
     NoFreshTransaction,
+    /// The evidence is a statement by a maker the order doesn't involve: a provider none of its routes ran, no holder
+    /// of a holding account its value rested at, no publisher of a node it crossed, or a maker the log holds no
+    /// statement of (`REQ-AUZ-4`, `confirmer-evidence-party`). Nothing is recorded, policy is asked nothing, and the
+    /// part stays held.
+    OutsideTheOrder,
+    /// A confirmation's or decline's evidence is by the party that made the report's own: the reporter's party can't
+    /// bear out, or bear down, its own word (`REQ-AUZ-4`, `confirmer-evidence-party`).
+    ReportersOwnParty,
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
     /// next call goes on from it.
     Append(AppendFailure),
@@ -1306,11 +1316,17 @@ impl Stuck {
     /// The decide step (see the module's docs): Core's own checks first, then policy's decision, recorded by
     /// policy. A permitting decision answering Core's own request is kept for its move; any other is answered and
     /// kept for nothing.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decide(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         deciding: Deciding<'_>,
+        history: &Recorded,
     ) -> Result<Decision, ResolveError> {
         let declared = self.unresolved(parts.segments, deciding.order, deciding.part)?;
         // Nothing is decided while any of the part's value is in motion: a segment handed over with no final outcome
@@ -1354,6 +1370,7 @@ impl Stuck {
             declared,
             deciding.resolution,
         )?;
+        digests_from_a_party(deciding.evidence, deciding.order, history)?;
         let decision = policy.decide_stuck(&request)?;
         if decision.request != request.request {
             return Err(ResolveError::NotItsAnswer);
@@ -1493,6 +1510,11 @@ impl Stuck {
     /// ([`ResolveError::ReportDeclined`]). Nothing is carried out again. Policy's side of reporting and confirming is
     /// `T-021-06`'s. The evidence a report names is, for a move the production mover carried out, a statement it took
     /// ([`Delivering::statement`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn known_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1500,6 +1522,7 @@ impl Stuck {
         moving: Moving<'_>,
         outcome: Resolved,
         evidence: &Stated,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = moving.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1533,6 +1556,7 @@ impl Stuck {
         if !follows(evidence.receipt(), &effect) {
             return Err(ResolveError::NoEvidence);
         }
+        from_a_party(evidence.receipt(), moving.order, None, history)?;
         let version = motion
             .reports
             .checked_add(1)
@@ -1577,11 +1601,17 @@ impl Stuck {
     /// frees the part for a new decision. The log records who reported and who confirmed, each with its evidence. The
     /// roles a confirmer may hold (no customer, not the desk of the provider holding the funds, `THR-70`) are
     /// policy's rule (`T-021-06`).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: Confirming<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = confirming.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1617,6 +1647,12 @@ impl Stuck {
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         on_its_own_statement(confirming.evidence.receipt(), &report.evidence, &effect)?;
+        from_a_party(
+            confirming.evidence.receipt(),
+            confirming.order,
+            Some(&report.evidence),
+            history,
+        )?;
         let request = OutcomeConfirmation {
             request: parts.fresh.id(),
             order: confirming.order.clone(),
@@ -1660,11 +1696,17 @@ impl Stuck {
     /// comes back as the error it is, with nothing changed. A permitted decline settles nothing and frees nothing:
     /// the part stays held, the report no longer stands, and a new one of the same move is admitted
     /// ([`Stuck::known_outcome`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decline_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn OutcomeDeclines,
         declining: Declining<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = declining.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1694,6 +1736,12 @@ impl Stuck {
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         on_its_own_statement(declining.evidence.receipt(), &report.evidence, &effect)?;
+        from_a_party(
+            declining.evidence.receipt(),
+            declining.order,
+            Some(&report.evidence),
+            history,
+        )?;
         let request = OutcomeDecline {
             request: parts.fresh.id(),
             order: declining.order.clone(),
@@ -1725,6 +1773,11 @@ impl Stuck {
     /// one settles nothing until another actor confirms it ([`Stuck::confirm_segment_outcome`],
     /// [`Stuck::confirm_segment_done`]) and stands until it is confirmed or declined
     /// ([`Stuck::decline_segment_outcome`]), after which another takes its place (`one-report-per-effect`).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn report_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1732,6 +1785,7 @@ impl Stuck {
         reporting: Reporting<'_>,
         outcome: Resolved,
         evidence: &Stated,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let declared = self.unresolved(parts.segments, reporting.order, reporting.part)?;
         if !declared
@@ -1765,6 +1819,7 @@ impl Stuck {
         if !follows(evidence.receipt(), &unknown.effect) {
             return Err(ResolveError::NoEvidence);
         }
+        from_a_party(evidence.receipt(), reporting.order, None, history)?;
         let version = made.checked_add(1).ok_or(ResolveError::ReportsExhausted)?;
         let request = OutcomeReport {
             request: parts.fresh.id(),
@@ -1805,13 +1860,19 @@ impl Stuck {
     /// final result, `failed`, and the segment's `segment_failed` ([`Segments::confirmed_failed`]): the segment is no
     /// longer in motion, its value still held, and the part can be decided (`AC-6`). Only failed is taken here: done
     /// settles the segment, which takes graded evidence ([`Stuck::confirm_segment_done`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
-        self.confirm_segment(parts, policy, confirming, None)
+        self.confirm_segment(parts, policy, confirming, None, history)
     }
 
     /// Confirms a segment's reported outcome as [`Stuck::confirm_segment_outcome`] does, and takes it done too
@@ -1821,14 +1882,20 @@ impl Stuck {
     /// result, `done`, and the segment's `segment_settled` on the evidence graded ([`Segments::confirmed_done`]). A
     /// done that grades to nothing yet, or that rests on no late result Core took, settles nothing
     /// ([`ResolveError::Ungraded`]): nothing is recorded, the report stands and the part stays held.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_segment_done(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
         settling: &mut Settling<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
-        self.confirm_segment(parts, policy, confirming, Some(settling))
+        self.confirm_segment(parts, policy, confirming, Some(settling), history)
     }
 
     fn confirm_segment(
@@ -1837,6 +1904,7 @@ impl Stuck {
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
         mut settling: Option<&mut Settling<'_>>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         self.unresolved(parts.segments, confirming.order, confirming.part)?;
         let at = key(confirming.order, confirming.segment);
@@ -1870,6 +1938,12 @@ impl Stuck {
             confirming.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
+        )?;
+        from_a_party(
+            confirming.evidence.receipt(),
+            confirming.order,
+            Some(&report.evidence),
+            history,
         )?;
         let outcome = report.outcome;
         // A done is graded before anything is recorded or policy is asked: one that grades to nothing yet waits, the
@@ -1961,11 +2035,17 @@ impl Stuck {
     /// a stuck resolution's: by an actor of another party and login than its reporter, naming the report and its own
     /// evidence, through policy. It settles nothing and frees nothing, and a new report of the segment's move is
     /// admitted in its place. A report whose confirmation policy permitted is settled and declined no more.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decline_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
         policy: &mut dyn OutcomeDeclines,
         declining: DecliningSegment<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         self.unresolved(parts.segments, declining.order, declining.part)?;
         let at = key(declining.order, declining.segment);
@@ -1998,6 +2078,12 @@ impl Stuck {
             declining.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
+        )?;
+        from_a_party(
+            declining.evidence.receipt(),
+            declining.order,
+            Some(&report.evidence),
+            history,
         )?;
         let request = OutcomeDecline {
             request: parts.fresh.id(),
@@ -2746,6 +2832,49 @@ fn two_actors(first: &Actor, second: &Actor) -> Result<(), ResolveError> {
     }
     if first.acts == second.acts {
         return Err(ResolveError::SameLogin);
+    }
+    Ok(())
+}
+
+/// Whether the statement `evidence` names is a party's word about `order` (`confirmer-evidence-party`, `T-020-40`),
+/// and, for a confirmation or a decline, not the party's that made the report's own (`reported_with`). A statement the
+/// history doesn't hold names no maker, so it is refused.
+fn from_a_party(
+    evidence: &Receipt,
+    order: &Id,
+    reported_with: Option<&Receipt>,
+    history: &Recorded,
+) -> Result<(), ResolveError> {
+    let statement = party::statement_at(evidence, history).ok_or(ResolveError::OutsideTheOrder)?;
+    if !party::verified_party(statement, order, history) {
+        return Err(ResolveError::OutsideTheOrder);
+    }
+    if let Some(reported) = reported_with
+        && party::statement_at(reported, history)
+            .is_some_and(|r| r.attribution.maker().party == statement.attribution.maker().party)
+    {
+        return Err(ResolveError::ReportersOwnParty);
+    }
+    Ok(())
+}
+
+/// Whether each of a decision's evidence digests that names a statement the history holds names a party's word about
+/// `order`, whatever its kind (a result, a judgement, a hold, an arrival answer, a question): a statement whose maker
+/// the log verified, by a party the order involves. Core's own questions are no exception: no log row ties a
+/// statement's shape to the operator, so a question shape alone proves nothing. A digest the history holds no
+/// statement under names no maker, and passes: it fails open, which `F-020`'s notes name.
+fn digests_from_a_party(
+    evidence: &[Digest],
+    order: &Id,
+    history: &Recorded,
+) -> Result<(), ResolveError> {
+    for (_, entry) in history {
+        if let Entry::Stated(statement) = entry
+            && evidence.contains(&statement.commitment)
+            && !party::verified_party(statement, order, history)
+        {
+            return Err(ResolveError::OutsideTheOrder);
+        }
     }
     Ok(())
 }

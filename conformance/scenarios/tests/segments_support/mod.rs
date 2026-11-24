@@ -87,6 +87,39 @@ thread_local! {
     /// set them. Each test builds its world first, and every world sets them anew, so a thread the test harness reuses
     /// carries nothing over.
     static ENDS: Cell<(&'static str, &'static str)> = const { Cell::new((RESERVE, RESERVE)) };
+    /// How many worlds are alive on this thread: while one is, no world sets other ends than it holds
+    /// ([`Alive::with`]).
+    static LIVE: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A live world's hold on the thread's ends. The ends are read from the thread, not carried by the world, so a second
+/// world built while the first is alive with other ends would change the first's: it refuses instead
+/// (`T-020-40`, the review of `T-020-39`'s low finding).
+struct Alive;
+
+impl Alive {
+    /// Sets the thread's ends to `ends` for a world that lives until the guard drops.
+    ///
+    /// # Panics
+    ///
+    /// If a world is alive on this thread whose ends differ.
+    fn with(ends: (&'static str, &'static str)) -> Self {
+        let held = ENDS.with(Cell::get);
+        assert!(
+            LIVE.with(Cell::get) == 0 || held == ends,
+            "a world with ends {ends:?} is built while one with ends {held:?} is alive: the kit keeps one pair of ends \
+             per thread, so the first world's would change; drop it first"
+        );
+        ENDS.with(|e| e.set(ends));
+        LIVE.with(|l| l.set(l.get() + 1));
+        Alive
+    }
+}
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        LIVE.with(|l| l.set(l.get().saturating_sub(1)));
+    }
 }
 
 /// The reserve the current world's route starts at: its withdrawal's provider, the order's origin reserve.
@@ -689,6 +722,8 @@ pub struct World {
     pub fleet: Fleet,
     pub catalogue: Catalogue,
     pub installed: Vec<Installed>,
+    /// Holds the thread's ends for as long as this world lives.
+    _alive: Alive,
 }
 
 impl World {
@@ -697,9 +732,10 @@ impl World {
     /// first and deposits at the second, so each is a provider of a segment on a route the order was given, and the
     /// second's word is a party's word about the order however the route ends.
     pub fn two_parties() -> Self {
-        let world = World::of(&[TWO_PARTY_ORIGIN, TWO_PARTY_LAST]);
-        ENDS.with(|e| e.set((TWO_PARTY_ORIGIN, TWO_PARTY_LAST)));
-        world
+        Self::built(
+            &[TWO_PARTY_ORIGIN, TWO_PARTY_LAST],
+            (TWO_PARTY_ORIGIN, TWO_PARTY_LAST),
+        )
     }
 
     pub fn of(reserves: &[&str]) -> Self {
@@ -709,7 +745,11 @@ impl World {
             Some(&r) => Box::leak(r.to_owned().into_boxed_str()),
             None => RESERVE,
         };
-        ENDS.with(|e| e.set((first, first)));
+        Self::built(reserves, (first, first))
+    }
+
+    fn built(reserves: &[&str], ends: (&'static str, &'static str)) -> Self {
+        let alive = Alive::with(ends);
         let mut fleet = Fleet::new(DEADLINE);
         let context = fleet.context().clone();
         let mut catalogue = Catalogue::new();
@@ -727,6 +767,7 @@ impl World {
             fleet,
             catalogue,
             installed,
+            _alive: alive,
         }
     }
 
@@ -2002,6 +2043,31 @@ impl Core {
     /// placeholder `operator_key` stands for, the simulated providers' convention.
     pub fn admitted(&self, catalogue: &Catalogue) -> Result<Vec<Entry>, (usize, String)> {
         self.admitted_skipping(catalogue, None)
+    }
+
+    /// The log's history as Core is handed it to hold a stuck resolution's evidence to a party the order involves
+    /// (`T-020-40`): every entry with the receipt this log gave it, as it stands now.
+    pub fn recorded(&self) -> Vec<(Receipt, Entry)> {
+        let log = self.log.borrow();
+        log.entries
+            .iter()
+            .enumerate()
+            .map(|(at, (entry, _))| {
+                // The real log attributes each statement it records; this one answers before it does, so the
+                // history Core is handed reads each as verified, as the real log's would.
+                let entry = match entry {
+                    Entry::Stated(s) => {
+                        let mut s = s.clone();
+                        s.attribution = rutent_contracts::core_internal::Attribution::Verified {
+                            who: s.attribution.maker().clone(),
+                        };
+                        Entry::Stated(s)
+                    }
+                    other => other.clone(),
+                };
+                (log.receipt_at(at), entry)
+            })
+            .collect()
     }
 
     /// [`Core::admitted`] with the entry at `skip` left out of what the log is shown, the others keeping the receipts

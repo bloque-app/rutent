@@ -233,13 +233,17 @@ fn staff_of_the_operator(core: &Core) -> (Actor, Actor) {
     (alice, bob)
 }
 
-/// The commitment of a statement Core kept about `order`: what a decision names as its evidence.
+/// The commitment of a provider's result Core kept about `order`: what a decision names as its evidence, a party's
+/// word (`T-020-40`).
 fn kept_about(core: &Core, order: &Id) -> rutent_contracts::module_interface::Digest {
     core.log()
         .entries()
         .iter()
         .find_map(|(_, e)| match e {
-            Entry::Stated(s) if s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) => {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
+            {
                 Some(s.commitment.clone())
             }
             _ => None,
