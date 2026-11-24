@@ -38,6 +38,12 @@
 //! - **A key signs a provider's statements at `made_at`** where a grant of the provider is in force then, and both
 //!   the advertisement accepted last and the one in force at `made_at` list it for `statements` (the catalogue's
 //!   rule, so a retired key can't sign a statement backdated to before its retirement).
+//! - **A statement received after its grant's revocation** is attributed to no one, whatever its `made_at`
+//!   (`THR-3`, item `thr3-backdated-after-revocation`): where every grant of the provider in force at `made_at` was
+//!   revoked after it and no later than the statement's `received_at` (`Register::revoked_before_receipt`, the
+//!   contract's `revoked_before_receipt` over the register), a backdated statement of a revoked key and a genuine
+//!   result made before the revocation alike, a revocation at the instant of receipt counting as before it. A
+//!   grant made again is a new grant: it attributes only what is made under it.
 //! - **The party a maker states for** is the publisher its advertisement accepted last names, for a provider, and the
 //!   operator's party for the operator and for a module the operator publishes: one with a done release the log
 //!   held no grant of when the release was done, and no advertisement. `attribute` holds such a module to the
@@ -85,6 +91,11 @@ pub const CHANGE_OFF_THE_LOGS_CLOCK: &str = "a catalogue change's effect is date
 /// The refusal of an advertisement received at a time more than the skew ahead of the log's clock.
 pub const ADVERTISEMENT_OFF_THE_LOGS_CLOCK: &str =
     "an advertisement is received within the skew of the log's own clock when it is appended";
+
+/// The refusal of a statement received at a time more than the skew ahead of the log's clock; one behind it is
+/// unavailable, as an advertisement's is.
+pub const STATEMENT_OFF_THE_LOGS_CLOCK: &str =
+    "a statement is received within the skew of the log's own clock when it is appended";
 
 /// The refusal of a grant or a revocation dated before the last change of its tuple.
 pub const CHANGE_BEFORE_ITS_TUPLES_LAST: &str =
@@ -178,15 +189,29 @@ pub(super) struct Register {
     ads: BTreeMap<String, Vec<Accepted>>,
     advertising_seen: Vec<PublicKey>,
     statements_seen: Vec<PublicKey>,
-    /// Each provider's tuples, each with its grants and revocations done, in the log's order: the time and whether
-    /// it granted.
-    grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool)>>>,
+    /// Each provider's tuples, each with its grants and revocations done, in the order their results arrived: the
+    /// effect's time, whether it granted, and the effect's index in the log, which breaks a tie in time as the
+    /// contract does (the later effect in the log wins).
+    grants: BTreeMap<String, BTreeMap<String, Vec<Change>>>,
     /// Each provider's tuples, each with the time of its last grant or revocation the log admitted, done or not.
     dated: BTreeMap<String, BTreeMap<String, i128>>,
     /// The modules the operator publishes: each one the log held no grant of when an `accept_module` of it was done.
     released: BTreeSet<String>,
     /// The publisher each private node an accepted advertisement declares is on record for.
     nodes: BTreeMap<String, String>,
+}
+
+/// A grant or revocation done: its effect's time, whether it granted, and its effect's index in the log.
+type Change = (i128, bool, u64);
+
+/// The change that decides a tuple's grant at `at`: the latest by its effect's time at or before it, the later effect
+/// in the log on a tie, as the contract reads it.
+fn latest_at(changes: &[Change], at: i128) -> Option<Change> {
+    changes
+        .iter()
+        .filter(|(t, ..)| *t <= at)
+        .max_by_key(|(t, _, index)| (*t, *index))
+        .copied()
 }
 
 fn nanos(text: &str) -> Option<i128> {
@@ -326,7 +351,11 @@ impl Register {
                             .or_default()
                             .entry(granted)
                             .or_default()
-                            .push((when.at.unix_nanos(), *change == CatalogueChange::Grant));
+                            .push((
+                                when.at.unix_nanos(),
+                                *change == CatalogueChange::Grant,
+                                effect.index.get(),
+                            ));
                     }
                     // A module is the operator's only where, when its release is done, the log holds no grant of
                     // it: a granted provider's early release leaves its party to its advertisement, and a grant
@@ -362,6 +391,21 @@ impl Register {
                 what, received_at, ..
             }) if what.statement.as_str() == ADVERTISEMENT_SHAPE => {
                 settings.on_the_clock(received_at.unix_nanos(), ADVERTISEMENT_OFF_THE_LOGS_CLOCK)
+            }
+            // A statement's received time is what `revoked_before_receipt` reads (`THR-3`), and orchestration, which
+            // writes it, must not date a late statement before a revocation: where the log holds a revocation of
+            // its maker's grant after its received time, that time is held to the log's own clock, as an
+            // advertisement's is. A statement received that long before it is appended is unavailable, not refused,
+            // and a retry with the same received time fails again: it is sent again with the time of the new append,
+            // and is then recorded unattributed, being received after the revocation.
+            Entry::Stated(StatedEntry {
+                attribution,
+                received_at,
+                ..
+            }) if self
+                .revoked_after(attribution.maker().acts.as_str(), received_at.unix_nanos()) =>
+            {
+                settings.on_the_clock(received_at.unix_nanos(), STATEMENT_OFF_THE_LOGS_CLOCK)
             }
             Entry::Verified(VerifiedEntry {
                 what:
@@ -402,16 +446,46 @@ impl Register {
     }
 
     /// Whether a grant of `provider` is in force at `at`: for one of its tuples, the last grant or revocation made
-    /// at or before `at` granted it. [`Register::admits`] keeps each tuple's changes in time order.
+    /// at or before `at` granted it, a tie in time going to the later effect in the log.
     fn in_force(&self, provider: &str, at: i128) -> bool {
         self.grants.get(provider).is_some_and(|tuples| {
-            tuples.values().any(|changes| {
+            tuples
+                .values()
+                .any(|changes| latest_at(changes, at).is_some_and(|(_, granted, _)| granted))
+        })
+    }
+
+    /// Whether the log holds a revocation of a grant of `provider` dated after `at`.
+    fn revoked_after(&self, provider: &str, at: i128) -> bool {
+        self.grants.get(provider).is_some_and(|tuples| {
+            tuples
+                .values()
+                .flatten()
+                .any(|(t, granted, _)| !granted && *t > at)
+        })
+    }
+
+    /// Whether every grant of `provider` in force at `made_at` was revoked after it and no later than `received`,
+    /// the time the log received the statement: core-internal's `revoked_before_receipt` (`THR-3`, `T-020-39`),
+    /// read from the register's done changes as the contract reads them from the history. Each grant, a tuple's or
+    /// a verifier's class, is in force at `made_at` where its latest change at or before it, by the effect's time and
+    /// the later one on a tie, granted; a grant made again after its revocation is a new grant and holds nothing
+    /// made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
+    /// refuses apart. A revocation at the instant of receipt counts as before it.
+    fn revoked_before_receipt(&self, provider: &str, made_at: i128, received: i128) -> bool {
+        let Some(tuples) = self.grants.get(provider) else {
+            return false;
+        };
+        let mut in_force = tuples
+            .values()
+            .filter(|changes| latest_at(changes, made_at).is_some_and(|(_, granted, _)| granted))
+            .peekable();
+        in_force.peek().is_some()
+            && in_force.all(|changes| {
                 changes
                     .iter()
-                    .rfind(|(t, _)| *t <= at)
-                    .is_some_and(|(_, granted)| *granted)
+                    .any(|(t, granted, _)| !granted && *t > made_at && *t <= received)
             })
-        })
     }
 
     /// Accepts the advertisement `received`, recorded at `at`, or says nothing about why not: a refusal changes
@@ -565,16 +639,21 @@ impl StatementKeys for Keys<'_> {
         maker: &Id,
         key: &SignedWith,
         at: &Timestamp,
-        // The statement's receipt: core-internal's rule on a statement received after its grants' revocation
-        // (`revoked_before_receipt`, `T-020-39`) is `T-022-09`'s to hold here; until then the key is trusted at
-        // `at` alone.
-        _received: &Timestamp,
+        received: &Timestamp,
     ) -> Result<bool, AppendFailure> {
         let settings = self.settings;
         if maker == &settings.operator {
             return Ok(key.key == settings.deployment.operator_key);
         }
-        let at = at.unix_nanos();
+        let (at, received) = (at.unix_nanos(), received.unix_nanos());
+        // A statement received after the revocation of every grant that would attribute it is attributed to no
+        // one, whatever its `made_at` (`THR-3`).
+        if self
+            .register
+            .revoked_before_receipt(maker.as_str(), at, received)
+        {
+            return Ok(false);
+        }
         let Some(history) = self.register.ads.get(maker.as_str()) else {
             return Ok(false);
         };

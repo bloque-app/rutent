@@ -1352,6 +1352,8 @@ fn answered<S: Store>(
     transaction: &str,
     made_at: &str,
 ) -> bool {
+    // Appended as it is received, which the world's answer fixes: the log's clock agrees.
+    set_now("2026-11-06T15:04:07Z");
     let mut question = question_of(transaction);
     question["when"]["at"] = made_at.into();
     let question = run.claim(
@@ -1569,6 +1571,235 @@ fn a_provider_signs_only_under_a_grant_in_force() {
         "us-bank",
         &statements_key("us-bank"),
         "tx-g-4",
+        "2026-11-06T23:59:59Z"
+    ));
+}
+
+/// `answered`, for a statement the log receives at `received`, appended with the log's clock at `received`: whether
+/// it was attributed.
+fn answered_received<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    transaction: &str,
+    made_at: &str,
+    received: &str,
+) -> bool {
+    set_now(received);
+    let receipt = try_answered_received(run, maker, transaction, made_at, received).unwrap();
+    verified_at(run, &receipt)
+}
+
+/// [`answered_received`] on the log's clock as it stands: the answer to the append.
+fn try_answered_received<S: Store>(
+    run: &mut Run<S>,
+    maker: &str,
+    transaction: &str,
+    made_at: &str,
+    received: &str,
+) -> Result<Receipt, AppendFailure> {
+    let question = run.claim(
+        &question_of(transaction),
+        &operator_key(),
+        json!({"kind": "balance_verification", "transaction": transaction}),
+    );
+    run.append(question).unwrap();
+    let mut answer = question_answer(maker, transaction);
+    answer["when"]["at"] = made_at.into();
+    answer["received_at"] = received.into();
+    let answer = run.claim(
+        &answer,
+        &statements_key(maker),
+        json!({"kind": "balance_verification", "transaction": transaction}),
+    );
+    run.append(answer)
+}
+
+/// A statement the log receives after its grant's revocation is attributed to no one, whatever its `made_at`: a
+/// revoked key can't sign one backdated to before the revocation, and a genuine result made before the revocation
+/// but received after it is refused too, its provider re-signing under a new grant (`THR-3`, owner's ruling
+/// `thr3-backdated-after-revocation`, applied default `revoked-key-late-genuine`). A revocation at the instant of
+/// receipt counts as before it.
+// verifies: THR-3
+#[test]
+fn a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    let key = "us-bank";
+    // Backdated into the grant's window, received a second after the revocation.
+    assert!(!answered_received(
+        &mut run,
+        key,
+        "tx-r-1",
+        "2026-11-06T23:59:59Z",
+        "2026-11-07T00:00:01Z"
+    ));
+    // A genuine result made well before the revocation, received long after it.
+    assert!(!answered_received(
+        &mut run,
+        key,
+        "tx-r-2",
+        "2026-11-06T15:04:05Z",
+        "2026-11-09T00:00:00Z"
+    ));
+    // Received at the instant of the revocation: before it, as the rule reads it.
+    assert!(!answered_received(
+        &mut run,
+        key,
+        "tx-r-3",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:00Z"
+    ));
+}
+
+/// A statement received before its grant's revocation stays attributed, though the revocation is recorded by the time
+/// it is appended: the rule reads the statement's own received time, never when the log was asked to record it.
+// verifies: REQ-AUD-2
+#[test]
+fn a_statement_received_before_the_revocation_stays_attributed() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-r-4",
+        "2026-11-06T15:04:05Z",
+        "2026-11-06T23:59:59Z"
+    ));
+    // A grant never revoked attributes whatever it is received after.
+    assert!(answered_received(
+        &mut run,
+        "fx-desk",
+        "tx-r-5",
+        "2026-11-06T15:04:05Z",
+        "2026-11-09T00:00:00Z"
+    ));
+}
+
+/// A grant made again after its revocation attributes only what is made under it: a statement made before the
+/// revocation and received after it stays refused though a grant stands again when it is received, one made in the
+/// gap between the two is refused, and one made after the new grant is attributed.
+// verifies: THR-3
+#[test]
+fn a_statement_after_a_grant_made_again_is_attributed_only_from_the_new_grant() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    run.grant("us-bank", "2026-11-09T00:00:00Z");
+    let received = "2026-11-10T00:00:00Z";
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-r-6",
+        "2026-11-06T15:04:05Z",
+        received
+    ));
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-r-7",
+        "2026-11-08T00:00:00Z",
+        received
+    ));
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-r-8",
+        "2026-11-09T12:00:00Z",
+        received
+    ));
+}
+
+/// A provider holding several grants is refused only where every grant in force at the statement's making was
+/// revoked: with another tuple's grant still standing, a statement received after one revocation stays attributed,
+/// and once the other is revoked too, it is refused (`THR-3`).
+// verifies: THR-3
+#[test]
+fn a_statement_stays_attributed_while_another_grant_of_its_maker_stands() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "grant", "provider": "us-bank", "tuple": "tuple-us-bank-b",
+               "advertising_keys": [public_key(&advertising_key("us-bank")).as_str()]}),
+        GRANTED_AT,
+    );
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-m-1",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:01Z"
+    ));
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": "us-bank", "tuple": "tuple-us-bank-b"}),
+        "2026-11-08T00:00:00Z",
+    );
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-m-2",
+        "2026-11-06T15:04:05Z",
+        "2026-11-08T00:00:01Z"
+    ));
+}
+
+/// Two changes of one tuple at the same instant are ordered by their effects' places in the log, as the contract
+/// orders them, not by the order their results arrive: a grant whose effect follows a revocation's at one instant
+/// holds the tuple granted there, though its result is recorded first.
+// verifies: THR-3
+#[test]
+fn changes_at_one_instant_are_ordered_by_their_effects() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    let at = "2026-11-07T00:00:00Z";
+    set_now(at);
+    let revoke = run
+        .try_change_catalogue("us-bank", "revoke_grant", at)
+        .unwrap();
+    let grant = run.try_change_catalogue("us-bank", "grant", at).unwrap();
+    // The later effect's result first.
+    run.end(&grant, "done", at);
+    run.end(&revoke, "done", at);
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-t-1",
+        at,
+        "2026-11-07T00:00:01Z"
+    ));
+}
+
+/// A statement's received time is held to the log's own clock where a revocation of its maker's grant is dated after
+/// it, as an advertisement's is: orchestration can't date a late statement before the revocation. A statement
+/// received that long before it is appended is unavailable, and recorded nowhere (`THR-3`).
+// verifies: THR-3
+#[test]
+fn a_late_statement_dated_before_a_revocation_is_not_taken() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    run.revoke("us-bank", "2026-11-07T00:00:00Z");
+    set_now("2026-11-08T00:00:00Z");
+    let before = run.log.len();
+    assert_eq!(
+        try_answered_received(
+            &mut run,
+            "us-bank",
+            "tx-c-1",
+            "2026-11-06T15:04:05Z",
+            "2026-11-06T23:59:59Z"
+        ),
+        Err(AppendFailure::Unavailable)
+    );
+    assert_eq!(run.log.len(), before + 1, "its question alone");
+    // Dated within the skew of the clock, it is the log's to attribute.
+    set_now("2026-11-07T00:00:30Z");
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-c-2",
+        "2026-11-06T15:04:05Z",
         "2026-11-06T23:59:59Z"
     ));
 }
@@ -3137,14 +3368,19 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
             .unwrap();
     };
 
-    // Revoked on the 7th; statements backdated to the 6th, inside the grant's window, appended after it.
+    // Revoked on the 7th; statements made on the 6th, inside the grant's window, received before the revocation and
+    // appended after it: the class is read as it stood at their own `made_at`.
     let mut run = Run::new(MemoryStore::new());
     granted(&mut run);
     run.carry_out(
         json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": name, "class": "kyc-basic"}),
         "2026-11-07T00:00:00Z",
     );
-    let (inside, later) = ("2026-11-06T15:04:05Z", "2026-11-07T00:00:05Z");
+    let (inside, before, later) = (
+        "2026-11-06T15:04:05Z",
+        "2026-11-06T23:59:59Z",
+        "2026-11-07T00:00:05Z",
+    );
     let own = stating(
         &mut run,
         shape,
@@ -3152,7 +3388,7 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
         judgement("kyc-basic"),
         0xe1,
         inside,
-        later,
+        before,
     )
     .unwrap();
     assert!(verified(&run, &own), "its class, made inside the window");
@@ -3163,7 +3399,7 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
         judgement("aml-full"),
         0xe2,
         inside,
-        later,
+        before,
     )
     .unwrap();
     assert!(!verified(&run, &other), "another class, backdated");
@@ -3174,7 +3410,7 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
         json!({"kind": "judgement"}),
         0xe3,
         inside,
-        later,
+        before,
     )
     .unwrap();
     assert!(!verified(&run, &a_result), "a result, backdated");
@@ -3187,11 +3423,26 @@ fn a_verifiers_class_grant_is_read_at_its_statements_own_time() {
                 judgement("kyc-basic"),
                 0xe4,
                 inside,
-                later
+                before
             ),
             Err(AppendFailure::Refused(_))
         ),
         "claimed as a provider, backdated"
+    );
+    // The same statement of its class received after the revocation is attributed to no one (`THR-3`).
+    let late = stating(
+        &mut run,
+        shape,
+        "verifier",
+        judgement("kyc-basic"),
+        0xe7,
+        inside,
+        later,
+    )
+    .unwrap();
+    assert!(
+        !verified(&run, &late),
+        "its class, made inside the window but received after the revocation"
     );
 
     // Class first, then a tuple on the 8th: before it, the class's limit; after it, a provider's statement too.

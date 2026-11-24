@@ -1135,3 +1135,118 @@ the two changed `T-022-02` tests and `--operator-key` held.
 - **After review of the plan change (PR #243):** the revocation rule is the contract's attribution rule
   (`StatementKeys::signs_for`, `attribute`'s step 8), so it is `T-020-39`'s item (7); `T-022-09` waits on it in wave 34
   and edits `log/keys.rs` only.
+
+## T-022-09: a statement received after its grant's revocation is refused
+
+Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `components/core-audit/src/log/keys.rs`
+(a `DEC-20` path, waiting for the owner's click at the release into `main`) and its tests in `tests/log.rs`.
+
+- **The rule.** `Keys::signs_for` now reads the statement's received time (`T-020-39`'s item 7 passed it, and the
+  register ignored it): where `Register::revoked_before_receipt(provider, made_at, received)` holds, the answer is no
+  whatever the `made_at`, so the statement is recorded unattributed, as any other the register can't attribute. It is
+  the contract's `revoked_before_receipt` read over the register's done changes (`grants`) rather than a call into the
+  contract, since `signs_for` holds no history: each grant (a tuple's, or a verifier's class) in force at `made_at`
+  (its latest change at or before it, by the effect's time, the later on a tie) must have a revocation after
+  `made_at` and no later than `received`. The operator's key is read before it and is untouched.
+- **Owner's rulings applied.** `thr3-backdated-after-revocation` ("F-022 row"): refuse. `revoked-key-late-genuine`
+  (applied default): a genuine result made before the revocation and received after it is refused too; its provider
+  re-signs under its new grant. A revocation at the instant of receipt counts as before it (`<= received`).
+- **Defaults.** (1) A grant made again is a new grant but the revocation of the same tuple still stands in the window:
+  a statement made before the revocation and received after it stays refused though a grant stands again at its
+  receipt, as the contract's function reads it (the revocation is looked for by grant, any time in
+  `(made_at, received]`). (2) No grant in force at `made_at` leaves the rule false, and `in_force` refuses it apart.
+  (3) The statement's own `received_at` is the only clock, never the log's: a statement received before the
+  revocation stays attributed though appended after it.
+- **Tests (`tests/log.rs`).** New: `a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time`
+  [`THR-3`], `a_statement_received_before_the_revocation_stays_attributed` [`REQ-AUD-2`],
+  `a_statement_after_a_grant_made_again_is_attributed_only_from_the_new_grant` [`THR-3`], seen red on their
+  assertions before the code. Flipped, as the row asks: `a_verifiers_class_grant_is_read_at_its_statements_own_time`
+  now expects "its class, made inside the window", received five seconds after the revocation, unattributed. Its
+  last case of the first block ("claimed as a provider, backdated") expected a refusal for the role; no key attributes
+  it now, so it is recorded unattributed like the others of that block (a test artefact, not a Core bug: the class
+  grant's limit on a role is still tested, with the grant in force, by
+  `a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone`). `T-022-02`'s key tests pass unchanged.
+- **Gaps.** See the fix round below for what is closed and what stays a residual for `T-025-05`.
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | A: `signs_for` skips `revoked_before_receipt` | the refusal test, the grant-made-again test, the class test |
+  | B: `<= received` becomes `< received` (revocation at the instant of receipt) | the refusal test |
+  | C: the revocation need not be no later than `received` | `a_provider_signs_only_under_a_grant_in_force`, the stays-attributed test |
+  | D: the revocation need not be after `made_at` | the grant-made-again test |
+
+### Fix round 1 (`T-022-09`, after the review of `babc2cb3`)
+
+- **Several grants (finding 1).** `a_statement_stays_attributed_while_another_grant_of_its_maker_stands`: a provider
+  with two tuples, one revoked, keeps a statement made before the revocation and received after it attributed; once
+  the other is revoked it is refused. Rule-off F1 (`all` to `any`) turns it red.
+- **Ties (finding 2).** The register now keeps each change's effect index beside its time and breaks a tie in time by
+  it (`latest_at`), as the contract reads the effects in the log's order, in `in_force` and in
+  `revoked_before_receipt` alike, not by the order the results arrived. `changes_at_one_instant_are_ordered_by_their_effects`:
+  a revocation and a grant at one instant, results in the opposite order. Rule-off F2 (tie by time alone) turns it red.
+- **The received time (finding 3).** Held to the log's clock, in `Register::admits`, where it matters: a stated entry
+  whose maker has a revocation of a grant dated after the entry's `received_at` must have that time within the skew
+  of the log's clock, else `Unavailable`, as an advertisement's behind-the-clock time is
+  (`a_late_statement_dated_before_a_revocation_is_not_taken`). Rule-off F3 turns it red. **Narrower than every
+  statement, as a default:** holding every stated entry to the clock failed six `checkpoints.rs` tests, whose worlds
+  append entries dated days before their clock, so the hold applies only where a later revocation of the maker's
+  grant exists, the one case where the received time decides attribution. **Residual for `T-025-05`:** within the skew
+  (300 s by default) of the log's clock, orchestration can still date a statement received a few minutes before a
+  revocation that is that recent; and the received time stays the writer's word for a maker with no revocation, where
+  it decides nothing. A statement the log couldn't take (`Unavailable`) can't be taken on a retry with the same
+  received time, which is still behind the clock and fails again; it has to be sent again with the time of the new
+  append, and is then recorded unattributed, being received after the revocation.
+- **The flipped test (finding 4).** `a_verifiers_class_grant_is_read_at_its_statements_own_time`'s first block is
+  restored: its statements are received before the revocation (`2026-11-06T23:59:59Z`) and appended after it, with
+  its original assertions (the class read at `made_at`, a backdated other class, result and provider claim refused),
+  and one case received after the revocation, unattributed. The test helpers `answered` and `answered_received` set
+  the log's clock to the statement's received time, since the world appends it as it is received.
+
+## T-022-10: the evidence store erases a cited statement on a decided override
+
+Same branch, after `T-022-09`. Edits `components/core-audit/src/receipts/store.rs` and `tests/receipts.rs` (a `DEC-20`
+path). Core's half is `T-020-42`; policy's is `T-021-13`.
+
+- **Design.** `BoundStore::erase(at)` reads the erasure back from the log (`decided`, which `decided_erasure` now wraps):
+  the `done` result, its `erase_statement` effect, and the permitting `decide`, and takes `overrides_citations` from
+  that decision's own request action, never from the effect. Set, the store skips the citation check (`erasable_from`
+  with `citations_refuse` false) and erases: bytes and salt go, the commitment and the stated entry stay, a fetch
+  answers `Erased`, and the entries citing it stay as they are. Every other rule holds under an override: the statement
+  is kept and named by a stated entry, and an advertisement is never erased.
+- **API.** `erasable` is unchanged (the default, `EVIDENCE_RESTED_ON`). New `erasable_overriding`, for orchestration
+  (`T-020-42`) to run before asking policy for an override: it answers what the operator may ask, never what the store
+  does, which is the permitting decision's word read from the log.
+- **Findings.** In `reconcile`, `ERASED_YET_CITED` counts only entries after the override's decision: a citation made
+  before it no longer holds the erasure back, one made after it (the log admits those between the decision and the
+  effect) is reported in `unsettled_erasures`. Without an override every citation counts, as before.
+- **Defaults.** (1) "After the decision" is the decision's log index, not the effect's or the result's. (2) The store
+  erases an override even where a citation landed after the decision: the operator decided it, and the finding
+  reports it. (3) An override's decision that isn't `permitted`, or whose action differs from the effect's, is no
+  decided erasure (`NO_DECIDED_ERASURE`), as before.
+- **Tests (`tests/receipts.rs`).** `store refuses a cited statement's erasure without an override` [`REQ-AUD-13`],
+  `store erases a cited statement on a decided override and history still checks` [`REQ-AUD-13`, `AC-36`], `citation
+  made after an override's decision is still reported` [`INV-7`] (as `store_refuses_...`, `store_erases_...`,
+  `citation_made_after_...`). The first pins the default and passed before the code; the other two failed first. The
+  test helper `decide_erasure` gained `decide_erasure_as` (override flag, a hook between decision and effect); the
+  existing tests pass unchanged.
+- **Gaps.** The store's refusal of an erasure whose decision lacks the override can't be built through an admitting
+  log (the log refuses the effect while a statement is cited, and a citation after the effect begins), so no
+  integration test reaches "override read as always true"; a unit test of `decided()` over a hand-built slice does
+  (fix round 1, below). The log's own row holds the rest (`T-020-39`).
+  `T-020-42` calls `erasable_overriding` and passes `overrides_citations` only where the operator asked.
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: `erase` ignores the decision's override | the override test, the late-citation test |
+  | R2: every citation counts for `ERASED_YET_CITED`, whatever the decision's time | the override test |
+  | R3: no citation counts (nothing reported) | the late-citation test |
+  | R4: `erasable_overriding` still refuses a cited statement | the override test, the late-citation test |
+
+### Fix round 1 (`T-022-10`, after the review of `babc2cb3`)
+
+- **`decided()` unit-tested (finding 5).** `receipts::store::tests::the_override_is_read_from_the_permitting_decision`
+  builds a decision, effect and `done` result by hand: `overrides` is false without the flag and true with it (and
+  names the decision's receipt), and an effect that sets the flag on a decision that doesn't is `NO_DECIDED_ERASURE`.
+  Rule-off F5 (`overrides: true || ...`) turns it red.

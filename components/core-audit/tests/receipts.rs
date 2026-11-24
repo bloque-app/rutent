@@ -167,15 +167,31 @@ fn erasure(commitment: &Digest, status: &str) -> GeneralEntry {
 /// Policy's permitting decision to erase what `commitment` names, its effect and its result, with the outcome
 /// `status`, in `log`: the decided path the store erases on. `n` tells its request and decision apart from others'.
 /// The receipt of the result.
-fn decide_erasure(
-    log: &mut (impl Log + PolicyLog),
+fn decide_erasure<L: Log + PolicyLog>(
+    log: &mut L,
     n: usize,
     commitment: &Digest,
     status: &str,
 ) -> Result<Receipt, AppendFailure> {
+    decide_erasure_as(log, n, commitment, status, false, |_| {})
+}
+
+/// [`decide_erasure`], the decision's action setting `overrides_citations` where `overrides` holds, and `between`
+/// run once the decision is recorded, before its effect.
+fn decide_erasure_as<L: Log + PolicyLog>(
+    log: &mut L,
+    n: usize,
+    commitment: &Digest,
+    status: &str,
+    overrides: bool,
+    between: impl FnOnce(&mut L),
+) -> Result<Receipt, AppendFailure> {
     let (request, decision) = (format!("req-erase-{n}"), format!("dec-erase-{n}"));
-    let action =
+    let mut action =
         json!({"kind": "erase_statement", "commitment": commitment, "reason": "retention_ended"});
+    if overrides {
+        action["overrides_citations"] = true.into();
+    }
     let operator = actor(OPERATOR, "op-login-2", "operator", "person");
     let decided: VerifiedEntry = serde_json::from_value(json!({
         "kind": "verified",
@@ -187,6 +203,7 @@ fn decide_erasure(
     }))
     .unwrap();
     let permit = log.append_decision(&DecisionEntry::try_from(decided).unwrap())?;
+    between(log);
     let core = actor("rutent", "core-orch", "core", "component");
     let effect: GeneralEntry = serde_json::from_value(json!({
         "kind": "verified",
@@ -399,6 +416,23 @@ impl Run {
     fn decide_erasure(&self, commitment: &Digest, status: &str) -> Result<Receipt, AppendFailure> {
         let n = self.log.borrow().entries().len();
         decide_erasure(&mut *self.log.borrow_mut(), n, commitment, status)
+    }
+
+    /// [`Run::decide_erasure`], overriding the citations, with `between` run once the decision is recorded.
+    fn decide_override(
+        &self,
+        commitment: &Digest,
+        between: impl FnOnce(&mut AuditLog<FileStore, LogsRead>),
+    ) -> Result<Receipt, AppendFailure> {
+        let n = self.log.borrow().entries().len();
+        decide_erasure_as(
+            &mut *self.log.borrow_mut(),
+            n,
+            commitment,
+            "done",
+            true,
+            between,
+        )
     }
 
     fn entries(&self) -> Vec<(Receipt, Entry)> {
@@ -1453,6 +1487,117 @@ fn no_erasure_reaches_a_statement_an_entry_rests_on() {
         Fetched::Kept(_)
     ));
     assert!(run.store.refused_erasures().is_empty());
+}
+
+/// An entry of the log citing the statement at `at`: a measure of `segment`.
+fn measure_citing(at: &Receipt, segment: &str) -> GeneralEntry {
+    let mut measure = valid("verified-entry-of-a-measure");
+    measure["what"]["record"]["segment"] = segment.into();
+    measure["what"]["record"]["cites"] = json!([at]);
+    serde_json::from_value(measure).unwrap()
+}
+
+/// A statement a later entry cites is not erased by default: the store's check refuses it, and so does the log's
+/// decision to erase it, whose refusal nothing in the store can overrule. Only the operator's override, a decision
+/// of its own, lifts it (`erasable_overriding`), so asking the store without it still refuses (`REQ-AUD-13`).
+// verifies: REQ-AUD-13
+#[test]
+fn store_refuses_a_cited_statements_erasure_without_an_override() {
+    let dir = TempDir::new("no-override");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    let refused = Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
+    assert_eq!(run.store.erasable(&cited), refused);
+    assert!(run.decide_erasure(&cited, "done").is_err());
+    // What the override lifts is the citations alone: an unnamed statement stays refused.
+    let unnamed = run
+        .keeper
+        .keep(&judgement("bank-co", json!({"kind": "judgement"})))
+        .unwrap();
+    assert_eq!(
+        run.store.erasable_overriding(&unnamed.commitment),
+        Err(AppendFailure::Refused(Violation(NAMED_BY_NO_ENTRY)))
+    );
+    assert!(matches!(
+        run.fetch("fx-desk", &cited).unwrap(),
+        Fetched::Kept(_)
+    ));
+    drop(run);
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.refused_erasures().is_empty());
+    assert!(!run.store.is_erased(&cited));
+}
+
+/// Where the operator decided an erasure that overrides the citations, the store erases a cited statement: its
+/// commitment and reference stay, the entry citing it reads it erased, the log reopens and no finding is reported
+/// for a citation made before the decision (`REQ-AUD-13`, `AC-36`).
+// verifies: REQ-AUD-13, AC-36
+#[test]
+fn store_erases_a_cited_statement_on_a_decided_override_and_history_still_checks() {
+    let dir = TempDir::new("override");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    let citing = run.append(&measure_citing(&at, "seg-1")).unwrap();
+    assert!(run.store.erasable(&cited).is_err());
+    run.store.erasable_overriding(&cited).unwrap();
+    let before = run.entries();
+    let roots: Vec<_> = (0..=before.len())
+        .map(|n| run.log.borrow().root_at(n).unwrap())
+        .collect();
+
+    let done = run.decide_override(&cited, |_| {}).unwrap();
+    run.store.erase(&done).unwrap();
+    run.append(&erasure(&cited, "done")).unwrap();
+
+    assert_eq!(run.fetch("fx-desk", &cited).unwrap(), Fetched::Erased);
+    assert!(run.store.is_erased(&cited));
+    assert!(run.store.refused_erasures().is_empty());
+    let after = run.entries();
+    assert_eq!(after[..before.len()], before[..]);
+    assert!(matches!(
+        &after[citing.index.get() as usize].1,
+        Entry::Verified(_)
+    ));
+    for (n, root) in roots.iter().enumerate() {
+        assert_eq!(run.log.borrow().root_at(n).as_ref(), Some(root));
+    }
+    drop(run);
+
+    // Reopened and bound again: the bytes are gone, the citation reads it erased, and nothing is reported.
+    let mut run = Run::open(&dir).unwrap();
+    assert_eq!(run.entries()[..after.len()], after[..]);
+    assert_eq!(run.fetch("fx-desk", &cited).unwrap(), Fetched::Erased);
+    assert!(run.store.refused_erasures().is_empty());
+    assert!(run.store.unsettled_erasures().is_empty());
+    assert!(run.store.missing().is_empty());
+}
+
+/// A citation made after the override's decision is still reported, though the store erases on the override: the
+/// operator decided to erase what was cited then, not what a later entry came to rest on (`INV-7`).
+// verifies: INV-7
+#[test]
+fn citation_made_after_an_overrides_decision_is_still_reported() {
+    let dir = TempDir::new("override-late");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    let done = run
+        .decide_override(&cited, |log| {
+            log.append(&measure_citing(&at, "seg-2")).unwrap();
+        })
+        .unwrap();
+    run.store.erase(&done).unwrap();
+    run.append(&erasure(&cited, "done")).unwrap();
+    assert_eq!(run.fetch("fx-desk", &cited).unwrap(), Fetched::Erased);
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.refused_erasures().is_empty());
+    assert_eq!(
+        run.store.unsettled_erasures(),
+        [(done, Violation(ERASED_YET_CITED))]
+    );
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------

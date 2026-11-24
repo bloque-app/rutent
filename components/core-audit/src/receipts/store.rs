@@ -504,6 +504,24 @@ pub fn decided_erasure<'a>(
     entries: &'a [(Receipt, Entry)],
     at: &Receipt,
 ) -> Result<&'a Digest, AppendFailure> {
+    decided(entries, at).map(|d| d.commitment)
+}
+
+/// An erasure the log decided, as the store reads it back from the log.
+struct Decided<'a> {
+    commitment: &'a Digest,
+    /// The receipt of the permitting decision.
+    decision: &'a Receipt,
+    /// Whether that decision's own action sets `overrides_citations` (`erasure-of-cited-evidence`, `T-020-39`): read
+    /// from the permitting decision, a `decide` the log holds permitted, never from the effect's word.
+    overrides: bool,
+}
+
+/// [`decided_erasure`], with the permitting decision and what it sets.
+fn decided<'a>(
+    entries: &'a [(Receipt, Entry)],
+    at: &Receipt,
+) -> Result<Decided<'a>, AppendFailure> {
     let refused = || AppendFailure::Refused(Violation(NO_DECIDED_ERASURE));
     let result = verified_at(entries, at).ok_or_else(refused)?;
     let (What::Result { effect }, Outcome::Done {}) = (&result.what, result.outcome) else {
@@ -520,7 +538,17 @@ pub fn decided_erasure<'a>(
     let decided = verified_at(entries, decision.receipt()).ok_or_else(refused)?;
     match (&decided.what, decided.outcome) {
         (What::Decide { request, .. }, Outcome::Permitted {}) if request.action == *action => {
-            Ok(commitment)
+            Ok(Decided {
+                commitment,
+                decision: decision.receipt(),
+                overrides: matches!(
+                    request.action,
+                    Action::EraseStatement {
+                        overrides_citations: true,
+                        ..
+                    }
+                ),
+            })
         }
         _ => Err(refused()),
     }
@@ -540,15 +568,19 @@ fn holds_value(value: &serde_json::Value, needle: &serde_json::Value) -> bool {
 /// entry naming it, or names the commitment itself, as a stuck order's decision names its evidence. Stated entries,
 /// erasures, the erasure's decided path, and reads (a read of a statement, and a permission over one) rest on nothing
 /// they name.
-fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
+///
+/// Only entries from index `from` on count where it is given: an override's decision lifts the citations made before
+/// it, and a citation made after it still counts.
+fn cited(entries: &[(Receipt, Entry)], commitment: &Digest, from: Option<u64>) -> bool {
     let mut needles: Vec<serde_json::Value> = entries
         .iter()
         .filter(|(_, e)| matches!(e, Entry::Stated(s) if s.commitment == *commitment))
         .filter_map(|(r, _)| serde_json::to_value(r).ok())
         .collect();
     needles.extend(serde_json::to_value(commitment).ok());
-    entries.iter().any(|(_, e)| match e {
+    entries.iter().any(|(r, e)| match e {
         Entry::Stated(_) => false,
+        Entry::Verified(_) if from.is_some_and(|from| r.index.get() <= from) => false,
         Entry::Verified(v) => {
             // The erasure's own path (its decision, its effect and their result) rests on nothing it names.
             let erasing = match &v.what {
@@ -576,23 +608,28 @@ fn cited(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
 impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     fn reconcile(&mut self) -> Result<(), AppendFailure> {
         let entries = self.log.borrow().entries().to_vec();
-        let decided: Vec<(Receipt, Digest)> = entries
+        // Each erasure the log decided, with the index of its permitting decision where that decision overrides the
+        // citations: what an entry cited before it no longer holds back (`T-022-10`).
+        let decided: Vec<(Receipt, Digest, Option<u64>)> = entries
             .iter()
             .filter_map(|(r, _)| {
-                decided_erasure(&entries, r)
-                    .ok()
-                    .map(|c| (r.clone(), c.clone()))
+                let d = decided(&entries, r).ok()?;
+                Some((
+                    r.clone(),
+                    d.commitment.clone(),
+                    d.overrides.then(|| d.decision.index.get()),
+                ))
             })
             .collect();
         let marks: Vec<String> = self.inner.borrow().erased.iter().cloned().collect();
         for mark in marks {
-            if !decided.iter().any(|(_, c)| c.value.as_str() == mark) {
+            if !decided.iter().any(|(_, c, _)| c.value.as_str() == mark) {
                 return Err(AppendFailure::Refused(Violation(MARK_WITHOUT_ITS_ERASURE)));
             }
         }
         // Every erasure the log decided is carried out, or, where the store refuses it, reported.
         self.refused = Vec::new();
-        for (at, _) in &decided {
+        for (at, ..) in &decided {
             match self.erase(at) {
                 Ok(()) => {}
                 Err(AppendFailure::Refused(why)) => self.refused.push((at.clone(), why)),
@@ -602,7 +639,7 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         // An erasure carried out is settled once the log records it, and while nothing cites what it erased: the
         // store erases on the done result, and the `erasure` entry, and the end of citations, follow.
         self.unsettled = Vec::new();
-        for (at, commitment) in &decided {
+        for (at, commitment, overridden) in &decided {
             if !self.is_erased(commitment) {
                 continue;
             }
@@ -619,7 +656,7 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
                 self.unsettled
                     .push((at.clone(), Violation(ERASURE_NOT_RECORDED)));
             }
-            if cited(&entries, commitment) {
+            if cited(&entries, commitment, *overridden) {
                 self.unsettled
                     .push((at.clone(), Violation(ERASED_YET_CITED)));
             }
@@ -670,6 +707,24 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// entry naming it; and no entry of the log rests on it. Run it before asking policy to erase, so no erasure is
     /// decided that the store would refuse.
     pub fn erasable(&self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.erasable_from(commitment, true)
+    }
+
+    /// [`BoundStore::erasable`] for an erasure the operator decides to override the citations (`T-022-10`, item
+    /// `erasure-of-cited-evidence`): every rule but the last holds, and an entry resting on the statement doesn't
+    /// refuse it. Run it before asking policy for an `erase_statement` that sets `overrides_citations`. The store
+    /// erases on such a decision only where the permitting decision, read back from the log, sets it
+    /// ([`BoundStore::erase`]), so this answers what the operator may ask, never what the store will do.
+    pub fn erasable_overriding(&self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.erasable_from(commitment, false)
+    }
+
+    /// [`BoundStore::erasable`], an entry resting on the statement refusing it where `citations_refuse` holds.
+    fn erasable_from(
+        &self,
+        commitment: &Digest,
+        citations_refuse: bool,
+    ) -> Result<(), AppendFailure> {
         let inner = self.inner.borrow();
         if inner.erased.contains(commitment.value.as_str()) {
             return Ok(());
@@ -694,7 +749,7 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
                 ADVERTISEMENT_NEVER_ERASED,
             )));
         }
-        if cited(log.entries(), commitment) {
+        if citations_refuse && cited(log.entries(), commitment, None) {
             return Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
         }
         Ok(())
@@ -712,8 +767,18 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// again after a crash. It refuses what [`BoundStore::erasable`] refuses. A statement erased already answers
     /// `Ok`.
     pub fn erase(&self, at: &Receipt) -> Result<(), AppendFailure> {
-        let commitment = decided_erasure(self.log.borrow().entries(), at)?.clone();
-        self.erasable(&commitment)?;
+        // Read back from the log: the commitment, and whether the permitting decision overrides the citations. An
+        // override lifts no rule but the citations', and the store honours it only from that decision.
+        let (commitment, overrides) = {
+            let log = self.log.borrow();
+            let d = decided(log.entries(), at)?;
+            (d.commitment.clone(), d.overrides)
+        };
+        if overrides {
+            self.erasable_overriding(&commitment)?;
+        } else {
+            self.erasable(&commitment)?;
+        }
         let mut inner = self.inner.borrow_mut();
         let key = commitment.value.as_str().to_owned();
         if inner.erased.contains(&key) {
@@ -827,5 +892,81 @@ impl Evidence for Keeper {
             .cloned()
             .map(Fetched::Kept)
             .ok_or(AppendFailure::Refused(Violation(NOT_KEPT)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn receipt(index: u64) -> Value {
+        json!({"log": "log-main", "index": index,
+               "entry": {"algorithm": "sha-256", "value": format!("{index:02x}").repeat(32)}})
+    }
+
+    fn erase(overrides: bool) -> Value {
+        let mut action = json!({"kind": "erase_statement", "reason": "retention_ended",
+            "commitment": {"algorithm": "sha-256", "value": "ab".repeat(32)}});
+        if overrides {
+            action["overrides_citations"] = true.into();
+        }
+        action
+    }
+
+    /// A decided erasure by hand: a permitting decision of `decided`'s action, the effect of `effected`'s, and the
+    /// effect's `done` result, three entries at 0, 1 and 2.
+    fn path(decided: Value, effected: Value) -> Vec<(Receipt, Entry)> {
+        let who =
+            json!({"party": "rutent", "acts": "core-orch", "role": "core", "kind": "component"});
+        let entries = [
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "decide", "decision": "dec-1",
+                            "request": {"request": "req-1", "caller": who, "action": decided,
+                                        "at": "2026-11-10T09:00:00Z"}},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "permitted"}}),
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "effect", "action": effected,
+                            "decision": {"request": "req-1", "decision": "dec-1", "answer": "permit",
+                                         "receipt": receipt(0)}},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "to_take_effect"}}),
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "result", "effect": receipt(1)},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "done"}}),
+        ];
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                (
+                    serde_json::from_value(receipt(i as u64)).unwrap(),
+                    serde_json::from_value(e).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The store reads `overrides_citations` from the permitting decision's own action: false where the decision
+    /// doesn't set it, true where it does, and an effect that sets it on a decision that doesn't is no decided
+    /// erasure at all.
+    // verifies: REQ-AUD-13
+    #[test]
+    fn the_override_is_read_from_the_permitting_decision() {
+        let at = serde_json::from_value(receipt(2)).unwrap();
+        let plain = path(erase(false), erase(false));
+        assert!(!decided(&plain, &at).unwrap().overrides);
+        let overriding = path(erase(true), erase(true));
+        let d = decided(&overriding, &at).unwrap();
+        assert!(d.overrides);
+        assert_eq!(d.decision, &serde_json::from_value(receipt(0)).unwrap());
+        // The effect's word is never the decision's.
+        let claimed = path(erase(false), erase(true));
+        assert_eq!(
+            decided(&claimed, &at).err(),
+            Some(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)))
+        );
     }
 }
