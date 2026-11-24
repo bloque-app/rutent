@@ -18,13 +18,13 @@ fn find(f: &mut Vec<Finding>, rule: &'static str, location: impl Into<String>, m
     });
 }
 
-fn column(t: &Table, name: &str) -> Option<usize> {
+pub(crate) fn column(t: &Table, name: &str) -> Option<usize> {
     t.header
         .iter()
         .position(|h| h.trim().eq_ignore_ascii_case(name))
 }
 
-fn bare(cell: &str) -> &str {
+pub(crate) fn bare(cell: &str) -> &str {
     cell.trim().trim_matches('`')
 }
 
@@ -41,7 +41,7 @@ fn milestone_number(text: &str) -> Option<u32> {
 }
 
 /// The milestone of each feature: from a Milestone column, else from the one milestone in the section heading.
-fn feature_milestones(all: &[Table]) -> BTreeMap<String, u32> {
+pub(crate) fn feature_milestones(all: &[Table]) -> BTreeMap<String, u32> {
     let mut out = BTreeMap::new();
     for t in all.iter().filter(|t| column(t, "Feature") == Some(0)) {
         let by_column = column(t, "Milestone");
@@ -59,13 +59,13 @@ fn feature_milestones(all: &[Table]) -> BTreeMap<String, u32> {
 }
 
 /// `T-NNN-NN`: three digits for the feature, two for the task.
-fn is_task_id(id: &str) -> bool {
+pub(crate) fn is_task_id(id: &str) -> bool {
     let parts: Vec<&str> = id.split('-').collect();
     let digits = |p: &str, n: usize| p.len() == n && p.chars().all(|c| c.is_ascii_digit());
     parts.len() == 3 && parts[0] == "T" && digits(parts[1], 3) && digits(parts[2], 2)
 }
 
-fn feature_of(task: &str) -> String {
+pub(crate) fn feature_of(task: &str) -> String {
     let mut parts = task.split('-');
     format!("F-{}", parts.nth(1).unwrap_or_default())
 }

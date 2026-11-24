@@ -388,10 +388,12 @@ fn each_segments_charge_is_checked_once_also_after_a_restart() {
     ));
 }
 
-// verifies: AC-14
+// verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {
-    // The assembly holds no check of its own: its charge module only builds the channel and reads it, and nothing
+    // A scan of the assembly's source, not a scenario: it keeps `AC-14`'s scenarios, which call Core's own check, from
+    // passing on a stand-in put back, and it verifies `AC-14` by none of its own (the table counts scenarios alone for
+    // an acceptance criterion). The assembly holds no check of its own: its charge module only builds the channel and reads it, and nothing
     // of it calls the quote module's check or builds its desk.
     for (file, text) in [
         ("charges.rs", include_str!("../src/assembly/charges.rs")),

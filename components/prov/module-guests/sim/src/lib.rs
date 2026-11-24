@@ -1,7 +1,7 @@
 //! The simulated providers' guests (`T-024-01`): one crate, two parts chosen by a feature, and for the sandboxed part
 //! a role (`reserve`, `exchange`, `ramp` or `verifier`) chosen by one too.
 //!
-//! The sandboxed part is `rutent-conformance`'s [`Simulated`] stand-in. For an operation of a provider that moves
+//! The sandboxed part is `rutent-conformance`'s `Simulated` stand-in. For an operation of a provider that moves
 //! value it asks its outside part, first, what the script says to do (`sim.begin`: the next behaviour queued for the
 //! operation's kind, and the length of the journal the platform's world keeps), reads the journal back when its own
 //! books are shorter or longer than it (`sim.book`), answers as the behaviour says, and writes the entry the

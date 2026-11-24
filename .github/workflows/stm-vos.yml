@@ -185,6 +185,31 @@ jobs:
           (cd "$PROGRAM/scenarios/wire" && cargo fmt --check &&
             CARGO_TARGET_DIR="$BUILD/scenarios-target" cargo clippy --locked --all-targets -- -D warnings)
 
+      # The documentation lint of the two workspaces of their own here (T-024-24, NFR-7), which the ci job's `cargo doc
+      # --workspace` never sees: the program, for VOS's guest target as build.sh builds it, and the client's workspace
+      # (the client, the scenarios, their host server and its wire). Like the step above, it needs VOS's sources. A change
+      # to this file is a DEC-20 path, allowed on m3 with the owner's click at the release into main.
+      - name: Documentation check, the client's workspace (T-024-24)
+        run: |
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          sources_git_config "$VOS_DIR"
+          (cd components/stm/vos-program/client && CARGO_TARGET_DIR="$BUILD/client-target" \
+            cargo doc --locked --workspace --no-deps --features vos)
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Documentation check, the program (T-024-24)
+        run: |
+          export SOURCES="$GITHUB_WORKSPACE/$PROGRAM/sources"
+          . "$GITHUB_WORKSPACE/$PROGRAM/sources.sh"
+          sources_git_config "$VOS_DIR"
+          (cd components/stm/vos-program && CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$BUILD/program-doc-target" \
+            CARGO_TARGET_RISCV64EM_VOS_RUSTFLAGS="-Zunstable-options -Clink-arg=-T$VOS_DIR/pvm/guest/pvm.ld" \
+            cargo doc --locked --no-deps --target "$VOS_DIR/pvm/guest/riscv64em-vos.json" -Zjson-target-spec \
+              -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem)
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: The assembled Core's scenarios on three VOS replicas (T-024-02)
         run: |
           set -o pipefail

@@ -134,11 +134,30 @@ fn report_full(
     review_notes: bool,
     form_items: Option<&BTreeSet<String>>,
 ) -> (Report, Vec<Finding>) {
+    report_in(
+        "conformance/scenarios/tests/fixture.rs",
+        scope,
+        source,
+        results,
+        review_notes,
+        form_items,
+    )
+}
+
+/// As [`report_full`], with the tests in the file `file`.
+fn report_in(
+    file: &str,
+    scope: &str,
+    source: &str,
+    results: &str,
+    review_notes: bool,
+    form_items: Option<&BTreeSet<String>>,
+) -> (Report, Vec<Finding>) {
     let (parsed, problems) = parse_scope(scope);
     let spec = spec();
     let defined = Defined::collect(&spec, &[], &plain_plan(), "");
     let universe = universe(&spec);
-    let tests = scan_tests("tests/fixture.rs", source);
+    let tests = scan_tests(file, source);
     let results = Results::parse(results);
     let exists = move |_: &str| review_notes;
     let inputs = Inputs {
@@ -182,6 +201,39 @@ fn some_with(found: &[String], rule: &str, needle: &str) -> bool {
 #[test]
 fn a_fixture_with_everything_in_place_has_no_finding() {
     let found = table_findings(&scope_text("off", &[]), &sources(&[]), &all_pass());
+    assert!(found.is_empty(), "{found:?}");
+}
+
+// verifies: DEC-18
+#[test]
+fn acceptance_criterion_verified_only_by_a_test_outside_the_scenarios_is_not_met() {
+    // `AC-1`'s only tagged test passes, in a test file of a crate other than the scenarios.
+    let scope = scope_text("off", &[]);
+    let (report, problems) = report_in(
+        "components/router/tests/fixture.rs",
+        &scope,
+        &sources(&[]),
+        &all_pass(),
+        true,
+        None,
+    );
+    let found: Vec<String> = problems
+        .iter()
+        .chain(report.table.iter())
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        some_with(&found, "ac-without-scenario", "AC-1"),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().all(|f| !f.contains("REQ-MOD-1")),
+        "only an acceptance criterion is held to a scenario: {found:?}"
+    );
+    let line = report.lines.iter().find(|l| l.id == "AC-1").expect("AC-1");
+    assert_eq!(line.status, "unverified", "{line:?}");
+    // The same test under the scenarios' tests passes the row.
+    let found = table_findings(&scope, &sources(&[]), &all_pass());
     assert!(found.is_empty(), "{found:?}");
 }
 
