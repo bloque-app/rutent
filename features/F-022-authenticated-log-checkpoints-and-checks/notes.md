@@ -1132,3 +1132,6 @@ the two changed `T-022-02` tests and `--operator-key` held.
 - **New rows:** `T-022-09` (a statement received after its grant's revocation is refused, `THR-3`, item
   `thr3-backdated-after-revocation`; `T-025-05`'s residual) and `T-022-10` (the store erases a cited statement on a
   decided override, item `erasure-of-cited-evidence`, beside `T-021-13` and `T-020-42`).
+- **After review of the plan change (PR #243):** the revocation rule is the contract's attribution rule
+  (`StatementKeys::signs_for`, `attribute`'s step 8), so it is `T-020-39`'s item (7); `T-022-09` waits on it in wave 34
+  and edits `log/keys.rs` only.

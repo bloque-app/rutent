@@ -5852,6 +5852,13 @@ together as: in v0 the origin stays as the first authorisation set it. Read agai
   log would permit a move of the origin account, and only orchestration's own guard stops it.
 - **So the code holds to the reading only through orchestration**, not through the decision call. `T-021-11` makes
   policy refuse any move of an origin account once one is in force, the payer's included, so the decision call holds
-  what orchestration already does; the contract's wider row is left as it is. This is the stricter reading of the two
-  answers, on the form for the owner to confirm: "Payer only" could instead mean a requester who is the payer may move
-  it, which is what policy does today.
+  what orchestration already does. A part whose authorisation in force names no account yet may have one named once
+  (`origin_in_force` answers `Some(None)` there, `funds/mod.rs:303`; `sets_account` at `:476`), and it is held from
+  then. The reading is the owner's own, not one for the form: the notes on both items say the origin is fixed at the
+  first authorisation and nobody changes it in v0, and to widen both together later. That is also why the contract's
+  `only-the-payer-moves-the-origin-account` stays as it is: it is the widened rule, kept for then, and policy holds
+  within it until both are widened.
+- **`false-judgement-stuck-bearer`'s open half.** `SPEC.md` 0.4.2 has `REQ-ORD-28` govern a stuck order a false
+  judgement left: the operator bears it, then recovers under contract, the reliance record (`T-020-23`) naming the
+  judge and the provider that relied on it. From whom it recovers is not decided: form item
+  `false-judgement-recovery`.

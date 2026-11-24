@@ -1728,3 +1728,6 @@ Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; it
 - **New row:** `T-024-20`, the balance scan beside `T-025-03`'s secrets scan (item `balance-scan-coverage`).
 - **The exit runs again.** `T-024-10`'s strict run of 2026-11-18 at `74249d38` stands for the rows before wave 33;
   the plan moves the exit to wave 37, after the answers' rows (waves 33 to 35) and `T-025-05`'s second pass (wave 36).
+- **After review of the plan change (PR #243):** `T-024-20`'s VOS half goes in
+  `components/stm/vos-program/scenarios/tests/secrets.rs`, the target `stm-vos.yml` already runs, on the push of `m3`
+  (`m*`), so no workflow (a `DEC-20` path) is edited; the reference host's half is in `secrets_scan.rs`.

@@ -279,7 +279,7 @@ Normative. Each has a statement, what it derives from, and how it is verified. `
 | `REQ-CPL-9` | Where a reserve demands a person's presence, the reserve decides what an agent may do, and rutent MUST only report the outcome. | `PS-103` | Test: presence demanded of an agent. |
 | `REQ-CPL-10` | Each provider MUST know a person under a different subject reference. Only the operator MUST be able to join them. A subject reference MUST be usable only by parties entitled to it. | `PS-30`, `PS-145`, `THR-48` | Test: two providers can't match a person's references; an unentitled party can't resolve one. |
 | `REQ-CPL-11` | Personal details of a payer who isn't a customer MUST stay with the provider that received them, and rutent's records MUST hold a reference at most. | `THR-113` | Test: scan the records after a third-party payment. |
-| `REQ-CPL-12` | The loss from a false judgement by a verifier or reserve MUST fall on the provider that relied on it. Records MUST show whose judgement it was and who relied on it, so that provider can recover under contract, which is outside this document. Where the false judgement leaves an order stuck, `REQ-ORD-28` governs: the operator bears the loss, then recovers it under contract from the party whose judgement was false, which the records name. | `PS-156`, `THR-91` | Inspection: no path charges that loss to a customer, nor to the operator except on a stuck order (`REQ-ORD-28`); test: the record names the judgement's maker and the provider relying on it. |
+| `REQ-CPL-12` | The loss from a false judgement by a verifier or reserve MUST fall on the provider that relied on it. Records MUST show whose judgement it was and who relied on it, so that provider can recover under contract, which is outside this document. Where the false judgement leaves an order stuck, `REQ-ORD-28` governs: the operator bears the loss, then recovers it under contract (`OBL-2`), the records naming the judgement's maker and the provider that relied on it. From whom it recovers is open (form item `false-judgement-recovery`). | `PS-156`, `THR-91` | Inspection: no path charges that loss to a customer, nor to the operator except on a stuck order (`REQ-ORD-28`); test: the record names the judgement's maker and the provider relying on it. |
 
 ### `REQ-AUZ-*`: authorisation and policy
 
@@ -607,7 +607,7 @@ ruling), Confidential (commercially or operationally sensitive), Internal, Publi
 | `THR-44` | Anyone who can force a no | Each no brings a new shortlist (R35), so more providers learn of the same person with each recalculation | R35's privacy wears away; person | `PS-95`, R35 | Mitigated (bounds): `REQ-CPL-5` |
 | `THR-45` | Third party | Asks a verifier about people it has no order for: who is eligible, who is flagged | Compliance status of people leaks | `PS-78`, `PS-95` | Mitigated (prevents): `REQ-CPL-2` |
 | `THR-46` | Shortlisted provider | Trades ahead or reprices on what it saw at the check or dry-run | Worse price; customer | `PS-71`, `PS-78`, [routing] | Mitigated (detects only): `REQ-AUD-7`. Operator sees it statistically, not per order |
-| `THR-47` | Provider | Learns a rival's quote, or that a rival was asked | Quiet collusion; customers | `PS-16`, [routing] | Mitigated (prevents): `REQ-CAT-5` |
+| `THR-47` | Provider | Learns a rival's quote, or that a rival was asked | Quiet collusion; customers | `PS-16`, [routing] | Mitigated (prevents): `REQ-CAT-5`. The timing of one customer's asks can still link them (accepted for v0, `cat5-timing-residual`). |
 | `THR-48` | Operator, or whoever breaches it | Joins one person's activity across providers through a shared reference. Stopping that also stops anyone catching fronting | A full history of a person | `PS-30`, [compliance], [verifier] | Mitigated (bounds): `REQ-CPL-10`. The operator can still join them |
 | `THR-49` | Intruder at the operator | Takes the audit trail and route records in bulk | Every customer's routes; a provider-by-provider map | `PS-21`, `PS-88` | Mitigated (bounds): `REQ-AUD-6` |
 | `THR-50` | A bug or a module | Puts secret plaintext or a raw provider response into logs, errors or the trail | Credential theft; provider, operator | `PS-85`, R37 | Mitigated (bounds): `REQ-AUD-6`, `REQ-MDL-12`. A raw provider response isn't covered by name |
@@ -668,7 +668,7 @@ ruling), Confidential (commercially or operationally sensitive), Internal, Publi
 | `THR-88` | Insider | Declares a version "actively exploited" falsely to halt a rival, or sits on a true one | Stranded orders, or continued loss | `PS-86`, R31 | Mitigated (detects only): `REQ-AUZ-6`, `REQ-AUD-1`. Operator's review sees who declared and when |
 | `THR-89` | Attacker | Exploits a flawed version while in-flight orders finish on it, until someone declares | Those orders' value | `PS-86`, R31 | Accepted, R31 |
 | `THR-90` | Provider | Posts a route, or has its suggestion treated as the operator's | Breaks `PS-80`; customers | `PS-74`, `PS-80` | Mitigated (prevents): `REQ-AUZ-2` |
-| `THR-91` | Reserve or verifier | Says yes without checking, or checks wrongly. No signature shows a failure of truth | Provider, and the people it should have stopped. The provider that relied on it carries the loss (`REQ-CPL-12`), or the operator where it leaves an order stuck, recovering it from the judgement's maker (`REQ-ORD-28`) | `PS-22`, `PS-78`, [compliance] | Accepted, R72 |
+| `THR-91` | Reserve or verifier | Says yes without checking, or checks wrongly. No signature shows a failure of truth | Provider, and the people it should have stopped. The provider that relied on it carries the loss (`REQ-CPL-12`), or the operator where it leaves an order stuck, which bears it, then recovers it under contract (`REQ-ORD-28`) | `PS-22`, `PS-78`, [compliance] | Accepted, R72 |
 | `THR-92` | Verified person | Fronts for others, or runs many agents. Possession of a credential doesn't show who benefits | Providers; regulators' view of them | `PS-2`, `PS-22`, [compliance] | Accepted, R72 |
 | `THR-93` | Person | A yes outlives the facts, or is withdrawn mid-order. Yet "orders are not failible" | Value in flight for someone no longer eligible; operator | `PS-92`, `PS-95`, [verifier] | Accepted, R119, as ruled in R64 |
 | `THR-94` | Customer | Passes a check, then spends the funds, or passes two orders on one balance. A yes is no reservation (R41). The withdrawal then fails, and the order is cancelled | Free work for the attacker; maybe a stuck order the operator pays for | `PS-77`, `PS-92`, R41 | Mitigated (bounds): `REQ-ORD-40`, `REQ-OPS-1`. It can't become a stuck order, but the work is still done |
@@ -693,7 +693,7 @@ Accepted by the owner under R72. rutent states these and doesn't solve them.
 |---|---|
 | Limit of `THR-15` | Two adjacent providers agreeing their reports can't be detected from inside. |
 | Limit of `THR-92` | A verified person can front for others, or run many agents. |
-| Limit of `THR-91` | A verifier or reserve can state something false. The provider that relied on it carries that loss (`REQ-CPL-12`); where it leaves an order stuck, the operator bears it and recovers it from the judgement's maker (`REQ-ORD-28`). |
+| Limit of `THR-91` | A verifier or reserve can state something false. The provider that relied on it carries that loss (`REQ-CPL-12`); where it leaves an order stuck, the operator bears it, then recovers it under contract (`REQ-ORD-28`). |
 | Limit of `THR-42` | A verifier learns something just by being asked. |
 | Limit of `THR-75` | Customers rely on the operator's solvency for stuck orders. |
 | Limit of `THR-81` | A stolen credential can be used outside rutent. |
@@ -719,7 +719,7 @@ Each was ruled on its own item, and the lead confirmed them together under R119.
 | Limit of `THR-30` | R109 | A dispute where the operator acted has only the operator's record |
 | Limit of `THR-2` | R115 | A stolen session acts as the user at those reserves |
 | Limit of `THR-129` | R92 | A friendly checker: customers and providers can judge it, and nothing stops one |
-| Limit of `THR-47` | `cat5-timing-residual` | In v0, the timing of one customer's questions can link them across providers, though each is its own transaction (`REQ-CAT-5`): jitter of a few hundred milliseconds won't break a link between asks seconds apart at v0's volume. Revisited when volume gives cover |
+| Limit of `THR-47` | `cat5-timing-residual` | In v0, the timing of one customer's questions can link them, at one provider or across colluding ones, though each is its own transaction (`REQ-CAT-5`): jitter of a few hundred milliseconds won't break a link between asks seconds apart at v0's volume. Revisited when volume gives cover |
 
 ### What can't be mitigated
 
@@ -792,7 +792,7 @@ The split `oss-ledger-2` requires. What rutent itself guarantees, against what w
 | ID | The operator must | Source |
 |---|---|---|
 | `OBL-1` | The operator MUST hold, for each provider, the narrowest credential that provider offers, and record what it allows. | `PS-83`, `oss-ledger-2`, `THR-80` |
-| `OBL-2` | The operator MUST resolve stuck orders and bear them. How it recovers from a provider is contract, outside this document. Its own staff and agents MUST include two actors whose chains of accountable parties meet nowhere below the operator, since actors whose chains meet there count as one (`REQ-AUZ-4`, `REQ-AUZ-8`); without them, no stuck order can be resolved. | `PS-93` |
+| `OBL-2` | The operator MUST resolve stuck orders and bear them. How it recovers from a provider is contract, outside this document. Its own staff and agents MUST include two actors whose chains of accountable parties meet nowhere below the operator, each holding the permissions for a stuck order's two steps, since actors whose chains meet there count as one (`REQ-AUZ-4`, ADR-0011); without them, no stuck order can be resolved. | `PS-93` |
 | `OBL-3` | The operator MUST check a provider's ability to pay for reversals before granting entry. | `PS-105` |
 | `OBL-4` | The operator MUST appoint a checker, and name it to customers and providers. | `PS-118`, `PS-140` |
 | `OBL-5` | The operator SHOULD set ceilings on value in flight, and watch its exposure on stuck orders. Customers rely on its solvency (`THR-75`). | `PS-93`, `THR-74` |
