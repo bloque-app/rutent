@@ -192,7 +192,7 @@ pub(super) struct Register {
     /// Each provider's tuples, each with its grants and revocations done, in the order their results arrived: the
     /// effect's time, whether it granted, and the effect's index in the log, which breaks a tie in time as the
     /// contract does (the later effect in the log wins).
-    grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool, u64)>>>,
+    grants: BTreeMap<String, BTreeMap<String, Vec<Change>>>,
     /// Each provider's tuples, each with the time of its last grant or revocation the log admitted, done or not.
     dated: BTreeMap<String, BTreeMap<String, i128>>,
     /// The modules the operator publishes: each one the log held no grant of when an `accept_module` of it was done.
@@ -201,9 +201,12 @@ pub(super) struct Register {
     nodes: BTreeMap<String, String>,
 }
 
+/// A grant or revocation done: its effect's time, whether it granted, and its effect's index in the log.
+type Change = (i128, bool, u64);
+
 /// The change that decides a tuple's grant at `at`: the latest by its effect's time at or before it, the later effect
 /// in the log on a tie, as the contract reads it.
-fn latest_at(changes: &[(i128, bool, u64)], at: i128) -> Option<(i128, bool, u64)> {
+fn latest_at(changes: &[Change], at: i128) -> Option<Change> {
     changes
         .iter()
         .filter(|(t, ..)| *t <= at)
@@ -397,7 +400,9 @@ impl Register {
                 attribution,
                 received_at,
                 ..
-            }) if self.revoked_after(attribution.maker().acts.as_str(), received_at.unix_nanos()) => {
+            }) if self
+                .revoked_after(attribution.maker().acts.as_str(), received_at.unix_nanos()) =>
+            {
                 settings.on_the_clock(received_at.unix_nanos(), STATEMENT_OFF_THE_LOGS_CLOCK)
             }
             Entry::Verified(VerifiedEntry {

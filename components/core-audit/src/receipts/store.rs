@@ -917,7 +917,8 @@ mod tests {
     /// A decided erasure by hand: a permitting decision of `decided`'s action, the effect of `effected`'s, and the
     /// effect's `done` result, three entries at 0, 1 and 2.
     fn path(decided: Value, effected: Value) -> Vec<(Receipt, Entry)> {
-        let who = json!({"party": "rutent", "acts": "core-orch", "role": "core", "kind": "component"});
+        let who =
+            json!({"party": "rutent", "acts": "core-orch", "role": "core", "kind": "component"});
         let entries = [
             json!({"kind": "verified", "who": who,
                    "what": {"call": "decide", "decision": "dec-1",

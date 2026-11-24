@@ -1755,7 +1755,9 @@ fn changes_at_one_instant_are_ordered_by_their_effects() {
     run.admit_providers();
     let at = "2026-11-07T00:00:00Z";
     set_now(at);
-    let revoke = run.try_change_catalogue("us-bank", "revoke_grant", at).unwrap();
+    let revoke = run
+        .try_change_catalogue("us-bank", "revoke_grant", at)
+        .unwrap();
     let grant = run.try_change_catalogue("us-bank", "grant", at).unwrap();
     // The later effect's result first.
     run.end(&grant, "done", at);
