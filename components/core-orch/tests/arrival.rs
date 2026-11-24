@@ -1936,6 +1936,43 @@ fn an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused() {
     assert!(env.policy.asked.is_empty());
 }
 
+/// The entry Core builds for a deposit states what the reserve's kept notice states (`T-020-50`, gap 10 of `T-020-45`):
+/// a filing on a deposit whose notice the store no longer keeps is refused before an order opens, and goes through once
+/// the notice is kept, since the log can't read a notice's body to hold the entry to it.
+// verifies: REQ-ORD-13, REQ-AUD-2
+#[test]
+fn filing_on_a_deposit_whose_kept_notice_isnt_readable_is_refused_before_an_order_opens() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    env.kept.forgets = true;
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                order: None,
+                class: OrderRefusalClass::MalformedRequest
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.started().is_empty());
+    assert!(env.policy.asked.is_empty(), "no order opened");
+    env.kept.forgets = false;
+    let mut again = filing(reserve_filer(), &deposited);
+    again.request = id("deposit-2");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &again).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+}
+
 /// A question that couldn't be kept opens no check: retried, it opens one, and one only (finding 7).
 // verifies: REQ-CAT-4, INV-8
 #[test]

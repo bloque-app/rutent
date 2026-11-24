@@ -11,7 +11,8 @@ use crate::module_interface::{
     CrossModuleCall, Digest, Name, OutboundCallRecord, SecretLookup, SecretRefusalReason,
 };
 use crate::provider_role::{
-    Denomination, EvidenceGrade, OuterNode, PublicKey, SafeInteger, SignatureScheme,
+    Denomination, DepositDestination, EvidenceGrade, OuterNode, PublicKey, SafeInteger,
+    SignatureScheme,
 };
 use crate::router_api::{Amount, Id, PositiveAmount, Timestamp};
 use crate::state_machine::RecordedInput;
@@ -2552,6 +2553,17 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         holder: Option<Id>,
+        /// Where the reserve's notice names an automatic deposit of this credit to go, as the notice states it with
+        /// who set it for whom (provider-role 4.0.0's `destination`, `T-020-50`): the order filed on the deposit is
+        /// authorised to that destination and no other, for the holder the parameters were set for
+        /// (`automatic-deposit-rests-on-its-arrival`'s `destination` and `set_for`). Absent, the notice names none and
+        /// the deposit goes to its holder.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        destination: Option<alloc::boxed::Box<DepositDestination>>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {

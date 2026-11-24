@@ -1485,6 +1485,10 @@
         "holder": {
           "description": "The party that holds the account the value reached, as the reserve's notice names it: whom a quote its order waits on its customer to accept waits for (waiting-quote-is-for-its-arrivals-holder, T-020-45).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "destination": {
+          "description": "Where the reserve's notice names an automatic deposit of this credit to go, as the notice states it with who set it for whom (provider-role 4.0.0's destination, T-020-50): the order filed on the deposit is authorised to that destination and no other, for the holder the parameters were set for (automatic-deposit-rests-on-its-arrival). Absent, the notice names none and the deposit goes to its holder.",
+          "$ref": "urn:rutent:provider-role:arrival-notice#/$defs/destination"
         }
       },
       "allOf": [

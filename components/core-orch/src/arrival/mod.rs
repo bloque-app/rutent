@@ -50,7 +50,8 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
-    ArrivalNotice, Credits, Denomination, OuterNode, Statement, check_one_credit,
+    ArrivalNotice, Credits, Denomination, DepositDestination, OuterNode, Statement,
+    check_one_credit,
 };
 use rutent_contracts::router_api::{Id, PositiveAmount, Request, Router};
 use rutent_contracts::state_machine::RecordedInput;
@@ -280,6 +281,8 @@ pub(super) struct Recorded {
     amount: PositiveAmount,
     account: Id,
     holder: Id,
+    /// Where the reserve's notice names an automatic deposit to go (`T-020-50`), as it states it.
+    destination: Option<DepositDestination>,
     order: Option<Id>,
     matched: ArrivalMatch,
     /// The commitment of the reserve's notice of the deposit: what an arrival naming an order names it by.
@@ -346,6 +349,8 @@ struct Credit {
     amount: PositiveAmount,
     account: Id,
     holder: Id,
+    /// The destination the notice names, where it names one.
+    destination: Option<DepositDestination>,
     /// The deposit's transaction: the reserve's per-credit reference.
     transaction: String,
     /// The statement as it was read.
@@ -368,6 +373,7 @@ fn read_notice(report: &Report) -> Option<Credit> {
         amount: PositiveAmount::new(&notice.amount)?,
         account: Id::new(&notice.account)?,
         holder: Id::new(&notice.holder)?,
+        destination: notice.destination.clone(),
         transaction: Id::new(&notice.transaction)?.as_str().to_owned(),
         statement,
     })
@@ -386,6 +392,29 @@ fn kept_as_read(
         .and_then(|k| unbase64url(k.bytes.as_str()))
         .and_then(|bytes| serde_json::from_slice::<Statement<ArrivalNotice>>(&bytes).ok())
         .is_some_and(|statement| statement == credit.statement))
+}
+
+/// Whether the notice the evidence store keeps behind `arrival`'s commitment, read as the log's own read gives it,
+/// states the holder and the destination `arrival` holds, and the figures it records (`T-020-50`): the entry Core
+/// builds for the deposit is the reserve's word and no other. A notice not kept any more, or kept as another
+/// statement, agrees with nothing.
+fn kept_notice_agrees(desk: &mut Desk<'_, '_>, arrival: &Recorded) -> Result<bool, ArrivalError> {
+    let kept = desk.kept.kept(&arrival.notice)?;
+    let Some(statement) = kept
+        .filter(|k| k.commitment == arrival.notice)
+        .and_then(|k| unbase64url(k.bytes.as_str()))
+        .and_then(|bytes| serde_json::from_slice::<Statement<ArrivalNotice>>(&bytes).ok())
+    else {
+        return Ok(false);
+    };
+    let notice = &statement.statement;
+    Ok(statement.maker == arrival.reserve.as_str()
+        && notice.holder == arrival.holder.as_str()
+        && notice.destination == arrival.destination
+        && notice.node == arrival.node
+        && notice.asset == arrival.asset
+        && notice.account == arrival.account.as_str()
+        && PositiveAmount::new(&notice.amount).is_some_and(|a| a == arrival.amount))
 }
 
 /// The bytes base64url text without padding writes, or `None` where it isn't such text.
@@ -649,6 +678,8 @@ impl Arrivals {
                 earlier: None,
                 // No filing waits on a quote here, so no holder is named (`T-020-45`).
                 holder: None,
+                // Nor is a destination: only a filing holds the deposit to one (`T-020-50`).
+                destination: None,
             };
             noted.arrival = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }
@@ -672,6 +703,7 @@ impl Arrivals {
             amount: report.amount.clone(),
             account: report.account.clone(),
             holder: report.holder.clone(),
+            destination: report.destination.clone(),
             order: order.clone(),
             matched,
             notice: noted.commitment.clone(),

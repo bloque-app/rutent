@@ -6958,3 +6958,77 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
 - **Rule-off.** `read` judging at the assertion's `made_at` again turns
   `assertion_dated_before_its_cutover_but_admitted_after_it_is_refused` red.
 
+
+## T-020-50: an automatic deposit's destination as its reserve names it (Core's half)
+
+Branch `f-020/t-020-50-deposit-destination`, from `f01bc669` (the review round's batch with `T-020-45`'s `destination`
+field). Finding 5 of the milestone review of 2026-11-24; the owner's answer `automatic-deposit-destination`: the
+destination comes from the user's standing instruction, which the reserve sets from parameters the customer configured
+through the integrator or the operator. Edits `components/core-orch/src/arrival/` (`mod.rs`, `filing.rs`), `core-internal`
+(a `DEC-20` path, folded into its unreleased 1.0.0), the stand-in reserve (`conformance/src/role/stand_in.rs`, an
+`F-024` file, kept to one optional instruction) and a scenario (`conformance/scenarios/tests/deposit_destination.rs`).
+
+- **What a filing does.** `Recorded` (an arrival Core took) keeps the destination its notice names, read from the signed
+  bytes with the other figures. `open_run`, before any order opens:
+  1. the entry Core is about to build agrees with the kept notice (`kept_notice_agrees`: the evidence store's bytes
+     behind the notice's commitment, read as the log's own read gives them, state the holder, the destination and the
+     figures `Recorded` holds; a notice no longer kept, or kept as another statement, agrees with nothing): else an
+     `order_refusal` of `malformed_request`, naming no order (gap 10 of `T-020-45`, closed on Core's side);
+  2. a destination `set_for` another party than the holder is `destination_refused` (gap 11, Core's side);
+  3. `well_formed` holds the filing's destination to the notice's where it names one: its reserve, outer node and
+     account, and the route's to asset, no other: else `malformed_request`. Where the notice names none, the filing is
+     for what it names as before and the holder rule below stands;
+  4. the destination still resolves through `REQ-ORD-24` to an owner, and that owner is the beneficiary, who is the
+     holder (the holder rule stays as the floor); the authorisation, given by the filer, carries that destination, so
+     policy and the log hold every move to it as for any destination (`move-rests-on-its-authorisation`).
+  The `arrival` entry naming the order carries the notice's `destination` beside its `notice` commitment and its
+  `holder`: the order's record names the reserve's statement the destination came from (`REQ-ORD-15`).
+- **A reserve that never declared automatic deposits.** `Arrivals::file` already refuses with `NotDeclared`, before an
+  order, an entry or a question, whatever the notice names; the scenario shows it for a notice that names a destination.
+- **The log's rows** (`core-internal`, three fields appended to `automatic-deposit-rests-on-its-arrival`; the log reads
+  no notice's body, so they hold Core's entry to the order, not the entry to the notice): `requester` (an arrival naming
+  a holder names the acceptance's requester), `destination` (a destination the arrival names is the destination and to
+  asset of the permitted `authorise` the acceptance names), `set_for` (that destination was set for the acceptance's
+  requester). New field `arrival.destination` (provider-role's `DepositDestination`, optional), schema, README row and
+  changelog. Seven admission fixtures (`--naming-its-destination`, `--naming-its-holder` admitted; `--destination`,
+  `--destination-in-another-asset`, `--destination-with-no-authorisation`, `--set_for`, `--holder` refused).
+- **The stand-in reserve** takes the customer's parameters with `Reserve::with_deposit_instruction(account, set_by,
+  set_for)` and names that destination (its own node, the credit's asset) in the notices of `set_for`'s credits, never
+  another holder's. The scenarios hand-sign their notices as `assembly_arrivals.rs` does, so they don't read it; its own
+  test is in `role_arrivals.rs`, and the role suite holds what it signs.
+- **Defaults taken (reversible, fail closed).** (a) The destination's owner must still be the holder: a standing
+  instruction naming an account another party owns is `destination_refused`, until an owner choice says an instruction
+  may pay a third party. (b) A filing naming another destination than the notice's is `malformed_request`, not
+  silently replaced by the notice's: the filer states what it files, and Core holds it to the reserve's word. (c) A
+  notice whose bytes the store no longer keeps (erased, `REQ-AUD-13`) can't be filed on: refused, permanently for that
+  request identifier, free again under another.
+- **Gaps.**
+  - 10 and 11 of `T-020-45` are closed as far as the log can: its rows can't read a notice's body, so `arrival.holder`
+    and `.destination` remain Core's entry, tied to the order's requester and authorisation by the rows above and to the
+    kept notice by `kept_notice_agrees`, before the entry is built. A log that read stated bodies would close the rest;
+    owner `T-025-05`'s review of the residual.
+  - The kept notice is read once per filing step 1 (an extra read of the store per filing, not per call carried on).
+  - A real reserve's side (`T-031-01`, outside this repository) reads the customer's parameters; the stand-in's
+    instruction is one account per holder, with no history of who changed it (`REQ-AUZ-9` records one setter).
+  - An erased notice (default c) ends the filing permanently; whether the reserve should be told is `T-031-01`'s.
+- **Tests** (`conformance/scenarios/tests/deposit_destination.rs`, against the simulated reserve that declares automatic
+  deposits): the row's four, `destination_set_for_another_party_or_not_the_filings_is_refused`; `core-orch`'s
+  `filing_on_a_deposit_whose_kept_notice_isnt_readable_is_refused_before_an_order_opens`; `core-internal`'s
+  `arrival_naming_a_destination_holds_the_orders_authorisation_to_it`; the stand-in's
+  `stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice`. The four named tests' first lines
+  of defence were already in place when written (the holder rule admits a destination the holder owns, and the
+  arrival's plumbing had landed), so they were seen red under rule-offs below rather than before the code.
+- **Rule-offs** (each rule switched off alone, the named test turned red; script `ruleoff.py` in the row's scratch
+  folder; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | log: an arrival's holder is the acceptance's requester | `arrival_naming_a_destination_holds_the_orders_authorisation_to_it` (`--holder`) |
+  | log: the arrival's destination is the named authorisation's (reserve, node, account, to asset) | the same (`--destination`, `--destination-in-another-asset`, `--destination-with-no-authorisation`) |
+  | log: the destination was set for the requester | the same (`--set_for`) |
+  | `well_formed`: the filing's destination is the notice's | `destination_set_for_another_party_or_not_the_filings_is_refused` |
+  | `open_run`: a destination set for another party is refused | the same |
+  | `open_run`: the kept notice agrees with the entry | `filing_on_a_deposit_whose_kept_notice_isnt_readable_is_refused_before_an_order_opens` |
+  | the `arrival` entry carries the notice's destination | `orders_record_names_the_reserves_statement_its_destination_came_from` |
+  | the notice read keeps its destination | the same, and `automatic_deposit_goes_where_its_reserve_sets_it_from_the_customers_parameters` |
+  | the stand-in names the instruction's destination | `stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice` |
