@@ -83,6 +83,10 @@ pub enum WalletError {
     NotAnswered(PlatformRefusal),
     /// The wallet answered, and did not say the movement succeeded.
     NotSucceeded,
+    /// The wallet answered that it has no record of the order, which is not a refusal: the value may rest in the
+    /// account and only the wallet's record be lost, as after its module restarted (`REQ-ORD-43`). The host lands
+    /// what its own record holds for the order again, and then releases.
+    NotKnown,
     /// The wallet's answer is of another operation than the one asked.
     WrongResult,
     /// The wallet says it moved another amount than it was asked to.
@@ -322,8 +326,10 @@ impl WalletHolding {
             }
             _ => return Err(WalletError::WrongResult),
         };
-        let ReserveMovementOutcome::Succeeded(settled) = result.outcome else {
-            return Err(WalletError::NotSucceeded);
+        let settled = match result.outcome {
+            ReserveMovementOutcome::Succeeded(settled) => settled,
+            ReserveMovementOutcome::Unknown(_) if !landing => return Err(WalletError::NotKnown),
+            _ => return Err(WalletError::NotSucceeded),
         };
         let stated = units.to_string();
         if settled.amount_in != stated || settled.amount_out != stated {
