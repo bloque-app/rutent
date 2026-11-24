@@ -1471,3 +1471,105 @@ private key, a seed or a token (searched). Counts are lines added and removed.
 | `tools/boundary-check/tests/graph.rs` | 113 | 0 | sound (only the assembly reaches core-audit and core-authz) |
 | `tools/contract-guard/src/lib.rs` | 233 | 0 | sound (stricter: a referenced major moves referencing majors) |
 | `tools/contract-guard/tests/guard.rs` | 180 | 0 | test; sound |
+
+## Second pass (`e63afbeb..2caa6f55`, 2026-11-24)
+
+The paths `git diff --name-only e63afbeb..2caa6f55` lists under a `DEC-20` prefix, with `conformance/evidence/v0-scope`:
+92 paths, 33 of them code, schemas, docs and tests, and 59 contract fixtures, all new. No workflow,
+`components/prov/`, `tools/` or `licences/` path changed. Ids are the findings and residuals of `notes.md`, section
+"T-025-05, second pass". Counts are lines added and removed.
+
+| Path | + | - | Verdict |
+|---|---|---|---|
+| `components/core-audit/src/log/keys.rs` | 93 | 10 | sound (the received-time rule and its clock hold, `T-022-09`); low L5; residuals R-BACKDATE (narrowed), R-FUTURE, R-KEYS |
+| `components/core-audit/src/receipts/store.rs` | 175 | 14 | sound (the override read from the permitting decision; later citations reported, `T-022-10`); residual R-OVERRIDE |
+| `components/core-audit/tests/log.rs` | 257 | 6 | test; sound |
+| `components/core-audit/tests/receipts.rs` | 174 | 3 | test; sound |
+| `components/core-authz/src/engine/entry_points.rs` | 51 | 5 | sound (`roll_back` carries out; its planted bypass caught); informational note on `carry_out_roll_back` |
+| `components/core-authz/src/engine/mod.rs` | 16 | 4 | sound (17 decided actions; `AC-17`'s note settled) |
+| `components/core-authz/src/funds/mod.rs` | 34 | 29 | sound (the origin held once set, `T-021-11`) |
+| `components/core-authz/src/funds/tests.rs` | 152 | 1 | test; sound |
+| `components/core-authz/src/roles/mod.rs` | 30 | 1 | sound (roll back's own permission; the override needs both permissions, operator only) |
+| `components/core-authz/src/roles/tests.rs` | 300 | 3 | test; sound |
+| `conformance/evidence/v0-scope` | 1 | 1 | sound (`REQ-CAT-5` to `m3` on the owner's acceptance of 2026-11-18; one `strict:` line, `on`) |
+| `contracts/CHANGELOG.md` | 7 | 0 | sound |
+| `contracts/core-internal/CHANGELOG.md` | 54 | 0 | sound |
+| `contracts/core-internal/README.md` | 15 | 11 | sound |
+| `contracts/core-internal/schemas/common.schema.json` | 7 | 2 | sound |
+| `contracts/core-internal/schemas/verified-entry.schema.json` | 92 | 6 | sound (`awaiting`, `waiting`); residual R-AWAITING |
+| `contracts/provider-role/CHANGELOG.md` | 7 | 0 | sound |
+| `contracts/provider-role/schemas/advertisement.schema.json` | 7 | 0 | sound (`payouts`, deposit tuples only by the Rust rule) |
+| `contracts/router-api/CHANGELOG.md` | 16 | 0 | sound |
+| `contracts/router-api/schemas/candidate.schema.json` | 34 | 0 | sound (`batched_payout`) |
+| `contracts/src/core_internal/attribution.rs` | 70 | 2 | sound (`revoked_before_receipt`); low L5 (done changes only); residual R-BACKDATE |
+| `contracts/src/core_internal/calls.rs` | 19 | 7 | sound (`signs_for` takes the received time) |
+| `contracts/src/core_internal/check.rs` | 35 | 1 | sound (`given_on_deposit`'s shape; `awaiting` exactly on a slow quote) |
+| `contracts/src/core_internal/mod.rs` | 1 | 1 | sound |
+| `contracts/src/core_internal/relations.rs` | 227 | 21 | sound (the party rule; the override from the permitting decision; deposits' acceptance); low L7; residuals R-MOVER, R-HOLDER |
+| `contracts/src/core_internal/types.rs` | 85 | 4 | sound |
+| `contracts/src/provider_role/types.rs` | 29 | 0 | sound |
+| `contracts/src/provider_role/validate.rs` | 10 | 1 | sound |
+| `contracts/src/router_api/check.rs` | 45 | 0 | sound (the candidate's half bounds the index the record's half reads) |
+| `contracts/src/router_api/types.rs` | 10 | 0 | sound |
+| `contracts/tests/core-internal.rs` | 511 | 4 | test; sound |
+| `contracts/tests/provider-role.rs` | 90 | 0 | test; sound |
+| `contracts/tests/router-api.rs` | 90 | 1 | test; sound |
+| `contracts/core-internal/fixtures/admission/acceptance-is-asked-in-the-users-session--given-on-a-deposit-in-no-session.json` | 3732 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/acceptance-is-of-the-quote-shown--given-on-a-deposit-of-a-quote-not-shown.json` | 3732 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--given-on-a-deposit-with-no-arrival.json` | 3732 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/automatic-deposit-rests-on-its-arrival--given-on-a-deposit.json` | 3731 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--a-decision-overriding-the-citations.json` | 3036 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-effect-on-a-decision-overriding-the-citations.json` | 3142 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-effect-overriding-on-a-decision-that-does-not.json` | 3142 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/erasure-waits-while-anything-rests-on-the-statement--an-erasure-on-a-decision-overriding-the-citations.json` | 3157 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/first-move-rests-on-its-parts-yes--given-on-a-deposit-by-anyone.json` | 1418 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/first-move-rests-on-its-parts-yes--given-on-a-deposit.json` | 1417 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-a-holding-check-names.json` | 4210 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-a-route-handed-on-from-the-order.json` | 4248 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-hand-on-input-joins.json` | 4467 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-holding-withdrawal-joins.json` | 4460 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-permitted-decide-hands-on-to.json` | 4478 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-refused-decide-hands-on-to.json` | 4480 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-a-resolve-effect-hands-on-to.json` | 4480 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-of-an-order-no-hand-on-joins.json` | 4420 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-only-a-recalculated-route-names.json` | 4262 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-another-provider-of-its-route.json` | 4173 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-holder-a-holding-withdrawal-names.json` | 4214 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-a-permitted-decide-names.json` | 4238 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-a-refused-decide-names.json` | 4240 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-mover-its-resolve-effect-names.json` | 4173 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-publisher-a-holding-withdrawal-names.json` | 4215 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-reserve-its-arrival-came-to.json` | 4173 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-decline-on-an-outside-providers-statement.json` | 4173 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--a-move-values-report-on-an-outside-providers-statement.json` | 3834 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/outcome-confirmation-cites-verified-evidence--party.json` | 4174 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/admission/part-evidence-rests-on-statements--party.json` | 3778 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/unverified--a-statement-made-before-a-revocation-received-after-its-grant-was-made-again.json` | 322 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/unverified--a-statement-received-after-its-grants-revocation.json` | 234 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/unverified--a-statement-received-at-its-grants-revocation.json` | 234 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/verified--a-statement-made-after-its-grant-was-made-again.json` | 322 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/verified--a-statement-received-after-one-grants-revocation-while-another-stands.json` | 322 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/attribution/verified--a-statement-received-before-its-grants-revocation.json` | 234 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/decision-request-to-roll-back-naming-no-version.json` | 15 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-quote-awaiting-its-customer-naming-a-segment-twice.json` | 37 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-quote-awaiting-its-customer-shown-with-a-firm-rate.json` | 39 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment.json` | 30 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-an-acceptance-given-on-a-deposit-naming-a-yes.json` | 49 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/invalid/verified-entry-of-an-acceptance-given-on-a-deposit-without-its-session.json` | 34 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/decision-request-to-roll-back-a-staged-release.json` | 16 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-notice-summary-of-a-waiting-order-delivered.json` | 33 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-quote-awaiting-its-customer-asked-again-firm.json` | 30 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-a-quote-awaiting-its-customer.json` | 39 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/core-internal/fixtures/valid/verified-entry-of-an-acceptance-given-on-a-deposit.json` | 35 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/advertisement-deposit-tuple-declaring-payouts-of-no-kind.json` | 95 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/invalid/advertisement-withdrawal-tuple-declaring-payouts.json` | 95 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/provider-role/fixtures/valid/advertisement-reserve-paying-out-deposits-in-batches.json` | 95 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-batched-payout-at-a-tuple-paying-per-order.json` | 744 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve.json` | 864 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-batched-payout-naming-an-operation-before-the-last.json` | 745 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/invalid/decision-record-batching-deposit-ending-a-kept-candidate.json` | 740 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-batched-payout-at-a-tuple-paying-per-order.json` | 9 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve.json` | 259 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-batched-payout-naming-an-operation-before-the-last.json` | 10 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/patches/decision-record-batching-deposit-ending-a-kept-candidate.json` | 9 | 0 | data; checked by `contracts/tests/`; no key material |
+| `contracts/router-api/fixtures/valid/decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve.json` | 745 | 0 | data; checked by `contracts/tests/`; no key material |
