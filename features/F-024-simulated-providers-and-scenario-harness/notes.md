@@ -1772,6 +1772,68 @@ Waves 33 to 36 (`T-020-39` to `T-020-43`, `T-021-11` to `T-021-13`, `T-022-09`, 
 | a figure not let into the journal | `balance planted in the log is found by the scan` |
 | the holding account not given what the test says it was | `full run's records hold no simulated balance outside the evidence store` |
 
+## T-024-22: the balance scan widened (finding 10 of `M3`'s milestone review of 2026-11-24)
+
+- **What changed.** `T-024-20`'s scan now reads the decision records Core signs (`Core::decision_records()`, one surface
+  each, named `Core's decision record <id>`; the log holds only their digests), and seeks every balance the accounts held
+  along the run, not only the first and last. (1) **Mid-route.** Each reserve's books are replayed entry by entry from the
+  platform's journal into a fresh stand-in (`Simulated`) after each step, and the balance after every entry is a figure
+  sought (`balance of reserve R, after movement n (step k)`; the books before any entry are named `before any movement`, the opening, so a figure named `after movement` is a balance held between two movements). The replay asks the reserve nothing, so it adds no probe to
+  any record the scan reads; the old halving probes stay for the start and the end. (2) **After each step.** `Scenario::
+  play_stepped` runs a hook after each completed step; the first landing is before any step, the second after step 1 and the
+  third after step 2, so the holding account's balance after a step is not one figure for the run; it is read after each
+  landing and after each step (`balance of the holding account, after landing n / after step n`). (3) **Distinctive opening.** The run sets each
+  reserve's opening balance (`Spec::opening`, `opening_for(seed)`: 61 234 567 to 89 234 566, never a round number, another per seed; a test holds the range),
+  where the stand-in's constant was 50 000 000. A figure the run itself states (the first landing, which is the
+  landed amount) is left out, as one under `MIN_LEN` is.
+- **How the opening reaches the reserve.** The reserve runs as a guest that builds its stand-in from its name, so a
+  figure the run sets travels as module state: `Fleet::install` seeds it under `OPENING_KEY`, the outside part hands it
+  back in the `begin` answer, and the sandboxed part builds `Spec::of(ROLE, provider)` with it. Edits outside the row's two
+  named files, needed for that and for nothing else: `conformance/src/sim/mod.rs` (`Spec::opening`, `OPENING_KEY`),
+  `conformance/src/role/stand_in.rs` (`Reserve::OPENING`, `Reserve::opening_with`), `components/prov/module-guests/sim/
+  src/lib.rs` (the two parts above) and `conformance/scenarios/src/sim/fleet.rs`. `T-024-20`'s gap 1 named this change.
+- **The records and the other text, as signed (fix round 1).** The decision records are read as the bytes Core signed
+  (`Core::decision_record_bytes`), and `read_core` refuses a run in which one doesn't read back as a record, so a record that
+  fell out of `decision_records()` can't drop out of the scan silently. `read_run` also reads `Run.stopped`, `followed`,
+  `swap_failed` and `reopened`.
+- **Tests** (`secrets_scan.rs`; VOS half in `vos-program/scenarios/tests/secrets.rs`): `decision records hold no simulated
+  balance`, `balance held after any step is found nowhere outside the evidence store` (the opening isn't 50 000 000 and
+  differs by seed; the balance after the first withdrawal is sought; nothing but the holding account's reading is on the
+  shelf), `balance planted in a decision record is found by the scan` (`Planted::InDecisionRecord`: each distinct figure,
+  written into the first record Core kept by `Core::leak_into_decision_record`, in turn into the request's id, the request's
+  round's, the bounds' policy version and the router's version (`DECISION_FIELDS`); a candidate's own fields (amounts,
+  providers) can't be planted, since the record holds them to the snapshot and to each other and one so changed no longer
+  reads back). The earlier controls dedupe by figure. The
+  VOS clean test also asserts the decision records were read and that the balance after the first withdrawal (the opening
+  less 12 345 678) is sought, a figure that is neither the opening nor the close; its control plants that figure, chosen
+  by value, and one of each other kind, not every figure (each is a run on three replicas).
+- **Defaults.** (1) A control that plants in a decision record writes after signing, from inside Core: the request's
+  identifier is Core's to set, so no figure of a customer's reaches the record from outside. (2) A figure the run states
+  is not sought: it can't be told from its own mention. (3) The replay reads balances from the stand-in's fingerprint
+  (`state()`, the first map), so a change of its format fails the test that seeks a mid-route figure, not silently.
+- **Gaps.** (1) A balance a record writes as a difference, in another unit or as a scaled decimal (`61.234567` for six
+  decimals) is still not sought (as `T-024-20`'s gap 2). Owner: `F-024` (a later row of the scan, low), with the owner's
+  note of which forms a record may write a figure in.
+  (2) The read is per journal entry and per step: a balance held only inside one entry's handling is not an observable of
+  the books. Owner: none, the stand-in has none. (3) The VOS half and the workflow step run in CI, not here; the run ids go
+  in below once the push of `m3` that integrates the row has them. Owner: `T-024-10`'s collection of run ids.
+- **Rule-off table.** Each rule switched off once on the reference host, and the test that went red:
+
+| Rule off | Red |
+| --- | --- |
+| the decision records not read | `decision records hold no simulated balance` and `balance planted in a decision record is found by the scan` |
+| a reserve's balance after each movement not sought (the first only) | `balance held after any step is found nowhere outside the evidence store` |
+| the holding account not read after each step | `balance held after any step is found nowhere outside the evidence store` |
+| the run doesn't set the reserves' opening balance | `balance held after any step is found nowhere outside the evidence store` |
+| the control writes nothing into the decision record | `balance planted in a decision record is found by the scan` |
+| the decision-record surface holds only the request | `balance planted in a decision record is found by the scan` (its fields beyond the request) |
+| the holding account's landings all before the steps | `balance held after any step is found nowhere outside the evidence store` (the balance after a step is one figure) |
+| `Run.followed` not read | `balance held after any step is found nowhere outside the evidence store` |
+| the check that every signed record reads back removed from `read_core` | `decision record that does not read back is refused and not dropped from the scan` (`Planted::CorruptDecisionRecord`, `Core::corrupt_decision_record`; a `should_panic` test, tagged `REQ-AUD-6`) |
+| `opening_for` draws too few bits (its modulus never bites) | `balance held after any step is found nowhere outside the evidence store` (the opening isn't spread over its range) |
+
+`T-024-20`'s own rule-offs stand for its three tests, which this row keeps (the first two now dedupe figures).
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`cat5-timing-residual`: "Accept the residual".** The scope file's `REQ-CAT-5` row moves from `partly`

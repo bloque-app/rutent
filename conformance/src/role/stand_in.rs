@@ -513,6 +513,17 @@ impl Reserve {
     /// The reserve's provider identifier.
     pub const PROVIDER: &'static str = "stand-in-reserve";
 
+    /// What the reserve's account holds when nothing sets it otherwise.
+    pub const OPENING: u128 = 50_000_000;
+
+    /// This reserve with `opening` in its account, in place of [`Reserve::OPENING`] (`T-024-22`): for a run that must
+    /// tell the account's balance from every other figure it states.
+    #[must_use]
+    pub fn opening_with(mut self, opening: u128) -> Self {
+        self.balances.insert(self.account.clone(), opening);
+        self
+    }
+
     /// A reserve that keeps its role. `context.account` holds funds, and `context.session` is its holder's
     /// session.
     pub fn new(context: &SuiteContext) -> Self {
@@ -607,7 +618,7 @@ impl Reserve {
             private_nodes: vec![ledger.to_owned()],
         };
         let mut balances = BTreeMap::new();
-        balances.insert(context.account.clone(), 50_000_000);
+        balances.insert(context.account.clone(), Self::OPENING);
         Self {
             name: identity.provider.clone(),
             advertisement: signer.sign(ADVERTISEMENT_SHAPE, advertisement),

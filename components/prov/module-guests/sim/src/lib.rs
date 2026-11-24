@@ -83,6 +83,7 @@ mod sandboxed {
         held: &'a mut Option<Simulated>,
         provider: &str,
         deployment: Option<&Value>,
+        opening: Option<u128>,
     ) -> &'a mut Simulated {
         held.get_or_insert_with(|| {
             let mut context = SuiteContext::default();
@@ -92,7 +93,9 @@ mod sandboxed {
             {
                 context.deployment = deployment;
             }
-            Simulated::new(Spec::of(ROLE, provider), &context)
+            let mut spec = Spec::of(ROLE, provider);
+            spec.opening = opening;
+            Simulated::new(spec, &context)
         })
     }
 
@@ -127,7 +130,7 @@ mod sandboxed {
                 // The ask failed: answer as the suite's default deployment does for this one operation, and keep no
                 // provider built on a failure, so the next operation asks again.
                 let mut unkept = None;
-                return self::provider(&mut unkept, provider, None)
+                return self::provider(&mut unkept, provider, None, None)
                     .answer(operation, &Behaviour::default())
                     .body;
             }
@@ -136,6 +139,7 @@ mod sandboxed {
                 held,
                 provider,
                 deployment.as_ref().map(|begun| &begun["deployment"]),
+                None,
             )
             .answer(operation, &Behaviour::default())
             .body;
@@ -146,7 +150,17 @@ mod sandboxed {
             BEGIN,
             json!({ "kind": kind, "dry_run": dry_run }),
         );
-        let sim = self::provider(held, provider, begun.as_ref().map(|b| &b["deployment"]));
+        // A reserve's opening balance, where the world seeds one (`T-024-22`).
+        let opening = begun
+            .as_ref()
+            .and_then(|b| b["opening"].as_str())
+            .and_then(|text| text.parse::<u128>().ok());
+        let sim = self::provider(
+            held,
+            provider,
+            begun.as_ref().map(|b| &b["deployment"]),
+            opening,
+        );
         let provider = sim.spec().provider.clone();
         let behaviour = begun
             .as_ref()
@@ -216,7 +230,7 @@ mod sandboxed {
 mod outside {
     use rutent_conformance::sim::{
         BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY,
-        PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
+        OPENING_KEY, PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 
@@ -252,6 +266,7 @@ mod outside {
                             .and_then(|n| n.parse::<u64>().ok())
                             .unwrap_or(0),
                         "deployment": state::read(DEPLOYMENT_KEY),
+                        "opening": state::read(OPENING_KEY),
                     })
                 }
                 BOOK => json!({ "book": state::read(BOOK_KEY) }),
