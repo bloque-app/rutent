@@ -1166,8 +1166,7 @@ Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `
   it now, so it is recorded unattributed like the others of that block (a test artefact, not a Core bug: the class
   grant's limit on a role is still tested, with the grant in force, by
   `a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone`). `T-022-02`'s key tests pass unchanged.
-- **Gaps.** None open. `T-025-05` reads this row's diff in place of the residual it carried (a key revoked since can
-  sign a statement backdated before its revocation).
+- **Gaps.** See the fix round below for what is closed and what stays a residual for `T-025-05`.
 - **Rule-off table.**
 
   | Rule switched off | Red |
@@ -1176,6 +1175,32 @@ Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `
   | B: `<= received` becomes `< received` (revocation at the instant of receipt) | the refusal test |
   | C: the revocation need not be no later than `received` | `a_provider_signs_only_under_a_grant_in_force`, the stays-attributed test |
   | D: the revocation need not be after `made_at` | the grant-made-again test |
+
+### Fix round 1 (`T-022-09`, after the review of `babc2cb3`)
+
+- **Several grants (finding 1).** `a_statement_stays_attributed_while_another_grant_of_its_maker_stands`: a provider
+  with two tuples, one revoked, keeps a statement made before the revocation and received after it attributed; once
+  the other is revoked it is refused. Rule-off F1 (`all` to `any`) turns it red.
+- **Ties (finding 2).** The register now keeps each change's effect index beside its time and breaks a tie in time by
+  it (`latest_at`), as the contract reads the effects in the log's order, in `in_force` and in
+  `revoked_before_receipt` alike, not by the order the results arrived. `changes_at_one_instant_are_ordered_by_their_effects`:
+  a revocation and a grant at one instant, results in the opposite order. Rule-off F2 (tie by time alone) turns it red.
+- **The received time (finding 3).** Held to the log's clock, in `Register::admits`, where it matters: a stated entry
+  whose maker has a revocation of a grant dated after the entry's `received_at` must have that time within the skew
+  of the log's clock, else `Unavailable`, as an advertisement's behind-the-clock time is
+  (`a_late_statement_dated_before_a_revocation_is_not_taken`). Rule-off F3 turns it red. **Narrower than every
+  statement, as a default:** holding every stated entry to the clock failed six `checkpoints.rs` tests, whose worlds
+  append entries dated days before their clock, so the hold applies only where a later revocation of the maker's
+  grant exists, the one case where the received time decides attribution. **Residual for `T-025-05`:** within the skew
+  (300 s by default) of the log's clock, orchestration can still date a statement received a few minutes before a
+  revocation that is that recent; and the received time stays the writer's word for a maker with no revocation, where
+  it decides nothing. A statement the log couldn't take (`Unavailable`) is Core's to retry with its true received time,
+  which is then refused as any late one.
+- **The flipped test (finding 4).** `a_verifiers_class_grant_is_read_at_its_statements_own_time`'s first block is
+  restored: its statements are received before the revocation (`2026-11-06T23:59:59Z`) and appended after it, with
+  its original assertions (the class read at `made_at`, a backdated other class, result and provider claim refused),
+  and one case received after the revocation, unattributed. The test helpers `answered` and `answered_received` set
+  the log's clock to the statement's received time, since the world appends it as it is received.
 
 ## T-022-10: the evidence store erases a cited statement on a decided override
 

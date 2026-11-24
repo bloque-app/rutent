@@ -92,6 +92,11 @@ pub const CHANGE_OFF_THE_LOGS_CLOCK: &str = "a catalogue change's effect is date
 pub const ADVERTISEMENT_OFF_THE_LOGS_CLOCK: &str =
     "an advertisement is received within the skew of the log's own clock when it is appended";
 
+/// The refusal of a statement received at a time more than the skew ahead of the log's clock; one behind it is
+/// unavailable, as an advertisement's is.
+pub const STATEMENT_OFF_THE_LOGS_CLOCK: &str =
+    "a statement is received within the skew of the log's own clock when it is appended";
+
 /// The refusal of a grant or a revocation dated before the last change of its tuple.
 pub const CHANGE_BEFORE_ITS_TUPLES_LAST: &str =
     "a tuple's grants and revocations are dated in the order the log records them";
@@ -184,15 +189,26 @@ pub(super) struct Register {
     ads: BTreeMap<String, Vec<Accepted>>,
     advertising_seen: Vec<PublicKey>,
     statements_seen: Vec<PublicKey>,
-    /// Each provider's tuples, each with its grants and revocations done, in the log's order: the time and whether
-    /// it granted.
-    grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool)>>>,
+    /// Each provider's tuples, each with its grants and revocations done, in the order their results arrived: the
+    /// effect's time, whether it granted, and the effect's index in the log, which breaks a tie in time as the
+    /// contract does (the later effect in the log wins).
+    grants: BTreeMap<String, BTreeMap<String, Vec<(i128, bool, u64)>>>,
     /// Each provider's tuples, each with the time of its last grant or revocation the log admitted, done or not.
     dated: BTreeMap<String, BTreeMap<String, i128>>,
     /// The modules the operator publishes: each one the log held no grant of when an `accept_module` of it was done.
     released: BTreeSet<String>,
     /// The publisher each private node an accepted advertisement declares is on record for.
     nodes: BTreeMap<String, String>,
+}
+
+/// The change that decides a tuple's grant at `at`: the latest by its effect's time at or before it, the later effect
+/// in the log on a tie, as the contract reads it.
+fn latest_at(changes: &[(i128, bool, u64)], at: i128) -> Option<(i128, bool, u64)> {
+    changes
+        .iter()
+        .filter(|(t, ..)| *t <= at)
+        .max_by_key(|(t, _, index)| (*t, *index))
+        .copied()
 }
 
 fn nanos(text: &str) -> Option<i128> {
@@ -332,7 +348,11 @@ impl Register {
                             .or_default()
                             .entry(granted)
                             .or_default()
-                            .push((when.at.unix_nanos(), *change == CatalogueChange::Grant));
+                            .push((
+                                when.at.unix_nanos(),
+                                *change == CatalogueChange::Grant,
+                                effect.index.get(),
+                            ));
                     }
                     // A module is the operator's only where, when its release is done, the log holds no grant of
                     // it: a granted provider's early release leaves its party to its advertisement, and a grant
@@ -368,6 +388,17 @@ impl Register {
                 what, received_at, ..
             }) if what.statement.as_str() == ADVERTISEMENT_SHAPE => {
                 settings.on_the_clock(received_at.unix_nanos(), ADVERTISEMENT_OFF_THE_LOGS_CLOCK)
+            }
+            // A statement's received time is what `revoked_before_receipt` reads (`THR-3`), and orchestration, which
+            // writes it, must not date a late statement before a revocation: where the log holds a revocation of
+            // its maker's grant after its received time, that time is held to the log's own clock, as an
+            // advertisement's is. A statement received that long before it is appended is unavailable, not refused.
+            Entry::Stated(StatedEntry {
+                attribution,
+                received_at,
+                ..
+            }) if self.revoked_after(attribution.maker().acts.as_str(), received_at.unix_nanos()) => {
+                settings.on_the_clock(received_at.unix_nanos(), STATEMENT_OFF_THE_LOGS_CLOCK)
             }
             Entry::Verified(VerifiedEntry {
                 what:
@@ -408,15 +439,22 @@ impl Register {
     }
 
     /// Whether a grant of `provider` is in force at `at`: for one of its tuples, the last grant or revocation made
-    /// at or before `at` granted it. [`Register::admits`] keeps each tuple's changes in time order.
+    /// at or before `at` granted it, a tie in time going to the later effect in the log.
     fn in_force(&self, provider: &str, at: i128) -> bool {
         self.grants.get(provider).is_some_and(|tuples| {
-            tuples.values().any(|changes| {
-                changes
-                    .iter()
-                    .rfind(|(t, _)| *t <= at)
-                    .is_some_and(|(_, granted)| *granted)
-            })
+            tuples
+                .values()
+                .any(|changes| latest_at(changes, at).is_some_and(|(_, granted, _)| granted))
+        })
+    }
+
+    /// Whether the log holds a revocation of a grant of `provider` dated after `at`.
+    fn revoked_after(&self, provider: &str, at: i128) -> bool {
+        self.grants.get(provider).is_some_and(|tuples| {
+            tuples
+                .values()
+                .flatten()
+                .any(|(t, granted, _)| !granted && *t > at)
         })
     }
 
@@ -433,22 +471,13 @@ impl Register {
         };
         let mut in_force = tuples
             .values()
-            .filter(|changes| {
-                changes
-                    .iter()
-                    .filter(|(t, _)| *t <= made_at)
-                    .fold(None, |last: Option<&(i128, bool)>, c| match last {
-                        Some(l) if l.0 > c.0 => Some(l),
-                        _ => Some(c),
-                    })
-                    .is_some_and(|(_, granted)| *granted)
-            })
+            .filter(|changes| latest_at(changes, made_at).is_some_and(|(_, granted, _)| granted))
             .peekable();
         in_force.peek().is_some()
             && in_force.all(|changes| {
                 changes
                     .iter()
-                    .any(|(t, granted)| !granted && *t > made_at && *t <= received)
+                    .any(|(t, granted, _)| !granted && *t > made_at && *t <= received)
             })
     }
 
