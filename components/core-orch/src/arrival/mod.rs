@@ -55,7 +55,7 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Id, PositiveAmount, Request, Router};
 use rutent_contracts::state_machine::RecordedInput;
 
-use crate::intake::{Desk, OrderRecord};
+use crate::intake::{Desk, OrderRecord, Quote};
 use crate::rounds::{Need, RoutingError};
 
 use confirm::{Confirmation, Confirming};
@@ -175,6 +175,9 @@ pub enum FiledWait {
     PolicyNotKnown,
     /// The reserve hasn't confirmed the deposit yet: silent, or its check couldn't go yet (`REQ-CAT-19`).
     ReserveNotYetConfirmed,
+    /// The route's quote has no firm rate (`REQ-QTE-10`): it is shown with its slow segments named, and the order waits
+    /// for its customer to accept it ([`Arrivals::accept`]); an automatic deposit isn't that acceptance.
+    CustomerAcceptance,
 }
 
 /// Where a filed order stands.
@@ -222,6 +225,8 @@ pub enum ArrivalError {
     OtherFigures,
     /// The operator key didn't sign.
     Unsigned,
+    /// The acceptance names no quote shown for the order, or one since replaced.
+    NotTheQuoteShown,
     /// A fresh identifier was one Core used before, or names the order.
     Fresh,
     /// The caller isn't the deployment's operator, nor a reserve, that the register says acts for
@@ -840,6 +845,47 @@ impl Arrivals {
         } else {
             self.runs.insert(arrival, run);
         }
+    }
+
+    /// The quote a filed order waits on its customer to accept, with its digest, or `None` where it waits on none.
+    pub fn awaiting(&self, order: &Id) -> Option<(&Quote, &Digest)> {
+        self.runs.values().find(|r| &r.order == order)?.awaiting()
+    }
+
+    /// The customer `by` accepts the route of the filed order `order` that waits for its customer, the quote of digest
+    /// `quote` (`filing.rs`'s `customer_accepts`, `REQ-QTE-10`): the order starts on the acceptance, recorded as
+    /// `given_on_deposit`, or is told as it stands. Nothing but the order's own customer accepts it, and only the
+    /// quote shown.
+    pub fn accept<R: Router>(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+    ) -> Result<Filed, ArrivalError> {
+        let Some(arrival) = self
+            .runs
+            .iter()
+            .find(|(_, r)| &r.order == order)
+            .map(|(k, _)| k.clone())
+        else {
+            // One that ended is told how, to its customer alone.
+            return match self.ended.iter().find(|r| &r.order == order) {
+                Some(run) if desk.actors.acts_for(&by.acts, &by.party, by.kind)
+                    && by.role == Role::Customer
+                    && by.party == run.record().parties.requester =>
+                {
+                    run.outcome().ok_or(ArrivalError::NotNow)
+                }
+                _ => Err(ArrivalError::NotTheFiler),
+            };
+        };
+        let Some(mut run) = self.runs.remove(&arrival) else {
+            return Err(ArrivalError::NotNow);
+        };
+        let result = run.customer_accepts::<R>(desk, self, by, quote);
+        self.settle(arrival, run);
+        result
     }
 
     /// The run that opened `order`, under way, started or ended.

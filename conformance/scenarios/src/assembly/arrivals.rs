@@ -140,6 +140,15 @@ impl Core {
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });
+        // A filed order that waits for its customer is started later, by `accept_filed`, from this filing.
+        if let Ok(Filed::Waiting {
+            order: Some(order), ..
+        }) = &filed
+        {
+            self.filings
+                .entry(order.as_str().to_owned())
+                .or_insert_with(|| filing.clone());
+        }
         if let Ok(Filed::Started { order, .. }) = &filed {
             self.filings
                 .entry(order.as_str().to_owned())
@@ -149,6 +158,39 @@ impl Core {
             {
                 self.follow_filed(order, &start)?;
             }
+        }
+        self.feed()?;
+        Ok(filed?)
+    }
+
+    /// The quote the filed order `order` waits on its customer to accept, with its digest (`T-020-41`).
+    pub fn awaiting(
+        &self,
+        order: &Id,
+    ) -> Option<(
+        rutent_core_orch::intake::Quote,
+        rutent_contracts::module_interface::Digest,
+    )> {
+        self.arrivals
+            .awaiting(order)
+            .map(|(quote, digest)| (quote.clone(), digest.clone()))
+    }
+
+    /// The customer `by` accepts the slow route of the filed order `order`, the quote of digest `quote`; once it
+    /// starts, its segments follow it.
+    pub fn accept_filed(
+        &mut self,
+        by: &rutent_contracts::core_internal::Actor,
+        order: &Id,
+        quote: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Filed, StepError> {
+        let filed = self
+            .with_arrivals(|arrivals, desk| arrivals.accept::<RouteFinder>(desk, order, by, quote));
+        if let Ok(Filed::Started { order, .. }) = &filed
+            && let Some(start) = self.arrivals.start(order).cloned()
+            && !self.started.contains_key(order.as_str())
+        {
+            self.follow_filed(order, &start)?;
         }
         self.feed()?;
         Ok(filed?)

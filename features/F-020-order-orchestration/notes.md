@@ -6178,3 +6178,42 @@ fix round 2). The log rule is unchanged.
   append, it changes nothing; one on the reporter's own maker's word is refused; the part stays held and can't be
   decided again. The coordinator puts the consequence on the owner's form; until he rules, the test pins it.
 - **`PLAN.md`**: the row's Work says it also gives the kit a second party and ports the stuck scenarios.
+
+## T-020-41: an automatic deposit whose only route has no firm rate waits for its customer
+
+Branch `f-020/t-020-41-deposit-waits`, from `m3` at `a3bc16b4`. Edits `components/core-orch/src/arrival/` and the
+assembly's `arrivals.rs`; no `contracts/` or `DEC-20` path.
+
+- **The flow.** `arrival/filing.rs`'s routing no longer ends an order whose price names slow segments
+  (`price.no_firm_rate`). It records the quote as `shown` (`quote_without_firm_rate`, the slow segments named by
+  `T-020-07`) and the run stops at a new step, `Customer`, answering `Filed::Waiting { wait:
+  FiledWait::CustomerAcceptance }`. The quote and its digest are read through `Arrivals::awaiting(order)`. Nothing
+  is accepted, started or authorised to move, and the funds stay in the holder's account at the reserve (`GUA-1`):
+  the deposit is held against the order, as for any filing, so it is spent and no other filing opens on it.
+- **The customer's acceptance** is `Arrivals::accept::<R>(desk, order, by, quote)`, given as intake's is. It is
+  refused to anyone but the order's own customer (`NotTheFiler`: the customer role, the order's requester's party,
+  listed in the register of actors) and for any quote but the one shown (`NotTheQuoteShown`, a new `ArrivalError`).
+  Policy is asked the customer's own authorisation (`REQ-AUZ-9`, as a carry-on by another login is), and on its
+  permit the acceptance is recorded on `AcceptanceBasis::GivenOnDeposit`: `who` the customer, the filing's session,
+  no yes, no hold, naming the authorisation the customer gave; then the `route_chosen` start, stated by the customer
+  (`SourceKind::Customer`, as intake's is). It is built once and appended as built, as the deposit's own is, so an
+  append that fails is carried on by the same customer accepting again, and the same acceptance again is told the
+  same.
+- **Validity.** The offered route keeps `DecisionRecord::earliest_expiry` of its candidate. Accepting past it records
+  nothing, asks the route again (a fresh `shown`, a new digest), and the order waits on that quote; the old digest is
+  `NotTheQuoteShown`.
+- **A session over ends the wait.** The filing's session is the one the acceptance is given in, so a wait whose
+  session is over ends as every other filing's does (`no_route_right_now`, recorded), at the next filing or
+  acceptance; nothing moved.
+- **Named tests** (`components/core-orch/tests/arrival.rs`): `automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer`
+  [`REQ-QTE-10`, `AC-13`], `customers_acceptance_of_the_slow_route_starts_it` [`REQ-QTE-10`, `REQ-ORD-15`],
+  `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` [`GUA-1`],
+  `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted` [`REQ-QTE-15`]. The first replaces
+  `automatic_deposit_never_starts_a_route_with_no_firm_rate`, which pinned the ending this row replaces.
+- **Gap 8 of `T-020-39`**, the three widenings for `given_on_deposit`: the scenario
+  `conformance/scenarios/tests/deposit_waits.rs` (the F-024 file of this row), `a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance`,
+  runs a slow reserve's order to its end through the assembly's real log: the customer's acceptance, the start
+  (`chosen-route-rests-on-its-orders-acceptance`), and the deposit, a later segment that moves
+  (`move-rests-on-its-orders-acceptance`). The third, `split-deposit-arrival-names-its-part`'s `deposited`, is shown
+  by `a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part` (core-orch): the filing
+  never splits (one deposit funds one part), so the case offers the log the order's start with a second part.
