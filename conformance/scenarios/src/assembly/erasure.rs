@@ -25,6 +25,14 @@ impl Statements for Bound<'_> {
         self.0.erasable_overriding(commitment)
     }
 
+    fn erasable_overriding_since(
+        &mut self,
+        commitment: &Digest,
+        decision: &rutent_contracts::core_internal::Receipt,
+    ) -> Result<(), AppendFailure> {
+        self.0.erasable_overriding_since(commitment, decision)
+    }
+
     fn erase(
         &mut self,
         result: &rutent_contracts::core_internal::Receipt,
@@ -34,6 +42,17 @@ impl Statements for Bound<'_> {
 }
 
 impl Core {
+    /// The evidence store bound again to the log as the disk holds it now: what binding finds of an erasure carried
+    /// out (the statements missing, the erasures refused or left unsettled), as a restart reads it (`T-022-04`).
+    ///
+    /// # Errors
+    ///
+    /// If the log or the store won't open or bind.
+    pub fn rebound_store(&self) -> Result<BoundStore<LogDisk, LogsRead>, AppendFailure> {
+        let (store, log) = super::read_back(&self.disk, &self.clock)?;
+        store.bind(log)
+    }
+
     /// Erases the statement kept under `commitment`, as `caller` asks and policy decides: the decision, the effect,
     /// its done result, the store's erasure and the `erasure` entry (`REQ-AUD-13`, `DEC-18`). The commitment stays in
     /// the log, and the statement's bytes go from the store alone.

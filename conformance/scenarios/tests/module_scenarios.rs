@@ -7,7 +7,7 @@
 //! and ran on is Core's own record in the log.
 
 use rutent_conformance::sim::{Role, Spec};
-use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, What};
+use rutent_contracts::core_internal::{Action, CatalogueChange, Entry, Outcome, What};
 use rutent_contracts::module_interface::AcceptanceMode;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::OrderState;
@@ -333,6 +333,37 @@ fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
         Some("1.0.0")
     );
     assert_eq!(recorded(&core), ["decide", "decide", "effect"]);
+    let effect_at = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(r, e)| match e {
+            Entry::Verified(v)
+                if matches!(
+                    &v.what,
+                    What::Effect {
+                        action: Action::ChangeCatalogue {
+                            change: CatalogueChange::RollBack,
+                            ..
+                        },
+                        ..
+                    }
+                ) =>
+            {
+                Some(r.clone())
+            }
+            _ => None,
+        })
+        .expect("the roll back's effect");
+    assert!(
+        core.log()
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, Entry::Verified(v)
+            if v.outcome == Outcome::Done {}
+                && matches!(&v.what, What::Result { effect } if *effect == effect_at))),
+        "the roll back effect's result is done"
+    );
     assert_eq!(
         core.roll_back(OTHER, "1.1.0"),
         Err(RollBackRefused::NothingStaged),

@@ -186,6 +186,8 @@ struct Store {
     cited: Cell<bool>,
     /// Which checks ran, in order: `erasable` or `erasable_overriding`.
     checks: RefCell<Vec<&'static str>>,
+    /// An entry rests on the statement that the log took after the permitting decision.
+    cited_after: Cell<bool>,
 }
 
 impl Store {
@@ -199,6 +201,7 @@ impl Store {
             erased_on: RefCell::new(Vec::new()),
             cited: Cell::new(false),
             checks: RefCell::new(Vec::new()),
+            cited_after: Cell::new(false),
         }
     }
 }
@@ -227,6 +230,18 @@ impl Statements for Store {
             return Err(AppendFailure::Refused(Violation("not kept")));
         }
         Ok(())
+    }
+
+    fn erasable_overriding_since(
+        &mut self,
+        commitment: &Digest,
+        _decision: &Receipt,
+    ) -> Result<(), AppendFailure> {
+        self.erasable_overriding(commitment)?;
+        match self.cited_after.get() {
+            true => Err(AppendFailure::Refused(Violation("evidence rested on"))),
+            false => Ok(()),
+        }
     }
 
     fn erase(&mut self, result: &Receipt) -> Result<(), AppendFailure> {
@@ -503,7 +518,9 @@ fn cited_statement_is_not_erased_without_an_override() {
 
 /// The operator asked for the override and policy permits it: the decision's action sets `overrides_citations`, the
 /// override check (not the default one) runs, and the cited statement is erased on the permit as any other, in the same
-/// order. The plain erasure of a statement nothing cites still asks for no override.
+/// order. The plain erasure of a statement nothing cites still asks for no override. The fake log holds no citing
+/// entry, so that history still checks over a real log is the assembly's scenario, `audit_scenarios.rs`'s
+/// `an_operator_holding_both_permissions_erases_a_cited_statement_and_history_checks`.
 // verifies: REQ-AUD-13, AC-36
 #[test]
 fn operators_decided_override_erases_a_cited_statement_and_history_still_checks() {
@@ -600,6 +617,46 @@ fn override_without_a_permitting_decision_erases_nothing() {
         }
     ));
     assert_eq!(log.calls(), ["stated", "decide"]);
+    assert!(store.kept.get());
+    assert!(store.erased_on.borrow().is_empty());
+}
+
+/// An entry the log took between the permitting decision and the effect still holds the override back: the override
+/// lifts only the citations made before the decision. The effect's result is `failed` and nothing is erased.
+// verifies: REQ-AUD-13
+#[test]
+fn override_is_refused_for_a_citation_made_after_its_decision() {
+    let (log, mut store) = world();
+    store.cited.set(true);
+    store.cited_after.set(true);
+    let (mut decisions, _) = policy(&log, true);
+    let (operator, core, reason) = (operator(), core(), Token::new("retention").unwrap());
+    let commitment = store.commitment.clone();
+    let refused = erase_statement_overriding(
+        &mut General(Rc::clone(&log)),
+        &mut decisions,
+        &mut store,
+        &Now,
+        &mut Ids(0),
+        &request(&commitment, &reason, &operator, &core),
+    );
+    assert!(
+        matches!(
+            refused.as_ref().map_err(|e| &**e),
+            Err(NotErased::Failed { .. })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        log.what(),
+        [
+            ("stated", "stated"),
+            ("decide", "permitted"),
+            ("effect", "to_take_effect"),
+            ("result", "failed"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+    );
     assert!(store.kept.get());
     assert!(store.erased_on.borrow().is_empty());
 }

@@ -719,6 +719,26 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         self.erasable_from(commitment, false)
     }
 
+    /// [`BoundStore::erasable_overriding`], and no entry rests on the statement after the permitting decision at
+    /// `decision` (`T-020-42`): the override lifts the citations made before that decision alone, so a citation the log
+    /// took between the decision and the effect refuses it ([`EVIDENCE_RESTED_ON`]). Run it after the effect is
+    /// recorded, where the store would otherwise erase and then report [`ERASED_YET_CITED`].
+    pub fn erasable_overriding_since(
+        &self,
+        commitment: &Digest,
+        decision: &Receipt,
+    ) -> Result<(), AppendFailure> {
+        self.erasable_overriding(commitment)?;
+        if cited(
+            self.log.borrow().entries(),
+            commitment,
+            Some(decision.index.get()),
+        ) {
+            return Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)));
+        }
+        Ok(())
+    }
+
     /// [`BoundStore::erasable`], an entry resting on the statement refusing it where `citations_refuse` holds.
     fn erasable_from(
         &self,

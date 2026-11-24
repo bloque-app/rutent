@@ -481,6 +481,12 @@ fn erasure_leaves_the_reference_and_history_checks() {
     assert!(watched.core.bound().missing().is_empty());
     assert!(watched.core.bound().refused_erasures().is_empty());
     assert!(watched.core.bound().unsettled_erasures().is_empty());
+    // And bound again over the log as it stands, as a restart reads it, it finds the same.
+    let rebound = watched.core.rebound_store().expect("the store binds again");
+    assert!(rebound.is_erased(&commitment));
+    assert!(rebound.missing().is_empty());
+    assert!(rebound.refused_erasures().is_empty());
+    assert!(rebound.unsettled_erasures().is_empty());
 
     // The record: the decision, the effect before the result, and the erasure naming the commitment that stays.
     let history = watched.history();
@@ -691,6 +697,13 @@ fn an_operator_holding_both_permissions_erases_a_cited_statement_and_history_che
     assert!(watched.core.bound().is_erased(&cited));
     assert!(watched.core.bound().refused_erasures().is_empty());
     assert!(watched.core.bound().unsettled_erasures().is_empty());
+    // Bound again over the log as it stands, as a restart reads it, the store finds nothing wrong: a citation made
+    // before the override's decision is no finding.
+    let rebound = watched.core.rebound_store().expect("the store binds again");
+    assert!(rebound.is_erased(&cited));
+    assert!(rebound.missing().is_empty());
+    assert!(rebound.refused_erasures().is_empty());
+    assert!(rebound.unsettled_erasures().is_empty());
     assert_eq!(
         calls_from(&watched, before.len()),
         ["decide", "effect", "result", "erasure"]

@@ -8,7 +8,8 @@
 //! 2. asks policy to decide `erase_statement` for the commitment, as the caller's own act; a refusal or an answer
 //!    that isn't a permit ends it, and no effect is recorded (`NotPermitted`: nothing is erased, `DEC-18`);
 //! 3. appends the effect on the permit, recorded before it takes place (`INV-7`), and asks the store again: the
-//!    log may have taken a citation since step 1. A store that now refuses gets the effect's result `failed`
+//!    log may have taken a citation since step 1 (under an override, since the permitting decision:
+//!    [`Statements::erasable_overriding_since`]). A store that now refuses gets the effect's result `failed`
 //!    appended, and the statement stays (`Failed`, `REQ-AUD-13`);
 //! 4. appends the effect's `done` result, which is what the store erases on (`BoundStore::erase` takes its receipt
 //!    and reads the decision back through it);
@@ -65,6 +66,26 @@ pub trait Statements {
     /// The store's refusal, or `Unavailable`.
     fn erasable_overriding(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
         self.erasable(commitment)
+    }
+
+    /// Whether the statement may still be erased on the override the permitting decision at `decision` made
+    /// (`T-020-42`): the override lifts only the citations made before that decision, so one the log took between the
+    /// decision and the effect refuses it. Run after the effect is recorded. The default refuses, so a store that
+    /// can't say never erases on an override.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal, or `Unavailable`.
+    fn erasable_overriding_since(
+        &mut self,
+        _commitment: &Digest,
+        _decision: &Receipt,
+    ) -> Result<(), AppendFailure> {
+        Err(AppendFailure::Refused(
+            rutent_contracts::core_internal::Violation(
+                "a store that can't say whether a citation came after the decision refuses the override",
+            ),
+        ))
     }
 
     /// Erases the statement the erasure decided at `result`, the receipt of its effect's `done` result. One erased
@@ -272,7 +293,12 @@ fn carry_out(
         )?,
     )?;
     // The log may have taken a citation of the statement since the first look.
-    if let Err(why) = statements.check(erasure.commitment, overriding) {
+    // Under an override, the citations made before the decision are lifted and none made after it is.
+    let still = match overriding {
+        true => statements.erasable_overriding_since(erasure.commitment, &decision.receipt),
+        false => statements.erasable(erasure.commitment),
+    };
+    if let Err(why) = still {
         let result = append_general(
             log,
             &built_with(

@@ -6593,7 +6593,7 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
 - **Defaults, reversible, each failing closed.** (1) `Statements::erasable_overriding` has a default that is the refusing
   `erasable`: a store that says nothing of an override never lifts one. (2) The assembly's operator login holds no
   `EraseOverridingCitations`: the scenarios that need it grant it through `Core::registers`, so nothing erases a cited
-  statement unless a scenario says the login may (`F-021`'s gap 1 is the deployment's register). (3) The refused
+  statement unless a scenario says the login may (`T-021-13`'s gap 1 is the deployment's register). (3) The refused
   roll-back scenario uses the customer as a caller no register lists, and a version that isn't the one staged.
 - **Tests.** In `components/core-orch/tests/erasure.rs`: `cited_statement_is_not_erased_without_an_override`
   [`REQ-AUD-13`], `operators_decided_override_erases_a_cited_statement_and_history_still_checks` [`REQ-AUD-13`, `AC-36`],
@@ -6609,7 +6609,7 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
   assembly's override scenarios failed on the same refusal and the roll back scenario on `NotPermitted` for `Ok` (the
   register not yet listing the permission).
 - **Gaps, with owners.** None found. The deployment's register listing `EraseOverridingCitations` and `Change(RollBack)`
-  for its operator logins is configuration (`F-021`'s gap 1).
+  for its operator logins is configuration (`T-021-13`'s gap 1, and `T-021-12`'s gap 2). This row closes `T-021-12`'s gap 1 (nothing called `Segments::roll_back`).
 - **Rule-offs** (each restored):
 
   | Rule switched off | Red |
@@ -6620,3 +6620,24 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
   | the overriding check is the refusing one | core-orch override and refusal tests; the assembly's override scenario (`Bound`) |
   | the operator login listed for the override by default | the assembly's refused-override scenario |
   | the operator login not listed for `Change(RollBack)` | the roll back scenario |
+
+### T-020-42, fix round 1 (the review of `91250014`)
+
+1. **A citation between the decision and the effect.** `BoundStore::erasable_overriding_since(commitment, decision)`
+   (core-audit) runs the override's check and refuses a citation after the permitting decision's index, as `reconcile`
+   counts it. `Statements::erasable_overriding_since` (refusing default) is what the look after the effect now asks on
+   the override path, with the decision's receipt, so such a citation makes the erasure `Failed` and nothing is erased.
+   Tests: `override_is_refused_for_a_citation_made_after_its_decision` (core-orch) and
+   `override_check_since_its_decision_refuses_a_later_citation` (core-audit).
+2. **Rebound store.** `Core::rebound_store` reads the disk back and binds again; both erasure scenarios (`T-020-37`'s
+   and the override's) assert the findings on that, not only on the store bound at assembly.
+3. Notes: gap owners corrected above, and `T-021-12`'s gap 1 recorded closed in F-021's notes.
+4. The roll back scenario asserts the effect's `done` result. 5. The core-orch override test's doc points at the scenario
+   that carries the history check.
+- **Rule-offs.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | `erasable_overriding_since` counts no citation | the core-audit test |
+  | the look after the effect on an override is the plain override check | the core-orch late-citation test |
+  | `reconcile` reports every citation of an overridden statement | the override scenario (on the rebound store) |
