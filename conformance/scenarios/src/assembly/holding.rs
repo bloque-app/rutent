@@ -375,12 +375,8 @@ impl Core {
         let part = self
             .first_part(order)
             .ok_or(StepError::NotNow("the order has a part"))?;
-        let (linked, route, start, statement) = {
-            let withdrawn = self
-                .mover
-                .withdrawn(effect)
-                .ok_or(HandingError::NotWithdrawn)?;
-            (
+        let withdrawn = match self.mover.withdrawn(effect) {
+            Some(withdrawn) => Some((
                 withdrawn.linked.clone(),
                 withdrawn.route.clone(),
                 withdrawn.start.clone(),
@@ -388,8 +384,11 @@ impl Core {
                     .statement
                     .cloned()
                     .ok_or(HandingError::NotWithdrawn)?,
-            )
+            )),
+            // A Core that reopened holds no mover's record of the withdrawal: the log's is read (`T-020-46`).
+            None => self.withdrawn_in_the_log(effect),
         };
+        let (linked, route, start, statement) = withdrawn.ok_or(HandingError::NotWithdrawn)?;
         let recorded: Vec<(Receipt, Entry)> = self
             .log
             .borrow()
@@ -441,6 +440,141 @@ impl Core {
         };
         self.feed()?;
         Ok(handed)
+    }
+
+    /// The holding account's withdrawal for the hand-on `effect` carried out, as the log holds it, for a Core that
+    /// reopened and holds no mover's record of it (`T-020-46`): the effect's `resolve_stuck` with its `done` result,
+    /// handing the part's value on to its linked order; the linked order's accepted route, from its acceptance (its
+    /// part) and the decision record its route was chosen by, each segment under the identifier
+    /// [`Core::accept_linked`] derives; and the holding account's own answer, verified, about the linked order, its
+    /// record read from the bytes the evidence store keeps (`proof_of_withdrawal`). `None` where any of it isn't there.
+    fn withdrawn_in_the_log(
+        &mut self,
+        effect: &Receipt,
+    ) -> Option<(Id, AcceptedRoute, HandedOnStart, Receipt)> {
+        use rutent_contracts::core_internal::{Attribution, Resolution};
+        use rutent_contracts::provider_role::{RESULT_SHAPE, ReserveMovementOutcome, ResultBody};
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let (order, holder, linked) = history.iter().find_map(|(r, e)| match e {
+            Entry::Verified(v) if r == effect => match &v.what {
+                What::Effect {
+                    action:
+                        rutent_contracts::core_internal::Action::ResolveStuck {
+                            order,
+                            resolution:
+                                Resolution::HandOn {
+                                    by, linked_order, ..
+                                },
+                            ..
+                        },
+                    ..
+                } => Some((order.clone(), by.clone(), linked_order.clone())),
+                _ => None,
+            },
+            _ => None,
+        })?;
+        let done = history.iter().any(|(_, e)| {
+            matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect: of } if of == effect)
+                && matches!(v.outcome, rutent_contracts::core_internal::Outcome::Done {}))
+        });
+        if !done {
+            return None;
+        }
+        let (acceptance, part) = history.iter().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Acceptance {
+                    acceptance,
+                    order: o,
+                    yeses,
+                    ..
+                } if *o == linked => Some((acceptance.clone(), yeses.first()?.part.clone())),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let decision_record = history.iter().rev().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order: o,
+                    ..
+                } if *o == linked => Some(decision_record.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let record = super::reopen::held_record(&self.signer.records, &history, &decision_record)?;
+        let [only] = record.chosen()?.parts.as_slice() else {
+            return None;
+        };
+        let part_id = rutent_contracts::state_machine::Id::new(part.as_str())?;
+        let mut segments = Vec::new();
+        for (place, operation) in only.operations.iter().enumerate() {
+            segments.push(SegmentPlan {
+                segment_id: super::linked::segment_id(&part_id, place).ok()?,
+                provider: rutent_contracts::state_machine::Id::new(operation.provider.as_str())?,
+                kind: operation.kind,
+                from: operation.from.clone(),
+                to: operation.to.clone(),
+            });
+        }
+        let first = segments.first()?.clone();
+        let rutent_contracts::provider_role::NodeRef::Inner(node) = &first.from.node else {
+            return None;
+        };
+        let route = AcceptedRoute {
+            order: linked.clone(),
+            decision_record,
+            acceptance,
+            plan: vec![rutent_contracts::state_machine::PartPlan { part_id, segments }],
+        };
+        let (statement, commitment) = history.iter().find_map(|(r, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == RESULT_SHAPE
+                    && matches!(&s.attribution, Attribution::Verified { who } if who.acts == holder)
+                    && s.about
+                        .as_ref()
+                        .is_some_and(|a| a.order.as_ref() == Some(&linked)) =>
+            {
+                Some((r.clone(), s.commitment.clone()))
+            }
+            _ => None,
+        })?;
+        let kept = rutent_contracts::core_internal::calls::KeptStatements::kept(
+            &mut self.kept,
+            &commitment,
+        )
+        .ok()??;
+        let answer = rutent_core_audit::receipts::store::bearing_out(&kept)?;
+        let result: Statement<ResultBody> = serde_json::from_slice(&answer).ok()?;
+        let ResultBody::Withdrawal(withdrawal) = result.statement else {
+            return None;
+        };
+        let ReserveMovementOutcome::Succeeded(settled) = withdrawal.outcome else {
+            return None;
+        };
+        let reference = rutent_prov::holding::wallet::proof_of_withdrawal(
+            holder.as_str(),
+            &withdrawal.transaction,
+            &settled.evidence,
+        )
+        .ok()?;
+        let start = HandedOnStart {
+            reserve: holder.as_str().to_owned(),
+            node: node.clone(),
+            first_segment: first.segment_id.clone(),
+            record: rutent_prov::holding::wallet::WithdrawalRecord {
+                by: holder.as_str().to_owned(),
+                node: node.clone(),
+                asset: first.from.asset.id.clone(),
+                order: order.as_str().to_owned(),
+                amount: settled.amount_out.parse().ok()?,
+                reference,
+            },
+            transaction: withdrawal.transaction,
+            answer,
+        };
+        Some((linked, route, start, statement))
     }
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`

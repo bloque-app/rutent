@@ -48,7 +48,7 @@ impl Reopening for Reading<'_> {
 }
 
 /// The decision record `id` Core's key signed, held to the digest the log names it by.
-fn held_record(
+pub(super) fn held_record(
     signed: &BTreeMap<String, Vec<u8>>,
     entries: &[(Receipt, Entry)],
     id: &Id,

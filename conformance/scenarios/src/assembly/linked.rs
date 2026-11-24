@@ -171,10 +171,13 @@ impl Core {
             stm::Id::new(self.fresh.id().as_str()).ok_or(StepError::NotNow("a fresh identifier"))
         };
         let part_id = id(())?;
+        // Each segment's identifier is its part's and its place, `{part}-s{n}`: the log's acceptance names the part,
+        // so a Core that reopens derives the plan again from the log and the record the route was chosen by
+        // (`T-020-46`). Unique within the order, as a plan's ids are.
         let mut segments = Vec::new();
-        for operation in only.operations.iter() {
+        for (place, operation) in only.operations.iter().enumerate() {
             segments.push(SegmentPlan {
-                segment_id: id(())?,
+                segment_id: segment_id(&part_id, place)?,
                 provider: stm::Id::new(operation.provider.as_str())
                     .ok_or(StepError::NotNow("a provider is an identifier"))?,
                 kind: operation.kind,
@@ -398,4 +401,10 @@ fn rounds_digest(order: &Id, route: &Request) -> Result<Digest, StepError> {
         "value": rutent_prov::module::wire::sha256(&canonical),
     }))
     .map_err(|_| StepError::NotNow("a quote's digest"))
+}
+
+/// The identifier of the segment at `place` in the linked order's part `part`, as [`Core::accept_linked`] names it.
+pub(super) fn segment_id(part: &stm::Id, place: usize) -> Result<stm::Id, StepError> {
+    stm::Id::new(&format!("{}-s{}", part.as_str(), place + 1))
+        .ok_or(StepError::NotNow("a segment identifier"))
 }

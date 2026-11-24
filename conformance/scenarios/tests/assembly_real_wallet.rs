@@ -656,6 +656,17 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
 /// Whether the wallet itself answers that it holds the base amount for `order`: its own word, asked outside any
 /// move, never the host's attribution.
 fn wallet_holds(core: &mut Core, wallet: &InstalledWallet, order: &str, asking: &str) -> bool {
+    wallet_holds_at_least(core, wallet, order, asking, AMOUNT)
+}
+
+/// Whether the wallet itself answers that it holds at least `amount` for `order`.
+fn wallet_holds_at_least(
+    core: &mut Core,
+    wallet: &InstalledWallet,
+    order: &str,
+    asking: &str,
+    amount: &str,
+) -> bool {
     let (_, answer) = core
         .ask_wallet(
             &wallet.provider,
@@ -665,7 +676,7 @@ fn wallet_holds(core: &mut Core, wallet: &InstalledWallet, order: &str, asking: 
                 session: "s-1".to_owned(),
                 account: order.to_owned(),
                 asset: "USDC".to_owned(),
-                amount: AMOUNT.to_owned(),
+                amount: amount.to_owned(),
             }),
         )
         .expect("the wallet answers");
@@ -748,6 +759,11 @@ fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_rel
         "one question, no landing"
     );
     assert_eq!(stuck.core.holdings().attributions(), held);
+    let twice = (2 * AMOUNT.parse::<u128>().unwrap()).to_string();
+    assert!(
+        !wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-3", &twice),
+        "the wallet holds the log's amount once, never twice"
+    );
     let linked = stuck
         .core
         .accept_linked(&linked_order(&stuck))
@@ -793,6 +809,118 @@ fn stuck_order_is_handed_on_after_the_holding_accounts_module_restarts() {
         "the wallet's record is gone"
     );
     handed_on_once(&mut stuck, &linked, &bob, &decided);
+}
+
+/// How many inputs of `kind` the log holds about `order`.
+fn inputs_of(
+    core: &Core,
+    order: &Id,
+    kind: fn(&rutent_contracts::state_machine::Observed) -> bool,
+) -> usize {
+    core.inputs()
+        .iter()
+        .filter(|i| i.subject.order.as_str() == order.as_str() && kind(&i.observed))
+        .count()
+}
+
+/// The hand-on of a stuck order's value, cut short by a crash right after the first order's `handed_on` reached the
+/// log, before the linked order's `route_chosen`. The assembled Core opened again rebuilds from the log the hand-on it
+/// holds half of, and the holding account's withdrawal its mover kept (the effect, its `done` result, the linked
+/// order's acceptance and decision record, the wallet's own answer): asked again, it appends the linked order's
+/// `route_chosen` and the holding account's record of its start, each once, and the `handed_on` stays the one the log
+/// took (`REQ-ORD-43`, `INV-4`).
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    let moved = stuck
+        .core
+        .move_stuck(&stuck.order, &decided, &bob)
+        .expect("moved");
+    let Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Done,
+        ..
+    } = moved
+    else {
+        panic!("the move is done: {moved:?}")
+    };
+    rutent_scenarios::harness::plant(
+        &mut stuck.core,
+        &rutent_scenarios::harness::Fault::CrashAfterRecord {
+            call: "input",
+            nth: 0,
+        },
+    );
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stuck.core.hand_on(&stuck.order, &effect, &bob)
+    }));
+    assert!(crashed.is_err(), "the crash stopped Core");
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    let bob = staff(&stuck.core, "desk-b", "bob");
+    let handed_on = |o: &rutent_contracts::state_machine::Observed| {
+        matches!(
+            o,
+            rutent_contracts::state_machine::Observed::HandedOn { .. }
+        )
+    };
+    let chosen = |o: &rutent_contracts::state_machine::Observed| {
+        matches!(
+            o,
+            rutent_contracts::state_machine::Observed::RouteChosen { .. }
+        )
+    };
+    assert_eq!(
+        inputs_of(&stuck.core, &stuck.order, handed_on),
+        1,
+        "the handed_on is in the log"
+    );
+    assert_eq!(
+        inputs_of(&stuck.core, &linked.order, chosen),
+        0,
+        "the linked route_chosen is not"
+    );
+    stuck
+        .core
+        .hand_on(&stuck.order, &effect, &bob)
+        .expect("the hand-on, rebuilt from the log, completes");
+    assert_eq!(
+        inputs_of(&stuck.core, &stuck.order, handed_on),
+        1,
+        "the handed_on once"
+    );
+    assert_eq!(
+        inputs_of(&stuck.core, &linked.order, chosen),
+        1,
+        "the linked route_chosen once"
+    );
+    let starts = stuck
+        .core
+        .verified_whats()
+        .iter()
+        .filter(|w| matches!(w, What::HoldingWithdrawal { order, .. } if *order == linked.order))
+        .count();
+    assert_eq!(
+        starts, 1,
+        "the holding account's record starts the linked order once"
+    );
 }
 
 /// What the real wallet answers a withdrawal is its own signed statement, which the platform passes on and the host
