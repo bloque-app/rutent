@@ -154,6 +154,8 @@ struct Fake {
     moved: bool,
     /// The bytes the platform hands back for each operation, where set, in place of a refusal.
     answer: Option<Vec<u8>>,
+    /// A withdrawal is answered as succeeded, signed by its provider, as the route's record states it.
+    settles_the_withdrawal: bool,
 }
 
 impl Modules for Fake {
@@ -201,7 +203,28 @@ impl Modules for Fake {
             judged("exchange-a", OperationKind::Withdrawal),
             judged("reserve-wallet", OperationKind::Deposit),
         ];
-        self.judged.push((transaction, judged));
+        let withdrawal =
+            serde_json::to_value(&operation.statement).unwrap()["kind"] == "withdrawal";
+        self.judged.push((transaction.clone(), judged));
+        if self.settles_the_withdrawal && withdrawal {
+            let outcome = json!({
+                "status": "succeeded", "amount_in": "100000000", "amount_out": "99900000",
+                "fee": { "asset": "COP", "amount": "100000" },
+                "evidence": [{ "grade": 3, "reference": "reserve-bank-co:book-1", "by": "reserve-bank-co" }],
+            });
+            let body =
+                json!({ "kind": "withdrawal", "transaction": transaction, "outcome": outcome });
+            return Answered::Bytes(snapshot_support::sign(
+                snapshot_support::envelope(
+                    &snapshot_support::deployment(),
+                    rutent_contracts::provider_role::RESULT_SHAPE,
+                    "reserve-bank-co",
+                    1_794_200_000,
+                    body,
+                ),
+                &snapshot_support::statements_key("reserve-bank-co", 1),
+            ));
+        }
         match &self.answer {
             Some(bytes) => Answered::Bytes(bytes.clone()),
             None => Answered::Refused(PlatformRefusal::Unavailable),
@@ -267,6 +290,7 @@ fn fake() -> Fake {
         promoted: Vec::new(),
         moved: false,
         answer: None,
+        settles_the_withdrawal: false,
     }
 }
 
@@ -362,6 +386,43 @@ fn admitting_with_wallet(payouts: Option<&str>) -> Catalogue {
     catalogue
 }
 
+/// `catalogue` with `exchange-a` joined, its exchange at `ledger-in` allowed to be routed through.
+fn with_the_exchange(mut catalogue: Catalogue) -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::{Category, Endpoint, TupleKey};
+    let ad = snapshot_support::reserve("exchange-a", "exchange-co");
+    catalogue
+        .grant(snapshot_support::grant("g-2", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-2",
+            snapshot_support::public_key(&snapshot_support::advertising_key("exchange-a")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "exchange-a",
+        &[&snapshot_support::statements_key("exchange-a", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    catalogue.set_evidence_floor(
+        TupleKey {
+            category: Category::Exchange,
+            origin: Endpoint::Inner("ledger-in".into()),
+            destination: Endpoint::Inner("ledger-in".into()),
+            asset: "COP".into(),
+            to_asset: Some("USDC".into()),
+        },
+        EvidenceGrade::Statement,
+    );
+    catalogue
+}
+
 fn core() -> Actor {
     Actor {
         party: id("rutent"),
@@ -416,6 +477,13 @@ fn run(modules: &mut Fake) -> (Ran, KeptLog) {
 
 /// [`run`] over `catalogue`.
 fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
+    let (mut ran, log) = run_over_each(modules, vec![catalogue]);
+    (ran.remove(0), log)
+}
+
+/// The part run once over each catalogue in turn, by one `Segments`, one log and one store: Core run again after the
+/// catalogue changed.
+fn run_over_each(modules: &mut Fake, catalogues: Vec<Catalogue>) -> (Vec<Ran>, KeptLog) {
     let record = record_naming_a_call();
     let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
     let mut log = KeptLog::default();
@@ -462,22 +530,25 @@ fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
         floor: None,
         record_entry: None,
     };
-    let mut parts = Parts {
-        clock: &clock,
-        catalogue: &catalogue,
-        log: &mut log,
-        evidence: &mut store,
-        decisions: &mut policy,
-        modules,
-        uses: &mut NoProxy,
-        grading: &mut ProvidersWord,
-        operator_key: &mut key,
-        fresh: &mut ids,
-        issued: &issued,
-        exposures: &mut exposures,
-        channel: &mut rutent_core_orch::notice::Unbuilt,
-    };
-    let ran = segments.run_part(&mut parts, &live).unwrap();
+    let mut ran = Vec::new();
+    for catalogue in &catalogues {
+        let mut parts = Parts {
+            clock: &clock,
+            catalogue,
+            log: &mut log,
+            evidence: &mut store,
+            decisions: &mut policy,
+            modules: &mut *modules,
+            uses: &mut NoProxy,
+            grading: &mut ProvidersWord,
+            operator_key: &mut key,
+            fresh: &mut ids,
+            issued: &issued,
+            exposures: &mut exposures,
+            channel: &mut rutent_core_orch::notice::Unbuilt,
+        };
+        ran.push(segments.run_part(&mut parts, &live).unwrap());
+    }
     (ran, log)
 }
 
@@ -670,4 +741,32 @@ fn route_ending_on_a_reserve_that_pays_per_order_is_handed_over() {
             "{payouts:?} is routed through: {ran:?}"
         );
     }
+}
+
+/// The part's withdrawal settled while its reserve paid per order. The reserve then re-advertises its deposit as
+/// `batched`, and the next run, at the next segment (the exchange, not yet handed over), is refused before it:
+/// `closable` reads the deposit at every segment not yet in flight, so only a part whose own deposit is already handed
+/// over escapes the guard.
+// verifies: REQ-ORD-33
+#[test]
+fn reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment() {
+    let mut modules = fake();
+    modules.settles_the_withdrawal = true;
+    // First run: the exchange isn't listed yet, so the part stops there, its withdrawal settled.
+    let before = admitting_with_wallet(Some("per_order"));
+    let after = with_the_exchange(admitting_with_wallet(Some("batched")));
+    let (ran, _) = run_over_each(&mut modules, vec![before, after]);
+    let Ran::Refused { refused, .. } = &ran[0] else {
+        panic!("{:?}", ran[0]);
+    };
+    assert_eq!(refused.reason, RouteRefusal::ProviderNotListed(1));
+    let Ran::Refused { refused, .. } = &ran[1] else {
+        panic!("{:?}", ran[1]);
+    };
+    assert_eq!(refused.reason, RouteRefusal::BatchedPayout(2));
+    assert_eq!(
+        modules.judged.len(),
+        1,
+        "only the withdrawal was handed over"
+    );
 }

@@ -6197,29 +6197,42 @@ Branch `f-020/t-020-43-batched-reserves`, from `m3` at `a3bc16b4`. Item `shared-
     `RouteRefusal::BatchedPayout(place)` (`snapshot/route.rs`). The segments' `closable` check, which already ran at
     every place before the first segment is handed over (as `NoPublicRecord` does), refuses it first, naming the
     deposit's place. The refusal is a `no_route_right_now` one, recorded once like the others.
-  - *Router suite* (`conformance/src/router/`): `Check::NoRouteEndsOnABatchingReserve` (no kept or outranked
-    candidate ends a part on a batching deposit; `batched_payout` names only one), the policy case gains
-    `f-dep-batched` and its expected drop, the double (`tests/router_double/`) drops it and has a flaw,
-    `ENDS_ON_BATCHING_RESERVE`, and the README's table a row. Edits to `components/router/` and the suite are named
+  - *Router suite* (`conformance/src/router/`): the policy case gains
+    `f-dep-batched` and its expected drop, and a choice case, `batching-deposit-would-win-choice`, a free deposit at a
+    batching reserve that would win the slow route and the round; the double (`tests/router_double/`) drops it and
+    has two flaws, `ENDS_ON_BATCHING_RESERVE` and `BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING`. Edits to `components/router/` and the suite are named
     here because the row makes them the Work.
 - **Defaults** (reversible, failing closed where they can):
   - a reserve that declares no `payouts` is per order, as built (`T-020-39`); the owner's answer of 2026-11-18 stands
     as the most conservative reading and is on the form;
   - the guard reads the provider's *accepted advertisement*, not the snapshot, so a re-advertised tuple takes effect at
-    once for parts not yet handed over. A part with a segment already in flight is never refused (the guard runs
-    before a segment is first handed over), so a reserve that turns `batched` mid-route lets the part run to its
-    deposit, where the log's one-movement rule still holds the second order (gap 1);
+    once for any segment not yet handed over. `closable` runs at every segment not yet in flight and reads the
+    deposit at the part's last place, so a reserve that turns `batched` mid-route is refused at the part's next
+    segment (`reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment`); only a part whose own deposit is
+    already handed over escapes it (gap 1);
   - a deposit whose provider or tuple the catalogue doesn't hold reads as per order here: it is refused on other
     grounds (`ProviderNotListed`, `BelowEvidenceFloor`) at its own place;
+  - `pays_in_batches` matches *any* reserve tuple of the provider with the deposit's origin, destination and asset,
+    where the router drops by the one tuple figure its operation cites. A provider advertising two tuples with the
+    same ends, one batched and one per order, has a route the router kept refused by Core. This fails closed and is
+    left as it is (review of `269ccee8`, finding 4); nothing forbids two such tuples in an advertisement;
   - the router drops by the destination tuple's own declaration, per tuple, not per provider: a reserve may batch one
     asset or direction and pay another per order.
 - **Gaps.**
-  1. A part already in flight to a reserve that starts batching is not stopped (owner: `F-020`, if the owner wants
-     the guard to run at the deposit's own place too; the log's `movement-evidences-one-segment` row keeps it safe, the
-     second order waiting as in `second_order_on_a_shared_final_movement_waits_while_the_first_keeps_it`).
+  1. A part whose own deposit is already handed over when its reserve starts batching is not stopped (owner:
+     `F-020`; the guard runs before a segment is first handed over, and at the deposit's own place it would be too
+     late). The log's `movement-evidences-one-segment` row keeps it safe: the second order waits, as in
+     `second_order_on_a_shared_final_movement_waits_while_the_first_keeps_it`.
   2. Ramps and exchanges carry no `payouts`; only a reserve's deposit can batch (provider-role's rule).
-  3. Split routes (several parts) are read part by part by the router's check, but the search builds one part per
-     candidate (`DEC-8`), so the multi-part case is the suite check's alone.
+  3. Split routes (several parts) are read part by part by the contract's check, but the search builds one part per
+     candidate (`DEC-8`), so the multi-part case is the contract's alone.
+  4. A deposit at a batching reserve in the middle of a route (a deposit, then a withdrawal again), which
+     `T-020-39`'s fixture "earlier deposit at a batching reserve" admits as a candidate-half case, is not read: only a
+     part's last operation is (the owner's ruling is about a route's *end*, where the order's close rests on the
+     movement). Its movement is relied on by the segment it settles, so `movement-evidences-one-segment` can hold a
+     second order there too, as it would on any shared movement; it leaves the part waiting on evidence, not closing
+     wrongly. Owner: `F-020`, with the owner's word on whether a middle deposit is in the ruling's scope; left as it
+     is until he rules.
 - **Named tests.** `components/router/tests/batched.rs`: `route_is_never_ended_on_a_reserve_that_batches_payouts`
   [`REQ-ORD-33`], `candidate_ending_on_a_batching_reserve_is_recorded_with_its_drop_reason` [`REQ-AUD-4`],
   `route_ended_on_a_reserve_that_pays_per_order_is_still_chosen` [`REQ-QTE-11`];
@@ -6231,6 +6244,10 @@ Branch `f-020/t-020-43-batched-reserves`, from `m3` at `a3bc16b4`. Item `shared-
   the suite: `a_route_ending_on_a_reserve_that_batches_payouts_is_dropped_with_its_reason`,
   `a_kept_route_ending_on_a_reserve_that_batches_payouts_is_refused`,
   `a_router_that_ends_routes_on_a_batching_reserve_fails_only_where_one_is_advertised`.
+  Added in fix round 1: `a_batching_deposit_that_would_win_the_choice_round_is_dropped_and_not_chosen`,
+  `a_router_that_drops_a_batching_route_only_when_it_shortlists_fails_the_choice_case`,
+  `reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment`, and the contract's
+  `candidate_dropped_for_a_batched_payout_names_its_reason` with its new invalid fixture.
 - **Seen failing first.** The router's three on assertions (a kept batching route; no `BatchedPayout`; the batching
   reserve chosen), the guard's refusal with its check stubbed (the part was handed over), the suite's tests on the
   double and the cases before they dropped it (`left: None`, `findings: []`, the shortlist listing the batching
@@ -6244,7 +6261,29 @@ Branch `f-020/t-020-43-batched-reserves`, from `m3` at `a3bc16b4`. Item `shared-
 | guard: `pays_in_batches` in the segments' `closable` | `route_chosen_to_end_on_a_reserve_that_batches_payouts_is_refused_before_anything_is_handed_over` |
 | `Closing::free_for` always free (first keeps it) | `second_order_on_a_shared_final_movement_waits_while_the_first_keeps_it`, and three older closing tests |
 | snapshot: the catalogue's snapshot strips `payouts` from a reserve tuple (`prov/src/catalogue/snapshot.rs`, put back) | `snapshot_hands_each_deposit_tuples_payouts_to_the_router` |
-| suite: `no_route_ends_on_a_batching_reserve` not run | `a_kept_route_ending_on_a_reserve_that_batches_payouts_is_refused` |
 | double: its drop of a batching deposit (`ENDS_ON_BATCHING_RESERVE`) | `a_router_that_ends_routes_on_a_batching_reserve_fails_only_where_one_is_advertised`, `every_flaw_fails_the_suite_run` |
 
 The router's own suite run (`router_suite`) stays green with every rule on: 30 tests.
+
+### T-020-43, fix round 1 (review of `269ccee8`)
+
+1. *Choice-round case* (should-fix): `batching-deposit-would-win-choice` (`conformance/src/router/cases.rs`): the AC-2
+   choice network plus a free deposit at a reserve that batches, answered at the slow route's amount, so it would
+   win the route and the round (253.963518 USDC against 253.836536); expected `batched_payout`, route through
+   `f-dep` chosen. The double's flaw `BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING` fails only that case.
+2. *Record half* (low): router-api's `DecisionRecord::check` now refuses a kept or outranked candidate whose part
+   ends at a batching deposit (the same unreleased 4.0.0; changelog entry naming the item, the invalid fixture
+   `decision-record-batching-deposit-ending-a-kept-candidate`, a test). This row edited `contracts/` on the
+   coordinator's instruction, router-api only. With it the suite's own check (`NoRouteEndsOnABatchingReserve`)
+   became unreachable behind `Check::Contract`, which runs first, so it is removed; the double's flaws now produce
+   records the contract refuses, and the suite catches them as contract failures.
+3. *Gap 1 corrected* above, and pinned by a test whose withdrawal settles, the reserve then batches, and the next run
+   is refused at the exchange's place with `BatchedPayout`.
+4. *Middle deposit*: gap 4.
+5. *Wider tuple match*: a default above.
+
+| Rule switched off (fix round 1) | Went red |
+|---|---|
+| contract: the record's refusal of a kept batching ending | `candidate_dropped_for_a_batched_payout_names_its_reason` (seen red on the stub before the rule) |
+| double: `BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING`'s condition removed (it drops in both rounds) | `a_router_that_drops_a_batching_route_only_when_it_shortlists_fails_the_choice_case` |
+| guard: `closable`'s `pays_in_batches` | `reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment` |

@@ -501,5 +501,5 @@ changelog entry, as a second bullet; no second bump.
 `judge.rs`'s `fault` drops a path whose last segment is a deposit at a reserve tuple declaring `payouts: batched`, as
 `batched_payout` naming its part's last operation, after the four cut-short reasons and before `excluded_by_policy`.
 A tuple that declares `per_order` or nothing is routed as before. `Segment::batches_payouts` reads the tuple figure the
-snapshot already carries. The suite's `no-route-ends-on-a-batching-reserve` check and the policy case's
-`f-dep-batched` hold a router to it; the full account is in `F-020`'s notes.
+snapshot already carries. The contract's record check now refuses a kept or outranked candidate ending there, and the policy case's
+`f-dep-batched` and the choice case `batching-deposit-would-win-choice` hold a router to it; the full account is in `F-020`'s notes.

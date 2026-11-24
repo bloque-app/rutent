@@ -29,7 +29,11 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 134] = [
+const RUST_RULES: [(&str, &str); 135] = [
+    (
+        "decision-record-batching-deposit-ending-a-kept-candidate",
+        "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
+    ),
     (
         "decision-record-batched-payout-at-a-tuple-paying-per-order",
         "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
@@ -1585,6 +1589,11 @@ fn candidate_dropped_for_a_batched_payout_names_its_reason() {
         (
             "decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve",
             "a batched-payout reason names its part's last operation",
+        ),
+        // The record's other side: a candidate that ends there isn't kept or outranked at all.
+        (
+            "decision-record-batching-deposit-ending-a-kept-candidate",
+            "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
         ),
     ] {
         let invalid = fixture("invalid", name);

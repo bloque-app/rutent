@@ -1331,6 +1331,13 @@ impl DecisionRecord {
             })
     }
 
+    /// Whether `tuple` is a deposit tuple declaring `batched` payouts.
+    fn batches_payouts(tuple: &Figure) -> bool {
+        matches!(&tuple.value, FigureValue::ReserveTuple { tuple }
+            if tuple.direction() == Some(crate::provider_role::ReserveDirection::Deposit)
+                && tuple.payouts() == crate::provider_role::Payouts::Batched)
+    }
+
     fn check_candidate(&self, candidate: &Candidate) -> Result<(), Violation> {
         let request = &self.request;
         let choice = matches!(request.round, Round::Choice { .. });
@@ -1388,6 +1395,17 @@ impl DecisionRecord {
                 } else if self.prices_cited(operation) != 1 {
                     return Err(Violation(
                         "every operation cites one price, for its own tuple",
+                    ));
+                }
+                // No kept or outranked candidate ends a part on a deposit at a reserve tuple that pays out in batches:
+                // one movement evidences one order's close, so Core could never close it (`REQ-ORD-33`,
+                // `T-020-43`). A candidate dropped for another reason may, as the router drops it first for this.
+                if o + 1 == part.operations.len()
+                    && matches!(candidate.dropped, None | Some(DropReason::Outranked { .. }))
+                    && Self::batches_payouts(tuple)
+                {
+                    return Err(Violation(
+                        "a kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches",
                     ));
                 }
                 self.check_citations(candidate, operation, &tuple.figure_id)?;

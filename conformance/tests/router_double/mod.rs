@@ -67,6 +67,9 @@ pub const FLOOR_BEFORE_THE_FEE: u8 = 11;
 /// Routes to a deposit at a reserve that batches payouts, as routers before `T-020-43` did.
 pub const ENDS_ON_BATCHING_RESERVE: u8 = 12;
 
+/// Drops a route ending at a batching reserve in a shortlist round only, and ends a choice round on it.
+pub const BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING: u8 = 13;
+
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
 
@@ -682,6 +685,7 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
         // A route ends on no deposit at a reserve that batches payouts: one movement closes one order's part
         // (`REQ-ORD-33`, `T-020-43`).
         if FLAW != ENDS_ON_BATCHING_RESERVE
+            && !(FLAW == BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING && self.choice())
             && let Some(tuple) = found.tuples.last()
             && matches!(&self.figure(&Id::new(tuple.clone()).expect("an id")).value,
                 FigureValue::ReserveTuple { tuple: t }
