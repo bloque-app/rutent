@@ -1552,6 +1552,8 @@ path: it waits for the owner's click at the release into `main`.
      third-party payer a way to authorise (`third-party-payer-authorises`). Owner: the owner's later word.
   3. Test seeding of the log-holds-a-move case uses the register's frozen snapshot, not entries run through
      `admit_entry`; the pair is admitted by the log's rule by reading, not by run. Owner: `T-021-11`'s reviewer.
+  4. Policy doesn't hold `origin_reserve`: today `hand_on/rule.rs` refuses a change of it (`ChangesOrigin`), and the later
+     widening owns it.
 - **Red first.** The changed `only the payer moves the origin account` and the two named tests of moving and of naming
   once failed on their outcome assertions (`Permit` for `Refuse`); the restating test passes before and after, and
   is held by the rule-offs below (the first of them).
@@ -1559,7 +1561,7 @@ path: it waits for the owner's click at the release into `main`.
 
   | Rule switched off | Tests that went red |
   |---|---|
-  | a move is refused where an account is in force | `authorisation_moving_the_origin_account_once_one_is_in_force_is_refused_even_from_the_payer`, `only_the_payer_moves_the_origin_account`, `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
+  | a move is refused where an account is in force | `authorisation_moving_the_origin_account_once_one_is_in_force_is_refused_even_from_the_payer`, `only_the_payer_moves_the_origin_account`, `origin_account_named_for_the_first_time_is_set_once_and_then_held`, `a_move_the_log_already_holds_is_not_followed`, `reopened_engine_still_refuses_a_move_of_the_origin_account`, `split_orders_parts_each_hold_their_origin_account` |
   | the first naming is the payer's alone | `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
   | the account is held from the first naming (later ones followed) | `a_move_the_log_already_holds_is_not_followed` |
 

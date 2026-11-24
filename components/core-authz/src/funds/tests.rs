@@ -1769,6 +1769,76 @@ fn a_move_the_log_already_holds_is_not_followed() {
     assert!(policy.authorise(&first).unwrap().permit().is_some());
 }
 
+/// An engine reopened over the log after a restart reads the origin account in force from it: a move is still refused,
+/// and restating the account is still permitted.
+// verifies: REQ-AUZ-9
+#[test]
+fn reopened_engine_still_refuses_a_move_of_the_origin_account() {
+    let log = Shared::default();
+    let mut policy = engine_over(&log);
+    let first = naming_account("auth-17-acct", "ord-17", "acct-1", giver(0));
+    assert!(policy.authorise(&first).unwrap().permit().is_some());
+    drop(policy);
+    let mut reopened = engine_over(&log);
+    let moved = naming_account("auth-17-moved", "ord-17", "acct-2", giver(0));
+    assert_eq!(reopened.authorise(&moved).unwrap().outcome, NOT_PERMITTED);
+    let restated = naming_account("auth-17-again", "ord-17", "acct-1", giver(0));
+    assert!(reopened.authorise(&restated).unwrap().permit().is_some());
+}
+
+/// On an order split in two parts each part holds its own origin account: one part's account is not the other's to
+/// take, and neither moves.
+// verifies: REQ-AUZ-9
+#[test]
+fn split_orders_parts_each_hold_their_origin_account() {
+    let mut policy = engine();
+    let for_part = |n: &str, part: &str, account: &str| Authorisation {
+        parts: Some(vec![id(part)]),
+        ..naming_account(n, "ord-17", account, giver(0))
+    };
+    assert!(
+        policy
+            .authorise(&for_part("auth-p1", "p1", "acct-1"))
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    assert!(
+        policy
+            .authorise(&for_part("auth-p2", "p2", "acct-2"))
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    for (n, part, account) in [
+        ("auth-p1-takes-p2s", "p1", "acct-2"),
+        ("auth-p2-takes-p1s", "p2", "acct-1"),
+        ("auth-p2-moves", "p2", "acct-3"),
+    ] {
+        assert_eq!(
+            policy
+                .authorise(&for_part(n, part, account))
+                .unwrap()
+                .outcome,
+            NOT_PERMITTED,
+            "{n}"
+        );
+    }
+    for (n, part, account) in [
+        ("auth-p1-again", "p1", "acct-1"),
+        ("auth-p2-again", "p2", "acct-2"),
+    ] {
+        assert!(
+            policy
+                .authorise(&for_part(n, part, account))
+                .unwrap()
+                .permit()
+                .is_some(),
+            "{n}"
+        );
+    }
+}
+
 /// An authorisation that names the origin account already in force, as the one in force, is still permitted, from
 /// the payer and from another giver alike where it sets nothing else.
 // verifies: REQ-AUZ-3
