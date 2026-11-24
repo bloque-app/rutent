@@ -75,8 +75,11 @@
 //! decider is, so a login of another party the register lists in the operator's role grants nothing. The grantee is a
 //! regulator or a checker by its request's shape (`PermissionChange::check`), and the register of actors binds that
 //! role to its login as it binds every actor's, so a grant to a login stating a role it isn't listed in is refused as
-//! acting for no accountable party. A revocation names a permission granted (`Register`, in `session`). Each decision's
-//! entry records the change whole, its grantor and grantee each in its role.
+//! acting for no accountable party. A grantee is never the operator's own: the register's word that its login is the
+//! deployment operator's (`Source::OfOperator`) refuses the grant, the grantor granting itself included, since a
+//! regulator or a checker is outside the operator. A revocation names a grant made, its permission, grantee and scope
+//! (`Register`, in `session`). Each decision's entry records the change whole, its grantor and grantee each in its
+//! role.
 //!
 //! # Acting for a user
 //!
@@ -170,18 +173,20 @@ pub enum Permission {
 }
 
 /// What an action needs, as the fixed rule holds it: inputs that must each say yes (`all`), and, where `any` isn't
-/// empty, inputs at least one of which must say yes, every one of them given.
+/// empty, inputs at least one of which must say yes, every one of them given; and inputs that must each say no
+/// (`none`).
 #[derive(Debug, Default)]
 struct Needs {
     all: Vec<Need>,
     any: Vec<Need>,
+    none: Vec<Need>,
 }
 
 impl From<Vec<Need>> for Needs {
     fn from(all: Vec<Need>) -> Self {
         Needs {
             all,
-            any: Vec::new(),
+            ..Needs::default()
         }
     }
 }
@@ -329,6 +334,7 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                         declared(&a.origin_reserve, NO_USER_WITHDRAWAL),
                         declared(&a.origin_reserve, AUTOMATIC_DEPOSIT),
                     ],
+                    none: Vec::new(),
                 }),
                 // The order's origin reserve itself, which declared it starts routes on automatic deposits.
                 Role::Provider if by.party == a.origin_reserve => Some(
@@ -348,7 +354,18 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
         // and no other role. Who the grantee is, a regulator or a checker, its request's shape holds
         // (`PermissionChange::check`), and the register of actors binds the role it states to its login, as every
         // actor's ([`acts_for`]).
-        Asked::GrantPermission(change) => of_operator_holds(&change.by, Permission::GrantRead),
+        // A grantee is never the operator's own (`T-021-14`, fix round 1): a regulator or a checker is outside the
+        // operator, so the register's word that the grantee's login is the operator's refuses the grant, the grantor
+        // granting itself among them.
+        Asked::GrantPermission(change) => {
+            of_operator_holds(&change.by, Permission::GrantRead).map(|mut needs| {
+                needs.none.push(Need {
+                    input: change.grantee.acts.clone(),
+                    from: Source::OfOperator,
+                });
+                needs
+            })
+        }
         Asked::RevokePermission(change) => of_operator_holds(&change.by, Permission::RevokeRead),
         _ => Some(Needs::default()),
     }
@@ -411,11 +428,18 @@ fn declared(reserve: &Id, declaration: &str) -> Need {
 /// What the fixed rule needs for `asked`: nothing for a call it refuses outright, or one it doesn't hold.
 pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
     let needs = needs_of(asked).unwrap_or_default();
-    Reply::Given(needs.all.into_iter().chain(needs.any).collect())
+    Reply::Given(
+        needs
+            .all
+            .into_iter()
+            .chain(needs.any)
+            .chain(needs.none)
+            .collect(),
+    )
 }
 
 /// The fixed rule's ruling over what [`needs_of`] names: every input of `all` says yes and, where `any` names some, at
-/// least one of them does. A no refuses, and an input not given is missing. A call no rule lets its caller make is
+/// least one of them does, and every input of `none` says no. A no refuses, and an input not given is missing. A call no rule lets its caller make is
 /// refused, and every call the rule doesn't hold passes.
 pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     let Some(needs) = needs_of(asked) else {
@@ -435,6 +459,13 @@ pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
         match said(need) {
             Some(Said::Yes) => any_yes = true,
             Some(Said::No) => {}
+            None => return Reply::Missing,
+        }
+    }
+    for need in &needs.none {
+        match said(need) {
+            Some(Said::No) => {}
+            Some(Said::Yes) => refused = true,
             None => return Reply::Missing,
         }
     }

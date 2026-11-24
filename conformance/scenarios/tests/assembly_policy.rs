@@ -366,8 +366,9 @@ fn trail_check(
 /// read of the trail as a regulator, reads the trail by it and revokes it. Each is refused, and recorded refused; the
 /// deployment's policy, which permits whatever the fixed rules let through, never permits it. The operator's login,
 /// listed for the permissions to grant and to revoke a read, grants nothing to the customer's login stating a
-/// regulator's role, grants a listed regulator the trail, the regulator reads it, and the customer's login stating
-/// the operator's role can't revoke it; the operator's login revokes it.
+/// regulator's role, grants a listed regulator the trail, the regulator reads it, other logins of the regulator's party
+/// read nothing by it, the operator's login listed as a regulator too is granted nothing, and the customer's login
+/// stating the operator's role can't revoke it; the operator's login revokes it.
 // verifies: REQ-AUZ-7, REQ-AUD-12, THR-7
 #[test]
 fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly() {
@@ -441,6 +442,45 @@ fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_i
         .check_read(&trail_check(&core, "req-read", &regulator, "perm-reg-1"))
         .unwrap();
     assert_eq!(read.outcome, ReadOutcome::Allowed {});
+    // Fix round 1, findings 1 and 2: other logins of the regulator's party, each listed in its own role, read nothing
+    // by its grant; the operator's login, listed as a regulator too, is granted nothing.
+    for (acts, role, kind) in [
+        ("fr-bot", Role::Verifier, ActorKind::Component),
+        ("fr-ops", Role::Operator, ActorKind::Person),
+    ] {
+        let reader = Actor {
+            acts: id(acts),
+            role,
+            kind,
+            ..regulator.clone()
+        };
+        core.registers().list(&reader);
+        let read = policy
+            .check_read(&trail_check(
+                &core,
+                &format!("req-{acts}"),
+                &reader,
+                "perm-reg-1",
+            ))
+            .unwrap();
+        assert!(
+            matches!(read.outcome, ReadOutcome::Refused { .. }),
+            "{acts}: {read:?}"
+        );
+    }
+    let operator_as_regulator = Actor {
+        role: Role::Regulator,
+        ..operator.clone()
+    };
+    core.registers().list(&operator_as_regulator);
+    let itself = trail_change(
+        &core,
+        "req-itself",
+        "perm-itself",
+        &operator_as_regulator,
+        &operator,
+    );
+    assert!(policy.grant_permission(&itself).unwrap().permit().is_none());
     let stolen = trail_change(&core, "req-steal", "perm-reg-1", &regulator, &as_operator);
     assert!(
         policy

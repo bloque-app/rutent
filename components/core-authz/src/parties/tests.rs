@@ -255,6 +255,9 @@ impl Sources for Registers {
             }
             // No caller here reaches another party along a chain: each is its own party's alone (`T-021-06`).
             Source::Reaches { .. } | Source::MeetsBelowOperator { .. } => yes(false),
+            // Every caller here takes a stuck order's steps and grants a read as the operator's; the grant fixture's
+            // regulator, `examiner-3`, is no part of the operator's (`T-021-14`).
+            Source::OfOperator => yes(need.input.as_str() != "examiner-3"),
             _ => Reply::Given(Said::Yes),
         }
     }

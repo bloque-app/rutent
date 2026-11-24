@@ -2478,7 +2478,8 @@ mod tests {
                 }),
             ),
             (
-                // By the operator's login holding the permission to grant, the operator's (`T-021-14`).
+                // By the operator's login holding the permission to grant, the operator's, to a grantee that isn't
+                // (`T-021-14`).
                 "grant_permission",
                 Call::Built(|e| {
                     let change: PermissionChange =
@@ -2487,7 +2488,7 @@ mod tests {
                     say(
                         e,
                         vec![holds(by, Permission::GrantRead), of_operator(by)],
-                        [],
+                        [of_operator(&change.grantee)],
                     );
                     e.grant_permission(&change)
                         .is_ok_and(|d| d.permit().is_some())

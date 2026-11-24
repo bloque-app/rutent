@@ -1757,11 +1757,10 @@ owner's click at the release into `main`, and the assembly's register of actors 
      the deployment (`F-030`).
   2. `core-orch`'s `Actors` (intake's and the arrival filing's read of the register) binds party and kind, not role.
      Those reads tell an order's own requester its status and check a filer before policy decides; policy binds the role
-     on every call it decides. Owner: `F-020` (intake), with finding 6's intake read scope.
-  3. A read naming a permission is held to the grantee's party, not its role or login (`Register::refuses`, the log's
-     `permitted-read-rests-on-its-grant`): a login of the regulator's party listed in another role reads by it only
-     where `read_needs` lets that role read at all. Left as built; owner `F-021`, for the owner's form if a read is
-     to be held to the grantee's login.
+     on every call it decides. Owner: `T-020-52` (the coordinator's routing in fix round 1; finding 4 of the review of
+     `30893dd6`).
+  3. ~~A read naming a permission is held to the grantee's party, not its role or login.~~ **Closed in fix round 1**
+     (finding 1 of the review of `30893dd6`): see below.
 - **Red first.** With the shapes in and the rules stubbed (`ActsFor` carrying a fixed role, both grant calls answered by
   no need, the override mapped to the erase scope): the permitted test failed on `revoking alone grants nothing`
   (`NoAccountableParty` for `NotPermitted`), the probe test on the operator's grant (`NoAccountableParty` for `Permit`),
@@ -1781,6 +1780,51 @@ owner's click at the release into `main`, and the assembly's register of actors 
   | the grantee not among the actors a grant names | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `actor_stating_another_party_acts_for_no_one` |
   | the override mapped to the erase scope | `erasure_overriding_citations_is_a_scope_of_its_own` |
   | the assembly's register answers `ActsFor` whatever the role (`Registers::acts_in`) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly`, `policys_sources_answer_from_the_records` |
+
+### T-021-14, fix round 1 (the security review of `30893dd6`, PR #290)
+
+The review confirmed finding 1 of `M3`'s milestone review closed and raised the next layer. Fix commit on top of
+`30893dd6`, `components/core-authz/` (`session/`, `roles/` and their tests, the engine's call table, `parties`'
+register) and `conformance/scenarios/tests/assembly_policy.rs`. No contract shape changes: the log's rows stay
+party-wide, and policy is stricter than the log.
+
+- **Finding 1 (should-fix): a read by a permission is held to the whole grantee.** `Register::refuses` now needs a
+  grant in force whose grantee is the reader: its party, its login and its role, over a scope covering the read. And
+  only a regulator or a checker reads by a permission at all (`read_needs`): the arms that let any other role read by
+  one are gone, so the operator, a verifier, Core, a customer or a provider naming a permission is refused unless
+  another line lets the read through without one. The reviewer's probes are refused cases: `fr-bot` (a verifier) and
+  `fr-ops` (the operator's role) of `fin-regulator` reading by `examiner-3`'s grant, in
+  `read_by_a_permission_is_held_to_its_grantees_login_and_role` (with another regulator login of the party, and
+  `examiner-3` itself listed and reading as a checker) and through the assembly.
+- **Finding 2 (low): no read is granted to the operator's own login.** A grant asks the register's word that the
+  grantee's login is the deployment operator's (`Source::OfOperator`), and a yes refuses it; the grantor granting itself
+  is one case of it, since a grantor is always the operator's. The fixed rule's `Needs` gains `none`, inputs that must
+  each say no. `read_is_never_granted_to_the_operators_own_login`, and through the assembly.
+- **Finding 3 (low): a revocation is held to the grant it names.** `Register::granted` and the revocations kept
+  (`Register::revoked`, now the revocations themselves) match a grant by its permission, grantee and scope together,
+  so revoking a permission while naming another grantee or scope revokes nothing, and the log never records a
+  revocation from a grantee that held nothing. `revocation_is_held_to_the_grant_it_names`.
+- **Finding 4 (low):** `core-orch`'s `Actors` binding the role is left to `T-020-52`, as the coordinator routed it.
+- **Test registers taught the new word** (test artefacts, not Core bugs): `session/tests.rs`' `Says` answers no login
+  but `op-login-2` the operator's; the engine's call table says the grant fixture's grantee isn't; `parties/tests.rs`'
+  register says `examiner-3` isn't. The roles tests' register already followed chains.
+- **Defaults, reversible, each failing closed.** A read by a permission matches the grantee's login as well as its role
+  (the reviewer left the login to the owner's form; holding it is the stricter reading, and a party with several
+  regulator logins needs a grant per login). A grantee whose login the register can't place is a missing input, so a
+  refusal.
+- **Red first.** Each of the three tests failed on its assertion before the fix: `fr-bot` `Allowed`, the operator's
+  self-grant `Permit`, the revocation naming `ex-9` `Permit`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the grant's login not matched to the reader's | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | the grant's role not matched to the reader's | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | any role reads by a permission (`_ if permitted`) | `read_by_a_permission_is_held_to_its_grantees_login_and_role` |
+  | the grantee's `OfOperator` not asked | `read_is_never_granted_to_the_operators_own_login` |
+  | `none` inputs not ruled (a yes passes) | `read_is_never_granted_to_the_operators_own_login` |
+  | a revocation matched by its permission alone | `revocation_is_held_to_the_grant_it_names` |
+  | a revocation's scope not matched | `revocation_is_held_to_the_grant_it_names` |
 
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 

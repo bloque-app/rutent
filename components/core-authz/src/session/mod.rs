@@ -37,17 +37,20 @@
 //!   (`Source::SegmentOrder`), so a permission over an order covers that order's segments and no other's;
 //! - a provider reads only a segment it names itself the provider of, which the segment's record says
 //!   (`Source::SegmentProvider`), and never an order, its state or the trail;
-//! - a regulator's or a checker's read names its permission;
+//! - a regulator's or a checker's read names its permission, and only theirs may: a read naming one is held to the
+//!   grant's grantee, its party, login and role all, not to its party alone (`T-021-14`);
 //! - a customer and a provider read who the deployment's checker is ([`CHECKER`], `REQ-AUD-10`), and any party a
 //!   kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`); any other
 //!   resource rests on a permission;
-//! - any other read, the operator's, a verifier's and Core's own parts' included, rests on a permission.
+//! - no other read rests on a permission: the operator's, a verifier's and Core's own parts' are refused but for their
+//!   own evidence and the operator's read of an order's state.
 //!
 //! A read naming a permission is held to the register: the permission was granted, through
 //! [`Reads::grant_permission`], to the reader's party, its scope covers what the read is of, and it hasn't been
 //! revoked. That rule reads what the engine itself decided, which a fixed rule, a plain function of the request,
 //! can't hold, so it is asked first, beside the fixed rules: its refusal is the answer and the deployment's policy
-//! isn't asked. A revocation is held to it the same way: only a permission granted can be revoked. Who may grant or
+//! isn't asked. A revocation is held to it the same way: only a grant made can be revoked, the one whose permission,
+//! grantee and scope it names, and it revokes that grant alone. Who may grant or
 //! revoke one is `T-021-03`'s rule's, as `T-021-14` gave it: an operator's login the register lists for the one
 //! permission the call is, the deployment operator's by the register (`roles`, "Granting and revoking a read").
 //!
@@ -112,7 +115,8 @@ pub fn instant(at: &Timestamp) -> Instant {
 pub struct Register {
     pub(crate) sessions: Vec<OpenSession>,
     pub(crate) grants: Vec<PermissionChange>,
-    pub(crate) revoked: Vec<Id>,
+    /// The revocations permitted, each of the one grant it names: its permission, grantee and scope (`T-021-14`).
+    pub(crate) revoked: Vec<PermissionChange>,
     /// Core's clock, which bounds each session from the moment it is asked for.
     pub(crate) clock: Box<dyn Clock>,
 }
@@ -222,23 +226,39 @@ impl Register {
         (!open).then_some(RefusalClass::NotPermitted)
     }
 
-    /// Whether `permission` was granted.
-    fn granted(&self, permission: &Id) -> bool {
-        self.grants.iter().any(|g| &g.permission == permission)
+    /// Whether the grant `change` names, its permission to its grantee over its scope, was granted: a revocation
+    /// revokes that grant and no other (`T-021-14`).
+    fn granted(&self, change: &PermissionChange) -> bool {
+        self.grants.iter().any(|g| same_grant(g, change))
     }
 
-    /// Why a read naming a permission is refused, where it is: the permission wasn't granted to the reader's party
-    /// over a scope covering what it reads, or it was revoked (core-internal's rows
-    /// `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`).
+    /// Whether the grant `grant` names was revoked.
+    fn revoked(&self, grant: &PermissionChange) -> bool {
+        self.revoked.iter().any(|r| same_grant(r, grant))
+    }
+
+    /// Why a read naming a permission is refused, where it is: no grant of it in force names the reader, its party,
+    /// its login and its role, over a scope covering what it reads (core-internal's rows
+    /// `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`, which hold the grantee's party alone:
+    /// policy holds the whole grantee, so another login of the grantee's party, or the grantee's own login in another
+    /// role, reads nothing by it, `T-021-14`).
     fn refuses(&self, check: &ReadCheck) -> Option<RefusalClass> {
         let permission = check.permission.as_ref()?;
         let granted = self.grants.iter().any(|g| {
             &g.permission == permission
                 && g.grantee.party == check.reader.party
+                && g.grantee.acts == check.reader.acts
+                && g.grantee.role == check.reader.role
                 && covers(&g.scope, &check.reads)
+                && !self.revoked(g)
         });
-        (!granted || self.revoked.contains(permission)).then_some(RefusalClass::NotPermitted)
+        (!granted).then_some(RefusalClass::NotPermitted)
     }
+}
+
+/// Whether `a` and `b` name one grant: one permission, to one grantee, over one scope.
+fn same_grant(a: &PermissionChange, b: &PermissionChange) -> bool {
+    a.permission == b.permission && a.grantee == b.grantee && a.scope == b.scope
 }
 
 /// The fixed rule's refusal of `asked`, where it needs no input to refuse.
@@ -317,8 +337,12 @@ fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
             input: party.clone(),
             from: Source::Statement(commitment.clone()),
         }],
-        (_, Read::Segment { order, segment, .. }) if permitted => vec![segment_of(order, segment)],
-        _ if permitted => Vec::new(),
+        // Only a regulator or a checker reads by a permission (`T-021-14`): a grant is theirs alone, and the register
+        // of grants holds the read to the grantee's own login and role.
+        (Role::Regulator | Role::Checker, Read::Segment { order, segment, .. }) if permitted => {
+            vec![segment_of(order, segment)]
+        }
+        (Role::Regulator | Role::Checker, _) if permitted => Vec::new(),
         _ => return None,
     };
     Some(needs)
@@ -488,7 +512,7 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
 
     fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
         change.check().map_err(AppendFailure::Refused)?;
-        let answer = if self.register.granted(&change.permission) {
+        let answer = if self.register.granted(change) {
             self.consult(Asked::RevokePermission(change))
         } else {
             Answer::Refuse {
@@ -500,10 +524,8 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
             decision,
         };
         let decision = self.answer(&change.request, &change.by, what, &change.at, answer)?;
-        if matches!(answer, Answer::Permit {})
-            && !self.register.revoked.contains(&change.permission)
-        {
-            self.register.revoked.push(change.permission.clone());
+        if matches!(answer, Answer::Permit {}) && !self.register.revoked(change) {
+            self.register.revoked.push(change.clone());
         }
         Ok(decision)
     }

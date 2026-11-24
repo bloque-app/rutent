@@ -141,12 +141,25 @@ impl Policy for Rules {
 ///
 /// Every actor these tests name acts for the party it states, which the register answers (`Source::ActsFor`,
 /// `T-021-03`), and every agent within its party's scope (`Source::AgentScope`, `T-021-05`); the fixtures' operator's
-/// login, `op-login-2`, is the operator's and holds the permissions to grant and revoke a read (`T-021-14`): those words
-/// are answered here and kept out of `asked`, which counts what the session and read rules ask.
+/// login, `op-login-2`, is the operator's and holds the permissions to grant and revoke a read, and no other login is
+/// the operator's (`T-021-14`): those words are answered here and kept out of `asked`, which counts what the session and
+/// read rules ask.
 #[derive(Default)]
 struct Says {
     says: Vec<(Need, Reply<Said>)>,
     asked: Vec<Need>,
+}
+
+/// What the register says of a login being the operator's (`T-021-14`): only the fixtures' operator's login is, so a
+/// grantee never is.
+fn of_the_operator(need: &Need) -> Option<Said> {
+    matches!(need.from, Source::OfOperator).then(|| {
+        if need.input.as_str() == "op-login-2" {
+            Said::Yes
+        } else {
+            Said::No
+        }
+    })
 }
 
 /// Whether `need` is the register's word that the fixtures' operator's login is the operator's, or holds the
@@ -181,6 +194,9 @@ impl Sources for Says {
         ) || the_operators_grant(need)
         {
             return Reply::Given(Said::Yes);
+        }
+        if let Some(said) = of_the_operator(need) {
+            return Reply::Given(said);
         }
         self.asked.push(need.clone());
         self.says

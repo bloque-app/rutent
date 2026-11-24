@@ -1586,6 +1586,176 @@ fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing()
     );
 }
 
+/// Fix round 1 of `T-021-14`'s review, finding 1: a read naming a permission is held to the grantee's own login and
+/// role, and only a regulator or a checker reads by one. The listed operator grants `examiner-3`, a regulator of
+/// `fin-regulator`, the trail. Other logins of `fin-regulator`, each listed in its own role, read nothing by it: `fr-bot`
+/// as a verifier, `fr-ops` in the operator's role, and `examiner-4`, another regulator; nor does `examiner-3` itself,
+/// listed as a checker too, reading as one. Each refusal is recorded. Asked past the register of grants, the fixed
+/// rule lets no role but a regulator's or a checker's read by a permission. `examiner-3` reads it as the regulator.
+// verifies: REQ-AUZ-7, REQ-AUD-12
+#[test]
+fn read_by_a_permission_is_held_to_its_grantees_login_and_role() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let bot = actor(
+        "fin-regulator",
+        "fr-bot",
+        Role::Verifier,
+        ActorKind::Component,
+    );
+    let ops = actor("fin-regulator", "fr-ops", Role::Operator, ActorKind::Person);
+    let other = actor(
+        "fin-regulator",
+        "examiner-4",
+        Role::Regulator,
+        ActorKind::Person,
+    );
+    let as_checker = actor(
+        "fin-regulator",
+        "examiner-3",
+        Role::Checker,
+        ActorKind::Person,
+    );
+    let register = granting()
+        .listing(&bot)
+        .listing(&ops)
+        .listing(&other)
+        .listing(&as_checker);
+    let mut policy = engine(Kept::world(), register);
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {}
+    );
+    for (n, reader) in [&bot, &ops, &other, &as_checker].into_iter().enumerate() {
+        let read = trail_read(&format!("req-borrow-{n}"), reader, "perm-reg-1");
+        assert_eq!(
+            policy.check_read(&read).unwrap().outcome,
+            ReadOutcome::Refused {
+                class: RefusalClass::NotPermitted
+            },
+            "{reader:?} reads nothing by another login's grant"
+        );
+        assert_eq!(last_entry(&policy.log).who, *reader);
+        assert!(matches!(
+            last_entry(&policy.log).outcome,
+            Outcome::Refused { .. }
+        ));
+    }
+    for (n, reader) in [&bot, &ops].into_iter().enumerate() {
+        let read = trail_read(&format!("req-past-{n}"), reader, "perm-reg-1");
+        assert_eq!(
+            policy.consult(Asked::CheckRead(&read)),
+            NOT_PERMITTED,
+            "{reader:?}: only a regulator or a checker reads by a permission"
+        );
+    }
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-own", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Allowed {}
+    );
+    assert_eq!(
+        policy.policy.1.ruled, 2,
+        "only the grant and the grantee's own read reached policy"
+    );
+}
+
+/// Fix round 1 of `T-021-14`'s review, finding 2: a read is never granted to the operator's own logins. The listed
+/// operator's login, listed in the regulator's role too, grants itself the trail as a regulator, and grants another of
+/// the operator's logins listed as a regulator the same: each refused, and recorded refused. A regulator outside the
+/// operator is granted it.
+// verifies: REQ-AUZ-7, REQ-AUD-10
+#[test]
+fn read_is_never_granted_to_the_operators_own_login() {
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let itself = actor("operator", "op-login-2", Role::Regulator, ActorKind::Person);
+    let colleague = actor("operator", "op-login-g", Role::Checker, ActorKind::Person);
+    let mut policy = engine(
+        Kept::world(),
+        granting().listing(&itself).listing(&colleague),
+    );
+    for (n, grantee) in [&itself, &colleague].into_iter().enumerate() {
+        let change = read_change(&format!("req-own-{n}"), "perm-own", grantee, &operator());
+        let decision = policy.grant_permission(&change).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{grantee:?}");
+        assert!(matches!(
+            policy.log().entry_of(&decision).outcome,
+            Outcome::Refused { .. }
+        ));
+    }
+    assert!(policy.register().grants.is_empty(), "nothing granted");
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {}
+    );
+}
+
+/// Fix round 1 of `T-021-14`'s review, finding 3: a revocation is held to the grant it names, its permission, grantee
+/// and scope together. The operator grants `examiner-3` the trail, then revokes the same permission naming `ex-9` of
+/// `other-reg`, and naming `examiner-3` over another scope: each refused, recorded refused, nothing revoked, and
+/// `examiner-3` still reads. Revoking the grant it names revokes it.
+// verifies: REQ-AUZ-7, REQ-AUD-1
+#[test]
+fn revocation_is_held_to_the_grant_it_names() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let elsewhere = actor("other-reg", "ex-9", Role::Regulator, ActorKind::Person);
+    let mut policy = engine(Kept::world(), granting().listing(&elsewhere));
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {}
+    );
+    let mut over_an_order = read_change("req-v-order", "perm-reg-1", &regulator(), &operator());
+    over_an_order.scope =
+        serde_json::from_value(json!({"kind": "order", "order": "ord-1"})).unwrap();
+    for revoke in [
+        read_change("req-v-other", "perm-reg-1", &elsewhere, &operator()),
+        over_an_order,
+    ] {
+        let decision = policy.revoke_permission(&revoke).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{revoke:?}");
+        assert!(matches!(
+            policy.log().entry_of(&decision).outcome,
+            Outcome::Refused { .. }
+        ));
+        assert!(policy.register().revoked.is_empty(), "nothing revoked");
+        assert_eq!(
+            policy
+                .check_read(&trail_read(
+                    &format!("req-r-{}", revoke.request.as_str()),
+                    &regulator(),
+                    "perm-reg-1"
+                ))
+                .unwrap()
+                .outcome,
+            ReadOutcome::Allowed {},
+            "examiner-3 still reads"
+        );
+    }
+    let revoke = read_change("req-v1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.revoke_permission(&revoke).unwrap().outcome,
+        Answer::Permit {}
+    );
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r-after", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        }
+    );
+}
+
 /// The operator moving value, or giving an authorisation, for a user at an origin reserve that never declared it
 /// can't require the user's own withdrawal is refused for the missing declaration; at one that declared it can, it is
 /// refused outright; a reserve out of reach gives not known. Only at a reserve that declared it is the operator let
