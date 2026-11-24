@@ -960,11 +960,250 @@ that declares no safe retry (seed 110, the simulated exchange), and that nothing
   declarations when a successor advertisement joins; until then a provider can't withdraw safe retry without a release.
 - The record is kept until the transaction's segment ends; a transaction handled with no segment begun is kept until the
   platform stops. Core begins a segment for every transaction, so nothing grows there; owner: `F-013`, if a deployment
-  ever calls `handle` with no segment.
+  ever calls `handle` with no segment. **Closed by `T-013-10`:** the record of an unsegmented operation is freed once
+  its provider's evidence window has passed, and it survives a restart.
 - A foreign-envelope replay to a provider with safe retry rests on the module's envelope check, which the role suite
-  asserts of every module. Owner: `T-025-05`, to review.
+  asserts of every module. Owner: `T-025-05`, to review. **Closed by `T-013-10`:** the platform refuses an operation
+  under a carried-out transaction of another envelope or other terms whatever the provider declares, in a callee's
+  scope too.
 - `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
 
 ### Rule-off table (T-013-09)
 
 See the commit body.
+
+## T-013-10: the platform's carried-out record survives a restart (`f-013/t-013-10-platform-record-durable`)
+
+Finding 3 of `M3`'s milestone review of 2026-11-24 (PR #143), `F-025`'s medium M1, and the review's Low on the same
+record. What the platform carried out under each transaction (`carried`), the segments in flight and the
+transactions that ended (`lifecycle.rs`), and the runs it counted lived in its memory alone, so a platform restarted
+mid-segment handed a repeat to the module again (`INV-8`).
+
+### Design (T-013-10)
+
+- **The port.** `module/record.rs`: `Record`, an append-only sequence of lines (`load`, `append`, `replace`), which
+  the platform writes and reads and nothing else interprets. Two implementations: `FileRecord`, one JSON entry per
+  line, each appended with `sync_data` before the platform goes on, `replace` written to `<name>.replacing`, synced
+  and renamed over, with an exclusive lock on `<name>.lock` held while it is open (a second platform's opening is
+  refused, `WouldBlock`); and `MemoryRecord`, whose clones share one sequence, for the tests that need no disk.
+  A last line with no line break is a write a stop cut off and is not read; any other line the platform can't read
+  refuses the opening.
+- **Opening.** `Platform::new` holds a `MemoryRecord`, as before in effect. `Platform::open(paths, world, envelope,
+  record)` reads every entry back, frees what its evidence window let go of, and replaces the record with what it
+  holds (the transactions that ended, the segments in flight, what was carried out, the runs counted), so the
+  record holds what is live, not every entry ever written. A reopened platform holds no release: each is admitted
+  again, as at any start, and a segment in flight runs on its version once that version is.
+- **The entries, and when each is written.** `carrying` (the operation, its transaction, scope and provider) before
+  the module is handed an operation carried out once (`T-013-09`'s `repeat_key`), unless the record holds that
+  transaction's scope already; `ran` (the provider's version, and the carried-out record where it changed) once the
+  module ran, which also counts the run; `withdrawn` where a `carrying` operation never reached the module (refused
+  as not handled, its process gone before a word); `segment` when a segment begins and after a stale mark moves it;
+  `ended` when a segment ends or a record is freed. `carried` and `runs` are the snapshot `open` writes.
+- **Fail closed, write by write.** A `carrying` entry that can't be written refuses the operation as `Unavailable`,
+  nothing of it run (the contract's reason for "nothing of the operation took effect"; no contract change). A
+  `segment` entry that can't be written refuses `begin_segment` as `Unavailable` and forgets the segment. Every
+  later write is best effort, since what is already written fails closed: a lost `ran` leaves the operation
+  carried out with no answer (refused, or run again where the provider declares a repeat safe); a lost `withdrawn`
+  leaves it carried out; a lost `ended` leaves the segment in flight and its record held.
+- **A platform stopped while the module ran** reopens with the operation carried out and no answer, from its
+  `carrying` entry: a repeat is refused for a provider without safe retry, as one whose first run gave no answer.
+- **`begin_segment` consults the record** (the review's Low): a transaction the platform carried out an operation
+  of with no segment is refused as `DuplicateTransaction`, at its provider or another. A dry run and the read-only
+  kinds carry nothing out, so a segment may begin on theirs.
+- **An unsegmented operation's record is freed** once its provider's declared evidence availability has passed
+  (`REQ-CAT-10`). The sealed `ReleaseJudge` gains `evidence_window(provider) -> Option<u64>`, read with `safe_retry`
+  when a release is admitted or accepted (`declarations.evidence.availability`, bounded seconds; unbounded,
+  undeclared or no advertisement is `None`, kept). The record's `free_at` is the world's clock (`World::now`) when
+  the module ran plus that window, for a transaction no segment holds; the platform frees due records at each
+  top-level `handle`, each `begin_segment` and on opening. Freed means the operations and answers are dropped and
+  the transaction is spent (`Lifecycle::spend`, the same `ended` set a segment's end writes): a repeat is refused,
+  never run, so freeing never trades `INV-8` for storage.
+- **Other terms or another envelope at a safe-retry provider** (the review's Low, `REQ-MDL-14`): `repeated` now
+  refuses as `DuplicateTransaction` an operation under a carried-out transaction whose statement, deployment,
+  protocol version or key differ from the first's, whatever the provider declares; only the same operation is a
+  repeat, answered from the record, or run again where its first run gave no answer. The role suite's `Through`
+  adapters (`module_role.rs`, `sim_providers.rs`) already read `DuplicateTransaction` as the final refusal the replay
+  probe expects, the twin's own, so a foreign replay at a safe provider now stops at the platform as it did for an
+  unsafe one. (The fix round below extends this to callee scopes, and updates both adapters' comments.)
+- **Existing test changed.** `T-013-09`'s unnamed `a_retry_of_another_envelope_reaches_the_module_of_a_provider_with_safe_retry`
+  asserted what this row reverses; it is replaced in `module_repeat.rs` by the row's named test. `T-013-09`'s
+  three named tests are unchanged and pass.
+- **Accessors.** `Platform::carries(transaction)`, whether the platform keeps a record under it;
+  `Lifecycle::segments`, `ended`, `has_ended`, `spend`, `restore_segment` and `forget_segment`.
+- **Tests.** `components/prov/tests/module_record.rs`: the four named restart, segment and window tests, and three
+  more (an operation the record can't hold isn't handed over; a record another platform holds isn't opened; and,
+  inside the first, a platform stopped while the module ran). `module_repeat.rs`: the named other-terms test.
+  `record.rs`'s unit tests: a cut-off last line is dropped, the lock survives `replace`, memory clones share lines.
+
+### Defaults (T-013-10)
+
+- A record entry the platform can't write before it acts refuses the act (`Unavailable`); later entries are best
+  effort, each loss failing closed. Reversible.
+- A freed record spends its transaction: after the evidence window a repeat is refused even at a safe-retry
+  provider, rather than answered (the evidence is gone) or run (a second move). Reversible.
+- Unbounded or undeclared evidence keeps the record for as long as the platform's record lasts.
+- `free_at` runs on the world's clock at the module's answer; a world whose clock can't be read frees nothing.
+- An operation at a safe-retry provider with other terms or another envelope is refused at the platform, not
+  judged by the module.
+
+### Gaps (T-013-10)
+
+- Wiring a `FileRecord` into an assembly that restarts the platform: `T-024-21` (Core and the platform restarted
+  in the invariant runs), and `F-030`'s production assembly for where the file lives. `M3`'s assembly opens
+  `Platform::new`, the memory record, as before.
+- A restarted platform holds no release until each is admitted again: which releases were accepted, which was in
+  force or staged, the staging's counts and the withdrawn versions are not in the record, and a restart's
+  re-admission re-establishes them in the order releases are admitted. The operator's marks and decisions are in it
+  since the fix round below. Owner: `T-013-11`, part (3) of its row (PLAN PR #267), with `F-030`'s start-up
+  re-admitting releases.
+- The `ended` set grows by one line per transaction ever ended, in memory and in the record, as it did in memory
+  before, and is rewritten whole at each opening. Owner: `F-013`, if a deployment's transaction count makes it
+  matter (left as a gap by the coordinator in the fix round).
+- Freeing is swept at each top-level `handle` and `begin_segment`, linear in the records held (the segments in flight
+  and the unsegmented operations within their windows). Owner: `F-013`, an index by `free_at` if it matters.
+- The jail-probes need Linux; CI runs them. This row touches no jail code.
+- `holding_support`'s wallet build counts as current when the shared target directory's `rutent-plain-wallet/built`
+  is newer than this worktree's guest sources, so a worktree with an older guest runs another's newer wallet:
+  locally, `holding_wallet` failed twice on `T-016-05`'s wallet (an unknown order now `Unknown`, not `Refused`) and
+  passed on this tree's own wallet, built into a scratch directory and named by `RUTENT_PLAIN_WALLET`. CI builds
+  fresh. Owner: `F-016`, to key the build by its sources' digest rather than their times.
+- `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
+
+### Rule-off table (T-013-10)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| The `carrying` entry written before the hand-over | `a repeat after the platform restarts moves nothing twice` (stopped while the module ran) |
+| The `Unavailable` refusal of an operation the record can't hold | `an_operation_the_platform_cannot_record_is_not_handed_to_the_module` |
+| Reading the record back in `Platform::open` | `a repeat after the platform restarts moves nothing twice` |
+| The `ended` entry written by `end_segment` | `ended transaction stays ended after the platform restarts` |
+| `begin_segment` consulting the carried-out record | `segment begun on a transaction already carried out is refused` |
+| Freeing after the evidence window (`free_spent`) | `unsegmented operation's record is freed after its evidence window` |
+| A freed record spending its transaction (`Lifecycle::spend`) | `unsegmented operation's record is freed after its evidence window` |
+| Other terms or another envelope refused at a safe-retry provider (`repeated`) | `repeat with other terms under a carried out transaction is refused even with safe retry` |
+| `FileRecord`'s lock | `a_record_another_platform_holds_is_not_opened` |
+| Dropping a cut-off last line (`whole_lines`) | `record::tests::a_file_record_reads_back_what_it_appended_and_drops_a_line_cut_off` |
+
+### Fix round 1 (T-013-10): the security review of `e173cfac` (PR #291)
+
+The fresh reviewer traced every crash point and found none that runs a transaction twice. Its findings, and what
+each became:
+
+1. **A failed append left a fragment for the next entry to be glued to** (should-fix). `FileRecord::append` notes the
+   file's length before it writes; on any failure it cuts the file back to it and syncs, and marks the record
+   broken: every later `append` and `replace` is refused until the record is opened again, so the platform refuses
+   each operation it can't record (`Unavailable`). A cut that fails too leaves a fragment with no line break at the
+   end, which an opening doesn't read, since nothing more is appended. Test:
+   `record::tests::a_write_cut_short_leaves_every_whole_entry_readable_and_the_record_takes_no_more` (a
+   `#[cfg(test)]` short write after a `carrying` entry; the reopening reads that entry back).
+2. **A safe-retry callee ran a call with other terms under one transaction** (should-fix). `repeated` compares the
+   operation before the early return for callee scopes: a callee runs again only the same call. Test:
+   `platform::tests::a_call_with_other_terms_into_a_safe_retry_callee_under_one_transaction_is_refused`, a unit test
+   on `repeated`, since the boundary suite's stand-ins make each call from the caller's own operation and can't vary
+   its terms without a change to that suite.
+3. **The operator's marks weren't kept across a restart** (low, done now). Each decision (`withdraw`, `promote`,
+   `roll_back`, `revoke`, `declare_exploited`, `mark_stale`) is taken on a clone of the lifecycle, and what it
+   changes, the marks it sets, the segments it moves and the decisions it records, is written as one `decided` entry
+   before the platform holds it; one the record can't hold is refused as the new `LifecycleRefusal::Unrecorded`,
+   nothing changed (amended in fix round 2: only a widening decision is refused so). `Platform::open` reads marks and decisions back (`Lifecycle::restore_mark`,
+   `restore_decision`), and `Lifecycle::started` never puts a marked version in force or staging, so an exploited
+   release admitted again after a restart runs nothing. Tests:
+   `segment_restored_after_a_restart_refuses_a_version_declared_exploited`,
+   `a_decision_the_platform_cannot_record_is_not_taken`. Releases themselves stay a gap (above), owned by `T-013-11`.
+4. **Another name got past the lock, and a missing record was made silently** (low). `FileRecord::create` makes a new
+   record (refused where anything is at the path); `FileRecord::open` refuses a missing one (`NotFound`), a path that
+   is a symbolic link or names a file with a second name (`nlink` above 1, on Unix) (`InvalidInput`), and locks
+   `<canonical path>.lock`, so a directory reached through a link takes the same lock. Tests:
+   `record::tests::a_record_is_opened_by_its_own_name_and_never_made_by_opening`, and
+   `a_file_record_is_held_by_one_platform_at_a_time` through a linked directory.
+5. **The directory sync after `replace` was best effort** (low). It is an error now, except where the system can't
+   sync a directory at all (`Unsupported`, `EINVAL`); `FileRecord::create` syncs the directory too. A `replace` that
+   fails marks the record broken, since which file holds its lines is no longer certain.
+6. **The identical-repeat check left out the maker, the shape and the signature scheme** (low). All three are
+   compared; `made_at` and the signature value are left out, as the doc comment says: a retry is the same operation
+   made again later and signed again, and the platform verifies no signature. The named other-terms test adds the
+   maker and the shape (the contract has one signature scheme).
+7. **Stale text** (low). `T-013-09`'s two gaps above are marked closed, and both `Through` comments
+   (`module_role.rs`, and `F-024`'s `sim_providers.rs`, a comment only, at the coordinator's request) say what the
+   platform now refuses.
+
+#### Defaults (fix round 1)
+
+- A record that failed a write takes nothing more until reopened: every operation the platform can't record is
+  refused, which stops the platform carrying out anything until a restart. Fail closed; reversible.
+- A decision the record can't hold is refused, not taken in memory alone.
+- A record is created by an explicit step; opening never creates one.
+- A hard-linked record file is refused outright rather than locked by inode.
+
+#### Rule-off table (fix round 1)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| `append` cutting back to the last whole line (1) | `record::tests::a_write_cut_short_leaves_every_whole_entry_readable_and_the_record_takes_no_more` |
+| No write after a failed one (1) | `record::tests::a_write_cut_short_leaves_every_whole_entry_readable_and_the_record_takes_no_more` |
+| Terms compared before a callee's early return (2) | `platform::tests::a_call_with_other_terms_into_a_safe_retry_callee_under_one_transaction_is_refused` |
+| A decision written before it is taken (3) | `segment_restored_after_a_restart_refuses_a_version_declared_exploited` |
+| A decision refused as `Unrecorded` when it can't be written (3) | `a_decision_the_platform_cannot_record_is_not_taken` |
+| Marks read back on opening (3) | `segment_restored_after_a_restart_refuses_a_version_declared_exploited` |
+| A marked version never started into force (3) | `segment_restored_after_a_restart_refuses_a_version_declared_exploited` |
+| A symbolic link refused (the link check and the not-a-file check, which catches a link too) (4) | `record::tests::a_record_is_opened_by_its_own_name_and_never_made_by_opening` |
+| A second name (hard link) refused (4) | `record::tests::a_record_is_opened_by_its_own_name_and_never_made_by_opening` |
+| Opening never creating a record (4) | `record::tests::a_record_is_opened_by_its_own_name_and_never_made_by_opening` |
+| Maker and shape compared (6) | `repeat with other terms under a carried out transaction is refused even with safe retry` |
+
+### Fix round 2 (T-013-10): the re-review of `b3b1b684` (PR #291)
+
+The re-review found the seven fixes hold and no new crash point. Its findings, and what each became:
+
+1. **An exploit declaration the record couldn't hold was refused, and the exploited version kept running**
+   (should-fix; a regression of fix round 1). After a failed write the record refuses everything, so the operator
+   couldn't stop an exploited version, and dry runs and the read-only kinds still reached it. `decide` now tells a
+   decision that restricts what runs from one that widens it:
+   - **Restrictive** (`declare_exploited`, `revoke`, `mark_stale`): where the record can't hold it, it is taken
+     in memory all the same, by its in-place form (`Lifecycle::declare_exploited_in_place`, `revoke_in_place`,
+     and `mark_stale` itself), its process stopped, and answered `LifecycleRefusal::TakenUnrecorded`: not durable,
+     to be taken again after a restart. The in-place form puts no version back in force: retiring the version in
+     force leaves none in force, since reinstating an older one would widen what runs.
+   - **Widening** (`promote`, `roll_back`, `withdraw`): refused as `Unrecorded`, nothing changed, as before.
+   Tests: `an_exploit_declaration_the_record_cannot_hold_still_stops_the_version` (the reviewer's probe: the mark is
+   held, the process stopped, a dry run refused `VersionExploited`, `operations_run` 0),
+   `a_revocation_the_record_cannot_hold_puts_no_version_back_in_force`, and
+   `a_widening_decision_the_platform_cannot_record_is_not_taken` (replacing
+   `a_decision_the_platform_cannot_record_is_not_taken`).
+2. **The canonical-path rule can be tested** (low). `record::tests::a_record_opened_through_a_directory_link_stays_in_the_directory_it_named`,
+   the reviewer's test: a record opened through a directory link that is then pointed elsewhere still replaces and
+   appends in the directory it named; without canonicalising, the entries split into the other directory.
+3. **The directory-sync error can be tested** (low). A `#[cfg(test)]` thread-local hook, `DIR_SYNC_FAILS`, read by
+   `sync_directory_of` as the cut-short write's hook is read by `append`.
+   `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one`: a failed sync refuses a
+   `replace` and breaks the record, refuses a `create`, and `Unsupported` and `EINVAL` are let through.
+4. **The gaps** (low): the release state is `T-013-11`'s part (3); the `ended` set and now the decision list grow
+   without bound and are rewritten whole at every opening, left as gaps by the coordinator.
+
+The fix round 1 note that two rules had no test that turns them red no longer holds: both have one now (above).
+
+#### Defaults (fix round 2)
+
+- A restrictive decision the record can't hold is taken in memory and reported `TakenUnrecorded`; it is not
+  retried by the platform. The operator takes it again once the platform reopens on a record it can write, and
+  before the release it concerns is admitted again: a version declared exploited unrecorded is unmarked after a
+  restart, and would run once re-admitted. Owner of the start-up that makes this order hold: `T-013-11` part (3),
+  with `F-030`'s start-up.
+- `Record`'s contract says that after a failed write every later write fails until the record is opened again,
+  since each `decided` entry holds only what changed since what the platform holds, so a record that recovered in
+  place would hold later state without an unrecorded mark. The platform holds itself to it whatever the
+  implementation does (`F-030`'s included): after one failed write it sends the record nothing more. Test:
+  `after_a_failed_write_the_platform_writes_nothing_more_even_to_a_record_that_recovered` (approval lows of PR
+  #291).
+- Taken in place, retiring the version in force leaves none in force until the operator decides.
+
+#### Rule-off table (fix round 2)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| A restrictive decision taken when the record can't hold it (1) | `an_exploit_declaration_the_record_cannot_hold_still_stops_the_version` |
+| Taken in place, no version put back in force (1) | `a_revocation_the_record_cannot_hold_puts_no_version_back_in_force` |
+| A widening decision refused when the record can't hold it (1) | `a_widening_decision_the_platform_cannot_record_is_not_taken` |
+| The record opened by its canonical path (2) | `record::tests::a_record_opened_through_a_directory_link_stays_in_the_directory_it_named` |
+| A failed directory sync an error (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |
+| `EINVAL` let through (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |

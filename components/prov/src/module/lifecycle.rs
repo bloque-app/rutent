@@ -267,6 +267,16 @@ pub enum LifecycleRefusal {
     AlreadyMarked,
     /// The staged version has no live process, so it can't be put in force.
     StagedNotRunning,
+    /// The platform couldn't write the decision to its record, so it wasn't taken: a restart would lose it
+    /// (`T-013-10`). Nothing changed. Only promoting, rolling back and withdrawing are refused so; a decision that
+    /// only restricts what runs is taken all the same ([`LifecycleRefusal::TakenUnrecorded`]).
+    Unrecorded,
+    /// The platform couldn't write the decision to its record, but the decision only restricts what runs, so it was
+    /// taken all the same, in memory: a version declared exploited runs nothing and its process is stopped, a
+    /// revoked one takes no new segment, a stale one's segments moved (`T-013-10`, `REQ-MDL-20`). Where it would
+    /// have put another version back in force, it didn't: none is in force until the operator decides. It isn't
+    /// durable: a restart loses it, so it is taken again once the platform reopens on a record it can write.
+    TakenUnrecorded,
 }
 
 #[derive(Debug, Clone)]
@@ -297,9 +307,10 @@ impl Releases {
             || self.staged.as_ref().is_some_and(|s| s.version == version)
     }
 
-    /// Takes `version` out of force or out of staging, as revoking it does: the version in force before it, if
-    /// one is unmarked, is put back in force (a recorded decision of its own), and a staging of it ends.
-    fn retire(&mut self, version: &str) -> Option<String> {
+    /// Takes `version` out of force or out of staging, as revoking it does: where `reinstate` says so, the version
+    /// in force before it, if one is unmarked, is put back in force (a recorded decision of its own), and a staging
+    /// of it ends. Without `reinstate`, no version is in force once the one in force is taken out.
+    fn retire(&mut self, version: &str, reinstate: bool) -> Option<String> {
         if self.staged.as_ref().is_some_and(|s| s.version == version) {
             self.staged = None;
         }
@@ -311,6 +322,7 @@ impl Releases {
             .iter()
             .rev()
             .find(|v| v.as_str() != version && !self.marks.contains_key(v.as_str()))
+            .filter(|_| reinstate)
             .cloned();
         self.in_force.clone_from(&back);
         if let Some(back) = &back {
@@ -383,7 +395,9 @@ impl Lifecycle {
     pub fn started(&mut self, provider: &str, version: &str, placement: Placement, at: Instant) {
         let policy = self.policy;
         let releases = self.providers.entry(provider.to_owned()).or_default();
-        if !releases.accepted.contains(version) {
+        // A version the operator marked, as a restarted platform reads it back before the release is admitted
+        // again, is never put back in force or staged by starting: only a decision does that (`T-013-10`).
+        if !releases.accepted.contains(version) || releases.marks.contains_key(version) {
             return;
         }
         match (placement, policy) {
@@ -598,6 +612,69 @@ impl Lifecycle {
         Some(record)
     }
 
+    /// Every segment in flight.
+    pub fn segments(&self) -> impl Iterator<Item = &SegmentRecord> {
+        self.segments.values()
+    }
+
+    /// Every transaction that ended: its segment ended, or it was spent with none ([`Lifecycle::spend`]).
+    pub fn ended(&self) -> impl Iterator<Item = &str> {
+        self.ended.iter().map(String::as_str)
+    }
+
+    /// Whether `transaction` ended.
+    pub fn has_ended(&self, transaction: &str) -> bool {
+        self.ended.contains(transaction)
+    }
+
+    /// Ends `transaction` whether or not a segment holds it: its segment, if any, is dropped, and it never begins
+    /// another nor runs anything more. The platform's record read back on opening, and a carried-out transaction
+    /// whose record is freed (`T-013-10`).
+    pub fn spend(&mut self, transaction: &str) {
+        self.segments.remove(transaction);
+        self.ended.insert(transaction.to_owned());
+    }
+
+    /// Holds `record` as a segment in flight, as the platform's record says it was when the platform stopped
+    /// (`T-013-10`). A transaction that ended stays ended.
+    pub fn restore_segment(&mut self, record: SegmentRecord) {
+        if !self.ended.contains(&record.transaction) {
+            self.segments.insert(record.transaction.clone(), record);
+        }
+    }
+
+    /// Every mark the operator set: each provider's version and its mark.
+    pub fn marks(&self) -> impl Iterator<Item = (&str, &str, Mark)> {
+        self.providers.iter().flat_map(|(provider, releases)| {
+            releases
+                .marks
+                .iter()
+                .map(move |(version, mark)| (provider.as_str(), version.as_str(), *mark))
+        })
+    }
+
+    /// Holds `mark` on the provider's `version`, as the platform's record says the operator set it, before or
+    /// whether or not that version's release is admitted again (`T-013-10`): a version marked exploited runs
+    /// nothing, one revoked takes no new segment, and neither is put in force by starting.
+    pub fn restore_mark(&mut self, provider: &str, version: &str, mark: Mark) {
+        self.providers
+            .entry(provider.to_owned())
+            .or_default()
+            .marks
+            .insert(version.to_owned(), mark);
+    }
+
+    /// Holds `decision` as one recorded before the platform restarted (`T-013-10`).
+    pub fn restore_decision(&mut self, decision: Decision) {
+        self.decisions.push(decision);
+    }
+
+    /// Drops the segment of `transaction` that just began, which the platform couldn't record: as if it never
+    /// began, its transaction free to begin. What the staging counted of it stays counted.
+    pub fn forget_segment(&mut self, transaction: &str) {
+        self.segments.remove(transaction);
+    }
+
     /// Every decision recorded, in order.
     pub fn decisions(&self) -> &[Decision] {
         &self.decisions
@@ -705,11 +782,32 @@ impl Lifecycle {
         self.retire(
             provider,
             version,
-            Mark::Revoked,
-            DecisionKind::Revoked,
+            (Mark::Revoked, DecisionKind::Revoked),
             by,
             at,
+            true,
         )
+    }
+
+    /// [`Lifecycle::revoke`], putting no version back in force: revoking the version in force leaves none in force
+    /// until the operator decides. What the platform takes when it can't record a revocation, since putting a
+    /// version in force widens what runs (`T-013-10`).
+    pub fn revoke_in_place(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.retire(
+            provider,
+            version,
+            (Mark::Revoked, DecisionKind::Revoked),
+            by,
+            at,
+            false,
+        )
+        .map(|_| ())
     }
 
     /// Declares the provider's `version` actively exploited, by `by`: it is revoked, and runs nothing more, so its
@@ -725,21 +823,42 @@ impl Lifecycle {
         self.retire(
             provider,
             version,
-            Mark::Exploited,
-            DecisionKind::DeclaredExploited,
+            (Mark::Exploited, DecisionKind::DeclaredExploited),
             by,
             at,
+            true,
         )
+    }
+
+    /// [`Lifecycle::declare_exploited`], putting no version back in force: declaring the version in force
+    /// exploited leaves none in force until the operator decides. What the platform takes when it can't record the
+    /// declaration: the exploited version stops all the same (`T-013-10`, `REQ-MDL-20`).
+    pub fn declare_exploited_in_place(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.retire(
+            provider,
+            version,
+            (Mark::Exploited, DecisionKind::DeclaredExploited),
+            by,
+            at,
+            false,
+        )
+        .map(|_| ())
     }
 
     fn retire(
         &mut self,
         provider: &str,
         version: &str,
-        mark: Mark,
-        kind: DecisionKind,
+        (mark, kind): (Mark, DecisionKind),
         by: &str,
         at: Instant,
+        reinstate: bool,
     ) -> Result<Option<String>, LifecycleRefusal> {
         let by = Identifier::new(by).ok_or(LifecycleRefusal::NoActor)?;
         let releases = self
@@ -754,7 +873,7 @@ impl Lifecycle {
             _ => {}
         }
         releases.marks.insert(version.to_owned(), mark);
-        let back = releases.retire(version);
+        let back = releases.retire(version, reinstate);
         self.record(provider, version, kind, by.clone(), at);
         if let Some(back) = &back {
             self.record(provider, back, DecisionKind::Reinstated, by, at);
