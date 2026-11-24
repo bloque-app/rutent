@@ -40,7 +40,8 @@ use std::collections::BTreeSet;
 
 use num_bigint::BigUint;
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Fee, ReserveMovementOutcome, ResultBody, TransferOutcome,
+    ConversionOutcome, Fee, Payouts, ReserveDirection, ReserveMovementOutcome, ResultBody,
+    TransferOutcome,
 };
 use rutent_contracts::router_api::{
     Candidate, DecisionRecord, DropReason, Endpoint, Figure, FigureValue, Id, Objective, Operation,
@@ -102,6 +103,9 @@ pub enum Check {
     /// outranked candidate's `by` is kept or outranked and ranks ahead of it; a choice round with such a candidate
     /// chooses (`REQ-QTE-11`).
     RankingFollowsTheObjective,
+    /// No kept or outranked candidate ends a part on a deposit at a reserve tuple that declares `batched` payouts,
+    /// and a `batched_payout` reason names only such a deposit (`REQ-ORD-33`, `T-020-43`).
+    NoRouteEndsOnABatchingReserve,
 }
 
 impl Check {
@@ -115,6 +119,7 @@ impl Check {
             Check::OutrankedCandidatesAreEligible => "outranked-candidates-are-eligible",
             Check::CallsFollowTheDeclarations => "calls-follow-the-declarations",
             Check::RankingFollowsTheObjective => "ranking-follows-the-objective",
+            Check::NoRouteEndsOnABatchingReserve => "no-route-ends-on-a-batching-reserve",
         }
     }
 }
@@ -176,6 +181,7 @@ pub fn recompute(record: &DecisionRecord) -> Recomputed {
     reader.rate_cycles_are_not_followed(&mut findings);
     reader.outranked_candidates_are_eligible(&mut findings);
     reader.calls_follow_the_declarations(&mut findings);
+    reader.no_route_ends_on_a_batching_reserve(&mut findings);
     let choice = reader.ranking_follows_the_objective(&mut findings);
     Recomputed { findings, choice }
 }
@@ -666,6 +672,36 @@ impl<'a> Reader<'a> {
             trial.chosen = Some(id.clone());
         }
         trial.check().map_err(|v| v.to_string())
+    }
+
+    /// Whether `candidate` ends a part on a deposit at a reserve tuple declaring `batched` payouts.
+    fn ends_on_a_batching_reserve(&self, candidate: &Candidate) -> bool {
+        candidate.parts.iter().any(|part| {
+            matches!(&self.cited(part.operations.last()).tuple.value,
+                FigureValue::ReserveTuple { tuple }
+                    if tuple.direction() == Some(ReserveDirection::Deposit)
+                        && tuple.payouts() == Payouts::Batched)
+        })
+    }
+
+    fn no_route_ends_on_a_batching_reserve(&self, findings: &mut Vec<Finding>) {
+        for candidate in &self.record.candidates {
+            let ends = self.ends_on_a_batching_reserve(candidate);
+            let detail = match &candidate.dropped {
+                Some(DropReason::BatchedPayout { .. }) if !ends => {
+                    "is dropped for a batched payout, but no part ends on a deposit at a reserve that batches payouts"
+                }
+                None | Some(DropReason::Outranked { .. }) if ends => {
+                    "is kept or outranked, but a part ends on a deposit at a reserve that batches payouts"
+                }
+                _ => continue,
+            };
+            findings.push(Finding {
+                check: Check::NoRouteEndsOnABatchingReserve,
+                candidate: Some(candidate.candidate_id.clone()),
+                detail: detail.to_owned(),
+            });
+        }
     }
 
     fn outranked_candidates_are_eligible(&self, findings: &mut Vec<Finding>) {

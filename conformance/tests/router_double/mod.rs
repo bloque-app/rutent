@@ -64,6 +64,9 @@ pub const LEAVES_OUT_CALLS: u8 = 10;
 /// Judges the floor on what arrives before the operator's fee, as routers before `T-020-02` did.
 pub const FLOOR_BEFORE_THE_FEE: u8 = 11;
 
+/// Routes to a deposit at a reserve that batches payouts, as routers before `T-020-43` did.
+pub const ENDS_ON_BATCHING_RESERVE: u8 = 12;
+
 /// The reference double, with one flaw or none.
 pub struct Reference<const FLAW: u8>;
 
@@ -675,6 +678,20 @@ impl<'a, const FLAW: u8> Search<'a, FLAW> {
                 });
             }
             None => {}
+        }
+        // A route ends on no deposit at a reserve that batches payouts: one movement closes one order's part
+        // (`REQ-ORD-33`, `T-020-43`).
+        if FLAW != ENDS_ON_BATCHING_RESERVE
+            && let Some(tuple) = found.tuples.last()
+            && matches!(&self.figure(&Id::new(tuple.clone()).expect("an id")).value,
+                FigureValue::ReserveTuple { tuple: t }
+                    if matches!(t.origin, NodeRef::Inner(_))
+                        && t.payouts() == rutent_contracts::provider_role::Payouts::Batched)
+        {
+            return Some(DropReason::BatchedPayout {
+                part: 0,
+                operation: last,
+            });
         }
         let operations: Vec<&Operation> = found.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations

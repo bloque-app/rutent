@@ -356,6 +356,12 @@ fn deposit(s: &mut Snapshot, id: &str, by: Party, price: Value) {
     );
 }
 
+/// States `payouts: batched` on the tuple the last `deposit` advertised.
+fn batching(s: &mut Snapshot) {
+    let tuple = s.figures.len() - 2;
+    s.figures[tuple]["value"]["tuple"]["payouts"] = json!("batched");
+}
+
 /// The AC-2 network's advertised figures.
 fn ac2_advertised(s: &mut Snapshot) {
     withdrawal(s);
@@ -674,6 +680,14 @@ fn policy_case() -> Case {
         RESERVE_WALLET,
         json!({ "fee": fee("0", "1", "2000"), "settlement_seconds": 120 }),
     );
+    // A deposit at a reserve that pays out in batches: no route ends on it (`REQ-ORD-33`, `T-020-43`).
+    deposit(
+        &mut s,
+        "f-dep-batched",
+        RESERVE_WALLET_2,
+        json!({ "fee": fee("0", "1", "2000"), "settlement_seconds": 120 }),
+    );
+    batching(&mut s);
     deposit(
         &mut s,
         "f-dep-greedy",
@@ -727,6 +741,10 @@ fn policy_case() -> Case {
             (vec!["f-w", "f-ex-unpriced"], "no_price"),
             (vec!["f-w", "f-ex-fast", "f-ramp-dear"], "fee_above_amount"),
             (vec!["f-w", "f-ex-fast", "f-ramp-all"], "nothing_delivered"),
+            (
+                vec!["f-w", "f-ex-fast", "f-ramp-x", "f-dep-batched"],
+                "batched_payout",
+            ),
         ],
     }
 }

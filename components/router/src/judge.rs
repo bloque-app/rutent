@@ -3,7 +3,8 @@
 //! First, a path cut short at an operation that can't be followed: its net beyond its price's levels, its tuple
 //! with no price, its price's fee above what reaches it, or nothing delivered short of the destination
 //! (router-api 3.0.0). Such a path's last part needn't reach the destination, which only these four reasons
-//! allow, so they come before every other. Then excluded by
+//! allow, so they come before every other. Then a deposit at a reserve that batches payouts, which ends no
+//! route (`batched_payout`, `T-020-43`); excluded by
 //! policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
 //! judgement of no; an operation outside its band or its price's levels, judged on what enters it after the fees
 //! before it, in its own unit (`REQ-QTE-12`); over a ceiling, counting what its operations produce and the
@@ -61,6 +62,18 @@ impl Search<'_> {
                 });
             }
             None => {}
+        }
+        // A route ends on no reserve that batches payouts: one movement evidences one order's close, so Core
+        // could never close an order on it (`REQ-ORD-33`, `T-020-43`). Its part's last operation is its deposit.
+        if path
+            .segments
+            .last()
+            .is_some_and(|&s| self.segments[s].batches_payouts())
+        {
+            return Some(DropReason::BatchedPayout {
+                part: 0,
+                operation: last,
+            });
         }
         let operations: Vec<&Operation> = path.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations

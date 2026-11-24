@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::provider_role::{Band, Denomination, NodeRef};
+use rutent_contracts::provider_role::{Band, Denomination, NodeRef, Payouts, ReserveDirection};
 use rutent_contracts::router_api::{
     CatalogueSnapshot, Endpoint, FeeFormula, Figure, FigureValue, Id, OperationKind, Pricing,
 };
@@ -49,6 +49,17 @@ impl Segment<'_> {
                 (Some(min), Some(max)) => &min <= amount && amount <= &max,
                 _ => false,
             })
+    }
+}
+
+impl Segment<'_> {
+    /// Whether the tuple is a deposit at a reserve that pays out in batches: one movement may pay several orders,
+    /// so no order's close can rest on it alone, and no route ends here (`REQ-ORD-33`, `T-020-43`). A tuple that
+    /// declares nothing pays per order.
+    pub(crate) fn batches_payouts(&self) -> bool {
+        matches!(&self.tuple.value, FigureValue::ReserveTuple { tuple }
+            if tuple.direction() == Some(ReserveDirection::Deposit)
+                && tuple.payouts() == Payouts::Batched)
     }
 }
 

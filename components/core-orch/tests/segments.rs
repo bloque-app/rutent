@@ -25,7 +25,7 @@ use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey};
 use rutent_core_orch::segments::{
     Answered, Live, Modules, NoProxy, Parts, ProvidersWord, Ran, SegmentOutcome, Segments,
 };
-use rutent_core_orch::snapshot::{Clock, Exposures, Reading};
+use rutent_core_orch::snapshot::{Clock, Exposures, Reading, RouteRefusal};
 use rutent_prov::catalogue::{Catalogue, Instant};
 use rutent_prov::module::lifecycle::{LifecycleRefusal, Move, MoveReason, SegmentRecord};
 use rutent_prov::module::types::Events;
@@ -318,6 +318,50 @@ fn admitting() -> Catalogue {
     catalogue
 }
 
+/// `admitting()`, with the route's final reserve, `reserve-wallet`, joined too: its deposit from `ledger-in` to
+/// `polygon`, declaring `payouts` as given (`None` for no declaration), at the same publisher as the first reserve.
+fn admitting_with_wallet(payouts: Option<&str>) -> Catalogue {
+    use rutent_contracts::provider_role::EvidenceGrade;
+    use rutent_prov::catalogue::tuples_of;
+    let ad = snapshot_support::reserve("reserve-wallet", "bank-co");
+    let mut value = serde_json::to_value(&ad).unwrap();
+    let mut tuple = json!({
+        "origin": "ledger-in", "destination": { "network": "polygon" }, "asset": "USDC",
+        "decimals": { "origin": 6, "destination": 6 },
+        "terms": { "bands": [{ "min": "1", "max": "1000000000000" }], "reporting": "gross", "required_inputs": [] },
+    });
+    if let Some(payouts) = payouts {
+        tuple["payouts"] = payouts.into();
+    }
+    value["offers"]["reserve"]["tuples"] = json!([tuple]);
+    value["private_nodes"] = json!(["ledger-in"]);
+    let ad: rutent_contracts::provider_role::Advertisement = serde_json::from_value(value).unwrap();
+    let mut catalogue = admitting();
+    catalogue
+        .grant(snapshot_support::grant("g-1", &ad, 5_000_000_000))
+        .unwrap();
+    catalogue
+        .trust_advertising_key(
+            "g-1",
+            snapshot_support::public_key(&snapshot_support::advertising_key("reserve-wallet")),
+        )
+        .unwrap();
+    let keys = snapshot_support::keys_of(
+        "reserve-wallet",
+        &[&snapshot_support::statements_key("reserve-wallet", 1)],
+    );
+    catalogue
+        .join(
+            &snapshot_support::advertisement_bytes(&ad, keys, snapshot_support::JOINED_AT),
+            Instant(snapshot_support::JOINED_AT),
+        )
+        .unwrap();
+    for key in tuples_of(&ad) {
+        catalogue.set_evidence_floor(key, EvidenceGrade::Statement);
+    }
+    catalogue
+}
+
 fn core() -> Actor {
     Actor {
         party: id("rutent"),
@@ -367,9 +411,13 @@ fn record_naming_a_call() -> DecisionRecord {
 
 /// Runs the record's first part over `modules`, with a log, a store and policy permitting every move.
 fn run(modules: &mut Fake) -> (Ran, KeptLog) {
+    run_over(modules, admitting())
+}
+
+/// [`run`] over `catalogue`.
+fn run_over(modules: &mut Fake, catalogue: Catalogue) -> (Ran, KeptLog) {
     let record = record_naming_a_call();
     let clock = TestClock(Cell::new(Reading::at(1_794_200_000)));
-    let catalogue = admitting();
     let mut log = KeptLog::default();
     let mut store = Store::default();
     let mut policy = Permitting(0);
@@ -585,4 +633,41 @@ fn segment_result_restated_by_a_relay_is_recorded_naming_the_relay() {
     modules.answer = Some(result_of("reserve-bank-co"));
     let (_, log) = run(&mut modules);
     assert_eq!(relays_of(&log, "reserve-bank-co"), vec![None]);
+}
+
+/// The part's final deposit is at `reserve-wallet`, which declares `batched` payouts: one movement may pay several
+/// orders, and a movement evidences one order's close, so the part could never close. The route guard refuses it at
+/// the part's first segment, naming the deposit's place, and nothing is recorded as handed over or moved.
+// verifies: REQ-ORD-33
+#[test]
+fn route_chosen_to_end_on_a_reserve_that_batches_payouts_is_refused_before_anything_is_handed_over()
+{
+    let mut modules = fake();
+    let (ran, log) = run_over(&mut modules, admitting_with_wallet(Some("batched")));
+    let Ran::Refused { refused, .. } = &ran else {
+        panic!("{ran:?}");
+    };
+    assert_eq!(refused.reason, RouteRefusal::BatchedPayout(2));
+    assert!(modules.judged.is_empty(), "no segment was handed over");
+    assert!(
+        log.0.iter().all(|e| !matches!(
+            e,
+            Entry::Verified(v) if matches!(v.what, What::Effect { .. })
+        )),
+        "no effect was recorded"
+    );
+}
+
+/// The same route over a reserve that declares `per_order`, or nothing, is handed over as before.
+// verifies: REQ-ORD-33
+#[test]
+fn route_ending_on_a_reserve_that_pays_per_order_is_handed_over() {
+    for payouts in [Some("per_order"), None] {
+        let mut modules = fake();
+        let (ran, _) = run_over(&mut modules, admitting_with_wallet(payouts));
+        assert!(
+            matches!(ran, Ran::Segments(_)),
+            "{payouts:?} is routed through: {ran:?}"
+        );
+    }
 }
