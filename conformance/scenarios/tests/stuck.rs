@@ -250,6 +250,7 @@ fn decide(
     evidence: &[rutent_contracts::module_interface::Digest],
 ) -> Result<rutent_contracts::core_internal::Decision, ResolveError> {
     let (order, part) = (id(&core.named.order), id(PART));
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.decide(
             parts,
@@ -261,6 +262,7 @@ fn decide(
                 resolution,
                 evidence,
             },
+            &history,
         )
     })
 }
@@ -2241,6 +2243,7 @@ fn known_outcome(
     evidence: &Receipt,
 ) -> Result<Moved, ResolveError> {
     let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.known_outcome(
             parts,
@@ -2253,6 +2256,7 @@ fn known_outcome(
             },
             outcome,
             &Stated::for_tests(evidence.clone(), Some(outcome)),
+            &history,
         )
     })
 }
@@ -2271,6 +2275,7 @@ fn confirm_outcome(
     evidence: &Receipt,
 ) -> Result<Moved, ResolveError> {
     let (order, carries_out, actor) = (id(order), decided(decision), segments_support::core());
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.confirm_outcome(
             parts,
@@ -2285,6 +2290,7 @@ fn confirm_outcome(
                 evidence: &Stated::for_tests(evidence.clone(), None),
                 core: &actor,
             },
+            &history,
         )
     })
 }
@@ -2907,6 +2913,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     let (result, other) = results_after_the_resolution(&mut core);
     let mut unbuilt = Unbuilt::new(PolicyPath(Rc::clone(&core.log)));
     let (order, carries_out, actor) = (id(ORDER), decided(&first), segments_support::core());
+    let history = core.recorded();
     let reported = on_parts(&mut core, |parts| {
         stuck.known_outcome(
             parts,
@@ -2919,6 +2926,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
             },
             Resolved::Done,
             &Stated::for_tests(result.clone(), Some(Resolved::Done)),
+            &history,
         )
     });
     assert!(
@@ -2956,6 +2964,7 @@ fn report_segment(
     evidence: &Receipt,
 ) -> Result<Moved, ResolveError> {
     let (order, part, segment) = (id(ORDER), id(PART), id(segment));
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.report_segment_outcome(
             parts,
@@ -2968,6 +2977,7 @@ fn report_segment(
             },
             outcome,
             &Stated::for_tests(evidence.clone(), Some(outcome)),
+            &history,
         )
     })
 }
@@ -2986,6 +2996,7 @@ fn confirm_segment(
 ) -> Result<Moved, ResolveError> {
     let (order, part, segment, actor) =
         (id(ORDER), id(PART), id(segment), segments_support::core());
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.confirm_segment_outcome(
             parts,
@@ -3001,6 +3012,7 @@ fn confirm_segment(
                 evidence: &Stated::for_tests(evidence.clone(), None),
                 core: &actor,
             },
+            &history,
         )
     })
 }
@@ -3168,6 +3180,15 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
     ));
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+/// The commitment of the stated entry `receipt` names: the digest a decision's evidence names the statement by.
+fn commitment_of(core: &Core, receipt: &Receipt) -> rutent_contracts::module_interface::Digest {
+    let at = usize::try_from(u64::from(receipt.index)).expect("a place");
+    match &core.log.borrow().entries[at].0 {
+        rutent_contracts::core_internal::Entry::Stated(s) => s.commitment.clone(),
+        other => panic!("a statement: {other:?}"),
+    }
 }
 
 /// The transaction the log's first stuck decision named for its resolution.
@@ -3595,7 +3616,16 @@ struct Silent {
 }
 
 fn silent_withdrawal() -> Silent {
-    let mut world = World::two_parties();
+    silent_withdrawal_in(World::two_parties())
+}
+
+/// [`silent_withdrawal`] at one reserve, which runs the whole route, with [`OTHER_RESERVE`] installed beside it,
+/// running nothing of the order: a provider outside it (`T-020-40`).
+fn silent_withdrawal_at_one_reserve() -> Silent {
+    silent_withdrawal_in(World::of(&[RESERVE, OTHER_RESERVE]))
+}
+
+fn silent_withdrawal_in(mut world: World) -> Silent {
     let mut core = Core::over(&mut world);
     world
         .fleet
@@ -3653,6 +3683,7 @@ impl Silent {
         let who = self.mover();
         let (order, part, segment) = (id(ORDER), id(PART), id(WITHDRAWAL));
         let (stuck, policy) = (&mut self.stuck, &mut self.policy);
+        let history = self.core.recorded();
         on_parts(&mut self.core, |parts| {
             stuck.report_segment_outcome(
                 parts,
@@ -3665,6 +3696,7 @@ impl Silent {
                 },
                 outcome,
                 evidence,
+                &history,
             )
         })
     }
@@ -3677,6 +3709,7 @@ impl Silent {
     ) -> Result<Moved, ResolveError> {
         let (order, part, segment) = (id(ORDER), id(PART), id(WITHDRAWAL));
         let (stuck, policy) = (&mut self.stuck, &mut self.policy);
+        let history = self.core.recorded();
         on_parts(&mut self.core, |parts| {
             stuck.decline_segment_outcome(
                 parts,
@@ -3691,6 +3724,7 @@ impl Silent {
                     reported_with: report.2.receipt(),
                     evidence,
                 },
+                &history,
             )
         })
     }
@@ -3708,6 +3742,7 @@ impl Silent {
             segments_support::core(),
         );
         let (stuck, policy) = (&mut self.stuck, &mut self.policy);
+        let history = self.core.recorded();
         on_parts(&mut self.core, |parts| {
             stuck.confirm_segment_outcome(
                 parts,
@@ -3723,6 +3758,7 @@ impl Silent {
                     evidence,
                     core: &actor,
                 },
+                &history,
             )
         })
     }
@@ -3742,6 +3778,7 @@ impl Silent {
             segments_support::core(),
         );
         let (stuck, policy) = (&mut self.stuck, &mut self.policy);
+        let history = self.core.recorded();
         on_settling(
             &mut self.core,
             &self.world.catalogue,
@@ -3763,6 +3800,7 @@ impl Silent {
                         core: &actor,
                     },
                     settling,
+                    &history,
                 )
             },
         )
@@ -4168,89 +4206,63 @@ fn segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed
     m.admitted();
 }
 
-/// The consequence of the owner's ruling that a confirmer's evidence comes from a party the order involves
-/// (`confirmer-evidence-party`, `T-020-39`), pinned until the owner rules on it: a stuck part of an order that only ever
-/// involved one party, the reserve that ran its whole route and holds its value, has nobody to confirm a silent
-/// resolution. Its mover reports the move done on that reserve's own word. A confirmation on the word of a reserve
-/// outside the order is refused by the log's rule; with the log refusing it, as the real log does on append, it changes
-/// nothing. One on the reporter's own maker's word is refused as no other party's. The part stays held, its outcome
-/// unknown, so it can't be decided again.
-// verifies: REQ-AUZ-4, INV-2
+/// A confirmation naming a provider outside the order's word frees nothing (`confirmer-evidence-party`,
+/// `T-020-40`): a stuck part of an order that only ever involved one party, the reserve that ran its whole route and
+/// holds its value, has nobody to confirm a silent resolution. Its mover reports the move done on that reserve's own
+/// word. A confirmation on the word of a reserve outside the order is refused by Core before policy is asked or the
+/// log is, so nothing is recorded and the log has nothing to refuse; one on another statement of the reporter's own
+/// party is refused too, and one on the reporter's own statement is no other statement. The part stays held, its
+/// outcome unknown, so it can't be decided again, until the owner rules on the part with no second party
+/// (`REQ-AUZ-4`, `REQ-ORD-28`).
+// verifies: INV-2, AC-6
 #[test]
-fn silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party() {
-    use rutent_contracts::core_internal::calls::AppendFailure;
+fn confirmation_naming_an_outside_providers_word_frees_nothing() {
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     // The order stuck at one party, its resolution moved with no answer and reported done on the reserve's word.
-    let reported = || {
-        let (world, mut core, mut stuck) = stuck_at_one_party();
-        let mut policy = PermitsEveryStep::new(&core.log);
-        let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
-        let first = decide(
-            &mut core,
-            &mut stuck,
-            &mut policy,
-            &alice,
-            &back_to_origin(AMOUNT),
-            &evidence(),
-        )
-        .unwrap();
-        let Ok(Moved::CarriedOut {
-            resolved: Resolved::Unknown,
-            ..
-        }) = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
-        else {
-            panic!("unknown");
-        };
-        // The reserve's own result, and an outside reserve's, both about the resolution's transaction.
-        let (result, outside) = results_after_the_resolution(&mut core);
-        assert_eq!(
-            known_outcome(
-                &mut core,
-                &mut stuck,
-                &mut policy,
-                ORDER,
-                &first,
-                &bob,
-                Resolved::Done,
-                &result
-            ),
-            Ok(Moved::AwaitsConfirmation { report: 1 })
-        );
-        (world, core, stuck, policy, first, result, outside)
+    let (world, mut core, mut stuck) = stuck_at_one_party();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    let Ok(Moved::CarriedOut {
+        resolved: Resolved::Unknown,
+        ..
+    }) = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
+    else {
+        panic!("unknown");
     };
-    let (world, mut core, mut stuck, mut policy, first, result, outside) = reported();
+    // The reserve's own result, and an outside reserve's, both about the resolution's transaction.
+    let (result, outside) = results_after_the_resolution(&mut core);
     assert_eq!(origin_reserve(), last_reserve(), "one party ran the route");
     assert_eq!(
         second_reserve(),
         OTHER_RESERVE,
         "the other reserve runs nothing of it"
     );
-    // The log's rule refuses a confirmation on the outside reserve's word: this log takes it, the log's checks don't.
-    let at = core.log.borrow().entries.len();
-    let _ = confirm_outcome(
-        &mut core,
-        &mut stuck,
-        &mut policy,
-        ORDER,
-        &first,
-        &alice,
-        (Resolved::Done, 1, &result),
-        &outside,
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &result
+        ),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
     );
-    let refused = core.admitted(&world.catalogue).unwrap_err();
-    assert_eq!(refused.0, at, "the confirmation is the entry refused");
-    assert!(
-        refused
-            .1
-            .contains("an outcome's evidence is made by a party its order involves"),
-        "{refused:?}"
-    );
-    drop((world, core, stuck));
-
-    // With the log refusing it, as the real log does on append, the confirmation changes nothing.
-    let (world, mut core, mut stuck, mut policy, first, result, outside) = reported();
-    policy.log_refuses_outcomes = true;
-    assert!(matches!(
+    // Core refuses a confirmation on the outside reserve's word: policy is asked nothing, nothing is recorded, and the
+    // log has nothing of it to refuse.
+    let (asked, entries) = (policy.asked, core.log.borrow().entries.len());
+    assert_eq!(
         confirm_outcome(
             &mut core,
             &mut stuck,
@@ -4259,14 +4271,17 @@ fn silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party() 
             &first,
             &alice,
             (Resolved::Done, 1, &result),
-            &outside
+            &outside,
         ),
-        Err(ResolveError::Append(AppendFailure::Refused(_)))
-    ));
-    policy.log_refuses_outcomes = false;
-    // The reporter's own maker's word confirms nothing: another party's is needed.
-    let before = core.log.borrow().entries.len();
-    assert!(
+        Err(ResolveError::OutsideTheOrder)
+    );
+    assert_eq!(
+        (policy.asked, core.log.borrow().entries.len()),
+        (asked, entries)
+    );
+    // The reporter's own maker's word confirms nothing: it is the report's own evidence, and another statement of
+    // its party is no other party's.
+    assert_eq!(
         confirm_outcome(
             &mut core,
             &mut stuck,
@@ -4276,13 +4291,28 @@ fn silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party() 
             &alice,
             (Resolved::Done, 1, &result),
             &result
-        )
-        .is_err()
+        ),
+        Err(ResolveError::NoEvidence)
+    );
+    let transaction = decided_transaction(&core);
+    let again = result_without_a_question(&mut core, origin_reserve(), transaction.as_str());
+    let (asked, entries) = (policy.asked, core.log.borrow().entries.len());
+    assert_eq!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 1, &result),
+            &again
+        ),
+        Err(ResolveError::ReportersOwnParty)
     );
     assert_eq!(
-        core.log.borrow().entries.len(),
-        before,
-        "nothing confirmed is recorded"
+        (policy.asked, core.log.borrow().entries.len()),
+        (asked, entries)
     );
     assert_eq!(
         outcome_decisions(&core),
@@ -4305,4 +4335,234 @@ fn silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party() 
     );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry it took");
+}
+
+/// The statement a resolution rests on is a party's word about the order, at each step that names one
+/// (`confirmer-evidence-party`, `T-020-40`): a decision's evidence digest that names a statement of the log's, and a
+/// report's evidence, by a provider outside the order, is refused before policy is asked, however verified, and the
+/// order's own provider's statement is taken in its place.
+// verifies: REQ-AUZ-4
+#[test]
+fn stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_refused() {
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let (world, mut core, mut stuck) = stuck_at_one_party();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
+    // Two statements about the order, by the provider that ran its route and by one that ran none of it.
+    let (own, outside) = results_after_the_move(&mut core, None, "tx-earlier");
+    let (own, outside) = (commitment_of(&core, &own), commitment_of(&core, &outside));
+    let asked = policy.asked;
+    for digests in [vec![outside.clone()], vec![own.clone(), outside.clone()]] {
+        assert_eq!(
+            decide(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                &alice,
+                &back_to_origin(AMOUNT),
+                &digests
+            )
+            .map(|_| ()),
+            Err(ResolveError::OutsideTheOrder),
+            "{digests:?}"
+        );
+    }
+    assert_eq!(policy.asked, asked, "policy is asked nothing");
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &[own],
+    )
+    .expect("the order's own provider's statement is taken");
+    let Ok(Moved::CarriedOut {
+        resolved: Resolved::Unknown,
+        ..
+    }) = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
+    else {
+        panic!("unknown");
+    };
+    // The mover reports the move done on the outside reserve's word, which says it settled: refused, and recorded
+    // nowhere; on the reserve's own, it stands.
+    let (result, outside) = results_after_the_resolution(&mut core);
+    let (asked, entries) = (policy.asked, core.log.borrow().entries.len());
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &outside
+        ),
+        Err(ResolveError::OutsideTheOrder)
+    );
+    assert_eq!(
+        (policy.asked, core.log.borrow().entries.len()),
+        (asked, entries)
+    );
+    assert_eq!(outcome_decisions(&core), (0, 0));
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &result
+        ),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)), "still held");
+    let admitted = core.admitted(&world.catalogue);
+    assert!(admitted.is_ok(), "{admitted:?}");
+}
+
+/// A statement by a provider on an earlier route of the order backs a resolution (`confirmer-evidence-party`,
+/// `T-020-40`): the order's route ran through two reserves of two parties, its deposit's provider's route was left by
+/// the recalculation that found no other, and that provider's word confirms the move the withdrawal's reported, on
+/// which the part resolves. The log admits every entry.
+// verifies: REQ-AUZ-4, REQ-ORD-1
+#[test]
+fn statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution() {
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let (world, mut core, mut stuck) = stuck_by_no_route();
+    assert_ne!(
+        origin_reserve(),
+        last_reserve(),
+        "two parties ran the route"
+    );
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        &evidence(),
+    )
+    .unwrap();
+    let Ok(Moved::CarriedOut {
+        resolved: Resolved::Unknown,
+        ..
+    }) = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
+    else {
+        panic!("unknown");
+    };
+    // The withdrawal's provider reports, the deposit's, which only the order's first route named, confirms.
+    let (result, earlier) = results_after_the_resolution(&mut core);
+    assert_eq!(second_reserve(), last_reserve());
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Failed,
+            &result
+        ),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    assert!(matches!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Failed, 1, &result),
+            &earlier
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Failed,
+            ..
+        })
+    ));
+    assert_eq!(outcome_decisions(&core), (1, 1));
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A silent move's report, confirmation and decline each rest on a party's word about the order
+/// (`confirmer-evidence-party`, `T-020-40`): a statement by a provider outside it is refused at each, before policy is
+/// asked, and the part stays held, the report standing.
+// verifies: REQ-AUZ-4, AC-6
+#[test]
+fn silent_move_reported_confirmed_or_declined_on_an_outside_providers_word_is_refused() {
+    let mut m = silent_withdrawal_at_one_reserve();
+    let alice = staff("desk-a", "alice");
+    let own = Stated::for_tests(
+        results_after_the_move(
+            &mut m.core,
+            Some(WITHDRAWAL),
+            m.unknown.transaction.as_str(),
+        )
+        .0,
+        Some(Resolved::Failed),
+    );
+    let outside = Stated::for_tests(m.others().receipt().clone(), Some(Resolved::Failed));
+    let word = m.others();
+    let asked = m.policy.asked;
+    assert_eq!(
+        m.report(Resolved::Failed, &outside),
+        Err(ResolveError::OutsideTheOrder),
+        "a report on an outside provider's word"
+    );
+    assert_eq!(m.decisions(), (0, 0, 0));
+    assert_eq!(
+        m.report(Resolved::Failed, &own),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    let asked_reported = m.policy.asked;
+    assert!(asked_reported > asked);
+    assert_eq!(
+        m.decline(&alice, (Resolved::Failed, 1, &own), &word),
+        Err(ResolveError::OutsideTheOrder),
+        "a decline on an outside provider's word"
+    );
+    assert_eq!(
+        m.confirm_failed(&alice, (Resolved::Failed, 1, &own), &word),
+        Err(ResolveError::OutsideTheOrder),
+        "a confirmation on an outside provider's word"
+    );
+    assert_eq!(m.policy.asked, asked_reported, "policy is asked nothing");
+    assert_eq!(m.decisions(), (1, 0, 0));
+    m.held();
+    m.admitted();
+}
+
+/// The kit keeps a world's two ends on the thread, so a second world built while the first lives, with other ends,
+/// would change the first's: it is refused instead (the review of `T-020-39`, low finding at `segments_support/mod.rs`).
+// verifies: REQ-AUZ-4
+#[test]
+#[should_panic(expected = "is alive")]
+fn second_world_with_other_ends_is_refused_while_the_first_lives() {
+    let first = World::two_parties();
+    let _second = World::of(&[RESERVE]);
+    drop(first);
+}
+
+/// Worlds that share their ends live together, and a world built after the last was dropped sets its own.
+// verifies: REQ-AUZ-4
+#[test]
+fn worlds_of_the_same_ends_live_together_and_others_follow_once_dropped() {
+    let (first, second) = (World::two_parties(), World::two_parties());
+    assert_eq!(
+        (origin_reserve(), last_reserve()),
+        (TWO_PARTY_ORIGIN, TWO_PARTY_LAST)
+    );
+    drop((first, second));
+    let third = World::of(&[RESERVE]);
+    assert_eq!((origin_reserve(), last_reserve()), (RESERVE, RESERVE));
+    drop(third);
 }

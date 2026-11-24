@@ -348,6 +348,7 @@ fn try_decide_by(
     let (order, part) = (id(ORDER), id(PART));
     let evidence = vec![digest(&"ab".repeat(32))];
     let resolution = hand_on_resolution_by(by);
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.decide(
             parts,
@@ -359,6 +360,7 @@ fn try_decide_by(
                 resolution: &resolution,
                 evidence: &evidence,
             },
+            &history,
         )
     })
     .map(|decision| Decided {
@@ -886,6 +888,7 @@ fn hand_on_keeps_the_original_customer_as_requester_and_records_the_operator_act
         amount: PositiveAmount::new(AMOUNT).unwrap(),
     };
     let evidence = vec![digest(&"ab".repeat(32))];
+    let history = core.recorded();
     let decision = on_parts(&mut core, |parts| {
         stuck.decide(
             parts,
@@ -897,6 +900,7 @@ fn hand_on_keeps_the_original_customer_as_requester_and_records_the_operator_act
                 resolution: &resolution,
                 evidence: &evidence,
             },
+            &history,
         )
     })
     .expect("decided");
@@ -1761,6 +1765,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
     // log: the answer is the evidence a hand-on's outcome rests on, though it names the wallet's own transaction.
     let (order, actor) = (id(ORDER), segments_support::core());
     let (bob, carol) = (staff("desk-b", "bob"), staff("desk-c", "carol"));
+    let history = core.recorded();
     let reported = on_parts(&mut core, |parts| {
         stuck.known_outcome(
             parts,
@@ -1773,6 +1778,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
             },
             Resolved::Done,
             &stated,
+            &history,
         )
     })
     .expect("reported");
@@ -1785,6 +1791,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
         wallet_succeeded(second_reserve(), &transaction, amount),
     );
     let others = take(&mut core, &mut world, &mut mover, &effect, &bytes).expect("another maker's");
+    let history = core.recorded();
     let confirmed = on_parts(&mut core, |parts| {
         stuck.confirm_outcome(
             parts,
@@ -1799,6 +1806,7 @@ fn hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated
                 evidence: &others,
                 core: &actor,
             },
+            &history,
         )
     })
     .expect("confirmed");
@@ -1904,6 +1912,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     let (order, part, actor) = (id(ORDER), id(PART), segments_support::core());
     let evidence = vec![digest(&"ab".repeat(32))];
     let resolution = hand_on_resolution();
+    let history = core.recorded();
     let again = on_parts(&mut core, |parts| {
         stuck.decide(
             parts,
@@ -1915,10 +1924,12 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 resolution: &resolution,
                 evidence: &evidence,
             },
+            &history,
         )
     });
     assert_eq!(again.map(|_| ()), Err(ResolveError::OutcomeUnknown));
     // The mover reports it on the holder's own statement: nothing is freed by that.
+    let history = core.recorded();
     let reported = on_parts(&mut core, |parts| {
         stuck.known_outcome(
             parts,
@@ -1931,6 +1942,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
             },
             Resolved::Failed,
             &holders,
+            &history,
         )
     })
     .expect("reported");
@@ -1954,6 +1966,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
         None,
         "it bears out nothing of the move itself"
     );
+    let history = core.recorded();
     let confirmed = on_parts(&mut core, |parts| {
         stuck.confirm_outcome(
             parts,
@@ -1968,6 +1981,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 evidence: &others,
                 core: &actor,
             },
+            &history,
         )
     })
     .expect("confirmed");
@@ -1983,6 +1997,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
         stuck.is_stuck(&id(ORDER), &id(PART)),
         "freed to a new decision, still stuck"
     );
+    let history = core.recorded();
     let decided_again = on_parts(&mut core, |parts| {
         stuck.decide(
             parts,
@@ -1994,6 +2009,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
                 resolution: &resolution,
                 evidence: &evidence,
             },
+            &history,
         )
     });
     assert!(decided_again.is_ok(), "{decided_again:?}");

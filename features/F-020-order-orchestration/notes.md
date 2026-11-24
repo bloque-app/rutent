@@ -6178,3 +6178,43 @@ fix round 2). The log rule is unchanged.
   append, it changes nothing; one on the reporter's own maker's word is refused; the part stays held and can't be
   decided again. The coordinator puts the consequence on the owner's form; until he rules, the test pins it.
 - **`PLAN.md`**: the row's Work says it also gives the kit a second party and ports the stuck scenarios.
+
+## T-020-40: a stuck order's evidence comes from a party to the order
+
+Branch `f-020/t-020-40-confirmer-party`, from `m3` at `a3bc16b4`. Edits `components/core-orch/src/stuck/` and the
+scenario kit; no `contracts/` edit.
+
+- **Design.** `stuck/party.rs` reads, from the log's history, whether a statement's maker is a party to an order, as
+  `core-internal`'s `party_to_the_order` does (a port, since the contract's function is private): a provider of a
+  segment on any route the order, or an order a hand-on joins it to, was given (chosen, recalculated, destination
+  changed), the provider a move or a resolution went to, the holder of a holding account its value rested at (an
+  arrival's reserve, a permitted decide step's or an effect's mover, a holding withdrawal's holder and publisher),
+  or the publisher of a node crossed, as a replay or evidence of the order binds it. Never a holding check, a refused
+  decide step, or an order no hand-on joins.
+  Every step that names a statement now takes the history (`Recorded`, `&[(Receipt, Entry)]`, as the log holds it) as
+  a trailing argument: `decide`, `known_outcome`, `confirm_outcome`, `decline_outcome`, `report_segment_outcome`,
+  `confirm_segment_outcome`, `confirm_segment_done`, `decline_segment_outcome`. A report, confirmation or decline
+  whose evidence is by a maker the order doesn't involve is `ResolveError::OutsideTheOrder`; a confirmation or decline
+  on another statement of the party that made the report's own is `ReportersOwnParty`. Both come before policy is
+  asked or anything is built, so nothing is recorded. The log's rule stays the guard.
+- **Decide step's digests** (T-020-39 gap 1): a digest of `Deciding::evidence` that names a stated entry the history
+  holds (its commitment) must be by a party, else `OutsideTheOrder`.
+- **Kit low finding** (`segments_support/mod.rs`): the ends stay on the thread, but a live `World` holds a guard;
+  building a world with other ends while one lives panics, and `World::two_parties` sets its ends in one step.
+  The first guard hit was my own test, fixed.
+- **Consumer edits:** `conformance/scenarios/src/assembly/mod.rs` (`decide_stuck` passes the log's entries), and the
+  scenarios `stuck.rs`, `stuck_mover.rs`, `stuck_hand_on.rs`, `hand_on.rs` (the history argument, `Core::recorded`).
+- **Named tests** (`stuck.rs`): `stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_refused`
+  [`REQ-AUZ-4`], `statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution` [`REQ-AUZ-4`,
+  `REQ-ORD-1`], `confirmation_naming_an_outside_providers_word_frees_nothing` [`INV-2`, `AC-6`] (T-020-39's pin of
+  the one-party order, now refused by Core). Added: `silent_move_reported_confirmed_or_declined_on_an_outside_providers_word_is_refused`,
+  `decline_resting_on_an_outside_providers_word_or_the_reporters_own_party_is_refused` (`stuck_mover.rs`), the kit's
+  two world tests, and `party.rs`'s three differential tests over the contract's admission cases.
+- **Red first:** with the three checks off, the four scenario tests and the party tests failed on assertions
+  (outside word accepted, `Declined`, `AwaitsConfirmation`); the earlier-route test passes then, red only in its rule-off.
+- **Defaults** (reversible): a digest naming no statement the history holds is a document and passes; evidence the
+  history doesn't hold is refused; the reporter's own party is read by the statements' makers' parties, as the log does.
+- **Gaps.** (1) A private node crossed with no replay or evidence binds no publisher, so its publisher's word is
+  refused (T-020-39 gap 5): left to the lead. (2) `party.rs` ports the log's rule; drift is guarded by the differential
+  tests over the contract's cases only. (3) The part with one party only stays held (T-020-39 gap 9), on the owner's form.
+- **Rule-off table** below.

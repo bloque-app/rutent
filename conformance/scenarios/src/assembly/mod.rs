@@ -1876,6 +1876,7 @@ impl Core {
             segments: &mut self.segments,
             exposures: &mut self.exposures,
         };
+        let history: Vec<_> = self.log.borrow().entries().to_vec();
         Ok(self.stuck.decide(
             &mut parts,
             &mut policy,
@@ -1886,6 +1887,7 @@ impl Core {
                 resolution,
                 evidence,
             },
+            &history,
         )?)
     }
 

@@ -152,6 +152,7 @@ fn decide(
 ) -> Result<rutent_contracts::core_internal::Decision, ResolveError> {
     let (order, part) = (id(&core.named.order), id(PART));
     let evidence = evidence();
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.decide(
             parts,
@@ -163,6 +164,7 @@ fn decide(
                 resolution,
                 evidence: &evidence,
             },
+            &history,
         )
     })
 }
@@ -757,6 +759,7 @@ fn report_and_confirm(
         decided(decision),
         segments_support::core(),
     );
+    let history = core.recorded();
     let reported = on_parts(core, |parts| {
         stuck.known_outcome(
             parts,
@@ -769,12 +772,14 @@ fn report_and_confirm(
             },
             outcome,
             evidence.0,
+            &history,
         )
     })
     .expect("reported");
     let Moved::AwaitsConfirmation { report } = reported else {
         panic!("awaits its confirmation: {reported:?}");
     };
+    let history = core.recorded();
     on_parts(core, |parts| {
         stuck.confirm_outcome(
             parts,
@@ -789,6 +794,7 @@ fn report_and_confirm(
                 evidence: &Stated::for_tests(evidence.1.clone(), None),
                 core: &actor,
             },
+            &history,
         )
     })
     .expect("confirmed")
@@ -1758,7 +1764,16 @@ struct Refused {
 const BOB: (&str, &str) = ("desk-b", "bob");
 
 fn refused_move() -> Refused {
-    let (mut world, mut core, mut stuck) = stuck_by_no_route();
+    refused_move_in(stuck_by_no_route())
+}
+
+/// [`refused_move`] at one reserve, which runs the whole route, with [`OTHER_RESERVE`] installed beside it, running
+/// nothing of the order: a provider outside it (`T-020-40`).
+fn refused_move_at_one_reserve() -> Refused {
+    refused_move_in(stuck_by_no_route_at_one_reserve())
+}
+
+fn refused_move_in((mut world, mut core, mut stuck): (World, Core, Stuck)) -> Refused {
     let mut mover = Mover::new();
     let mut policy = PermitsEveryStep::new(&core.log);
     world
@@ -1894,10 +1909,12 @@ impl Refused {
             &mut Stuck,
             &mut rutent_core_orch::stuck::Parts<'_>,
             &mut PermitsEveryStep,
+            &[(Receipt, Entry)],
         ) -> T,
     ) -> T {
         let (stuck, policy) = (&mut self.stuck, &mut self.policy);
-        on_parts(&mut self.core, |parts| with(stuck, parts, policy))
+        let history = self.core.recorded();
+        on_parts(&mut self.core, |parts| with(stuck, parts, policy, &history))
     }
 
     fn report(
@@ -1911,7 +1928,7 @@ impl Refused {
             decided(&self.permitted),
             segments_support::core(),
         );
-        self.moving(|stuck, parts, policy| {
+        self.moving(|stuck, parts, policy, history| {
             stuck.known_outcome(
                 parts,
                 policy,
@@ -1923,6 +1940,7 @@ impl Refused {
                 },
                 outcome,
                 evidence,
+                history,
             )
         })
     }
@@ -1938,7 +1956,7 @@ impl Refused {
             decided(&self.permitted),
             segments_support::core(),
         );
-        self.moving(|stuck, parts, policy| {
+        self.moving(|stuck, parts, policy, history| {
             stuck.confirm_outcome(
                 parts,
                 policy,
@@ -1952,6 +1970,7 @@ impl Refused {
                     evidence,
                     core: &actor,
                 },
+                history,
             )
         })
     }
@@ -1963,7 +1982,7 @@ impl Refused {
         evidence: &Stated,
     ) -> Result<Moved, ResolveError> {
         let (order, carries_out) = (id(&self.core.named.order), decided(&self.permitted));
-        self.moving(|stuck, parts, policy| {
+        self.moving(|stuck, parts, policy, history| {
             stuck.decline_outcome(
                 parts,
                 policy,
@@ -1976,6 +1995,7 @@ impl Refused {
                     reported_with: report.2.receipt(),
                     evidence,
                 },
+                history,
             )
         })
     }
@@ -2575,4 +2595,59 @@ fn confirmation_whose_result_the_log_could_not_take_is_not_open_to_another_confi
         Err(ResolveError::NoDecision)
     );
     assert_eq!(m.decisions(), (1, 1, 0), "policy is asked nothing more");
+}
+
+/// A decline of a report rests on a statement by a party the order involves, another than the reporter's: the word of
+/// a provider outside the order declines nothing, however verified, and nor does another statement by the reporter's
+/// own party. Core refuses each before policy is asked, the report stands, and a party's word then declines it
+/// (`confirmer-evidence-party`, `T-020-40`).
+// verifies: REQ-AUZ-4
+#[test]
+fn decline_resting_on_an_outside_providers_word_or_the_reporters_own_party_is_refused() {
+    // At one reserve, which runs the whole route, the other reserve runs nothing of the order.
+    let mut m = refused_move_at_one_reserve();
+    let (bob, carol) = (staff(BOB.0, BOB.1), staff("desk-c", "carol"));
+    let failed = m.failed();
+    assert_eq!(
+        m.report(&bob, Resolved::Failed, &failed),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    let outside = m.others();
+    let (asked, entries) = (m.policy.asked, m.core.log.borrow().entries.len());
+    assert_eq!(
+        m.decline(&carol, (Resolved::Failed, 1, &failed), &outside),
+        Err(ResolveError::OutsideTheOrder)
+    );
+    assert_eq!(m.policy.asked, asked, "policy is asked nothing");
+    assert_eq!(
+        m.core.log.borrow().entries.len(),
+        entries,
+        "nothing recorded"
+    );
+    assert_eq!(m.decisions(), (1, 0, 0));
+    m.held();
+    m.admitted();
+    drop(m);
+
+    // At two parties, another statement of the reporter's own party declines nothing; the other party's does.
+    let mut m = refused_move();
+    let failed = m.failed();
+    assert_eq!(
+        m.report(&bob, Resolved::Failed, &failed),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    let asked = m.policy.asked;
+    let settled = m.settled();
+    assert_eq!(
+        m.decline(&carol, (Resolved::Failed, 1, &failed), &settled),
+        Err(ResolveError::ReportersOwnParty)
+    );
+    assert_eq!(m.policy.asked, asked, "policy is asked nothing");
+    let others = m.others();
+    assert_eq!(
+        m.decline(&carol, (Resolved::Failed, 1, &failed), &others),
+        Ok(Moved::Declined { report: 1 })
+    );
+    m.held();
+    m.admitted();
 }

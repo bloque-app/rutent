@@ -97,6 +97,7 @@
 mod handing;
 mod journal;
 mod mover;
+mod party;
 mod timing;
 mod view;
 
@@ -136,6 +137,7 @@ pub use handing::{
 pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
 pub use mover::{Delivering, Mover, NotTaken, Ports, Stated, Withdrawn};
+pub use party::Recorded;
 pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
 pub use view::{StuckValue, rank};
 
@@ -520,6 +522,14 @@ pub enum ResolveError {
     /// The source of fresh identifiers repeats ones Core used: no transaction of its own is drawn for the
     /// resolution, and nothing is decided.
     NoFreshTransaction,
+    /// The evidence is a statement by a maker the order doesn't involve: a provider none of its routes ran, no holder
+    /// of a holding account its value rested at, no publisher of a node it crossed, or a maker the log holds no
+    /// statement of (`REQ-AUZ-4`, `confirmer-evidence-party`). Nothing is recorded, policy is asked nothing, and the
+    /// part stays held.
+    OutsideTheOrder,
+    /// A confirmation's or decline's evidence is by the party that made the report's own: the reporter's party can't
+    /// bear out, or bear down, its own word (`REQ-AUZ-4`, `confirmer-evidence-party`).
+    ReportersOwnParty,
     /// The log or policy refused or failed an append. Nothing moved; where an effect was built, it is kept, and the
     /// next call goes on from it.
     Append(AppendFailure),
@@ -1311,6 +1321,7 @@ impl Stuck {
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         deciding: Deciding<'_>,
+        history: &Recorded,
     ) -> Result<Decision, ResolveError> {
         let declared = self.unresolved(parts.segments, deciding.order, deciding.part)?;
         // Nothing is decided while any of the part's value is in motion: a segment handed over with no final outcome
@@ -1354,6 +1365,7 @@ impl Stuck {
             declared,
             deciding.resolution,
         )?;
+        digests_from_a_party(deciding.evidence, deciding.order, history)?;
         let decision = policy.decide_stuck(&request)?;
         if decision.request != request.request {
             return Err(ResolveError::NotItsAnswer);
@@ -1500,6 +1512,7 @@ impl Stuck {
         moving: Moving<'_>,
         outcome: Resolved,
         evidence: &Stated,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = moving.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1533,6 +1546,7 @@ impl Stuck {
         if !follows(evidence.receipt(), &effect) {
             return Err(ResolveError::NoEvidence);
         }
+        from_a_party(evidence.receipt(), moving.order, None, history)?;
         let version = motion
             .reports
             .checked_add(1)
@@ -1582,6 +1596,7 @@ impl Stuck {
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: Confirming<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = confirming.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1617,6 +1632,12 @@ impl Stuck {
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         on_its_own_statement(confirming.evidence.receipt(), &report.evidence, &effect)?;
+        from_a_party(
+            confirming.evidence.receipt(),
+            confirming.order,
+            Some(&report.evidence),
+            history,
+        )?;
         let request = OutcomeConfirmation {
             request: parts.fresh.id(),
             order: confirming.order.clone(),
@@ -1665,6 +1686,7 @@ impl Stuck {
         parts: &mut Parts<'_>,
         policy: &mut dyn OutcomeDeclines,
         declining: Declining<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let at = declining.carries_out.request.as_str().to_owned();
         let motion = self
@@ -1694,6 +1716,12 @@ impl Stuck {
             .clone()
             .ok_or(ResolveError::NoDecision)?;
         on_its_own_statement(declining.evidence.receipt(), &report.evidence, &effect)?;
+        from_a_party(
+            declining.evidence.receipt(),
+            declining.order,
+            Some(&report.evidence),
+            history,
+        )?;
         let request = OutcomeDecline {
             request: parts.fresh.id(),
             order: declining.order.clone(),
@@ -1732,6 +1760,7 @@ impl Stuck {
         reporting: Reporting<'_>,
         outcome: Resolved,
         evidence: &Stated,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         let declared = self.unresolved(parts.segments, reporting.order, reporting.part)?;
         if !declared
@@ -1765,6 +1794,7 @@ impl Stuck {
         if !follows(evidence.receipt(), &unknown.effect) {
             return Err(ResolveError::NoEvidence);
         }
+        from_a_party(evidence.receipt(), reporting.order, None, history)?;
         let version = made.checked_add(1).ok_or(ResolveError::ReportsExhausted)?;
         let request = OutcomeReport {
             request: parts.fresh.id(),
@@ -1810,8 +1840,9 @@ impl Stuck {
         parts: &mut Parts<'_>,
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
-        self.confirm_segment(parts, policy, confirming, None)
+        self.confirm_segment(parts, policy, confirming, None, history)
     }
 
     /// Confirms a segment's reported outcome as [`Stuck::confirm_segment_outcome`] does, and takes it done too
@@ -1827,8 +1858,9 @@ impl Stuck {
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
         settling: &mut Settling<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
-        self.confirm_segment(parts, policy, confirming, Some(settling))
+        self.confirm_segment(parts, policy, confirming, Some(settling), history)
     }
 
     fn confirm_segment(
@@ -1837,6 +1869,7 @@ impl Stuck {
         policy: &mut dyn StuckOrders,
         confirming: ConfirmingSegment<'_>,
         mut settling: Option<&mut Settling<'_>>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         self.unresolved(parts.segments, confirming.order, confirming.part)?;
         let at = key(confirming.order, confirming.segment);
@@ -1870,6 +1903,12 @@ impl Stuck {
             confirming.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
+        )?;
+        from_a_party(
+            confirming.evidence.receipt(),
+            confirming.order,
+            Some(&report.evidence),
+            history,
         )?;
         let outcome = report.outcome;
         // A done is graded before anything is recorded or policy is asked: one that grades to nothing yet waits, the
@@ -1966,6 +2005,7 @@ impl Stuck {
         parts: &mut Parts<'_>,
         policy: &mut dyn OutcomeDeclines,
         declining: DecliningSegment<'_>,
+        history: &Recorded,
     ) -> Result<Moved, ResolveError> {
         self.unresolved(parts.segments, declining.order, declining.part)?;
         let at = key(declining.order, declining.segment);
@@ -1998,6 +2038,12 @@ impl Stuck {
             declining.evidence.receipt(),
             &report.evidence,
             &unknown.effect,
+        )?;
+        from_a_party(
+            declining.evidence.receipt(),
+            declining.order,
+            Some(&report.evidence),
+            history,
         )?;
         let request = OutcomeDecline {
             request: parts.fresh.id(),
@@ -2746,6 +2792,48 @@ fn two_actors(first: &Actor, second: &Actor) -> Result<(), ResolveError> {
     }
     if first.acts == second.acts {
         return Err(ResolveError::SameLogin);
+    }
+    Ok(())
+}
+
+/// Whether the statement `evidence` names is a party's word about `order` (`confirmer-evidence-party`, `T-020-40`),
+/// and, for a confirmation or a decline, not the party's that made the report's own (`reported_with`). A statement the
+/// history doesn't hold names no maker, so it is refused.
+fn from_a_party(
+    evidence: &Receipt,
+    order: &Id,
+    reported_with: Option<&Receipt>,
+    history: &Recorded,
+) -> Result<(), ResolveError> {
+    let statement = party::statement_at(evidence, history).ok_or(ResolveError::OutsideTheOrder)?;
+    if !party::involves(statement, order, history) {
+        return Err(ResolveError::OutsideTheOrder);
+    }
+    if let Some(reported) = reported_with
+        && party::statement_at(reported, history)
+            .is_some_and(|r| r.attribution.maker().party == statement.attribution.maker().party)
+    {
+        return Err(ResolveError::ReportersOwnParty);
+    }
+    Ok(())
+}
+
+/// Whether each of a decision's evidence digests that names a provider's result the history holds names a party's word about
+/// `order`. A digest the history holds no result under is a document or Core's own question, not a provider's word, and no
+/// maker is read of it.
+fn digests_from_a_party(
+    evidence: &[Digest],
+    order: &Id,
+    history: &Recorded,
+) -> Result<(), ResolveError> {
+    for (_, entry) in history {
+        if let Entry::Stated(statement) = entry
+            && evidence.contains(&statement.commitment)
+            && statement.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+            && !party::involves(statement, order, history)
+        {
+            return Err(ResolveError::OutsideTheOrder);
+        }
     }
     Ok(())
 }
