@@ -6574,3 +6574,49 @@ tests. The four scenario tests are named by their first words: `confirmation_nam
   | the contract's arrival-reserve arm of `party_to_the_order` (`relations.rs`, restored) | the walk |
   | question shapes skipped again | the digest probe |
   | `from_a_party`: verified attribution not required | the unverified-evidence test |
+
+## T-020-42
+
+Branch `f-020/t-020-42-erasure-override`, from `9af9746c`. Edits `components/core-orch/src/erasure.rs` and, in the `F-024`
+conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and `releases.rs`.
+
+- **Design.** `erase_statement_overriding` runs `T-020-37`'s steps with the override: the first look and the look after
+  the effect are `Statements::erasable_overriding` (the store's `BoundStore::erasable_overriding`, `T-022-10`), and the
+  `EraseStatement` policy is asked for sets `overrides_citations`. `erase_statement` is unchanged and never sets it, so
+  the default (`EVIDENCE_RESTED_ON`, nothing decided or recorded) holds; `Erasure` gained no field, so the callers and
+  `T-020-37`'s tests are untouched. Core asks for the override only where its caller calls the overriding function: it
+  never infers one from a refusal. Policy decides who may (`T-021-13`: an operator's login holding `EraseStatement` and
+  `EraseOverridingCitations`); the store honours the flag only from the permitting decision. The entries citing the
+  statement stay as they are.
+- **Roll back.** `Core::roll_back` / `roll_back_as` in the assembly's `releases.rs` call `Segments::roll_back` over
+  the platform, as `promote` is wired, and the operator's login now holds `Change(RollBack)` in the register.
+- **Defaults, reversible, each failing closed.** (1) `Statements::erasable_overriding` has a default that is the refusing
+  `erasable`: a store that says nothing of an override never lifts one. (2) The assembly's operator login holds no
+  `EraseOverridingCitations`: the scenarios that need it grant it through `Core::registers`, so nothing erases a cited
+  statement unless a scenario says the login may (`F-021`'s gap 1 is the deployment's register). (3) The refused
+  roll-back scenario uses the customer as a caller no register lists, and a version that isn't the one staged.
+- **Tests.** In `components/core-orch/tests/erasure.rs`: `cited_statement_is_not_erased_without_an_override`
+  [`REQ-AUD-13`], `operators_decided_override_erases_a_cited_statement_and_history_still_checks` [`REQ-AUD-13`, `AC-36`],
+  `override_without_a_permitting_decision_erases_nothing` [`REQ-AUZ-1`]; the fake store there models "cited" by flag, since
+  the fake log's `admit_entry` has no citing entry, so the real log's refusal and the history check are the scenarios'.
+  In `conformance/scenarios/tests/audit_scenarios.rs` (the assembled Core, the real log, store and outside checker):
+  `an_erasure_asked_without_the_override_keeps_a_cited_statement`,
+  `an_operator_holding_both_permissions_erases_a_cited_statement_and_history_checks`,
+  `an_operator_holding_only_the_erase_permission_is_refused_the_override`; and in `module_scenarios.rs`
+  `a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing`. `T-020-37`'s tests pass unchanged.
+- **Red first.** With `erase_statement_overriding` a stub that behaved as the plain one, the override and refusal tests
+  failed on the store's refusal (`NotErasable`); the cited-by-default test passed first (it pins today's behaviour). The
+  assembly's override scenarios failed on the same refusal and the roll back scenario on `NotPermitted` for `Ok` (the
+  register not yet listing the permission).
+- **Gaps, with owners.** None found. The deployment's register listing `EraseOverridingCitations` and `Change(RollBack)`
+  for its operator logins is configuration (`F-021`'s gap 1).
+- **Rule-offs** (each restored):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `overrides_citations` always false | core-orch override and refusal tests; the assembly's two override scenarios |
+  | first look is the default check | core-orch override and refusal tests |
+  | look after the effect is the default check | core-orch override test |
+  | the overriding check is the refusing one | core-orch override and refusal tests; the assembly's override scenario (`Bound`) |
+  | the operator login listed for the override by default | the assembly's refused-override scenario |
+  | the operator login not listed for `Change(RollBack)` | the roll back scenario |

@@ -13,7 +13,9 @@ use rutent_contracts::core_internal::{
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::Id;
-use rutent_core_orch::erasure::{Erasure, NotErased, Statements, erase_statement};
+use rutent_core_orch::erasure::{
+    Erasure, NotErased, Statements, erase_statement, erase_statement_overriding,
+};
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::snapshot::{Clock, Reading};
 use serde_json::json;
@@ -180,6 +182,10 @@ struct Store {
     /// `erase` answers `Unavailable` this many times first.
     unavailable: Cell<usize>,
     erased_on: RefCell<Vec<Receipt>>,
+    /// An entry of the log rests on the statement: `erasable` refuses it, `erasable_overriding` doesn't.
+    cited: Cell<bool>,
+    /// Which checks ran, in order: `erasable` or `erasable_overriding`.
+    checks: RefCell<Vec<&'static str>>,
 }
 
 impl Store {
@@ -191,14 +197,20 @@ impl Store {
             erasable_for: Cell::new(usize::MAX),
             unavailable: Cell::new(0),
             erased_on: RefCell::new(Vec::new()),
+            cited: Cell::new(false),
+            checks: RefCell::new(Vec::new()),
         }
     }
 }
 
 impl Statements for Store {
     fn erasable(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.checks.borrow_mut().push("erasable");
         if *commitment != self.commitment || !self.kept.get() {
             return Err(AppendFailure::Refused(Violation("not kept")));
+        }
+        if self.cited.get() {
+            return Err(AppendFailure::Refused(Violation("evidence rested on")));
         }
         match self.erasable_for.get() {
             0 => Err(AppendFailure::Refused(Violation("evidence rested on"))),
@@ -207,6 +219,14 @@ impl Statements for Store {
                 Ok(())
             }
         }
+    }
+
+    fn erasable_overriding(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.checks.borrow_mut().push("erasable_overriding");
+        if *commitment != self.commitment || !self.kept.get() {
+            return Err(AppendFailure::Refused(Violation("not kept")));
+        }
+        Ok(())
     }
 
     fn erase(&mut self, result: &Receipt) -> Result<(), AppendFailure> {
@@ -448,4 +468,138 @@ fn an_erasure_the_store_cannot_finish_now_settles_later() {
     );
     assert_eq!(*store.erased_on.borrow(), [erased.result]);
     assert!(!store.kept.get());
+}
+
+/// A statement an entry rests on isn't erased by default: the store's refusal ends it before policy is asked, and
+/// nothing is recorded.
+// verifies: REQ-AUD-13
+#[test]
+fn cited_statement_is_not_erased_without_an_override() {
+    let (log, mut store) = world();
+    store.cited.set(true);
+    let (mut decisions, asked) = policy(&log, true);
+    let (operator, core, reason) = (operator(), core(), Token::new("retention").unwrap());
+    let commitment = store.commitment.clone();
+    let refused = erase_statement(
+        &mut General(Rc::clone(&log)),
+        &mut decisions,
+        &mut store,
+        &Now,
+        &mut Ids(0),
+        &request(&commitment, &reason, &operator, &core),
+    );
+    assert!(
+        matches!(
+            refused.as_ref().map_err(|e| &**e),
+            Err(NotErased::NotErasable(_))
+        ),
+        "{refused:?}"
+    );
+    assert!(asked.borrow().is_empty());
+    assert_eq!(log.calls(), ["stated"]);
+    assert!(store.kept.get());
+    assert_eq!(*store.checks.borrow(), ["erasable"]);
+}
+
+/// The operator asked for the override and policy permits it: the decision's action sets `overrides_citations`, the
+/// override check (not the default one) runs, and the cited statement is erased on the permit as any other, in the same
+/// order. The plain erasure of a statement nothing cites still asks for no override.
+// verifies: REQ-AUD-13, AC-36
+#[test]
+fn operators_decided_override_erases_a_cited_statement_and_history_still_checks() {
+    let (log, mut store) = world();
+    store.cited.set(true);
+    let (mut decisions, asked) = policy(&log, true);
+    let (operator, core, reason) = (operator(), core(), Token::new("retention").unwrap());
+    let commitment = store.commitment.clone();
+    let erased = erase_statement_overriding(
+        &mut General(Rc::clone(&log)),
+        &mut decisions,
+        &mut store,
+        &Now,
+        &mut Ids(0),
+        &request(&commitment, &reason, &operator, &core),
+    )
+    .expect("a permitted override erases a cited statement");
+    assert_eq!(
+        log.calls(),
+        ["stated", "decide", "effect", "result", "erasure"]
+    );
+    assert!(!store.kept.get());
+    assert_eq!(*store.erased_on.borrow(), [erased.result]);
+    assert_eq!(asked.borrow().len(), 1);
+    assert!(matches!(
+        &asked.borrow()[0].action,
+        rutent_contracts::core_internal::Action::EraseStatement {
+            overrides_citations: true,
+            ..
+        }
+    ));
+    assert!(
+        store
+            .checks
+            .borrow()
+            .iter()
+            .all(|c| *c == "erasable_overriding"),
+        "only the override's check ran: {:?}",
+        store.checks.borrow()
+    );
+
+    // And the plain one asks no override, and runs the default check.
+    let (log, mut store) = world();
+    let (mut decisions, asked) = policy(&log, true);
+    let commitment = store.commitment.clone();
+    erase_statement(
+        &mut General(Rc::clone(&log)),
+        &mut decisions,
+        &mut store,
+        &Now,
+        &mut Ids(0),
+        &request(&commitment, &reason, &operator, &core),
+    )
+    .expect("a plain erasure");
+    assert!(matches!(
+        &asked.borrow()[0].action,
+        rutent_contracts::core_internal::Action::EraseStatement {
+            overrides_citations: false,
+            ..
+        }
+    ));
+    assert!(store.checks.borrow().iter().all(|c| *c == "erasable"));
+}
+
+/// Policy doesn't permit the override: it was asked as an override, no effect is recorded, the statement stays.
+// verifies: REQ-AUZ-1
+#[test]
+fn override_without_a_permitting_decision_erases_nothing() {
+    let (log, mut store) = world();
+    store.cited.set(true);
+    let (mut decisions, asked) = policy(&log, false);
+    let (operator, core, reason) = (operator(), core(), Token::new("retention").unwrap());
+    let commitment = store.commitment.clone();
+    let refused = erase_statement_overriding(
+        &mut General(Rc::clone(&log)),
+        &mut decisions,
+        &mut store,
+        &Now,
+        &mut Ids(0),
+        &request(&commitment, &reason, &operator, &core),
+    );
+    assert!(
+        matches!(
+            refused.as_ref().map_err(|e| &**e),
+            Err(NotErased::NotPermitted(Answer::Refuse { .. }))
+        ),
+        "{refused:?}"
+    );
+    assert!(matches!(
+        &asked.borrow()[0].action,
+        rutent_contracts::core_internal::Action::EraseStatement {
+            overrides_citations: true,
+            ..
+        }
+    ));
+    assert_eq!(log.calls(), ["stated", "decide"]);
+    assert!(store.kept.get());
+    assert!(store.erased_on.borrow().is_empty());
 }

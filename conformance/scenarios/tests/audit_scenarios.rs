@@ -13,6 +13,7 @@ use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::OrderState;
 use rutent_core_audit::checkpoint::{Finding, Kept, tick_of};
 use rutent_core_audit::log::record;
+use rutent_core_authz::roles::Permission;
 use rutent_core_orch::intake::{Status, Told};
 use rutent_scenarios::assembly::checking::{
     self, CHECKPOINT_EVERY, CoreCheckpointer, checker, history_of, openings_of,
@@ -601,6 +602,141 @@ fn erasure_without_a_permitting_decision_is_refused_in_the_assembled_core() {
     ));
     assert_eq!(watched.history().len(), length, "nothing was recorded");
 
+    watched.period(CHECKPOINT_EVERY);
+    assert_eq!(
+        watched.findings(&watched.history(), &watched.received, &watched.openings()),
+        Vec::<Finding>::new()
+    );
+}
+
+// --- Erasure that overrides citations (T-020-42, item erasure-of-cited-evidence) ---------------------------------------
+
+/// A statement of the run's history the store keeps and a later entry rests on: refused by default.
+fn cited_statement(watched: &Watched) -> Digest {
+    use rutent_contracts::core_internal::Violation;
+    use rutent_contracts::core_internal::calls::AppendFailure;
+    use rutent_core_audit::receipts::store::EVIDENCE_RESTED_ON;
+
+    watched
+        .history()
+        .iter()
+        .filter_map(|r| match serde_json::from_slice::<Entry>(r) {
+            Ok(Entry::Stated(s)) => Some(s.commitment),
+            _ => None,
+        })
+        .find(|c| {
+            watched.core.bound().erasable(c)
+                == Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+        })
+        .expect("a statement an entry rests on")
+}
+
+/// A run with one order done and checkpoints published, and a statement a later entry rests on.
+fn watched_with_a_cited_statement() -> (Watched, Digest) {
+    let mut watched = Watched::new("an override asked of Core");
+    watched.publish();
+    watched.busy(&[("req-1", AMOUNT)]);
+    watched.period(CHECKPOINT_EVERY);
+    let cited = cited_statement(&watched);
+    (watched, cited)
+}
+
+/// Asked for no override, Core keeps a statement a later entry rests on, and nothing is recorded.
+// verifies: REQ-AUD-13
+#[test]
+fn an_erasure_asked_without_the_override_keeps_a_cited_statement() {
+    use rutent_core_orch::erasure::NotErased;
+
+    let (mut watched, cited) = watched_with_a_cited_statement();
+    watched
+        .core
+        .registers()
+        .permit(&kit::operator_login(), Permission::EraseOverridingCitations);
+    let length = watched.history().len();
+    assert!(matches!(
+        watched
+            .core
+            .erase_statement(&cited, "retention")
+            .map_err(|e| *e),
+        Err(NotErased::NotErasable(_))
+    ));
+    assert_eq!(watched.history().len(), length, "nothing was recorded");
+    assert!(!watched.core.bound().is_erased(&cited));
+}
+
+/// An operator's login holding both the erase permission and the override's asks Core to erase a statement a later
+/// entry rests on, as an override: policy permits it, the statement's bytes go, the entries citing it stay as they
+/// are, the store finds nothing wrong, and the outside checker, handed bytes alone, finds history intact, against
+/// checkpoints published before and after.
+// verifies: REQ-AUD-13, AC-36
+#[test]
+fn an_operator_holding_both_permissions_erases_a_cited_statement_and_history_checks() {
+    let (mut watched, cited) = watched_with_a_cited_statement();
+    watched
+        .core
+        .registers()
+        .permit(&kit::operator_login(), Permission::EraseOverridingCitations);
+    let before = watched.history();
+    let received = watched.received.clone();
+    assert_eq!(
+        watched.findings(&before, &received, &watched.openings()),
+        Vec::<Finding>::new()
+    );
+
+    let erased = watched
+        .core
+        .erase_statement_overriding(&cited, "retention")
+        .expect("an operator holding both permissions overrides");
+
+    assert!(watched.core.bound().is_erased(&cited));
+    assert!(watched.core.bound().refused_erasures().is_empty());
+    assert!(watched.core.bound().unsettled_erasures().is_empty());
+    assert_eq!(
+        calls_from(&watched, before.len()),
+        ["decide", "effect", "result", "erasure"]
+    );
+    assert!(erased.effect.index < erased.result.index && erased.result.index < erased.entry.index);
+    // The entries that cite it stay as they were, byte for byte.
+    let history = watched.history();
+    assert_eq!(&history[..before.len()], &before[..]);
+    let openings = watched.openings();
+    assert_eq!(
+        watched.findings(&history, &received, &openings),
+        Vec::<Finding>::new(),
+        "history checks against the checkpoints published before the override"
+    );
+    watched.period(CHECKPOINT_EVERY);
+    assert_eq!(
+        watched.findings(&watched.history(), &watched.received, &watched.openings()),
+        Vec::<Finding>::new(),
+        "and against one published after it"
+    );
+}
+
+/// An operator's login holding the erase permission alone is refused the override: the refusal is recorded, no effect,
+/// nothing is erased, and history checks.
+// verifies: REQ-AUZ-1, REQ-AUD-13
+#[test]
+fn an_operator_holding_only_the_erase_permission_is_refused_the_override() {
+    use rutent_contracts::core_internal::Answer;
+    use rutent_core_orch::erasure::NotErased;
+
+    let (mut watched, cited) = watched_with_a_cited_statement();
+    let before = watched.history().len();
+    let refused = watched
+        .core
+        .erase_statement_overriding(&cited, "retention")
+        .map_err(|e| *e);
+    assert!(
+        matches!(refused, Err(NotErased::NotPermitted(Answer::Refuse { .. }))),
+        "{refused:?}"
+    );
+    assert!(!watched.core.bound().is_erased(&cited));
+    assert_eq!(
+        calls_from(&watched, before),
+        ["decide"],
+        "only the refusal is recorded"
+    );
     watched.period(CHECKPOINT_EVERY);
     assert_eq!(
         watched.findings(&watched.history(), &watched.received, &watched.openings()),

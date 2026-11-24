@@ -10,6 +10,7 @@ use rutent_contracts::core_internal::{Entry, HandedOver, What};
 use rutent_contracts::module_interface::AdmissionArtefact;
 use rutent_prov::module::types::Admitted;
 
+use rutent_core_orch::segments::roll_back::{RollBackAsked, RollBackRefused};
 use rutent_core_orch::segments::{PromoteRefused, Promotion};
 
 use super::{Core, Running};
@@ -116,5 +117,44 @@ impl Core {
                 core: &core,
             },
         )
+    }
+
+    /// Ends `provider`'s staging of `version`, as `caller` asks and policy decides: Core records the effect before it
+    /// calls the platform and its result after (`REQ-AUZ-6`, `T-021-12`, `T-020-42`). The version in force stays.
+    ///
+    /// # Errors
+    ///
+    /// If nothing is staged, the version isn't the one staged, policy doesn't permit it, or the platform won't.
+    pub fn roll_back_as(
+        &mut self,
+        caller: &rutent_contracts::core_internal::Actor,
+        provider: &str,
+        version: &str,
+    ) -> Result<String, RollBackRefused> {
+        let mut decisions = self.policy.clone();
+        let (provider, version) = (crate::kit::id(provider), crate::kit::id(version));
+        let core = crate::kit::core();
+        self.segments.roll_back(
+            &mut self.general,
+            &mut decisions,
+            &mut self.fleet.platform,
+            &self.clock,
+            &mut self.fresh,
+            &RollBackAsked {
+                provider: &provider,
+                version: &version,
+                caller,
+                core: &core,
+            },
+        )
+    }
+
+    /// [`Core::roll_back_as`] by the operator's login.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::roll_back_as`].
+    pub fn roll_back(&mut self, provider: &str, version: &str) -> Result<String, RollBackRefused> {
+        self.roll_back_as(&crate::kit::operator_login(), provider, version)
     }
 }

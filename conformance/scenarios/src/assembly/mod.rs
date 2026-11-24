@@ -733,12 +733,19 @@ impl Core {
                 r.list(&actor);
             }
             r.permit(&kit::core(), Permission::CarryOnward);
-            for change in [CatalogueChange::Grant, CatalogueChange::Promote] {
+            for change in [
+                CatalogueChange::Grant,
+                CatalogueChange::Promote,
+                CatalogueChange::RollBack,
+            ] {
                 r.permit(&kit::operator_login(), Permission::Change(change));
             }
             r.permit(&kit::operator_login(), Permission::ReadOrderState);
             // The operator's login erases a kept statement's bytes where policy decides it (`REQ-AUD-13`, `T-020-37`).
             r.permit(&kit::operator_login(), Permission::EraseStatement);
+            // Not the override's permission (`EraseOverridingCitations`, `T-021-13`): the scenarios that need it grant it
+            // through `Core::registers`, so the login erases a cited statement only where a scenario says it may
+            // (`T-020-42`).
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);

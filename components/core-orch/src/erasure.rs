@@ -24,6 +24,13 @@
 //! done result, so a failure there is never recorded as one: it is the evidence store's finding
 //! (`unsettled_erasures`) until it is settled.
 //!
+//! By default a statement an entry rests on isn't erased (`EVIDENCE_RESTED_ON`, `REQ-AUD-13`). The operator may
+//! override that through a decided erasure (`T-020-42`, item `erasure-of-cited-evidence`): [`erase_statement_overriding`]
+//! runs the same steps with the override's check ([`Statements::erasable_overriding`]) in place of the default's, and
+//! asks policy for an `erase_statement` that sets `overrides_citations`, which policy permits an operator's login holding
+//! both permissions alone (`T-021-13`). The store honours the flag only from that permitting decision (`T-022-10`), and
+//! the entries that cite the statement stay as they are. Core sets the flag nowhere else, and [`erase_statement`] never.
+//!
 //! Core reaches the store only through [`Statements`]; the assembly implements it over the bound store, the only
 //! handle that erases (`T-022-03`). Nothing here decides who may erase: that is policy's, and Core's own actors are
 //! never the caller.
@@ -48,6 +55,18 @@ pub trait Statements {
     /// The store's refusal, or `Unavailable`.
     fn erasable(&mut self, commitment: &Digest) -> Result<(), AppendFailure>;
 
+    /// [`Statements::erasable`] for an erasure the operator asked to override the citations (`T-020-42`): every rule
+    /// but the one that refuses a statement an entry rests on. It answers what the operator may ask, never what the
+    /// store does, which is the permitting decision's word. The default is the refusing check, so a store that says
+    /// nothing of an override never lifts one.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal, or `Unavailable`.
+    fn erasable_overriding(&mut self, commitment: &Digest) -> Result<(), AppendFailure> {
+        self.erasable(commitment)
+    }
+
     /// Erases the statement the erasure decided at `result`, the receipt of its effect's `done` result. One erased
     /// already is `Ok`.
     ///
@@ -55,6 +74,16 @@ pub trait Statements {
     ///
     /// The store's refusal, or `Unavailable`: the call may be made again.
     fn erase(&mut self, result: &Receipt) -> Result<(), AppendFailure>;
+}
+
+impl dyn Statements + '_ {
+    /// The check the erasure runs, the override's where the operator asked for it and the default's otherwise.
+    fn check(&mut self, commitment: &Digest, overriding: bool) -> Result<(), AppendFailure> {
+        match overriding {
+            true => self.erasable_overriding(commitment),
+            false => self.erasable(commitment),
+        }
+    }
 }
 
 /// An erasure asked for.
@@ -199,15 +228,26 @@ pub fn erase_statement(
     fresh: &mut dyn Fresh,
     erasure: &Erasure<'_>,
 ) -> Result<Erased, Box<NotErased>> {
+    carry_out(log, decisions, statements, clock, fresh, erasure, false)
+}
+
+fn carry_out(
+    log: &mut dyn Log,
+    decisions: &mut dyn Decisions,
+    statements: &mut dyn Statements,
+    clock: &dyn Clock,
+    fresh: &mut dyn Fresh,
+    erasure: &Erasure<'_>,
+    overriding: bool,
+) -> Result<Erased, Box<NotErased>> {
     statements
-        .erasable(erasure.commitment)
+        .check(erasure.commitment, overriding)
         .map_err(|why| Box::new(NotErased::NotErasable(why)))?;
     let action = Action::EraseStatement {
         commitment: erasure.commitment.clone(),
         reason: erasure.reason.clone(),
-        // The owner's default: refused while anything cites the statement. Orchestration's override is
-        // `T-020-42`'s.
-        overrides_citations: false,
+        // Set only where the operator asked for the override (`T-020-42`); policy decides whether it may.
+        overrides_citations: overriding,
     };
     let request = DecisionRequest {
         request: fresh.id(),
@@ -232,7 +272,7 @@ pub fn erase_statement(
         )?,
     )?;
     // The log may have taken a citation of the statement since the first look.
-    if let Err(why) = statements.erasable(erasure.commitment) {
+    if let Err(why) = statements.check(erasure.commitment, overriding) {
         let result = append_general(
             log,
             &built_with(
@@ -270,6 +310,22 @@ pub fn erase_statement(
     }
     .settle(log, statements, clock)
     .map_err(|unsettled| Box::new(NotErased::Unsettled(*unsettled)))
+}
+
+/// [`erase_statement`] where the operator asked to override the citations (`T-020-42`, item `erasure-of-cited-evidence`).
+///
+/// # Errors
+///
+/// [`NotErased`], as [`erase_statement`].
+pub fn erase_statement_overriding(
+    log: &mut dyn Log,
+    decisions: &mut dyn Decisions,
+    statements: &mut dyn Statements,
+    clock: &dyn Clock,
+    fresh: &mut dyn Fresh,
+    erasure: &Erasure<'_>,
+) -> Result<Erased, Box<NotErased>> {
+    carry_out(log, decisions, statements, clock, fresh, erasure, true)
 }
 
 fn built_with(
