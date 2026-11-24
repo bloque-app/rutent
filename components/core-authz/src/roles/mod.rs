@@ -37,7 +37,8 @@
 //! # The operator's permissions
 //!
 //! Granting, accepting a module, revoking, marking stale, declaring a version exploited, setting a tuple's slippage,
-//! and every other catalogue change, promotion of a staged release included, are each a [`Permission`] of its own
+//! and every other catalogue change, promotion of a staged release and rolling its staging back included
+//! (`CatalogueChange::RollBack`, `T-021-12`, ADR-0014), are each a [`Permission`] of its own
 //! (`REQ-AUZ-6`), and so is posting a route. Each is held actor by actor, not by the operator's party, since every
 //! login of the operator acts for that one party: a permission held by the party would let each of them make every
 //! change, which is the insider `THR-88` names. The fixed rule refuses a catalogue change asked in any role but the
@@ -162,12 +163,6 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 Action::PostRoute { .. } => {
                     operator_holds(caller, Permission::PostRoute).map(Needs::from)
                 }
-                // Rolling a staging back (`T-020-39`'s `roll_back`) is a permission of its own from `T-021-12`;
-                // until then no rule answers it, so policy refuses it whoever asks.
-                Action::ChangeCatalogue {
-                    change: CatalogueChange::RollBack,
-                    ..
-                } => None,
                 Action::ChangeCatalogue { change, .. } => {
                     operator_holds(caller, Permission::Change(*change)).map(Needs::from)
                 }

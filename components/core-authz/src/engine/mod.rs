@@ -41,7 +41,8 @@
 //!   [`Engine::with_policy`] asks them before the deployment's policy, so no assembly can leave one out. A refusal from either
 //!   beats not known from the other.
 //! - **An unreachable provider** gives `verifier_unreachable`: core-internal has no cause of its own for it.
-//! - **`AC-17`'s reading is pending** on the owner's form as `spec-ac17-not-known`, with "not known" the default.
+//! - **`AC-17`'s reading is settled**: the owner answered "not known" (`spec-ac17-not-known`, 2026-11-18), which is
+//!   the first reading above.
 //! - **An unknown order is refused as another's is.** A source of an order's or a segment's record that knows nothing
 //!   of it gives `not_permitted`, the refusal of an order that isn't the caller's, never `missing_input`, so a refused
 //!   caller can't tell an order that doesn't exist from one it may not see (`T-023-01`'s question, the coordinator's
@@ -1180,6 +1181,7 @@ mod tests {
             CatalogueChange::WithdrawRelease,
             CatalogueChange::SetSlippage,
             CatalogueChange::Promote,
+            CatalogueChange::RollBack,
         ] {
             match change {
                 CatalogueChange::Grant
@@ -1191,9 +1193,8 @@ mod tests {
                 | CatalogueChange::Reinstate
                 | CatalogueChange::WithdrawRelease
                 | CatalogueChange::SetSlippage
-                | CatalogueChange::Promote => {}
-                // Not listed above: no rule answers it until `T-021-12` gives it its own permission, which lists it.
-                CatalogueChange::RollBack => unreachable!("not listed until T-021-12"),
+                | CatalogueChange::Promote
+                | CatalogueChange::RollBack => {}
             }
             actions.push(Action::ChangeCatalogue {
                 change,
@@ -1243,6 +1244,15 @@ mod tests {
             }
         }
         actions
+    }
+
+    /// `roll_back` is carried out only on a permitted decision's effect: the scan lists it among the methods that carry
+    /// out a decided action, so orchestration may call it only where the effect it rests on is in hand, and nowhere
+    /// else (`T-021-12`, ADR-0014).
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn staging_is_rolled_back_only_on_a_permitted_decisions_effect() {
+        entry_points::staging_is_rolled_back_only_on_an_effect();
     }
 
     /// The outcome of the one entry the log took since the last look, which must pass its checks.
@@ -1452,7 +1462,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 16);
+        assert_eq!(actions.len(), 17);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1584,7 +1594,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 16 + 2 * 3 + 3 + 3,
+            3 * 17 + 2 * 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy

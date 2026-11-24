@@ -1565,6 +1565,52 @@ path: it waits for the owner's click at the release into `main`.
   | the first naming is the payer's alone | `origin_account_named_for_the_first_time_is_set_once_and_then_held` |
   | the account is held from the first naming (later ones followed) | `a_move_the_log_already_holds_is_not_followed` |
 
+## T-021-12
+
+Branch `f-021/t-021-12-13-rollback-override`, from `m3` at `a3bc16b4`. Edits `components/core-authz/` only (`roles/`, the
+engine's scan and its list of decided actions), a `DEC-20` path: it waits for the owner's click at the release into
+`main`.
+
+- **What changed.** `CatalogueChange::RollBack` is answered by the one arm every catalogue change has: an operator's
+  login the register lists for `Permission::Change(RollBack)`, a permission of its own, apart from promotion's and every
+  other. The special arm that answered no rule is gone. Core's own actors, and every other role, are refused before the
+  deployment's policy is asked; the decision's entry records the request whole, so it names the actor and the change
+  (`REQ-AUD-8`). The scan (`engine/entry_points.rs`) moves `roll_back` from `CARRIES_OUT_NOTHING` to `CARRY_OUT`
+  (`change_catalogue: roll_back`), so in orchestration it may be called only where the effect it rests on is in hand
+  (rule 3). `engine/mod.rs`'s note that `AC-17`'s reading is pending now says the owner settled it as "not known"
+  (`spec-ac17-not-known`, 2026-11-18).
+- **Tests.** `roll_back_is_refused_while_no_rule_answers_it` is replaced by `roll back without its permission is
+  refused` (`roll_back_without_its_permission_is_refused`), which also holds the permitted case: the operator's login
+  holding the one permission is permitted, recorded with its actor and action, and the log admits the effect; the same
+  permission held by Core's actor, and every other permission held by the operator, are refused. `every_permission` lists
+  `RollBack` (its `unreachable!` is gone), so `each_permission_alone_allows_only_its_own_action` runs over it (11 to 12)
+  and the erase and promotion tests' loops over `every_permission` take it in unchanged. `every_decided_action` lists
+  it, so `T-021-01`'s two counts move by the one action (16 to 17, `3 * 16` to `3 * 17`): the only edits to them.
+  `staging_is_rolled_back_only_on_a_permitted_decisions_effect` pins the scan's side.
+- **Defaults, reversible, each failing closed.**
+  - The permission is an operator's alone: Core's own actors don't roll a staging back, even holding it (there is no
+    `CarryOnward` path), as for the erasure.
+  - Policy reads nothing of the release or the staging (that one is in force, that a staging is open): `roll_back`
+    keeps the version in force and the platform answers a roll back with nothing staged.
+- **Gaps, with owners.**
+  1. Orchestration doesn't call `roll_back` yet: its seam in `F-020`'s `segments/` (an effect of a permitted
+     `RollBack` decision carried out as `promote` is) is not in this row's crate set, which the wave kept to
+     `core-authz`. Owner: a `core-orch` row of `F-020` (the plan's commit body names the seam); until then the scan holds
+     any later call to the effect rule.
+  2. The deployment's register must list `Change(RollBack)` for the operator logins that may roll back:
+     configuration, owner `F-021`'s register docs / the deployment.
+- **Red first.** The new roll back test failed on its permitted assertion (`Refuse` for `Permit`), `each permission
+  alone` on `Change(RollBack) allows itself`, the engine's two counts on 16 against 17, and the scan test on its
+  `CARRY_OUT` assertion.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the roll back arm answers no rule (`None`) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | promotion's permission stands for it | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | no permission asked (any caller passes) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | `roll_back` left out of the scan's `CARRY_OUT` | `staging_is_rolled_back_only_on_a_permitted_decisions_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

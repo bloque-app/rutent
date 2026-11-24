@@ -81,6 +81,11 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "change_catalogue: promote",
     ),
     (
+        "roll_back",
+        "prov/src/module/platform.rs",
+        "change_catalogue: roll_back",
+    ),
+    (
         "grant",
         "prov/src/catalogue/mod.rs",
         "change_catalogue: grant",
@@ -170,11 +175,6 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "end_segment",
         "prov/src/module/platform.rs",
         "a segment's bounds; its value moves through `handle`",
-    ),
-    (
-        "roll_back",
-        "prov/src/module/platform.rs",
-        "ends a staging and keeps the version in force (ADR-0014); no row names it a permission",
     ),
     (
         "take_events",
@@ -1168,4 +1168,50 @@ pub(super) fn each_rule_catches_its_planted_bypass() {
         ["f: carries out `handle` without the effect it rests on"],
         "only test code is left aside"
     );
+}
+
+/// `roll_back`, which ends a release's staging and keeps the version in force (ADR-0014), is listed as carrying out a
+/// decided action (`change_catalogue: roll_back`), not as carrying out none, so in orchestration it is called only
+/// where the effect it rests on is in hand (`T-021-12`); and the rule finds a call of it planted without one.
+pub(super) fn staging_is_rolled_back_only_on_an_effect() {
+    let listed = |list: &[(&str, &str, &str)]| {
+        list.iter()
+            .any(|(n, f, _)| *n == "roll_back" && *f == "prov/src/module/platform.rs")
+    };
+    assert!(listed(CARRY_OUT), "`roll_back` is a carried out action");
+    assert!(
+        !listed(CARRIES_OUT_NOTHING),
+        "`roll_back` is no longer a method that carries out nothing"
+    );
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        orch("pub fn go(&mut self) { self.platform.roll_back(\"p\", \"op\", at); }"),
+        ["go: carries out `roll_back` without the effect it rests on"]
+    );
+    assert_eq!(
+        orch(
+            "fn go(&mut self, effect: &Effect) { self.platform.roll_back(\"p\", \"op\", self.at(effect)); }"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        found_outside("fn f(&mut self) { self.platform.roll_back(\"p\", \"op\", at); }"),
+        ["f: carries out `roll_back` outside orchestration"]
+    );
+}
+
+fn found_outside(source: &str) -> Vec<String> {
+    let mut scan = Scan::default();
+    scan_source(Crate::Authz, "planted.rs", false, source, &mut scan);
+    scan.findings
+        .into_iter()
+        .map(|f| format!("{}: {}", f.function, f.what))
+        .collect()
 }
