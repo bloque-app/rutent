@@ -73,6 +73,42 @@ pub use rutent_scenarios::kit::{
     AMOUNT, Counted as Ids, DECLARED, PlaceholderKey as TestKey, RESERVE, START, bank, bounds,
     core, customer, id, ledger, operator, tuple,
 };
+// The world's two ends ---------------------------------------------------------------------------------------------
+
+/// The withdrawal's provider of the two-party world ([`World::two_parties`], `T-020-39`): a reserve whose ledger is
+/// on the operator's public list, so another publisher's reserve can serve it too.
+pub const TWO_PARTY_ORIGIN: &str = "sim-duo-in";
+/// The deposit's provider of the two-party world: another publisher's reserve on [`TWO_PARTY_ORIGIN`]'s ledger, with a
+/// bank of its own, so the order's route runs through two providers of two parties.
+pub const TWO_PARTY_LAST: &str = "sim-duo-out";
+
+thread_local! {
+    /// The reserves the current world's route starts and ends at: [`RESERVE`] twice, unless [`World::two_parties`]
+    /// set them. Each test builds its world first, and every world sets them anew, so a thread the test harness reuses
+    /// carries nothing over.
+    static ENDS: Cell<(&'static str, &'static str)> = const { Cell::new((RESERVE, RESERVE)) };
+}
+
+/// The reserve the current world's route starts at: its withdrawal's provider, the order's origin reserve.
+pub fn origin_reserve() -> &'static str {
+    ENDS.with(|e| e.get().0)
+}
+
+/// The reserve the current world's route ends at: its deposit's provider, the order's destination reserve.
+pub fn last_reserve() -> &'static str {
+    ENDS.with(|e| e.get().1)
+}
+
+/// The other party whose word confirms or declines a move's outcome: the route's last reserve where it isn't the
+/// origin ([`World::two_parties`]), and otherwise [`OTHER_RESERVE`], a reserve the world installs beside the route.
+pub fn second_reserve() -> &'static str {
+    if last_reserve() != origin_reserve() {
+        last_reserve()
+    } else {
+        OTHER_RESERVE
+    }
+}
+
 /// The order.
 pub const ORDER: &str = "ord-1";
 /// The part.
@@ -546,7 +582,10 @@ impl authz::Sources for Register {
             authz::Source::OrderParties(order) => {
                 yes(order.as_str() == ORDER && need.input == customer().party)
             }
-            authz::Source::SegmentProvider { .. } => yes(need.input.as_str() == RESERVE),
+            authz::Source::SegmentProvider { .. } => {
+                yes(need.input.as_str() == origin_reserve()
+                    || need.input.as_str() == last_reserve())
+            }
             // The customer authorises each order the kit seeds through the engine (`T-021-04`).
             authz::Source::Requester(_) => yes(need.input == customer().party),
             _ => Reply::Missing,
@@ -653,7 +692,24 @@ pub struct World {
 }
 
 impl World {
+    /// The world whose order involves a second party (`T-020-39`, reused by `T-020-40`): two reserves of two
+    /// publishers on one public ledger, [`TWO_PARTY_ORIGIN`] and [`TWO_PARTY_LAST`]; the order's route withdraws at the
+    /// first and deposits at the second, so each is a provider of a segment on a route the order was given, and the
+    /// second's word is a party's word about the order however the route ends.
+    pub fn two_parties() -> Self {
+        let world = World::of(&[TWO_PARTY_ORIGIN, TWO_PARTY_LAST]);
+        ENDS.with(|e| e.set((TWO_PARTY_ORIGIN, TWO_PARTY_LAST)));
+        world
+    }
+
     pub fn of(reserves: &[&str]) -> Self {
+        let first: &'static str = match reserves.first() {
+            Some(&r) if r == RESERVE => RESERVE,
+            Some(&r) if r == TWO_PARTY_ORIGIN => TWO_PARTY_ORIGIN,
+            Some(&r) => Box::leak(r.to_owned().into_boxed_str()),
+            None => RESERVE,
+        };
+        ENDS.with(|e| e.set((first, first)));
         let mut fleet = Fleet::new(DEADLINE);
         let context = fleet.context().clone();
         let mut catalogue = Catalogue::new();
@@ -686,8 +742,9 @@ impl World {
 pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
     let context = world.context();
     let bounds = bounds(&context);
-    let withdrawal = tuple(RESERVE, bank(RESERVE), ledger(RESERVE));
-    let deposit = tuple(RESERVE, ledger(RESERVE), bank(RESERVE));
+    let (first, last) = (origin_reserve(), last_reserve());
+    let withdrawal = tuple(first, bank(first), ledger(first));
+    let deposit = tuple(last, ledger(first), bank(last));
     let prices = [price(withdrawal.clone()), price(deposit.clone())];
     let exposures = Exposures::new();
     let releases = Releases::new();
@@ -696,8 +753,8 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
         serde_json::from_value(json!({
             "request_id": request_id,
             "round": round,
-            "from": bank(RESERVE),
-            "to": bank(RESERVE),
+            "from": bank(first),
+            "to": bank(last),
             "amount": AMOUNT,
             "objective": { "kind": "lowest_total_cost" },
         }))
@@ -722,10 +779,11 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
     shortlist.check().expect("a shortlist record");
     // The reserve's dry runs, as the routing asks them.
     let dry = |world: &mut World, kind: &str, transaction: &str, from: Value, to: Value| {
+        let provider = if kind == "withdrawal" { first } else { last };
         let mut statement = json!({
             "kind": kind,
             "transaction": transaction,
-            "provider": RESERVE,
+            "provider": provider,
             "asset": "COP",
             "amount": AMOUNT,
             "dry_run": true,
@@ -741,7 +799,7 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
             statement["destination"] = to["node"].clone();
         }
         let operation = rutent_conformance::sim::operation(&context, statement);
-        match world.fleet.handle(RESERVE, &operation) {
+        match world.fleet.handle(provider, &operation) {
             Handled::Answered(result) => serde_json::to_vec(&*result).unwrap(),
             Handled::Refused(why) => panic!("the dry run was refused: {why:?}"),
         }
@@ -755,13 +813,7 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
                 )
                 .unwrap(),
             },
-            bytes: dry(
-                world,
-                "withdrawal",
-                "tx-dry-w",
-                bank(RESERVE),
-                ledger(RESERVE),
-            ),
+            bytes: dry(world, "withdrawal", "tx-dry-w", bank(first), ledger(first)),
         },
         Received {
             tuple: deposit.clone(),
@@ -771,7 +823,7 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
                 )
                 .unwrap(),
             },
-            bytes: dry(world, "deposit", "tx-dry-d", ledger(RESERVE), bank(RESERVE)),
+            bytes: dry(world, "deposit", "tx-dry-d", ledger(first), bank(last)),
         },
     ];
     let _ = world.fleet.platform.take_events();
@@ -824,9 +876,9 @@ pub fn chosen_route(world: &mut World, clock: &TestClock) -> DecisionRecord {
 pub fn route_end() -> RouteEnd {
     RouteEnd {
         destination: Destination {
-            reserve: id(RESERVE),
+            reserve: id(last_reserve()),
             node: OuterNode {
-                network: format!("{RESERVE}-bank"),
+                network: format!("{}-bank", last_reserve()),
             },
             account: id("acct-2"),
         },
@@ -1022,7 +1074,7 @@ pub fn results_after_the_move(
         &order,
         segment,
         transaction,
-        &[RESERVE, OTHER_RESERVE],
+        &[origin_reserve(), second_reserve()],
     );
     (receipts[0].clone(), receipts[1].clone())
 }
@@ -1220,10 +1272,13 @@ fn seed_arrival(
         );
         log.take(&question, Through::General).unwrap();
         // The reserve's report, signed with its statements key.
-        let mut report =
-            seed_envelope(rutent_contracts::provider_role::RESULT_SHAPE, RESERVE, body);
-        rutent_conformance::signing::sign_value(&mut report, &statements_key_of(RESERVE));
-        let publisher = Spec::of(SimRole::Reserve, RESERVE)
+        let mut report = seed_envelope(
+            rutent_contracts::provider_role::RESULT_SHAPE,
+            origin_reserve(),
+            body,
+        );
+        rutent_conformance::signing::sign_value(&mut report, &statements_key_of(origin_reserve()));
+        let publisher = Spec::of(SimRole::Reserve, origin_reserve())
             .make(&SuiteContext::default())
             .advertisement()
             .into_statement()
@@ -1231,7 +1286,7 @@ fn seed_arrival(
             .publisher;
         let reserve = Actor {
             party: id(&publisher),
-            acts: id(RESERVE),
+            acts: id(origin_reserve()),
             role: Role::Provider,
             kind: ActorKind::Component,
         };
@@ -1259,7 +1314,7 @@ fn seed_arrival(
         };
         let mut notice = seed_envelope(
             rutent_contracts::provider_role::ARRIVAL_NOTICE_SHAPE,
-            RESERVE,
+            origin_reserve(),
             json!({
                 "transaction": credit,
                 "node": node,
@@ -1269,7 +1324,7 @@ fn seed_arrival(
                 "holder": rutent_scenarios::kit::customer().party,
             }),
         );
-        rutent_conformance::signing::sign_value(&mut notice, &statements_key_of(RESERVE));
+        rutent_conformance::signing::sign_value(&mut notice, &statements_key_of(origin_reserve()));
         let notice = stated_seed(
             store,
             serde_json::to_vec(&notice).unwrap(),
@@ -1285,7 +1340,7 @@ fn seed_arrival(
         log.take(
             &entry(
                 What::Arrival {
-                    reserve: id(RESERVE),
+                    reserve: id(origin_reserve()),
                     node: node.clone(),
                     asset: first.from.asset.clone(),
                     amount: first.amount_in.amount().clone(),
@@ -1310,7 +1365,7 @@ pub fn authorisation_of(named: &Named, floor: Option<PositiveAmount>) -> Authori
     Authorisation {
         authorisation: id(&named.authorisation()),
         order: id(&named.order),
-        origin_reserve: id(RESERVE),
+        origin_reserve: id(origin_reserve()),
         // The payer's account at the reserve, the one the kit's withdrawal names (`payer.bank_account`).
         origin_account: Some(id("acct-1")),
         destination: end.destination,
@@ -1400,7 +1455,7 @@ fn seed_chosen(
                     settlement_account_at: None,
                     payer: customer().party,
                 },
-                origin_reserve: id(RESERVE),
+                origin_reserve: id(origin_reserve()),
                 yeses: Vec::new(),
                 held: None,
                 session: None,
@@ -1446,6 +1501,8 @@ fn seed_chosen(
 /// the reserve's signed yes for its one part from the reserve's ledger, the acceptance `requester` gave, and its
 /// decision record, under `decision_record`. Its `route_chosen`, naming `handed_on_from`, is the hand-on's to record.
 pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_record: &Id) {
+    // A route handed on starts with the kit's route's deposit, from where the value rests: its last reserve's
+    // (`T-020-39`), which says yes to it and stands as its origin reserve; the kit's own reserve where it runs alone.
     let (order, authorisation) = (id(&named.order), id(&named.authorisation()));
     let at = Timestamp::new(Instant(START).rfc3339().unwrap()).unwrap();
     let until = Timestamp::new(Instant(START + 86_400).rfc3339().unwrap()).unwrap();
@@ -1464,7 +1521,7 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
     let session = id(&format!("sess-{}", named.order));
     let quote = digest(&"ac".repeat(32));
     let transaction = format!("tx-yes-{}", named.order);
-    let yes = stated_results(core, &order, None, &transaction, &[RESERVE]).remove(0);
+    let yes = stated_results(core, &order, None, &transaction, &[last_reserve()]).remove(0);
     let mut log = core.log.borrow_mut();
     log.take(
         &verified(
@@ -1517,10 +1574,10 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
                     settlement_account_at: None,
                     payer: requester.party.clone(),
                 },
-                origin_reserve: id(RESERVE),
+                origin_reserve: id(last_reserve()),
                 yeses: vec![rutent_contracts::core_internal::PartYes {
                     part: id(PART),
-                    origin_reserve: id(RESERVE),
+                    origin_reserve: id(last_reserve()),
                     reserve_yes: yes,
                 }],
                 held: None,
@@ -1536,6 +1593,7 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
     // account to the payer's own (`T-021-04`).
     drop(log);
     let mut authorisation = authorisation_of(named, None);
+    authorisation.origin_reserve = id(last_reserve());
     if requester.party != customer().party {
         authorisation.origin_account = None;
     }
@@ -1613,7 +1671,7 @@ pub fn seed_linked_on_a_deposit(
                     settlement_account_at: None,
                     payer: requester.clone(),
                 },
-                origin_reserve: id(RESERVE),
+                origin_reserve: id(last_reserve()),
                 yeses: Vec::new(),
                 held: None,
                 session: None,
@@ -1813,7 +1871,7 @@ impl Core {
             id(&self.named.order),
             id(PART),
             id(&self.named.authorisation()),
-            id(RESERVE),
+            id(origin_reserve()),
             route_end(),
         );
         let segments = [id(&self.named.withdrawal), id(&self.named.deposit)];
@@ -1891,7 +1949,7 @@ impl Core {
             id(&self.named.order),
             id(PART),
             id(&self.named.authorisation()),
-            id(RESERVE),
+            id(origin_reserve()),
             route_end(),
         );
         let segments = [id(&self.named.withdrawal), id(&self.named.deposit)];
@@ -2037,7 +2095,13 @@ impl StatementKeys for Sources<'_> {
         )
     }
 
-    fn signs_for(&mut self, _: &Id, _: &SignedWith, _: &Timestamp) -> Result<bool, AppendFailure> {
+    fn signs_for(
+        &mut self,
+        _: &Id,
+        _: &SignedWith,
+        _: &Timestamp,
+        _: &Timestamp,
+    ) -> Result<bool, AppendFailure> {
         Ok(true)
     }
 }

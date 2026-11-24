@@ -1,0 +1,10 @@
+{
+  "base": "decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve",
+  "patch": [
+    {
+      "op": "replace",
+      "path": "/statement/candidates/1/dropped/operation",
+      "value": 2
+    }
+  ]
+}

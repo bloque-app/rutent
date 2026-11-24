@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release and promote are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13). The Rust types check these.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13). The Rust types check these.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -200,7 +200,8 @@
         "reinstate",
         "withdraw_release",
         "set_slippage",
-        "promote"
+        "promote",
+        "roll_back"
       ]
     },
     "action": {
@@ -537,6 +538,10 @@
         "reason": {
           "description": "Why, as a token: a label to read, which no decision branches on.",
           "$ref": "#/$defs/token"
+        },
+        "overrides_citations": {
+          "description": "Whether the erasure goes ahead while later entries cite the statement: false unless set. Unset, the log refuses it while anything rests on the statement; set, it is the operator's override, a permission of its own, and the log admits the erasure only where its permitting decision's action sets it (REQ-AUD-13).",
+          "type": "boolean"
         }
       }
     },

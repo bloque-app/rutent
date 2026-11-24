@@ -8,7 +8,7 @@ use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::{self as stm, OperationKind, PartPlan, SegmentPlan};
 use rutent_core_orch::hand_on::Parts;
 
-use super::{Core, General, PART, RESERVE, id, ledger};
+use super::{Core, General, PART, id, last_reserve, ledger, origin_reserve};
 
 /// Runs `with` over Core's hand-on parts: the kit's clock, log, identifiers, segments and exposures, and `stuck`.
 pub fn hand_parts<T>(
@@ -70,7 +70,7 @@ pub fn linked_plan(core: &Core, from: serde_json::Value, segment: &str) -> Vec<P
 
 /// The linked order's part starting where the kit's order's value rests: the reserve's ledger.
 pub fn from_the_ledger(core: &Core, segment: &str) -> Vec<PartPlan> {
-    linked_plan(core, ledger(RESERVE), segment)
+    linked_plan(core, ledger(origin_reserve()), segment)
 }
 
 /// The kit's linked order's decision record id.
@@ -108,7 +108,12 @@ pub fn route_from_the_ledger(
 
     let context = world.context();
     let bounds = bounds(&context);
-    let deposit = tuple(RESERVE, ledger(RESERVE), bank(RESERVE));
+    // The kit's route's deposit, from the ledger the order's value rests at: its last reserve's (`T-020-39`).
+    let deposit = tuple(
+        last_reserve(),
+        ledger(origin_reserve()),
+        bank(last_reserve()),
+    );
     let prices = [price(deposit.clone())];
     let (exposures, releases) = (Exposures::new(), Releases::new());
     let record_id = record_id.clone();
@@ -116,8 +121,8 @@ pub fn route_from_the_ledger(
         let mut request = json!({
             "request_id": request_id,
             "round": round,
-            "from": ledger(RESERVE),
-            "to": bank(RESERVE),
+            "from": ledger(origin_reserve()),
+            "to": bank(last_reserve()),
             "amount": amount,
             "objective": { "kind": "lowest_total_cost" },
         });
@@ -144,16 +149,16 @@ pub fn route_from_the_ledger(
     let statement = json!({
         "kind": "deposit",
         "transaction": "tx-dry-linked",
-        "provider": RESERVE,
+        "provider": last_reserve(),
         "asset": "COP",
         "amount": amount,
         "dry_run": true,
         "inputs": { "beneficiary.bank_account": "acct-2" },
-        "origin": ledger(RESERVE)["node"].clone(),
-        "destination": bank(RESERVE)["node"].clone(),
+        "origin": ledger(origin_reserve())["node"].clone(),
+        "destination": bank(last_reserve())["node"].clone(),
     });
     let operation = rutent_conformance::sim::operation(&context, statement);
-    let bytes = match world.fleet.handle(RESERVE, &operation) {
+    let bytes = match world.fleet.handle(last_reserve(), &operation) {
         Handled::Answered(result) => serde_json::to_vec(&*result).unwrap(),
         Handled::Refused(why) => panic!("the dry run was refused: {why:?}"),
     };
@@ -268,7 +273,7 @@ pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation
                         settlement_account_at: None,
                         payer: requester,
                     },
-                    origin_reserve: id(RESERVE),
+                    origin_reserve: id(origin_reserve()),
                     yeses: Vec::new(),
                     held: None,
                     session: None,
@@ -290,7 +295,7 @@ pub fn seed_acceptance(core: &Core, order: &str, acceptance: &str, authorisation
 /// and its transaction is the one the log holds one start to (`one-start-per-holding-record`).
 pub fn holding_statement(core: &mut Core, linked: &str) -> Receipt {
     let transaction = format!("tx-holding-{linked}-{}", core.log.borrow().entries.len());
-    super::stated_results(core, &id(linked), None, &transaction, &[RESERVE]).remove(0)
+    super::stated_results(core, &id(linked), None, &transaction, &[origin_reserve()]).remove(0)
 }
 
 /// Proves `linked`'s start on `record`, the holding account's record of its withdrawal, citing a statement of it

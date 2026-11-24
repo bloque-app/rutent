@@ -18,8 +18,7 @@ use rutent_router::RouteFinder;
 use rutent_scenarios::sim::SimWorld;
 
 use super::{
-    Core, General, PART, RESERVE, World, authorisation_of, bank, bounds, digest, id, ledger, price,
-    tuple,
+    Core, General, PART, World, authorisation_of, bank, bounds, digest, id, ledger, price, tuple,
 };
 
 /// The providers' modules as the rounds reach them: each question handed to the platform as signed.
@@ -117,7 +116,7 @@ impl Rerouting {
         let order = rounds::Order {
             order: id(&core.named.order),
             caller: super::core(),
-            origin_reserve: id(RESERVE),
+            origin_reserve: id(super::origin_reserve()),
             presence: Presence::User {
                 session: id(&context.session),
             },
@@ -132,8 +131,16 @@ impl Rerouting {
             bounds = serde_json::from_value(value).expect("bounds");
         }
         let prices = [
-            price(tuple(RESERVE, bank(RESERVE), ledger(RESERVE))),
-            price(tuple(RESERVE, ledger(RESERVE), bank(RESERVE))),
+            price(tuple(
+                super::origin_reserve(),
+                bank(super::origin_reserve()),
+                ledger(super::origin_reserve()),
+            )),
+            price(tuple(
+                super::last_reserve(),
+                ledger(super::origin_reserve()),
+                bank(super::last_reserve()),
+            )),
         ];
         let (core_actor, operator) = (super::core(), core.operator.clone());
         let mut general = General(Rc::clone(&core.log));
@@ -188,7 +195,7 @@ impl Rerouting {
             id(&core.named.order),
             id(PART),
             id(&core.named.authorisation()),
-            id(RESERVE),
+            id(super::origin_reserve()),
         );
         let (caller, core_actor, operator) = (super::core(), super::core(), core.operator.clone());
         let session = id(&session);

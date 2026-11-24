@@ -1,6 +1,16 @@
 # router-api changelog
 
 ## 4.0.0
+- A candidate dropped for a batched payout names its reason (item `shared-movement-reading`, `T-020-39`):
+  `DropReason::BatchedPayout {part, operation}` (`batched_payout`), a part whose last operation, its deposit, is at a
+  reserve tuple declaring provider-role's `payouts: batched`. `Candidate::check` holds it to its part's last operation
+  and the record's check to a deposit tuple of the snapshot that pays out in batches. The snapshot carries each
+  tuple's `payouts` through its `reserve_tuple` figure, provider-role's shape by reference, so no field of this
+  contract's own changed. One valid fixture, `decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve`,
+  and three invalid ones the Rust types refuse, the two halves with messages of their own (the review of `27b0f6b9`):
+  a tuple paying per order (the record's), an operation before the last and an earlier deposit at a batching reserve
+  (the candidate's). The router's search drops such a candidate from `T-020-43`. Folded into
+  this unreleased major. (DEC-4, DEC-20, REQ-AUD-4, REQ-ORD-33, T-020-39)
 - Docs (`T-020-21`, item 2): `Operation::stated_out`'s `None` means nothing arrives by the answer, so it confirms
   nothing and a candidate through it is dropped as delivering nothing; it is never read as the answer's
   `amount_out`. No shape, type or rule changed. Folded into this unreleased major. (DEC-4, DEC-20, REQ-CAT-11,

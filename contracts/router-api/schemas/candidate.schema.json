@@ -70,6 +70,7 @@
             "no_price",
             "fee_above_amount",
             "nothing_delivered",
+            "batched_payout",
             "excluded_by_policy",
             "below_floor",
             "no_positive_outcome",
@@ -460,6 +461,39 @@
             "properties": {
               "reason": {
                 "const": "nothing_delivered"
+              },
+              "part": {
+                "$ref": "#/$defs/index"
+              },
+              "operation": {
+                "$ref": "#/$defs/index"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "batched_payout"
+              }
+            }
+          },
+          "then": {
+            "description": "One of its parts would end on a deposit at a reserve tuple that pays its deposits out in batches (provider-role's payouts: batched), whose one movement no order's close can rest on alone (REQ-ORD-33, REQ-AUD-4). It names that part's last operation, the deposit; the part is listed whole. That the operation is its part's last, a deposit at a batching tuple, is the Rust types' to check.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reason",
+              "part",
+              "operation"
+            ],
+            "properties": {
+              "reason": {
+                "const": "batched_payout"
               },
               "part": {
                 "$ref": "#/$defs/index"

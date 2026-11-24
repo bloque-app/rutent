@@ -205,6 +205,9 @@ pub fn erase_statement(
     let action = Action::EraseStatement {
         commitment: erasure.commitment.clone(),
         reason: erasure.reason.clone(),
+        // The owner's default: refused while anything cites the statement. Orchestration's override is
+        // `T-020-42`'s.
+        overrides_citations: false,
     };
     let request = DecisionRequest {
         request: fresh.id(),

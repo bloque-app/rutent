@@ -144,7 +144,11 @@ fn run_with_the_deposit_refused(core: &mut Core, world: &mut World) -> Ran {
 /// nothing passed out and its effect's result is `failed`, its value not in motion), then recalculated from the
 /// reserve's ledger where its value sits, and offered no route: the reserve refuses every dry run of the deposit.
 fn left_no_route() -> (World, Core, Recalculation) {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    left_no_route_in(World::two_parties())
+}
+
+/// [`left_no_route`], in `world`.
+fn left_no_route_in(mut world: World) -> (World, Core, Recalculation) {
     let mut core = Core::over(&mut world);
     let mut watched = Watched::new(&mut world.fleet.platform);
     watched.refuse_begin = Some(1);
@@ -162,7 +166,7 @@ fn left_no_route() -> (World, Core, Recalculation) {
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let mut rerouting = Rerouting::of(&core);
     let outcome = rerouting
         .recalculate(&mut core, &mut world)
@@ -202,7 +206,19 @@ fn record_no_route(
 
 /// The kit's order stuck by no route, its value resting at the reserve's ledger.
 fn stuck_by_no_route() -> (World, Core, Stuck) {
-    let (world, mut core, outcome) = left_no_route();
+    stuck_by_no_route_in(left_no_route())
+}
+
+/// The kit's order stuck by no route in a world of one reserve, which runs the whole route: an order that only ever
+/// involved one party. [`OTHER_RESERVE`] is installed beside it, and runs nothing of it.
+fn stuck_at_one_party() -> (World, Core, Stuck) {
+    stuck_by_no_route_in(left_no_route_in(World::of(&[RESERVE, OTHER_RESERVE])))
+}
+
+/// The order left no route, recorded stuck.
+fn stuck_by_no_route_in(
+    (world, mut core, outcome): (World, Core, Recalculation),
+) -> (World, Core, Stuck) {
     let mut stuck = Stuck::new();
     let recorded = record_no_route(&mut core, &mut stuck, &outcome).expect("recorded");
     assert_eq!(recorded.state, OrderState::Stuck);
@@ -213,7 +229,7 @@ fn stuck_by_no_route() -> (World, Core, Stuck) {
 /// The resolution that returns the stuck value to its origin, through the reserve that holds it.
 fn back_to_origin(amount: &str) -> Resolution {
     Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         to: origin(),
         asset: cop_unit(),
         amount: PositiveAmount::new(amount).unwrap(),
@@ -339,7 +355,7 @@ fn no_route_left_makes_the_order_stuck_and_nothing_is_rolled_back() {
         "nothing released; the value at rest is held where it sits"
     );
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::new(AMOUNT).unwrap(),
         "the ceilings in flight count the value at rest"
     );
@@ -354,13 +370,13 @@ fn no_route_left_makes_the_order_stuck_and_nothing_is_rolled_back() {
         "the value resting at the ledger is seen in full"
     );
 
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     assert_eq!(
         try_run(&mut core, &mut world),
         Err(SegmentsError::Stuck(id(PART)))
     );
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "nothing more is handed over"
     );
@@ -395,7 +411,7 @@ fn no_route_at_a_failed_final_deposit_waits_for_the_customer() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_for(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let ran = core.run(&mut world);
     assert!(
         matches!(segments(&ran)[1].outcome, SegmentOutcome::Refused(_)),
@@ -404,7 +420,7 @@ fn no_route_at_a_failed_final_deposit_waits_for_the_customer() {
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let mut rerouting = Rerouting::of(&core);
     let outcome = rerouting.recalculate(&mut core, &mut world).unwrap();
     assert!(
@@ -449,7 +465,7 @@ fn segment_past_twice_the_p99_makes_the_order_stuck_and_warns_the_operator() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let ran = run_taking(&mut core, &mut world, 30);
     assert!(
         matches!(segments(&ran)[0].outcome, SegmentOutcome::Unknown(_)),
@@ -482,7 +498,7 @@ fn segment_past_twice_the_p99_makes_the_order_stuck_and_warns_the_operator() {
         (
             "ord-21",
             "p1-s1-of-21",
-            RESERVE,
+            origin_reserve(),
             StuckBasis::TwiceP99,
             30,
             61
@@ -510,7 +526,7 @@ fn segment_past_twice_the_p99_makes_the_order_stuck_and_warns_the_operator() {
         Ok(Watch::AlreadyStuck)
     );
     assert_eq!(count(&core, is_stuck_declared), 1);
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let ran = try_run(&mut core, &mut world).expect("what it gave back is recorded");
     assert_eq!(segments(&ran).len(), 1, "the deposit isn't handed over");
     assert!(matches!(
@@ -518,7 +534,7 @@ fn segment_past_twice_the_p99_makes_the_order_stuck_and_warns_the_operator() {
         SegmentOutcome::Unknown(_)
     ));
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "nothing is asked of the provider again"
     );
@@ -537,7 +553,7 @@ fn provider_with_no_history_is_timed_on_twice_its_advertised_time() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Unknown));
+        .script_for(last_reserve(), "deposit", Behaviour::act(Act::Unknown));
     let ran = run_taking(&mut core, &mut world, 30);
     assert!(
         matches!(segments(&ran)[1].outcome, SegmentOutcome::Unknown(_)),
@@ -573,7 +589,7 @@ fn figures_behind_a_stuck_call_are_on_record() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let ran = core.run(&mut world);
     assert!(
         matches!(segments(&ran)[0].outcome, SegmentOutcome::Unknown(_)),
@@ -637,7 +653,7 @@ fn figures_behind_a_stuck_call_are_on_record() {
         (
             ORDER,
             PART,
-            RESERVE,
+            origin_reserve(),
             StuckBasis::TwiceAdvertised,
             DECLARED,
             2 * DECLARED + 5
@@ -668,7 +684,7 @@ fn settlement_changes(raised: &[rutent_core_orch::stuck::Raised]) -> Vec<(u64, u
             else {
                 panic!("a settlement time difference");
             };
-            assert_eq!(provider.as_str(), RESERVE);
+            assert_eq!(provider.as_str(), origin_reserve());
             (
                 u64::from(*before_seconds),
                 u64::from(*now_seconds),
@@ -752,7 +768,7 @@ fn raise_the_log_refuses_holds_up_no_stuck_call() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let _ = run_taking(&mut core, &mut world, 30);
     let since = carried_since(&core, "p1-s1-of-21");
     for _ in 0..2 {
@@ -796,7 +812,7 @@ fn stuck_state_is_visible_to_the_customer_and_the_provider() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "deposit", Behaviour::act(Act::Unknown));
+        .script_for(last_reserve(), "deposit", Behaviour::act(Act::Unknown));
     let _ = core.run(&mut world);
     let since = carried_since(&core, DEPOSIT);
     let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
@@ -1177,12 +1193,15 @@ fn resolution_is_moved_once_by_another_party_on_its_decision() {
     let followed = core.segments.order(&id(ORDER)).expect("followed");
     assert_eq!(followed.parts[0].state, OrderState::EndedWithoutCompleting);
     let mut world = world;
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     assert_eq!(
         try_run(&mut core, &mut world).map(|_| ()),
         Err(SegmentsError::Stuck(id(PART)))
     );
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
@@ -1212,7 +1231,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
         Err(ResolveError::NoEvidence)
     );
     let to_a_friend = Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         to: Destination {
             account: id("acct-of-a-friend"),
             ..origin()
@@ -1235,7 +1254,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
         Err(ResolveError::NotItsValue)
     );
     let another_asset = Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         to: origin(),
         asset: Denomination {
             id: "USD".into(),
@@ -1289,7 +1308,7 @@ fn moves_once(
 
 fn to_destination(core: &Core, amount: &str) -> Resolution {
     Resolution::Deliver {
-        by: id(RESERVE),
+        by: id(origin_reserve()),
         to: destination(core),
         asset: cop_unit(),
         amount: PositiveAmount::new(amount).unwrap(),
@@ -1715,7 +1734,7 @@ fn resolution_ends_come_from_cores_records() {
         },
     ] {
         let to_a_friend = Resolution::Deliver {
-            by: id(RESERVE),
+            by: id(origin_reserve()),
             to,
             asset: cop_unit(),
             amount: PositiveAmount::new(AMOUNT).unwrap(),
@@ -1747,7 +1766,7 @@ fn stuck_part_records_what_its_carried_segment_gave_back() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     for _ in 0..3 {
         core.log
             .borrow_mut()
@@ -1763,7 +1782,7 @@ fn stuck_part_records_what_its_carried_segment_gave_back() {
         watch(&mut core, &mut stuck, &mut raises),
         Ok(Watch::Stuck(_))
     ));
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let results = |core: &Core| {
         core.log
             .borrow()
@@ -1785,7 +1804,7 @@ fn stuck_part_records_what_its_carried_segment_gave_back() {
     ));
     assert_eq!(results(&core), before + 1, "what it gave back is recorded");
     assert_eq!(
-        world.fleet.platform.operations_received(RESERVE),
+        world.fleet.platform.operations_received(origin_reserve()),
         handled,
         "nothing asked again"
     );
@@ -1868,7 +1887,7 @@ fn unknown_withdrawal_holds_the_stuck_parts_decision_back() {
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let _ = core.run(&mut world);
     let since = carried_since(&core, WITHDRAWAL);
     let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
@@ -1891,11 +1910,14 @@ fn unknown_withdrawal_holds_the_stuck_parts_decision_back() {
         .map(|_| ()),
         Err(ResolveError::ValueInMotion(id(WITHDRAWAL)))
     );
-    let handled = world.fleet.platform.operations_received(RESERVE);
+    let handled = world.fleet.platform.operations_received(origin_reserve());
     let _ = try_run(&mut core, &mut world);
-    assert_eq!(world.fleet.platform.operations_received(RESERVE), handled);
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled
+    );
+    assert_eq!(
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::new(AMOUNT).unwrap(),
         "its value stays held"
     );
@@ -1939,7 +1961,7 @@ fn ends_followed_at_take_up_survive_a_recalculation() {
     world
         .fleet
         .world()
-        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        .script_dry_run(last_reserve(), "deposit", Behaviour::act(Act::Refuse));
     let outcome = rerouting
         .recalculate(&mut core, &mut world)
         .expect("routed");
@@ -2078,7 +2100,7 @@ fn real_logs_receipt_passes_the_receipt_rule() {
             what: What::StuckCall {
                 order: id(ORDER),
                 part: id(PART),
-                provider: id(RESERVE),
+                provider: id(origin_reserve()),
                 basis: StuckBasis::TwiceAdvertised,
                 figure_seconds: rutent_contracts::provider_role::SafeInteger::try_from(60u64)
                     .unwrap(),
@@ -2181,7 +2203,7 @@ fn settlement_recorded_late_keeps_a_stuck_parts_value_held() {
     );
     assert!(core.segments.stuck(&id(ORDER), &id(PART)));
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::new(AMOUNT).unwrap(),
         "the value resting at the ledger is held"
     );
@@ -2722,7 +2744,7 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         "{ran:?}"
     );
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::new(AMOUNT).unwrap()
     );
     let decision = decide(
@@ -2749,13 +2771,13 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         })
     ));
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::zero(),
         "a resolved part holds nothing"
     );
     let _ = try_run(&mut core, &mut world);
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::zero()
     );
     core.admitted(&world.catalogue)
@@ -2994,12 +3016,12 @@ fn confirm_segment(
 // verifies: REQ-AUZ-4, REQ-ORD-1, REQ-ORD-2, INV-4
 #[test]
 fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut world = World::two_parties();
     let mut core = Core::over(&mut world);
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let _ = core.run(&mut world);
     let since = carried_since(&core, WITHDRAWAL);
     let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
@@ -3110,7 +3132,7 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
     assert_eq!(outcome_decisions(&core), (1, 1));
     assert!(!core.segments.handed_over(&id(ORDER), &id(WITHDRAWAL)));
     assert_eq!(
-        core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        core.exposures.in_flight(&id(origin_reserve()), &cop_unit()),
         Amount::new(AMOUNT).unwrap(),
         "its value stays held, for the part's resolution"
     );
@@ -3162,7 +3184,7 @@ fn decided_transaction(core: &Core) -> Id {
 }
 
 /// Two results about the transaction the current order's stuck decision named, by two providers, made and appended
-/// now: [`RESERVE`]'s, then [`OTHER_RESERVE`]'s. A resolution's outcome is reported and confirmed on them
+/// now: [`origin_reserve()`]'s, then [`second_reserve()`]'s. A resolution's outcome is reported and confirmed on them
 /// (`outcome-confirmation-cites-verified-evidence`).
 fn results_after_the_resolution(core: &mut Core) -> (Receipt, Receipt) {
     let transaction = decided_transaction(core);
@@ -3522,7 +3544,7 @@ impl Grading for Waits {
 
 /// The outcome a settled withdrawal of the reserve states, from a run that settles.
 fn settled_withdrawal_outcome() -> serde_json::Value {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut world = World::two_parties();
     let mut core = Core::over(&mut world);
     let _ = core.run(&mut world);
     core.store
@@ -3551,14 +3573,14 @@ fn later_word(core: &Core, transaction: &Id, outcome: Option<serde_json::Value>)
         .find(|v| {
             v["statement"]["transaction"] == transaction.as_str()
                 && v["shape"] == rutent_contracts::provider_role::RESULT_SHAPE
-                && v["maker"] == RESERVE
+                && v["maker"] == origin_reserve()
         })
         .expect("the reserve's answer is kept");
     if let Some(outcome) = outcome {
         answer["statement"]["outcome"] = outcome;
     }
     answer["made_at"] = core.clock.now().timestamp().unwrap().as_str().into();
-    rutent_conformance::signing::sign_value(&mut answer, &statements_key_of(RESERVE));
+    rutent_conformance::signing::sign_value(&mut answer, &statements_key_of(origin_reserve()));
     serde_json::to_vec(&answer).unwrap()
 }
 
@@ -3573,12 +3595,12 @@ struct Silent {
 }
 
 fn silent_withdrawal() -> Silent {
-    let mut world = World::of(&[RESERVE, OTHER_RESERVE]);
+    let mut world = World::two_parties();
     let mut core = Core::over(&mut world);
     world
         .fleet
         .world()
-        .script_for(RESERVE, "withdrawal", Behaviour::act(Act::Unknown));
+        .script_for(origin_reserve(), "withdrawal", Behaviour::act(Act::Unknown));
     let _ = core.run(&mut world);
     let since = carried_since(&core, WITHDRAWAL);
     let (mut stuck, mut raises) = (Stuck::new(), Raises::default());
@@ -3943,7 +3965,10 @@ fn segments_move_confirmed_done_is_graded_and_then_settles_the_segment() {
         Err(ResolveError::DoneNeedsEvidence)
     );
     assert_eq!(m.decisions(), (1, 0, 0));
-    let held = m.core.exposures.in_flight(&id(RESERVE), &cop_unit());
+    let held = m
+        .core
+        .exposures
+        .in_flight(&id(origin_reserve()), &cop_unit());
     assert_eq!(
         held,
         Amount::new(AMOUNT).unwrap(),
@@ -3951,7 +3976,9 @@ fn segments_move_confirmed_done_is_graded_and_then_settles_the_segment() {
     );
     let confirmed = m.confirm_done(&bob, (Resolved::Done, 1, &settled), &others, &mut Recorded);
     assert_eq!(
-        m.core.exposures.in_flight(&id(RESERVE), &cop_unit()),
+        m.core
+            .exposures
+            .in_flight(&id(origin_reserve()), &cop_unit()),
         held,
         "a late settlement keeps the hold, which the part's resolution releases"
     );
@@ -4139,4 +4166,143 @@ fn segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed
         vec![Outcome::Unanswered {}, Outcome::Done {}]
     );
     m.admitted();
+}
+
+/// The consequence of the owner's ruling that a confirmer's evidence comes from a party the order involves
+/// (`confirmer-evidence-party`, `T-020-39`), pinned until the owner rules on it: a stuck part of an order that only ever
+/// involved one party, the reserve that ran its whole route and holds its value, has nobody to confirm a silent
+/// resolution. Its mover reports the move done on that reserve's own word. A confirmation on the word of a reserve
+/// outside the order is refused by the log's rule; with the log refusing it, as the real log does on append, it changes
+/// nothing. One on the reporter's own maker's word is refused as no other party's. The part stays held, its outcome
+/// unknown, so it can't be decided again.
+// verifies: REQ-AUZ-4, INV-2
+#[test]
+fn silent_move_of_a_one_party_order_stays_held_for_want_of_a_confirming_party() {
+    use rutent_contracts::core_internal::calls::AppendFailure;
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    // The order stuck at one party, its resolution moved with no answer and reported done on the reserve's word.
+    let reported = || {
+        let (world, mut core, mut stuck) = stuck_at_one_party();
+        let mut policy = PermitsEveryStep::new(&core.log);
+        let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
+        let first = decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &alice,
+            &back_to_origin(AMOUNT),
+            &evidence(),
+        )
+        .unwrap();
+        let Ok(Moved::CarriedOut {
+            resolved: Resolved::Unknown,
+            ..
+        }) = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
+        else {
+            panic!("unknown");
+        };
+        // The reserve's own result, and an outside reserve's, both about the resolution's transaction.
+        let (result, outside) = results_after_the_resolution(&mut core);
+        assert_eq!(
+            known_outcome(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                ORDER,
+                &first,
+                &bob,
+                Resolved::Done,
+                &result
+            ),
+            Ok(Moved::AwaitsConfirmation { report: 1 })
+        );
+        (world, core, stuck, policy, first, result, outside)
+    };
+    let (world, mut core, mut stuck, mut policy, first, result, outside) = reported();
+    assert_eq!(origin_reserve(), last_reserve(), "one party ran the route");
+    assert_eq!(
+        second_reserve(),
+        OTHER_RESERVE,
+        "the other reserve runs nothing of it"
+    );
+    // The log's rule refuses a confirmation on the outside reserve's word: this log takes it, the log's checks don't.
+    let at = core.log.borrow().entries.len();
+    let _ = confirm_outcome(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        ORDER,
+        &first,
+        &alice,
+        (Resolved::Done, 1, &result),
+        &outside,
+    );
+    let refused = core.admitted(&world.catalogue).unwrap_err();
+    assert_eq!(refused.0, at, "the confirmation is the entry refused");
+    assert!(
+        refused
+            .1
+            .contains("an outcome's evidence is made by a party its order involves"),
+        "{refused:?}"
+    );
+    drop((world, core, stuck));
+
+    // With the log refusing it, as the real log does on append, the confirmation changes nothing.
+    let (world, mut core, mut stuck, mut policy, first, result, outside) = reported();
+    policy.log_refuses_outcomes = true;
+    assert!(matches!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 1, &result),
+            &outside
+        ),
+        Err(ResolveError::Append(AppendFailure::Refused(_)))
+    ));
+    policy.log_refuses_outcomes = false;
+    // The reporter's own maker's word confirms nothing: another party's is needed.
+    let before = core.log.borrow().entries.len();
+    assert!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 1, &result),
+            &result
+        )
+        .is_err()
+    );
+    assert_eq!(
+        core.log.borrow().entries.len(),
+        before,
+        "nothing confirmed is recorded"
+    );
+    assert_eq!(
+        outcome_decisions(&core),
+        (1, 0),
+        "a report, and no confirmation"
+    );
+    assert!(stuck.is_stuck(&id(ORDER), &id(PART)), "still held");
+    assert_eq!(
+        decide(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            &alice,
+            &back_to_origin(AMOUNT),
+            &evidence()
+        )
+        .map(|_| ()),
+        Err(ResolveError::OutcomeUnknown),
+        "it can't be decided again while its outcome is unknown"
+    );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry it took");
 }

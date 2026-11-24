@@ -1,6 +1,13 @@
 # provider-role changelog
 
 ## 3.1.0
+- A deposit tuple says how it pays out (item `shared-movement-reading`, `T-020-39`): `ReserveTuple.payouts`, optional,
+  `per_order` or `batched` (`Payouts`), read as per order where absent, as reserves were built (`ReserveTuple::payouts`).
+  Only a deposit tuple declares it (`RuleViolation::PayoutsOnAWithdrawal`). A final movement evidences one order's
+  close, so a reserve paying several orders with one movement could never close them; routing drops a route ending
+  there (router-api's `batched_payout`, `T-020-43`). One valid fixture, `advertisement-reserve-paying-out-deposits-in-batches`;
+  two invalid, a withdrawal declaring payouts (the Rust validation) and a declaration of no kind (the schema). Folded
+  into this unreleased minor while `develop` holds 3.0.0. (DEC-4, DEC-20, REQ-ORD-33, T-020-39)
 - Docs (`T-020-18`'s review, item 4): two arrival notices under different transactions are two signed claims, each
   attributable to its reserve, which neither this contract nor the log can tell from two real credits; a reserve
   stating one credit twice under two references bears the loss (`arrival.rs`, the README's "Arrivals"). No shape or

@@ -29,7 +29,19 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 131] = [
+const RUST_RULES: [(&str, &str); 134] = [
+    (
+        "decision-record-batched-payout-at-a-tuple-paying-per-order",
+        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+    ),
+    (
+        "decision-record-batched-payout-naming-an-operation-before-the-last",
+        "a batched-payout reason names its part's last operation",
+    ),
+    (
+        "decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve",
+        "a batched-payout reason names its part's last operation",
+    ),
     (
         "policy-bounds-two-slippage-limits-for-one-tuple",
         "there is at most one slippage limit per tuple",
@@ -1517,5 +1529,73 @@ fn every_schema_names_draft_2020_12_and_its_urn() {
             "{shape}"
         );
         assert_eq!(s["$id"], urn(shape).as_str(), "{shape}");
+    }
+}
+
+/// A candidate whose part would end on a deposit at a reserve tuple that pays out in batches is dropped with a reason
+/// of its own, `batched_payout`, naming that deposit, the part's last operation; the snapshot carries the tuple's
+/// declaration, so a reader recomputes the reason from the record alone. Naming an operation before the last, or a
+/// tuple that pays per order, is refused (`REQ-AUD-4`, `REQ-ORD-33`, item `shared-movement-reading`, `T-020-39`).
+// verifies: REQ-AUD-4
+#[test]
+fn candidate_dropped_for_a_batched_payout_names_its_reason() {
+    use rutent_contracts::provider_role::Payouts;
+    use rutent_contracts::router_api::DropReason;
+    let name = "decision-record-shortlist-dropping-a-route-ending-at-a-batching-reserve";
+    let value = fixture("valid", name);
+    assert!(validator("decision-record").is_valid(&value), "{name}");
+    assert_eq!(
+        through_rust("decision-record", &value).unwrap(),
+        value,
+        "{name}"
+    );
+    let record = valid_record(name).statement;
+    let dropped = record
+        .candidates()
+        .iter()
+        .find_map(|c| c.dropped.clone())
+        .expect("a dropped candidate");
+    assert_eq!(
+        dropped,
+        DropReason::BatchedPayout {
+            part: 0,
+            operation: 3
+        }
+    );
+    // The snapshot carries the deposit tuple's declaration, provider-role's `payouts`.
+    let batched = record.snapshot.figures.iter().find_map(|f| match &f.value {
+        FigureValue::ReserveTuple { tuple } if f.figure_id.as_str() == "f-dep-b" => {
+            Some(tuple.payouts())
+        }
+        _ => None,
+    });
+    assert_eq!(batched, Some(Payouts::Batched));
+    // The record's half: the deposit's tuple pays out in batches. The candidate's half: the reason names its part's
+    // last operation, even where an earlier one is itself a deposit at a batching reserve, which the record's half
+    // would let through (the review of `27b0f6b9`).
+    for (name, rule) in [
+        (
+            "decision-record-batched-payout-at-a-tuple-paying-per-order",
+            "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+        ),
+        (
+            "decision-record-batched-payout-naming-an-operation-before-the-last",
+            "a batched-payout reason names its part's last operation",
+        ),
+        (
+            "decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve",
+            "a batched-payout reason names its part's last operation",
+        ),
+    ] {
+        let invalid = fixture("invalid", name);
+        assert!(
+            validator("decision-record").is_valid(&invalid),
+            "{name} breaks a rule only Rust states"
+        );
+        let refused = through_rust("decision-record", &invalid);
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains(rule)),
+            "{name}: {refused:?}"
+        );
     }
 }
