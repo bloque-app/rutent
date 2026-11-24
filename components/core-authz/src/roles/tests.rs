@@ -1756,6 +1756,83 @@ fn revocation_is_held_to_the_grant_it_names() {
     );
 }
 
+/// The review's lows on `7865ed6b`: a grant never reuses a permission's id. The log counts an id revoked for good once
+/// any revocation of it is permitted, and revokes every grant sharing it, so policy refuses a grant naming an id it
+/// granted before, still in force or revoked. A second grant of `perm-reg-1`, to another regulator, is refused; the
+/// same request again answers as the first did; after `perm-reg-1` is revoked, granting it again is refused and the
+/// read stays refused. Each refusal is recorded. A grant under a fresh id is permitted, and its read allowed.
+// verifies: REQ-AUZ-7, REQ-AUD-12
+#[test]
+fn grant_reusing_a_permission_id_is_refused() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let elsewhere = actor("other-reg", "ex-9", Role::Regulator, ActorKind::Person);
+    let mut policy = engine(Kept::world(), granting().listing(&elsewhere));
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {}
+    );
+
+    // In force: a second grant of the id, to another regulator, is refused.
+    let shared = read_change("req-g2", "perm-reg-1", &elsewhere, &operator());
+    let decision = policy.grant_permission(&shared).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "an id in force");
+    assert!(matches!(
+        policy.log().entry_of(&decision).outcome,
+        Outcome::Refused { .. }
+    ));
+    assert_eq!(policy.register().grants, std::slice::from_ref(&grant));
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {},
+        "the same request again answers as the first did"
+    );
+
+    // Revoked: granting the id again is refused, and the read stays refused.
+    let revoke = read_change("req-v1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.revoke_permission(&revoke).unwrap().outcome,
+        Answer::Permit {}
+    );
+    let again = read_change("req-g3", "perm-reg-1", &regulator(), &operator());
+    let decision = policy.grant_permission(&again).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "a revoked id");
+    assert!(matches!(
+        policy.log().entry_of(&decision).outcome,
+        Outcome::Refused { .. }
+    ));
+    let replayed = policy.grant_permission(&grant).unwrap();
+    assert_eq!(
+        replayed.outcome, NOT_PERMITTED,
+        "nor the first request again"
+    );
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r1", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        }
+    );
+
+    // A fresh id is granted, and read by.
+    let fresh = read_change("req-g4", "perm-reg-2", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&fresh).unwrap().outcome,
+        Answer::Permit {}
+    );
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r2", &regulator(), "perm-reg-2"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Allowed {}
+    );
+}
+
 /// The operator moving value, or giving an authorisation, for a user at an origin reserve that never declared it
 /// can't require the user's own withdrawal is refused for the missing declaration; at one that declared it can, it is
 /// refused outright; a reserve out of reach gives not known. Only at a reserve that declared it is the operator let

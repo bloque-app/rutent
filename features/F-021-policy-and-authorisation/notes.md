@@ -1826,6 +1826,26 @@ party-wide, and policy is stricter than the log.
   | a revocation matched by its permission alone | `revocation_is_held_to_the_grant_it_names` |
   | a revocation's scope not matched | `revocation_is_held_to_the_grant_it_names` |
 
+### T-021-14, the two lows of the approval at `7865ed6b`
+
+- **A grant never reuses a permission's id.** Policy tracks grants and revocations one grant at a time, but the log's
+  `permitted-read-is-not-revoked` counts an id revoked for good once any revocation of it is permitted, and so revokes
+  every grant sharing it. So "grant, revoke, grant again" under one id was permitted while every read by it stayed
+  refused, and two grants sharing an id were revoked together by the log. The engine now refuses a grant naming an id
+  it granted before, to anyone, still in force or revoked (`Register::reuses`), before policy is asked; the same request
+  again, while its grant is in force, answers as the first did. `grant_reusing_a_permission_id_is_refused` holds both
+  cases and a fresh id granted and read by. Default, failing closed: one id, one grant, for good; the deployment names
+  a new id for a new grant.
+- **Docs.** `session`'s module docs and `read_needs`' say only a regulator or a checker reads by a permission, held to
+  the grant's own grantee.
+- **Red first.** The test failed on `an id in force` (`Permit` for `NotPermitted`).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an id in force may be granted again | `grant_reusing_a_permission_id_is_refused` |
+  | a revoked id may be granted again | `grant_reusing_a_permission_id_is_refused` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

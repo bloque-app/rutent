@@ -41,13 +41,15 @@
 //!   grant's grantee, its party, login and role all, not to its party alone (`T-021-14`);
 //! - a customer and a provider read who the deployment's checker is ([`CHECKER`], `REQ-AUD-10`), and any party a
 //!   kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`); any other
-//!   resource rests on a permission;
+//!   resource only a regulator or a checker reads, by a permission;
 //! - no other read rests on a permission: the operator's, a verifier's and Core's own parts' are refused but for their
 //!   own evidence and the operator's read of an order's state.
 //!
 //! A read naming a permission is held to the register: the permission was granted, through
-//! [`Reads::grant_permission`], to the reader's party, its scope covers what the read is of, and it hasn't been
-//! revoked. That rule reads what the engine itself decided, which a fixed rule, a plain function of the request,
+//! [`Reads::grant_permission`], to the reader itself, its party, login and role, its scope covers what the read is
+//! of, and it hasn't been revoked. A grant never reuses a permission's id the engine granted before, in force or
+//! revoked (`T-021-14`): the log counts an id revoked for good once any revocation of it is permitted, and revokes
+//! every grant sharing it, so a reused id would be a grant permitted that nothing reads by. That rule reads what the engine itself decided, which a fixed rule, a plain function of the request,
 //! can't hold, so it is asked first, beside the fixed rules: its refusal is the answer and the deployment's policy
 //! isn't asked. A revocation is held to it the same way: only a grant made can be revoked, the one whose permission,
 //! grantee and scope it names, and it revokes that grant alone. Who may grant or
@@ -232,6 +234,18 @@ impl Register {
         self.grants.iter().any(|g| same_grant(g, change))
     }
 
+    /// Whether `change` would grant a permission's id the engine granted before, to anyone, in force or revoked, other
+    /// than by the same request again while it is in force (`T-021-14`).
+    fn reuses(&self, change: &PermissionChange) -> bool {
+        self.grants
+            .iter()
+            .any(|g| g.permission == change.permission && g != change)
+            || self
+                .revoked
+                .iter()
+                .any(|r| r.permission == change.permission)
+    }
+
     /// Whether the grant `grant` names was revoked.
     fn revoked(&self, grant: &PermissionChange) -> bool {
         self.revoked.iter().any(|r| same_grant(r, grant))
@@ -283,7 +297,8 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
 /// - a customer and a provider read who the deployment's checker is (`REQ-AUD-10`), and no other resource;
 /// - any party reads, without a permission, a kept statement the evidence store's record says is its own
 ///   (`REQ-AUD-5`);
-/// - any other read rests on a permission, which the register holds it to; a segment read as one of its order.
+/// - any other read is a regulator's or a checker's, by a permission the register holds it to; a segment read as one
+///   of its order. No other role reads by a permission.
 ///
 /// So the operator reads nothing but an order's state and age and its own evidence without a permission, and a
 /// verifier and Core's own parts nothing but their own evidence.
@@ -498,7 +513,13 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
 
     fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
         change.check().map_err(AppendFailure::Refused)?;
-        let answer = self.consult(Asked::GrantPermission(change));
+        let answer = if self.register.reuses(change) {
+            Answer::Refuse {
+                class: RefusalClass::NotPermitted,
+            }
+        } else {
+            self.consult(Asked::GrantPermission(change))
+        };
         let what = |decision| What::GrantPermission {
             change: change.clone(),
             decision,
