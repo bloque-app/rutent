@@ -262,17 +262,49 @@ fn a_retry_under_another_key_or_protocol_version_is_refused_for_a_provider_witho
     }
 }
 
-// verifies: INV-8
+/// A change made to an operation's JSON.
+type Change = fn(&mut serde_json::Value);
+
+/// A repeat is the same operation asked again; one under a carried out transaction with other terms or another
+/// envelope is a second operation under one identifier, which a declared safe retry doesn't cover (`T-013-10`).
+// verifies: REQ-MDL-14, INV-8
 #[test]
-fn a_retry_of_another_envelope_reaches_the_module_of_a_provider_with_safe_retry() {
+fn repeat_with_other_terms_under_a_carried_out_transaction_is_refused_even_with_safe_retry() {
     let mut s = running(RAMP);
     let first = s.platform.handle(RAMP, &withdrawal(RAMP, 1));
     assert!(matches!(first, Handled::Answered(_)), "{first:?}");
-    let mut v = serde_json::to_value(withdrawal(RAMP, 1)).expect("JSON");
-    v["protocol_version"] = "9.0.0".into();
-    let again = s.platform.handle(RAMP, &operation(v));
-    assert!(matches!(again, Handled::Answered(_)), "{again:?}");
-    assert_eq!(s.platform.operations_run(RAMP), 2);
+    let changes: [(&str, Change); 5] = [
+        ("amount", |v| v["statement"]["amount"] = "2000".into()),
+        ("asset", |v| v["statement"]["asset"] = "USD".into()),
+        ("protocol version", |v| {
+            v["protocol_version"] = "9.0.0".into()
+        }),
+        ("deployment", |v| {
+            v["deployment"]["name"] = "another-deployment".into();
+        }),
+        ("key", |v| {
+            v["signature"]["key"] = rutent_conformance::role::placeholder_key(61)
+                .as_str()
+                .into();
+        }),
+    ];
+    for (what, change) in changes {
+        let mut v = serde_json::to_value(withdrawal(RAMP, 1)).expect("JSON");
+        change(&mut v);
+        assert_eq!(
+            s.platform.handle(RAMP, &operation(v)),
+            Handled::Refused(PlatformRefusal::DuplicateTransaction),
+            "{what}"
+        );
+        assert_eq!(
+            s.platform.operations_run(RAMP),
+            1,
+            "{what}: the module ran a second operation under the transaction"
+        );
+    }
+    // The same operation again is a repeat, answered from the record.
+    assert_eq!(s.platform.handle(RAMP, &withdrawal(RAMP, 1)), first);
+    assert_eq!(s.platform.operations_run(RAMP), 1);
 }
 
 // verifies: INV-8

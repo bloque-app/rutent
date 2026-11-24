@@ -598,6 +598,43 @@ impl Lifecycle {
         Some(record)
     }
 
+    /// Every segment in flight.
+    pub fn segments(&self) -> impl Iterator<Item = &SegmentRecord> {
+        self.segments.values()
+    }
+
+    /// Every transaction that ended: its segment ended, or it was spent with none ([`Lifecycle::spend`]).
+    pub fn ended(&self) -> impl Iterator<Item = &str> {
+        self.ended.iter().map(String::as_str)
+    }
+
+    /// Whether `transaction` ended.
+    pub fn has_ended(&self, transaction: &str) -> bool {
+        self.ended.contains(transaction)
+    }
+
+    /// Ends `transaction` whether or not a segment holds it: its segment, if any, is dropped, and it never begins
+    /// another nor runs anything more. The platform's record read back on opening, and a carried-out transaction
+    /// whose record is freed (`T-013-10`).
+    pub fn spend(&mut self, transaction: &str) {
+        self.segments.remove(transaction);
+        self.ended.insert(transaction.to_owned());
+    }
+
+    /// Holds `record` as a segment in flight, as the platform's record says it was when the platform stopped
+    /// (`T-013-10`). A transaction that ended stays ended.
+    pub fn restore_segment(&mut self, record: SegmentRecord) {
+        if !self.ended.contains(&record.transaction) {
+            self.segments.insert(record.transaction.clone(), record);
+        }
+    }
+
+    /// Drops the segment of `transaction` that just began, which the platform couldn't record: as if it never
+    /// began, its transaction free to begin. What the staging counted of it stays counted.
+    pub fn forget_segment(&mut self, transaction: &str) {
+        self.segments.remove(transaction);
+    }
+
     /// Every decision recorded, in order.
     pub fn decisions(&self) -> &[Decision] {
         &self.decisions

@@ -968,3 +968,114 @@ that declares no safe retry (seed 110, the simulated exchange), and that nothing
 ### Rule-off table (T-013-09)
 
 See the commit body.
+
+## T-013-10: the platform's carried-out record survives a restart (`f-013/t-013-10-platform-record-durable`)
+
+Finding 3 of `M3`'s milestone review of 2026-11-24 (PR #143), `F-025`'s medium M1, and the review's Low on the same
+record. What the platform carried out under each transaction (`carried`), the segments in flight and the
+transactions that ended (`lifecycle.rs`), and the runs it counted lived in its memory alone, so a platform restarted
+mid-segment handed a repeat to the module again (`INV-8`).
+
+### Design (T-013-10)
+
+- **The port.** `module/record.rs`: `Record`, an append-only sequence of lines (`load`, `append`, `replace`), which
+  the platform writes and reads and nothing else interprets. Two implementations: `FileRecord`, one JSON entry per
+  line, each appended with `sync_data` before the platform goes on, `replace` written to `<name>.replacing`, synced
+  and renamed over, with an exclusive lock on `<name>.lock` held while it is open (a second platform's opening is
+  refused, `WouldBlock`); and `MemoryRecord`, whose clones share one sequence, for the tests that need no disk.
+  A last line with no line break is a write a stop cut off and is not read; any other line the platform can't read
+  refuses the opening.
+- **Opening.** `Platform::new` holds a `MemoryRecord`, as before in effect. `Platform::open(paths, world, envelope,
+  record)` reads every entry back, frees what its evidence window let go of, and replaces the record with what it
+  holds (the transactions that ended, the segments in flight, what was carried out, the runs counted), so the
+  record holds what is live, not every entry ever written. A reopened platform holds no release: each is admitted
+  again, as at any start, and a segment in flight runs on its version once that version is.
+- **The entries, and when each is written.** `carrying` (the operation, its transaction, scope and provider) before
+  the module is handed an operation carried out once (`T-013-09`'s `repeat_key`), unless the record holds that
+  transaction's scope already; `ran` (the provider's version, and the carried-out record where it changed) once the
+  module ran, which also counts the run; `withdrawn` where a `carrying` operation never reached the module (refused
+  as not handled, its process gone before a word); `segment` when a segment begins and after a stale mark moves it;
+  `ended` when a segment ends or a record is freed. `carried` and `runs` are the snapshot `open` writes.
+- **Fail closed, write by write.** A `carrying` entry that can't be written refuses the operation as `Unavailable`,
+  nothing of it run (the contract's reason for "nothing of the operation took effect"; no contract change). A
+  `segment` entry that can't be written refuses `begin_segment` as `Unavailable` and forgets the segment. Every
+  later write is best effort, since what is already written fails closed: a lost `ran` leaves the operation
+  carried out with no answer (refused, or run again where the provider declares a repeat safe); a lost `withdrawn`
+  leaves it carried out; a lost `ended` leaves the segment in flight and its record held.
+- **A platform stopped while the module ran** reopens with the operation carried out and no answer, from its
+  `carrying` entry: a repeat is refused for a provider without safe retry, as one whose first run gave no answer.
+- **`begin_segment` consults the record** (the review's Low): a transaction the platform carried out an operation
+  of with no segment is refused as `DuplicateTransaction`, at its provider or another. A dry run and the read-only
+  kinds carry nothing out, so a segment may begin on theirs.
+- **An unsegmented operation's record is freed** once its provider's declared evidence availability has passed
+  (`REQ-CAT-10`). The sealed `ReleaseJudge` gains `evidence_window(provider) -> Option<u64>`, read with `safe_retry`
+  when a release is admitted or accepted (`declarations.evidence.availability`, bounded seconds; unbounded,
+  undeclared or no advertisement is `None`, kept). The record's `free_at` is the world's clock (`World::now`) when
+  the module ran plus that window, for a transaction no segment holds; the platform frees due records at each
+  top-level `handle`, each `begin_segment` and on opening. Freed means the operations and answers are dropped and
+  the transaction is spent (`Lifecycle::spend`, the same `ended` set a segment's end writes): a repeat is refused,
+  never run, so freeing never trades `INV-8` for storage.
+- **Other terms or another envelope at a safe-retry provider** (the review's Low, `REQ-MDL-14`): `repeated` now
+  refuses as `DuplicateTransaction` an operation under a carried-out transaction whose statement, deployment,
+  protocol version or key differ from the first's, whatever the provider declares; only the same operation is a
+  repeat, answered from the record, or run again where its first run gave no answer. Callee scopes are unchanged
+  (a safe callee runs each call). The role suite's `Through` adapters (`module_role.rs`, `sim_providers.rs`)
+  already read `DuplicateTransaction` as the final refusal the replay probe expects, the twin's own, so a foreign
+  replay at a safe provider now stops at the platform as it did for an unsafe one; their comments still say "a
+  provider that declares no safe retry", which is now narrower than the code (not edited: `sim_providers.rs` is
+  `F-024`'s).
+- **Existing test changed.** `T-013-09`'s unnamed `a_retry_of_another_envelope_reaches_the_module_of_a_provider_with_safe_retry`
+  asserted what this row reverses; it is replaced in `module_repeat.rs` by the row's named test. `T-013-09`'s
+  three named tests are unchanged and pass.
+- **Accessors.** `Platform::carries(transaction)`, whether the platform keeps a record under it;
+  `Lifecycle::segments`, `ended`, `has_ended`, `spend`, `restore_segment` and `forget_segment`.
+- **Tests.** `components/prov/tests/module_record.rs`: the four named restart, segment and window tests, and three
+  more (an operation the record can't hold isn't handed over; a record another platform holds isn't opened; and,
+  inside the first, a platform stopped while the module ran). `module_repeat.rs`: the named other-terms test.
+  `record.rs`'s unit tests: a cut-off last line is dropped, the lock survives `replace`, memory clones share lines.
+
+### Defaults (T-013-10)
+
+- A record entry the platform can't write before it acts refuses the act (`Unavailable`); later entries are best
+  effort, each loss failing closed. Reversible.
+- A freed record spends its transaction: after the evidence window a repeat is refused even at a safe-retry
+  provider, rather than answered (the evidence is gone) or run (a second move). Reversible.
+- Unbounded or undeclared evidence keeps the record for as long as the platform's record lasts.
+- `free_at` runs on the world's clock at the module's answer; a world whose clock can't be read frees nothing.
+- An operation at a safe-retry provider with other terms or another envelope is refused at the platform, not
+  judged by the module.
+
+### Gaps (T-013-10)
+
+- Wiring a `FileRecord` into an assembly that restarts the platform: `T-024-21` (Core and the platform restarted
+  in the invariant runs), and `F-030`'s production assembly for where the file lives. `M3`'s assembly opens
+  `Platform::new`, the memory record, as before.
+- A restarted platform holds no release until each is admitted again; the lifecycle's marks, decisions and staging
+  counts are not in the record. A segment restored on a version the operator had marked stale, revoked or declared
+  exploited runs on it until marked again. Owner: `F-013`, with `F-030`'s start-up re-admitting releases.
+- The `ended` set grows by one line per transaction ever ended, in memory and in the record, as it did in memory
+  before. Owner: `F-013`, if a deployment's transaction count makes it matter.
+- Freeing is swept at each top-level `handle` and `begin_segment`, linear in the records held (the segments in flight
+  and the unsegmented operations within their windows). Owner: `F-013`, an index by `free_at` if it matters.
+- The jail-probes need Linux; CI runs them. This row touches no jail code.
+- `holding_support`'s wallet build counts as current when the shared target directory's `rutent-plain-wallet/built`
+  is newer than this worktree's guest sources, so a worktree with an older guest runs another's newer wallet:
+  locally, `holding_wallet` failed twice on `T-016-05`'s wallet (an unknown order now `Unknown`, not `Refused`) and
+  passed on this tree's own wallet, built into a scratch directory and named by `RUTENT_PLAIN_WALLET`. CI builds
+  fresh. Owner: `F-016`, to key the build by its sources' digest rather than their times.
+- `DEC-20` path: `components/prov/src/module/` waits for the owner's click at the release into `main`.
+
+### Rule-off table (T-013-10)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| The `carrying` entry written before the hand-over | `a repeat after the platform restarts moves nothing twice` (stopped while the module ran) |
+| The `Unavailable` refusal of an operation the record can't hold | `an_operation_the_platform_cannot_record_is_not_handed_to_the_module` |
+| Reading the record back in `Platform::open` | `a repeat after the platform restarts moves nothing twice` |
+| The `ended` entry written by `end_segment` | `ended transaction stays ended after the platform restarts` |
+| `begin_segment` consulting the carried-out record | `segment begun on a transaction already carried out is refused` |
+| Freeing after the evidence window (`free_spent`) | `unsegmented operation's record is freed after its evidence window` |
+| A freed record spending its transaction (`Lifecycle::spend`) | `unsegmented operation's record is freed after its evidence window` |
+| Other terms or another envelope refused at a safe-retry provider (`repeated`) | `repeat with other terms under a carried out transaction is refused even with safe retry` |
+| `FileRecord`'s lock | `a_record_another_platform_holds_is_not_opened` |
+| Dropping a cut-off last line (`whole_lines`) | `record::tests::a_file_record_reads_back_what_it_appended_and_drops_a_line_cut_off` |

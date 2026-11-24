@@ -47,6 +47,7 @@ use crate::module::limits::{
     within as within_bound,
 };
 use crate::module::output;
+use crate::module::record::{CarriedEntry, Entry, MemoryRecord, Record};
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
     LookupOutcome, PlatformRefusal, ProcessId, StateEvent, UnknownOutcome,
@@ -202,21 +203,42 @@ struct Slot {
     /// Whether the provider's advertisement declares a repeat safe (`REQ-CAT-10`), read from the judge when a
     /// release was admitted or accepted. `None`, declared or not known, is no safe retry (`T-013-09`).
     safe_retry: Option<bool>,
+    /// How long, in seconds, evidence of the provider's outcomes stays available, as its advertisement declares
+    /// (`REQ-CAT-10`), read with `safe_retry`. `None`, unbounded, undeclared or not known, keeps the record of an
+    /// operation it carried out with no segment for as long as the platform's record lasts (`T-013-10`).
+    evidence_window: Option<u64>,
 }
 
 /// The scope of an operation the platform was handed, as against one a module called a callee with.
 const TOP_LEVEL: &str = "";
 
 /// An operation of a transaction the platform carried out: whose it was, and its answer if it gave one, which a
-/// provider that declares a repeat safe is answered from (`T-013-09`).
+/// provider that declares a repeat safe is answered from (`T-013-09`). It is kept in the platform's record too, so a
+/// restarted platform holds it (`T-013-10`).
 struct Carried {
     provider: String,
-    /// The operation as the platform was handed it. A later one of another envelope (deployment, protocol version
-    /// or signing key) is no repeat of it but a foreign replay, which still reaches the module, as ever: the module
-    /// checks the envelope before it answers from what it has recorded (`REQ-PRT-1`), and the platform doesn't
-    /// pre-empt that. Only an identical one is answered from the record.
+    /// The operation as the platform was handed it. Only an identical one is a repeat, answered from the record; one
+    /// of other terms or another envelope (deployment, protocol version or signing key) is a second operation under
+    /// the transaction's identifier, and refused whatever the provider declares (`REQ-MDL-14`, `T-013-10`).
     operation: Statement<Operation>,
     answer: Option<Box<Statement<ResultBody>>>,
+    /// When, in seconds of the world's clock, the record may be freed: its provider's evidence window after it was
+    /// carried out, where no segment held its transaction. `None` is never; a segment's record is freed as the
+    /// segment ends (`REQ-CAT-10`).
+    free_at: Option<u64>,
+}
+
+impl Carried {
+    fn entry(&self, transaction: &str, scope: &str) -> CarriedEntry {
+        CarriedEntry {
+            transaction: transaction.to_owned(),
+            scope: scope.to_owned(),
+            provider: self.provider.clone(),
+            operation: self.operation.clone(),
+            answer: self.answer.as_deref().cloned(),
+            free_at: self.free_at,
+        }
+    }
 }
 
 /// The operation one provider's module is handling, and what it obtained while handling it.
@@ -503,13 +525,16 @@ pub struct Platform<W: World> {
     /// How many operations each provider's version ran: its process took the operation and said something of it,
     /// so an operation refused before reaching a live process doesn't count towards a staging.
     runs: BTreeMap<(String, String), u64>,
-    /// The operation carried out under each transaction, by the scope it was asked in, until its segment ends:
-    /// [`TOP_LEVEL`] for the platform's own, and the callee's name for a call a module made into it. A second one
-    /// in a scope is a repeat, whatever its kind (`INV-8`, `REQ-CAT-10`, `T-013-09`).
+    /// The operation carried out under each transaction, by the scope it was asked in, until its segment ends or,
+    /// for one no segment held, its evidence window passes: [`TOP_LEVEL`] for the platform's own, and the callee's
+    /// name for a call a module made into it. A second one in a scope is a repeat, whatever its kind (`INV-8`,
+    /// `REQ-CAT-10`, `T-013-09`). Kept in the platform's record too (`T-013-10`).
     carried: BTreeMap<String, BTreeMap<String, Carried>>,
     /// The callees' versions whose process ended during a top-level operation, started again at the platform's
     /// next call, after that operation's answer was handed back ([`Platform::restart_ended`]).
     restarts: Vec<(String, String)>,
+    /// Where what the platform carried out is kept, beyond its memory (`T-013-10`).
+    record: Box<dyn Record>,
 }
 
 impl<W: World> Platform<W> {
@@ -548,7 +573,221 @@ impl<W: World> Platform<W> {
             runs: BTreeMap::new(),
             carried: BTreeMap::new(),
             restarts: Vec::new(),
+            record: Box::new(MemoryRecord::new()),
         })
+    }
+
+    /// A platform as [`Platform::new`] makes it, on `record`, which holds what an earlier platform carried out
+    /// (`T-013-10`; `INV-8`, `NFR-6`). It reads every entry back: what was carried out under each transaction, and
+    /// its answer if it gave one, an operation written as handed over and never answered being carried out with no
+    /// answer; the segments in flight, on the versions they ran on; the transactions that ended; and how many
+    /// operations each provider's version ran. Then it frees what its evidence window let go of, and replaces the
+    /// record with what it holds. From then on it writes each to the record before it acts on it, so a repeat
+    /// after the platform restarts is answered as one in the same run is: refused, or from the first answer.
+    ///
+    /// It holds no release: each is admitted again, as at any start, and a segment in flight runs on its version
+    /// once that version is. Refused where the record can't be read, holds an entry the platform doesn't read, or
+    /// can't be replaced.
+    pub fn open(
+        paths: Paths,
+        world: W,
+        envelope: Envelope,
+        record: Box<dyn Record>,
+    ) -> Result<Self, String> {
+        let mut platform = Self::new(paths, world, envelope)?;
+        platform.record = record;
+        let lines = platform
+            .record
+            .load()
+            .map_err(|e| format!("the platform's record can't be read: {e}"))?;
+        for (n, line) in lines.iter().enumerate() {
+            let entry = Entry::read(line)
+                .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
+            platform.read_back(entry);
+        }
+        platform.free_spent();
+        let lines = platform
+            .held()
+            .map_err(|e| format!("the platform's record can't be written: {e}"))?;
+        platform
+            .record
+            .replace(&lines)
+            .map_err(|e| format!("the platform's record can't be replaced: {e}"))?;
+        Ok(platform)
+    }
+
+    /// Takes one entry of the record back into what the platform holds.
+    fn read_back(&mut self, entry: Entry) {
+        match entry {
+            Entry::Carrying {
+                transaction,
+                scope,
+                provider,
+                operation,
+            } => {
+                if !self.lifecycle.has_ended(&transaction) {
+                    // Handed over and never answered: carried out, with no answer.
+                    self.carried
+                        .entry(transaction)
+                        .or_default()
+                        .entry(scope)
+                        .or_insert(Carried {
+                            provider,
+                            operation: *operation,
+                            answer: None,
+                            free_at: None,
+                        });
+                }
+            }
+            Entry::Ran {
+                provider,
+                version,
+                carried,
+            } => {
+                *self.runs.entry((provider, version)).or_default() += 1;
+                if let Some(carried) = carried {
+                    self.carried_again(*carried);
+                }
+            }
+            Entry::Withdrawn { transaction, scope } => {
+                if let Some(scopes) = self.carried.get_mut(&transaction) {
+                    if scopes.get(&scope).is_some_and(|c| c.answer.is_none()) {
+                        scopes.remove(&scope);
+                    }
+                    if scopes.is_empty() {
+                        self.carried.remove(&transaction);
+                    }
+                }
+            }
+            Entry::Carried(carried) => self.carried_again(*carried),
+            Entry::Runs {
+                provider,
+                version,
+                count,
+            } => {
+                self.runs.insert((provider, version), count);
+            }
+            Entry::Segment(segment) => self.lifecycle.restore_segment(segment.into()),
+            Entry::Ended { transaction } => {
+                self.carried.remove(&transaction);
+                self.lifecycle.spend(&transaction);
+            }
+        }
+    }
+
+    /// Holds `carried` as the record of its transaction in its scope, unless the transaction ended.
+    fn carried_again(&mut self, carried: CarriedEntry) {
+        if self.lifecycle.has_ended(&carried.transaction) {
+            return;
+        }
+        self.carried.entry(carried.transaction).or_default().insert(
+            carried.scope,
+            Carried {
+                provider: carried.provider,
+                operation: carried.operation,
+                answer: carried.answer.map(Box::new),
+                free_at: carried.free_at,
+            },
+        );
+    }
+
+    /// What the platform holds, as the entries of a record: the transactions that ended, the segments in flight,
+    /// what was carried out, and the runs counted.
+    fn held(&self) -> std::io::Result<Vec<String>> {
+        let ended = self.lifecycle.ended().map(|transaction| Entry::Ended {
+            transaction: transaction.to_owned(),
+        });
+        let segments = self
+            .lifecycle
+            .segments()
+            .map(|segment| Entry::Segment(segment.into()));
+        let carried = self.carried.iter().flat_map(|(transaction, scopes)| {
+            scopes.iter().map(move |(scope, carried)| {
+                Entry::Carried(Box::new(carried.entry(transaction, scope)))
+            })
+        });
+        let runs = self
+            .runs
+            .iter()
+            .map(|((provider, version), count)| Entry::Runs {
+                provider: provider.clone(),
+                version: version.clone(),
+                count: *count,
+            });
+        ended
+            .chain(segments)
+            .chain(carried)
+            .chain(runs)
+            .map(|entry| entry.line())
+            .collect()
+    }
+
+    /// Writes `entry` to the record, durably once this returns.
+    fn write(&mut self, entry: &Entry) -> std::io::Result<()> {
+        let line = entry.line()?;
+        self.record.append(&line)
+    }
+
+    /// Writes the segment of `transaction`, as it now is, to the record.
+    fn write_segment(&mut self, transaction: &str) -> std::io::Result<()> {
+        match self.lifecycle.segment(transaction) {
+            Some(segment) => {
+                let entry = Entry::Segment(segment.into());
+                self.write(&entry)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// The world's clock, in whole seconds, or `None` where it gives no time the platform can read.
+    fn world_secs(&mut self) -> Option<u64> {
+        let now = self.world.now().ok()?;
+        Stamp::parse(now.as_str()).map(|stamp| stamp.secs)
+    }
+
+    /// When the record of an operation the provider just carried out under `transaction` may be freed: its
+    /// evidence window from now, where no segment holds the transaction, the provider's evidence is bounded and
+    /// the world's clock can be read; never otherwise (`REQ-CAT-10`).
+    fn free_at(&mut self, provider: &str, transaction: &str) -> Option<u64> {
+        if self.lifecycle.segment(transaction).is_some() {
+            return None;
+        }
+        let window = self.providers.get(provider)?.evidence_window?;
+        self.world_secs()?.checked_add(window)
+    }
+
+    /// Frees the record of each transaction no segment holds whose every operation's evidence window has passed,
+    /// by the world's clock (`REQ-CAT-10`): its operations and answers are dropped, and the transaction is spent,
+    /// so a repeat of it is refused and never run (`INV-8`). Nothing is freed where the clock can't be read.
+    fn free_spent(&mut self) {
+        let Some(now) = self.world_secs() else {
+            return;
+        };
+        let due: Vec<String> = self
+            .carried
+            .iter()
+            .filter(|(transaction, scopes)| {
+                self.lifecycle.segment(transaction).is_none()
+                    && !scopes.is_empty()
+                    && scopes
+                        .values()
+                        .all(|carried| carried.free_at.is_some_and(|at| at <= now))
+            })
+            .map(|(transaction, _)| transaction.clone())
+            .collect();
+        for transaction in due {
+            self.carried.remove(&transaction);
+            self.lifecycle.spend(&transaction);
+            // A record that can't be written still holds the transaction as carried out: a restarted platform
+            // refuses its repeat all the same.
+            let _ = self.write(&Entry::Ended { transaction });
+        }
+    }
+
+    /// Whether the platform keeps a record of an operation it carried out under `transaction`: until its segment
+    /// ends, or, for one no segment held, until its evidence window passes (`T-013-10`).
+    pub fn carries(&self, transaction: &str) -> bool {
+        self.carried.contains_key(transaction)
     }
 
     /// The directory the platform keeps its children's working directories in: one for each child running, none
@@ -2154,6 +2393,7 @@ impl<W: World> Platform<W> {
         }
         let slot = self.providers.entry(provider.clone()).or_default();
         slot.safe_retry = judge.safe_retry(&provider);
+        slot.evidence_window = judge.evidence_window(&provider);
         if fresh {
             slot.pending = Some((artefact.clone(), machine, received_assertion.to_vec()));
         } else {
@@ -2192,6 +2432,7 @@ impl<W: World> Platform<W> {
         }
         let slot = self.providers.get_mut(provider)?;
         slot.safe_retry = judge.safe_retry(provider);
+        slot.evidence_window = judge.evidence_window(provider);
         let (mut artefact, machine, _) = slot.pending.take()?;
         let version = artefact.declaration().version.as_str().to_owned();
         artefact.acceptance.accepted = Some(Accepted {
@@ -2266,10 +2507,17 @@ impl<W: World> Platform<W> {
     /// where its transaction's segment is another provider's or has ended, and as `VersionExploited` where its
     /// segment's version was declared exploited (`T-013-06`). A second operation of a kind under a transaction it
     /// carried out is refused as `DuplicateTransaction`, the module not run, unless the provider declares a repeat
-    /// safe, and then it is answered from the platform's record: the first answer, not a second run. Where the
-    /// platform can't tell whether the provider declared it, it is refused (`T-013-09`; `INV-8`, `REQ-CAT-10`).
+    /// safe and it is the same operation, and then it is answered from the platform's record: the first answer,
+    /// not a second run. Where the platform can't tell whether the provider declared it, it is refused (`T-013-09`;
+    /// `INV-8`, `REQ-CAT-10`).
+    ///
+    /// The operation is written to the platform's record before the module is handed it, and refused as
+    /// `Unavailable`, nothing of it run, where it can't be; its answer is written once the module ran, so a platform
+    /// restarted on the record answers a repeat as this one would (`T-013-10`). An operation carried out with no
+    /// segment is held until its provider's evidence window passes, and its transaction is spent from then on.
     pub fn handle(&mut self, provider: &str, operation: &Statement<Operation>) -> Handled {
         self.restart_ended();
+        self.free_spent();
         let transaction = transaction_of(&operation.statement);
         self.handle_in(provider, operation, transaction.as_deref(), false)
     }
@@ -2304,6 +2552,29 @@ impl<W: World> Platform<W> {
         let Some(declaration) = self.declaration_of(provider, &version) else {
             return Handled::Refused(PlatformRefusal::Unavailable);
         };
+        // Written before the module is handed it, so a platform stopped while the module runs reopens with it carried
+        // out (`T-013-10`). Where the record holds it already, a first run that gave no answer, nothing is written
+        // again. An operation the record can't hold is never handed over: a restart could lose it.
+        let written_ahead = match &repeat {
+            Some((transaction, scope))
+                if !self
+                    .carried
+                    .get(transaction)
+                    .is_some_and(|scopes| scopes.contains_key(scope)) =>
+            {
+                let entry = Entry::Carrying {
+                    transaction: transaction.clone(),
+                    scope: scope.clone(),
+                    provider: provider.to_owned(),
+                    operation: Box::new(operation.clone()),
+                };
+                if self.write(&entry).is_err() {
+                    return Handled::Refused(PlatformRefusal::Unavailable);
+                }
+                true
+            }
+            _ => false,
+        };
         // Only an operation the version's process ran counts towards a staging: not one refused as not handled,
         // nor one that found its process gone.
         let key = (provider.to_owned(), version.clone());
@@ -2314,27 +2585,40 @@ impl<W: World> Platform<W> {
                 .observe(provider, &version, matches!(handled, Handled::Answered(_)));
             // The module ran: whatever it came to, the operation was carried out (`T-013-09`). A first outcome
             // unknown is the case a repeat is least safe in.
+            let mut kept = None;
             if let Some((transaction, scope)) = repeat {
                 let answer = match &handled {
                     Handled::Answered(result) => Some(result.clone()),
                     Handled::Refused(_) => None,
                 };
-                let carried = self.carried.entry(transaction).or_default();
+                let free_at = self.free_at(provider, &transaction);
+                let carried = self.carried.entry(transaction.clone()).or_default();
                 // The first answer stays the record, whoever asks again.
                 if carried
                     .get(&scope)
                     .is_none_or(|first| first.answer.is_none())
                 {
-                    carried.insert(
-                        scope,
-                        Carried {
-                            provider: provider.to_owned(),
-                            operation: operation.clone(),
-                            answer,
-                        },
-                    );
+                    let first = Carried {
+                        provider: provider.to_owned(),
+                        operation: operation.clone(),
+                        answer,
+                        free_at,
+                    };
+                    kept = Some(Box::new(first.entry(&transaction, &scope)));
+                    carried.insert(scope, first);
                 }
             }
+            // A record that can't be written holds the operation as handed over with no answer, if it was one carried
+            // out once: a restarted platform refuses its repeat, or runs it again where that's declared safe.
+            let _ = self.write(&Entry::Ran {
+                provider: provider.to_owned(),
+                version,
+                carried: kept,
+            });
+        } else if written_ahead && let Some((transaction, scope)) = repeat {
+            // Nothing of it ran: the record lets it go, and the transaction is free, as it was. One that can't be
+            // written keeps it carried out with no answer, which fails closed.
+            let _ = self.write(&Entry::Withdrawn { transaction, scope });
         }
         handled
     }
@@ -2345,9 +2629,10 @@ impl<W: World> Platform<W> {
     /// first one, and refused as `DuplicateTransaction` where it doesn't declare it, where it declares nothing,
     /// where the platform can't tell, where the first was another provider's, and whatever the kind or the
     /// envelope: the platform verifies no signature, so a changed key or protocol version is a retry (`INV-8`,
-    /// `REQ-CAT-10`). Only where the provider declares a repeat safe does the module run again: where its first
-    /// run gave no answer, and for an operation of another envelope or other terms, which it judges itself, as it
-    /// does a foreign replay (`REQ-PRT-1`), which the record must not answer.
+    /// `REQ-CAT-10`). Where the provider declares a repeat safe, an operation of other terms or another envelope is
+    /// no repeat of the first but a second operation under one identifier, refused as `DuplicateTransaction` too
+    /// (`REQ-MDL-14`, `T-013-10`): a declared safe retry covers the same operation asked again, nothing else. Only
+    /// there does the module run again: the same operation, where its first run gave no answer.
     fn repeated(
         &self,
         provider: &str,
@@ -2371,7 +2656,7 @@ impl<W: World> Platform<W> {
             || before.signature.key != now.signature.key
             || before.statement != now.statement
         {
-            return None;
+            return Some(Handled::Refused(PlatformRefusal::DuplicateTransaction));
         }
         first.answer.clone().map(Handled::Answered)
     }
@@ -2492,15 +2777,26 @@ impl<W: World> Platform<W> {
 
     /// Begins the segment of `transaction` at the provider (`REQ-MDL-5`, `REQ-MDL-14`): it runs on the version this
     /// returns, the staged one for its share and the one in force otherwise, until it ends, unless the operator
-    /// marks that version stale. A transaction a segment holds or held is refused as `DuplicateTransaction`
-    /// (`INV-8`), and a provider with no version in force as `Unavailable`.
+    /// marks that version stale. A transaction a segment holds or held, or one the platform carried out an
+    /// operation of with no segment, is refused as `DuplicateTransaction` (`INV-8`, `REQ-MDL-14`, `T-013-10`), and a
+    /// provider with no version in force as `Unavailable`. The segment is written to the platform's record before
+    /// it is begun; one the record can't hold is refused as `Unavailable`, and nothing of it began.
     pub fn begin_segment(
         &mut self,
         provider: &str,
         transaction: &Identifier,
     ) -> Result<String, PlatformRefusal> {
         self.restart_ended();
-        self.lifecycle.begin_segment(provider, transaction)
+        self.free_spent();
+        if self.carried.contains_key(transaction.as_str()) {
+            return Err(PlatformRefusal::DuplicateTransaction);
+        }
+        let version = self.lifecycle.begin_segment(provider, transaction)?;
+        if self.write_segment(transaction.as_str()).is_err() {
+            self.lifecycle.forget_segment(transaction.as_str());
+            return Err(PlatformRefusal::Unavailable);
+        }
+        Ok(version)
     }
 
     /// Ends the segment of `transaction` and hands over its record: the version it began on, the one it ran on and
@@ -2509,6 +2805,11 @@ impl<W: World> Platform<W> {
         self.restart_ended();
         let record = self.lifecycle.end_segment(transaction)?;
         self.carried.remove(transaction);
+        // A record that can't be written holds the segment in flight and its operations carried out: a restarted
+        // platform refuses their repeats all the same, and the segment can be ended again.
+        let _ = self.write(&Entry::Ended {
+            transaction: transaction.to_owned(),
+        });
         self.reconcile(&record.provider);
         Some(record)
     }
@@ -2622,6 +2923,17 @@ impl<W: World> Platform<W> {
     ) -> Result<usize, LifecycleRefusal> {
         self.restart_ended();
         let moved = self.lifecycle.mark_stale(provider, version, by, at)?;
+        // Each segment that moved, as it now runs, in the platform's record: one that can't be written runs on its
+        // old version after a restart, which the operator can mark stale again.
+        let segments: Vec<String> = self
+            .lifecycle
+            .segments()
+            .filter(|segment| segment.provider == provider && !segment.moves.is_empty())
+            .map(|segment| segment.transaction.clone())
+            .collect();
+        for transaction in segments {
+            let _ = self.write_segment(&transaction);
+        }
         self.reconcile(provider);
         Ok(moved)
     }

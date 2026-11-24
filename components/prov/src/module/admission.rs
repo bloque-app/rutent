@@ -45,7 +45,8 @@ use rutent_contracts::module_interface::{
     validate_operator_assertion,
 };
 use rutent_contracts::provider_role::{
-    CanonicalError, ContextMismatch, PublicKey, ShapeMismatch, Statement, canonicalize,
+    Availability, CanonicalError, ContextMismatch, PublicKey, ShapeMismatch, Statement,
+    canonicalize,
 };
 
 use crate::catalogue::{Catalogue, CatalogueError, Instant, StatementRefusal};
@@ -118,6 +119,10 @@ pub enum Unverified {
 ///     fn safe_retry(&self, _: &str) -> Option<bool> {
 ///         Some(true)
 ///     }
+///
+///     fn evidence_window(&self, _: &str) -> Option<u64> {
+///         Some(0)
+///     }
 /// }
 /// ```
 pub trait ReleaseJudge: sealed::Sealed {
@@ -137,6 +142,12 @@ pub trait ReleaseJudge: sealed::Sealed {
     /// `None` where it holds none, or the advertisement declares nothing (a module the operator publishes, a
     /// verifier). The platform reads `None` as no safe retry.
     fn safe_retry(&self, provider: &str) -> Option<bool>;
+
+    /// How long, in seconds, evidence of the provider's outcomes stays available, as the advertisement the judge
+    /// holds declares it (`REQ-CAT-10`): `None` where it is unbounded, declared by none, or the judge holds no
+    /// advertisement. The platform keeps the record of an operation it carried out with no segment until this
+    /// has passed, and for as long as its record lasts where it is `None` (`T-013-10`).
+    fn evidence_window(&self, provider: &str) -> Option<u64>;
 }
 
 /// The seal: only the catalogue implements it, and it can't be named outside this module.
@@ -175,6 +186,13 @@ impl ReleaseJudge for Catalogue {
 
     fn safe_retry(&self, provider: &str) -> Option<bool> {
         self.declared_by(provider)?.safe_retry
+    }
+
+    fn evidence_window(&self, provider: &str) -> Option<u64> {
+        match self.declared_by(provider)?.evidence.as_ref()?.availability {
+            Availability::Bounded(bounded) => Some(bounded.seconds.get()),
+            Availability::Unbounded(_) => None,
+        }
     }
 }
 
