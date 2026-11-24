@@ -1083,8 +1083,17 @@ fn a_form_item_the_decisions_file_lacks_is_reported() {
 // verifies: DEC-17
 #[test]
 fn the_binary_reads_the_decisions_file_and_a_review_needs_notes_that_are_not_empty() {
+    // The form check needs a partly met row, and the real scope file may hold none (`REQ-CAT-5` became an m3 row when
+    // the owner accepted its residual), so the copy carries its own: `REQ-CAT-5`, the one PLAN.md's T-024-09 row
+    // allows to be partly met.
     let real = std::fs::read_to_string(root().join("conformance/evidence/v0-scope")).unwrap();
-    let head = records_dir("forms", &real);
+    let scope: String = real
+        .lines()
+        .filter(|line| !line.starts_with("REQ-CAT-5 |"))
+        .chain(["REQ-CAT-5 | partly | form:cat5-timing-residual | the form check's own row"])
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let head = records_dir("forms", &scope);
     let run = || {
         let out = Command::new(env!("CARGO_BIN_EXE_evidence-table"))
             .arg("--root")
