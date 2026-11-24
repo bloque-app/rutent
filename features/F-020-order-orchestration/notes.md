@@ -6287,3 +6287,176 @@ The router's own suite run (`router_suite`) stays green with every rule on: 30 t
 | contract: the record's refusal of a kept batching ending | `candidate_dropped_for_a_batched_payout_names_its_reason` (seen red on the stub before the rule) |
 | double: `BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING`'s condition removed (it drops in both rounds) | `a_router_that_drops_a_batching_route_only_when_it_shortlists_fails_the_choice_case` |
 | guard: `closable`'s `pays_in_batches` | `reserve_that_turns_batched_mid_route_is_refused_at_the_next_segment` |
+## T-020-41: an automatic deposit whose only route has no firm rate waits for its customer
+
+Branch `f-020/t-020-41-deposit-waits`, from `m3` at `a3bc16b4`. Edits `components/core-orch/src/arrival/` and the
+assembly's `arrivals.rs`; no `contracts/` or `DEC-20` path.
+
+- **The flow.** `arrival/filing.rs`'s routing no longer ends an order whose price names slow segments
+  (`price.no_firm_rate`). It records the quote as `shown` (`quote_without_firm_rate`, the slow segments named by
+  `T-020-07`) and the run stops at a new step, `Customer`, answering `Filed::Waiting { wait:
+  FiledWait::CustomerAcceptance }`. The quote and its digest are read through `Arrivals::awaiting(order)`. Nothing
+  is accepted, started or authorised to move, and the funds stay in the holder's account at the reserve (`GUA-1`):
+  the deposit is held against the order, as for any filing, so it is spent and no other filing opens on it.
+- **The customer's acceptance** is `Arrivals::accept::<R>(desk, order, by, quote)`, given as intake's is. It is
+  refused to anyone but the order's own customer (`NotTheFiler`: the customer role, the order's requester's party,
+  listed in the register of actors) and for any quote but the one shown (`NotTheQuoteShown`, a new `ArrivalError`).
+  Policy is asked the customer's own authorisation (`REQ-AUZ-9`, as a carry-on by another login is), and on its
+  permit the acceptance is recorded on `AcceptanceBasis::GivenOnDeposit`: `who` the customer, the filing's session,
+  no yes, no hold, naming the authorisation the customer gave; then the `route_chosen` start, stated by the customer
+  (`SourceKind::Customer`, as intake's is). It is built once and appended as built, as the deposit's own is, so an
+  append that fails is carried on by the same customer accepting again, and the same acceptance again is told the
+  same.
+- **Validity.** The offered route keeps `DecisionRecord::earliest_expiry` of its candidate. Accepting past it records
+  nothing, asks the route again (a fresh `shown`, a new digest), and the order waits on that quote; the old digest is
+  `NotTheQuoteShown`.
+- **A session over ends the wait.** The filing's session is the one the acceptance is given in, so a wait whose
+  session is over ends as every other filing's does (`no_route_right_now`, recorded), at the next filing or
+  acceptance; nothing moved.
+- **Named tests** (`components/core-orch/tests/arrival.rs`): `automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer`
+  [`REQ-QTE-10`, `AC-13`], `customers_acceptance_of_the_slow_route_starts_it` [`REQ-QTE-10`, `REQ-ORD-15`],
+  `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` [`GUA-1`],
+  `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted` [`REQ-QTE-15`]. The first replaces
+  `automatic_deposit_never_starts_a_route_with_no_firm_rate`, which pinned the ending this row replaces.
+- **Gap 8 of `T-020-39`**, the three widenings for `given_on_deposit`: the scenario
+  `conformance/scenarios/tests/deposit_waits.rs` (the F-024 file of this row), `a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance`,
+  runs a slow reserve's order to its end through the assembly's real log: the customer's acceptance, the start
+  (`chosen-route-rests-on-its-orders-acceptance`), and the deposit, a later segment that moves
+  (`move-rests-on-its-orders-acceptance`). The third, `split-deposit-arrival-names-its-part`'s `deposited`, is shown
+  by `a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part` (core-orch): the filing
+  never splits (one deposit funds one part), so the case offers the log the order's start with a second part.
+- **Defaults** (reversible, each failing closed):
+  - the customer's acceptance asks policy for the customer's own authorisation (a new one, as a carry-on by another
+    login does), in place of reusing the filer's; policy not knowing waits as `policy_not_known`, a refusal is
+    `ArrivalError::Refused` and the order keeps waiting;
+  - a quote with a slow segment is asked of the customer for good: once asked, a requoted route waits for its
+    customer too, even where it is now firm, so a customer never accepts a quote and then finds another started;
+  - a quote with no figure stating a validity doesn't expire (`earliest_expiry` is `None`), as a hold's doesn't;
+  - the customer accepts in the session the deposit was filed in (the acceptance cites it); there is no second
+    session parameter, and a wait whose session is over ends, with nothing moved;
+  - the customer's acceptance comes only from the order's requester's party, in the customer's role, listed in the
+    register of actors (a person or an agent); anyone else is `NotTheFiler`, as a stranger is told of a receipt;
+  - one deposit still funds one part, so the log's split row for the new basis is shown by an offered history, not a
+    filing.
+- **Gaps, with owners.**
+  1. Closed by the fix round below: the waiting order is told to its customer through its notice.
+  2. `T-020-39`'s gap 4, that the log can't read that a `given_on_deposit` acceptance's route has no firm rate, stays:
+     `arrival/` holds it (the filing asks the customer only for a route with a slow segment and `Arrivals::accept`
+     only answers an order waiting for it), and no log row can check the route's price.
+  3. An acceptance the customer gives while policy doesn't know waits as `policy_not_known` with nothing recorded, and
+     the customer accepts again; no timer carries it (as intake's).
+- **Rule-off table** (each switched off alone from the committed checkpoint `dfb57a75`, its tests run through the lock,
+  the file restored with `git checkout`; script `scratchpad/ruleoff.py`). "Waits" is
+  `automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer`, "accepts"
+  `customers_acceptance_of_the_slow_route_starts_it`, "nothing moves"
+  `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder`, "validity"
+  `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted`, "split"
+  `a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part`, "scenario"
+  `deposit_waits.rs`'s one.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `filing.rs`: a slow route never asks the customer (it is accepted on the deposit) | waits, accepts, nothing moves, validity, split, scenario |
+  | `filing.rs`: the digest isn't held to the quote shown | accepts, validity |
+  | `filing.rs`: the acceptance's caller isn't held to the order's customer | accepts |
+  | `filing.rs`: the quote's validity isn't read | validity |
+  | `filing.rs`: a wait ends no more with its session | nothing moves |
+  | `filing.rs`: the customer's acceptance recorded on `automatic_deposit` | accepts, scenario |
+  | `relations.rs`, `move-rests-on-its-orders-acceptance`: `automatic_deposit` alone (gap 8) | scenario |
+  | `relations.rs`, `first-move-rests-on-its-parts-yes`'s deposit arm: `automatic_deposit` alone | scenario |
+  | `relations.rs`, `chosen-route-rests-on-its-orders-acceptance`: `automatic_deposit` alone (gap 8) | accepts, validity, split, scenario |
+  | `relations.rs`, `deposited` (`split-deposit-arrival-names-its-part`): `automatic_deposit` alone (gap 8) | split |
+
+  The three rows of gap 8 now each show a red; `contracts/` was edited only in these runs, and restored.
+
+### T-020-41, fix round 1 (the review of `a610cb93`)
+
+- **Finding 1, tell the customer** (fixed, not waived; the owner's standing rule is to fix contract gaps now).
+  - *Contract* (`DEC-20` path; core-internal, folded into its unreleased 1.0.0, so **no version moved**; the
+    guard is read against `origin/develop`, where 1.0.0 isn't released): `What::Shown` gains an optional `awaiting`
+    (`Awaiting { requester, valid_until, slow }`, `SlowSegment { position, declared_seconds }`), written only for the
+    quote an order filed on a deposit waits on its customer to accept. The notices are built from the log alone, and
+    the log's `shown` held only the digest, so the shape rides on it: no new entry kind and no new citation row.
+    Its check: only on a quote shown without a firm rate, at least one slow segment, each place once; absent, a
+    `shown` reads and writes as before. Schema, README and changelogs (the contract's and the crate's) say so. One valid
+    fixture (`verified-entry-of-a-quote-awaiting-its-customer`) and two invalid (shown as a firm quote; a segment named
+    twice), both refused by the Rust types.
+  - *Notices* (`F-023`): `About::Waiting { order, at, quote, valid_until, slow }`, no provider, amount or account
+    (`REQ-AUZ-7`), sent by `Notices::notify` to the customer the entry names and to the operator, once for each
+    `shown` that carries `awaiting`, so a requote is told again. The order has no state before its acceptance, so the
+    notice has no sequence and no key in the ledger or the log's summaries: a restart tells it again, and an
+    `Inbox` holds it once (`Taken::Event` then `Repeat`; `Inbox::waiting_on` reads it). The order's changes are
+    counted from its start as ever.
+  - *Filing*: the slow quote is recorded with `awaiting` (requester, the whole-second validity, the slow segments by
+    place), again on every requote.
+  - *Tests*: contract `quote_an_order_waits_on_its_customer_to_accept_is_told_from_the_log` [`REQ-QTE-10`,
+    `REQ-ORD-20`]; notices `an_order_waiting_for_its_customers_acceptance_is_told_to_the_customer_and_the_operator`
+    [`REQ-QTE-10`, `REQ-ORD-20`]; the scenario `deposit_waits.rs` now reads the customer's notice off the real log.
+- **Finding 2, the validity shown** (fixed): `Arrivals::awaiting(order, now)` returns `Awaited { quote, digest,
+  valid_until, expired }`; an expired quote is said to be, and accepting it still asks the route again (the requote
+  stays on acceptance, nothing is requoted on a read). The validity is the earliest figure's, to the whole second
+  below.
+- **Finding 3, the session** (fixed): `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder`
+  now runs both ends of a wait whose session is over, the filing filed again and the customer accepting: each ends the
+  order, records no acceptance and moves nothing. The refusal loop of
+  `customers_acceptance_of_the_slow_route_starts_it` now also tries a listed customer of another party, beside the
+  reserve filing it and an unlisted login of the right party.
+  - **What the session's end costs** (said, and an owner choice for the form: *re-offer on the same deposit in a later
+    session?*): the wait ends only when the next filing or acceptance looks at it (no timer), and its end leaves
+    the deposit spent, since the deposit was held against the order (`one-order-per-deposit`). The funds stay with
+    the holder, as the ruling asks, but a customer who leaves the session can't come back to the same deposit: only a
+    new arrival notice from the reserve is a new arrival. Default: no re-offer.
+- **Finding 5, what policy decides** (said): in `customer_accepts` the requote (a router call and a fresh `shown`) and
+  the end for a session that is over run before policy is asked of the customer. Both are bounded to the order's own
+  customer, and the filer's permit already covers the order; policy decides the acceptance and the start, not the
+  requote.
+- **Rule-offs of this round** (each alone, from the committed fix; script `scratchpad/ruleoff2.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the contract's check: `awaiting` only on a quote without a firm rate | the contract test (`--shown-with-a-firm-rate`) |
+  | the contract's check: each slow place once | the contract test (`--naming-a-segment-twice`) |
+  | `Notices::notify` sends no waiting notice | the notices test, the scenario |
+  | the filing writes no `awaiting` on a requote | `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted` |
+  | `awaiting` never says expired | the same |
+
+### T-020-41, fix round 2 (the re-review of `1bc97afa`)
+
+- **Finding 1, a requote that comes back firm** (blocker, fixed). Asked once, a customer is asked of every requote of
+  the order, firm now or not, and the contract refused `awaiting` there. The cleanest fix keeps `awaiting` on every
+  such quote, since the notice carries the new quote's validity, and tightens the check to say what it means: `awaiting`
+  is on a quote shown without a firm rate naming at least one slow segment, or on a plain quote naming none (a
+  requote that came back firm), each place once, never on a price. The other option, `awaiting` only where `slow` is
+  non-empty, would have left a firm requote with no validity and no notice to carry it. The schema's `minItems` is gone
+  (the Rust check holds the pairing); fixtures: one valid (`--asked-again-firm`), one more invalid
+  (`--without-a-firm-rate-naming-no-slow-segment`). The reviewer's probe is
+  `a_requote_that_comes_back_firm_is_shown_and_accepted_by_the_customer`: the old digest is refused, the new quote is
+  plain, names no slow segment, is told as still waiting, and its acceptance starts the order.
+- **Finding 2, a restart** (fixed). The waiting notice is named in the ledger (`Key::Waiting { to, order, quote }`),
+  so a restart sends none the ledger shows delivered and an undelivered one is tried again by `retry`; and it is
+  summarised in the log as the order's notices are, for which core-internal gains `NoticeOf::Waiting { order, quote }`
+  (folded into the unreleased 1.0.0, one valid fixture; `NoticeOf` no longer derives `Hash`, since provider's
+  `Digest` doesn't and nothing hashed it). A wait is told only while the log shows no acceptance, refusal or start of
+  the order after it: the read skips an order its own unread entries settle. Its end is told by `About::WaitEnded`,
+  named in the ledger alone (no summary), so an `Inbox` can drop the wait; a restart with the ledger sends it no more.
+  Test: `a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_order_waits`.
+- **Finding 3, the inbox** (fixed). The waiting notice carries the place of its `shown` entry in the log (`index`);
+  the `Inbox` keeps the latest by it, whatever order the notices come in, and drops the wait when the order's first
+  notice arrives (it started) or `WaitEnded` does; a late older notice doesn't bring it back. Test:
+  `an_inbox_holds_the_latest_waiting_quote_and_none_once_the_order_started_or_the_wait_ended`.
+- **A limit, said**: a restart without a durable ledger tells again what the log still shows waiting (at least
+  once); only the ledger and the log's summaries make a restart quiet, as for every other notice.
+- **Rule-offs of this round** (each alone, from the committed fix; script `scratchpad/ruleoff3.py`): see the table the
+  commit's body holds and below.
+
+  | Rule switched off | Red |
+  |---|---|
+  | the contract's firm pairing: a plain quote may carry `awaiting` | the contract test (the firm fixture) |
+  | the contract's pairing check whole | the contract test (the invalid fixtures) |
+  | the filing writes no `awaiting` where `slow` is empty | the firm-requote test |
+  | the waiting notice's ledger mark is not read | the restart and retry test |
+  | an order the log shows settled is still told as waiting | the restart test |
+  | the end of a wait is not told | the restart test |
+  | the inbox keeps the first notice, not the latest | the inbox test |
+  | the inbox keeps the wait after the order starts | the inbox test |
+

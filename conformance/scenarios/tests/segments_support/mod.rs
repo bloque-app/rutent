@@ -1552,6 +1552,7 @@ pub fn seed_linked(core: &mut Core, named: &Named, requester: &Actor, decision_r
                 order: order.clone(),
                 shown: quote.clone(),
                 shown_as: rutent_contracts::core_internal::ShownAs::Quote,
+                awaiting: None,
             },
             Outcome::Observed {},
         ),

@@ -594,6 +594,32 @@ impl What {
                 }
             }
             What::Authorise { authorisation, .. } => authorisation.check(),
+            // A quote an order waits on its customer to accept is one shown without a firm rate, naming the slow
+            // segments, each once (`REQ-QTE-10`).
+            What::Shown {
+                awaiting: Some(awaiting),
+                shown_as,
+                ..
+            } => {
+                // A quote asked of the customer once stays one the customer accepts when it is asked again, firm now
+                // or not: a firm one names no slow segment, a slow one names at least one.
+                let slow = !awaiting.slow.is_empty();
+                if !matches!(
+                    (shown_as, slow),
+                    (ShownAs::QuoteWithoutFirmRate, true) | (ShownAs::Quote, false)
+                ) {
+                    return Err(Violation(
+                        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
+                    ));
+                }
+                let places: alloc::vec::Vec<_> = awaiting.slow.iter().map(|s| s.position).collect();
+                if !distinct(&places) {
+                    return Err(Violation(
+                        "a quote awaiting its customer names its slow segments, each once",
+                    ));
+                }
+                Ok(())
+            }
             What::Result { .. }
             | What::StuckMove { .. }
             | What::CheckRead { .. }

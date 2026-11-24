@@ -71,6 +71,10 @@ pub struct Inbox {
     key: PublicKey,
     orders: BTreeMap<String, Held>,
     events: BTreeMap<String, About>,
+    waits: BTreeMap<String, (u64, About)>,
+    /// The orders that started or whose wait ended, by the place of the entry that ended it: nothing at or before it
+    /// is waited on.
+    closed: BTreeMap<String, u64>,
     beat: Option<(Id, u64)>,
 }
 
@@ -83,6 +87,8 @@ impl Inbox {
             key,
             orders: BTreeMap::new(),
             events: BTreeMap::new(),
+            waits: BTreeMap::new(),
+            closed: BTreeMap::new(),
             beat: None,
         }
     }
@@ -107,7 +113,16 @@ impl Inbox {
                 sequence,
                 view,
                 ..
-            } => self.order(order.as_str(), sequence, view, sealed.notice.current),
+            } => {
+                // Its order started: nothing is waited on any more, whatever notice of a wait comes late.
+                self.closed.insert(order.as_str().to_owned(), u64::MAX);
+                self.waits.remove(order.as_str());
+                self.order(order.as_str(), sequence, view, sealed.notice.current)
+            }
+            about @ (About::Waiting { .. } | About::WaitEnded { .. }) => {
+                let order = about.order().unwrap_or_default().to_owned();
+                self.waiting(&order, about)
+            }
             About::Heartbeat { run, beat, .. } => {
                 self.beat = Some((run, beat));
                 Taken::Beat
@@ -122,6 +137,46 @@ impl Inbox {
                 }
             }
         })
+    }
+
+    /// An order waiting for its customer, or its wait ended: the latest by the place of its entry in the log is the
+    /// one held, whatever order the notices come in; an order that started or whose wait ended waits no more, and an
+    /// older quote is held no more than a newer one.
+    fn waiting(&mut self, order: &str, about: About) -> Taken {
+        let (index, ends) = match &about {
+            About::Waiting { index, .. } => (*index, false),
+            About::WaitEnded { index, .. } => (*index, true),
+            _ => return Taken::Repeat,
+        };
+        if self
+            .closed
+            .get(order)
+            .is_some_and(|closed| *closed >= index)
+        {
+            return if ends { Taken::Repeat } else { Taken::Earlier };
+        }
+        match self.waits.get(order) {
+            Some((held, _)) if !ends && *held >= index => {
+                return if *held == index {
+                    Taken::Repeat
+                } else {
+                    Taken::Earlier
+                };
+            }
+            _ => {}
+        }
+        if ends {
+            self.closed.insert(order.to_owned(), index);
+            self.waits.remove(order);
+        } else {
+            self.waits.insert(order.to_owned(), (index, about));
+        }
+        Taken::Event
+    }
+
+    /// The quote `order` waits on its customer to accept, as the latest notice told it.
+    pub fn waiting_on(&self, order: &Id) -> Option<&About> {
+        self.waits.get(order.as_str()).map(|(_, about)| about)
     }
 
     fn order(&mut self, order: &str, sequence: u64, view: View, current: bool) -> Taken {
@@ -198,5 +253,11 @@ pub(super) fn event_key(about: &About) -> String {
         About::Order {
             order, sequence, ..
         } => serde_json::to_string(&("order", order.as_str(), sequence)).unwrap_or_default(),
+        About::Waiting { order, quote, .. } => {
+            serde_json::to_string(&("waiting", order.as_str(), quote)).unwrap_or_default()
+        }
+        About::WaitEnded { order, .. } => {
+            serde_json::to_string(&("wait_ended", order.as_str())).unwrap_or_default()
+        }
     }
 }

@@ -224,6 +224,7 @@ impl Core {
                 order: order.clone(),
                 shown: shown.clone(),
                 shown_as: ShownAs::Quote,
+                awaiting: None,
             },
         )?;
         let parties = self.parties_of(&linked.from)?;

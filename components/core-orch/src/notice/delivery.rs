@@ -40,6 +40,17 @@ pub enum Key {
         /// The change's sequence.
         sequence: u64,
     },
+    /// An order's waiting for its customer, to one receiver, by the quote's digest as it is written; `None` names the
+    /// notice that the wait ended. The summary of the first is the log's (`NoticeOf::Waiting`); the second's mark is
+    /// the ledger's alone.
+    Waiting {
+        /// The receiver.
+        to: Receiver,
+        /// The order.
+        order: String,
+        /// The quote's digest, as it is written.
+        quote: Option<String>,
+    },
     /// A raise to the operator, by its id.
     Raise {
         /// The raise's id.

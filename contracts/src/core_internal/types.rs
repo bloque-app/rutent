@@ -2423,6 +2423,12 @@ pub enum What {
         shown: Digest,
         /// How it was shown.
         shown_as: ShownAs,
+        /// Where the quote is one an order filed on an automatic deposit waits on its customer to accept: whom it
+        /// waits for, until when the quote stands and which segments are slow, so the customer is told from the log
+        /// alone (`REQ-QTE-10`, `REQ-ORD-20`, item `deposit-no-firm-rate`, `T-020-41`). Only on a quote shown without
+        /// a firm rate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        awaiting: Option<Awaiting>,
     },
     /// A segment's declared and actual settlement times (`REQ-QTE-3`).
     Settlement {
@@ -2725,6 +2731,33 @@ pub enum What {
     },
 }
 
+/// What an order waiting for its customer's acceptance of a slow route tells the customer: the party it waits for, when
+/// the quote stops standing and which of its segments are slow. No provider, amount or account (`REQ-AUZ-7`).
+/// Schema: `urn:rutent:core-internal:verified-entry#/$defs/awaiting`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Awaiting {
+    /// The party whose acceptance it waits for: the order's requester, receiving as its customer.
+    pub requester: Id,
+    /// When the quote stops standing, where any figure it rests on states a validity: the earliest of them, to the
+    /// whole second below it. None where none does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<Timestamp>,
+    /// The segments over three days, at least one, each by its place in the route, once.
+    pub slow: Vec<SlowSegment>,
+}
+
+/// A slow segment of the route shown, by its place in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlowSegment {
+    /// Its place in the route, counted from 1, part after part.
+    pub position: Count,
+    /// The time its provider declared, in seconds, where it declared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_seconds: Option<Count>,
+}
+
 /// Whom a notice was for: a party, in the role it receives in. Schema:
 /// `urn:rutent:core-internal:verified-entry#/$defs/notice_receiver`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2737,7 +2770,7 @@ pub struct NoticeReceiver {
 }
 
 /// What a notice was of. Schema: `urn:rutent:core-internal:verified-entry#/$defs/notice_of`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoticeOf {
     /// A change of an order: the `sequence`-th of its changes, counted from 1.
@@ -2751,6 +2784,14 @@ pub enum NoticeOf {
     Raise {
         /// The raise's id (`notice-summary-names-its-raise`).
         raise: Id,
+    },
+    /// An order's waiting for its customer's acceptance of a quote, told by the quote's digest: it has no sequence
+    /// before it starts (`T-020-41`).
+    Waiting {
+        /// The order.
+        order: Id,
+        /// The quote's digest, as the `shown` entry holds it.
+        quote: Digest,
     },
 }
 

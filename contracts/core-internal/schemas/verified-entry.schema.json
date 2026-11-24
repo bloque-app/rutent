@@ -1549,6 +1549,54 @@
             "quote_without_firm_rate",
             "price"
           ]
+        },
+        "awaiting": {
+          "description": "Where the quote is one an order filed on an automatic deposit waits on its customer to accept: whom it waits for, until when the quote stands, which segments are slow, none where a requote came back firm (REQ-QTE-10, REQ-ORD-20, T-020-41). Only on a quote, as the Rust types check.",
+          "$ref": "#/$defs/awaiting"
+        }
+      }
+    },
+    "awaiting": {
+      "description": "What an order waiting for its customer's acceptance of a slow route tells the customer: the party it waits for, when the quote stops standing and which segments are slow. No provider, amount or account (REQ-AUZ-7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requester",
+        "slow"
+      ],
+      "properties": {
+        "requester": {
+          "description": "The party whose acceptance it waits for: the order's requester, receiving as its customer.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "valid_until": {
+          "description": "When the quote stops standing, where any figure it rests on states a validity.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        },
+        "slow": {
+          "description": "The segments over three days, each once; none where the quote is firm. Which the Rust types check against how it is shown.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/slow_segment"
+          }
+        }
+      }
+    },
+    "slow_segment": {
+      "description": "A slow segment of the route shown, by its place in it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ],
+      "properties": {
+        "position": {
+          "description": "Its place in the route, counted from 1, part after part.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
+        },
+        "declared_seconds": {
+          "description": "The time its provider declared, in seconds, where it declared one.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/count"
         }
       }
     },
@@ -2709,7 +2757,7 @@
       }
     },
     "notice_of": {
-      "description": "What a notice was of: a change of an order, at its sequence, or a raise.",
+      "description": "What a notice was of: a change of an order, at its sequence, a raise, or an order waiting for its customer, by the quote's digest.",
       "type": "object",
       "required": [
         "kind"
@@ -2718,7 +2766,8 @@
         "kind": {
           "enum": [
             "order",
-            "raise"
+            "raise",
+            "waiting"
           ]
         }
       },
@@ -2751,6 +2800,21 @@
           },
           "then": {
             "$ref": "#/$defs/notice_of_raise"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "waiting"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/notice_of_waiting"
           }
         }
       ]
@@ -2790,6 +2854,27 @@
         "raise": {
           "description": "The raise's id (notice-summary-names-its-raise).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "notice_of_waiting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "quote"
+      ],
+      "properties": {
+        "kind": {
+          "const": "waiting"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "quote": {
+          "description": "The quote's digest, as its shown entry holds it.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
         }
       }
     },

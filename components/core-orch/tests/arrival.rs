@@ -2919,71 +2919,627 @@ fn an_arrival_held_against_a_part_names_the_part() {
     assert_admitted(&env);
 }
 
-// REQ-QTE-10, AC-13 (T-020-07's review) -------------------------------------------------------------------------------
+// REQ-QTE-10, AC-13 (T-020-41: the deposit waits for its customer) -----------------------------------------------------
 
-/// A deposit filed automatically whose route has a segment over three days has no firm rate, which only the
-/// customer's acceptance may start (`REQ-QTE-10`), and an automatic deposit isn't the customer's: the filing ends its
-/// order, `no_route_right_now`, accepting and starting nothing, as any end at routing does.
+/// Prices the reserve's deposit at `seconds` to settle: over three days it leaves its route without a firm rate.
+fn slow(env: &mut Env, seconds: u64) {
+    for price in env.prices.iter_mut() {
+        if price.tuple == snapshot_support::deposit_tuple(RESERVE) {
+            price.settlement_seconds = seconds.try_into().unwrap();
+        }
+    }
+}
+
+/// The customer accepts the slow route of the filed order `order`, the quote of `digest`.
+fn accept_slow(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+    order: &Id,
+    by: &Actor,
+    digest: &rutent_contracts::module_interface::Digest,
+) -> Result<Filed, ArrivalError> {
+    env.with_providers(providers, |_, desk| {
+        arrivals.accept::<RouteFinder>(desk, order, by, digest)
+    })
+}
+
+/// A slow deposit of 1 000 filed by the reserve: the deposit, its filing, the order it waits as, and its quote's digest.
+fn waiting_slow(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+) -> (Filing, Id, rutent_contracts::module_interface::Digest) {
+    slow(env, 4 * 86_400);
+    let deposited = deposit(env, providers, arrivals, 1000, 0);
+    let one = filing(reserve_filer(), &deposited);
+    let filed = file(env, providers, arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order),
+        wait: FiledWait::CustomerAcceptance,
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let (_, digest, _, _) = awaited(env, arrivals, &order).expect("its quote is shown");
+    (one, order, digest)
+}
+
+/// The quote `order` waits on its customer to accept, as of the environment's clock: the quote, its digest, until when
+/// it stands and whether it stopped standing.
+fn awaited(
+    env: &Env,
+    arrivals: &Arrivals,
+    order: &Id,
+) -> Option<(
+    rutent_core_orch::intake::Quote,
+    rutent_contracts::module_interface::Digest,
+    Option<rutent_contracts::router_api::Timestamp>,
+    bool,
+)> {
+    let now = env.clock.now().timestamp().unwrap();
+    arrivals
+        .awaiting(order, &now)
+        .map(|a| (a.quote.clone(), a.digest.clone(), a.valid_until, a.expired))
+}
+
+/// A deposit filed automatically whose only route has a segment over three days has no firm rate, which only the
+/// customer's acceptance may start (`REQ-QTE-10`), and an automatic deposit isn't the customer's: the filing shows the
+/// quote with its slow segments named, records the order as waiting for its customer, and starts nothing. Filing again
+/// is told the same and records nothing.
 // verifies: AC-13, REQ-QTE-10
 #[test]
-fn automatic_deposit_never_starts_a_route_with_no_firm_rate() {
+fn automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer() {
     let mut env = crate::env();
-    let slow = |env: &mut Env, seconds: u64| {
-        for price in env.prices.iter_mut() {
-            if price.tuple == snapshot_support::deposit_tuple(RESERVE) {
-                price.settlement_seconds = seconds.try_into().unwrap();
-            }
-        }
-    };
-    slow(&mut env, 4 * 86_400);
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
-    let deposited = match arrive(
-        &mut env,
-        &mut providers,
-        &mut arrivals,
-        &mut Open::default(),
-        &report(1000, 0),
-    )
-    .unwrap()
-    {
-        Arrived::NoOrder { arrival } => arrival,
-        other => panic!("{other:?}"),
-    };
-    let filed = file(
-        &mut env,
-        &mut providers,
-        &mut arrivals,
-        &filing(reserve_filer(), &deposited),
-    )
-    .unwrap();
-    assert!(
-        matches!(
-            filed,
-            Filed::CantProceed {
-                order: Some(_),
-                class: OrderRefusalClass::NoRouteRightNow
-            }
-        ),
-        "{filed:?}"
+    let (one, order, digest) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+
+    let (quote, shown_digest, valid_until, expired) =
+        awaited(&env, &arrivals, &order).expect("its quote");
+    assert_eq!(shown_digest, digest);
+    // The customer is shown until when the quote stands, and it stands.
+    assert!(valid_until.is_some() && !expired);
+    assert_eq!(
+        quote.shown_as,
+        rutent_contracts::core_internal::ShownAs::QuoteWithoutFirmRate
     );
+    assert!(
+        !quote.price.no_firm_rate.is_empty(),
+        "the slow segments are named"
+    );
+    assert!(
+        quote
+            .price
+            .no_firm_rate
+            .iter()
+            .all(|s| s.provider == id(RESERVE) && s.declared_seconds == Some(4 * 86_400)),
+        "{:?}",
+        quote.price.no_firm_rate
+    );
+    let log = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(log.iter().any(|w| matches!(
+        w,
+        What::Shown { order: o, shown, shown_as: rutent_contracts::core_internal::ShownAs::QuoteWithoutFirmRate, awaiting: Some(_) }
+            if o == &order && shown == &digest
+    )));
+    // The log says whom it waits for, until when and which segments are slow, for the customer's notice.
+    let told = log
+        .iter()
+        .find_map(|w| match w {
+            What::Shown {
+                awaiting: Some(a), ..
+            } => Some(a.clone()),
+            _ => None,
+        })
+        .expect("the shown quote awaits its customer");
+    assert_eq!(told.requester, customer().party);
+    assert_eq!(told.valid_until, valid_until);
+    let places: Vec<u64> = told.slow.iter().map(|s| u64::from(s.position)).collect();
+    // Each slow segment by its place in the route shown, from 1.
+    let expected: Vec<u64> = quote
+        .price
+        .no_firm_rate
+        .iter()
+        .map(|slow| {
+            quote
+                .price
+                .segments
+                .iter()
+                .position(|s| s.part == slow.part && s.operation == slow.operation)
+                .expect("a slow segment of the route") as u64
+                + 1
+        })
+        .collect();
+    assert_eq!(places, expected);
     assert!(env.acceptances().is_empty(), "no acceptance on the deposit");
     assert!(env.started().is_empty(), "nothing started");
+    assert!(
+        !ended_in_the_log(&env, &order),
+        "the order waits, it doesn't end"
+    );
     assert_admitted(&env);
 
-    // The deposit was held against the order before it was routed, and one deposit opens one order
-    // (`one-order-per-deposit`), so, as with every end at routing, it is filed on no more: filed anew, even with its
-    // route firm again, it opens nothing. Only a new notice is a new arrival.
-    slow(&mut env, 60);
     let before = env.len();
-    let mut again = filing(reserve_filer(), &deposited);
-    again.request = id("deposit-2");
+    let again = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
     assert_eq!(
-        file(&mut env, &mut providers, &mut arrivals, &again),
-        Err(ArrivalError::NotFileable)
+        again,
+        Filed::Waiting {
+            order: Some(order),
+            wait: FiledWait::CustomerAcceptance
+        }
     );
     assert_eq!(env.len(), before, "nothing recorded");
+    // The deposit is held against the order: another filing of it opens nothing.
+    let mut other = filing(reserve_filer(), &one.arrival);
+    other.request = id("deposit-2");
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut arrivals, &other),
+        Err(ArrivalError::Conflicting { .. })
+    ));
+    assert_admitted(&env);
+}
+
+/// The customer's acceptance of the slow route, given in the session the deposit was filed in, starts it: recorded on
+/// `given_on_deposit`, its `who` the customer, naming the quote shown and the session, with no yes; only the order's
+/// customer, only for the quote shown.
+// verifies: REQ-QTE-10, REQ-ORD-15
+#[test]
+fn customers_acceptance_of_the_slow_route_starts_it() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (one, order, digest) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+
+    // Not the quote shown: nothing is recorded.
+    let before = env.len();
+    let other: rutent_contracts::module_interface::Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "77".repeat(32) }))
+            .unwrap();
+    assert_eq!(
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &other
+        ),
+        Err(ArrivalError::NotTheQuoteShown)
+    );
+    // Not the order's customer: the reserve filing it, an unlisted login of its party, or a listed customer of
+    // another party.
+    let other_party = Actor {
+        party: id("another-customer"),
+        acts: id("another-customer"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
+    };
+    env.actors.borrow_mut().list(&other_party);
+    for who in [reserve_filer(), impostor(), other_party] {
+        assert_eq!(
+            accept_slow(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &order,
+                &who,
+                &digest
+            ),
+            Err(ArrivalError::NotTheFiler),
+            "{who:?}"
+        );
+    }
+    assert_eq!(env.len(), before, "nothing recorded");
     assert!(env.started().is_empty());
+
+    let accepted = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &digest,
+    )
+    .unwrap();
+    let Filed::Started {
+        order: started,
+        acceptance,
+    } = accepted
+    else {
+        panic!("{accepted:?}");
+    };
+    assert_eq!(started, order);
+    let acceptances = env.acceptances();
+    assert_eq!(acceptances.len(), 1);
+    let What::Acceptance {
+        acceptance: id_of,
+        order: accepted_order,
+        quote,
+        basis,
+        yeses,
+        session,
+        held,
+        ..
+    } = &acceptances[0].what
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (
+            id_of,
+            accepted_order,
+            quote,
+            basis,
+            yeses.len(),
+            session,
+            held
+        ),
+        (
+            &acceptance,
+            &order,
+            &digest,
+            &AcceptanceBasis::GivenOnDeposit,
+            0,
+            &Some(id(SESSION)),
+            &None
+        )
+    );
+    assert_eq!(acceptances[0].who, customer());
+    assert_eq!(env.started(), [order.as_str()], "the route started");
+    // The same acceptance again is told the same and records nothing.
+    let before = env.len();
+    assert_eq!(
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &digest
+        ),
+        Ok(Filed::Started {
+            order: order.clone(),
+            acceptance
+        })
+    );
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &one).unwrap(),
+        Filed::Started {
+            order,
+            acceptance: match &acceptances[0].what {
+                What::Acceptance { acceptance, .. } => acceptance.clone(),
+                _ => unreachable!(),
+            }
+        }
+    );
+    assert_eq!(env.len(), before);
+    assert_admitted(&env);
+}
+
+/// While the filed order waits nothing is authorised to move: no effect, no start, no exposure, and the reserve was
+/// asked nothing that moves value. The funds stay in the holder's account at the reserve, whatever comes of the wait:
+/// its session ending ends the order and moves nothing either (`GUA-1`).
+// verifies: GUA-1
+#[test]
+fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder() {
+    // The wait ends two ways once its session is over: the filing is filed again, or the customer accepts.
+    for customer_accepts in [false, true] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        slow(&mut env, 4 * 86_400);
+        let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+        let mut one = filing(reserve_filer(), &deposited);
+        one.session = short_session(&mut env, "session-short", START + 600);
+        let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+        let Filed::Waiting {
+            order: Some(order), ..
+        } = filed
+        else {
+            panic!("{filed:?}");
+        };
+        let (_, digest, _, _) = awaited(&env, &arrivals, &order).expect("its quote");
+        let moved = |env: &Env| {
+            env.book
+                .borrow()
+                .verified()
+                .into_iter()
+                .filter(|w| {
+                    matches!(
+                        w,
+                        What::Effect { .. } | What::Input { .. } | What::Acceptance { .. }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(moved(&env), 0);
+        assert_eq!(env.exposures.held().count(), 0, "nothing held in flight");
+
+        // Waiting, the filing is told it waits as long as its session is open.
+        env.clock.set(START + 300);
+        assert!(matches!(
+            file(&mut env, &mut providers, &mut arrivals, &one).unwrap(),
+            Filed::Waiting {
+                wait: FiledWait::CustomerAcceptance,
+                ..
+            }
+        ));
+        assert_eq!(moved(&env), 0);
+
+        // Its session over, the wait ends the order, recorded, and still nothing moved: a customer accepting then
+        // is told it ended, and no acceptance is recorded.
+        env.clock.set(START + 700);
+        let ended = if customer_accepts {
+            accept_slow(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &order,
+                &customer(),
+                &digest,
+            )
+            .unwrap()
+        } else {
+            file(&mut env, &mut providers, &mut arrivals, &one).unwrap()
+        };
+        assert!(
+            matches!(ended, Filed::CantProceed { order: Some(ref o), .. } if o == &order),
+            "{customer_accepts}: {ended:?}"
+        );
+        assert!(ended_in_the_log(&env, &order));
+        assert!(env.acceptances().is_empty());
+        assert_eq!(moved(&env), 0);
+        assert_eq!(env.exposures.held().count(), 0);
+        assert_admitted(&env);
+    }
+}
+
+/// A slow route's quote is as valid as the figures it stands on (`REQ-QTE-15`): the customer's acceptance past it is
+/// asked again, the route shown anew, and starts nothing; the old quote is no longer the one shown, the new one is
+/// accepted.
+// verifies: REQ-QTE-15
+#[test]
+fn slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (_, order, first) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+
+    // Past what its figures say, the customer is told the quote stopped standing, and is shown when it did.
+    let (_, _, standing_until, expired) = awaited(&env, &arrivals, &order).expect("its quote");
+    assert!(!expired);
+    env.clock.set(START + 3 * 3_600);
+    let (_, _, until, expired) = awaited(&env, &arrivals, &order).expect("its quote, expired");
+    assert!(expired, "a dead quote is said to be");
+    assert_eq!(until, standing_until);
+    // Nothing is accepted on it: the route is asked again and shown anew.
+    let asked = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &first,
+    )
+    .unwrap();
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(env.acceptances().is_empty(), "nothing accepted");
+    assert!(env.started().is_empty());
+    let (_, second, renewed, expired) =
+        awaited(&env, &arrivals, &order).expect("a quote shown anew");
+    assert!(!expired && renewed.is_some());
+    assert_ne!(second, first, "a quote of its own");
+    let shown: Vec<_> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Shown { shown, .. } => Some(shown.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [first.clone(), second.clone()]);
+    // Each quote says it waits on the customer, for the customer's notice.
+    let awaiting: Vec<bool> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Shown { awaiting, .. } => Some(awaiting.is_some()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(awaiting, [true, true]);
+    assert_admitted(&env);
+
+    // The old quote isn't the one shown any more; the new one is accepted.
+    assert_eq!(
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &first
+        ),
+        Err(ArrivalError::NotTheQuoteShown)
+    );
+    let accepted = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(accepted, Filed::Started { .. }), "{accepted:?}");
+    assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+}
+
+/// An order its customer accepted on a deposit (`given_on_deposit`) is split no more than one accepted by the deposit
+/// itself: a start of more than one part rests on an arrival naming each part (`split-deposit-arrival-names-its-part`),
+/// which the one arrival of the deposit's order, naming none, isn't. The filing never splits (one deposit funds one part),
+/// so the case is the log's own: the order's start as the log holds it, with a second part, offered to the log.
+// verifies: REQ-ORD-15, REQ-ORD-42
+#[test]
+fn a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part() {
+    use rutent_contracts::core_internal::{
+        DeploymentOperator, Through, VerifiedEntry, admit_entry,
+    };
+    use rutent_contracts::state_machine::{Id as StmId, RecordId};
+
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (_, order, digest) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+    accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &digest,
+    )
+    .unwrap();
+
+    let history = env.history();
+    let (start, input) = history
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. }) => {
+                    Some((v.clone(), input.clone()))
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("the order started");
+    let mut split = input;
+    split.record_id = RecordId::new("split-start").unwrap();
+    let Observed::RouteChosen { parts, .. } = &mut split.observed else {
+        unreachable!()
+    };
+    let mut second = parts[0].clone();
+    second.part_id = StmId::new("part-two").unwrap();
+    for (n, segment) in second.segments.iter_mut().enumerate() {
+        segment.segment_id = StmId::new(format!("part-two-segment-{n}")).unwrap();
+    }
+    parts.push(second);
+    let entry = Entry::Verified(VerifiedEntry {
+        what: What::Input { input: split },
+        ..start
+    });
+    let refused = admit_entry(
+        &history,
+        &entry,
+        Through::General,
+        &DeploymentOperator {
+            maker: operator().acts,
+            party: operator().party,
+        },
+    )
+    .expect_err("a split start with no arrival naming its parts");
+    assert_eq!(
+        refused.0,
+        "a split route of an order accepted on an automatic deposit rests on an arrival naming each part"
+    );
+}
+
+/// A slow route's quote asked again past its validity may come back firm: it is shown as a plain quote, with no slow
+/// segment named, which the order still waits on its customer to accept, since the customer was asked; the old digest
+/// is refused, and accepting the new one starts the order (`REQ-QTE-15`, `REQ-QTE-10`).
+// verifies: REQ-QTE-15, REQ-QTE-10
+#[test]
+fn a_requote_that_comes_back_firm_is_shown_and_accepted_by_the_customer() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (_, order, first) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+
+    // The validity passes and the route is firm now.
+    env.clock.set(START + 3 * 3_600);
+    slow(&mut env, 60);
+    let asked = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &first,
+    )
+    .expect("the log takes the quote shown anew");
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    let (quote, second, valid_until, expired) =
+        awaited(&env, &arrivals, &order).expect("a quote shown anew");
+    assert_ne!(second, first);
+    assert!(quote.price.no_firm_rate.is_empty(), "no slow segment named");
+    assert_eq!(
+        quote.shown_as,
+        rutent_contracts::core_internal::ShownAs::Quote
+    );
+    assert!(valid_until.is_some() && !expired);
+    // The log says it waits on the customer still, naming no slow segment.
+    let last = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Shown { awaiting, .. } => Some(awaiting.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("a quote shown");
+    assert!(last.is_some_and(|a| a.slow.is_empty() && a.requester == customer().party));
+    assert_admitted(&env);
+
+    assert_eq!(
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &first
+        ),
+        Err(ArrivalError::NotTheQuoteShown)
+    );
+    let started = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    assert_eq!(env.acceptances().len(), 1);
     assert_admitted(&env);
 }
 

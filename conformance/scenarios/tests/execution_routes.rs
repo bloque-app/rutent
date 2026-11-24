@@ -209,6 +209,7 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
                     order: o,
                     shown,
                     shown_as,
+                    ..
                 } if o == order => Some((shown, shown_as)),
                 _ => None,
             })

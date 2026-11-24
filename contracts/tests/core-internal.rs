@@ -78,7 +78,19 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 52] = [
+const RUST_RULES: [(&str, &str); 55] = [
+    (
+        "verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment",
+        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
+    ),
+    (
+        "verified-entry-of-a-quote-awaiting-its-customer-shown-with-a-firm-rate",
+        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
+    ),
+    (
+        "verified-entry-of-a-quote-awaiting-its-customer-naming-a-segment-twice",
+        "a quote awaiting its customer names its slow segments, each once",
+    ),
     (
         "decision-request-to-roll-back-naming-no-version",
         "a catalogue change names a version exactly when it is about a module release",
@@ -4414,6 +4426,52 @@ fn customers_acceptance_of_a_filed_orders_slow_route_has_a_basis_of_its_own() {
     // Its first move is the origin reserve's, on no yes.
     assert_case("first-move-rests-on-its-parts-yes--given-on-a-deposit");
     assert_case_refused("first-move-rests-on-its-parts-yes--given-on-a-deposit-by-anyone");
+}
+
+/// A quote an order filed on a deposit waits on its customer to accept says so in the log: whom it waits for, until
+/// when it stands and which segments are slow, so the customer is told from the log alone, and only of a quote shown
+/// without a firm rate, naming each slow segment once (`REQ-QTE-10`, `REQ-ORD-20`, item `deposit-no-firm-rate`,
+/// `T-020-41`). A quote shown as another kind is no such quote.
+// verifies: REQ-QTE-10, REQ-ORD-20
+#[test]
+fn quote_an_order_waits_on_its_customer_to_accept_is_told_from_the_log() {
+    let name = "verified-entry-of-a-quote-awaiting-its-customer";
+    assert_accepted_by_both(name);
+    let entry: VerifiedEntry = serde_json::from_value(fixture("valid", name)).unwrap();
+    let What::Shown {
+        awaiting: Some(awaiting),
+        shown_as,
+        ..
+    } = &entry.what
+    else {
+        panic!("a shown quote awaiting its customer");
+    };
+    assert_eq!(
+        *shown_as,
+        rutent_contracts::core_internal::ShownAs::QuoteWithoutFirmRate
+    );
+    assert_eq!(awaiting.requester.as_str(), "cust-1");
+    assert!(awaiting.valid_until.is_some());
+    assert_eq!(awaiting.slow.len(), 2);
+    // A quote shown without it reads as before, and writes no such field.
+    let plain = fixture(
+        "valid",
+        "verified-entry-of-a-quote-shown-without-a-firm-rate",
+    );
+    let back = through_rust("verified-entry", &plain).unwrap();
+    assert_eq!(back, plain);
+    // Asked again and firm now, it still waits on the customer, and names no slow segment; its summary names it by
+    // its digest.
+    let firm = "verified-entry-of-a-quote-awaiting-its-customer-asked-again-firm";
+    assert_accepted_by_both(firm);
+    assert_accepted_by_both("verified-entry-of-a-notice-summary-of-a-waiting-order-delivered");
+    for name in [
+        "verified-entry-of-a-quote-awaiting-its-customer-shown-with-a-firm-rate",
+        "verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment",
+        "verified-entry-of-a-quote-awaiting-its-customer-naming-a-segment-twice",
+    ] {
+        assert_rejected(name);
+    }
 }
 
 /// A statement the log receives after the revocation of every grant that would attribute it is attributed to no

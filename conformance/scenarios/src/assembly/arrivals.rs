@@ -38,6 +38,19 @@ impl FiledOrders for FiledOn {
     }
 }
 
+/// A quote a filed order waits on its customer to accept, owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaited {
+    /// The quote, its slow segments named.
+    pub quote: rutent_core_orch::intake::Quote,
+    /// Its digest.
+    pub digest: rutent_contracts::module_interface::Digest,
+    /// Until when it stands.
+    pub valid_until: Option<rutent_contracts::router_api::Timestamp>,
+    /// Whether it stopped standing.
+    pub expired: bool,
+}
+
 /// The orders open, as read before the call.
 struct Open(Vec<OpenOrder>);
 
@@ -140,6 +153,15 @@ impl Core {
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });
+        // A filed order that waits for its customer is started later, by `accept_filed`, from this filing.
+        if let Ok(Filed::Waiting {
+            order: Some(order), ..
+        }) = &filed
+        {
+            self.filings
+                .entry(order.as_str().to_owned())
+                .or_insert_with(|| filing.clone());
+        }
         if let Ok(Filed::Started { order, .. }) = &filed {
             self.filings
                 .entry(order.as_str().to_owned())
@@ -149,6 +171,38 @@ impl Core {
             {
                 self.follow_filed(order, &start)?;
             }
+        }
+        self.feed()?;
+        Ok(filed?)
+    }
+
+    /// The quote the filed order `order` waits on its customer to accept, as of Core's clock (`T-020-41`): the quote,
+    /// its digest, until when it stands and whether it stopped standing.
+    pub fn awaiting(&self, order: &Id) -> Option<Awaited> {
+        let now = self.clock.timestamp();
+        self.arrivals.awaiting(order, &now).map(|a| Awaited {
+            quote: a.quote.clone(),
+            digest: a.digest.clone(),
+            valid_until: a.valid_until,
+            expired: a.expired,
+        })
+    }
+
+    /// The customer `by` accepts the slow route of the filed order `order`, the quote of digest `quote`; once it
+    /// starts, its segments follow it.
+    pub fn accept_filed(
+        &mut self,
+        by: &rutent_contracts::core_internal::Actor,
+        order: &Id,
+        quote: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Filed, StepError> {
+        let filed = self
+            .with_arrivals(|arrivals, desk| arrivals.accept::<RouteFinder>(desk, order, by, quote));
+        if let Ok(Filed::Started { order, .. }) = &filed
+            && let Some(start) = self.arrivals.start(order).cloned()
+            && !self.started.contains_key(order.as_str())
+        {
+            self.follow_filed(order, &start)?;
         }
         self.feed()?;
         Ok(filed?)

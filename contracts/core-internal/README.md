@@ -317,7 +317,7 @@ The Rust types carry the mapping as `Answer::outcome`, `SessionOutcome::outcome`
 | Measure record | `urn:rutent:core-internal:measure-record` | `MeasureRecord`, `MeasuredRole`, `Measure` |
 | Handed over to the log | `urn:rutent:core-internal:handover` | `HandedOver` |
 | Raise | `urn:rutent:core-internal:raise` | `Raise`, `Difference`, `Reported`, `HoldingIncomparable`, `NoFormula`, `PublicEndMismatch`, `PublicFigures` |
-| Verified entry | `urn:rutent:core-internal:verified-entry` | `VerifiedEntry`, `What`, `Outcome`, `OperatorCommand`, `OutcomeDecline`, `NoticeReceiver`, `NoticeOf`, `NoticeEnd` |
+| Verified entry | `urn:rutent:core-internal:verified-entry` | `VerifiedEntry`, `What`, `Outcome`, `OperatorCommand`, `OutcomeDecline`, `NoticeReceiver`, `NoticeOf`, `NoticeEnd`, `Awaiting`, `SlowSegment` |
 | Stated entry | `urn:rutent:core-internal:stated-entry` | `StatedEntry`, `Attribution`, `SignedWith`, `About` |
 | Log entry, either kind | `urn:rutent:core-internal:entry` | `Entry` |
 | Kept statement | `urn:rutent:core-internal:kept-statement` | `KeptStatement`, `Salt`, `Encoded` |
@@ -393,6 +393,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-020-06` | each round's decision record, chained to the order's history | `decision_record` with `previous`, its `decision_record` the id the state machine's inputs cite |
 | `T-020-06` | questions fanned out, counted against the caller | `charge`; `ask_about_person` |
 | `T-020-07` | the quote shown, labelled a quote, without a firm rate, or the price | `shown` |
+| `T-020-41` | the quote an order filed on a deposit waits on its customer to accept: whom, until when, which segments are slow | `shown`'s `awaiting` |
 | `T-020-07` | stated terms with their times; a held quote | stated entries of provider-role's `terms` (binding from `StatedEntry::binds_from`) and `hold` (about its own transaction); `acceptance.held`, the hold an acceptance redeems |
 | `T-020-07` | a charge above its formula's maximum, flagged | raise, `difference: charge`, naming its result's and its terms' stated entries (`result`, `terms`) |
 | `T-020-08` | segment records, platform events, proxy uses | `hand_over` |

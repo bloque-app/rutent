@@ -2931,3 +2931,212 @@ fn a_summary_refused_for_a_conflict_is_not_among_the_refused() {
     assert_eq!(journal.summaries().len(), 2);
     assert!(journal.summaries().iter().all(|s| s["last_try"] == 1));
 }
+
+/// An order filed on a deposit that waits for its customer to accept a slow route is told to that customer and the
+/// operator, from the log's `shown` that says so: the quote's digest, until when it stands and which segments are
+/// slow by their place, and no provider, amount or account. A second quote of the order (asked again past its
+/// validity) is another notice; the same one again is sent to no one and held once by a receiver (`REQ-QTE-10`,
+/// `REQ-ORD-20`, `REQ-AUZ-7`).
+// verifies: REQ-QTE-10, REQ-ORD-20
+#[test]
+fn an_order_waiting_for_its_customers_acceptance_is_told_to_the_customer_and_the_operator() {
+    let shown = |digest: &str, valid_until: &str, at: usize| {
+        verified(
+            json!({
+                "call": "shown",
+                "order": "ord-w",
+                "shown": {"algorithm": "sha-256", "value": digest.repeat(32)},
+                "shown_as": "quote_without_firm_rate",
+                "awaiting": {
+                    "requester": ALICE,
+                    "valid_until": valid_until,
+                    "slow": [{"position": 1, "declared_seconds": 345_600}, {"position": 2}]
+                }
+            }),
+            &time(at),
+        )
+    };
+    let first = shown("a1", "2026-11-12T11:00:00Z", 1);
+    let again = shown("b2", "2026-11-12T12:00:00Z", 2);
+    let log = receipted(vec![first.clone()]);
+    held_to_the_log(&log, &unbuilt_refusals());
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut notices = notices();
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(0));
+
+    let mut alice = inbox(customer(ALICE), &key);
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 1);
+    assert_eq!(wire.to(&operator()).len(), 1);
+    assert_eq!(alice.take(&Ed25519, &told[0]), Ok(Taken::Event));
+    assert_eq!(alice.take(&Ed25519, &told[0]), Ok(Taken::Repeat));
+    let about = said(&told[0])["about"].clone();
+    assert_eq!(
+        about,
+        json!({
+            "about": "waiting",
+            "order": "ord-w",
+            "at": time(1),
+            "index": 0,
+            "quote": {"algorithm": "sha-256", "value": "a1".repeat(32)},
+            "valid_until": "2026-11-12T11:00:00Z",
+            "slow": [{"position": 1, "declared_seconds": 345_600}, {"position": 2}]
+        }),
+        "the digest, the validity and the slow places, and nothing of a provider or an amount"
+    );
+    // Nobody else is told; another party's inbox refuses it.
+    assert_eq!(
+        inbox(customer(BOB), &key).take(&Ed25519, &told[0]),
+        Err(NotTaken::ForAnother)
+    );
+
+    // The route asked again past the validity is another quote: told anew, and held as the one the order waits on.
+    let log = receipted(vec![first, again]);
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 2);
+    assert_eq!(alice.take(&Ed25519, &told[1]), Ok(Taken::Event));
+    let held = alice.waiting_on(&id("ord-w")).expect("it waits");
+    assert!(
+        matches!(held, About::Waiting { valid_until: Some(v), .. } if v.as_str() == "2026-11-12T12:00:00Z")
+    );
+}
+
+/// The waiting notice is kept in the ledger and summarised in the log as the order's are: a restart sends none the
+/// ledger shows delivered, a notice the transport didn't take is tried again by `retry`, and a restart after it sends
+/// nothing. An order the log shows accepted or refused since is told as waiting to no one (`REQ-ORD-20`).
+// verifies: REQ-QTE-10, REQ-ORD-20
+#[test]
+fn a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_order_waits() {
+    let waiting = |digest: &str| {
+        verified(
+            json!({
+                "call": "shown",
+                "order": "ord-w",
+                "shown": {"algorithm": "sha-256", "value": digest.repeat(32)},
+                "shown_as": "quote_without_firm_rate",
+                "awaiting": {
+                    "requester": ALICE,
+                    "valid_until": "2026-11-12T11:00:00Z",
+                    "slow": [{"position": 1}]
+                }
+            }),
+            &time(1),
+        )
+    };
+    let log = receipted(vec![waiting("a1")]);
+    let ledger = Kept::default();
+    let mut key = TestKey::new();
+
+    // The path is down: both are tried and kept, and `retry` delivers them once it is up.
+    let mut wire = Wire {
+        down: true,
+        ..Wire::default()
+    };
+    let mut notices = resuming(&ledger);
+    assert_eq!(notices.notify(&log, &mut key, &mut wire), Ok(2));
+    assert_eq!(notices.undelivered().len(), 2);
+    wire.down = false;
+    let retried = notices.retry(&mut wire);
+    assert_eq!((retried.delivered, retried.failed), (2, 0));
+    assert_eq!(wire.to(&customer(ALICE)).len(), 1);
+
+    // A restart over the same log and ledger sends nothing, and the summaries it owes are the log's to write.
+    let mut wire = Wire::default();
+    let mut restarted = resuming(&ledger);
+    assert_eq!(restarted.notify(&log, &mut key, &mut wire), Ok(0));
+    assert!(wire.sent.is_empty());
+
+    // A restart with no ledger, over a log that shows the order accepted since: nobody is told it waits.
+    let accepted = receipted(vec![waiting("a1"), acceptance("ord-w", ALICE)]);
+    let mut fresh = notices_fresh();
+    let mut wire = Wire::default();
+    assert_eq!(fresh.notify(&accepted, &mut key, &mut wire), Ok(0));
+    assert!(wire.sent.is_empty());
+
+    // One it shows refused since is told that it ended, once, and nothing of a wait; a restart with the ledger
+    // sends no more.
+    let refused = receipted(vec![
+        waiting("a1"),
+        verified(
+            json!({
+                "call": "order_refusal",
+                "request": "req-w",
+                "order": "ord-w",
+                "class": "no_route_right_now"
+            }),
+            &time(2),
+        ),
+    ]);
+    let ledger = Kept::default();
+    let (mut wire, mut ended) = (Wire::default(), resuming(&ledger));
+    assert_eq!(ended.notify(&refused, &mut key, &mut wire), Ok(2));
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 1);
+    assert_eq!(said(&told[0])["about"]["about"], "wait_ended");
+    let mut wire = Wire::default();
+    assert_eq!(
+        resuming(&ledger).notify(&refused, &mut key, &mut wire),
+        Ok(0)
+    );
+}
+
+fn notices_fresh() -> Notices {
+    notices()
+}
+
+/// A receiver holds the latest quote of an order by its place in the log, whatever order the notices come in, and
+/// holds none once the order started or its wait ended (`REQ-ORD-20`).
+// verifies: REQ-QTE-10, REQ-ORD-20
+#[test]
+fn an_inbox_holds_the_latest_waiting_quote_and_none_once_the_order_started_or_the_wait_ended() {
+    let shown = |digest: &str, at: usize| {
+        verified(
+            json!({
+                "call": "shown",
+                "order": "ord-w",
+                "shown": {"algorithm": "sha-256", "value": digest.repeat(32)},
+                "shown_as": "quote",
+                "awaiting": {"requester": ALICE, "slow": []}
+            }),
+            &time(at),
+        )
+    };
+    let mut key = TestKey::new();
+    let log = receipted(vec![shown("a1", 1), shown("b2", 2)]);
+    let mut wire = Wire::default();
+    assert_eq!(notices().notify(&log, &mut key, &mut wire), Ok(4));
+    let told = wire.to(&customer(ALICE));
+    assert_eq!(told.len(), 2);
+
+    // The newer arrives first: the older is no later one.
+    let mut alice = inbox(customer(ALICE), &key);
+    assert_eq!(alice.take(&Ed25519, &told[1]), Ok(Taken::Event));
+    assert_eq!(alice.take(&Ed25519, &told[0]), Ok(Taken::Earlier));
+    assert!(matches!(
+        alice.waiting_on(&id("ord-w")),
+        Some(About::Waiting { index: 1, .. })
+    ));
+
+    // The order starts: nothing is waited on, and a late notice of the wait doesn't bring it back.
+    let started = receipted(
+        std::iter::once(shown("a1", 1))
+            .chain(log_of(&[("ord-w", ALICE)]))
+            .collect(),
+    );
+    let mut wire = Wire::default();
+    let mut later = notices();
+    later
+        .notify(&started[..1], &mut key, &mut wire)
+        .expect("the wait");
+    later
+        .notify(&started, &mut key, &mut wire)
+        .expect("the order");
+    for bytes in wire.to(&customer(ALICE)) {
+        assert!(alice.take(&Ed25519, &bytes).is_ok());
+    }
+    assert_eq!(alice.waiting_on(&id("ord-w")), None);
+    assert_eq!(alice.take(&Ed25519, &told[1]), Ok(Taken::Earlier));
+    assert_eq!(alice.waiting_on(&id("ord-w")), None);
+}
