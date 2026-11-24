@@ -165,26 +165,16 @@ Readings taken without asking, each reversible; the owner's form overrules any o
 
 ### Gaps, each named for its owner
 
-- **Policy calls answered beside the engine** (`PolicySide`; review of `712c3fb`, 1): charges (`T-021-05`) and
-  questions about people (`T-021-07`) are each decided as the engine decides a call: its
-  own fixed rules (`core-authz`'s `Fixed`, the register of actors and the roles' rule among them) over the same
-  records, then the deployment's policy, which `Core::refuse` reaches. The answer alone is the stand-in's: an
-  authorisation recorded as the consultation's answer; a charge within a bound no scenario reaches where permitted,
-  over a bound of 0 where not, so `AC-18`'s shared limit can't be shown on it; a question about a person refused
-  where refused and otherwise not known. Authorisations were answered so too until `T-021-04` built them on the
-  engine; its merge dropped that `impl` for the engine's, and gave the assembly's policy handle the read of
-  `CoreLog` the engine's register needs (`F-021`'s notes). Each that remains still writes its answer outside the
-  engine's `consult`, which the
-  entry-point scan over Core's three crates can't see, so `T-025-05` should review them until each row builds its
-  call on the engine; dropping one is deleting its `impl` and forwarding to the engine, as `Decisions` does.
+- **Policy calls answered by the engine (was: beside it; corrected by `T-024-24`).** Every call of policy's handle
+  (`PolicySide`, in `assembly/policy.rs`) forwards to the engine: decisions, sessions, reads, authorisations
+  (`T-021-04`), charges (`T-021-05`), a stuck order's steps and a move's outcome (`T-021-06`), declines (`T-024-19`)
+  and questions about people (`T-021-07`). The engine decides each through its one consultation, its fixed rules first
+  and then the deployment's policy, and records it on policy's handle before it answers. No stand-in answers a
+  policy call any more; the earlier gap (review of `712c3fb`, 1) closed row by row as each built its call on the
+  engine, and this note stood until the milestone review of 2026-11-24 found it stale.
 - **Promotion.** Nothing in the assembly calls `Segments::promote`, so no scenario of this row promotes a staged
   release through a decided catalogue change; the path is `T-021-03`'s rule and `T-020-08`'s call, which `T-024-07`'s
   upgrade scenario (`AC-19`) first runs here.
-- **For `T-025-05`: the stand-ins' consultation is a copy.** `PolicySide::consult` and `verdict`
-  (`assembly/policy.rs`) copy the engine's `Engine::consult` and `verdict` (`core-authz`'s `engine/mod.rs`), which
-  are crate-private there. Until each stand-in goes, they must be checked against the engine's on every change to
-  it: the order of the fixed rules and the deployment's policy, a refusal beating not known, and each reply's
-  answer.
 - **For `T-025-05`: the log's skew checks can't trip here.** The log, policy and Core read one clock, so an effect
   or an advertisement is never dated outside the log's skew of its own clock; the rows that hold those rules are
   tested in `core-audit`'s own tests, not by the assembly.
@@ -1786,3 +1776,92 @@ Waves 33 to 36 (`T-020-39` to `T-020-43`, `T-021-11` to `T-021-13`, `T-022-09`, 
 - **After review of the plan change (PR #243):** `T-024-20`'s VOS half goes in
   `components/stm/vos-program/scenarios/tests/secrets.rs`, the target `stm-vos.yml` already runs, on the push of `m3`
   (`m*`), so no workflow (a `DEC-20` path) is edited; the reference host's half is in `secrets_scan.rs`.
+
+## T-024-24: the records and tests the milestone review found claiming more than they check
+
+The Lows of `M3`'s milestone review of 2026-11-24 (PR #143), one by one.
+
+1. **Three tests that claimed more than they checked.**
+   - `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` (`core-orch/tests/arrival.rs`) now
+     reads the reserve's book. The test's `Reserve` double keeps one on request (`book`, the holder's account at the
+     reserve, set to the deposit's 1 000): at the wait's start, while it stands and after it ends (both ways it ends)
+     the test asserts the balance, asks the reserve to verify 1 000 (it answers sufficient) and 1 001 (it doesn't), and
+     the answers follow the book. The limit is plain: nothing Core can do in this harness debits the book (every
+     question it asks a provider is a verification or a dry run), so the read pins the double and the log together and
+     would go red on a harness that let a move reach the book, not on Core alone.
+   - `statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution` (`scenarios/tests/stuck.rs`) gave the
+     order one route, which the review saw. **Not fixed as the row asks; renamed instead**
+     (`statement_by_a_provider_of_the_orders_one_route_backs_a_resolution`, `PLAN.md`'s `T-020-40` row and the doc comment
+     with it) so it claims what it checks. Giving the order a second route that leaves its first deposit's provider off
+     it needs a recalculated route to the same destination through another provider, and the kit's routes are two
+     segments from one reserve to the destination's own: a second route ends at the same destination reserve, so a
+     provider only on the first would have to be a ramp or an exchange of a longer first route, which the kit's
+     `chosen_route` and `route_end` (two tuples, one pair of ends per thread) can't build. A world with a three-segment
+     first route (the `sim-join` group's, `AC-1`) and the kit's ends read from its route is the work; owner: the next
+     row that edits the kit, or the lead. The test's claim about "an earlier route" stays unverified until then.
+   - The source-text scan `the_assembly_no_longer_checks_charges_itself` (`scenarios/tests/charge_check.rs`) is tagged
+     `REQ-QTE-5`, not `AC-14`: it is no scenario, and `AC-14` has scenarios of its own that call Core's check.
+2. **`AC-*` rows need a scenario.** The evidence table counts, for an `M3` row of the `AC` family, only tagged tests under
+   `conformance/scenarios/tests/`; where tests are tagged and none is there, the row is `unverified` with the finding
+   `ac-without-scenario`. Every `AC` row of the scope file has one at this commit (checked from the sources: 41 `M3`
+   rows). Test: `acceptance_criterion_verified_only_by_a_test_outside_the_scenarios_is_not_met`.
+3. **`plan-names`** (`tools/records`): `cargo run -p rutent-records --bin plan-names [--strict] [--through-wave N]`. A
+   test is named in a task row's `Tests` cell as a backticked phrase of two words or more outside brackets and
+   parentheses; its function is the phrase in lower case, apostrophes dropped, other runs of characters made one
+   underscore. Rows of a feature of `M1` to `M3` are held to the code's test functions (any `.rs` file but `target/`'s).
+   Report mode prints the drift and exits 0; strict exits 1; `--through-wave N` holds only rows of waves up to `N`, so a
+   row another branch is writing isn't read as drift. The summary line counts the named tests and their rows, so the
+   count the review could not re-derive (`533/533`) is derived on each run and stated nowhere.
+   - **Drift found, ten names, each fixed in `PLAN.md`** (the code was right or the plan's name was a paraphrase):
+     `T-020-07` (`..._is_flagged_to_the_operator`, the test is `..._is_flagged`), `T-020-32` (the test has no "about the
+     order"), `T-020-39` (`roll back is refused while no rule answers it`: `T-021-12` gave `roll_back` its own permission,
+     so the rule is gone and the test is `roll back without its permission is refused`, tagged `REQ-AUZ-6`),
+     `T-022-09` (three names without their leading "a"), `T-010-01` (a CI step, named as such and not as a test), `T-024-10` (a run of the evidence table, likewise),
+     `T-010-06` (the one name of the G-54 test stood for four, now named; and `store's memory`, the test says
+     `store memory`). Also `T-020-40`'s name, above.
+   - **Strict at the exit.** `T-024-10`'s third run is `plan-names --strict` over every row of `M1` to `M3`. At this commit,
+     with `--through-wave 38`, it reports nothing; without it, it reports the names of rows the other branches of wave 39
+     and later are writing (`T-013-10`, `T-013-11`, `T-016-05`, `T-020-45` to `T-020-54`, `T-021-15`, `T-021-16`,
+     `T-022-11`, `T-023-04`, `T-024-21` to `T-024-23`), which each of those rows must make true when it lands. The records
+     test `every_test_the_plan_names_is_a_test_of_the_workspace` holds wave 38 and earlier to it at every push.
+   - The records workflow (`.github/workflows/records.yml`) is not edited: the check runs through the records test, and
+     `T-024-10` runs it strictly. Turning it into a CI step of its own is a `DEC-20` edit this row did not need.
+4. **F-024's stale stand-in notes.** "Policy calls answered beside the engine" and "the stand-ins' consultation is a copy"
+   are replaced above: every call of `PolicySide` forwards to the engine. `conformance/scenarios/src/lib.rs`'s crate doc
+   said the same and is corrected.
+5. **The documentation lint covers the sub-workspaces.** `.github/workflows/ci.yml` gains two steps, after the plain
+   wallet's lint (`Documentation check, module guests`, `Documentation check, plain wallet guest`), each running
+   `cargo doc --no-deps` with `RUSTDOCFLAGS: -D warnings` over the invocations the lint steps use; `stm-vos.yml` gains one
+   (the VOS program, built for VOS's guest target as `build.sh` builds it, and the client's workspace, with the
+   scenarios, their host server and its wire). Both edits are `DEC-20` paths: allowed on `m3`, the owner's click at the
+   release into `main`. The new lint found one broken link in the module guests (`sim/src/lib.rs`, a link to a type the
+   crate root doesn't import), now plain code. A records test, `documentation_lint_covers_every_sub_workspace`, finds every
+   directory with a `[workspace]` of its own (not `experiments/`, not a root `exclude`, which is a fixture) and requires a
+   workflow step that runs `cargo doc`, denies warnings and names the directory. **Not run here:** the VOS step's two
+   commands need VOS's checkout, so they are CI-only and unseen; `stm-vos.yml` runs on pushes of `m*` and `develop`, not
+   of this branch, so the first run is at the merge into `m3`. Owner: whoever merges this row, who reads that run, and
+   fixes a rustdoc warning in the VOS crates there if one shows.
+
+**Defaults taken.** The names check reads two-word phrases only (a one-word backtick is a path, a type or an id). A row in
+no wave is held to the code. `--through-wave` is a report-mode aid; the exit's strict run omits it. The VOS doc step is in
+the VOS workflow, with its sources, not the ci job.
+
+**Rule-off table.** Each rule switched off once, the test that went red (all on assertions):
+
+| Rule off | Red |
+| --- | --- |
+| a name's apostrophes kept | `a_name_is_snake_cased_with_its_apostrophes_dropped`, `every_test_the_plan_names_is_a_test_of_the_workspace` |
+| a row of a later milestone held to the code | `a_row_of_a_later_milestone_names_no_test_the_workspace_needs` |
+| the wave limit | `a_row_after_the_given_wave_is_left_out`, `every_test_the_plan_names_is_a_test_of_the_workspace` |
+| a phrase in brackets or parentheses read as a name | `only_a_phrase_outside_brackets_and_parentheses_is_a_named_test` |
+| an `AC` row's verifier need not be a scenario | `acceptance_criterion_verified_only_by_a_test_outside_the_scenarios_is_not_met` |
+| a doc step need not deny warnings | `a_step_that_names_the_directory_but_does_not_document_or_deny_warnings_covers_nothing` |
+| a directory need not be named as a whole path | the same |
+| the module guests' and wallet's doc steps absent (before they were written) | `documentation_lint_covers_every_sub_workspace` |
+| the plan's nine drifted names (before they were fixed) | `every_test_the_plan_names_is_a_test_of_the_workspace` |
+| the reserve's book at another figure than the deposit | `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder` |
+
+Seen red before their code: the names check's fixtures (against a stub that reported nothing), the real-plan test (nine
+findings, above) and the lint's real-repository test (four sub-workspaces uncovered). Not seen red before their code:
+the `AC` test (its code was written beside it; the rule-off row is its red) and the arrival test's book reads (the rule-off
+row is its red).

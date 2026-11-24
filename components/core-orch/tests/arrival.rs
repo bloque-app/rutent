@@ -76,6 +76,10 @@ struct Reserve {
     verifications: Vec<Value>,
     /// The maker its answers to them name, where another provider's than the reserve's: a relay's copy.
     speaks_as: Option<&'static str>,
+    /// What the reserve's book holds for the holder's account, where a test keeps one: its answers to balance
+    /// verifications follow it, and only a move out of it changes it. `None` keeps no book, and every verification
+    /// is answered by `insufficient` alone.
+    book: Option<u64>,
 }
 
 impl Reserve {
@@ -86,7 +90,37 @@ impl Reserve {
             silent: false,
             verifications: Vec::new(),
             speaks_as: None,
+            book: None,
         }
+    }
+
+    /// The reserve's book of the holder's account: what it holds for it, which Core can read only by asking.
+    fn balance(&self) -> u64 {
+        self.book.expect("the test keeps a book")
+    }
+
+    /// What the reserve answers a verification that the holder's account holds `units`, as Core is answered: its
+    /// signed answer read for its `sufficient`.
+    fn confirms(&mut self, units: u64) -> bool {
+        let question = json!({ "statement": {
+            "kind": "balance_verification",
+            "transaction": format!("read-the-book-of-{units}"),
+            "amount": units.to_string(),
+            "session": SESSION,
+            "account": ACCOUNT,
+        } });
+        let bytes = self
+            .ask(&id(RESERVE), &serde_json::to_vec(&question).unwrap())
+            .expect("the reserve answers");
+        let answer: Value = serde_json::from_slice(&bytes).unwrap();
+        answer["statement"]["outcome"]["sufficient"]
+            .as_bool()
+            .unwrap()
+    }
+
+    /// Whether the reserve's book covers `amount`, as it answers a balance verification (without a book, always).
+    fn covers(&self, amount: u64) -> bool {
+        self.book.is_none_or(|held| amount <= held)
     }
 
     /// How many questions any provider was asked.
@@ -110,7 +144,11 @@ impl Providers for Reserve {
         let body = json!({
             "kind": "balance_verification",
             "transaction": operation["transaction"],
-            "outcome": { "status": "answered", "sufficient": !self.insufficient },
+            "outcome": {
+                "status": "answered",
+                "sufficient": !self.insufficient
+                    && self.covers(operation["amount"].as_str().unwrap().parse().unwrap()),
+            },
         });
         let maker = self.speaks_as.unwrap_or(provider.as_str());
         let answer = envelope(&deployment(), RESULT_SHAPE, maker, now, body);
@@ -3225,7 +3263,8 @@ fn customers_acceptance_of_the_slow_route_starts_it() {
 
 /// While the filed order waits nothing is authorised to move: no effect, no start, no exposure, and the reserve was
 /// asked nothing that moves value. The funds stay in the holder's account at the reserve, whatever comes of the wait:
-/// its session ending ends the order and moves nothing either (`GUA-1`).
+/// its session ending ends the order and moves nothing either (`GUA-1`). The reserve's book is read at each step, by
+/// its balance and by the answers it gives Core's verifications of the amount and of one unit more.
 // verifies: GUA-1
 #[test]
 fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder() {
@@ -3233,6 +3272,8 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
     for customer_accepts in [false, true] {
         let mut env = crate::env();
         let mut providers = Reserve::new(&env);
+        // The deposit credits the holder's account at the reserve; the book is the reserve's own.
+        providers.book = Some(1000);
         let mut arrivals = Arrivals::new();
         slow(&mut env, 4 * 86_400);
         let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
@@ -3259,8 +3300,20 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
                 })
                 .count()
         };
+        // The reserve's book: the holder's 1 000 are there, all of them and no more, and what Core asked of it
+        // took none (the questions it was asked are verifications, which a book answers and does not change).
+        let book = |providers: &mut Reserve, when: &str| {
+            assert_eq!(
+                providers.balance(),
+                1000,
+                "{when}: the funds stay with the holder"
+            );
+            assert!(providers.confirms(1000), "{when}: all of it is there");
+            assert!(!providers.confirms(1001), "{when}: and no more than it");
+        };
         assert_eq!(moved(&env), 0);
         assert_eq!(env.exposures.held().count(), 0, "nothing held in flight");
+        book(&mut providers, "filed, waiting");
 
         // Waiting, the filing is told it waits as long as its session is open.
         env.clock.set(START + 300);
@@ -3272,6 +3325,7 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
             }
         ));
         assert_eq!(moved(&env), 0);
+        book(&mut providers, "waiting still");
 
         // Its session over, the wait ends the order, recorded, and still nothing moved: a customer accepting then
         // is told it ended, and no acceptance is recorded.
@@ -3296,6 +3350,7 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
         assert!(ended_in_the_log(&env, &order));
         assert!(env.acceptances().is_empty());
         assert_eq!(moved(&env), 0);
+        book(&mut providers, "ended");
         assert_eq!(env.exposures.held().count(), 0);
         assert_admitted(&env);
     }

@@ -14,9 +14,8 @@
 //! - [`secrets`]: `T-025-03`'s scan for a credential, a secret and a module's state in what a run leaves.
 //! - [`sim`]: the simulated providers' platform side (`T-024-01`).
 //!
-//! The policy calls whose rows haven't built them on the engine yet (authorisations, charges, questions about
-//! people) are answered beside it on policy's handle, the engine's own ([`assembly::policy::PolicySide`]): the handle
-//! the engine holds is still the only policy handle.
+//! Every policy call is answered by the engine, through [`assembly::policy::PolicySide`], which forwards each to it:
+//! the handle the engine holds is the only policy handle.
 //!
 //! **Nothing outside this crate reaches the log but to read it.** The assembled Core hands out the log behind a
 //! shared borrow ([`assembly::Core::log`]), policy's sources with their records private

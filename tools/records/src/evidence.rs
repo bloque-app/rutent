@@ -29,6 +29,9 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The prefixes of the identifiers the table covers.
+/// Where a scenario's test lives: the only place an acceptance criterion's verifier may be (`DEC-18`).
+const SCENARIO_TESTS: &str = "conformance/scenarios/tests/";
+
 const FAMILIES: [&str; 5] = ["REQ-", "INV-", "AC-", "NFR-", "GUA-"];
 
 /// The checks a row verified by inspection may name: the documentation, boundary and licence checks.
@@ -526,7 +529,7 @@ fn string_array(text: &str) -> Option<Vec<String>> {
 /// excludes nothing. An `exclude` the reader cannot fully parse (the inline form `workspace = { .. }`, a dotted
 /// key, a value that is not an array of single-line strings) is an error, never "nothing excluded": a crate wrongly
 /// counted as run would vouch for tests the root run never reaches.
-fn excluded_dirs(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+pub(crate) fn excluded_dirs(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     let text = match std::fs::read_to_string(root.join("Cargo.toml")) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -829,6 +832,31 @@ fn m3_line(
         .iter()
         .filter(|t| t.tag.as_ref().is_some_and(|tag| tag.contains(&row.id)))
         .collect();
+    // An acceptance criterion is a statement about the assembled system, so its verifier is a scenario (`DEC-18`):
+    // a test of `conformance/scenarios/tests/`, whatever else is tagged with it.
+    let tagged_all = tagged.len();
+    let tagged: Vec<&TestCase> = if row.id.starts_with("AC-") {
+        tagged
+            .into_iter()
+            .filter(|t| t.file.starts_with(SCENARIO_TESTS))
+            .collect()
+    } else {
+        tagged
+    };
+    if tagged.is_empty() && tagged_all > 0 {
+        out.push(finding(
+            "ac-without-scenario",
+            location.to_string(),
+            format!(
+                "{} is an acceptance criterion and its {tagged_all} tagged test(s) are none of a scenario (`{SCENARIO_TESTS}`)",
+                row.id
+            ),
+        ));
+        return (
+            "unverified".into(),
+            format!("no scenario among {tagged_all} tagged tests"),
+        );
+    }
     if tagged.is_empty() {
         out.push(finding(
             "no-tagged-test",

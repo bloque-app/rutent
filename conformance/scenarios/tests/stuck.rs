@@ -4424,13 +4424,15 @@ fn stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_re
     assert!(admitted.is_ok(), "{admitted:?}");
 }
 
-/// A statement by a provider on an earlier route of the order backs a resolution (`confirmer-evidence-party`,
-/// `T-020-40`): the order's route ran through two reserves of two parties, its deposit's provider's route was left by
-/// the recalculation that found no other, and that provider's word confirms the move the withdrawal's reported, on
-/// which the part resolves. The log admits every entry.
+/// A statement by a provider of the order's one route backs a resolution (`confirmer-evidence-party`, `T-020-40`):
+/// the order was given one route, through two reserves of two parties, and left it when the recalculation found no
+/// other; the deposit's provider, whose segment was never handed over, is still a party to the order, and its word
+/// confirms the move the withdrawal's reported, on which the part resolves. The log admits every entry. The order has
+/// no second route here: the kit's routes are two segments to the one destination, so no provider of a first route is
+/// left off a second (`F-024`'s notes, `T-024-24`).
 // verifies: REQ-AUZ-4, REQ-ORD-1
 #[test]
-fn statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution() {
+fn statement_by_a_provider_of_the_orders_one_route_backs_a_resolution() {
     let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
     let (world, mut core, mut stuck) = stuck_by_no_route();
     assert_ne!(

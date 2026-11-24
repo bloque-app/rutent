@@ -1,11 +1,15 @@
 //! Checks over the project's records: the tag check (`DEC-21`), the plan check (`PLAN.md` §5) and the
 //! requirement-to-evidence table (`T-024-09`).
 //!
-//! Both read plain text with `std` alone. They share one reading of which identifiers the documents define, so
+//! The names check (`T-024-24`) holds the tests the plan names to the tests the code has.
+//!
+//! All read plain text with `std` alone. They share one reading of which identifiers the documents define, so
 //! a test tag and a task row are held to the same list.
 
 pub mod evidence;
 pub mod ids;
+pub mod lints;
+pub mod names;
 pub mod plan;
 mod table;
 pub mod tags;

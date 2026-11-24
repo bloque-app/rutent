@@ -201,6 +201,31 @@ jobs:
         run: cargo doc --workspace --no-deps --features rutent-conformance/signing
         env:
           RUSTDOCFLAGS: -D warnings
+      # The documentation lint covers the workspaces of their own too (`T-024-24`, NFR-7): the step above never sees them,
+      # so each has a step naming its directory, which `rutent-records`' test `documentation_lint_covers_every_sub_workspace`
+      # holds to every sub-workspace of the repository. The VOS program's and its client's are in `stm-vos.yml`, whose
+      # job has VOS's sources. This edit is a DEC-20 path, allowed on m3 with the owner's click at the release into main.
+      - name: Documentation check, module guests
+        run: |
+          cargo doc --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-guests --no-deps
+          cargo doc --manifest-path components/prov/module-guests/Cargo.toml -p rutent-wasm-standin -p rutent-wasm-role-standin \
+            --target wasm32-unknown-unknown --features rutent-wasm-standin/sandboxed,rutent-wasm-standin/reserve,rutent-wasm-role-standin/reserve --no-deps
+          for role in reserve exchange ramp verifier; do
+            cargo doc --manifest-path components/prov/module-guests/Cargo.toml -p rutent-sim-provider \
+              --target wasm32-unknown-unknown --features "sandboxed,$role" --no-deps
+          done
+          cargo doc --manifest-path components/prov/module-guests/Cargo.toml -p rutent-sim-provider \
+            --target wasm32-unknown-unknown --features outside --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Documentation check, plain wallet guest
+        run: |
+          cargo doc --manifest-path components/prov/guests/plain-wallet/Cargo.toml --target wasm32-unknown-unknown \
+            --features sandboxed --no-deps
+          cargo doc --manifest-path components/prov/guests/plain-wallet/Cargo.toml --target wasm32-unknown-unknown \
+            --features outside --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       # EXP-1's purpose-built store (T-007-02) is behind a feature, off by default, so the steps above don't build
       # it. These build, lint, document and test it with the feature on, real-kill and torn-tail tests included.
       - name: Lint, purpose-built store
