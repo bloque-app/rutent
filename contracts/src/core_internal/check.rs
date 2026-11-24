@@ -76,7 +76,7 @@ impl Action {
             advertising_keys,
             statement_key,
             setting,
-            ..
+            provider,
         } = self
         {
             if change.is_about_a_release() != version.is_some() {
@@ -112,6 +112,15 @@ impl Action {
             // An operator's setting names itself and its value, and nothing of a release or a tuple (`T-020-45`).
             if change.is_a_setting() != setting.is_some() {
                 broke("a catalogue change names an operator's setting exactly when it sets one")?;
+            }
+            // A setting about a provider (a tuple's, or a provider's ceiling) names that provider, so policy and the
+            // log hold it against the provider whose value it sets (the review of `1bb5f4cb`).
+            if setting
+                .as_ref()
+                .and_then(|s| s.provider())
+                .is_some_and(|p| p != provider)
+            {
+                broke("an operator's setting about a provider names that provider")?;
             }
         }
         Ok(())

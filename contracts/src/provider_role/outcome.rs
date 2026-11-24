@@ -10,7 +10,7 @@ use super::envelope::{
     ContextMismatch, Deployment, JUDGEMENT_SHAPE, ProtocolVersions, RESULT_SHAPE,
     REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Statement, StatementShape,
 };
-use super::operation::{HoldRequest, StatusQuery};
+use super::operation::Operation;
 use super::stated::{Hold, TupleTerms};
 use super::types::{EvidenceGrade, SafeInteger};
 use super::validate::made_after;
@@ -812,27 +812,41 @@ pub enum StatusMismatch {
     CarriesAnotherTransactionsResult,
     /// The result it carries is a status answer or a hold, not a result of the transaction's own operation.
     CarriesNoOperationsResult,
+    /// It was made by another provider than the one asked (the review of `1bb5f4cb`, as `check_answer`'s
+    /// `OfAnotherReserve`).
+    AnsweredByAnotherProvider,
+    /// The question isn't a status question, or the answer isn't a status answer.
+    NotAStatusQuestion,
 }
 
-/// Holds a status answer to the question it answers (`REQ-ORD-1`): the question's transaction, the transaction asked
-/// about, and, where it answers, a result of that transaction's own operation. The carried result's maker and context
-/// are the answer's ([`Statement::check_context`]).
+/// Holds a status answer to the question it answers (`REQ-ORD-1`): both signed statements, so the answer is the
+/// provider asked's own; the question's transaction, the transaction asked about, and, where it answers, a result of
+/// that transaction's own operation. The carried result's maker and context are the answer's
+/// ([`Statement::check_context`]).
 pub fn check_status_answer(
-    question: &StatusQuery,
-    answer: &StatusQueryResult,
+    question: &Statement<Operation>,
+    answer: &Statement<ResultBody>,
 ) -> Result<(), Vec<StatusMismatch>> {
+    let (Operation::StatusQuery(asked), ResultBody::StatusQuery(answered)) =
+        (&question.statement, &answer.statement)
+    else {
+        return Err(alloc::vec![StatusMismatch::NotAStatusQuestion]);
+    };
     let mut out = Vec::new();
-    if answer.transaction != question.transaction {
+    if answer.maker != asked.provider {
+        out.push(StatusMismatch::AnsweredByAnotherProvider);
+    }
+    if answered.transaction != asked.transaction {
         out.push(StatusMismatch::AnswersAnotherQuestion);
     }
-    if answer.about != question.about {
+    if answered.about != asked.about {
         out.push(StatusMismatch::AboutAnotherTransaction);
     }
-    if let StatusOutcome::Answered(answered) = &answer.outcome {
-        let result = &answered.result.statement;
+    if let StatusOutcome::Answered(carried) = &answered.outcome {
+        let result = &carried.result.statement;
         if matches!(result, ResultBody::StatusQuery(_) | ResultBody::Hold(_)) {
             out.push(StatusMismatch::CarriesNoOperationsResult);
-        } else if result.transaction() != Some(question.about.as_str()) {
+        } else if result.transaction() != Some(asked.about.as_str()) {
             out.push(StatusMismatch::CarriesAnotherTransactionsResult);
         }
     }
@@ -848,34 +862,48 @@ pub enum HoldMismatch {
     HoldsAnotherQuote,
     /// The hold it carries holds past the validity asked, or names a validity that can't be ordered.
     PastTheValidityAsked,
+    /// It was made by another reserve than the one asked (the review of `1bb5f4cb`, as `check_answer`'s
+    /// `OfAnotherReserve`).
+    OfAnotherReserve,
+    /// The request isn't a hold request, or the answer isn't a hold answer.
+    NotAHoldRequest,
 }
 
-/// Holds a reserve's answer to the hold request it answers (`REQ-QTE-15`): its transaction, and, where it holds, a
-/// hold under that transaction of exactly the record, candidate and order or session asked, valid no later than asked.
-/// The hold's maker and context are the answer's ([`Statement::check_context`]).
+/// Holds a reserve's answer to the hold request it answers (`REQ-QTE-15`): both signed statements, so the answer is
+/// the reserve asked's own; its transaction, and, where it holds, a hold under that transaction of exactly the record,
+/// candidate and order or session asked, valid no later than asked. The hold's maker and context are the answer's
+/// ([`Statement::check_context`]).
 pub fn check_hold_answer(
-    request: &HoldRequest,
-    answer: &HoldResult,
+    request: &Statement<Operation>,
+    answer: &Statement<ResultBody>,
 ) -> Result<(), Vec<HoldMismatch>> {
+    let (Operation::Hold(asked), ResultBody::Hold(answered)) =
+        (&request.statement, &answer.statement)
+    else {
+        return Err(alloc::vec![HoldMismatch::NotAHoldRequest]);
+    };
     let mut out = Vec::new();
-    let held = match &answer.outcome {
+    if answer.maker != asked.provider {
+        out.push(HoldMismatch::OfAnotherReserve);
+    }
+    let held = match &answered.outcome {
         HoldOutcome::Held(held) => Some(&held.hold.statement),
         HoldOutcome::Refused(_) => None,
     };
-    if answer.transaction != request.transaction
-        || held.is_some_and(|h| h.transaction != request.transaction)
+    if answered.transaction != asked.transaction
+        || held.is_some_and(|h| h.transaction != asked.transaction)
     {
         out.push(HoldMismatch::AnswersAnotherRequest);
     }
     if let Some(hold) = held {
-        if hold.record != request.record
-            || hold.candidate != request.candidate
-            || hold.held_for != request.held_for
+        if hold.record != asked.record
+            || hold.candidate != asked.candidate
+            || hold.held_for != asked.held_for
         {
             out.push(HoldMismatch::HoldsAnotherQuote);
         }
-        if hold.valid_until != request.valid_until
-            && !made_after(&request.valid_until, &hold.valid_until)
+        if hold.valid_until != asked.valid_until
+            && !made_after(&asked.valid_until, &hold.valid_until)
         {
             out.push(HoldMismatch::PastTheValidityAsked);
         }

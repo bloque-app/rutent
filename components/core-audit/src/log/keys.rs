@@ -373,7 +373,7 @@ impl Register {
             }) if what.statement.as_str() == ADVERTISEMENT_SHAPE => {
                 if let Some(bytes) = kept {
                     // A refused advertisement changes nothing.
-                    let _ = self.join(settings, history, bytes, received_at.unix_nanos());
+                    let _ = self.join(settings, history, bytes, received_at);
                 }
             }
             _ => {}
@@ -488,27 +488,28 @@ impl Register {
             })
     }
 
-    /// Accepts the advertisement `received`, recorded at `at`, or says nothing about why not: a refusal changes
+    /// Accepts the advertisement `received`, received at `received_at`, or says nothing about why not: a refusal changes
     /// nothing.
     fn join(
         &mut self,
         settings: &Settings,
         history: &History,
         received: &[u8],
-        at: i128,
+        received_at: &rutent_contracts::router_api::Timestamp,
     ) -> Option<()> {
+        let at = received_at.unix_nanos();
         let statement: Statement<Advertisement> = serde_json::from_slice(received).ok()?;
         canonicalize(received).ok()?;
         statement.check_shape().ok()?;
         statement
-            // One version in force, the deployment's, so the time a statement is judged at isn't read (provider-role
-            // 4.0.0); its own `made_at` stands in.
+            // Judged at the time the log received it, never the maker's own `made_at`, so a statement can't be dated
+            // back past a cutover (provider-role 4.0.0; one version in force here).
             .check_context(
                 &settings.deployment,
                 &rutent_contracts::provider_role::ProtocolVersions::only(
                     settings.protocol_version.as_str(),
                 ),
-                &statement.made_at,
+                received_at.as_str(),
             )
             .ok()?;
         validate_statement(&statement).ok()?;

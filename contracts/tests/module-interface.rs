@@ -17,6 +17,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// When the test takes a fixture's statement: its own time, never the statement's `made_at` (provider-role 4.0.0).
+const TAKEN_AT: &str = "2026-11-06T15:04:05Z";
+
 /// Every schema the contract's shapes reach, by contract and name; each is registered by its `$id`,
 /// `urn:rutent:<contract>:<name>`. The provider-role schemas are referred to, never copied.
 const SCHEMAS: [(&str, &str); 21] = [
@@ -840,7 +843,7 @@ fn signed_result_members_hold(bundle: &SignedResult) -> Result<(), String> {
         .check_context(
             &bundle.result.deployment,
             &provider_role::ProtocolVersions::only(bundle.result.protocol_version.clone()),
-            &bundle.result.made_at,
+            TAKEN_AT,
         )
         .map_err(|e| format!("result: {e:?}"))
 }

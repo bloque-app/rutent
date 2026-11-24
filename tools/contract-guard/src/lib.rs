@@ -422,20 +422,26 @@ fn lock_moves(base: Option<&str>, head: Option<&str>) -> LockMoves {
     moves
 }
 
-/// Bullets present in the head changelog but not the base one.
-/// A protocol change says whether a party may ignore it (`REQ-PRT-2`): `Ignorable: yes` or `Ignorable: no`, exactly one,
-/// and `Ignorable: no` wherever it says `Adds a protection`. `Err` is the sentence that says why not.
+/// A protocol change says whether a party may ignore it (`REQ-PRT-2`): the marker `Ignorable:` followed by the whole
+/// word `yes` or `no`, exactly once, so `Ignorable: none` or `Ignorable: not sure` says neither; and `Ignorable: no`
+/// wherever it says it adds a protection, read whatever its case. `Err` is the sentence that says why not.
 fn check_ignorable(bullet: &str) -> Result<(), String> {
     let first = bullet.lines().next().unwrap_or(bullet);
-    let flat = bullet.split_whitespace().collect::<Vec<_>>().join(" ");
-    let yes = flat.contains("Ignorable: yes");
-    let no = flat.contains("Ignorable: no");
-    if yes == no {
+    let words: Vec<&str> = bullet.split_whitespace().collect();
+    let said: Vec<&str> = words
+        .windows(2)
+        .filter(|pair| pair[0] == "Ignorable:")
+        .map(|pair| pair[1].trim_end_matches(['.', ',', ';', ')']))
+        .collect();
+    let yes = said.iter().filter(|w| **w == "yes").count();
+    let no = said.iter().filter(|w| **w == "no").count();
+    if yes + no != 1 || said.len() != 1 {
         return Err(format!(
             "protocol changelog entry says neither or both of `Ignorable: yes` and `Ignorable: no` (REQ-PRT-2): {first}"
         ));
     }
-    if yes && flat.contains("Adds a protection") {
+    let flat = words.join(" ").to_lowercase();
+    if yes == 1 && flat.contains("adds a protection") {
         return Err(format!(
             "protocol changelog entry adds a protection but says a party may ignore it (REQ-PRT-2): {first}"
         ));
@@ -460,6 +466,7 @@ fn new_protocol_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Bullets present in the head changelog but not the base one.
 fn new_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
     let before = base.map(all_bullets).unwrap_or_default();
     head.map(all_bullets)

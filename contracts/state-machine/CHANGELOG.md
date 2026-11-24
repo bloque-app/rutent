@@ -1,6 +1,10 @@
 # state-machine changelog
 
 ## 3.0.0
+- Following provider-role 4.0.0 (`T-020-45`, finding 9 of `M3`'s milestone review of 2026-11-24): this contract's
+  schemas name provider-role's URNs (`order.schema.json`'s nodes and amounts) and its Rust re-exports provider-role's
+  `NodeRef`, so its shapes change with provider-role's major, in this unreleased major. No shape, type or rule of its
+  own changed. (DEC-4, DEC-20, T-020-45)
 - Folded into 3.0.0 before its release: a hand-on taken back, and an open part's start undone (`T-020-01`'s
   reviews since landing). A new observed kind, `hand_on_taken_back {linked_order}`, about one part, takes back a
   hand-on whose linked order was refused and never opened (`after_hand_on_taken_back`): the part waits for the

@@ -5300,9 +5300,6 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
     })
 }
 
-/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
-/// stated entry of `history` under that commitment (`arrival-names-its-notice`, which holds it to provider-role's
-/// arrival notice before any arrival citing it is admitted, so the shape isn't read again here).
 /// Whether `history` holds the end of `order`'s wait for its customer, unaccepted (`T-020-45`).
 fn wait_ended(order: &Id, history: &History) -> bool {
     history.iter().any(|(_, e)| {
@@ -5310,6 +5307,9 @@ fn wait_ended(order: &Id, history: &History) -> bool {
     })
 }
 
+/// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
+/// stated entry of `history` under that commitment (`arrival-names-its-notice`, which holds it to provider-role's
+/// arrival notice before any arrival citing it is admitted, so the shape isn't read again here).
 fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
     let What::Arrival {
         notice: Some(notice),

@@ -958,6 +958,9 @@ fn changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard(
         "- A status question. (DEC-4, T-020-45)",
         "- A status question, which a party may ignore. (DEC-4, T-020-45)",
         "- A status question. Ignorable: yes. Ignorable: no. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: none. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: not sure. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: no. Ignorable: no. (DEC-4, T-020-45)",
     ] {
         let violations = protocol_change(entry);
         assert!(
@@ -1004,6 +1007,15 @@ fn change_adding_a_protection_marked_ignorable_fails_the_contract_guard() {
             .iter()
             .any(|v| v.subject == "provider-role" && v.message.contains("adds a protection")),
         "expected a protection violation, got {violations:?}"
+    );
+    // Read whatever its case.
+    let lower =
+        protocol_change("- Cutovers, which adds a protection. Ignorable: yes. (DEC-4, T-020-45)");
+    assert!(
+        lower
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("adds a protection")),
+        "expected a protection violation in lower case, got {lower:?}"
     );
     assert_eq!(
         protocol_change("- Cutovers. Ignorable: no. Adds a protection. (DEC-4, T-020-45)"),

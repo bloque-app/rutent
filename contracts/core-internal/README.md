@@ -495,7 +495,7 @@ accepted, so a fixture breaking two rules can't pass on its first refusal (`T-02
 - **An operator's setting** is a catalogue change of its own, `set_setting`, whose action names the setting and its
   value (`OperatorSetting`: `operator_fee`, `slippage_limit`, `evidence_floor`, `public_node`, `provider_ceiling`,
   `publisher_ceiling`, `cadence`, `cutover`; `SettingKind` for policy's permissions). For a setting about a provider
-  its `provider` is that provider, otherwise the deployment's operator. `set_slippage`, which names a tuple and no
+  its `provider` is that provider, which `Action::check` holds it to, otherwise the deployment's operator. `set_slippage`, which names a tuple and no
   value, stays as it was.
 - **The lifecycle actions** `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale` were already
   catalogue changes of their own (`accept_module`, `withdraw_release`, `revoke_release`, `declare_exploited`,

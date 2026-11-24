@@ -6713,7 +6713,7 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
 - **Versioning.** provider-role's unreleased 3.1.0 is 4.0.0 (finding 9; `develop` holds 3.0.0). module-interface,
   released at 4.0.0 on `develop`, moves to 5.0.0: its `handles` and call kinds take provider-role's operation kinds
   by reference, and `OperationKind` gains two variants. router-api (unreleased 4.0.0) and core-internal (unreleased
-  1.0.0) fold. state-machine and host don't refer to provider-role and are untouched. Fixtures keep naming protocol
+  1.0.0) fold. state-machine refers to provider-role (`order.schema.json`'s nodes and amounts, the re-exported `NodeRef`), so its unreleased 3.0.0 takes a line that it follows provider-role 4.0.0 (fix round 1); host refers only to state-machine, already at an unreleased 3.0.0. Fixtures keep naming protocol
   2.0.1, as every major since 2.0.1 has (router's `calls.rs` pins it "so a provider-role bump leaves the fixture
   standing"): the row's "every `protocol` literal" is read as the literals that name the protocol's current version,
   which were `contracts/src/provider_role/mod.rs`'s `VERSION` and `conformance/src/role/suite.rs`'s pin; every other
@@ -6827,7 +6827,9 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
      if the decision record's settlement figures are to enter the log).
   3. Which protocol versions are in force, their cutover dates and the per-segment reading across a cutover are
      `T-020-54`'s; router-api's bounds name one version (`ProtocolVersions::only`), so routing takes no older one.
-     Owner: `T-020-54`.
+     Every caller judges a statement at its receiving side's time (fix round 1), save module admission's `read`, which
+     has no clock and passes the assertion's own `made_at`: once an older version is in force it must pass the
+     platform's clock. Owner: `T-020-54`.
   4. A question Core asked under a transaction with no answer logged leaves that transaction out of a rebuilt
      `Issued`. Owner: `T-020-46`.
   5. A reopened Core holds an open order's request from `order_opened` but not its tuples' inputs. Owner: `T-020-46`.
@@ -6877,3 +6879,64 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
   | `check`: a setting named exactly by `set_setting` | `operator_setting_is_a_catalogue_change_of_its_own`, `each_invalid_fixture_breaks_only_the_rule_it_names`, fixtures, `every_invalid_fixture_is_rejected_by_the_rust_types_too` |
   | the rule switch never switching off | `each_invalid_fixture_breaks_only_the_rule_it_names` |
   | `is_a_lifecycle_action` leaving out `promote` and `roll_back` | `each_lifecycle_action_is_a_catalogue_change_of_its_own` |
+
+### T-020-45, fix round 1 (the review of `1bb5f4cb`, PR #294)
+
+- **1, should-fix: an answer by another provider.** `check_status_answer` and `check_hold_answer` now take the signed
+  statements (`&Statement<Operation>`, `&Statement<ResultBody>`), as `check_answer` does, and refuse an answer whose
+  maker isn't the provider asked (`StatusMismatch::AnsweredByAnotherProvider`, `HoldMismatch::OfAnotherReserve`), and
+  a question or answer of another kind (`NotAStatusQuestion`, `NotAHoldRequest`). Invalid bundles
+  `answered-status-query-by-another-provider` and `answered-hold-by-another-reserve`. Folded into 4.0.0.
+- **2, should-fix: a setting naming another provider.** `Action::check` refuses a `set_setting` whose setting is about
+  a provider (a tuple's slippage limit or evidence floor, a provider's ceiling) and whose `provider` is another ("an
+  operator's setting about a provider names that provider"). Invalid fixture
+  `decision-request-to-set-a-providers-ceiling-naming-another-provider`.
+- **3, should-fix: the merge's duplicate wave 38.** `PLAN.md`'s diagram keeps one `W38` subgraph, naming both of
+  wave 38's rows, and drops `T --> RG`, so it matches the wave table.
+- **4, low: the reader's time.** Every caller in the workspace now judges a statement's version at its receiving
+  side's time, never the statement's own `made_at`: core-audit's key register at the stated entry's `received_at`
+  (`log/keys.rs`, `join` now takes it); the catalogue at the caller's clock `at` (`advertisements.rs`, refused as
+  `BadTime` where it can't be written); the stand-ins and the role suite at their own clocks (`MADE_AT`, `TAKEN_AT`);
+  module-interface's contract test at its own time. Test `statement_dated_before_its_cutover_but_received_after_it_is_void`
+  [`REQ-PRT-4`, `THR-64`]. One caller holds no received time: module admission's `read` (`prov/src/module/admission.rs`),
+  which judges a release assertion at its own `made_at`; added to gap 3 for `T-020-54`, which passes the platform's
+  clock when older versions are in force.
+- **5, low: the holder and `set_for`.** Recorded as gaps, with owners: `arrival.holder` is Core's word, which no row
+  ties to the holder its reserve's notice names (the log reads a stated entry's commitment, maker and shape, never its
+  body), so R-AWAITING rests on `filing.rs` copying the notice's holder (gap 10, owner `T-020-50`, which reads the
+  notice in the filing: a receipt-side check of the holder against the kept notice); and `DepositDestination.set_for`
+  isn't held to the notice's `holder` (gap 11, owner `T-020-50`, whose filing takes the destination). The destination's
+  changelog entry is now `Ignorable: no`: it decides where a deposit goes.
+- **6, low: the guard's markers.** `check_ignorable` reads `Ignorable:` followed by the whole word `yes` or `no`,
+  exactly once, so `Ignorable: none`, `Ignorable: not sure` and a marker said twice say neither; `adds a protection` is
+  read whatever its case. The guard test gains those cases.
+- **7, low: docs.** `wait_ended`'s doc and `deposit_of`'s, and `check_ignorable`'s and `new_bullets`'s, each back on
+  their own item; the core-internal test's comment says what the two-rule case changes; the note on state-machine
+  above corrected, and state-machine's unreleased 3.0.0 says it follows provider-role 4.0.0.
+- **8, low: terms passed unsigned.** The platform's output schema now admits `terms`, holds and status answers, so a
+  dry-run answer carrying `terms` made by another party is passed on unsigned inside the signed result, where it was
+  `MalformedOutput`; terms made by the provider itself are still refused (`NestedOfAnotherShape`). Today the router's
+  `is_void` refuses such a figure (`NestedMaker`), so the harm falls on the module alone. Gap 12, owner `T-020-47`
+  (Core taking terms from what the platform hands back): the signer refuses a nested envelope not made by the
+  provider, or signs the provider's own.
+- **Gaps added:** 3 now also names module admission's `read`; 10, 11 and 12 above.
+
+- **Rule-offs of the fix round** (from `accd6812`, script `ruleoff-fix1.py` in the row's scratch folder; none hung):
+
+  | Rule switched off | Red |
+  |---|---|
+  | `check_status_answer`: the answer's maker is the provider asked | fixtures, `status_question_is_answered_by_the_providers_own_result_for_the_transaction_asked_about` |
+  | `check_hold_answer`: the answer's maker is the reserve asked | fixtures, `hold_request_is_answered_by_the_reserves_own_hold_of_what_was_asked` |
+  | `check_hold_answer`: a request of another kind | the hold test |
+  | `Action::check`: a setting about a provider names it | `each_invalid_fixture_breaks_only_the_rule_it_names`, `every_invalid_fixture_is_rejected_by_the_rust_types_too`, fixtures |
+  | the guard: `Ignorable:` read as a prefix (`none`, `not sure`) | `changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard` |
+  | the guard: a marker said twice taken | the same |
+  | the guard: `adds a protection` read in its case | `change_adding_a_protection_marked_ignorable_fails_the_contract_guard` |
+  | a caller judging at the statement's `made_at` again | none in the workspace: every caller holds one version in force, so the time isn't read yet; the contract's rule is shown by `statement_dated_before_its_cutover_but_received_after_it_is_void`, and the callers' is `T-020-54`'s to test once older versions are in force |
+- **The guard on its own changelog.** Read whatever its case, `adds a protection` also matched the rule's own entry,
+  which explains the rule and is `Ignorable: yes`; that entry now says "bringing a new protection". Against
+  `origin/develop`: "1906 changed path(s) … no violations".
+- **Local checks** (through the lock, at the fix commit): fmt, workspace clippy `-D warnings`, `rutent-contracts`,
+  `rutent-contract-guard`, `rutent-core-authz`, `rutent-core-orch`, `rutent-core-audit`, `rutent-router`,
+  `rutent-conformance`, the scenarios `hand_on`, `authz_scenarios` and `deposit_waits`, the doc check, plan-check and
+  tag-check `--strict` (0 findings, 2211 tests tagged), and the guard against `origin/develop` as above.

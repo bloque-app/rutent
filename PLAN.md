@@ -1051,7 +1051,7 @@ flowchart LR
     AN["T-020-40 to T-020-43, T-021-12, T-021-13, T-022-09, T-022-10 on the round"]
   end
   subgraph W38["Wave 38: the milestone review's findings 1 and 2"]
-    RV["T-021-14, T-020-44, on their own branches"]
+    RV["T-021-14 read grants and bound roles, T-020-44 hand-on retry"]
   end
   subgraph W39["Waves 39 to 43: the milestone review of 2026-11-24"]
     RR["T-020-45 contract round"]
@@ -1063,9 +1063,6 @@ flowchart LR
   subgraph W44["Waves 44 and 45: exit, a third time"]
     SR["T-025-05 security review"]
     T["T-024-10 evidence table"]
-  end
-  subgraph W38["Wave 38: the milestone review's fixes"]
-    RG["T-021-14 read grants and bound roles"]
   end
   M2 --> C
   C --> Q & Z & L & P
@@ -1097,7 +1094,6 @@ flowchart LR
   RA & RB --> RS
   RA & RB & RO & RS --> SR & T
   SR --> T
-  T --> RG
 ```
 
 | Wave | Tasks |

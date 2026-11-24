@@ -81,7 +81,8 @@ impl<T: Typed> RoleProvider for T {
     }
 }
 
-/// When stand-ins say they made a statement.
+/// The stand-ins' clock: when they say they made a statement, and when they take the operator's (a version is judged
+/// at the time a statement is taken, never at its own `made_at`, provider-role 4.0.0).
 const MADE_AT: &str = "2026-11-06T15:04:05Z";
 
 /// When the stand-ins make their statements.
@@ -237,7 +238,7 @@ impl Signer {
                 &rutent_contracts::provider_role::ProtocolVersions::only(
                     self.context.protocol_version.as_str(),
                 ),
-                &operation.made_at,
+                MADE_AT,
             )
             .is_ok()
             && operation.check_signed_by_operator().is_ok()
@@ -1055,7 +1056,7 @@ impl Typed for Reserve {
                 &rutent_contracts::provider_role::ProtocolVersions::only(
                     self.signer.context.protocol_version.as_str(),
                 ),
-                &question.made_at,
+                MADE_AT,
             )
             .is_ok()
             && question.check_signed_by_operator().is_ok();

@@ -25,6 +25,10 @@ use super::{
 };
 
 /// A node no provider advertises, for probing the edge of a provider's tuples.
+/// When the suite takes each statement it is answered with: its own clock, never a statement's `made_at`, so a
+/// version is judged at the time the statement is received (provider-role 4.0.0).
+const TAKEN_AT: &str = "2026-11-06T15:04:05Z";
+
 const UNADVERTISED_NODE: &str = "conformance-unadvertised-node";
 /// An asset no provider advertises.
 const UNADVERTISED_ASSET: &str = "conformance-unadvertised-asset";
@@ -452,7 +456,7 @@ impl Run<'_> {
             &rutent_contracts::provider_role::ProtocolVersions::only(
                 self.context.protocol_version.as_str(),
             ),
-            &statement.made_at,
+            TAKEN_AT,
         ) {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));
         }

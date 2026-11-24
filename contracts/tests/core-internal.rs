@@ -81,7 +81,11 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 59] = [
+const RUST_RULES: [(&str, &str); 60] = [
+    (
+        "decision-request-to-set-a-providers-ceiling-naming-another-provider",
+        "an operator's setting about a provider names that provider",
+    ),
     (
         "decision-request-to-set-a-setting-naming-none",
         "a catalogue change names an operator's setting exactly when it sets one",
@@ -4844,7 +4848,8 @@ fn each_invalid_fixture_breaks_only_the_rule_it_names() {
     assert!(
         through_rust(shape_of(name), &fixture("invalid", name)).is_err_and(|e| e.contains(rule))
     );
-    // A fixture that breaks two rules is caught: the class rule's fixture with its version taken away and a tuple named.
+    // A fixture that breaks two rules is caught: the class rule's fixture as a grant naming a tuple and no advertising
+    // keys, which breaks the class rule and the advertising keys' rule.
     let mut two = fixture(
         "invalid",
         "decision-request-to-set-slippage-naming-a-verifiers-class",

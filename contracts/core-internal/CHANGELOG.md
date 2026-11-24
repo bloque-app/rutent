@@ -14,8 +14,9 @@
     `one-order-per-deposit` freeing a deposit whose order's wait ended unaccepted (`GUA-1`); `NoticeOf::WaitEnded`, so a
     restart sends the notice once (`T-023-04`).
   - Finding 4 and `M2`'s item 6: `CatalogueChange::SetSetting` (`set_setting`) with `Action::ChangeCatalogue.setting`
-    (`OperatorSetting`, `SettingKind`); the five lifecycle actions were already changes of their own
-    (`LIFECYCLE_ACTIONS`, `is_a_lifecycle_action`).
+    (`OperatorSetting`, `SettingKind`), a setting about a provider naming that provider as the change's `provider`
+    (the review of `1bb5f4cb`; `decision-request-to-set-a-providers-ceiling-naming-another-provider`); the five
+    lifecycle actions were already changes of their own (`LIFECYCLE_ACTIONS`, `is_a_lifecycle_action`).
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).
@@ -28,7 +29,7 @@
     README no longer says, is here.
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. With `T-020-44`'s round, merged beside it: twenty-eight schemas, 179 valid fixtures and 179 invalid,
+  row and field. With `T-020-44`'s round, merged beside it: twenty-eight schemas, 179 valid fixtures and 180 invalid,
   744 admission cases and 58 attribution cases; 114 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

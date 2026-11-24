@@ -17,8 +17,8 @@
   what it took before. Which versions are in force, and the per-segment reading across a cutover, are Core's
   (`T-020-54`). Rust only. Ignorable: no. Adds a protection. (DEC-4, DEC-20, REQ-PRT-1, REQ-PRT-4, THR-64, T-020-45)
 - Each entry of this changelog says whether a party may ignore the change (finding 11, `REQ-PRT-2`), as `Ignorable:`
-  followed by yes or no, and an entry that adds a protection says so and is never ignorable. The contract
-  guard refuses a new entry of this changelog that says neither, or that adds a protection and says a party may
+  followed by yes or no, and an entry bringing a new protection says so and is never ignorable. The contract
+  guard refuses a new entry of this changelog that says neither, or that brings a new protection and says a party may
   ignore it (`tools/contract-guard`). 3.1.0's entries, folded here, now say it. Ignorable: yes. (DEC-4, DEC-20,
   REQ-PRT-2, T-020-45)
 - An arrival notice may name where its automatic deposit goes (finding 5, `T-020-50`): an optional `destination`
@@ -27,7 +27,9 @@
   to its holder; the reader still resolves the destination (`REQ-ORD-24`) and holds it inside the deposit's
   authorisation. Two notices of one credit naming different destinations restate it (`same_figures`). One valid
   fixture, `arrival-notice-naming-its-automatic-deposits-destination`; one invalid, a destination that doesn't say who
-  set it. Ignorable: yes. (DEC-4, DEC-20, REQ-ORD-13, REQ-AUZ-9, T-020-45)
+  set it. Not ignorable: it decides where a deposit goes, inside its authorisation (`REQ-AUZ-9`), so a reader that
+  ignored it would send the deposit to its holder against the customer's parameters (the review of `1bb5f4cb`).
+  Ignorable: no. (DEC-4, DEC-20, REQ-ORD-13, REQ-AUZ-9, T-020-45)
 - The carriers Core's own callers need (finding 4, `T-020-47`, `T-013-11`). Read first: a provider's terms
   (`TupleTerms`, `terms`) and a reserve's hold (`Hold`, `hold`) were already statements of their own, and
   `Tracking::StatusQuery` already declared that a provider answers status queries; no operation carried any of them
@@ -36,13 +38,15 @@
     under a transaction of its own, of where the transaction `about` stands, for a provider that declares
     `status_query` tracking. `ResultBody::StatusQuery(StatusQueryResult {transaction, about, outcome})`, its outcome
     `answered` (the provider's own result for `about`, whole, as a nested statement of the answer's maker),
-    `not_known` or `refused`. `check_status_answer(question, answer)` holds it to the question
-    (`StatusMismatch {AnswersAnotherQuestion, AboutAnotherTransaction, CarriesAnotherTransactionsResult,
-    CarriesNoOperationsResult}`). It moves nothing.
+    `not_known` or `refused`. `check_status_answer(question, answer)` takes both signed statements and holds the
+    answer to the question (`StatusMismatch {AnsweredByAnotherProvider, AnswersAnotherQuestion,
+    AboutAnotherTransaction, CarriesAnotherTransactionsResult, CarriesNoOperationsResult, NotAStatusQuestion}`), the
+    answer's maker the provider asked (the review of `1bb5f4cb`). It moves nothing.
   - `Operation::Hold(HoldRequest {transaction, provider, record, candidate, for, valid_until})`, `hold`: the
     operator's request that a reserve hold a chosen quote. `ResultBody::Hold(HoldResult {transaction, outcome})`, its
-    outcome `held` (the reserve's own `Hold`, whole) or `refused`. `check_hold_answer(request, answer)` holds it to the
-    request (`HoldMismatch {AnswersAnotherRequest, HoldsAnotherQuote, PastTheValidityAsked}`).
+    outcome `held` (the reserve's own `Hold`, whole) or `refused`. `check_hold_answer(request, answer)` takes both
+    signed statements and holds it to the request (`HoldMismatch {OfAnotherReserve, AnswersAnotherRequest,
+    HoldsAnotherQuote, PastTheValidityAsked, NotAHoldRequest}`), the answer's maker the reserve asked.
   - A withdrawal's, deposit's, transfer's and conversion's dry-run answer may hand back its provider's own signed terms
     (`terms`, optional, a nested statement of the result's maker; `ResultBody::terms`).
   - `ResultBody::transaction()` names the transaction a result answers.
@@ -51,7 +55,7 @@
   fixtures: `operation-status-query`, `operation-hold-of-a-chosen-quote`,
   `result-status-query-answered-with-the-providers-result`, `result-status-query-not-known`, `result-hold-held`,
   `result-withdrawal-handing-back-its-terms`, and two bundles, `answered-status-query-` and `answered-hold-` (a
-  question or request and its answer); fifteen invalid, one per rule. Ignorable: no. (DEC-4, DEC-20, REQ-ORD-1,
+  question or request and its answer); seventeen invalid, one per rule. Ignorable: no. (DEC-4, DEC-20, REQ-ORD-1,
   REQ-QTE-6, REQ-QTE-15, REQ-CAT-16, T-020-45)
 - Docs (the review's Low on this README's wording): the README and the schema descriptions say what a provider states,
   and no more of Core's internal log, which core-internal's README says instead (`hold.schema.json`, `terms`,

@@ -87,12 +87,8 @@ struct AnsweredStatusQuery {
 
 impl AnsweredStatusQuery {
     fn check(&self) -> Result<(), String> {
-        let (Operation::StatusQuery(question), ResultBody::StatusQuery(answer)) =
-            (&self.question.statement, &self.answer.statement)
-        else {
-            return Err("not a status question and its answer".to_owned());
-        };
-        provider_role::check_status_answer(question, answer).map_err(|v| format!("{v:?}"))
+        provider_role::check_status_answer(&self.question, &self.answer)
+            .map_err(|v| format!("{v:?}"))
     }
 }
 
@@ -106,12 +102,7 @@ struct AnsweredHold {
 
 impl AnsweredHold {
     fn check(&self) -> Result<(), String> {
-        let (Operation::Hold(request), ResultBody::Hold(answer)) =
-            (&self.request.statement, &self.answer.statement)
-        else {
-            return Err("not a hold request and its answer".to_owned());
-        };
-        provider_role::check_hold_answer(request, answer).map_err(|v| format!("{v:?}"))
+        provider_role::check_hold_answer(&self.request, &self.answer).map_err(|v| format!("{v:?}"))
     }
 }
 
@@ -885,6 +876,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
         (
             "answered-hold-under-another-transaction",
             hold(HoldMismatch::AnswersAnotherRequest),
+        ),
+        (
+            "answered-hold-by-another-reserve",
+            hold(HoldMismatch::OfAnotherReserve),
+        ),
+        (
+            "answered-status-query-by-another-provider",
+            status(StatusMismatch::AnsweredByAnotherProvider),
         ),
         (
             "answered-hold-of-another-candidate",
@@ -2828,14 +2827,24 @@ fn hold_request_is_answered_by_the_reserves_own_hold_of_what_was_asked() {
     assert_eq!(&held.hold.statement.transaction, transaction);
     assert_eq!(held.hold.maker, answered.answer.maker);
     // An earlier validity than asked is within it.
-    let mut earlier = answer.clone();
-    if let HoldOutcome::Held(held) = &mut earlier.outcome {
+    let mut earlier = answered.answer.clone();
+    if let ResultBody::Hold(answer) = &mut earlier.statement
+        && let HoldOutcome::Held(held) = &mut answer.outcome
+    {
         held.hold.statement.valid_until = "2026-11-06T15:01:00Z".to_owned();
     }
-    let Operation::Hold(request) = &answered.request.statement else {
-        unreachable!()
-    };
-    assert_eq!(provider_role::check_hold_answer(request, &earlier), Ok(()));
+    assert_eq!(
+        provider_role::check_hold_answer(&answered.request, &earlier),
+        Ok(())
+    );
+    // A request and an answer of another kind are no hold and its answer.
+    assert_eq!(
+        provider_role::check_hold_answer(
+            &serde_json::from_value(fixture("valid", "operation-status-query")).unwrap(),
+            &earlier
+        ),
+        Err(vec![HoldMismatch::NotAHoldRequest])
+    );
     for (name, rule) in rust_rule_fixtures() {
         if name.starts_with("answered-hold-")
             || name == "result-hold-carrying-another-reserves-hold"
@@ -2863,5 +2872,32 @@ fn terms_handed_back_with_a_result_are_its_makers_own() {
     assert_rule_rejects(
         "result-withdrawal-handing-back-another-makers-terms",
         "NestedMaker",
+    );
+}
+
+/// A version is judged at the time the reader takes a statement, never the maker's own `made_at` (the review of
+/// `1bb5f4cb`, low 4): a holdout's statement dated before the cutover but received after it is void, so no provider
+/// can date its way back past a cutover (`THR-64`).
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn statement_dated_before_its_cutover_but_received_after_it_is_void() {
+    let cutover = "2026-12-01T00:00:00Z";
+    let in_force = ProtocolVersions::only(provider_role::VERSION).with_older("3.0.0", cutover);
+    let mut value = fixture("valid", "result-transfer-failed");
+    value["protocol_version"] = "3.0.0".into();
+    value["made_at"] = "2026-11-30T23:00:00Z".into();
+    let holdout: Statement<ResultBody> = serde_json::from_value(value).expect("deserialises");
+    let received = "2026-12-01T00:00:01Z";
+    assert_eq!(
+        holdout.check_context(&holdout.deployment, &in_force, received),
+        Err(ContextMismatch::PastCutover {
+            version: "3.0.0".to_owned(),
+            cutover: cutover.to_owned(),
+        })
+    );
+    // Judged at its own `made_at`, the same statement would pass: why no reader may pass it.
+    assert_eq!(
+        holdout.check_context(&holdout.deployment, &in_force, &holdout.made_at),
+        Ok(())
     );
 }

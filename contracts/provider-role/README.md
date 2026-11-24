@@ -223,7 +223,8 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
     (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008); or the operator's `status_query` and `hold` (4.0.0).
   - A status query (4.0.0) is asked of a provider that declares `status_query` tracking, under a transaction of its
     own, naming the transaction it is `about`. Its result names both, and is `answered` (the provider's own result for
-    `about`, whole), `not_known` or `refused` (`check_status_answer`). It changes nothing (`REQ-ORD-1`).
+    `about`, whole), `not_known` or `refused`; `check_status_answer` takes both signed statements, so the answer is the
+    provider asked's (`AnsweredByAnotherProvider`). It changes nothing (`REQ-ORD-1`).
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
     which says which amount is stated.
@@ -308,8 +309,9 @@ terms back in a dry-run answer's optional `terms` (4.0.0), and a reserve its hol
 - **The hold request and its answer** (4.0.0). `Operation::Hold` (`hold`) is the operator's request that a reserve
   hold a chosen quote: the hold's transaction, the reserve, the record, the candidate, whom it is for and the validity
   asked. The reserve answers with `ResultBody::Hold`, `held` carrying its own `Hold` whole (`NestedMaker` otherwise),
-  or `refused`. `check_hold_answer(request, answer)` holds it to the request (`AnswersAnotherRequest`,
-  `HoldsAnotherQuote`, `PastTheValidityAsked`).
+  or `refused`. `check_hold_answer(request, answer)` takes both signed statements and holds the answer to the
+  request: made by the reserve asked (`OfAnotherReserve`), its transaction (`AnswersAnotherRequest`), the quote asked
+  (`HoldsAnotherQuote`) and the validity asked (`PastTheValidityAsked`).
 - **Terms handed back** (4.0.0). A withdrawal's, deposit's, transfer's or conversion's dry-run answer may carry the provider's
   own signed `terms`, a nested statement of the result's maker (`ResultBody::terms`).
 
