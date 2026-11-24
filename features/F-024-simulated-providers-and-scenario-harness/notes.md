@@ -1717,6 +1717,58 @@ repository records with an owner are not listed here.
 
 Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; its strict step ran with the switch on and reported `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. At the milestone's tip `74249d38`, with this row merged, `ci` run `44394538585` ran the table strictly with the switch on: `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`; every other check at that commit passed, `STM on VOS` run `44394538454` included. The run's evidence-table step reports form items not checked, as `decisions/` sits outside the repository, so `form:cat5-timing-residual` is not validated against the form in CI.
 
+## T-024-20: `REQ-AUD-6`'s "no balance" half, scanned
+
+- **What it is.** `T-025-03`'s scan module (`conformance/scenarios/src/secrets.rs`) gains `Kind::Balance` and `run_balanced`:
+  a full simulated run (two orders of amounts of its own, and a plain wallet at `sim-wallet-node` given three landings of
+  eight digits each) scanned for the balances its accounts held, in every form the scan already seeks a value in. The
+  surfaces are `T-025-03`'s (the host's answers and snapshot, Core's log as records and as read back, the inputs fed to
+  the host, the evidence shelf, and on VOS the nodes' files) plus the platform's: each reserve's journal in its world,
+  the outside requests it delivered, and the catalogue's log of balance checks.
+- **Where the figures come from.** Read from the accounts, not written beside them. A reserve's bank answers only yes or
+  no, so its balance is found by halving over `check_balance` (at the start, on a Core of its own with no step run, and at
+  the end, after the surfaces are gathered so the probes are in none of them). The holding account's balance is the
+  wallet's own reading (`holding_reading`), which the test holds equal to the sum landed. The wallet's `holding_balance`
+  statement is then asked and kept with `ask_wallet_stating`, so the evidence store holds the reading and the log holds only
+  the stated entry's commitment; `check_holding` records the check without the figure.
+- **Tests.** `secrets_scan.rs`: `full run's records hold no simulated balance outside the evidence store` (every surface
+  but the shelf is clean; the shelf does hold the reading, so the clean scan is not a run that kept nothing; each figure is
+  at least `MIN_LEN` digits and none is a figure the run states), `balance planted in the log is found by the scan` (each
+  figure, planted as a request identifier that Core records, in the log's records and in the log read back; and in the
+  journal as an input the boundary let through; no other figure is found), `holding account's balance reading is found
+  only in the evidence store` (every hit is on the shelf, and the log holds the check and not the figure). The VOS half
+  (`vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_evidence_store`, and its control
+  `scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files`) is in `vos-program/scenarios/tests/secrets.rs`,
+  which `stm-vos.yml` runs with `--test secrets`; it type-checks here with `cargo check --tests --features vos` and has not
+  run (CI's run id goes here: **pending, on the push of `m3` that integrates the row**; the reference half's `ci` run id
+  likewise).
+- **Defaults.** (1) The shelf is the one surface exempt, by the name `evidence shelf`: the scan fails closed on every other
+  surface, and a new surface is scanned unless it is the shelf. (2) A reserve's opening balance is read, not assumed:
+  the probes. (3) The VOS control plants in the journal only; a balance in Core's log doesn't touch the host, so the
+  reference half's control holds it. (4) The platform's records are scanned as JSON (journals) or as `Debug` text
+  (delivered requests, check log): a figure is digits in either.
+- **Gaps.** (1) **A reserve's balance is not distinctive.** The stand-in's opening balance is a constant, 50 000 000
+  (`conformance/src/role/stand_in.rs`, outside this row's files), and a round trip on the base route leaves it so, so a
+  reserve's balance at the start and at the end are one figure, which `INV-9` also uses. The row asks for values no other
+  figure of the run takes; the run's own figures are chosen so that none equals it (the test holds it), and the holding
+  account's are the row's own. Owner: a small change to `Shape` or `Reserve::new` to set the opening (`F-024`, low), after
+  which the run sets it to a figure of its own. (2) Only a balance in the form of its digits is sought: one a record
+  writes as a difference, a percentage, or in another unit is not (as `T-025-03`'s gap 2 for other encodings). (3) The VOS
+  half and the workflow step are not run here.
+- **Rule-off table.** Each rule switched off once on the reference host, and the test that went red:
+
+| Rule off | Red |
+| --- | --- |
+| reserves' balances at the end not sought | `full run's records hold no simulated balance outside the evidence store` |
+| the holding account's balance not sought | that test and `holding account's balance reading is found only in the evidence store` |
+| the platform's journals not read | `full run's records hold no simulated balance outside the evidence store` |
+| the wallet's reading not kept as evidence | `holding account's balance reading is found only in the evidence store` and the full run's (the shelf holds no reading) |
+| Core's check of the reading not recorded | `holding account's balance reading is found only in the evidence store` |
+| an order states a figure that is a balance | all three |
+| a figure not planted in the log | `balance planted in the log is found by the scan` |
+| a figure not let into the journal | `balance planted in the log is found by the scan` |
+| the holding account not given what the test says it was | `full run's records hold no simulated balance outside the evidence store` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`cat5-timing-residual`: "Accept the residual".** The scope file's `REQ-CAT-5` row moves from `partly`

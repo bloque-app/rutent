@@ -39,6 +39,8 @@ pub enum Kind {
     Secret,
     /// A module's private state.
     ModuleState,
+    /// A balance a simulated account held (`REQ-AUD-6`'s "no balance", `T-024-20`).
+    Balance,
 }
 
 /// A value to seek.
@@ -588,29 +590,46 @@ fn run_with(environment: &mut dyn Environment, seed: u64, leak: Option<Kind>) ->
                 .into_iter()
                 .map(|(provider, key, _)| (provider, key))
                 .collect();
-            let machine = core.feed.machine_mut();
-            let mut host = machine_surfaces(machine, "the host").unwrap_or_else(|e| panic!("{e}"));
-            surfaces.append(&mut host);
-            for (n, kept) in core
-                .disk
-                .shelved()
-                .unwrap_or_else(|e| panic!("{e}"))
-                .into_iter()
-                .enumerate()
-            {
-                surfaces.push(Surface {
-                    name: format!("Core's evidence shelf, entry {n}"),
-                    bytes: kept,
-                });
-            }
-            for (n, record) in core.disk.records().into_iter().enumerate() {
-                surfaces.push(Surface {
-                    name: format!("Core's log, record {n}"),
-                    bytes: record,
-                });
-            }
+            read_core(core, &mut surfaces);
         },
     );
+    completed(&run, leak.is_some());
+    read_run(&run, &mut surfaces);
+    Scanned {
+        canaries: planted.into_inner(),
+        surfaces,
+        run,
+        module_state,
+    }
+}
+
+/// What Core and its host hold once a run is over: the host's answers, the evidence shelf, and the log's records.
+fn read_core(core: &mut Core, surfaces: &mut Vec<Surface>) {
+    let machine = core.feed.machine_mut();
+    let mut host = machine_surfaces(machine, "the host").unwrap_or_else(|e| panic!("{e}"));
+    surfaces.append(&mut host);
+    for (n, kept) in core
+        .disk
+        .shelved()
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .enumerate()
+    {
+        surfaces.push(Surface {
+            name: format!("Core's evidence shelf, entry {n}"),
+            bytes: kept,
+        });
+    }
+    for (n, record) in core.disk.records().into_iter().enumerate() {
+        surfaces.push(Surface {
+            name: format!("Core's log, record {n}"),
+            bytes: record,
+        });
+    }
+}
+
+/// Holds that a run completed, with one more order on the host where an input was let in.
+fn completed(run: &Run, leaked: bool) {
     assert!(
         !run.orders.is_empty() && !run.log.is_empty() && run.stopped.is_empty(),
         "the run didn't complete: orders {}, log {}, stopped {:?}",
@@ -619,11 +638,15 @@ fn run_with(environment: &mut dyn Environment, seed: u64, leak: Option<Kind>) ->
         run.stopped
     );
     assert!(
-        run.hosted.len() == run.orders.len() + usize::from(leak.is_some()),
+        run.hosted.len() == run.orders.len() + usize::from(leaked),
         "the host holds {} of {} orders",
         run.hosted.len(),
         run.orders.len()
     );
+}
+
+/// What the run, once read, adds: the log as read back and the inputs fed to the host.
+fn read_run(run: &Run, surfaces: &mut Vec<Surface>) {
     surfaces.push(Surface::of(
         "the log read back",
         serde_json::to_vec(&run.log),
@@ -632,12 +655,6 @@ fn run_with(environment: &mut dyn Environment, seed: u64, leak: Option<Kind>) ->
         "the inputs fed to the host",
         serde_json::to_vec(&run.inputs),
     ));
-    Scanned {
-        canaries: planted.into_inner(),
-        surfaces,
-        run,
-        module_state,
-    }
 }
 
 /// A copy of the first input that opened an order, under an order and a record id that carry `leak`: a boundary
@@ -662,4 +679,265 @@ pub fn leaked_input(inputs: &[RecordedInput], leak: &str) -> RecordedInput {
         *decision_record = Id::new(format!("decision-{leak}")).expect("an id");
     }
     leaked
+}
+
+/// Where a balance is planted in a run, for the controls (`T-024-20`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Planted {
+    /// In the log: as the customer's request identifier, which Core records.
+    InLog(String),
+    /// In the state machine's journal: in an input the boundary lets through.
+    InJournal(String),
+}
+
+/// A run scanned for balances (`T-024-20`).
+pub struct Balanced {
+    /// What the run left, with the balances as its canaries.
+    pub scanned: Scanned,
+    /// The node of the holding account.
+    pub node: String,
+    /// What was landed at the holding account, by order.
+    pub landed: Vec<(String, String)>,
+    /// The holding account's balance, as its wallet states it.
+    pub holding: u128,
+    /// Every amount the run states, as text.
+    pub stated: Vec<String>,
+}
+
+/// The node of the holding account the balance run gives its wallet.
+pub const WALLET_NODE: &str = "sim-wallet-node";
+
+/// What the balance run lands at the wallet's account, by order: three figures of eight digits that no amount of the
+/// run, no fee and no other balance takes.
+pub const LANDED: [(&str, &str); 3] = [
+    ("ord-held-1", "31415926"),
+    ("ord-held-2", "27182818"),
+    ("ord-held-3", "16180339"),
+];
+
+/// The two orders of the balance run, in amounts that are no balance's digits.
+const ORDERED: [(&str, &str); 2] = [("req-bal-1", "12345678"), ("req-bal-2", "9876543")];
+
+/// The scenario every balance scan runs: [`full_run`]'s shape, with orders of amounts of its own, and, when `planted`
+/// is a log plant, a request identifier that carries the figure.
+fn balance_run(planted: Option<&Planted>) -> Scenario {
+    let mut scenario = Scenario::new(
+        "a full run, scanned for balances",
+        crate::checks::BASE,
+        Given::one_reserve(crate::assembly::Staged::AtOnce),
+    );
+    for (n, (request, amount)) in ORDERED.iter().enumerate() {
+        let request = match planted {
+            Some(Planted::InLog(figure)) if n == 0 => format!("req-{figure}"),
+            _ => (*request).to_owned(),
+        };
+        scenario = scenario.when(Step::Order {
+            request,
+            amount: (*amount).to_owned(),
+        });
+    }
+    scenario.when(Step::Run)
+}
+
+/// The largest amount `reserve`'s bank covers, as the balance checks say it: yes or no to each amount asked, which
+/// is all they say, so it is found by halving. This is how the balance is read from the account itself.
+///
+/// # Panics
+///
+/// If a check is refused, or the bank covers more than 2^40 or less than one.
+fn covered(core: &mut Core, reserve: &str, session: &rutent_contracts::router_api::Id) -> u128 {
+    use rutent_prov::catalogue::Verdict;
+    let mut covers = |amount: u128| {
+        core.check_balance(reserve, session, &amount.to_string())
+            .unwrap_or_else(|e| panic!("the balance check of {reserve} was refused: {e:?}"))
+            == Verdict::Yes
+    };
+    let (mut low, mut high) = (1u128, 1u128 << 40);
+    assert!(
+        covers(low) && !covers(high),
+        "{reserve}'s balance is out of range"
+    );
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if covers(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+/// What each reserve of the scenario's given held when no step had run, as its bank answers: read on a Core with the
+/// reference host, since a stand-in's opening balance doesn't depend on the host.
+fn opening_balances(scenario: &Scenario, seed: u64) -> Vec<(String, u128)> {
+    let bare = Scenario::new(
+        "reserves at the start",
+        crate::checks::BASE,
+        scenario.given.clone(),
+    );
+    let (mut core, _) = bare.core(seed, &mut crate::assembly::machine::Reference);
+    reserves_held(&mut core, &reserves_of(scenario))
+}
+
+/// The reserves the scenario is given.
+fn reserves_of(scenario: &Scenario) -> Vec<String> {
+    scenario
+        .given
+        .providers
+        .iter()
+        .filter(|s| s.role == rutent_conformance::sim::Role::Reserve)
+        .map(|s| s.provider.clone())
+        .collect()
+}
+
+fn reserves_held(core: &mut Core, reserves: &[String]) -> Vec<(String, u128)> {
+    core.set_check_bound(10_000);
+    let session = core
+        .open_session(&crate::kit::customer())
+        .unwrap_or_else(|e| panic!("a session to ask the banks in: {e:?}"));
+    reserves
+        .iter()
+        .map(|reserve| (reserve.clone(), covered(core, reserve, &session)))
+        .collect()
+}
+
+/// [`run_planted`]'s sibling for `REQ-AUD-6`'s "no balance" half (`T-024-20`): a full simulated run in which the
+/// simulated accounts hold figures the run states nowhere else, scanned for them.
+///
+/// The figures are read from the accounts: each reserve's bank is asked, by the checks that answer yes or no, what it
+/// covers, at the start (on a Core of its own) and once the run is over, and the holding account's wallet states its
+/// balance, which is what was landed there. The wallet is then asked for that balance as a statement, which the
+/// evidence store keeps (`holding-balance-evidence`) and the log records by commitment alone, and Core's check of the
+/// reading is recorded. Nothing else of the run is told the figures. With `plant`, one more figure is let into the log
+/// or the journal, for the controls.
+///
+/// # Panics
+///
+/// If the run doesn't complete, the accounts can't be read, or a figure the scan seeks is a figure the run states.
+pub fn run_balanced(
+    environment: &mut dyn Environment,
+    seed: u64,
+    plant: Option<&Planted>,
+) -> Balanced {
+    use rutent_contracts::core_internal::About;
+    use rutent_contracts::provider_role::Operation;
+    let scenario = balance_run(plant);
+    let opening = opening_balances(&scenario, seed);
+    let reserves = reserves_of(&scenario);
+    let wallet = std::cell::RefCell::new(None);
+    let mut surfaces: Vec<Surface> = Vec::new();
+    let mut closing: Vec<(String, u128)> = Vec::new();
+    let mut holding = 0u128;
+    let run = scenario.play_probed(
+        seed,
+        environment,
+        reference(),
+        &mut |core| {
+            let installed = core
+                .install_wallet(WALLET_NODE, "USDC")
+                .unwrap_or_else(|e| panic!("the wallet wasn't installed: {e:?}"));
+            for (order, amount) in LANDED {
+                core.land(WALLET_NODE, "USDC", order, amount)
+                    .unwrap_or_else(|e| panic!("the wallet didn't take {amount}: {e:?}"));
+            }
+            *wallet.borrow_mut() = Some(installed);
+        },
+        &mut |core| {
+            let provider = wallet
+                .borrow()
+                .as_ref()
+                .expect("the wallet")
+                .provider
+                .clone();
+            // The reading, as `REQ-AUD-15` takes it, checked, and the wallet's own statement of it kept.
+            let reading = core
+                .holding_reading(WALLET_NODE, 2)
+                .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"));
+            holding = reading.balance.as_str().parse().expect("a figure");
+            core.check_holding(&reading)
+                .unwrap_or_else(|e| panic!("the check wasn't recorded: {e:?}"));
+            let question: Operation = serde_json::from_value(serde_json::json!({
+                "kind": "holding_balance", "transaction": "tx-holding-balance",
+                "provider": provider, "node": WALLET_NODE, "asset": "USDC",
+            }))
+            .expect("an operation");
+            core.ask_wallet_stating(
+                &provider,
+                question,
+                &About {
+                    order: Some(crate::kit::id(LANDED[0].0)),
+                    segment: None,
+                    transaction: Some(crate::kit::id("tx-holding-balance")),
+                    node: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("the wallet's statement wasn't kept: {e:?}"));
+            if let Some(Planted::InJournal(figure)) = plant {
+                let inputs: Vec<RecordedInput> = core
+                    .feed
+                    .deliveries
+                    .iter()
+                    .map(|(input, _)| input.clone())
+                    .collect();
+                core.feed
+                    .machine_mut()
+                    .submit(leaked_input(&inputs, figure))
+                    .unwrap_or_else(|e| panic!("the host refused the leaked input: {e:?}"));
+            }
+            read_core(core, &mut surfaces);
+            // What the platform keeps: each provider's books and what it sent outside.
+            for provider in reserves.iter().chain(std::iter::once(&provider)) {
+                surfaces.push(Surface::of(
+                    format!("the platform's journal of {provider}"),
+                    serde_json::to_vec(core.world().journal(provider)),
+                ));
+            }
+            surfaces.push(Surface {
+                name: "the outside requests the platform delivered".to_owned(),
+                bytes: format!("{:?}", core.world().delivered()).into_bytes(),
+            });
+            let account = crate::assembly::context().account;
+            surfaces.push(Surface {
+                name: "the catalogue's log of balance checks".to_owned(),
+                bytes: format!("{:?}", core.catalogue().check_log(&account)).into_bytes(),
+            });
+            // Last, because it asks the banks and so adds to what the catalogue logs.
+            closing = reserves_held(core, &reserves);
+        },
+    );
+    completed(&run, matches!(plant, Some(Planted::InJournal(_))));
+    read_run(&run, &mut surfaces);
+    let landed: Vec<(String, String)> = LANDED
+        .iter()
+        .map(|(o, a)| ((*o).to_owned(), (*a).to_owned()))
+        .collect();
+    let mut canaries = vec![Canary::text(
+        format!("balance of the holding account at {WALLET_NODE}"),
+        Kind::Balance,
+        &holding.to_string(),
+    )];
+    for (when, held) in [("at the start", &opening), ("at the end", &closing)] {
+        for (reserve, balance) in held {
+            canaries.push(Canary::text(
+                format!("balance of reserve {reserve}, {when}"),
+                Kind::Balance,
+                &balance.to_string(),
+            ));
+        }
+    }
+    let mut stated: Vec<String> = ORDERED.iter().map(|(_, a)| (*a).to_owned()).collect();
+    stated.extend(LANDED.iter().map(|(_, a)| (*a).to_owned()));
+    Balanced {
+        scanned: Scanned {
+            canaries,
+            surfaces,
+            run,
+            module_state: Vec::new(),
+        },
+        node: WALLET_NODE.to_owned(),
+        landed,
+        holding,
+        stated,
+    }
 }
