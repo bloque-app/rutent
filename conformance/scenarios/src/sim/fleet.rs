@@ -361,6 +361,13 @@ impl Fleet {
             DEPLOYMENT_KEY,
             &serde_json::to_string(&self.context.deployment).expect("a deployment is JSON"),
         );
+        if let Some(opening) = spec.opening {
+            self.platform.world.seed_state(
+                &spec.provider,
+                rutent_conformance::sim::OPENING_KEY,
+                &opening.to_string(),
+            );
+        }
         let networks = networks_of(&spec);
         for network in &networks {
             if self.platform.world.network(network).is_none() {

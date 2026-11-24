@@ -302,6 +302,25 @@ impl Scenario {
         before: &mut dyn FnMut(&mut Core),
         after: &mut dyn FnMut(&mut Core),
     ) -> Run {
+        self.play_stepped(seed, environment, swap_to, before, &mut |_, _| {}, after)
+    }
+
+    /// [`Scenario::play_probed`], with `stepped` run on Core after each step that completed, once what the step held
+    /// back has reached the state machine, with the step's number from one: a test that reads what Core's world holds
+    /// after every step, not only at the end (`T-024-22`).
+    ///
+    /// # Panics
+    ///
+    /// As [`Scenario::play`].
+    pub fn play_stepped(
+        &self,
+        seed: u64,
+        environment: &mut dyn Environment,
+        swap_to: Box<dyn Environment>,
+        before: &mut dyn FnMut(&mut Core),
+        stepped: &mut dyn FnMut(&mut Core, usize),
+        after: &mut dyn FnMut(&mut Core),
+    ) -> Run {
         let config = self.config(seed);
         let mut core = Core::assemble(&config, environment).unwrap_or_else(|e| {
             panic!(
@@ -317,7 +336,7 @@ impl Scenario {
         let mut crashed = false;
         let mut down = false;
         let mut stopped = Vec::new();
-        for step in &self.when {
+        for (n, step) in self.when.iter().enumerate() {
             if *step == Step::Restart {
                 let swap_to = core.swap_to.take();
                 core = core.reopened(&config, environment).unwrap_or_else(|e| {
@@ -354,6 +373,7 @@ impl Scenario {
                             self.name
                         );
                     }
+                    stepped(&mut core, n + 1);
                 }
                 Ok(Err(e)) => panic!(
                     "scenario `{}`, seed {seed}: step {step:?} failed: {e:?}",

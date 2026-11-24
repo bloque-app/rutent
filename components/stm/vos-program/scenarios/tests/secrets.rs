@@ -166,6 +166,19 @@ fn vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_
             named("platform's journal of") && named("requests the platform delivered"),
             "seed {seed}: the scan didn't read the platform's records"
         );
+        // The records Core signs (the log holds their digests), and balances held mid-route and after each step.
+        assert!(
+            named("Core's decision record"),
+            "seed {seed}: the scan didn't read the decision records"
+        );
+        let names = scan.names();
+        assert!(
+            names.iter().any(|n| n.contains("after movement"))
+                && names
+                    .iter()
+                    .any(|n| n.contains("holding account, after step")),
+            "seed {seed}: the scan seeks no balance held mid-route or after a step: {names:?}"
+        );
         assert!(
             nodes.files > 0 && nodes.bytes > 0,
             "seed {seed}: the nodes left no file to read, so the scan saw nothing of their state"
@@ -185,7 +198,7 @@ fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
     // the platform's and the same on any host. (A balance in Core's log, which no host touches, is the reference
     // host's control: `secrets_scan.rs`.)
     let clean = run_balanced(&mut Reference, 1, None);
-    let mut figures: Vec<(String, String)> = clean
+    let figures: Vec<(String, String)> = clean
         .scanned
         .canaries
         .iter()
@@ -196,6 +209,26 @@ fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
             )
         })
         .collect();
+    // One figure of each kind the scan seeks, not all of them (each is a run on three replicas): the account's
+    // reading, a reserve's opening, a balance held between two movements of a route, and the holding account's after
+    // a landing and after a step (`T-024-22`).
+    let kinds = [
+        "holding account at",
+        "at the start",
+        "after movement",
+        "after landing",
+        "holding account, after step",
+    ];
+    let wanted: Vec<(String, String)> = kinds
+        .iter()
+        .filter_map(|kind| figures.iter().find(|(n, _)| n.contains(kind)).cloned())
+        .collect();
+    assert_eq!(
+        wanted.len(),
+        kinds.len(),
+        "a kind of figure isn't sought: {figures:?}"
+    );
+    let mut figures = wanted;
     figures.sort_by(|a, b| a.1.cmp(&b.1));
     figures.dedup_by(|a, b| a.1 == b.1);
     assert!(

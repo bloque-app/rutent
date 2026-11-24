@@ -364,7 +364,14 @@ fn full_runs_records_hold_no_simulated_balance_outside_the_evidence_store() {
 fn balance_planted_in_the_log_is_found_by_the_scan() {
     let clean = run_balanced(&mut Reference, 1, None);
     let scan = Scan::new(clean.scanned.canaries.clone()).expect("a scan");
+    // Each figure once: those the accounts held at several moments are one figure to plant.
+    let mut once: Vec<&Canary> = Vec::new();
     for canary in &clean.scanned.canaries {
+        if !once.iter().any(|c| c.bytes == canary.bytes) {
+            once.push(canary);
+        }
+    }
+    for canary in once {
         let value = String::from_utf8(canary.bytes.clone()).expect("a figure");
         for (planted, surface) in [
             (Planted::InLog(value.clone()), "Core's log, record"),
@@ -431,4 +438,144 @@ fn holding_accounts_balance_reading_is_found_only_in_the_evidence_store() {
         "the log holds no record of the check"
     );
     assert!(!log.contains(&run.holding.to_string()));
+}
+
+/// What a surface is, by the part of its name that says so.
+fn named<'a>(surfaces: &'a [Surface], part: &str) -> Vec<&'a Surface> {
+    surfaces.iter().filter(|s| s.name.contains(part)).collect()
+}
+
+/// The figures a scan seeks, each once, with the first name it goes by.
+fn distinct(canaries: &[Canary]) -> Vec<(String, String)> {
+    let mut figures: Vec<(String, String)> = Vec::new();
+    for canary in canaries {
+        let value = String::from_utf8(canary.bytes.clone()).expect("a figure");
+        if !figures.iter().any(|(_, v)| *v == value) {
+            figures.push((canary.name.clone(), value));
+        }
+    }
+    figures
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn decision_records_hold_no_simulated_balance() {
+    for seed in [1, 2] {
+        let run = run_balanced(&mut Reference, seed, None);
+        let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+        // The records Core signs, each as signed: the log holds only their digests, so this is the one place to read them.
+        let records: Vec<Surface> = named(&run.scanned.surfaces, "Core's decision record")
+            .into_iter()
+            .cloned()
+            .collect();
+        assert!(
+            records.len() >= run.scanned.run.orders.len(),
+            "seed {seed}: the scan read {} decision records for {} orders",
+            records.len(),
+            run.scanned.run.orders.len()
+        );
+        for record in &records {
+            let text = String::from_utf8_lossy(&record.bytes);
+            assert!(
+                text.contains("router_version") && text.contains("candidates"),
+                "seed {seed}: `{}` is no decision record",
+                record.name
+            );
+        }
+        let report = scan
+            .check(&records)
+            .unwrap_or_else(|hits| panic!("seed {seed}: {}", hits.join("; ")));
+        assert_eq!(report.looked_at.len(), records.len());
+    }
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
+    let mut openings = Vec::new();
+    for seed in [1, 2] {
+        let run = run_balanced(&mut Reference, seed, None);
+        let scan = Scan::new(run.scanned.canaries.clone()).expect("a scan");
+        let figures = distinct(&run.scanned.canaries);
+        let names = scan.names();
+        // A reserve's balance after each of its movements, and the holding account's after each step.
+        let after = |part: &str| names.iter().filter(|n| n.contains(part)).count();
+        assert!(
+            after("after movement") >= 2 && after("holding account, after step") >= 3,
+            "seed {seed}: the scan seeks no balance held mid-route or after a step: {names:?}"
+        );
+        // The reserve's opening balance is no round constant, and the run sets it.
+        let opening = run
+            .scanned
+            .canaries
+            .iter()
+            .find(|c| c.name.contains("reserve") && c.name.contains("at the start"))
+            .map(|c| String::from_utf8(c.bytes.clone()).expect("a figure"))
+            .expect("an opening balance");
+        assert_ne!(
+            opening, "50000000",
+            "seed {seed}: the opening is the stand-in's constant"
+        );
+        assert!(
+            opening.len() >= MIN_LEN && !opening.ends_with("000000"),
+            "seed {seed}: the opening {opening} isn't distinctive"
+        );
+        // A balance mid-route: the opening less what the first order took out.
+        let mid = opening.parse::<u128>().expect("a figure") - 12_345_678;
+        assert!(
+            figures.iter().any(|(_, v)| *v == mid.to_string()),
+            "seed {seed}: the balance after the first withdrawal ({mid}) isn't sought: {figures:?}"
+        );
+        for (name, value) in &figures {
+            assert!(
+                value.len() >= MIN_LEN && !run.stated.contains(value),
+                "seed {seed}: `{name}` is not a distinctive figure"
+            );
+        }
+        let (shelf, outside): (Vec<Surface>, Vec<Surface>) =
+            run.scanned.surfaces.iter().cloned().partition(is_shelf);
+        scan.check(&outside)
+            .unwrap_or_else(|hits| panic!("seed {seed}: {}", hits.join("; ")));
+        assert!(
+            scan.find(&shelf)
+                .iter()
+                .all(|h| h.canary.contains("holding account")),
+            "seed {seed}: a reserve's balance is on the shelf"
+        );
+        openings.push(opening);
+    }
+    assert_ne!(
+        openings[0], openings[1],
+        "the run doesn't set the opening from its seed"
+    );
+}
+
+// verifies: REQ-AUD-6
+#[test]
+fn balance_planted_in_a_decision_record_is_found_by_the_scan() {
+    let clean = run_balanced(&mut Reference, 1, None);
+    let scan = Scan::new(clean.scanned.canaries.clone()).expect("a scan");
+    for (name, value) in distinct(&clean.scanned.canaries) {
+        let run = run_balanced(
+            &mut Reference,
+            1,
+            Some(&Planted::InDecisionRecord(value.clone())),
+        );
+        let hits = scan.find(&run.scanned.surfaces);
+        assert!(
+            hits.iter()
+                .any(|h| h.surface.contains("Core's decision record")
+                    && String::from_utf8(scan_bytes(&clean.scanned.canaries, &h.canary))
+                        .is_ok_and(|v| v == value)),
+            "`{name}` planted in a decision record wasn't found in a decision record: {hits:?}"
+        );
+    }
+}
+
+fn scan_bytes(canaries: &[Canary], name: &str) -> Vec<u8> {
+    canaries
+        .iter()
+        .find(|c| c.name == name)
+        .map(|c| c.bytes.clone())
+        .unwrap_or_default()
 }

@@ -898,6 +898,27 @@ impl Core {
             .collect()
     }
 
+    /// A control for the scan of the records Core signs (`T-024-22`): writes `leak` into the first decision record
+    /// Core kept, in a field that is text, as a record that carried a figure would. The request's own identifier is
+    /// Core's to set, so a customer's figure can't be put there from outside; this puts it there from inside. False
+    /// if Core kept no record to write it in.
+    pub fn leak_into_decision_record(&mut self, leak: &str) -> bool {
+        let Some(bytes) = self.signer.records.values_mut().next() else {
+            return false;
+        };
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return false;
+        };
+        value["statement"]["request"]["request_id"] = format!("req-{leak}").into();
+        match serde_json::to_vec(&value) {
+            Ok(written) => {
+                *bytes = written;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// From now on, the destination's network ties each deposit to the first movement to its account of its amount, as
     /// a reserve paying two orders with one payment would have it: a fault the scenarios plant (`T-020-09`).
     pub fn tie_payments_by_destination(&mut self) {

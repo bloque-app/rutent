@@ -57,6 +57,11 @@ pub const BOOK_KEY: &str = "book";
 /// suite's default context (`T-024-02`: the assembly's deployment names the operator's real key).
 pub const DEPLOYMENT_KEY: &str = "deployment";
 
+/// The state key a scenario that sets a reserve's opening balance seeds it under, as text (`T-024-22`): the sandboxed
+/// part builds its stand-in with that figure in the account, in place of [`Reserve::OPENING`]. Where none is seeded,
+/// it keeps the stand-in's own.
+pub const OPENING_KEY: &str = "opening";
+
 /// The prefix of the state keys a script's next behaviour is read under: `script/next/{kind}/{dry|real}`. Reading
 /// one takes the behaviour out of the queue, which is how a script is consumed.
 pub const SCRIPT_PREFIX: &str = "script/next";
@@ -145,6 +150,10 @@ pub struct Spec {
     /// Whether a reserve declares that it starts routes on automatic deposits (`REQ-ORD-13`).
     #[serde(default)]
     pub automatic_deposits: bool,
+    /// What a reserve's account holds when its books are empty, where the scenario sets it; the stand-in's own
+    /// ([`Reserve::OPENING`]) where none (`T-024-22`).
+    #[serde(default)]
+    pub opening: Option<u128>,
 }
 
 impl Spec {
@@ -154,7 +163,16 @@ impl Spec {
             role,
             provider: provider.to_owned(),
             automatic_deposits: false,
+            opening: None,
         }
+    }
+
+    /// This provider, a reserve whose account holds `opening` when its books are empty: a run that scans for balances
+    /// gives each a figure no other figure of the run takes (`T-024-22`).
+    #[must_use]
+    pub fn opening_with(mut self, opening: u128) -> Self {
+        self.opening = Some(opening);
+        self
     }
 
     /// This provider, a reserve declaring that it starts routes on automatic deposits.
@@ -282,16 +300,20 @@ impl Spec {
     pub fn make(&self, context: &SuiteContext) -> Box<dyn Standin> {
         let identity = self.identity();
         match self.role {
-            Role::Reserve => Box::new(
-                Reserve::declaring(
+            Role::Reserve => {
+                let reserve = Reserve::declaring(
                     context,
                     &identity,
                     &self.bank(),
                     &self.ledger(),
                     self.automatic_deposits,
                 )
-                .shaped(&shape_of(&self.provider)),
-            ),
+                .shaped(&shape_of(&self.provider));
+                Box::new(match self.opening {
+                    Some(opening) => reserve.opening_with(opening),
+                    None => reserve,
+                })
+            }
             Role::Exchange => {
                 Box::new(Exchange::named(context, &identity).shaped(&shape_of(&self.provider)))
             }
