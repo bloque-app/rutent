@@ -4,7 +4,8 @@
 use rutent_contracts::module_interface::SecretValue;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::secrets::{
-    Canary, Kind, MIN_LEN, Planted, Scan, Surface, run_balanced, run_leaking, run_planted,
+    Canary, DECISION_FIELDS, Kind, MIN_LEN, Planted, Scan, Surface, opening_for, run_balanced,
+    run_leaking, run_planted,
 };
 
 fn text(kind: Kind, value: &str) -> Canary {
@@ -477,8 +478,10 @@ fn decision_records_hold_no_simulated_balance() {
         for record in &records {
             let text = String::from_utf8_lossy(&record.bytes);
             assert!(
-                text.contains("router_version") && text.contains("candidates"),
-                "seed {seed}: `{}` is no decision record",
+                text.contains("router_version")
+                    && text.contains("candidates")
+                    && text.contains("signature"),
+                "seed {seed}: `{}` is no decision record, as signed",
                 record.name
             );
         }
@@ -501,8 +504,20 @@ fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
         // A reserve's balance after each of its movements, and the holding account's after each step.
         let after = |part: &str| names.iter().filter(|n| n.contains(part)).count();
         assert!(
-            after("after movement") >= 2 && after("holding account, after step") >= 3,
-            "seed {seed}: the scan seeks no balance held mid-route or after a step: {names:?}"
+            after("holding account, after step") >= 3,
+            "seed {seed}: the scan seeks no balance the holding account held after a step: {names:?}"
+        );
+        // The holding account's balance after a step is not one figure for the run: it moves between steps.
+        let after_steps: std::collections::BTreeSet<&[u8]> = run
+            .scanned
+            .canaries
+            .iter()
+            .filter(|c| c.name.contains("holding account, after step"))
+            .map(|c| c.bytes.as_slice())
+            .collect();
+        assert!(
+            after_steps.len() >= 2,
+            "seed {seed}: the holding account's balance after each step is one figure"
         );
         // The reserve's opening balance is no round constant, and the run sets it.
         let opening = run
@@ -526,6 +541,26 @@ fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
             figures.iter().any(|(_, v)| *v == mid.to_string()),
             "seed {seed}: the balance after the first withdrawal ({mid}) isn't sought: {figures:?}"
         );
+        // A balance held between two movements: a figure of a reserve after a movement that is neither its opening nor
+        // its close.
+        let closing = run
+            .scanned
+            .canaries
+            .iter()
+            .find(|c| c.name.contains("reserve") && c.name.contains("at the end"))
+            .map(|c| String::from_utf8(c.bytes.clone()).expect("a figure"))
+            .expect("a closing balance");
+        let mid_route = run
+            .scanned
+            .canaries
+            .iter()
+            .filter(|c| c.name.contains("after movement"))
+            .map(|c| String::from_utf8(c.bytes.clone()).expect("a figure"))
+            .any(|v| v != opening && v != closing);
+        assert!(
+            mid_route,
+            "seed {seed}: no balance held between two movements is sought: {names:?}"
+        );
         for (name, value) in &figures {
             assert!(
                 value.len() >= MIN_LEN && !run.stated.contains(value),
@@ -543,7 +578,34 @@ fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
             "seed {seed}: a reserve's balance is on the shelf"
         );
         openings.push(opening);
+        // And the text Core produces about the run, which no other surface holds.
+        let looked: Vec<&str> = run
+            .scanned
+            .surfaces
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        for part in [
+            "why the routes stopped",
+            "what Core told of each order",
+            "why a swap failed",
+            "whether the log read back",
+        ] {
+            assert!(
+                looked.contains(&part),
+                "seed {seed}: the scan didn't read `{part}`"
+            );
+        }
     }
+    // The opening spans the range the notes give, and no seed leaves it.
+    let drawn: Vec<u128> = (0..2_000).map(opening_for).collect();
+    assert!(
+        drawn
+            .iter()
+            .all(|o| (61_234_567..=89_234_566).contains(o) && o % 1_000_000 != 0)
+            && drawn.iter().any(|o| *o > 79_000_000),
+        "the opening isn't spread over its range"
+    );
     assert_ne!(
         openings[0], openings[1],
         "the run doesn't set the opening from its seed"
@@ -555,11 +617,13 @@ fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
 fn balance_planted_in_a_decision_record_is_found_by_the_scan() {
     let clean = run_balanced(&mut Reference, 1, None);
     let scan = Scan::new(clean.scanned.canaries.clone()).expect("a scan");
-    for (name, value) in distinct(&clean.scanned.canaries) {
+    // Each figure in one field of the record, the fields taking turns: the request's, a candidate's, the snapshot's.
+    for (n, (name, value)) in distinct(&clean.scanned.canaries).into_iter().enumerate() {
+        let at = DECISION_FIELDS[n % DECISION_FIELDS.len()];
         let run = run_balanced(
             &mut Reference,
             1,
-            Some(&Planted::InDecisionRecord(value.clone())),
+            Some(&Planted::InDecisionRecord(value.clone(), at)),
         );
         let hits = scan.find(&run.scanned.surfaces);
         assert!(
@@ -567,7 +631,7 @@ fn balance_planted_in_a_decision_record_is_found_by_the_scan() {
                 .any(|h| h.surface.contains("Core's decision record")
                     && String::from_utf8(scan_bytes(&clean.scanned.canaries, &h.canary))
                         .is_ok_and(|v| v == value)),
-            "`{name}` planted in a decision record wasn't found in a decision record: {hits:?}"
+            "`{name}` planted in a decision record wasn't found in a decision record (at {at}): {hits:?}"
         );
     }
 }

@@ -628,11 +628,19 @@ fn read_core(core: &mut Core, surfaces: &mut Vec<Surface>) {
     }
     // The decision records Core signs: the log holds only their digests (`T-024-22`), so they are read where Core
     // keeps them, as signed.
-    for record in core.decision_records() {
-        surfaces.push(Surface::of(
-            format!("Core's decision record {}", record.record_id().as_str()),
-            serde_json::to_vec(&record),
-        ));
+    let signed = core.decision_record_bytes();
+    // A record that doesn't read back as one is still scanned, as signed, and the run is refused: it would be a
+    // record the scan could not tell was there.
+    assert_eq!(
+        signed.len(),
+        core.decision_records().len(),
+        "a decision record Core signed doesn't read back as one"
+    );
+    for (id, bytes) in signed {
+        surfaces.push(Surface {
+            name: format!("Core's decision record {id}"),
+            bytes,
+        });
     }
 }
 
@@ -663,6 +671,24 @@ fn read_run(run: &Run, surfaces: &mut Vec<Surface>) {
         "the inputs fed to the host",
         serde_json::to_vec(&run.inputs),
     ));
+    // The text Core produces about the run, which no other surface holds (`T-024-22`): why a route stopped, what
+    // Core told each order's customer, why a swap failed and whether the log read back.
+    surfaces.push(Surface::of(
+        "why the routes stopped",
+        serde_json::to_vec(&run.stopped),
+    ));
+    surfaces.push(Surface::of(
+        "what Core told of each order",
+        serde_json::to_vec(&run.followed),
+    ));
+    surfaces.push(Surface::of(
+        "why a swap failed",
+        serde_json::to_vec(&run.swap_failed),
+    ));
+    surfaces.push(Surface::of(
+        "whether the log read back",
+        serde_json::to_vec(&run.reopened),
+    ));
 }
 
 /// A copy of the first input that opened an order, under an order and a record id that carry `leak`: a boundary
@@ -689,6 +715,18 @@ pub fn leaked_input(inputs: &[RecordedInput], leak: &str) -> RecordedInput {
     leaked
 }
 
+/// The fields of a decision record a control plants a figure in: the request's, the request's round's, the bounds'
+/// policy version and the router's version, which are neither the request's nor its record's id (`T-024-22`). Each is a text field that
+/// still reads back as a record with the figure in it. A candidate's own fields (its amounts, its providers) are not
+/// here: the record holds them to the snapshot and to each other, so a figure written in one is a record that no
+/// longer reads back, which `read_core` refuses.
+pub const DECISION_FIELDS: [&str; 4] = [
+    "/request/request_id",
+    "/request/round/refines/request_id",
+    "/bounds/policy_version",
+    "/router_version",
+];
+
 /// Where a balance is planted in a run, for the controls (`T-024-20`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Planted {
@@ -696,8 +734,9 @@ pub enum Planted {
     InLog(String),
     /// In the state machine's journal: in an input the boundary lets through.
     InJournal(String),
-    /// In a decision record Core signed, which the log holds by its digest alone (`T-024-22`).
-    InDecisionRecord(String),
+    /// In a decision record Core signed, which the log holds by its digest alone, in the text field `.1` names, a
+    /// JSON pointer under the statement (`T-024-22`, [`DECISION_FIELDS`]).
+    InDecisionRecord(String, &'static str),
 }
 
 /// A run scanned for balances (`T-024-20`).
@@ -731,7 +770,7 @@ const ORDERED: [(&str, &str); 2] = [("req-bal-1", "12345678"), ("req-bal-2", "98
 /// The opening balance the balance run gives its reserves under `seed`: between 61 000 000 and 90 000 000, so it
 /// covers the orders, and never a round number.
 pub fn opening_for(seed: u64) -> u128 {
-    let drawn = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40;
+    let drawn = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 37;
     61_234_567 + u128::from(drawn % 28_000_000)
 }
 
@@ -895,6 +934,23 @@ pub fn run_balanced(
     let mut surfaces: Vec<Surface> = Vec::new();
     let mut closing: Vec<(String, u128)> = Vec::new();
     let mut holding = 0u128;
+    // Lands `LANDED[n]` at the wallet, and reads what the account then holds.
+    let land = |core: &mut Core, n: usize| {
+        let (order, amount) = LANDED[n];
+        core.land(WALLET_NODE, "USDC", order, amount)
+            .unwrap_or_else(|e| panic!("the wallet didn't take {amount}: {e:?}"));
+        let held = core
+            .holding_reading(WALLET_NODE, 2)
+            .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"))
+            .balance
+            .as_str()
+            .parse()
+            .expect("a figure");
+        running.borrow_mut().push((
+            format!("balance of the holding account, after landing {}", n + 1),
+            held,
+        ));
+    };
     let read_holding = |core: &mut Core| -> u128 {
         core.holding_reading(WALLET_NODE, 2)
             .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"))
@@ -912,13 +968,19 @@ pub fn run_balanced(
             for (n, held) in replayed(spec, &context, &journal).into_iter().enumerate() {
                 if !seen.contains(&held) {
                     seen.push(held);
-                    running.borrow_mut().push((
+                    // Index 0 is the books before any entry: the opening, not a balance held mid-route.
+                    let name = if n == 0 {
+                        format!(
+                            "balance of reserve {}, before any movement ({when})",
+                            spec.provider
+                        )
+                    } else {
                         format!(
                             "balance of reserve {}, after movement {n} ({when})",
                             spec.provider
-                        ),
-                        held,
-                    ));
+                        )
+                    };
+                    running.borrow_mut().push((name, held));
                 }
             }
         }
@@ -931,18 +993,15 @@ pub fn run_balanced(
             let installed = core
                 .install_wallet(WALLET_NODE, "USDC")
                 .unwrap_or_else(|e| panic!("the wallet wasn't installed: {e:?}"));
-            for (n, (order, amount)) in LANDED.iter().enumerate() {
-                core.land(WALLET_NODE, "USDC", order, amount)
-                    .unwrap_or_else(|e| panic!("the wallet didn't take {amount}: {e:?}"));
-                let held = read_holding(core);
-                running.borrow_mut().push((
-                    format!("balance of the holding account, after landing {}", n + 1),
-                    held,
-                ));
-            }
+            // The first landing is before any step; the others come between them, so the holding account's balance
+            // after a step is not one figure for the whole run.
+            land(core, 0);
             *wallet.borrow_mut() = Some(installed);
         },
         &mut |core, step| {
+            if step < LANDED.len() {
+                land(core, step);
+            }
             let held = read_holding(core);
             running.borrow_mut().push((
                 format!("balance of the holding account, after step {step}"),
@@ -980,10 +1039,10 @@ pub fn run_balanced(
                 },
             )
             .unwrap_or_else(|e| panic!("the wallet's statement wasn't kept: {e:?}"));
-            if let Some(Planted::InDecisionRecord(figure)) = plant {
+            if let Some(Planted::InDecisionRecord(figure, at)) = plant {
                 assert!(
-                    core.leak_into_decision_record(figure),
-                    "Core kept no decision record to write the figure in"
+                    core.leak_into_decision_record(figure, at),
+                    "Core kept no decision record with text at {at} to write the figure in"
                 );
             }
             if let Some(Planted::InJournal(figure)) = plant {

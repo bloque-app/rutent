@@ -173,11 +173,28 @@ fn vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_
         );
         let names = scan.names();
         assert!(
-            names.iter().any(|n| n.contains("after movement"))
-                && names
-                    .iter()
-                    .any(|n| n.contains("holding account, after step")),
-            "seed {seed}: the scan seeks no balance held mid-route or after a step: {names:?}"
+            names
+                .iter()
+                .any(|n| n.contains("holding account, after step")),
+            "seed {seed}: the scan seeks no balance held after a step: {names:?}"
+        );
+        // A balance held between two movements, distinct from the opening and the close, and the one the first
+        // withdrawal leaves: not only the books before any movement, which the opening already is.
+        let figure = |part: &str| {
+            run.scanned
+                .canaries
+                .iter()
+                .find(|c| c.name.contains(part))
+                .map(|c| String::from_utf8(c.bytes.clone()).expect("a figure"))
+                .unwrap_or_else(|| panic!("seed {seed}: no figure named `{part}`"))
+        };
+        let (opening, closing) = (figure("at the start"), figure("at the end"));
+        let first_withdrawal = opening.parse::<u128>().expect("a figure") - 12_345_678;
+        assert!(
+            mid_route(&run.scanned.canaries, &opening, &closing)
+                .iter()
+                .any(|(_, v)| *v == first_withdrawal.to_string()),
+            "seed {seed}: the balance after the first withdrawal ({first_withdrawal}) isn't sought: {names:?}"
         );
         assert!(
             nodes.files > 0 && nodes.bytes > 0,
@@ -189,6 +206,25 @@ fn vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_
             nodes.hits
         );
     }
+}
+
+/// The figures a reserve held after a movement that are neither its opening nor its close: balances held mid-route.
+fn mid_route(
+    canaries: &[rutent_scenarios::secrets::Canary],
+    opening: &str,
+    closing: &str,
+) -> Vec<(String, String)> {
+    canaries
+        .iter()
+        .filter(|c| c.name.contains("after movement"))
+        .map(|c| {
+            (
+                c.name.clone(),
+                String::from_utf8(c.bytes.clone()).expect("a figure"),
+            )
+        })
+        .filter(|(_, v)| v != opening && v != closing)
+        .collect()
 }
 
 // verifies: REQ-AUD-6
@@ -215,11 +251,10 @@ fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
     let kinds = [
         "holding account at",
         "at the start",
-        "after movement",
         "after landing",
         "holding account, after step",
     ];
-    let wanted: Vec<(String, String)> = kinds
+    let mut wanted: Vec<(String, String)> = kinds
         .iter()
         .filter_map(|kind| figures.iter().find(|(n, _)| n.contains(kind)).cloned())
         .collect();
@@ -228,6 +263,22 @@ fn scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files() {
         kinds.len(),
         "a kind of figure isn't sought: {figures:?}"
     );
+    // The balance held between two movements is chosen by value: the figure the first withdrawal leaves, which is
+    // neither the opening nor the close and so can't be the opening under another name.
+    let value_of = |part: &str| {
+        figures
+            .iter()
+            .find(|(n, _)| n.contains(part))
+            .map(|(_, v)| v.clone())
+            .expect("a figure")
+    };
+    let (opening, closing) = (value_of("at the start"), value_of("at the end"));
+    let withdrawn = (opening.parse::<u128>().expect("a figure") - 12_345_678).to_string();
+    let mid = mid_route(&clean.scanned.canaries, &opening, &closing)
+        .into_iter()
+        .find(|(_, v)| *v == withdrawn)
+        .expect("the balance after the first withdrawal is sought");
+    wanted.push(mid);
     let mut figures = wanted;
     figures.sort_by(|a, b| a.1.cmp(&b.1));
     figures.dedup_by(|a, b| a.1 == b.1);

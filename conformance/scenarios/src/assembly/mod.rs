@@ -898,24 +898,50 @@ impl Core {
             .collect()
     }
 
+    /// Every decision record Core signed, as signed: its id and the envelope's bytes, whether or not they read back as
+    /// a record (`T-024-22`: a scan that read only the records that parse would miss one that doesn't).
+    pub fn decision_record_bytes(&self) -> Vec<(String, Vec<u8>)> {
+        self.signer
+            .records
+            .iter()
+            .map(|(id, bytes)| (id.clone(), bytes.clone()))
+            .collect()
+    }
+
     /// A control for the scan of the records Core signs (`T-024-22`): writes `leak` into the first decision record
-    /// Core kept, in a field that is text, as a record that carried a figure would. The request's own identifier is
-    /// Core's to set, so a customer's figure can't be put there from outside; this puts it there from inside. False
-    /// if Core kept no record to write it in.
-    pub fn leak_into_decision_record(&mut self, leak: &str) -> bool {
+    /// Core kept, in the text field of the record `at` names (a JSON pointer under the statement, such as
+    /// `/request/request_id`), as a record that carried a figure would. Core sets the request's identifier and the
+    /// rest itself, so a customer's figure can't be put there from outside; this puts it there from inside. False if
+    /// Core kept no record, or the record has no text there, or reads back as no record with the figure in it.
+    pub fn leak_into_decision_record(&mut self, leak: &str, at: &str) -> bool {
         let Some(bytes) = self.signer.records.values_mut().next() else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return false;
         };
-        value["statement"]["request"]["request_id"] = format!("req-{leak}").into();
-        match serde_json::to_vec(&value) {
-            Ok(written) => {
+        let Some(field) = value["statement"].pointer_mut(at).filter(|f| f.is_string()) else {
+            return false;
+        };
+        // An amount stays a number, which is how a figure would sit there; any other text takes the figure after a word.
+        let numeric = field
+            .as_str()
+            .is_some_and(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
+        *field = if numeric {
+            leak.to_owned()
+        } else {
+            format!("req-{leak}")
+        }
+        .into();
+        match serde_json::to_vec(&value)
+            .ok()
+            .filter(|w| record_in(w).is_some())
+        {
+            Some(written) => {
                 *bytes = written;
                 true
             }
-            Err(_) => false,
+            None => false,
         }
     }
 
