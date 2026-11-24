@@ -1642,6 +1642,49 @@ fn a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok() {
     assert!(run.store.unsettled_erasures().is_empty());
 }
 
+/// A store that erased under the older rule, a citation standing after the override's decision, is bound again: the
+/// erasure is carried out already, so the retried erase answers `Ok`, nothing is reported refused, and once its
+/// `erasure` entry is appended the late citation is the one finding left (`INV-8`, `REQ-AUD-13`). The older rule's
+/// state is written straight into the evidence store (its kept file gone, its erased mark in place), not through the
+/// log, which refuses a citation once an erasure has begun.
+// verifies: INV-8, REQ-AUD-13
+#[test]
+fn a_store_erased_under_the_older_rule_is_not_reported_refused_when_bound_again() {
+    let dir = TempDir::new("older-rule");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    let done = run
+        .decide_override(&cited, |log| {
+            log.append(&measure_citing(&at, "seg-2")).unwrap();
+        })
+        .unwrap();
+    assert!(run.store.erase(&done).is_err());
+    drop(run);
+    let evidence = dir.evidence();
+    std::fs::remove_file(
+        evidence
+            .join("kept")
+            .join(format!("{}.json", cited.value.as_str())),
+    )
+    .unwrap();
+    std::fs::write(evidence.join("erased").join(cited.value.as_str()), b"").unwrap();
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&cited));
+    assert!(run.store.refused_erasures().is_empty());
+    assert_eq!(run.store.erase(&done), Ok(()));
+    run.append(&erasure(&cited, "done")).unwrap();
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.refused_erasures().is_empty());
+    assert_eq!(
+        run.store.unsettled_erasures(),
+        [(done, Violation(ERASED_YET_CITED))]
+    );
+}
+
 // --- Receipts' rules -----------------------------------------------------------------------------------------------
 
 /// A receipt altered after it was signed, signed by another key than the log's, or checked against another entry,

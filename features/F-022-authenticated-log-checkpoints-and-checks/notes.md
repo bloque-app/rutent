@@ -1312,3 +1312,19 @@ admitted effect until a `failed` result undoes it.
 - **Residual for `T-025-05`.** Orchestration writes the results, so a `failed` it writes can undo a revocation policy
   permitted. Before this row it could withhold `done` and so keep the revocation from counting: the power is the same,
   moved from "withhold" to "undo". A revocation's effect still needs policy's permit; its result doesn't.
+
+### Fix round 2 (`T-022-11`, three lows of the approval at `1bf65bfa`)
+
+- **L1.** `a_store_erased_under_the_older_rule_is_not_reported_refused_when_bound_again`: after a refused override erase
+  (a citation between decision and effect), the kept file is deleted and the erased mark written straight into the
+  evidence store, then the store is bound again: nothing is reported refused, the retried erase answers `Ok`, and after
+  the `erasure` entry the late citation is the finding. Rule-off F6 (the early `Ok` dropped) turns it and
+  `a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok` red.
+- **L2.** The drift test also compares a copy of each fixture with every change effect dated at one instant and its
+  results last, in the opposite order. **Gap, owner `core-internal`'s contract (the round that exposes grants in force):**
+  the tie-break can't show through `revoked_before_receipt`: a tie matters to whether a grant is in force at `made_at`,
+  and the rule then needs a revocation strictly after `made_at`, which a tied change isn't, so the tie-break off (F2)
+  leaves the drift test green. It stays held by `changes_at_one_instant_are_ordered_by_their_effects`. No fixture has a
+  verifier's class grant, so the test's doc no longer claims classes are compared.
+- **L3.** `PLAN.md`'s `T-022-10` Work text says a citation after the decision refuses the erasure (`T-022-11`); the
+  register's doc is wrapped.

@@ -10,8 +10,8 @@
 //! - **The operator** signs as [`Settings::operator`] with the deployment's `operator_key`, and states for
 //!   [`Settings::operator_party`].
 //! - **A provider's grant** is in force from a `change_catalogue` effect of `grant` for one of its tuples to one of
-//!   `revoke_grant` for it, each at its effect's time, a grant once it is done and a revocation from its effect. The log admits such an effect only on an
-//!   unused permit of a permitting decision policy wrote (`admit_entry`), so orchestration can't grant a provider by
+//!   `revoke_grant` for it, each at its effect's time, a grant once it is done and a revocation from its effect. The log admits
+//!   such an effect only on an unused permit of a permitting decision policy wrote (`admit_entry`), so orchestration can't grant a provider by
 //!   itself; only where its time is within the skew of the log's own [`Clock`], which orchestration never writes
 //!   (dated ahead of it, it is refused; behind it, as a retry after the skew is, unavailable); and, for a grant or a
 //!   revocation, only where it is dated no earlier than its tuple's last change, so a tuple's changes run in the
@@ -525,10 +525,10 @@ impl Register {
 
     /// Whether every grant of `provider` in force at `made_at` was revoked after it and no later than `received`,
     /// the time the log received the statement: core-internal's `revoked_before_receipt` (`THR-3`, `T-020-39`),
-    /// read from the register's grants done and revocations admitted (not undone) as the contract reads them from the history. Each grant, a tuple's or
-    /// a verifier's class, is in force at `made_at` where its latest change at or before it, by the effect's time and
-    /// the later one on a tie, granted; a grant made again after its revocation is a new grant and holds nothing
-    /// made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
+    /// read from the register's grants done and revocations admitted (not undone) as the contract reads them from
+    /// the history. Each grant, a tuple's or a verifier's class, is in force at `made_at` where its latest change at
+    /// or before it, by the effect's time and the later one on a tie, granted; a grant made again after its
+    /// revocation is a new grant and holds nothing made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
     /// refuses apart. A revocation at the instant of receipt counts as before it.
     fn revoked_before_receipt(&self, provider: &str, made_at: i128, received: i128) -> bool {
         let Some(tuples) = self.grants.get(provider) else {
@@ -788,6 +788,34 @@ mod tests {
             .collect()
     }
 
+    /// `case` with every grant and revocation effect dated at the time of the first one, where it holds two or more:
+    /// the changes tie, and the later effect in the log decides each, though the results come last in the opposite order.
+    fn at_one_instant(case: &Value) -> Option<Value> {
+        let mut case = case.clone();
+        let mut first = None;
+        let mut changes = 0;
+        for item in case["history"].as_array_mut()? {
+            let entry = &mut item["entry"];
+            if entry["what"]["call"] == "effect"
+                && entry["what"]["action"]["kind"] == "change_catalogue"
+                && ["grant", "revoke_grant"].contains(&entry["what"]["action"]["change"].as_str()?)
+            {
+                let at = first.get_or_insert_with(|| entry["when"]["at"].clone());
+                entry["when"]["at"] = at.clone();
+                changes += 1;
+            }
+        }
+        // The results come last, in the opposite order to their effects, so the order the results arrive in is not
+        // the effects' order.
+        let items = case["history"].as_array_mut()?;
+        let (results, mut rest): (Vec<Value>, Vec<Value>) = std::mem::take(items)
+            .into_iter()
+            .partition(|i| i["entry"]["what"]["call"] == "result");
+        rest.extend(results.into_iter().rev());
+        *items = rest;
+        (changes >= 2).then_some(case)
+    }
+
     /// The register as the log builds it from `history`, entry by entry.
     fn register_of(case: &Value, history: &[(Receipt, Entry)]) -> Register {
         let settings = Settings::new(
@@ -804,17 +832,27 @@ mod tests {
     }
 
     /// The contract's `revoked_before_receipt` and the register's reading of it agree over every attribution
-    /// fixture, at the claim's own times and at the time of each change in its history (so a tie in time between a
-    /// claim and a change, a grant's or a class's, is compared), each with five received times around the making, so
-    /// the port can't drift from the rule (`THR-3`, the review's Low on the register).
+    /// fixture, and over a copy of each with every change effect dated at one instant (so the later effect in the log
+    /// decides each tie), at the claim's own times and at the time of each entry in its history, each with five
+    /// received times around the making, so the port can't drift from the rule (`THR-3`, the review's Low on the
+    /// register). No fixture holds a verifier's class grant, so the classes' reading is compared by no case here. Nor does
+    /// the tie-break show here: a tie decides whether a grant is in force at `made_at`, and the rule then asks for a
+    /// revocation strictly after `made_at`, which no tied change is, so the rule's answer is the same either way (the
+    /// tie-break is held by `changes_at_one_instant_are_ordered_by_their_effects`).
     // verifies: THR-3
     #[test]
     fn contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures() {
         let (mut compared, mut revoked) = (0, 0);
-        for (name, case) in fixtures() {
+        let mut tied = 0;
+        let cases = fixtures().into_iter().flat_map(|(name, case)| {
+            let copy = at_one_instant(&case).map(|c| (format!("{name} (tied)"), c));
+            [Some((name, case)), copy].into_iter().flatten()
+        });
+        for (name, case) in cases {
             if case["history"].as_array().is_none_or(|h| h.is_empty()) {
                 continue;
             }
+            tied += usize::from(name.ends_with("(tied)"));
             let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
             let history = history_of(&name, &case);
             let register = register_of(&case, &history);
@@ -854,6 +892,7 @@ mod tests {
                 }
             }
         }
+        assert!(tied >= 5, "tied copies: {tied}");
         assert!(compared >= 200, "{compared}");
         assert!(revoked >= 8, "the fixtures revoke: {revoked}");
     }
