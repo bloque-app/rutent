@@ -1,6 +1,10 @@
 # F-025 `T-025-04`: drafted amendments for the owner
 
-**Drafts only. Nothing here is applied: `ARCHITECTURE.md` and `SPEC.md` are not edited by this row.** The reading behind
+**Applied on 2026-11-23**, on the owner's answer "Apply all" to `recheck-amendments` (2026-11-18): A to
+`ARCHITECTURE.md` §6, B's two sentences to `SPEC.md` §8 (0.4.2); B's optional entry, not proposed, is not applied.
+The text below is the draft as written.
+
+**As drafted: drafts only. Nothing here was applied by this row: `ARCHITECTURE.md` and `SPEC.md` are not edited by this row.** The reading behind
 each is in `notes.md`, "T-025-04". Applying them is the owner's call, item `recheck-amendments` on the form. Statuses
 are as of `m3`'s `3d9b6a45`.
 

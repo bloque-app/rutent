@@ -1716,3 +1716,15 @@ repository records with an owner are not listed here.
 ### The strict run
 
 Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; its strict step ran with the switch on and reported `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. At the milestone's tip `74249d38`, with this row merged, `ci` run `44394538585` ran the table strictly with the switch on: `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`; every other check at that commit passed, `STM on VOS` run `44394538454` included. The run's evidence-table step reports form items not checked, as `decisions/` sits outside the repository, so `form:cat5-timing-residual` is not validated against the form in CI.
+
+## The owner's answers of 2026-11-18, in the plan (2026-11-23)
+
+- **`cat5-timing-residual`: "Accept the residual".** The scope file's `REQ-CAT-5` row moves from `partly`
+  (`form:cat5-timing-residual`) to `m3`, its note naming the acceptance; `SPEC.md` 0.4.2 lists it as an accepted limit
+  of `THR-47`. Its eight tagged tests are its verifiers. Moving `partly` to `m3` tightens the table, so the ratchet
+  against `develop` doesn't refuse it.
+- **`spec-ac17-not-known`.** `unreachable_verifier_gives_a_refusal_and_nothing_moves` is renamed
+  `unreachable_verifier_gives_not_known_and_nothing_moves`; the earlier rows of these notes keep the old name, as run.
+- **New row:** `T-024-20`, the balance scan beside `T-025-03`'s secrets scan (item `balance-scan-coverage`).
+- **The exit runs again.** `T-024-10`'s strict run of 2026-11-18 at `74249d38` stands for the rows before wave 33;
+  the plan moves the exit to wave 37, after the answers' rows (waves 33 to 35) and `T-025-05`'s second pass (wave 36).

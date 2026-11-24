@@ -1523,3 +1523,18 @@ engine's list of decided actions and its counts).
   | the operator-only restriction (any listed role may erase) | `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy`, `every_value_moving_action_is_refused_when_policy_denies` |
   | another permission (`PostRoute`) stands for it | `caller_without_the_erase_permission_is_refused`, `operator_with_the_erase_permission_is_permitted_to_erase_a_statement`, `every_value_moving_action_is_refused_when_policy_denies` |
   | no permission asked of the operator | `caller_without_the_erase_permission_is_refused`, `every_value_moving_action_is_refused_when_policy_denies` |
+
+## The owner's answers of 2026-11-18, in the plan (2026-11-23)
+
+- **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as
+  `REQ-AUZ-5` and the engine already had it. The scenario is renamed `unreachable_verifier_gives_not_known_and_nothing_moves`
+  (`conformance/scenarios/tests/authz_scenarios.rs`, a pure rename with its doc comment). The note in
+  `components/core-authz/src/engine/mod.rs` that the reading is pending is left for `T-021-12`, which edits
+  `core-authz` anyway, so this docs change touches no `DEC-20` path.
+- **New rows:** `T-021-11` (the origin account fixed in v0; `F-020`'s notes, "The origin check of 2026-11-23"),
+  `T-021-12` (`roll_back`'s own permission, item `rollback-permission`) and `T-021-13` (an erasure that overrides
+  citations, its own permission, item `erasure-of-cited-evidence`). `T-021-12` and `T-021-13` share `roles` in wave 34
+  and run in turn.
+- **`stuck-same-actor-reaches`: "As applied".** Agents whose chains of accountable parties meet anywhere below the
+  operator count as one actor, as `T-021-06` built it. The operator note is `SPEC.md` 0.4.2's `OBL-2`: its own staff
+  and agents must include two actors whose chains meet nowhere below it, or no stuck order can be resolved.

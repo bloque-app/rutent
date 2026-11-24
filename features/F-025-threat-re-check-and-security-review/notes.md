@@ -877,3 +877,16 @@ switch's own reading (report mode until `T-024-10`). Closes L2. *The assembly:* 
 as the other calls do, tested through the assembly (a decline of nothing is the log's refusal, nothing recorded). Closes
 L3. L4 is closed. A nit, not blocking: the new comment in `ci.yml` says that without the variable "the probe skips"; it
 builds its own release provider instead (`jail_layers.rs:380-402`), as `F-024`'s note on the row says correctly.
+
+## The owner's answers of 2026-11-18 (applied 2026-11-23)
+
+- **`recheck-amendments` (`R-SAD-AMEND`): "Apply all".** `amendments.md`'s A.1 to A.6 are applied to
+  `ARCHITECTURE.md` §6 (the five rows, the `THR-57` row and the closing sentence; the pin in A.1's design cell now
+  48.0.9) and B's two sentences to `SPEC.md` §8 (`THR-130`, `THR-57`), in `SPEC.md` 0.4.2. B's optional `THR-79`
+  Coverage entry was "not proposed" and is not applied.
+- **`cat5-timing-residual`: accepted for v0**, an accepted limit of `THR-47` in `SPEC.md` 0.4.2; the scope file classes
+  `REQ-CAT-5` as `m3`.
+- **`balance-scan-coverage` (`R-BALANCE-SCAN`):** a scan row, `T-024-20`, `F-024`'s since it owns the files.
+- **`thr3-backdated-after-revocation`:** the `THR-3` residual this row recorded becomes `T-022-09`.
+- **`T-025-05` runs again** in wave 36, over what the answers' rows change on `DEC-20`'s paths, against the commit
+  of its first review.

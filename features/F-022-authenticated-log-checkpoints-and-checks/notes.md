@@ -1122,3 +1122,13 @@ the two changed `T-022-02` tests and `--operator-key` held.
     is a finding; not needed by any row.
   - `contracts/core-internal/README.md` still says `T-022-07` "moves `core-audit` off" the old URNs; it is now true,
     and is the contracts' own file, so unedited here (`DEC-20`). Owner: the next contract round (`T-020-30`).
+
+## The owner's answers of 2026-11-18, in the plan (2026-11-23)
+
+- **`holding-balance-evidence`: "Evidence store only".** The default this feature built (a `holding_balance` result's
+  bytes kept in the evidence store, and only there) is now `SPEC.md` 0.4.2's `REQ-AUD-6`: a holding account's balance
+  read to verify it may be kept only as evidence held outside the log, never in the log or a record. `T-024-20` scans
+  for it.
+- **New rows:** `T-022-09` (a statement received after its grant's revocation is refused, `THR-3`, item
+  `thr3-backdated-after-revocation`; `T-025-05`'s residual) and `T-022-10` (the store erases a cited statement on a
+  decided override, item `erasure-of-cited-evidence`, beside `T-021-13` and `T-020-42`).
