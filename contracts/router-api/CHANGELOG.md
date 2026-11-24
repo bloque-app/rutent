@@ -11,6 +11,12 @@
   a tuple paying per order (the record's), an operation before the last and an earlier deposit at a batching reserve
   (the candidate's). The router's search drops such a candidate from `T-020-43`. Folded into
   this unreleased major. (DEC-4, DEC-20, REQ-AUD-4, REQ-ORD-33, T-020-39)
+- A kept or outranked candidate doesn't end a part on a deposit at a reserve tuple that pays out in batches (item
+  `shared-movement-reading`, `T-020-43`, review of `269ccee8`): the record's check refuses it, so the rule holds of every
+  valid record and not only of what the router emits; a candidate dropped for another reason may, as the router
+  drops it first for this one. One invalid fixture, `decision-record-batching-deposit-ending-a-kept-candidate`,
+  made from the valid batching fixture with its drop removed. No shape changed. Folded into this unreleased major.
+  (DEC-4, DEC-20, REQ-ORD-33, T-020-43)
 - Docs (`T-020-21`, item 2): `Operation::stated_out`'s `None` means nothing arrives by the answer, so it confirms
   nothing and a candidate through it is dropped as delivering nothing; it is never read as the answer's
   `amount_out`. No shape, type or rule changed. Folded into this unreleased major. (DEC-4, DEC-20, REQ-CAT-11,

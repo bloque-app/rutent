@@ -61,7 +61,7 @@ use rutent_contracts::core_internal::{
     ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef,
+    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef, Payouts,
     ReserveMovementOutcome, ResultBody, Statement, TransferOutcome,
 };
 use rutent_contracts::router_api::{Amount, Id, Operation, OperationKind};
@@ -340,6 +340,9 @@ pub enum Unadmitted {
     /// It is a part's final deposit to a destination with no public record Core reads, which no publisher declares a
     /// private rail: nothing could close the part (`REQ-ORD-33`).
     NoPublicRecord,
+    /// It is a part's final deposit at a reserve tuple that declares `batched` payouts, which no order's close can
+    /// rest on alone (`REQ-ORD-33`, `T-020-43`).
+    BatchedPayout,
 }
 
 impl Unadmitted {
@@ -350,8 +353,28 @@ impl Unadmitted {
             Unadmitted::NoHoldingAccount => RouteRefusal::NoHoldingAccount(place),
             Unadmitted::NotListed => RouteRefusal::ProviderNotListed(place),
             Unadmitted::NoPublicRecord => RouteRefusal::NoPublicRecord(place),
+            Unadmitted::BatchedPayout => RouteRefusal::BatchedPayout(place),
         }
     }
+}
+
+/// Whether `deposit` is at a reserve tuple that declares `batched` payouts in its provider's accepted advertisement:
+/// one movement may pay several orders' deposits, and a movement evidences one order's close, so a part ending
+/// here could never close (`REQ-ORD-33`, `T-020-43`). A reserve that declares nothing pays per order, and so does
+/// a deposit whose provider or tuple the catalogue doesn't hold, which is refused on other grounds (`admits`).
+pub fn pays_in_batches(catalogue: &Catalogue, deposit: &Operation) -> bool {
+    deposit.kind == OperationKind::Deposit
+        && catalogue
+            .accepted_advertisement(deposit.provider.as_str())
+            .and_then(|ad| ad.statement.offers.reserve.as_ref())
+            .is_some_and(|reserve| {
+                reserve.tuples.iter().any(|t| {
+                    t.origin == deposit.from.node
+                        && t.destination == deposit.to.node
+                        && t.asset == deposit.from.asset.id
+                        && t.payouts() == Payouts::Batched
+                })
+            })
 }
 
 /// Whether `operation` may be routed through now, by the catalogue as it stands: the catalogue lists its provider,

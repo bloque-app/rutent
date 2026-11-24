@@ -82,6 +82,10 @@ pub enum RouteRefusal {
     /// The part's final deposit, at this place, is to a destination with no public record Core reads, which no
     /// publisher declares a private rail: nothing could close the part (`REQ-ORD-33`, `T-020-09`).
     NoPublicRecord(usize),
+    /// The part's final deposit, at this place, is at a reserve tuple that declares `batched` payouts: one movement
+    /// may pay several orders, and a movement evidences one order's close, so nothing could close the part
+    /// (`REQ-ORD-33`, `T-020-43`). Routing drops such a route (`batched_payout`); this is the guard behind it.
+    BatchedPayout(usize),
 }
 
 /// A refused route: why, and the class the caller is told.

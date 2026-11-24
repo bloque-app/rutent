@@ -1710,7 +1710,10 @@ impl Segments {
                     let ending = part.operations.len() - 1;
                     let closable = || {
                         let deposit = &part.operations[ending];
-                        if deposit.kind != rutent_contracts::router_api::OperationKind::Deposit
+                        if crate::closing::pays_in_batches(parts.catalogue, deposit) {
+                            Err(crate::closing::Unadmitted::BatchedPayout.at(ending))
+                        } else if deposit.kind
+                            != rutent_contracts::router_api::OperationKind::Deposit
                             || parts.grading.can_close(deposit)
                         {
                             Ok(())

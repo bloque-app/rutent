@@ -3374,3 +3374,53 @@ fn a_raise_the_log_refuses_is_kept_readable_and_stops_nothing() {
     );
     assert_eq!(refused[0].2, Violation("a rule of the log"));
 }
+
+/// A reserve that batches payouts answers two orders' final deposits with one movement on `polygon`: the first order
+/// graded on it keeps it, and the second waits on the reserve's word, not closing, as the owner's ruling reads ("First
+/// keeps it", item `shared-movement-reading`). It is why routing ends no route on such a reserve (`T-020-43`).
+// verifies: REQ-ORD-33
+#[test]
+fn second_order_on_a_shared_final_movement_waits_while_the_first_keeps_it() {
+    let route = route(None);
+    let (catalogue, mut nets, books) = fixture_world();
+    for tx in ["tx-d1", "tx-d2"] {
+        nets.moved("polygon", tx, "poly-batch", "acct-9", "USDC", D.1);
+    }
+    let log = Log::default();
+    let parts: Vec<Part> = ["ord-1", "ord-2"]
+        .into_iter()
+        .map(|order| {
+            Part::new(
+                order,
+                &route,
+                end("polygon", "acct-9", ("USDC", 6), D.1),
+                &log,
+            )
+        })
+        .collect();
+    let mut closing = Closing::new();
+    for part in &parts {
+        part.settle_before(&mut grading(&catalogue, &nets, &books, &mut closing), 2);
+    }
+    let graded: Vec<Graded> = parts
+        .iter()
+        .zip(["tx-d1", "tx-d2"])
+        .map(|(part, tx)| {
+            let bytes = deposit(tx, json!([piece(3, "book", "reserve-wallet")]));
+            part.grade(
+                &mut grading(&catalogue, &nets, &books, &mut closing),
+                2,
+                "reserve-wallet",
+                tx,
+                &bytes,
+                D.1,
+            )
+        })
+        .collect();
+    assert!(matches!(graded[0], Graded::Settles { .. }));
+    assert_eq!(graded[1], Graded::Waits(Short::MovementShared));
+    assert_eq!(
+        closing.evidences("polygon", "poly-batch"),
+        Some(("ord-1", "p1-s3"))
+    );
+}

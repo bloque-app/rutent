@@ -51,8 +51,9 @@ use rutent_contracts::router_api::{
 /// `#[non_exhaustive]` since 3.0.0, so a reason added later (still a major under `DEC-4`) breaks no build here; a
 /// test holds this list to the contract's schema, so a new reason fails it until the suite is reviewed for it.
 /// `batched_payout` (router-api 4.0.0, `T-020-39`) is checked by the contract's own [`DecisionRecord::check`], which the
-/// suite runs first: its part's last operation, a deposit at a tuple the snapshot says pays out in batches. The cases
-/// where the router drops one are `T-020-43`'s.
+/// suite runs first: its part's last operation, a deposit at a tuple the snapshot says pays out in batches; and the
+/// contract refuses a kept or outranked candidate that ends there (`T-020-43`). The cases where the router drops
+/// one are `T-020-43`'s.
 pub const DROP_REASONS: [&str; 18] = [
     "stale_figure",
     "void_statement",

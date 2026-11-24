@@ -4,7 +4,8 @@
 mod router_double;
 
 use router_double::{
-    BREAKS_TIES_DESCENDING, Correct, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FLOOR_BEFORE_THE_FEE,
+    BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING, BREAKS_TIES_DESCENDING, Correct,
+    ENDS_ON_BATCHING_RESERVE, FEE_IGNORES_MAXIMUM, FEE_ROUNDS_DOWN, FLOOR_BEFORE_THE_FEE,
     FOLLOWS_RATE_CYCLES, IGNORES_DECIMALS, IGNORES_OBJECTIVE, LEAVES_OUT_CALLS, OMITS_UNSTATABLE,
     OUTRANKS_UNCONFIRMED, ROUNDS_EACH_LEVEL, Reference,
 };
@@ -452,6 +453,62 @@ fn every_flaw_fails_the_suite_run() {
     assert!(fails(run::<Reference<OMITS_UNSTATABLE>>()));
     assert!(fails(run::<Reference<LEAVES_OUT_CALLS>>()));
     assert!(fails(run::<Reference<FLOOR_BEFORE_THE_FEE>>()));
+    assert!(fails(run::<Reference<ENDS_ON_BATCHING_RESERVE>>()));
+    assert!(fails(run::<
+        Reference<BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING>,
+    >()));
+}
+
+const BATCHED_ROUTE: [&str; 4] = ["f-w", "f-ex-fast", "f-ramp-x", "f-dep-batched"];
+
+// verifies: REQ-AUD-4, REQ-ORD-33
+#[test]
+fn a_route_ending_on_a_reserve_that_batches_payouts_is_dropped_with_its_reason() {
+    let record = routed_case::<Correct>("policy-shortlist");
+    assert_eq!(
+        on_path(&record, &BATCHED_ROUTE).dropped,
+        Some(DropReason::BatchedPayout {
+            part: 0,
+            operation: 3
+        })
+    );
+    assert!(recompute(&record).passes());
+}
+
+// verifies: REQ-ORD-33
+#[test]
+fn a_kept_route_ending_on_a_reserve_that_batches_payouts_is_refused() {
+    let mut record = routed_case::<Correct>("policy-shortlist");
+    let i = index_on_path(&record, &BATCHED_ROUTE);
+    record.candidates[i].dropped = None;
+    // The contract refuses it, so the suite's first check fails and no other runs.
+    assert!(
+        record
+            .check()
+            .is_err_and(|v| v.to_string().contains("pays out in batches"))
+    );
+    assert_eq!(recompute(&record).failed_checks(), vec![Check::Contract]);
+}
+
+// verifies: REQ-ORD-33, DEC-5
+#[test]
+fn a_router_that_ends_routes_on_a_batching_reserve_fails_only_where_one_is_advertised() {
+    let report = run::<Reference<ENDS_ON_BATCHING_RESERVE>>();
+    let failed: Vec<&str> = report.failures().iter().map(|o| o.case).collect();
+    assert!(
+        !failed.is_empty()
+            && failed.iter().all(|case| {
+                ["policy-shortlist", "batching-deposit-would-win-choice"].contains(case)
+            }),
+        "{}",
+        report.summary()
+    );
+    // The record it makes keeps the route, which the contract refuses.
+    let case = case("policy-shortlist");
+    let record =
+        Reference::<ENDS_ON_BATCHING_RESERVE>::route(&case.request, &case.snapshot, &case.bounds);
+    assert_eq!(on_path(&record, &BATCHED_ROUTE).dropped, None);
+    assert!(record.check().is_err());
 }
 
 // verifies: REQ-ORD-27, DEC-5
@@ -653,4 +710,47 @@ fn a_quote_at_another_amount_can_not_slow_the_fastest_route() {
         "a fresh quote an operation cites is for its amount in"
     );
     assert_eq!(recompute(&record).failed_checks(), vec![Check::Contract]);
+}
+
+// verifies: REQ-ORD-33
+#[test]
+fn a_batching_deposit_that_would_win_the_choice_round_is_dropped_and_not_chosen() {
+    let record = routed_case::<Correct>("batching-deposit-would-win-choice");
+    let route = ["f-w", "f-ex-slow", "f-ramp-x", "f-dep-batched"];
+    assert_eq!(
+        on_path(&record, &route).dropped,
+        Some(DropReason::BatchedPayout {
+            part: 0,
+            operation: 3
+        })
+    );
+    assert_eq!(
+        path(&record, record.chosen().expect("a route")),
+        vec![
+            SLOW_ROUTE
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>()
+        ]
+    );
+    assert!(recompute(&record).passes());
+}
+
+// verifies: REQ-ORD-33, DEC-5
+#[test]
+fn a_router_that_drops_a_batching_route_only_when_it_shortlists_fails_the_choice_case() {
+    let report = run::<Reference<BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING>>();
+    let failed: Vec<&str> = report.failures().iter().map(|o| o.case).collect();
+    assert!(
+        !failed.is_empty()
+            && failed
+                .iter()
+                .all(|case| *case == "batching-deposit-would-win-choice"),
+        "{}",
+        report.summary()
+    );
+    // The shortlist case, where it does drop, is clean.
+    let shortlist =
+        routed_case::<Reference<BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING>>("policy-shortlist");
+    assert!(recompute(&shortlist).passes());
 }

@@ -495,3 +495,11 @@ changelog entry, as a second bullet; no second bump.
 - **`name_segment`'s other refusals** (nit). `tests/route_calls.rs` also asserts it names nothing for a choice
   round with no route (`decision-record-with-no-route`, `NothingChosen`) and for a record that breaks its contract
   (choosing a candidate it doesn't hold, `Invalid`). These pin behaviour already there, so they passed at once.
+
+## T-020-43: no route ends on a reserve that batches payouts
+
+`judge.rs`'s `fault` drops a path whose last segment is a deposit at a reserve tuple declaring `payouts: batched`, as
+`batched_payout` naming its part's last operation, after the four cut-short reasons and before `excluded_by_policy`.
+A tuple that declares `per_order` or nothing is routed as before. `Segment::batches_payouts` reads the tuple figure the
+snapshot already carries. The contract's record check now refuses a kept or outranked candidate ending there, and the policy case's
+`f-dep-batched` and the choice case `batching-deposit-would-win-choice` hold a router to it; the full account is in `F-020`'s notes.
