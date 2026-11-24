@@ -134,6 +134,9 @@ pub(super) struct HeldWallets<'a, 'b> {
     pub(super) holdings: &'a mut Holdings,
     pub(super) running: &'a RefCell<Running<'b>>,
     pub(super) bounds: &'a PolicyBounds,
+    /// A fresh transaction of Core's, drawn where a holding account's module restarted, for restoring what the log
+    /// holds before the withdrawal (`T-020-46`).
+    pub(super) restore: Option<Id>,
 }
 
 impl Withdrawals for HeldWallets<'_, '_> {
@@ -162,6 +165,7 @@ impl Withdrawals for HeldWallets<'_, '_> {
             holdings: &mut *self.holdings,
             platform: &mut *running.platform,
             operator: &operator,
+            restore: self.restore.as_ref().map(Id::as_str),
         }
         .withdraw(route, order, amount, asked)
     }
@@ -173,6 +177,8 @@ struct Landing<'a, W: World, O: Operator> {
     holdings: &'a mut Holdings,
     platform: &'a mut Platform<W>,
     operator: &'a O,
+    /// Core's fresh identifiers: a restore goes under a transaction of Core's own (`T-020-46`).
+    fresh: &'a mut dyn Fresh,
 }
 
 impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
@@ -212,6 +218,35 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
             order,
             amount.as_str(),
         ))
+    }
+
+    fn restore(
+        &mut self,
+        node: &str,
+        asset: &str,
+        order: &str,
+        amount: &rutent_contracts::router_api::Amount,
+    ) -> Landed {
+        if self
+            .holdings
+            .account(node)
+            .is_none_or(|account| account.asset() != asset)
+        {
+            return Landed::Unconfirmed;
+        }
+        let transaction = self.fresh.id();
+        answered(
+            self.holdings
+                .restore(
+                    self.platform,
+                    self.operator,
+                    node,
+                    order,
+                    amount.as_str(),
+                    transaction.as_str(),
+                )
+                .map(|_| ()),
+        )
     }
 }
 
@@ -493,6 +528,26 @@ impl Core {
         Ok(effect)
     }
 
+    /// What a reopened Core finds of the landings its segments owed (`Segments::reconcile_landings`, `T-020-46`): each
+    /// value the log settled at a node a holding account holds, still resting there, restored in the account where
+    /// the wallet lacks it, never landed blind. Answers how many it found placed.
+    pub(super) fn reconcile_landings(&mut self) -> usize {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let Some(made_at) = self.clock.now().timestamp() else {
+            return 0;
+        };
+        let mut key = RealKey::assembly();
+        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let mut landing = Landing {
+            holdings: &mut self.holdings,
+            platform: &mut self.fleet.platform,
+            operator: &operator,
+            fresh: &mut self.fresh,
+        };
+        self.segments.reconcile_landings(&mut landing)
+    }
+
     /// Lands in the holding accounts the value of each segment that settled at a public node they hold, as Core does
     /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. The assembly calls
     /// it after each run of a part, so where the value rests is Core's own record, and a scenario calls it again to
@@ -509,6 +564,7 @@ impl Core {
             holdings: &mut self.holdings,
             platform: &mut self.fleet.platform,
             operator: &operator,
+            fresh: &mut self.fresh,
         };
         self.segments.land_settled(&mut landing)
     }

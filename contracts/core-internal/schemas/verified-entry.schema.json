@@ -3054,7 +3054,7 @@
       }
     },
     "what_order_opened": {
-      "description": "An order as intake opened it, before any acceptance (T-020-45, for T-020-46's rebuild on reopening). The tuples' inputs are not here: they may carry accounts, so they stay out of the log (REQ-AUD-6).",
+      "description": "An order as intake opened it, before any acceptance (T-020-45, for T-020-46's rebuild on reopening). The tuples' inputs are not here: they may carry accounts, so the log holds only the salted commitment of the operator's statement of them (inputs, REQ-AUD-6).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -3100,6 +3100,10 @@
         "route": {
           "description": "The route asked for, as the router's request names it.",
           "$ref": "urn:rutent:router-api:request"
+        },
+        "inputs": {
+          "description": "The salted commitment of the operator's statement of the order's inputs (urn:rutent:core-internal:order-inputs), kept in the evidence store and appended as a stated entry before this one, so the log holds no account (REQ-AUD-6, T-020-46). Absent where the order carries no input.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
         }
       }
     },

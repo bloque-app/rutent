@@ -11,8 +11,12 @@
 //!   its outcome, and the value in flight held in [`Exposures`];
 //! - the stuck orders ([`Stuck::reopened`]): the declarations, the kept decisions, what moved and the moves in motion;
 //! - what each started order needs to run on: its decision record, its plan, its authorisation as the log holds it in
-//!   force, its origin and session from its `order_opened`, its destination's account as the deposit's input, and what
-//!   its route delivers.
+//!   force, its origin and session from its `order_opened`, its inputs from the operator's statement of them that
+//!   `order_opened` names by commitment, and what its route delivers.
+//!
+//! - the hand-ons the log holds half of ([`rutent_core_orch::hand_on::HandOn::reopened`]);
+//! - the landings the segments owed, asked of the holding accounts, whose host record goes on beside the platform
+//!   (`Segments::reconcile_landings`).
 //!
 //! The decision records are the operator key's: Core signs each with it, and the log names it by digest. The key and
 //! the records it signed go on across the reopening, as the platform and the clock do, and each is held to the log's
@@ -71,11 +75,38 @@ fn held_record(
 }
 
 impl Core {
+    /// The host's holding accounts, which go on beside the platform, listed again in the reopened catalogue: each
+    /// wallet a module the operator publishes, its node public, the way to its account recorded, as
+    /// [`Core::install_wallet`] listed it (`REQ-CAT-23`, `T-020-46`).
+    pub(super) fn relist_holdings(&mut self) {
+        let accounts: Vec<(String, String)> = self
+            .holdings
+            .attributions()
+            .into_iter()
+            .filter_map(|(node, _)| {
+                let provider = self.holdings.account(&node)?.provider().to_owned();
+                Some((node, provider))
+            })
+            .collect();
+        for (node, provider) in accounts {
+            let _ = self.catalogue.publish_operator_module(&provider);
+            let _ = self.catalogue.add_public_node(&node);
+            let _ = self.catalogue.register_public_holding(&node, &provider);
+        }
+    }
+
     /// Rebuilds Core's own state from the log the disk holds (see the module's docs).
     pub(super) fn rebuild_from_log(&mut self) {
         let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
         self.issued = Issued::recorded(&history);
-        self.intake = Intake::reopened(&history);
+        self.intake = {
+            let mut reading = Reading {
+                signed: &self.signer.records,
+                entries: &history,
+                kept: &mut self.kept,
+            };
+            Intake::reopened(&history, &mut reading)
+        };
         let orders: Vec<Id> = self.intake.orders().filter_map(Id::new).collect();
         for order in &orders {
             if let Some(record) = self.intake.record(order) {
@@ -106,8 +137,12 @@ impl Core {
         };
         self.segments = segments;
         self.exposures = exposures;
-        // The routes handed on whose start the holding account's record proved (`T-020-26`).
+        // The routes handed on whose start the holding account's record proved (`T-020-26`), and the hand-ons the log
+        // holds half of.
         self.recover_starts();
+        self.hand_on = rutent_core_orch::hand_on::HandOn::reopened(&history);
+        // The landings the segments owed: asked of the holding accounts, never made blind (`INV-1`).
+        self.reconcile_landings();
         self.stuck = Stuck::reopened(&self.segments, &self.clock, &history, &mut self.exposures);
         self.restart_orders(&history);
     }
@@ -198,7 +233,13 @@ impl Core {
                     .ok()
                     .map(|shown| shown.arrives)
             })?;
-        let mut inputs = BTreeMap::new();
+        // The order's inputs, as intake read them back from the operator's statement of them (`T-020-46`), the
+        // destination's account among them.
+        let mut inputs = self
+            .intake
+            .request_of(order)
+            .map(|request| request.inputs.clone())
+            .unwrap_or_default();
         inputs.insert(
             DESTINATION_INPUT.to_owned(),
             destination.account.as_str().to_owned(),

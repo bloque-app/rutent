@@ -49,9 +49,10 @@
 //! Every value-moving effect of the linked order, or of the new route, stays under policy's decision and its own
 //! authorisation, as every move does (`F-021`).
 //!
-//! **In memory only.** The pending changes, resumes and hand-ons, the refusals recorded for linked orders, the linked
-//! orders' starts and the spent records live in [`HandOn`]; after a restart a linked order's start can't be proven
-//! again and its segments are refused, failing closed. Keeping them durably is `F-030`'s.
+//! **After a restart.** A Core that reopens rebuilds from the log the hand-ons it holds half of
+//! ([`HandOn::reopened`]: a `handed_on` taken, its linked order's `route_chosen` not) and the starts the holding
+//! accounts' records proved ([`HandOn::recover_starts`]). The pending changes and resumes, and the refusals recorded for
+//! linked orders, live in [`HandOn`] alone (`T-020-46`'s gaps).
 
 mod rule;
 
@@ -486,6 +487,17 @@ pub struct HandOn {
     /// statement is refused, and the same entry again is answered with its receipt.
     started: BTreeMap<String, Started>,
     linked: BTreeMap<String, Linked>,
+    /// The hand-ons a Core that reopened found pending in the log, by order and part (`T-020-46`): the first order's
+    /// `handed_on` taken, the linked order's `route_chosen` not.
+    logged: BTreeMap<(String, String), Logged>,
+}
+
+/// A hand-on the log holds half of: the first order's `handed_on`, with its receipt, and the first order as it stood
+/// before it, which a retry naming the same linked order builds the `route_chosen` on.
+#[derive(Debug, Clone)]
+struct Logged {
+    handed_on: (Step, RecordedInput),
+    before: stm::Order,
 }
 
 /// A linked order's start as the log took it.
@@ -501,6 +513,86 @@ impl HandOn {
     /// Nothing handed on yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The hand-ons rebuilt from `history`, the log's own entries, as a Core that reopens reads them (`T-020-46`):
+    /// each part whose `handed_on` the log took with no `route_chosen` of its linked order and no
+    /// `hand_on_taken_back` after it is pending, its `handed_on` as the log holds it and the first order as it stood
+    /// before it. A retry naming the same linked order appends the linked order's `route_chosen` alone, built from the
+    /// retry's route as the first hand-on built it; one naming another is refused
+    /// ([`HandOnError::PendingForAnother`]). The rest of a hand-on is in the log already: its starts, which
+    /// [`HandOn::recover_starts`] proves again.
+    pub fn reopened(history: &[(Receipt, Entry)]) -> Self {
+        let mut hand_on = HandOn::new();
+        let inputs: Vec<(&Receipt, &RecordedInput)> = history
+            .iter()
+            .filter_map(|(receipt, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Input { input },
+                    ..
+                }) => Some((receipt, input)),
+                _ => None,
+            })
+            .collect();
+        for (at, (receipt, input)) in inputs.iter().enumerate() {
+            let Observed::HandedOn { linked_order, .. } = &input.observed else {
+                continue;
+            };
+            let Some(part) = input.subject.part.as_ref() else {
+                continue;
+            };
+            let later = &inputs[at + 1..];
+            let opened = later.iter().any(|(_, i)| {
+                i.subject.order.as_str() == linked_order.as_str()
+                    && matches!(i.observed, Observed::RouteChosen { .. })
+            });
+            let taken_back = later.iter().any(|(_, i)| {
+                matches!(&i.observed, Observed::HandOnTakenBack { linked_order: l } if l == linked_order)
+            });
+            if opened || taken_back {
+                continue;
+            }
+            // The first order as it stood before its `handed_on`.
+            let mut before: Option<stm::Order> = None;
+            for (_, earlier) in &inputs[..at] {
+                if earlier.subject.order != input.subject.order {
+                    continue;
+                }
+                before = match before {
+                    None => Stm::open(earlier),
+                    Some(order) => Some(Stm::transition(&order, earlier)),
+                };
+            }
+            let (Some(before), Ok(entry)) = (
+                before,
+                GeneralEntry::try_from(
+                    history
+                        .iter()
+                        .find(|(r, _)| r == *receipt)
+                        .map(|(_, e)| e.clone())
+                        .unwrap_or_else(|| unreachable!("the input's own entry")),
+                ),
+            ) else {
+                continue;
+            };
+            hand_on.logged.insert(
+                (
+                    input.subject.order.as_str().to_owned(),
+                    part.as_str().to_owned(),
+                ),
+                Logged {
+                    handed_on: (
+                        Step {
+                            entry,
+                            receipt: Some((*receipt).clone()),
+                        },
+                        (*input).clone(),
+                    ),
+                    before,
+                },
+            );
+        }
+        hand_on
     }
 
     /// Records the customer's new destination for a waiting part (see the module's docs). A change built and not
@@ -747,7 +839,30 @@ impl HandOn {
             return self.take_back(parts, &at);
         }
         if !self.hand_ons.contains_key(&at) {
-            let built = Self::build_hand_on(parts, &handing)?;
+            let built = match self.logged.get(&at) {
+                // Half of it in the log already, found by a Core that reopened: built on the first order as it stood
+                // before its `handed_on`, which stands as the log took it (`T-020-46`).
+                Some(logged) => {
+                    let linked = logged.handed_on.1.observed.clone();
+                    if !matches!(&linked, Observed::HandedOn { linked_order, .. }
+                        if linked_order.as_str() == handing.linked.as_str())
+                    {
+                        let Observed::HandedOn { linked_order, .. } = linked else {
+                            return Err(HandOnError::Unknown);
+                        };
+                        return Err(HandOnError::PendingForAnother {
+                            pending: Id::new(linked_order.as_str())
+                                .ok_or(HandOnError::Id("a linked order"))?,
+                        });
+                    }
+                    let (handed_on, before) = (logged.handed_on.clone(), logged.before.clone());
+                    let mut built = Self::build_on(parts, &handing, before)?;
+                    built.handed_on = handed_on;
+                    built
+                }
+                None => Self::build_hand_on(parts, &handing)?,
+            };
+            self.logged.remove(&at);
             self.hand_ons.insert(at.clone(), built);
         }
         // A hand-on pending was built for one linked order, its `handed_on` perhaps in the log already: a retry names
@@ -902,6 +1017,15 @@ impl HandOn {
             .order(handing.order)
             .cloned()
             .ok_or(Refused::Unknown)?;
+        Self::build_on(parts, handing, first)
+    }
+
+    /// [`HandOn::build_hand_on`], on `first`, the first order as it stands for the hand-on.
+    fn build_on(
+        parts: &mut Parts<'_>,
+        handing: &Handing<'_>,
+        first: stm::Order,
+    ) -> Result<PendingHandOn, HandOnError> {
         let part = first
             .parts
             .iter()

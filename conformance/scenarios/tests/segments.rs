@@ -836,6 +836,66 @@ fn first_verdict_on_a_result_stands_when_its_key_is_retired_between_tries() {
     );
 }
 
+/// Core's own rule against a second move after a restart, against a log that would take one (`T-020-46`): the kit's
+/// log admits whatever it is handed, with none of the real log's rows (`part-waits-for-value-in-motion` among them).
+/// The withdrawal is carried out, then the log can't take its result's stated entry, and Core stops. Its segments,
+/// rebuilt from the log, hold the withdrawal carried out with its outcome unknown to them: run again, it is never
+/// carried out again (`AlreadyActed`), and its provider is handed nothing more.
+// verifies: INV-8
+#[test]
+fn reopened_segments_move_nothing_twice_where_the_log_would_take_a_second_move() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::StatedResult, Fault::Unavailable));
+    }
+    let session = world.context().session;
+    let stopped = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut NoProxy,
+        &mut Recorded,
+        &session,
+    );
+    assert!(stopped.is_err(), "{stopped:?}");
+    let handled = world.fleet.platform.operations_received(origin_reserve());
+    // A restart: Core's segments rebuilt from the log.
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    for _ in 0..2 {
+        let again = core.try_run_with(
+            &world.catalogue,
+            &mut world.fleet.platform,
+            &mut NoProxy,
+            &mut Recorded,
+            &session,
+        );
+        assert!(
+            matches!(again, Err(SegmentsError::AlreadyActed(_))),
+            "{again:?}"
+        );
+    }
+    assert_eq!(
+        world.fleet.platform.operations_received(origin_reserve()),
+        handled,
+        "the withdrawal's provider is handed nothing more"
+    );
+    let moves = core
+        .log
+        .borrow()
+        .entries
+        .iter()
+        .filter(|(e, _)| {
+            matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
+                if matches!(v.what, rutent_contracts::core_internal::What::Effect {
+                    action: rutent_contracts::core_internal::Action::MoveValue { .. }, .. }))
+        })
+        .count();
+    assert_eq!(moves, 1, "one move");
+}
+
 /// The log takes the withdrawal's effect and its answer is lost; Core appends the same entry again, gets its
 /// receipt, and acts on it once. Where the log can't take the effect at all, nothing is handed over.
 // verifies: INV-8, INV-7

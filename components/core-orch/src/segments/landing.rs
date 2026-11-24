@@ -35,6 +35,15 @@ pub trait Landings {
     /// Releases `amount` of `asset` the account holds for `order` at `node`: the value moved on or came back.
     /// [`Landed::Placed`] says it was released.
     fn release(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed;
+
+    /// Restores in `node`'s holding account `amount` of `asset`, what the log holds for `order` there: what the
+    /// wallet itself holds for the order is asked first, per order, and only what it lacks is landed again, under a
+    /// transaction of Core's own, so nothing is attributed twice (`INV-1`, `T-020-46`). [`Landed::Placed`] says the
+    /// account holds it now. Unconfirmed by default: nothing is landed blind.
+    fn restore(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed {
+        let _ = (node, asset, order, amount);
+        Landed::Unconfirmed
+    }
 }
 
 /// What landing, or releasing, a value answered.
@@ -128,6 +137,22 @@ impl Landing {
 
     pub(super) fn unconfirmed(&self) -> usize {
         self.unconfirmed.len() + self.unreleased.len()
+    }
+
+    /// What a Core that reopened found of a segment's landing (`T-020-46`): placed where the account holds it now,
+    /// passed where its value moved on, and otherwise unconfirmed, never landed blind.
+    pub(super) fn found(&mut self, at: At, placed: Option<bool>) {
+        match placed {
+            Some(true) => {
+                self.placed.insert(at);
+            }
+            Some(false) => {
+                self.passed.insert(at);
+            }
+            None => {
+                self.unconfirmed.insert(at);
+            }
+        }
     }
 
     pub(super) fn is_placed(&self, at: &At) -> bool {

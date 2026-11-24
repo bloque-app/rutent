@@ -920,6 +920,66 @@ impl Segments {
         placed
     }
 
+    /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
+    /// entry, so for each segment the log settled at a node a holding account holds, whose value still rests there,
+    /// the account is asked what it holds for the order and only what it lacks is landed again
+    /// ([`Landings::restore`]): never landed blind, so a reopened Core attributes nothing twice (`INV-1`). One whose
+    /// value moved on is read as passed: its release, if one was owed, is not asked again. Answers how many it found
+    /// placed.
+    pub fn reconcile_landings(&mut self, landings: &mut dyn Landings) -> usize {
+        let mut found = Vec::new();
+        for ((order, segment), flight) in &self.flights {
+            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
+                continue;
+            };
+            let Some(tracked) = self.orders.get(order.as_str()) else {
+                continue;
+            };
+            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
+                part.segments
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == segment.as_str())
+                    .map(|place| (part, place))
+            }) else {
+                continue;
+            };
+            let to = &part.segments[place].to;
+            let rutent_contracts::provider_role::NodeRef::Inner(node) = &to.node else {
+                continue;
+            };
+            if !landings.holds(node) || amount_out.is_zero() {
+                continue;
+            }
+            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
+                self.flights
+                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+            });
+            found.push((
+                (order.clone(), segment.clone()),
+                node.clone(),
+                to.asset.id.clone(),
+                amount_out.clone(),
+                moved_on,
+            ));
+        }
+        let mut placed = 0;
+        for (at, node, asset, amount, moved_on) in found {
+            if moved_on {
+                self.landing.found(at, Some(false));
+                continue;
+            }
+            match landings.restore(&node, &asset, &at.0, &amount) {
+                Landed::Placed => {
+                    self.landing.found(at, Some(true));
+                    placed += 1;
+                }
+                Landed::NotNow | Landed::Unconfirmed => self.landing.found(at, None),
+            }
+        }
+        placed
+    }
+
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds
     /// at the node is released by the next [`Segments::land_settled`] (`REQ-AUD-15`, `T-020-33`).
     pub(crate) fn note_reversed(&mut self, order: &Id, segment: &Id) {

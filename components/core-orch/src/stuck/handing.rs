@@ -92,6 +92,10 @@ pub struct Wallets<'a, W: World, O: Operator> {
     pub platform: &'a mut Platform<W>,
     /// The operator, whose key signs the withdrawal.
     pub operator: &'a O,
+    /// A transaction of Core's own, fresh, for restoring in the account what the log holds for the order before the
+    /// withdrawal, where the account's module restarted (`T-020-46`): `None` where Core drew none, and then nothing
+    /// is restored.
+    pub restore: Option<&'a str>,
 }
 
 /// What the caller is shown each statement through.
@@ -150,6 +154,32 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
         amount: &str,
         asked: &mut Show<'_>,
     ) -> Result<HandedOnStart, StartError> {
+        // The account's module restarted, and the wallet's record of the order with it: what the log holds for the
+        // order, the value handed on, is restored in the account first, under Core's own transaction, so the
+        // withdrawal finds it (`REQ-ORD-43`, `INV-1`, `T-020-46`). The restore isn't the withdrawal's question, so it
+        // is not shown to the caller; a restore that fails starts nothing.
+        if let Some(SegmentPlan {
+            from:
+                rutent_contracts::state_machine::Endpoint {
+                    node: rutent_contracts::provider_role::NodeRef::Inner(node),
+                    ..
+                },
+            ..
+        }) = route.first()
+            && self.holdings.restarted(self.platform, node)
+        {
+            let transaction = self.restore.ok_or(StartError::Wallet(
+                rutent_prov::holding::wallet::WalletError::NotKnown,
+            ))?;
+            self.holdings.restore(
+                self.platform,
+                self.operator,
+                node,
+                order,
+                amount,
+                transaction,
+            )?;
+        }
         let operator = Asking {
             inner: self.operator,
             asked: RefCell::new(asked),

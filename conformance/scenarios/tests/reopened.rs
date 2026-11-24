@@ -1,7 +1,7 @@
 //! Core rebuilds its state from the log when it reopens (`T-020-46`, finding 3 of `M3`'s milestone review): a Core
-//! opened again on its disk agrees with the Core that ran on. No value moves twice; what is in flight is held again, so
-//! new orders respect the ceilings; a stuck part's kept decision and what moved are read back. A reopened order whose
-//! next segment needs its tuples' inputs can't carry on yet: the log holds no commitment to them (the notes' gap).
+//! opened again on its disk agrees with the Core that ran on. The order it was running carries on from where it
+//! stopped, its inputs read back from the operator's statement of them; no value moves twice; what is in flight is held
+//! again, so new orders respect the ceilings; a stuck part's kept decision and what moved are read back.
 
 use std::cell::RefCell;
 
@@ -47,6 +47,93 @@ fn moves(run: &Run) -> Vec<String> {
             Entry::Stated(_) => None,
         })
         .collect()
+}
+
+/// Which of the log's `decide` entries after the order started, from 0, decides its `nth` move, from 1: a crash
+/// planted once the order started counts the records from there.
+fn decide_of_move(run: &Run, nth: usize) -> usize {
+    let started = run
+        .log
+        .iter()
+        .position(|e| {
+            matches!(e, Entry::Verified(v)
+                if matches!(&v.what, What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. })))
+        })
+        .expect("the order started");
+    let mut decides = 0;
+    let mut seen = 0;
+    for entry in &run.log[started..] {
+        if let Entry::Verified(v) = entry
+            && let What::Decide { request, .. } = &v.what
+        {
+            if matches!(request.action, Action::MoveValue { .. }) {
+                seen += 1;
+                if seen == nth {
+                    return decides;
+                }
+            }
+            decides += 1;
+        }
+    }
+    panic!("the log decides no move {nth}")
+}
+
+/// A Core stopped mid-order, between its withdrawal and its deposit (right after policy's decision of the deposit's
+/// move reached the log, before anything of the deposit was), opened again on its disk and run again, carries the
+/// order on as the Core that ran on: the order completes, each of its segments moved once under a transaction of its
+/// own, by one `move_value` each, and nothing stopped.
+// verifies: NFR-6
+#[test]
+fn core_reopened_mid_order_carries_on_as_the_core_that_ran_on() {
+    for seed in SEEDS {
+        let ran_on = scenario("the Core that ran on")
+            .when(order(1))
+            .when(Step::Run)
+            .play(seed, &mut Reference, reference());
+        let nth = decide_of_move(&ran_on, 2);
+        let reopened = scenario("a Core reopened mid-order")
+            .when(order(1))
+            .when(Step::Plant(Fault::CrashAfterRecord {
+                call: "decide",
+                nth,
+            }))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Rerun)
+            .play(seed, &mut Reference, reference());
+        assert!(reopened.crashed, "seed {seed}: the crash stopped Core");
+        assert_eq!(reopened.reopened, Ok(0), "seed {seed}");
+        assert!(
+            reopened.stopped.is_empty(),
+            "seed {seed}: {:?}",
+            reopened.stopped
+        );
+        assert_eq!(
+            reopened.state_names(),
+            ran_on.state_names(),
+            "seed {seed}: the order stands as the one that ran on"
+        );
+        assert!(
+            ran_on
+                .state_names()
+                .values()
+                .all(|s| s.as_deref() == Some("complete")),
+            "seed {seed}: {:?}",
+            ran_on.state_names()
+        );
+        assert_eq!(
+            moves(&reopened),
+            moves(&ran_on),
+            "seed {seed}: one move each"
+        );
+        let moved = reopened.movements();
+        assert_eq!(
+            moved.len(),
+            ran_on.movements().len(),
+            "seed {seed}: {moved:?}"
+        );
+        assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
+    }
 }
 
 /// A Core stopped after a segment's `move_value` effect reached the log, before or after its provider carried it out,
@@ -357,4 +444,94 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
     assert_eq!(core.operations_received(RESERVE), handled + 1);
     assert_eq!(resolve_effects(&core), 1);
     assert!(core.exposures().stuck().is_empty(), "nothing held for it");
+}
+
+/// The resolution's move is done, and Core stops right after its `done` result reached the log, before the part's
+/// `stuck_resolved`: the part still reads stuck. Opened again, Core counts what the done move moved, so the part holds
+/// nothing more and a second decision to deliver its value is refused before policy is asked: the value moves once
+/// (`INV-8`, `INV-4`).
+// verifies: INV-8, INV-4
+#[test]
+fn done_move_is_counted_as_moved_after_a_restart() {
+    let given = scenario("a stuck order, moved, then reopened").when(order(1));
+    let (mut core, orders) = given.core(1, &mut Reference);
+    let order = orders[0].clone();
+    let part = core.first_part(&order).expect("a started order");
+    core.faults.refuse_begin = Some(1);
+    core.run(&order).expect("the order runs");
+    core.leave_no_route(&order).expect("the part is stuck");
+    let (alice, bob) = desks(&core);
+    let resolution = Resolution::Deliver {
+        by: id(RESERVE),
+        to: destination(&core),
+        asset: cop(),
+        amount: PositiveAmount::new(AMOUNT).unwrap(),
+    };
+    let evidence = evidence_about(&core, &order);
+    let decision = core
+        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .expect("asked");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    rutent_scenarios::harness::plant(
+        &mut core,
+        &Fault::CrashAfterRecord {
+            call: "result",
+            nth: 0,
+        },
+    );
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        core.move_stuck(&order, &carries_out, &bob)
+    }));
+    assert!(crashed.is_err(), "the crash stopped Core");
+    let mut core = given.reopen(core, 1, &mut Reference);
+    let (alice, _) = desks(&core);
+    assert_eq!(resolve_effects(&core), 1, "the move's effect is in the log");
+    assert!(resolved(&core).is_empty(), "its stuck_resolved is not");
+    assert!(core.is_stuck(&order, &part), "the part still reads stuck");
+    let handled = core.operations_received(RESERVE);
+    assert!(
+        matches!(
+            core.decide_stuck(&order, &alice, &resolution, &evidence),
+            Err(rutent_scenarios::assembly::StepError::Resolve(
+                rutent_core_orch::stuck::ResolveError::NotItsValue
+            ))
+        ),
+        "what moved is counted: the part holds nothing more to deliver"
+    );
+    assert_eq!(core.operations_received(RESERVE), handled);
+}
+
+/// Every transaction the log names, a round's question, an answer, a move's or a hand-over's, is one a Core opened
+/// again holds as asked under (`Issued::recorded`), so no fresh transaction it draws is one of them (`INV-8`).
+// verifies: INV-8
+#[test]
+fn transactions_the_log_names_are_held_as_used_after_a_restart() {
+    let given = scenario("a Core reopened after an order ran")
+        .when(order(1))
+        .when(Step::Run);
+    let (core, _) = given.core(1, &mut Reference);
+    let named: Vec<String> = core
+        .log()
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s) => s
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.as_ref())
+                .map(|t| t.as_str().to_owned()),
+            Entry::Verified(_) => None,
+        })
+        .collect();
+    assert!(!named.is_empty(), "the log names transactions");
+    let core = given.reopen(core, 1, &mut Reference);
+    for transaction in &named {
+        assert!(
+            core.issued().contains(transaction),
+            "{transaction} is held as used"
+        );
+    }
 }

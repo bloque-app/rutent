@@ -86,6 +86,20 @@ pub use ask::Unsigned;
 pub use journal::Unappended;
 pub use ports::{Fresh, OperatorKey, Providers};
 
+/// Signs `body` as the operator's statement of shape `shape`, made by `maker` at `made_at`, under `bounds`' deployment
+/// and protocol version: the envelope the rounds sign their questions in, for Core's other statements (an order's
+/// inputs, `T-020-46`).
+pub(crate) fn sign_statement<T: serde::Serialize>(
+    key: &mut dyn OperatorKey,
+    bounds: &PolicyBounds,
+    shape: &str,
+    maker: &Id,
+    made_at: &Timestamp,
+    body: T,
+) -> Result<Vec<u8>, Unsigned> {
+    ask::sign(key, bounds, shape, maker, made_at, body)
+}
+
 use crate::relay;
 use ask::Question;
 

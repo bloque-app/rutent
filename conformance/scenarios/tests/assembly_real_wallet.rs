@@ -26,7 +26,9 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_orch::segments::{Ran, SegmentOutcome};
 use rutent_core_orch::stuck::{Moved, Resolved};
 use rutent_scenarios::assembly::linked::{AcceptedLinked, LinkedOrder};
+use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, StepError};
+use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, id};
 use rutent_scenarios::sim::InstalledWallet;
 use serde_json::json;
@@ -649,6 +651,148 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     );
     // The assembled Core's log is the real one, which admits each entry as it is appended: a run that returned
     // settled has every entry of the move admitted.
+}
+
+/// Whether the wallet itself answers that it holds the base amount for `order`: its own word, asked outside any
+/// move, never the host's attribution.
+fn wallet_holds(core: &mut Core, wallet: &InstalledWallet, order: &str, asking: &str) -> bool {
+    let (_, answer) = core
+        .ask_wallet(
+            &wallet.provider,
+            Operation::BalanceVerification(BalanceVerification {
+                transaction: asking.to_owned(),
+                provider: wallet.provider.clone(),
+                session: "s-1".to_owned(),
+                account: order.to_owned(),
+                asset: "USDC".to_owned(),
+                amount: AMOUNT.to_owned(),
+            }),
+        )
+        .expect("the wallet answers");
+    let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
+    answer["statement"]["outcome"]["sufficient"] == true
+}
+
+/// The stuck order's value handed on once, as the log and the wallet both say: the move done, the hand-on recorded,
+/// and the host's attribution of the order gone with the withdrawal.
+fn handed_on_once(stuck: &mut Stuck, linked: &AcceptedLinked, bob: &Actor, decision: &Decided) {
+    let moved = stuck
+        .core
+        .move_stuck(&stuck.order, decision, bob)
+        .expect("moved");
+    let Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Done,
+        ..
+    } = moved
+    else {
+        panic!("the move is done: {moved:?}")
+    };
+    stuck
+        .core
+        .hand_on(&stuck.order, &effect, bob)
+        .expect("handed on");
+    let withdrawals = stuck
+        .core
+        .verified_whats()
+        .iter()
+        .filter(|w| matches!(w, What::HoldingWithdrawal { order, .. } if *order == linked.order))
+        .count();
+    assert_eq!(withdrawals, 1, "one withdrawal starts the linked order");
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "the account holds nothing for the order once it left"
+    );
+}
+
+/// The wallet's module restarts, and the wallet's record of the order with it; the host still attributes the value,
+/// which the wallet now says it doesn't hold. Core, opened again, asks the wallet what it holds for each order the
+/// log settled at its node and lands again only what it lacks, under a transaction of its own: the wallet holds the
+/// value again, the host attributes it once, and a second reopening lands nothing more. Then the stuck order's value
+/// is handed on, its release finding the value in the account (`REQ-ORD-43`, `INV-1`).
+// verifies: REQ-ORD-43, INV-1
+#[test]
+fn holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_release() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let held = stuck.core.holdings().attributions();
+    assert!(stuck.core.restart_module(&wallet.provider));
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, &order, "ask-1"),
+        "the wallet's record is gone"
+    );
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, &order, "ask-2"),
+        "re-landed from the log"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "attributed once"
+    );
+    // Opened again: the wallet is asked, holds it, and nothing more is landed.
+    let asked = stuck.core.operations_received(&wallet.provider);
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        asked + 1,
+        "one question, no landing"
+    );
+    assert_eq!(stuck.core.holdings().attributions(), held);
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    assert_eq!(decision.outcome, Answer::Permit {}, "{decision:?}");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    handed_on_once(&mut stuck, &linked, &bob, &decided);
+}
+
+/// The wallet's module restarts after the operator decided to hand the stuck order's value on, and the wallet's record
+/// of the order goes with it. Core, which ran on, reads the platform's report of the restart and restores in the account
+/// what the log holds for the order before the withdrawal, under a transaction of its own: the move is done, the order
+/// handed on once, and the host's attribution of the order gone with the withdrawal (`REQ-ORD-43`).
+// verifies: REQ-ORD-43
+#[test]
+fn stuck_order_is_handed_on_after_the_holding_accounts_module_restarts() {
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    assert_eq!(decision.outcome, Answer::Permit {}, "{decision:?}");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    assert!(stuck.core.restart_module(&wallet.provider));
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, &order, "ask-1"),
+        "the wallet's record is gone"
+    );
+    handed_on_once(&mut stuck, &linked, &bob, &decided);
 }
 
 /// What the real wallet answers a withdrawal is its own signed statement, which the platform passes on and the host

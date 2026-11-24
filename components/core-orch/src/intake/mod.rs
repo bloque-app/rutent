@@ -56,7 +56,8 @@ use std::collections::BTreeMap;
 use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, KeptStatements, Log};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
-    Entry, OrderRefusalClass, PartYes, Parties, Receipt, RefusalClass, Role, ShownAs, What,
+    Entry, ORDER_INPUTS_SHAPE, OrderInputs, OrderRefusalClass, PartYes, Parties, Receipt,
+    RefusalClass, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -435,13 +436,17 @@ impl Intake {
     }
 
     /// Intake rebuilt from `history`, the log's own entries, as a Core that reopens reads it (`T-020-46`): each order
-    /// an `order_opened` names, under its requester's request identifier, with the request it holds (its destination's
-    /// account set as the deposit's input, as intake sets it; the tuples' other inputs are not in the log,
-    /// `REQ-AUD-6`, so the order holds none), its last decision record's receipt for the next routing to chain to,
+    /// an `order_opened` names, under its requester's request identifier, with the request it holds: its inputs read
+    /// back through `reading` from the operator's statement of them, kept behind the commitment `order_opened` names
+    /// (`REQ-AUD-6`), held to the order the statement names, and its destination's account set as the deposit's input,
+    /// as intake sets it; its last decision record's receipt for the next routing to chain to,
     /// and its standing: accepted and started where the log holds its acceptance and its `route_chosen`, refused where
     /// it holds the order's refusal, and its outcome to come otherwise, so a quote shown before is shown again on a
     /// new routing. A repeat of the request is held to the fields the log holds of it.
-    pub fn reopened(history: &[(Receipt, Entry)]) -> Self {
+    pub fn reopened(
+        history: &[(Receipt, Entry)],
+        reading: &mut dyn crate::segments::Reopening,
+    ) -> Self {
         let mut intake = Intake::new();
         let verified = || {
             history.iter().filter_map(|(receipt, entry)| match entry {
@@ -459,10 +464,23 @@ impl Intake {
                 session,
                 destination,
                 route,
+                inputs,
             } = what
             else {
                 continue;
             };
+            let stated = inputs
+                .as_ref()
+                .and_then(|commitment| reading.kept(commitment))
+                .and_then(|bytes| {
+                    serde_json::from_slice::<
+                            rutent_contracts::provider_role::Statement<OrderInputs>,
+                        >(&bytes)
+                        .ok()
+                })
+                .filter(|s| s.shape == ORDER_INPUTS_SHAPE && &s.statement.order == order)
+                .map(|s| s.statement.inputs)
+                .unwrap_or_default();
             let asked = OrderRequest {
                 request: request.clone(),
                 caller: (**caller).clone(),
@@ -471,7 +489,11 @@ impl Intake {
                 session: session.clone(),
                 destination: (**destination).clone(),
                 route: (**route).clone(),
-                inputs: BTreeMap::new(),
+                inputs: stated
+                    .iter()
+                    .filter(|(name, _)| name.as_str() != DESTINATION_INPUT)
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
                 needs: Vec::new(),
             };
             let mut ran = asked.clone();
@@ -1143,6 +1165,43 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
     kept.order = Some(order.clone());
     // The order as opened, the log's one record of it before its acceptance, for a Core that reopens to read its open
     // orders from (`T-020-46`). The tuples' inputs stay out of the log (`REQ-AUD-6`).
+    // The order's inputs, which may carry accounts, as the operator's statement of them, kept in the evidence store:
+    // the log holds its salted commitment alone, which `order_opened` names (`T-020-46`, `REQ-AUD-6`).
+    let inputs = if kept.request.inputs.is_empty() {
+        None
+    } else {
+        let made_at = record::now(desk.parts.clock)?;
+        let bytes = crate::rounds::sign_statement(
+            desk.parts.operator_key,
+            desk.bounds,
+            ORDER_INPUTS_SHAPE,
+            &desk.operator.acts,
+            &made_at,
+            OrderInputs {
+                order: order.clone(),
+                inputs: kept.request.inputs.clone(),
+            },
+        )
+        .map_err(|_| IntakeError::Unofferable)?;
+        let stated = crate::segments::stated_entry(
+            desk.parts.evidence,
+            &made_at,
+            &bytes,
+            desk.operator.clone(),
+            desk.operator,
+            None,
+        )
+        .map_err(|why| match why {
+            crate::segments::Unappended::Append(failure) => IntakeError::Log(failure),
+            crate::segments::Unappended::Unrecordable => IntakeError::Unofferable,
+        })?;
+        let Entry::Stated(entry) = &stated else {
+            return Err(IntakeError::Unofferable);
+        };
+        let commitment = entry.commitment.clone();
+        kept.opening.push(stated);
+        Some(commitment)
+    };
     let opened_as = What::OrderOpened {
         order: order.clone(),
         request: kept.request.request.clone(),
@@ -1152,6 +1211,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         session: kept.request.session.clone(),
         destination: Box::new(kept.request.destination.clone()),
         route: Box::new(kept.request.route.clone()),
+        inputs,
     };
     kept.opening
         .push(record::build(desk.parts.clock, desk.core, opened_as)?);
@@ -1207,13 +1267,19 @@ fn same_request(first: &OrderRequest, again: &OrderRequest) -> bool {
         }
 }
 
-/// [`same_request`], for a request rebuilt from the log (`T-020-46`): `logged` holds no inputs and no needs, which
-/// the log doesn't hold, so `again` repeats it where it is the same in every field the log holds.
+/// [`same_request`], for a request rebuilt from the log (`T-020-46`): `logged` holds its inputs as the operator's
+/// statement of them names them, the destination's account apart, which intake sets, and no needs, which the log
+/// doesn't hold, so `again` repeats it where it is the same in every field the log holds.
 fn same_logged_request(logged: &OrderRequest, again: &OrderRequest) -> bool {
     same_request(
         logged,
         &OrderRequest {
-            inputs: BTreeMap::new(),
+            inputs: again
+                .inputs
+                .iter()
+                .filter(|(name, _)| name.as_str() != DESTINATION_INPUT)
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
             needs: Vec::new(),
             ..again.clone()
         },

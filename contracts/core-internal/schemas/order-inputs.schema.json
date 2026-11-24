@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:order-inputs",
+  "title": "An order's inputs",
+  "description": "The inputs an order carries for the tuples that require them, as the operator states them when intake opens the order (T-020-46): the body of a statement kept in the evidence store behind the salted commitment order_opened names, so a Core that reopens reads them back and the log holds no account (REQ-AUD-6). It names no transaction and is appended about nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order",
+    "inputs"
+  ],
+  "properties": {
+    "order": {
+      "description": "The order.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "inputs": {
+      "description": "Each input, by name: never empty, since an order with no input states none.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

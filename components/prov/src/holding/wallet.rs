@@ -23,8 +23,9 @@
 use std::collections::BTreeMap;
 
 use rutent_contracts::provider_role::{
-    Deposit, HoldingBalance, HoldingBalanceOutcome, MovementSettlement, Operation, OuterNode,
-    ReserveMovementOutcome, ResultBody, Statement, Withdrawal,
+    BalanceOutcome, BalanceVerification, Deposit, HoldingBalance, HoldingBalanceOutcome,
+    MovementSettlement, Operation, OuterNode, ReserveMovementOutcome, ResultBody, Statement,
+    Withdrawal,
 };
 
 mod handed_on;
@@ -36,7 +37,7 @@ use crate::holding::{
     BalanceSource, HeldForOrder, HoldingAccount as _, HoldingError, HoldingReading, OrderLedger,
 };
 use crate::module::platform::{Platform, World};
-use crate::module::types::{Handled, PlatformRefusal};
+use crate::module::types::{Handled, PlatformRefusal, ProcessId};
 
 /// The name of the input that carries the order a movement is for.
 pub const ORDER_INPUT: &str = "order";
@@ -122,6 +123,9 @@ pub struct WalletHolding {
     provider: String,
     ledger: OrderLedger,
     sent: u64,
+    /// The process the wallet's module ran in when it last confirmed a movement: another one since means its
+    /// module restarted, and with it the wallet's own record (`REQ-ORD-43`, `T-020-46`).
+    process: Option<ProcessId>,
 }
 
 impl WalletHolding {
@@ -135,6 +139,7 @@ impl WalletHolding {
             provider: provider.into(),
             ledger: OrderLedger::new(node, asset),
             sent: 0,
+            process: None,
         }
     }
 
@@ -164,9 +169,112 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        let (next, ..) = self.movement(platform, operator, true, node, asset, order, amount)?;
+        let (next, ..) =
+            self.movement(platform, operator, true, node, asset, order, amount, None)?;
         self.ledger = next;
+        self.process = platform.process(&self.provider);
         Ok(())
+    }
+
+    /// Whether the wallet's module restarted since it last confirmed a movement, as the platform reports its process:
+    /// its own record is then gone, and what the host attributes may no longer rest in the wallet's record
+    /// (`REQ-ORD-43`, `T-020-46`). False where it confirmed none yet.
+    pub fn restarted<W: World>(&self, platform: &Platform<W>) -> bool {
+        self.process
+            .is_some_and(|seen| platform.process(&self.provider) != Some(seen))
+    }
+
+    /// What the wallet itself holds for `order`, by its own answers, up to `amount`: the most it says the order's
+    /// account holds at least of (`balance_verification`, asked per order, each under a transaction of `transaction`'s
+    /// own, `{transaction}-v{n}`). Never the host's attribution, which outlives the wallet's record, and never a
+    /// repeat landing's `succeeded`, which adds nothing (`T-016-05`).
+    pub fn held_by_wallet<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+        order: &str,
+        amount: u128,
+        transaction: &str,
+    ) -> Result<u128, WalletError> {
+        let mut asked = 0u32;
+        let mut verify = |units: u128| -> Result<bool, WalletError> {
+            asked += 1;
+            let operation = Operation::BalanceVerification(BalanceVerification {
+                transaction: format!("{transaction}-v{asked}"),
+                provider: self.provider.clone(),
+                session: transaction.to_owned(),
+                account: order.to_owned(),
+                asset: self.ledger.asset().to_owned(),
+                amount: units.to_string(),
+            });
+            match platform.handle(&self.provider, &operator.statement(operation)) {
+                Handled::Answered(result) => match result.statement {
+                    ResultBody::BalanceVerification(r) => match r.outcome {
+                        BalanceOutcome::Answered(answer) => Ok(answer.sufficient),
+                        BalanceOutcome::Refused(_) => Err(WalletError::NotSucceeded),
+                    },
+                    _ => Err(WalletError::WrongResult),
+                },
+                Handled::Refused(why) => Err(WalletError::NotAnswered(why)),
+            }
+        };
+        if amount == 0 || verify(amount)? {
+            return Ok(amount);
+        }
+        // The wallet holds less than `amount`: the most it holds at least of, between none and `amount`.
+        let (mut low, mut high) = (0u128, amount);
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if verify(middle)? {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low)
+    }
+
+    /// Restores in the wallet what the log holds for `order` at the node, `amount`, before a release (`REQ-ORD-43`,
+    /// `INV-1`, `T-020-46`): what the wallet itself holds for the order is asked first ([`Self::held_by_wallet`]),
+    /// and only what it lacks is landed again, under `transaction`, a transaction of Core's own: the host's counter
+    /// would mint one the platform's durable record holds already. The host's attribution ends at `amount` for the
+    /// order, not above it, so a re-landing never attributes value twice. Answers what it landed again.
+    pub fn restore<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+        order: &str,
+        amount: &str,
+        transaction: &str,
+    ) -> Result<u128, WalletError> {
+        let units = parse_amount(amount)?;
+        let held = self.held_by_wallet(platform, operator, order, units, transaction)?;
+        if held >= units {
+            self.process = platform.process(&self.provider);
+            return Ok(0);
+        }
+        let short = units - held;
+        let (node, asset) = (
+            self.ledger.node().to_owned(),
+            self.ledger.asset().to_owned(),
+        );
+        let (mut next, ..) = self.movement(
+            platform,
+            operator,
+            true,
+            &node,
+            &asset,
+            order,
+            &short.to_string(),
+            Some(transaction.to_owned()),
+        )?;
+        let attributed = next.held_for(order);
+        if attributed > units {
+            next.release(order, attributed - units)?;
+        }
+        self.ledger = next;
+        self.process = platform.process(&self.provider);
+        Ok(short)
     }
 
     /// Value leaves the account for an order, up to what the order holds.
@@ -179,8 +287,10 @@ impl WalletHolding {
         order: &str,
         amount: &str,
     ) -> Result<(), WalletError> {
-        let (next, ..) = self.movement(platform, operator, false, node, asset, order, amount)?;
+        let (next, ..) =
+            self.movement(platform, operator, false, node, asset, order, amount, None)?;
         self.ledger = next;
+        self.process = platform.process(&self.provider);
         Ok(())
     }
 
@@ -243,6 +353,7 @@ impl WalletHolding {
         asset: &str,
         order: &str,
         amount: &str,
+        transaction: Option<String>,
     ) -> Result<
         (
             OrderLedger,
@@ -278,8 +389,10 @@ impl WalletHolding {
         }
 
         let kind = if landing { "deposit" } else { "withdrawal" };
-        let transaction = format!("{}-{kind}-{}", self.provider, self.sent + 1);
-        self.sent += 1;
+        let transaction = transaction.unwrap_or_else(|| {
+            self.sent += 1;
+            format!("{}-{kind}-{}", self.provider, self.sent)
+        });
         let network = OuterNode {
             network: self.provider.clone(),
         };
@@ -408,6 +521,31 @@ impl Holdings {
             .get_mut(node)
             .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?
             .land(platform, operator, node, asset, order, amount)
+    }
+
+    /// [`WalletHolding::restore`] at `node`'s holding account: what the log holds for `order` there, `amount`,
+    /// restored in the wallet before a release, under `transaction` (`T-020-46`).
+    pub fn restore<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+        node: &str,
+        order: &str,
+        amount: &str,
+        transaction: &str,
+    ) -> Result<u128, WalletError> {
+        self.accounts
+            .get_mut(node)
+            .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?
+            .restore(platform, operator, order, amount, transaction)
+    }
+
+    /// Whether `node`'s holding account's module restarted since it last confirmed a movement
+    /// ([`WalletHolding::restarted`]).
+    pub fn restarted<W: World>(&self, platform: &Platform<W>, node: &str) -> bool {
+        self.accounts
+            .get(node)
+            .is_some_and(|account| account.restarted(platform))
     }
 
     /// Value leaves `node`'s holding account for an order.

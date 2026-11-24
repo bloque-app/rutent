@@ -2044,6 +2044,60 @@ fn a_pending_hand_on_retried_for_another_linked_order_is_refused() {
         .expect("the log admits every entry");
 }
 
+/// A hand-on whose first order's `handed_on` the log took, the linked order's `route_chosen` not, when Core stops: the
+/// hand-on pending in memory is gone. A fresh `HandOn` refuses the retry (the part reads handed on, and waits no more);
+/// the one rebuilt from the log holds the hand-on pending for its linked order, refuses a retry naming another, and
+/// completes the one naming its own, appending the `route_chosen` alone, the `handed_on` once (`REQ-ORD-43`).
+// verifies: REQ-ORD-43
+#[test]
+fn pending_hand_on_is_rebuilt_from_the_log() {
+    let (world, mut core) = waiting_for_the_customer();
+    for n in [2, 3] {
+        seed_linked(
+            &mut core,
+            &Named::another(n),
+            &customer(),
+            &linked_record(&format!("ord-{n}")),
+        );
+    }
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Chosen, Fault::Unavailable));
+    }
+    assert!(matches!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Append(_))
+    ));
+    assert_eq!(count(&core, is_handed_on), 1, "the handed_on is in the log");
+    // A restart: Core's segments rebuilt from the log; the hand-on pending in memory is gone.
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let before = entries(&core);
+    assert!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2").is_err(),
+        "a fresh record of the hand-ons refuses it"
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    let mut rebuilt = HandOn::reopened(&recorded_with_receipts(&core));
+    assert_eq!(
+        hand_on_to(&mut core, &mut rebuilt, "ord-3", &plan, "acc-ord-3"),
+        Err(HandOnError::PendingForAnother {
+            pending: id("ord-2")
+        })
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    let done = hand_on_to(&mut core, &mut rebuilt, "ord-2", &plan, "acc-ord-2")
+        .expect("the hand-on rebuilt from the log, retried for its own linked order");
+    assert_eq!(done.route_chosen.subject.order.as_str(), "ord-2");
+    assert_eq!(count(&core, is_handed_on), 1, "the handed_on once");
+    assert!(core.segments.order(&id("ord-2")).is_some());
+    assert_eq!(part_of(&core, ORDER).state, OrderState::HandedOn);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// A hand-on pending for `ord-2`, its `handed_on` not yet in the log, retried naming an `ord-3` another part has
 /// taken: the retry is refused as the pending one's (`PendingForAnother`), before the free-order check, so the
 /// `ord-2` hand-on isn't dropped and then completes when retried for its own order.

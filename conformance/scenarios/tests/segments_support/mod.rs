@@ -499,6 +499,49 @@ fn commitment(place: usize) -> Digest {
     digest(&format!("{place:064x}"))
 }
 
+impl Store {
+    /// The bytes kept behind `wanted`, as the log reads them (`T-020-46`).
+    pub fn bytes_behind(&self, wanted: &Digest) -> Option<Vec<u8>> {
+        let kept = self.kept.borrow();
+        (0..kept.len())
+            .find(|i| &commitment(*i) == wanted)
+            .map(|i| kept[i].clone())
+    }
+}
+
+/// Core's segments and value in flight lost to a restart and rebuilt from the kit's log (`Segments::reopened`,
+/// `T-020-46`): the decision records are the kit's chosen record and `others`, the kept bytes the kit's store's.
+pub fn reopen_segments(core: &mut Core, catalogue: &Catalogue, others: &[DecisionRecord]) {
+    struct Reading<'a> {
+        records: Vec<DecisionRecord>,
+        store: &'a Store,
+    }
+    impl rutent_core_orch::segments::Reopening for Reading<'_> {
+        fn record(&self, id: &Id) -> Option<DecisionRecord> {
+            self.records.iter().find(|r| r.record_id() == id).cloned()
+        }
+        fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+            self.store.bytes_behind(commitment)
+        }
+    }
+    let history = handing::recorded_with_receipts(core);
+    let mut records = vec![core.record.clone()];
+    records.extend(others.iter().cloned());
+    let mut reading = Reading {
+        records,
+        store: &core.store,
+    };
+    let mut exposures = Exposures::new();
+    core.segments = Segments::reopened(
+        &*core.clock,
+        catalogue,
+        &history,
+        &mut reading,
+        &mut exposures,
+    );
+    core.exposures = exposures;
+}
+
 // Policy ------------------------------------------------------------------------------------------------------------
 
 /// Policy's handle on the shared log.
