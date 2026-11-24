@@ -1567,8 +1567,9 @@ path: it waits for the owner's click at the release into `main`.
 
 ## T-021-12
 
-Branch `f-021/t-021-12-13-rollback-override`, from `m3` at `a3bc16b4`. Edits `components/core-authz/` only (`roles/`, the
-engine's scan and its list of decided actions), a `DEC-20` path: it waits for the owner's click at the release into
+Branch `f-021/t-021-12-13-rollback-override`, from `m3` at `a3bc16b4`. Edits `components/core-authz/` (`roles/`, the
+engine's scan and its list of decided actions) and, from fix round 1, `components/core-orch/src/segments/roll_back.rs`
+with one `pub mod roll_back;` line in `segments/mod.rs`, a `DEC-20` path: it waits for the owner's click at the release into
 `main`.
 
 - **What changed.** `CatalogueChange::RollBack` is answered by the one arm every catalogue change has: an operator's
@@ -1586,17 +1587,29 @@ engine's scan and its list of decided actions), a `DEC-20` path: it waits for th
   `RollBack` (its `unreachable!` is gone), so `each_permission_alone_allows_only_its_own_action` runs over it (11 to 12)
   and the erase and promotion tests' loops over `every_permission` take it in unchanged. `every_decided_action` lists
   it, so `T-021-01`'s two counts move by the one action (16 to 17, `3 * 16` to `3 * 17`): the only edits to them.
-  `staging_is_rolled_back_only_on_a_permitted_decisions_effect` pins the scan's side.
+  `staging_is_rolled_back_only_on_a_permitted_decisions_effect` pins the scan's side; the seam's own tests are
+  `core-orch`'s `tests/roll_back.rs` (a permitted roll back ends the staging and records its effect and result; a refused or
+  not-known decision, a log that can't take the effect, another version or nothing staged, ends nothing; the platform's
+  refusal records `failed`; an effect of another action rolls nothing back).
 - **Defaults, reversible, each failing closed.**
   - The permission is an operator's alone: Core's own actors don't roll a staging back, even holding it (there is no
     `CarryOnward` path), as for the erasure.
   - Policy reads nothing of the release or the staging (that one is in force, that a staging is open): `roll_back`
     keeps the version in force and the platform answers a roll back with nothing staged.
+- **The seam (fix round 1, the reviewer's finding 1).** `segments/roll_back.rs` carries `roll_back` out as `promote` is, in
+  a file of its own so `segments/mod.rs` takes only its `mod` line. `Segments::roll_back` asks the decision for a
+  `change_catalogue` of `roll_back` naming the provider and the staged version, by the caller; on a permit it records the
+  effect, calls the platform through `RollsBack` (a port of its own, so no `Modules` implementation changes), and
+  records the result `done` or `failed`; the effect is marked acted on only once the staging ended. The public
+  `carry_out_roll_back` takes the `Effect` itself and checks the permitted action, which the scan, matching names only,
+  can't: an effect whose action isn't a `roll_back` of a named version asks nothing of the platform
+  (`NotARollBack`), and the version is compared again with the one staged right before the platform is asked, so a
+  permit to roll one release back ends no other staging. `promote`'s `carry_promotion` reads only the provider off its
+  effect and doesn't check the change; that is left as it is, outside this row.
 - **Gaps, with owners.**
-  1. Orchestration doesn't call `roll_back` yet: its seam in `F-020`'s `segments/` (an effect of a permitted
-     `RollBack` decision carried out as `promote` is) is not in this row's crate set, which the wave kept to
-     `core-authz`. Owner: a `core-orch` row of `F-020` (the plan's commit body names the seam); until then the scan holds
-     any later call to the effect rule.
+  1. Nothing calls `Segments::roll_back` yet outside its tests: the assembly's wiring of an operator command to it, as
+     `promote` has through the assembly's `releases.rs`, isn't part of this row. Owner: the assembly row that wires the
+     operator's catalogue commands (`T-024-*`'s scenario kit), to be named by the plan's owner; no row exists for it yet.
   2. The deployment's register must list `Change(RollBack)` for the operator logins that may roll back:
      configuration, owner `F-021`'s register docs / the deployment.
 - **Red first.** The new roll back test failed on its permitted assertion (`Refuse` for `Permit`), `each permission
@@ -1610,6 +1623,18 @@ engine's scan and its list of decided actions), a `DEC-20` path: it waits for th
   | promotion's permission stands for it | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
   | no permission asked (any caller passes) | `roll_back_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
   | `roll_back` left out of the scan's `CARRY_OUT` | `staging_is_rolled_back_only_on_a_permitted_decisions_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+
+- **Rule-off of the seam, fix round 1** (`cargo test -p rutent-core-orch --test roll_back`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the effect's action isn't checked to be a `roll_back` | `effect_of_another_action_rolls_nothing_back` |
+  | the staged version isn't compared again before the platform is asked | `effect_of_another_action_rolls_nothing_back` |
+  | a platform refusal records the result `done` | `platform_refusal_records_the_result_failed` |
+  | a decision that doesn't permit still yields an effect | `refused_or_unknown_roll_back_ends_nothing` |
+
+  Red first: with the action check missing (the shape of `carry_promotion`) `effect_of_another_action_rolls_nothing_back`
+  failed on its assertion; the other four seam tests passed against that stub and are held by the rule-offs above.
 
 ## T-021-13
 
