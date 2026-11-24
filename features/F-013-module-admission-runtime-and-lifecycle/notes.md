@@ -1105,7 +1105,7 @@ each became:
    `roll_back`, `revoke`, `declare_exploited`, `mark_stale`) is taken on a clone of the lifecycle, and what it
    changes, the marks it sets, the segments it moves and the decisions it records, is written as one `decided` entry
    before the platform holds it; one the record can't hold is refused as the new `LifecycleRefusal::Unrecorded`,
-   nothing changed. `Platform::open` reads marks and decisions back (`Lifecycle::restore_mark`,
+   nothing changed (amended in fix round 2: only a widening decision is refused so). `Platform::open` reads marks and decisions back (`Lifecycle::restore_mark`,
    `restore_decision`), and `Lifecycle::started` never puts a marked version in force or staging, so an exploited
    release admitted again after a restart runs nothing. Tests:
    `segment_restored_after_a_restart_refuses_a_version_declared_exploited`,
@@ -1151,11 +1151,50 @@ each became:
 | Opening never creating a record (4) | `record::tests::a_record_is_opened_by_its_own_name_and_never_made_by_opening` |
 | Maker and shape compared (6) | `repeat with other terms under a carried out transaction is refused even with safe retry` |
 
-Two rules no test turns red when switched off, and why:
-- **The lock on the canonical path** (4). A record reached through a linked directory names a lock file through the
-  same link, which the filesystem resolves to the same file, so the lock holds with or without canonicalising; a
-  different lock name only arises from a link to the record file itself, which the link and second-name refusals
-  stop. Canonicalising is kept as the reviewer asked, and the aliased-directory case is asserted in
-  `a_file_record_is_held_by_one_platform_at_a_time`.
-- **The directory sync's failure being an error** (5). No portable test makes a directory's `fsync` fail; the code
-  propagates every error but `Unsupported` and `EINVAL`.
+### Fix round 2 (T-013-10): the re-review of `b3b1b684` (PR #291)
+
+The re-review found the seven fixes hold and no new crash point. Its findings, and what each became:
+
+1. **An exploit declaration the record couldn't hold was refused, and the exploited version kept running**
+   (should-fix; a regression of fix round 1). After a failed write the record refuses everything, so the operator
+   couldn't stop an exploited version, and dry runs and the read-only kinds still reached it. `decide` now tells a
+   decision that restricts what runs from one that widens it:
+   - **Restrictive** (`declare_exploited`, `revoke`, `mark_stale`): where the record can't hold it, it is taken
+     in memory all the same, by its in-place form (`Lifecycle::declare_exploited_in_place`, `revoke_in_place`,
+     and `mark_stale` itself), its process stopped, and answered `LifecycleRefusal::TakenUnrecorded`: not durable,
+     to be taken again after a restart. The in-place form puts no version back in force: retiring the version in
+     force leaves none in force, since reinstating an older one would widen what runs.
+   - **Widening** (`promote`, `roll_back`, `withdraw`): refused as `Unrecorded`, nothing changed, as before.
+   Tests: `an_exploit_declaration_the_record_cannot_hold_still_stops_the_version` (the reviewer's probe: the mark is
+   held, the process stopped, a dry run refused `VersionExploited`, `operations_run` 0),
+   `a_revocation_the_record_cannot_hold_puts_no_version_back_in_force`, and
+   `a_widening_decision_the_platform_cannot_record_is_not_taken` (replacing
+   `a_decision_the_platform_cannot_record_is_not_taken`).
+2. **The canonical-path rule can be tested** (low). `record::tests::a_record_opened_through_a_directory_link_stays_in_the_directory_it_named`,
+   the reviewer's test: a record opened through a directory link that is then pointed elsewhere still replaces and
+   appends in the directory it named; without canonicalising, the entries split into the other directory.
+3. **The directory-sync error can be tested** (low). A `#[cfg(test)]` thread-local hook, `DIR_SYNC_FAILS`, read by
+   `sync_directory_of` as the cut-short write's hook is read by `append`.
+   `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one`: a failed sync refuses a
+   `replace` and breaks the record, refuses a `create`, and `Unsupported` and `EINVAL` are let through.
+4. **The gaps** (low): the release state is `T-013-11`'s part (3); the `ended` set and now the decision list grow
+   without bound and are rewritten whole at every opening, left as gaps by the coordinator.
+
+The fix round 1 note that two rules had no test that turns them red no longer holds: both have one now (above).
+
+#### Defaults (fix round 2)
+
+- A restrictive decision the record can't hold is taken in memory and reported `TakenUnrecorded`; it is not
+  retried by the platform. The operator takes it again after the restart.
+- Taken in place, retiring the version in force leaves none in force until the operator decides.
+
+#### Rule-off table (fix round 2)
+
+| Rule switched off | Test that went red |
+| --- | --- |
+| A restrictive decision taken when the record can't hold it (1) | `an_exploit_declaration_the_record_cannot_hold_still_stops_the_version` |
+| Taken in place, no version put back in force (1) | `a_revocation_the_record_cannot_hold_puts_no_version_back_in_force` |
+| A widening decision refused when the record can't hold it (1) | `a_widening_decision_the_platform_cannot_record_is_not_taken` |
+| The record opened by its canonical path (2) | `record::tests::a_record_opened_through_a_directory_link_stays_in_the_directory_it_named` |
+| A failed directory sync an error (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |
+| `EINVAL` let through (3) | `record::tests::a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one` |

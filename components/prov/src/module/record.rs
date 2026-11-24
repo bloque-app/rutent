@@ -218,7 +218,14 @@ fn sync_directory_of(path: &Path) -> io::Result<()> {
     let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) else {
         return Ok(());
     };
-    match File::open(dir).and_then(|d| d.sync_all()) {
+    #[cfg(test)]
+    let synced = match tests::DIR_SYNC_FAILS.take() {
+        Some(fails) => Err(fails()),
+        None => File::open(dir).and_then(|d| d.sync_all()),
+    };
+    #[cfg(not(test))]
+    let synced = File::open(dir).and_then(|d| d.sync_all());
+    match synced {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::Unsupported || e.raw_os_error() == Some(EINVAL) => {
             Ok(())
@@ -563,6 +570,88 @@ impl Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// The tests' failing directory sync: the next one on this thread fails with the error this makes.
+        pub(super) static DIR_SYNC_FAILS: std::cell::Cell<Option<fn() -> io::Error>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// The lines of the file at `path`, as a record reads them.
+    fn lines_at(path: &Path) -> Vec<String> {
+        whole_lines(&fs::read_to_string(path).expect("reads"))
+    }
+
+    /// A record opened through a directory link holds on to the directory the link named when it was opened: its
+    /// replacement, and every append after it, land in that record and not wherever the link points by then, so a
+    /// platform's entries never split across two files.
+    // verifies: INV-8, NFR-6
+    #[test]
+    fn a_record_opened_through_a_directory_link_stays_in_the_directory_it_named() {
+        let a = scratch("link-a");
+        let b = scratch("link-b");
+        let (a_dir, b_dir) = (
+            a.parent().expect("a directory").to_path_buf(),
+            b.parent().expect("a directory").to_path_buf(),
+        );
+        let link = a_dir.with_file_name(format!(
+            "{}-link",
+            a_dir.file_name().expect("a name").to_string_lossy()
+        ));
+        let _ = fs::remove_file(&link);
+        drop(FileRecord::create(&a).expect("is created"));
+        std::os::unix::fs::symlink(&a_dir, &link).expect("a link to the directory");
+        let mut record = FileRecord::open(link.join("record")).expect("opens through the link");
+        // The link now names another directory.
+        fs::remove_file(&link).expect("unlinked");
+        std::os::unix::fs::symlink(&b_dir, &link).expect("a link to another directory");
+        record.replace(&["one".to_owned()]).expect("replaces");
+        record.append("two").expect("appends");
+        assert_eq!(lines_at(&a), ["one", "two"]);
+        assert!(!b.exists(), "the record split into {}", b.display());
+        let _ = fs::remove_file(&link);
+        let _ = fs::remove_dir_all(&a_dir);
+        let _ = fs::remove_dir_all(&b_dir);
+    }
+
+    /// A directory sync that fails is an error: a replacement is refused, and the record takes nothing more until
+    /// it is opened again, and a creation is refused. Only a system that can't sync a directory at all
+    /// (`Unsupported`, `EINVAL`) is let through.
+    // verifies: INV-8, NFR-6
+    #[test]
+    fn a_failed_directory_sync_is_an_error_unless_the_system_cannot_sync_one() {
+        let path = scratch("dir-sync");
+        let mut record = FileRecord::create(&path).expect("is created");
+        record.append("one").expect("appends");
+        DIR_SYNC_FAILS.set(Some(|| {
+            io::Error::other("the directory couldn't be synced")
+        }));
+        record
+            .replace(&["two".to_owned()])
+            .expect_err("a failed sync refuses the replacement");
+        record.append("three").expect_err("broken until reopened");
+        drop(record);
+        let other = path.with_file_name("other");
+        DIR_SYNC_FAILS.set(Some(|| {
+            io::Error::other("the directory couldn't be synced")
+        }));
+        FileRecord::create(&other).expect_err("a failed sync refuses the creation");
+        // A system that can't sync a directory at all isn't failing.
+        let mut record = FileRecord::open(&path).expect("reopens");
+        let cannot: [fn() -> io::Error; 2] = [
+            || io::Error::from(io::ErrorKind::Unsupported),
+            || io::Error::from_raw_os_error(22),
+        ];
+        for (n, fails) in cannot.into_iter().enumerate() {
+            DIR_SYNC_FAILS.set(Some(fails));
+            record
+                .replace(&[format!("let through {n}")])
+                .expect("let through");
+        }
+        record.append("four").expect("appends");
+        assert_eq!(record.load().expect("loads"), ["let through 1", "four"]);
+        let _ = fs::remove_dir_all(path.parent().expect("a directory"));
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

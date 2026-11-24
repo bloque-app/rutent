@@ -19,7 +19,7 @@ use common::{TestWorld, WORLD_AT, withdrawal};
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_prov::catalogue::Instant;
-use rutent_prov::module::lifecycle::{DecisionKind, Mark};
+use rutent_prov::module::lifecycle::{DecisionKind, LifecycleRefusal, Mark};
 use rutent_prov::module::record::{FileRecord, MemoryRecord, Record};
 use rutent_prov::module::types::{Admitted, Handled};
 use signed::{AT, RAMP, RESERVE, Signed, release};
@@ -418,22 +418,103 @@ fn segment_restored_after_a_restart_refuses_a_version_declared_exploited() {
     assert_eq!(s.platform.operations_run(RESERVE), 0);
 }
 
-/// An operator's decision the record can't hold isn't taken: a restart would lose it.
-// verifies: REQ-MDL-20
+/// A record that fails its first `carrying` write and every write after, as a full disk leaves a `FileRecord`:
+/// handing `provider` an operation under transaction 9 breaks it.
+fn break_record(s: &mut Signed, provider: &str) {
+    assert_eq!(
+        s.platform.handle(provider, &withdrawal(provider, 9)),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+}
+
+/// A decision that only restricts what runs is taken even where the record can't hold it: a failing disk never
+/// keeps an exploited version running (`REQ-MDL-20`). It is answered `TakenUnrecorded`, since a restart loses it.
+/// The reviewer's probe of fix round 1: a segment in flight on `1.0.0`, `1.0.1` in force, the record broken.
+// verifies: REQ-MDL-20, INV-8
 #[test]
-fn a_decision_the_platform_cannot_record_is_not_taken() {
+fn an_exploit_declaration_the_record_cannot_hold_still_stops_the_version() {
     let memory = MemoryRecord::new();
     let mut s = opened(
-        Box::new(StopsAt::new(&memory, "decided")),
+        Box::new(StopsAt::new(&memory, "carrying")),
+        TestWorld::default(),
+        &[RESERVE],
+    );
+    s.platform
+        .begin_segment(RESERVE, &tx(RESERVE, 1))
+        .expect("a segment");
+    admit_version(&mut s, RESERVE, "1.0.1");
+    break_record(&mut s, RESERVE);
+    assert!(s.platform.version_process(RESERVE, "1.0.0").is_some());
+
+    assert_eq!(
+        s.platform
+            .declare_exploited(RESERVE, "1.0.0", "test-operator", AT),
+        Err(LifecycleRefusal::TakenUnrecorded)
+    );
+    assert_eq!(
+        s.platform.lifecycle().mark(RESERVE, "1.0.0"),
+        Some(Mark::Exploited)
+    );
+    assert_eq!(s.platform.version_process(RESERVE, "1.0.0"), None);
+    // Not even a dry run reaches it.
+    assert_eq!(
+        s.platform.handle(RESERVE, &dry_run(RESERVE, 1)),
+        Handled::Refused(PlatformRefusal::VersionExploited)
+    );
+    assert_eq!(s.platform.operations_run(RESERVE), 0);
+}
+
+/// Taken where the record can't hold it, a revocation of the version in force puts no other back in force:
+/// putting one in force widens what runs, which an unrecorded decision never does.
+// verifies: REQ-MDL-20
+#[test]
+fn a_revocation_the_record_cannot_hold_puts_no_version_back_in_force() {
+    let memory = MemoryRecord::new();
+    let mut s = opened(
+        Box::new(StopsAt::new(&memory, "carrying")),
         TestWorld::default(),
         &[RESERVE],
     );
     admit_version(&mut s, RESERVE, "1.0.1");
+    break_record(&mut s, RESERVE);
     assert_eq!(
-        s.platform
-            .declare_exploited(RESERVE, "1.0.0", "test-operator", AT),
-        Err(rutent_prov::module::lifecycle::LifecycleRefusal::Unrecorded)
+        s.platform.revoke(RESERVE, "1.0.1", "test-operator", AT),
+        Err(LifecycleRefusal::TakenUnrecorded)
     );
-    assert_eq!(s.platform.lifecycle().mark(RESERVE, "1.0.0"), None);
+    assert_eq!(
+        s.platform.lifecycle().mark(RESERVE, "1.0.1"),
+        Some(Mark::Revoked)
+    );
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), None);
+    assert_eq!(s.platform.active_version(RESERVE), None);
+}
+
+/// A decision that widens what runs the record can't hold isn't taken: a restart would lose it.
+// verifies: REQ-MDL-20
+#[test]
+fn a_widening_decision_the_platform_cannot_record_is_not_taken() {
+    let memory = MemoryRecord::new();
+    let mut s = opened(
+        Box::new(StopsAt::new(&memory, "carrying")),
+        TestWorld::default(),
+        &[RESERVE],
+    );
+    s.platform.set_staging(Some(
+        rutent_prov::module::lifecycle::Staging::new(50, 0, 0).expect("a policy"),
+    ));
+    admit_version(&mut s, RESERVE, "1.0.1");
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.0.1"));
+    break_record(&mut s, RESERVE);
+    for decided in [
+        s.platform
+            .roll_back(RESERVE, "test-operator", AT)
+            .map(|_| ()),
+        s.platform.promote(RESERVE, "test-operator", AT).map(|_| ()),
+    ] {
+        assert_eq!(decided, Err(LifecycleRefusal::Unrecorded));
+    }
+    assert_eq!(s.platform.lifecycle().staged(RESERVE), Some("1.0.1"));
+    assert_eq!(s.platform.lifecycle().in_force(RESERVE), Some("1.0.0"));
+    assert_eq!(s.platform.lifecycle().mark(RESERVE, "1.0.1"), None);
     assert!(s.platform.lifecycle().decisions().is_empty());
 }

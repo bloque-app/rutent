@@ -209,6 +209,10 @@ struct Slot {
     evidence_window: Option<u64>,
 }
 
+/// The in-place form of a decision that only restricts what runs, taken where the platform's record can't hold the
+/// decision itself (`T-013-10`).
+type Restrict<'a> = Box<dyn FnOnce(&mut Lifecycle) -> Result<(), LifecycleRefusal> + 'a>;
+
 /// The scope of an operation the platform was handed, as against one a module called a callee with.
 const TOP_LEVEL: &str = "";
 
@@ -779,12 +783,17 @@ impl<W: World> Platform<W> {
 
     /// Takes an operator's decision, `decide`, on the lifecycle, once what it changes is in the platform's record:
     /// the marks it sets, the segments it moves and the decisions it records, in one entry written before the
-    /// platform holds any of it (`T-013-10`). A decision the lifecycle refuses changes nothing; one the record can't
-    /// hold is refused as `Unrecorded` and changes nothing either, so a restart never loses an exploited or
-    /// revoked mark the platform acted on.
+    /// platform holds any of it (`T-013-10`). A decision the lifecycle refuses changes nothing.
+    ///
+    /// Where the record can't hold it, what happens is the decision's kind. One that widens what runs (`restrict`
+    /// `None`: promoting, rolling back, withdrawing) is refused as `Unrecorded`, nothing changed. One that only
+    /// restricts it is taken all the same, in memory, by `restrict`, its in-place form, which puts no version back
+    /// in force, and reported as `TakenUnrecorded`: a failing disk never keeps an exploited version running
+    /// (`REQ-MDL-20`).
     fn decide<T>(
         &mut self,
         decide: impl FnOnce(&mut Lifecycle) -> Result<T, LifecycleRefusal>,
+        restrict: Option<Restrict<'_>>,
     ) -> Result<T, LifecycleRefusal> {
         let mut next = self.lifecycle.clone();
         let made = decide(&mut next)?;
@@ -810,12 +819,20 @@ impl<W: World> Platform<W> {
             .map(DecisionEntry::from)
             .collect();
         if !(marks.is_empty() && segments.is_empty() && decisions.is_empty()) {
-            self.write(&Entry::Decided {
+            let written = self.write(&Entry::Decided {
                 marks,
                 segments,
                 decisions,
-            })
-            .map_err(|_| LifecycleRefusal::Unrecorded)?;
+            });
+            if written.is_err() {
+                return Err(match restrict {
+                    None => LifecycleRefusal::Unrecorded,
+                    Some(restrict) => match restrict(&mut self.lifecycle) {
+                        Ok(()) => LifecycleRefusal::TakenUnrecorded,
+                        Err(refusal) => refusal,
+                    },
+                });
+            }
         }
         self.lifecycle = next;
         Ok(made)
@@ -2925,8 +2942,11 @@ impl<W: World> Platform<W> {
             return None;
         }
         let version = waiting.declaration().version.as_str().to_owned();
-        self.decide(|lifecycle| lifecycle.withdrawn(provider, &version, by, at))
-            .ok()?;
+        self.decide(
+            |lifecycle| lifecycle.withdrawn(provider, &version, by, at),
+            None,
+        )
+        .ok()?;
         let slot = self.providers.get_mut(provider)?;
         let (artefact, _, _) = slot.pending.take()?;
         slot.withdrawn.insert(version);
@@ -2957,7 +2977,7 @@ impl<W: World> Platform<W> {
                 return Err(LifecycleRefusal::StagedNotRunning);
             }
         }
-        let promoted = self.decide(|lifecycle| lifecycle.promote(provider, by, at))?;
+        let promoted = self.decide(|lifecycle| lifecycle.promote(provider, by, at), None)?;
         self.reconcile(provider);
         Ok(promoted)
     }
@@ -2974,7 +2994,7 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<String, LifecycleRefusal> {
         self.restart_ended();
-        let rolled_back = self.decide(|lifecycle| lifecycle.roll_back(provider, by, at))?;
+        let rolled_back = self.decide(|lifecycle| lifecycle.roll_back(provider, by, at), None)?;
         self.reconcile(provider);
         Ok(rolled_back)
     }
@@ -2983,8 +3003,9 @@ impl<W: World> Platform<W> {
     /// (`REQ-MDL-20`). Revoking the version in force puts the one before it back in force, a recorded decision; the
     /// version put back, if any.
     ///
-    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
-    /// can't be (`T-013-10`).
+    /// Written to the platform's record before it is taken. Where it can't be, it only restricts what runs, so it
+    /// is taken all the same, in memory, putting no version back in force, and answered `TakenUnrecorded`: not
+    /// durable, to be taken again after a restart (`T-013-10`).
     pub fn revoke(
         &mut self,
         provider: &str,
@@ -2993,16 +3014,22 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
         self.restart_ended();
-        let back = self.decide(|lifecycle| lifecycle.revoke(provider, version, by, at))?;
+        let back = self.decide(
+            |lifecycle| lifecycle.revoke(provider, version, by, at),
+            Some(Box::new(|lifecycle| {
+                lifecycle.revoke_in_place(provider, version, by, at)
+            })),
+        );
         self.reconcile(provider);
-        Ok(back)
+        back
     }
 
     /// Declares the provider's `version` actively exploited, by `by`: its process is stopped and its segments are
     /// refused as `VersionExploited`, not moved (`REQ-MDL-20`). The version put back in force, if any.
     ///
-    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
-    /// can't be (`T-013-10`).
+    /// Written to the platform's record before it is taken. Where it can't be, it only restricts what runs, so it
+    /// is taken all the same, in memory, putting no version back in force, and answered `TakenUnrecorded`: not
+    /// durable, to be taken again after a restart (`T-013-10`).
     pub fn declare_exploited(
         &mut self,
         provider: &str,
@@ -3011,18 +3038,23 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<Option<String>, LifecycleRefusal> {
         self.restart_ended();
-        let back =
-            self.decide(|lifecycle| lifecycle.declare_exploited(provider, version, by, at))?;
+        let back = self.decide(
+            |lifecycle| lifecycle.declare_exploited(provider, version, by, at),
+            Some(Box::new(|lifecycle| {
+                lifecycle.declare_exploited_in_place(provider, version, by, at)
+            })),
+        );
         self.reconcile(provider);
-        Ok(back)
+        back
     }
 
     /// Marks the provider's `version` stale, by `by`, the operator's decision and never the publisher's: its
     /// segments in flight move to the version in force, each move recorded in its segment's record (`REQ-MDL-5`,
     /// `REQ-MDL-19`). Refused while a release is staged (ADR-0014). How many segments moved.
     ///
-    /// Written to the platform's record before it is taken, and refused as `Unrecorded`, nothing changed, where it
-    /// can't be (`T-013-10`).
+    /// Written to the platform's record before it is taken. Where it can't be, it only restricts what runs, so it
+    /// is taken all the same, in memory, putting no version back in force, and answered `TakenUnrecorded`: not
+    /// durable, to be taken again after a restart (`T-013-10`).
     pub fn mark_stale(
         &mut self,
         provider: &str,
@@ -3031,9 +3063,14 @@ impl<W: World> Platform<W> {
         at: Clock,
     ) -> Result<usize, LifecycleRefusal> {
         self.restart_ended();
-        let moved = self.decide(|lifecycle| lifecycle.mark_stale(provider, version, by, at))?;
+        let moved = self.decide(
+            |lifecycle| lifecycle.mark_stale(provider, version, by, at),
+            Some(Box::new(|lifecycle| {
+                lifecycle.mark_stale(provider, version, by, at).map(|_| ())
+            })),
+        );
         self.reconcile(provider);
-        Ok(moved)
+        moved
     }
 
     /// What the platform saw since it was last asked: outbound call records, secret lookups, state reads and

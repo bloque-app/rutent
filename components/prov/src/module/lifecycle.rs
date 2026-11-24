@@ -268,8 +268,15 @@ pub enum LifecycleRefusal {
     /// The staged version has no live process, so it can't be put in force.
     StagedNotRunning,
     /// The platform couldn't write the decision to its record, so it wasn't taken: a restart would lose it
-    /// (`T-013-10`). Nothing changed.
+    /// (`T-013-10`). Nothing changed. Only promoting, rolling back and withdrawing are refused so; a decision that
+    /// only restricts what runs is taken all the same ([`LifecycleRefusal::TakenUnrecorded`]).
     Unrecorded,
+    /// The platform couldn't write the decision to its record, but the decision only restricts what runs, so it was
+    /// taken all the same, in memory: a version declared exploited runs nothing and its process is stopped, a
+    /// revoked one takes no new segment, a stale one's segments moved (`T-013-10`, `REQ-MDL-20`). Where it would
+    /// have put another version back in force, it didn't: none is in force until the operator decides. It isn't
+    /// durable: a restart loses it, so it is taken again once the platform reopens on a record it can write.
+    TakenUnrecorded,
 }
 
 #[derive(Debug, Clone)]
@@ -300,9 +307,10 @@ impl Releases {
             || self.staged.as_ref().is_some_and(|s| s.version == version)
     }
 
-    /// Takes `version` out of force or out of staging, as revoking it does: the version in force before it, if
-    /// one is unmarked, is put back in force (a recorded decision of its own), and a staging of it ends.
-    fn retire(&mut self, version: &str) -> Option<String> {
+    /// Takes `version` out of force or out of staging, as revoking it does: where `reinstate` says so, the version
+    /// in force before it, if one is unmarked, is put back in force (a recorded decision of its own), and a staging
+    /// of it ends. Without `reinstate`, no version is in force once the one in force is taken out.
+    fn retire(&mut self, version: &str, reinstate: bool) -> Option<String> {
         if self.staged.as_ref().is_some_and(|s| s.version == version) {
             self.staged = None;
         }
@@ -314,6 +322,7 @@ impl Releases {
             .iter()
             .rev()
             .find(|v| v.as_str() != version && !self.marks.contains_key(v.as_str()))
+            .filter(|_| reinstate)
             .cloned();
         self.in_force.clone_from(&back);
         if let Some(back) = &back {
@@ -773,11 +782,32 @@ impl Lifecycle {
         self.retire(
             provider,
             version,
-            Mark::Revoked,
-            DecisionKind::Revoked,
+            (Mark::Revoked, DecisionKind::Revoked),
             by,
             at,
+            true,
         )
+    }
+
+    /// [`Lifecycle::revoke`], putting no version back in force: revoking the version in force leaves none in force
+    /// until the operator decides. What the platform takes when it can't record a revocation, since putting a
+    /// version in force widens what runs (`T-013-10`).
+    pub fn revoke_in_place(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.retire(
+            provider,
+            version,
+            (Mark::Revoked, DecisionKind::Revoked),
+            by,
+            at,
+            false,
+        )
+        .map(|_| ())
     }
 
     /// Declares the provider's `version` actively exploited, by `by`: it is revoked, and runs nothing more, so its
@@ -793,21 +823,42 @@ impl Lifecycle {
         self.retire(
             provider,
             version,
-            Mark::Exploited,
-            DecisionKind::DeclaredExploited,
+            (Mark::Exploited, DecisionKind::DeclaredExploited),
             by,
             at,
+            true,
         )
+    }
+
+    /// [`Lifecycle::declare_exploited`], putting no version back in force: declaring the version in force
+    /// exploited leaves none in force until the operator decides. What the platform takes when it can't record the
+    /// declaration: the exploited version stops all the same (`T-013-10`, `REQ-MDL-20`).
+    pub fn declare_exploited_in_place(
+        &mut self,
+        provider: &str,
+        version: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        self.retire(
+            provider,
+            version,
+            (Mark::Exploited, DecisionKind::DeclaredExploited),
+            by,
+            at,
+            false,
+        )
+        .map(|_| ())
     }
 
     fn retire(
         &mut self,
         provider: &str,
         version: &str,
-        mark: Mark,
-        kind: DecisionKind,
+        (mark, kind): (Mark, DecisionKind),
         by: &str,
         at: Instant,
+        reinstate: bool,
     ) -> Result<Option<String>, LifecycleRefusal> {
         let by = Identifier::new(by).ok_or(LifecycleRefusal::NoActor)?;
         let releases = self
@@ -822,7 +873,7 @@ impl Lifecycle {
             _ => {}
         }
         releases.marks.insert(version.to_owned(), mark);
-        let back = releases.retire(version);
+        let back = releases.retire(version, reinstate);
         self.record(provider, version, kind, by.clone(), at);
         if let Some(back) = &back {
             self.record(provider, back, DecisionKind::Reinstated, by, at);
