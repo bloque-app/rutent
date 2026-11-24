@@ -2859,21 +2859,18 @@ fn from_a_party(
 }
 
 /// Whether each of a decision's evidence digests that names a statement the history holds names a party's word about
-/// `order`, whatever its kind (a result, a judgement, a hold, an arrival answer): a statement whose maker the log
-/// verified, by a party the order involves. Core's own questions (an operation, an arrival question) are no
-/// provider's word and are skipped. A digest the history holds no statement under names no maker, and passes: it
-/// fails open, which `F-020`'s notes name.
+/// `order`, whatever its kind (a result, a judgement, a hold, an arrival answer, a question): a statement whose maker
+/// the log verified, by a party the order involves. Core's own questions are no exception: no log row ties a
+/// statement's shape to the operator, so a question shape alone proves nothing. A digest the history holds no
+/// statement under names no maker, and passes: it fails open, which `F-020`'s notes name.
 fn digests_from_a_party(
     evidence: &[Digest],
     order: &Id,
     history: &Recorded,
 ) -> Result<(), ResolveError> {
-    use rutent_contracts::provider_role::{ARRIVAL_QUESTION_SHAPE, OPERATION_SHAPE};
     for (_, entry) in history {
         if let Entry::Stated(statement) = entry
             && evidence.contains(&statement.commitment)
-            && ![OPERATION_SHAPE, ARRIVAL_QUESTION_SHAPE]
-                .contains(&statement.what.statement.as_str())
             && !party::verified_party(statement, order, history)
         {
             return Err(ResolveError::OutsideTheOrder);

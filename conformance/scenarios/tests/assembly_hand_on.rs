@@ -36,7 +36,8 @@ fn staff(core: &Core, desk: &str, login: &str) -> Actor {
     actor
 }
 
-/// The commitment of a statement the log holds about `order`: the evidence a decision names.
+/// The commitment of a provider's result the log holds about `order`: the evidence a decision names, a party's word
+/// (Core's own questions are no evidence, `T-020-40`).
 fn evidence_about(
     core: &Core,
     order: &rutent_contracts::router_api::Id,
@@ -47,9 +48,10 @@ fn evidence_about(
         .iter()
         .find_map(|(_, e)| match e {
             Entry::Stated(s)
-                if s.about
-                    .as_ref()
-                    .is_some_and(|a| a.order.as_ref() == Some(order)) =>
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about
+                        .as_ref()
+                        .is_some_and(|a| a.order.as_ref() == Some(order)) =>
             {
                 Some(s.commitment.clone())
             }

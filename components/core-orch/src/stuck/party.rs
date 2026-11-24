@@ -255,7 +255,7 @@ mod tests {
     //! contract's admission cases for the `party` field of `outcome-confirmation-cites-verified-evidence` is read
     //! here, and the maker of the evidence it cites is a party to its order exactly where the log admits it.
 
-    use rutent_contracts::core_internal::{DeploymentOperator, Through, admit_entry};
+    use rutent_contracts::core_internal::{DeploymentOperator, Through, Violation, admit_entry};
     use serde_json::Value;
 
     use super::*;
@@ -306,8 +306,9 @@ mod tests {
         }
     }
 
-    /// Whether the log admits `entry` after `history`, through either of its handles.
-    fn admitted(case: &Value, history: &[(Receipt, Entry)], entry: &Entry) -> bool {
+    /// The log's verdict on `entry` after `history`, through either of its handles: admitted through one, or else the
+    /// refusal naming the party rule where either handle gives it, and the first handle's otherwise.
+    fn verdict(case: &Value, history: &[(Receipt, Entry)], entry: &Entry) -> Result<(), Violation> {
         let operator = match &case["operator"] {
             Value::Null => DeploymentOperator {
                 maker: Id::new("operator").expect("an id"),
@@ -318,9 +319,18 @@ mod tests {
                 party: Id::new(named["party"].as_str().expect("a party")).expect("an id"),
             },
         };
-        [Through::Policy, Through::General]
+        let verdicts: Vec<Result<(), Violation>> = [Through::Policy, Through::General]
             .into_iter()
-            .any(|through| admit_entry(history, entry, through, &operator).is_ok())
+            .map(|through| admit_entry(history, entry, through, &operator))
+            .collect();
+        if verdicts.iter().any(Result::is_ok) {
+            return Ok(());
+        }
+        let refusals: Vec<Violation> = verdicts.into_iter().filter_map(Result::err).collect();
+        let party = refusals
+            .iter()
+            .find(|v| v.0.contains("a party its order involves"));
+        Err(party.or(refusals.first()).expect("a refusal").clone())
     }
 
     /// Orchestration's reading of "a party the order involves" follows the log's, case by case, over every
@@ -359,20 +369,26 @@ mod tests {
             };
             let name = path.display();
             read += 1;
-            if admitted(&case, &history, &entry) {
-                admitted_cases += 1;
-                for receipt in &receipts {
-                    assert_ne!(party(receipt), Some(false), "{name}: admitted, so a party");
+            match verdict(&case, &history, &entry) {
+                Ok(()) => {
+                    admitted_cases += 1;
+                    for receipt in &receipts {
+                        assert_ne!(party(receipt), Some(false), "{name}: admitted, so a party");
+                    }
                 }
-            } else if case["breaks"] == "party"
-                && [ROW, "part-evidence-rests-on-statements"]
-                    .contains(&case["row"].as_str().unwrap_or(""))
-            {
-                party_cases += 1;
-                assert!(
-                    receipts.iter().any(|r| party(r) == Some(false)),
-                    "{name}: refused for its party, so a statement of no party"
-                );
+                // Refused by the party rule, whatever the fixture says it breaks: some cited maker is no party.
+                Err(refusal) if refusal.0.contains("a party its order involves") => {
+                    party_cases += 1;
+                    assert!(
+                        receipts.iter().any(|r| party(r) == Some(false)),
+                        "{name}: the log refuses it for its party, so a statement of no party"
+                    );
+                }
+                Err(refusal) => assert!(
+                    !case["breaks"].is_null(),
+                    "{name}: a case that breaks nothing is refused: {}",
+                    refusal.0
+                ),
             }
         }
         // The walk reads the cases it means to: none of them silently skipped.
@@ -389,7 +405,7 @@ mod tests {
         involves(statement, &order, history)
     }
 
-    /// A decision's evidence digests are held to a party whatever the statement's kind, Core's own questions apart,
+    /// A decision's evidence digests are held to a party whatever the statement's kind, a question's shape included,
     /// and only where the log verified the maker: an outside provider's judgement is refused as its result is, and
     /// a statement claiming a party's name with no verified signature is refused too.
     // verifies: REQ-AUZ-4
@@ -424,8 +440,12 @@ mod tests {
             probe("party", &shape(JUDGEMENT_SHAPE)),
             Err(ResolveError::OutsideTheOrder)
         );
-        // Core's own question is no provider's word.
-        assert_eq!(probe("party", &shape(OPERATION_SHAPE)), Ok(()));
+        // A statement in the shape of Core's question is no exception: no log rule ties the shape to the operator, so
+        // an outsider's verified statement in it is refused as any other.
+        assert_eq!(
+            probe("party", &shape(OPERATION_SHAPE)),
+            Err(ResolveError::OutsideTheOrder)
+        );
         // A party's statement passes where verified, and not where it only claims its maker.
         let route = "a-confirmation-on-another-provider-of-its-route";
         assert_eq!(probe(route, &nothing), Ok(()));
@@ -439,6 +459,38 @@ mod tests {
             v["attribution"] = serde_json::json!({"signature": "unverified", "claimed_by": who});
         };
         assert_eq!(probe(route, &claimed), Err(ResolveError::OutsideTheOrder));
+    }
+
+    /// A report's, confirmation's or decline's evidence is held to a verified statement too: one that only claims a
+    /// party's name is refused, and another statement of the report's own party is the reporter's.
+    // verifies: REQ-AUZ-4
+    #[test]
+    fn evidence_of_an_outcome_must_be_a_verified_statement_of_another_party_than_the_reporters() {
+        use crate::stuck::{ResolveError, from_a_party};
+        let case = read(&format!(
+            "{ROW}--a-confirmation-on-another-provider-of-its-route"
+        ));
+        let mut history = history_of(&case);
+        let entry: Entry = serde_json::from_value(case["entry"].clone()).expect("an entry");
+        let (order, receipts) = cited(&entry).expect("evidence");
+        assert_eq!(from_a_party(&receipts[0], &order, None, &history), Ok(()));
+        // Against itself, as the report's own evidence, its party is the reporter's.
+        assert_eq!(
+            from_a_party(&receipts[0], &order, Some(&receipts[0]), &history),
+            Err(ResolveError::ReportersOwnParty)
+        );
+        let at = history
+            .iter()
+            .position(|(r, _)| *r == receipts[0])
+            .expect("the statement");
+        let mut value = serde_json::to_value(&history[at].1).expect("JSON");
+        let who = value["attribution"]["who"].clone();
+        value["attribution"] = serde_json::json!({"signature": "unverified", "claimed_by": who});
+        history[at].1 = serde_json::from_value(value).expect("an entry");
+        assert_eq!(
+            from_a_party(&receipts[0], &order, None, &history),
+            Err(ResolveError::OutsideTheOrder)
+        );
     }
 
     /// A statement stating for the publisher of a node the order crossed counts only where the history binds the
