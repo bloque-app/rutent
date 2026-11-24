@@ -278,7 +278,8 @@ fn release_of_an_operator_published_wallet_is_accepted_in_the_log_and_its_answer
     assert!(rutent_conformance::signing::verify(&answer).is_ok());
 }
 
-/// The commitment of a statement the log holds about `order`: the evidence a decision names.
+/// The commitment of a provider's result the log holds about `order`: the evidence a decision names, a party's word
+/// (Core's own questions are no evidence, `T-020-40`).
 fn evidence_about(core: &Core, order: &Id) -> Vec<rutent_contracts::module_interface::Digest> {
     let log = core.log();
     let found = log
@@ -286,9 +287,10 @@ fn evidence_about(core: &Core, order: &Id) -> Vec<rutent_contracts::module_inter
         .iter()
         .find_map(|(_, e)| match e {
             Entry::Stated(s)
-                if s.about
-                    .as_ref()
-                    .is_some_and(|a| a.order.as_ref() == Some(order)) =>
+                if s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
+                    && s.about
+                        .as_ref()
+                        .is_some_and(|a| a.order.as_ref() == Some(order)) =>
             {
                 Some(s.commitment.clone())
             }
