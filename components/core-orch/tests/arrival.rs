@@ -1941,7 +1941,7 @@ fn an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused() {
 /// the notice is kept, since the log can't read a notice's body to hold the entry to it.
 // verifies: REQ-ORD-13, REQ-AUD-2
 #[test]
-fn filing_on_a_deposit_whose_kept_notice_isnt_readable_is_refused_before_an_order_opens() {
+fn filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before_an_order_opens() {
     let mut env = crate::env();
     let mut providers = Reserve::new(&env);
     let mut arrivals = Arrivals::new();
@@ -1967,6 +1967,24 @@ fn filing_on_a_deposit_whose_kept_notice_isnt_readable_is_refused_before_an_orde
     assert!(env.started().is_empty());
     assert!(env.policy.asked.is_empty(), "no order opened");
     env.kept.forgets = false;
+    // A notice replaced in the store, kept under the same commitment as other bytes, agrees with nothing either.
+    env.kept.alters = true;
+    let mut replaced = filing(reserve_filer(), &deposited);
+    replaced.request = id("deposit-replaced");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &replaced).unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                order: None,
+                class: OrderRefusalClass::MalformedRequest
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.started().is_empty());
+    assert!(env.policy.asked.is_empty(), "no order opened");
+    env.kept.alters = false;
     let mut again = filing(reserve_filer(), &deposited);
     again.request = id("deposit-2");
     let filed = file(&mut env, &mut providers, &mut arrivals, &again).unwrap();

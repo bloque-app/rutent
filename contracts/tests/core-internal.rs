@@ -4639,7 +4639,7 @@ fn arrival_naming_a_destination_holds_the_orders_authorisation_to_it() {
         "destination-in-another-asset",
         "destination-with-no-authorisation",
         "set_for",
-        "holder",
+        "requester",
     ] {
         assert_case_refused(&format!("{row}--{name}"));
     }

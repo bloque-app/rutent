@@ -226,12 +226,13 @@ fn stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice
             .destination
             .is_none()
     );
-    // What it signs passes the role suite.
+    // What it signs passes the role suite, whose credits are the conformance holder's, so its notices name the
+    // destination.
     let report = run_role_suite(
         &mut Signing(Reserve::new(&context).with_deposit_instruction(
             "standing-account",
             "integrator-1",
-            "the-holder",
+            "conformance-holder",
         )),
         &context,
         &Ed25519Verifier,

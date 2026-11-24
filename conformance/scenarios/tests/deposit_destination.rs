@@ -4,7 +4,8 @@
 //! place of the holder rule, still through the destination's resolution (`REQ-ORD-24`) and inside the authorisation's
 //! terms, and the order's record names the reserve's statement the destination came from.
 
-use rutent_conformance::signing::{real, sign_value};
+use rutent_conformance::role::BankCredit;
+use rutent_conformance::signing::{real, sign_value, signed};
 use rutent_conformance::sim::{Role as SimRole, Spec};
 use rutent_contracts::core_internal::{Destination, Entry, Parties, What};
 use rutent_contracts::provider_role::{Denomination, KeyPurpose, OuterNode};
@@ -86,10 +87,13 @@ fn report(core: &Core, destination: Option<Value>) -> Report {
 
 /// A core whose reserve starts routes on automatic deposits, the customer's standing account registered as theirs.
 fn core() -> Core {
+    core_of(Spec::of(SimRole::Reserve, RESERVE).starting_routes_on_automatic_deposits())
+}
+
+/// A core over `reserve`, the customer's standing account registered as theirs.
+fn core_of(reserve: Spec) -> Core {
     let given = Given {
-        providers: vec![
-            Spec::of(SimRole::Reserve, RESERVE).starting_routes_on_automatic_deposits(),
-        ],
+        providers: vec![reserve],
         ..Given::one_reserve(Staged::AtOnce)
     };
     let (core, _) = Scenario::new("Deposit destination", "AC-10", given).core(1, &mut Reference);
@@ -134,6 +138,35 @@ fn filing_to(
     }
 }
 
+/// The notice the simulated reserve itself signs of a credit of `AMOUNT` to the customer's account, naming the
+/// destination of the standing instruction an integrator set for the customer: the stand-in's own bytes, not hand-signed.
+fn standin_report(reserve: &Spec) -> Report {
+    let request = base_request("req-shape", AMOUNT, &id("session-shape"));
+    let rutent_contracts::provider_role::NodeRef::Outer(node) = request.route.from.node.clone()
+    else {
+        panic!("the route starts at an outer node");
+    };
+    let mut standin = reserve.make(&context());
+    assert!(standin.credit_arrival(&BankCredit {
+        reference: "credit-1".to_owned(),
+        node,
+        asset: request.route.from.asset.clone(),
+        amount: AMOUNT.to_owned(),
+        account: context().account,
+        holder: kit::customer().party.as_str().to_owned(),
+    }));
+    Report {
+        reserve: id(RESERVE),
+        // The stand-in signs with its placeholder key; the real key it stands for signs what the platform takes.
+        notice: signed(
+            standin
+                .arrival_notice("credit-1")
+                .expect("the reserve's notice")
+                .bytes(),
+        ),
+    }
+}
+
 fn arrived(
     core: &mut Core,
     destination: Option<Value>,
@@ -166,23 +199,44 @@ fn record_of(core: &Core, order: &rutent_contracts::router_api::Id) -> (What, Wh
 // verifies: REQ-ORD-13
 #[test]
 fn automatic_deposit_goes_where_its_reserve_sets_it_from_the_customers_parameters() {
-    let mut core = core();
+    // An integrator set the customer's standing instruction at the reserve; its own notice names the destination.
     let customer = kit::customer().party;
-    let arrival = arrived(&mut core, Some(named(customer.as_str(), customer.as_str())));
-    let filing = filing_to(&mut core, arrival, STANDING_ACCOUNT);
+    let reserve = Spec::of(SimRole::Reserve, RESERVE)
+        .starting_routes_on_automatic_deposits()
+        .with_deposit_instruction(STANDING_ACCOUNT, "integrator-1", customer.as_str());
+    let mut core = core_of(reserve.clone());
+    let reported = standin_report(&reserve);
+    let Arrived::NoOrder { arrival } = core.arrive(&reported).expect("the arrival is taken") else {
+        panic!("the arrival opens no order");
+    };
+    // Another account the holder owns is no destination the reserve named: refused, the deposit still free.
+    let elsewhere = filing_to(
+        &mut core,
+        arrival.clone(),
+        rutent_scenarios::assembly::DESTINATION_ACCOUNT,
+    );
+    assert!(matches!(
+        core.file(elsewhere),
+        Ok(Filed::CantProceed { order: None, .. })
+    ));
+    let mut filing = filing_to(&mut core, arrival, STANDING_ACCOUNT);
+    filing.request = id("deposit-2");
     let Ok(Filed::Started { order, .. }) = core.file(filing) else {
         panic!("the deposit starts at the destination its reserve names");
     };
-    let (_, authorise) = record_of(&core, &order);
+    let (held, authorise) = record_of(&core, &order);
     let What::Authorise { authorisation, .. } = authorise else {
         panic!("an authorisation");
     };
     assert_eq!(authorisation.destination.account.as_str(), STANDING_ACCOUNT);
-    assert_ne!(
-        authorisation.destination.account.as_str(),
-        rutent_scenarios::assembly::DESTINATION_ACCOUNT,
-        "not the default destination"
-    );
+    let What::Arrival {
+        destination: Some(named),
+        ..
+    } = held
+    else {
+        panic!("the arrival names the destination");
+    };
+    assert_eq!(named.set_by, "integrator-1");
 }
 
 // verifies: REQ-ORD-24
