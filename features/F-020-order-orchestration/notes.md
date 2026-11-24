@@ -6260,3 +6260,16 @@ tests. The four scenario tests are named by their first words: `confirmation_nam
 - **Rule-offs of the round** (from the fix commit, as above; "walk" is the differential test, "probe" the digest
   probe, "assembly" `assembly_stuck` and `assembly_hand_on`):
 
+  | Rule switched off | Red |
+  |---|---|
+  | digests: Core's questions not skipped | `assembly_stuck`, `assembly_hand_on` |
+  | digests: held to results only (the old limit) | probe |
+  | digests: verified attribution not required | probe |
+  | `involves`: always a party | walk, probe, the publisher test |
+  | `involves`: never a party | walk, probe, the publisher test |
+  | `involves`: arrival's reserve arm | walk (the round-1 test had it on a named case only) |
+  | `involves`: node publishers | the publisher test |
+
+  The verified-attribution requirement on a report's, confirmation's or decline's evidence has no rule-off red:
+  `Core::recorded` reads every kit statement verified, and no scenario builds an unverified one; the probe covers the
+  digests' half only.
