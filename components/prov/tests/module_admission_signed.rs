@@ -460,3 +460,51 @@ fn clock_past_the_year_9999_admits_and_accepts_nothing() {
             .is_some()
     );
 }
+
+/// A release assertion is judged at the platform's clock when it is admitted, never at its own `made_at`
+/// (provider-role 4.0.0, the review of `6cc50683`): one under an older protocol version, dated before that version's
+/// cutover but admitted after it, is refused at admission, and the same assertion admitted before the cutover is read.
+// verifies: REQ-PRT-4, THR-64
+#[test]
+fn assertion_dated_before_its_cutover_but_admitted_after_it_is_refused() {
+    let (declaration, binaries) = release(RESERVE, "1.0.0", &["withdrawal"]);
+    let advertising = signed::catalogue_support::advertising_key(RESERVE);
+    let mut value: serde_json::Value = serde_json::from_slice(&signed::assertion_at(
+        &declaration,
+        &binaries,
+        &advertising,
+        "2026-11-30T23:00:00Z",
+    ))
+    .expect("JSON");
+    value["protocol_version"] = "3.0.0".into();
+    let bytes = serde_json::to_vec(&value).expect("JSON");
+    let cutover = "2026-12-01T00:00:00Z";
+    let versions = rutent_contracts::provider_role::ProtocolVersions::only(
+        rutent_contracts::provider_role::VERSION,
+    )
+    .with_older("3.0.0", cutover);
+    let deployment = signed::catalogue_support::deployment();
+    assert_eq!(
+        rutent_prov::module::admission::read(
+            &bytes,
+            &deployment,
+            &versions,
+            "2026-12-01T00:00:01Z"
+        )
+        .map(|_| ()),
+        Err(Unverified::WrongContext(ContextMismatch::PastCutover {
+            version: "3.0.0".to_owned(),
+            cutover: cutover.to_owned(),
+        }))
+    );
+    assert!(
+        rutent_prov::module::admission::read(
+            &bytes,
+            &deployment,
+            &versions,
+            "2026-11-30T23:30:00Z"
+        )
+        .is_ok(),
+        "admitted before the cutover, it is read"
+    );
+}

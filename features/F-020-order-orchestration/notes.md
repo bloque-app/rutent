@@ -6827,9 +6827,9 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
      if the decision record's settlement figures are to enter the log).
   3. Which protocol versions are in force, their cutover dates and the per-segment reading across a cutover are
      `T-020-54`'s; router-api's bounds name one version (`ProtocolVersions::only`), so routing takes no older one.
-     Every caller judges a statement at its receiving side's time (fix round 1), save module admission's `read`, which
-     has no clock and passes the assertion's own `made_at`: once an older version is in force it must pass the
-     platform's clock. Owner: `T-020-54`.
+     Every caller judges a statement at its receiving side's time (fix rounds 1 and 2): module admission's `read` now
+     takes the platform's admission time and the versions in force. Which versions the platform holds in force is
+     `T-020-54`'s. Owner: `T-020-54`.
   4. A question Core asked under a transaction with no answer logged leaves that transaction out of a rebuilt
      `Issued`. Owner: `T-020-46`.
   5. A reopened Core holds an open order's request from `order_opened` but not its tuples' inputs. Owner: `T-020-46`.
@@ -6921,7 +6921,7 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
   provider, or signs the provider's own.
 - **Gaps added:** 3 now also names module admission's `read`; 10, 11 and 12 above.
 
-- **Rule-offs of the fix round** (from `accd6812`, script `ruleoff-fix1.py` in the row's scratch folder; none hung):
+- **Rule-offs of the fix round** (from `6cc50683`'s tree, script `ruleoff-fix1.py` in the row's scratch folder; none hung):
 
   | Rule switched off | Red |
   |---|---|
@@ -6940,3 +6940,21 @@ yet, so this round starts from `m3`'s shapes and its merge with them is the lead
   `rutent-contract-guard`, `rutent-core-authz`, `rutent-core-orch`, `rutent-core-audit`, `rutent-router`,
   `rutent-conformance`, the scenarios `hand_on`, `authz_scenarios` and `deposit_waits`, the doc check, plan-check and
   tag-check `--strict` (0 findings, 2211 tests tagged), and the guard against `origin/develop` as above.
+
+### T-020-45, fix round 2 (the approval of `6cc50683`)
+
+- **Module admission's time.** `Platform::admit` computes `admitted_at` before reading the assertion, so
+  `admission::read(received, deployment, versions, admitted_at)` now takes the deployment, the versions in force and
+  that time, and judges the version there, never at the assertion's own `made_at`; the platform passes its one
+  version (`ProtocolVersions::only`). Test `assertion_dated_before_its_cutover_but_admitted_after_it_is_refused`
+  [`REQ-PRT-4`, `THR-64`] (`components/prov/tests/module_admission_signed.rs`): an assertion under 3.0.0 made before
+  its cutover and read after it is `WrongContext(PastCutover)`, and read before it is read. Edits
+  `components/prov/src/module/admission.rs` and `platform.rs` (`DEC-20` paths). Gap 3's admission part is closed.
+- **The fix round's rule-off table** names `6cc50683`'s tree, on the branch, in place of `accd6812`, an amended
+  commit that isn't.
+- **Gap 13 (new): the guard's protection check reads free text.** "adds a protection" is matched anywhere in an entry,
+  so an entry that only mentions the words (as the rule's own did) is held to `Ignorable: no`. Owner: a later guard
+  change (a marker of its own, such as `Adds a protection.` as a whole sentence, the lead's).
+- **Rule-off.** `read` judging at the assertion's `made_at` again turns
+  `assertion_dated_before_its_cutover_but_admitted_after_it_is_refused` red.
+
