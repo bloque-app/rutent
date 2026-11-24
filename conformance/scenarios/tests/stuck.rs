@@ -4491,7 +4491,10 @@ fn stuck_after_a_second_route() -> (World, Core, Stuck) {
 /// it, and the part is stuck on that second route. The value rests at the withdrawal's provider's ledger, so it moves the
 /// value back, and its statement, the report, is a statement by a provider on the first route only, which is still a
 /// party to the order; the deposit's provider, on the second route, confirms, and the part resolves. The log admits
-/// every entry.
+/// every entry. This checks the outcome end to end; it does not isolate the rule that a provider on any of the order's
+/// routes is a party: the withdrawal's provider is also a party through its first-route move and as the decide and
+/// resolve mover, so the test stays green with that arm of `stuck/party.rs` off. The arm is pinned by
+/// `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case`.
 // verifies: REQ-AUZ-4, REQ-ORD-1
 #[test]
 fn statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution() {
