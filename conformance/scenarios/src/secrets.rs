@@ -737,6 +737,9 @@ pub enum Planted {
     /// In a decision record Core signed, which the log holds by its digest alone, in the text field `.1` names, a
     /// JSON pointer under the statement (`T-024-22`, [`DECISION_FIELDS`]).
     InDecisionRecord(String, &'static str),
+    /// A decision record Core signed that no longer reads back as a record, for the control of the check that every
+    /// record kept is read (`T-024-22`).
+    CorruptDecisionRecord,
 }
 
 /// A run scanned for balances (`T-024-20`).
@@ -1039,6 +1042,12 @@ pub fn run_balanced(
                 },
             )
             .unwrap_or_else(|e| panic!("the wallet's statement wasn't kept: {e:?}"));
+            if matches!(plant, Some(Planted::CorruptDecisionRecord)) {
+                assert!(
+                    core.corrupt_decision_record(),
+                    "Core kept no decision record to corrupt"
+                );
+            }
             if let Some(Planted::InDecisionRecord(figure, at)) = plant {
                 assert!(
                     core.leak_into_decision_record(figure, at),

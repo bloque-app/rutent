@@ -617,7 +617,8 @@ fn balance_held_after_any_step_is_found_nowhere_outside_the_evidence_store() {
 fn balance_planted_in_a_decision_record_is_found_by_the_scan() {
     let clean = run_balanced(&mut Reference, 1, None);
     let scan = Scan::new(clean.scanned.canaries.clone()).expect("a scan");
-    // Each figure in one field of the record, the fields taking turns: the request's, a candidate's, the snapshot's.
+    // Each figure in one field of the record, the fields taking turns: the request's id, `round.refines.request_id`,
+    // `bounds.policy_version` and `router_version` (`DECISION_FIELDS`).
     for (n, (name, value)) in distinct(&clean.scanned.canaries).into_iter().enumerate() {
         let at = DECISION_FIELDS[n % DECISION_FIELDS.len()];
         let run = run_balanced(
@@ -642,4 +643,13 @@ fn scan_bytes(canaries: &[Canary], name: &str) -> Vec<u8> {
         .find(|c| c.name == name)
         .map(|c| c.bytes.clone())
         .unwrap_or_default()
+}
+
+// verifies: REQ-AUD-6
+#[test]
+#[should_panic(expected = "doesn't read back as one")]
+fn decision_record_that_does_not_read_back_is_refused_and_not_dropped_from_the_scan() {
+    // A record Core signed whose candidates are no list reads back as no record; the run is refused, so it can't
+    // vanish from the scan with the rest staying green.
+    let _ = run_balanced(&mut Reference, 1, Some(&Planted::CorruptDecisionRecord));
 }

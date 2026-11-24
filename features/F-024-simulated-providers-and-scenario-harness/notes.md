@@ -1829,6 +1829,7 @@ Waves 33 to 36 (`T-020-39` to `T-020-43`, `T-021-11` to `T-021-13`, `T-022-09`, 
 | the decision-record surface holds only the request | `balance planted in a decision record is found by the scan` (its fields beyond the request) |
 | the holding account's landings all before the steps | `balance held after any step is found nowhere outside the evidence store` (the balance after a step is one figure) |
 | `Run.followed` not read | `balance held after any step is found nowhere outside the evidence store` |
+| the check that every signed record reads back removed from `read_core` | `decision record that does not read back is refused and not dropped from the scan` (`Planted::CorruptDecisionRecord`, `Core::corrupt_decision_record`; a `should_panic` test, tagged `REQ-AUD-6`) |
 | `opening_for` draws too few bits (its modulus never bites) | `balance held after any step is found nowhere outside the evidence store` (the opening isn't spread over its range) |
 
 `T-024-20`'s own rule-offs stand for its three tests, which this row keeps (the first two now dedupe figures).

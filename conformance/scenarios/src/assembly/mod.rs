@@ -908,6 +908,25 @@ impl Core {
             .collect()
     }
 
+    /// A control for the check that every record Core signed is read (`T-024-22`): rewrites the first record kept with
+    /// its `candidates` set to a string, so it no longer reads back as a record. False if Core kept none.
+    pub fn corrupt_decision_record(&mut self) -> bool {
+        let Some(bytes) = self.signer.records.values_mut().next() else {
+            return false;
+        };
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return false;
+        };
+        value["statement"]["candidates"] = "not a list".into();
+        match serde_json::to_vec(&value) {
+            Ok(written) => {
+                *bytes = written;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// A control for the scan of the records Core signs (`T-024-22`): writes `leak` into the first decision record
     /// Core kept, in the text field of the record `at` names (a JSON pointer under the statement, such as
     /// `/request/request_id`), as a record that carried a figure would. Core sets the request's identifier and the
