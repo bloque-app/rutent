@@ -5487,8 +5487,9 @@ fn holders_own(citing: &VerifiedEntry, moved: Option<&Entry>, statement: &Stated
 }
 
 /// The orders `order` is joined to by hand-ons in `history`, itself first: the orders it handed value on to and the
-/// ones it was handed on from, by the hand-on inputs, the stuck resolutions, the holding accounts' records and the
-/// routes handed on, each way, and theirs in turn (`T-020-39`).
+/// ones it was handed on from, by the hand-on inputs, the stuck resolutions (their effects, and the decide steps
+/// policy permitted), the holding accounts' records and the routes handed on, each way, and theirs in turn
+/// (`T-020-39`).
 fn linked_orders<'a>(order: &'a str, history: &'a History) -> Vec<&'a str> {
     let mut orders: Vec<&str> = alloc::vec![order];
     // Each pair of orders a hand-on joins, read from what this log recorded.
@@ -5524,7 +5525,9 @@ fn linked_orders<'a>(order: &'a str, history: &'a History) -> Vec<&'a str> {
                         },
                     ..
                 } => out.push((order.as_str(), linked_order.as_str())),
-                What::StuckDecide { request, .. } => {
+                // A decide step joins the orders only where policy permitted it: a refused one decided nothing
+                // (the review of `27b0f6b9`).
+                What::StuckDecide { request, .. } if v.outcome == (Outcome::Permitted {}) => {
                     if let Resolution::HandOn { linked_order, .. } = &request.resolution {
                         out.push((request.order.as_str(), linked_order.as_str()));
                     }
@@ -5552,8 +5555,8 @@ fn linked_orders<'a>(order: &'a str, history: &'a History) -> Vec<&'a str> {
 /// Whether `statement` is made by a party `order` involves (`confirmer-evidence-party`, `T-020-39`): its maker is a
 /// provider of a segment on any route this log gave the order or an order a hand-on joins it to, the first chosen,
 /// a recalculated or a changed destination's alike, or the one a move of its went to; or the holder of a holding
-/// account its value rested at (the reserve its value arrived at, a stuck resolution's mover, a holding account a
-/// check or a route handed on names); or the party it states for is the publisher of a private node one of those
+/// account its value rested at (the reserve its value arrived at, a permitted stuck resolution's mover, the holder a
+/// route handed on starts from); or the party it states for is the publisher of a private node one of those
 /// routes crossed, as this log binds the node to it (`private_node_of`). An outside provider's word, however
 /// verified, is no evidence about the order. No customer signs a statement.
 fn party_to_the_order(statement: &StatedEntry, order: &Id, history: &History) -> bool {
@@ -5599,7 +5602,8 @@ fn party_to_the_order(statement: &StatedEntry, order: &Id, history: &History) ->
                     },
                 ..
             } => ours(o) && by == maker,
-            What::StuckDecide { request, .. } => {
+            // A permitted decide step's mover; a refused one names no one (the review of `27b0f6b9`).
+            What::StuckDecide { request, .. } if v.outcome == (Outcome::Permitted {}) => {
                 ours(&request.order)
                     && matches!(&request.resolution,
                         Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } if by == maker)
@@ -5609,9 +5613,6 @@ fn party_to_the_order(statement: &StatedEntry, order: &Id, history: &History) ->
                 order: Some(o),
                 ..
             } => ours(o) && reserve == maker,
-            What::HoldingCheck {
-                provider, orders: held, ..
-            } => provider == maker && held.iter().any(ours),
             What::HoldingWithdrawal {
                 order: o,
                 handed_on_from,

@@ -4147,6 +4147,32 @@ fn stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log() {
         assert_case_refused(&format!("{row}--{name}"));
     }
     assert_case_refused("part-evidence-rests-on-statements--party");
+    // Each way the log makes a maker a party, alone, and the ways it doesn't (the review of `27b0f6b9`): a holding
+    // check names no party, nor a decide step policy refused, nor an order no hand-on joins.
+    for name in [
+        "a-confirmation-on-a-provider-a-holding-check-names",
+        "a-confirmation-on-the-mover-a-refused-decide-names",
+        "a-confirmation-on-a-provider-of-an-order-no-hand-on-joins",
+        "a-confirmation-on-a-provider-of-an-order-a-refused-decide-hands-on-to",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+    for name in [
+        "a-confirmation-on-the-mover-a-permitted-decide-names",
+        "a-confirmation-on-the-mover-its-resolve-effect-names",
+        "a-confirmation-on-the-reserve-its-arrival-came-to",
+        "a-confirmation-on-the-holder-a-holding-withdrawal-names",
+        "a-confirmation-on-the-publisher-a-holding-withdrawal-names",
+        "a-confirmation-on-a-provider-of-an-order-a-hand-on-input-joins",
+        "a-confirmation-on-a-provider-of-a-route-handed-on-from-the-order",
+        "a-confirmation-on-a-provider-of-an-order-a-holding-withdrawal-joins",
+        "a-confirmation-on-a-provider-of-an-order-a-resolve-effect-hands-on-to",
+        "a-confirmation-on-a-provider-of-an-order-a-permitted-decide-hands-on-to",
+    ] {
+        let name = format!("{row}--{name}");
+        assert!(read_admission(&name)["breaks"].is_null(), "{name}");
+        assert_case(&name);
+    }
     // A provider on the order's route, or only on a route recalculated since; the holder the resolution names
     // (bank-co, which delivers p3's value); a hand-on's linked order's: each admitted.
     for name in [

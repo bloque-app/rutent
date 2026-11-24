@@ -301,7 +301,7 @@ impl Candidate {
                     .is_some_and(|p| *operation as usize + 1 == p.operations.len());
                 if !last {
                     return Err(Violation(
-                        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
+                        "a batched-payout reason names its part's last operation",
                     ));
                 }
             }
@@ -1558,7 +1558,7 @@ impl DecisionRecord {
                             && tuple.payouts() == crate::provider_role::Payouts::Batched);
                 if !batched {
                     return Err(Violation(
-                        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
+                        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
                     ));
                 }
                 Ok(())

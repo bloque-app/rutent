@@ -1783,3 +1783,50 @@ fn roll_back_is_refused_while_no_rule_answers_it() {
     );
     assert_eq!(policy.decide(&promoted).unwrap().outcome, Answer::Permit {});
 }
+
+/// An erasure that overrides the statement's citations, core-internal's `overrides_citations` (`T-020-39`), is
+/// refused while no rule answers it: the operator's login holding the permission to erase, and every other, is
+/// refused before the deployment's policy is asked, and the log takes no effect on it; the same erasure without the
+/// override is still permitted on the plain permission. `T-021-13` gives the override a permission of its own and
+/// replaces this test (`REQ-AUZ-1`, `REQ-AUD-13`, the review of `27b0f6b9`).
+// verifies: REQ-AUZ-1, REQ-AUD-13
+#[test]
+fn erasure_overriding_citations_is_refused_while_no_rule_answers_it() {
+    let overriding = |caller: &Actor| {
+        let mut request = erasure_asked(caller);
+        request.request = id(&format!("req-erase-over-{}", caller.acts.as_str()));
+        let Action::EraseStatement {
+            overrides_citations,
+            ..
+        } = &mut request.action
+        else {
+            panic!("an erasure");
+        };
+        *overrides_citations = true;
+        request
+    };
+    let mut every: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every.push(Permission::EraseStatement);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every),
+    );
+    let asked = overriding(&operator());
+    let decision = policy.decide(&asked).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED);
+    assert!(decision.permit().is_none());
+    assert_eq!(
+        policy.log.effect(&asked, forged(&decision)),
+        no_permitting_decision()
+    );
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "it never reached the deployment's policy"
+    );
+    // Without the override, the plain permission still answers it.
+    let plain = erasure_asked(&operator());
+    assert_eq!(policy.decide(&plain).unwrap().outcome, Answer::Permit {});
+}

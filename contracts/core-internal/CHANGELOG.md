@@ -948,8 +948,8 @@
      a decline's evidence) and `part-evidence-rests-on-statements` (the stuck resolution's own evidence entry) gain a
      field, `party`: the statement's maker is a provider of a segment on any route this log gave the order or an
      order a hand-on joins it to, recalculated and changed routes included, or the one a move of it went to; the
-     holder of a holding account its value rested at (its arrival's reserve, a stuck resolution's mover, a holding
-     check's or a route handed on's holder); or it states for the publisher of a private node those routes crossed,
+     holder of a holding account its value rested at (its arrival's reserve, a stuck resolution's mover, a route
+     handed on's holder); or it states for the publisher of a private node those routes crossed,
      as `private_node_of` binds the node. An outside provider's word is no evidence about the order. Four refused
      cases (a confirmation, a move's report, a decline and a part's evidence, each on an outside provider's result)
      and two admitted (another provider of the route; one only a recalculated route names). (REQ-AUZ-4)
@@ -974,6 +974,9 @@
      cases: before the revocation, with another grant standing, and made after the grant was made again, verified;
      after the revocation, at its instant, and made before it but received after the grant was made again,
      unverified. The log's register holds it from `T-022-09`. (THR-3, REQ-AUD-2)
-  Twenty-eight schemas, 160 valid fixtures, 168 invalid ones, 714 admission cases and 56 attribution cases; 109
+  After the review of `27b0f6b9`: the `party` field reads no `holding_check` (no row ties one to the order) and a
+  `stuck_decide` only where policy permitted it, in `party_to_the_order` and the hand-on closure alike; fourteen more
+  admission cases, one per way a maker is made a party, alone.
+  Twenty-eight schemas, 160 valid fixtures, 168 invalid ones, 728 admission cases and 56 attribution cases; 109
   relations and 5 closing ones, three stated. Outside `contracts/`: the consumer edits the shapes force, named in the
   round's commit. (DEC-4, DEC-20, T-020-39)

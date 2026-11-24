@@ -29,14 +29,18 @@ const SHAPES: [&str; 10] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 133] = [
+const RUST_RULES: [(&str, &str); 134] = [
     (
         "decision-record-batched-payout-at-a-tuple-paying-per-order",
-        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
+        "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
     ),
     (
         "decision-record-batched-payout-naming-an-operation-before-the-last",
-        "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches",
+        "a batched-payout reason names its part's last operation",
+    ),
+    (
+        "decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve",
+        "a batched-payout reason names its part's last operation",
     ),
     (
         "policy-bounds-two-slippage-limits-for-one-tuple",
@@ -1566,9 +1570,22 @@ fn candidate_dropped_for_a_batched_payout_names_its_reason() {
         _ => None,
     });
     assert_eq!(batched, Some(Payouts::Batched));
-    for name in [
-        "decision-record-batched-payout-at-a-tuple-paying-per-order",
-        "decision-record-batched-payout-naming-an-operation-before-the-last",
+    // The record's half: the deposit's tuple pays out in batches. The candidate's half: the reason names its part's
+    // last operation, even where an earlier one is itself a deposit at a batching reserve, which the record's half
+    // would let through (the review of `27b0f6b9`).
+    for (name, rule) in [
+        (
+            "decision-record-batched-payout-at-a-tuple-paying-per-order",
+            "a batched-payout reason names a deposit at a reserve tuple that pays out in batches",
+        ),
+        (
+            "decision-record-batched-payout-naming-an-operation-before-the-last",
+            "a batched-payout reason names its part's last operation",
+        ),
+        (
+            "decision-record-batched-payout-naming-an-earlier-deposit-at-a-batching-reserve",
+            "a batched-payout reason names its part's last operation",
+        ),
     ] {
         let invalid = fixture("invalid", name);
         assert!(
@@ -1577,9 +1594,7 @@ fn candidate_dropped_for_a_batched_payout_names_its_reason() {
         );
         let refused = through_rust("decision-record", &invalid);
         assert!(
-            refused.as_ref().is_err_and(|e| e.contains(
-                "a batched-payout reason names its part's last operation, a deposit at a reserve tuple that pays out in batches"
-            )),
+            refused.as_ref().is_err_and(|e| e.contains(rule)),
             "{name}: {refused:?}"
         );
     }

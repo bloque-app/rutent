@@ -199,6 +199,13 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 // actors included. The decision's entry records the request whole, so it names the commitment erased
                 // and who asked. That the log's statement is one it keeps, and that its erasure is decided, the log holds
                 // (`BoundStore::erase`).
+                // An erasure overriding the statement's citations (`T-020-39`'s `overrides_citations`) is a permission
+                // of its own from `T-021-13`; until then no rule answers it, so policy refuses it whoever asks, as it
+                // refuses `roll_back` until `T-021-12`.
+                Action::EraseStatement {
+                    overrides_citations: true,
+                    ..
+                } => None,
                 Action::EraseStatement { .. } => {
                     operator_holds(caller, Permission::EraseStatement).map(Needs::from)
                 }

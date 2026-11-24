@@ -50,7 +50,10 @@ use rutent_contracts::router_api::{
 /// The drop reasons this suite knows, as router-api 3.0.0 names them (`T-011-05`). `DropReason` is
 /// `#[non_exhaustive]` since 3.0.0, so a reason added later (still a major under `DEC-4`) breaks no build here; a
 /// test holds this list to the contract's schema, so a new reason fails it until the suite is reviewed for it.
-pub const DROP_REASONS: [&str; 17] = [
+/// `batched_payout` (router-api 4.0.0, `T-020-39`) is checked by the contract's own [`DecisionRecord::check`], which the
+/// suite runs first: its part's last operation, a deposit at a tuple the snapshot says pays out in batches. The cases
+/// where the router drops one are `T-020-43`'s.
+pub const DROP_REASONS: [&str; 18] = [
     "stale_figure",
     "void_statement",
     "quote_voided",
@@ -63,6 +66,7 @@ pub const DROP_REASONS: [&str; 17] = [
     "no_price",
     "fee_above_amount",
     "nothing_delivered",
+    "batched_payout",
     "excluded_by_policy",
     "below_floor",
     "no_positive_outcome",

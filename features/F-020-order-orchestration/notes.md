@@ -5884,8 +5884,8 @@ the owner's click at the release into `main`), and the consumer files below.
      joins it to (`route_chosen`, `route_recalculated`, `destination_changed`; `linked_orders` closes over hand-on
      inputs, `resolve_stuck` hand-ons and their decide steps, holding withdrawals and routes handed on, both ways), or
      the provider a `move_value` of those orders went to; a holder of a holding account its value rested at (the
-     reserve of an `arrival` of the order, a stuck resolution's `by`, a `holding_check`'s provider, a
-     `holding_withdrawal`'s holder); or it states for the publisher of a private node those plans cross, as
+     reserve of an `arrival` of the order, a stuck resolution's `by`, a `holding_withdrawal`'s holder;
+     after the review of `27b0f6b9`, a decide step's `by` only where policy permitted it, and no `holding_check`); or it states for the publisher of a private node those plans cross, as
      `private_node_of` binds it, or the publisher a `holding_withdrawal` names.
   3. `erasure-of-cited-evidence`: `Action::EraseStatement.overrides_citations: bool`, `#[serde(default)]` and skipped
      when false, so every earlier request, entry and digest reads and writes as before. The schema's property is a
@@ -5958,8 +5958,9 @@ the owner's click at the release into `main`), and the consumer files below.
   - fold into each contract's unreleased version;
   - a decline's evidence is held to a party too (the row's own field), so an outside provider's word can't decline
     either;
-  - "a party the order involves" includes the reserve of its arrival, a stuck resolution's mover (`by`, decided or
-    effected), a holding check's provider and a holding withdrawal's holder and publisher, and the orders a hand-on
+  - "a party the order involves" includes the reserve of its arrival, a stuck resolution's mover (`by`, effected, or
+    decided by a permitted decide step), and a holding withdrawal's holder and publisher (no holding check, after the
+    review of `27b0f6b9`), and the orders a hand-on
     joins, both ways and transitively; and nothing else: not the authorisation's destination reserve unless a plan
     or a move names it, never the customer;
   - a node's publisher is read only where the log binds it (`private_node_of`: a replay or evidence of the order);
@@ -6029,3 +6030,95 @@ the owner's click at the release into `main`), and the consumer files below.
   | `payouts()` reading absent as batched | per order, batched |
   | `Candidate::check`: a batched payout names the part's last operation | none: the record's half refuses the earlier operation's tuple first; kept as defence |
   | the record's check: the deposit tuple pays out in batches | dropped, fixtures |
+
+### T-020-39, the review of `27b0f6b9`: changes
+
+- **Should-fix 1, fixed: a holding check made any provider a party.** No row ties a `holding_check` to the order, so
+  whoever writes one could name an outside provider. The arm is dropped from `party_to_the_order`; the holders the
+  log binds stay (an arrival's reserve, a resolution's mover, a holding withdrawal's holder and publisher). Refused
+  case `outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-provider-a-holding-check-names`, the
+  reviewer's probe.
+- **Should-fix 2, fixed: a refused decide step named a party and joined orders.** `party_to_the_order` and
+  `linked_orders` read a `stuck_decide` only where its outcome is `permitted`. Cases: `--a-confirmation-on-the-mover-a-
+  permitted-decide-names` (admitted), `--…-a-refused-decide-names` (refused), `--a-confirmation-on-a-provider-of-an-order-
+  a-permitted-decide-hands-on-to` (admitted), `--…-a-refused-decide-hands-on-to` (refused).
+- **Should-fix 3, fixed: the erasure override was permitted on the plain erase permission.** `core-authz`'s
+  `roles/mod.rs` answers `EraseStatement { overrides_citations: true, .. }` with no rule, so the fixed rule refuses it
+  whoever asks until `T-021-13`, as `roll_back` until `T-021-12`. Test
+  `erasure_overriding_citations_is_refused_while_no_rule_answers_it` [`REQ-AUZ-1`, `REQ-AUD-13`]; `T-021-13` replaces
+  it when it gives the override its own permission (gap 6). Default: refused, failing closed.
+- **Low 4, fixed: the two halves of the `batched_payout` check.** The candidate's half refuses "a batched-payout reason
+  names its part's last operation", the record's "a batched-payout reason names a deposit at a reserve tuple that pays
+  out in batches". New invalid fixture (patched), `decision-record-batched-payout-naming-an-earlier-deposit-at-a-
+  batching-reserve`: the dropped part deposits at a batching reserve's tuple mid-route (`f-dep-co`, co-ach) and
+  withdraws again; only the candidate's half refuses it.
+- **Low 5, fixed: every arm in the rule-off table.** One admission case per way the log makes a maker a party, alone
+  (`scratchpad/f020zp/gen3.py`): the resolution's effect, a permitted decide, an arrival's reserve, a holding
+  withdrawal's holder and its publisher; and per way it joins an order through a hand-on: a hand-on input, a route
+  handed on from the order, a holding withdrawal, a resolve effect, a permitted decide; and an order no hand-on joins
+  (refused). Fourteen new admission cases (728 in all); `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log`
+  asserts each.
+- **CI's failures at `115c97fc` (run `45333150064`), sorted.** 21 tests.
+  - `conformance/tests/router_suite.rs`'s `the_suite_knows_every_drop_reason_the_contract_schema_names`: fixed,
+    `batched_payout` in the suite's `DROP_REASONS` (`conformance/src/router/mod.rs`), which the contract's own record
+    check recomputes; the router's cases for it are `T-020-43`'s.
+  - `tools/records/tests/evidence.rs`'s `the_binary_reads_the_decisions_file_and_a_review_needs_notes_that_are_not_empty`:
+    `#243`'s, fixed on `m3` at `bb0cd23e`, not on this base; not this row's.
+  - 19 scenarios, each refused by the new `party` field and still refused after the fixes (run locally through the
+    lock): `stuck.rs`'s `confirmation_names_the_report_it_confirms`, `confirmed_failure_frees_the_part_for_a_new_decision`,
+    `declined_report_of_a_silent_move_is_followed_by_a_new_one_that_stands_until_it_is_confirmed`,
+    `segments_move_confirmed_done_is_graded_and_then_settles_the_segment`,
+    `segments_move_confirmed_done_whose_record_the_log_could_not_take_is_confirmed_once`,
+    `segments_move_confirmed_done_with_no_graded_evidence_settles_nothing`,
+    `silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part`,
+    `unknown_move_takes_its_known_outcome_once_on_two_actors_word`; `stuck_mover.rs`'s
+    `confirmation_of_a_declined_report_is_refused`, `decline_by_the_reporters_own_party_is_refused`,
+    `decline_or_confirmation_the_log_refuses_is_a_refusal_that_changes_nothing`,
+    `move_left_unknown_takes_its_known_outcome_from_the_providers_stated_result`,
+    `part_stays_held_while_its_report_is_declined`,
+    `provider_stated_failure_does_not_free_the_part_until_another_party_confirms_it`,
+    `report_declined_by_its_confirmer_is_followed_by_a_new_report_that_stands_until_it_is_confirmed`,
+    `report_whose_evidence_states_another_outcome_than_the_one_reported_is_refused`,
+    `stuck_resolved_cites_an_evidence_entry_the_log_holds`; `stuck_hand_on.rs`'s
+    `hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_partys_confirmation`,
+    `hand_on_left_unknown_takes_its_known_outcome_from_the_holding_accounts_stated_answer`. **Test artefacts, not a
+    Core bug:** each confirms or declines on `OTHER_RESERVE`'s (`sim-reserve-b`) result, a reserve the kit installs
+    beside the order's but which runs no segment of any route the order was given, holds none of its value and
+    is joined to it by no hand-on: the outside provider the owner's ruling refuses, put there under the overruled
+    default of 2026-11-17 ("a confirmer's evidence maker need not be a party to the order"). Core passes the caller's
+    evidence through as built (`T-020-40` refuses it in `stuck/` first). **Not fixed here, and the rule not relaxed:**
+    the kit's order runs one reserve (withdrawal and deposit at `RESERVE`, on its own private ledger), so it has no
+    second party; the confirmer can't be swapped for `RESERVE` either, since a confirmation needs another party than
+    the report's (`outcome-confirmation-rests-on-its-report`). The fix is a kit world whose order involves a second
+    provider (a route, or a recalculated route, through it), which is what `T-020-40`'s "statement by a provider on an
+    earlier route of the order backs a resolution" needs. Owner: `T-020-40`, or the lead for a kit row. So `ci` stays
+    red on these 19 until then (gap 9).
+- **Gap 9 (new).** Beside the kit: under the ruling, a stuck part of an order whose routes involved one party only
+  has no second party to confirm a silent resolution, so it stays held. Recorded for the lead, as a reading the
+  owner may want to see (`REQ-AUZ-4`, `REQ-ORD-28`).
+- **Rule-offs of the review's round** (from `79994eb2`, same script; none hung). "Evidence" and "table" as above:
+
+  | Rule switched off | Red |
+  |---|---|
+  | `party_to_the_order`: plans' providers | evidence, table |
+  | its moves' providers | none: a strict subset of the plans' (`move-segment-is-in-its-orders-plan`), kept as defence (the reviewer agreed) |
+  | its resolve effect's mover | evidence, table |
+  | its decide step's mover | evidence, table |
+  | its decide step read whatever policy answered | evidence, table |
+  | its arrival's reserve | evidence, table |
+  | its holding withdrawal's holder | evidence, table |
+  | its holding withdrawal's publisher | evidence, table |
+  | its node publishers (`private_node_of`) | evidence |
+  | `linked_orders` whole | evidence, table |
+  | its hand-on input | evidence, table |
+  | its route handed on from the order | evidence, table |
+  | its holding withdrawal | evidence, table |
+  | its resolve effect | evidence, table |
+  | its decide step | evidence, table |
+  | its decide step read whatever policy answered | evidence, table |
+  | `roles/mod.rs`: the override answered by the plain erase permission | `erasure_overriding_citations_is_refused_while_no_rule_answers_it` |
+  | `Candidate::check`: a batched payout names its part's last operation | `candidate_dropped_for_a_batched_payout_names_its_reason`, fixtures (the earlier deposit admitted) |
+  | the record's check: the deposit tuple pays out in batches | the same three |
+- **Local checks** (through the lock, at the fix commit): fmt, clippy `--workspace --all-targets -D warnings`,
+  `rutent-contracts`, `rutent-core-authz --lib`, the three `stuck*` scenario binaries (19 failing as above, the rest
+  passing), plan-check and tag-check `--strict`, the guard against `origin/develop`.
