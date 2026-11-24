@@ -1372,6 +1372,76 @@ fn holding_accounts_record_proves_one_start_from_its_own_reserve() {
     );
 }
 
+/// One start per linked order: the log holds one start per record, so a second, different holding record (another
+/// reference, or another statement of the same record) for a linked order already started proves nothing and records
+/// nothing. The identical record and statement again is the same entry retried, answered with its receipt.
+// verifies: REQ-ORD-40, INV-5
+#[test]
+fn a_started_linked_order_takes_no_second_start() {
+    let (world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let mut hand_on = HandOn::new();
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2").expect("handed on");
+    let linked = id("ord-2");
+    let record = withdrawal_record();
+    let statement = segments_support::handing::holding_statement(&mut core, "ord-2");
+    let first = segments_support::handing::prove_citing(
+        &mut core,
+        &mut hand_on,
+        &linked,
+        &record,
+        &statement,
+    )
+    .expect("the start is proven");
+    let starts = |core: &Core| count(core, |w| matches!(w, What::HoldingWithdrawal { .. }));
+    assert_eq!(starts(&core), 1);
+    // Another record of the holding account, for the same linked order.
+    let mut other = withdrawal_record();
+    other.reference = format!("{RESERVE}-withdrawal-tx-another");
+    let (cited, another) = (
+        segments_support::handing::holding_statement(&mut core, "ord-2"),
+        segments_support::handing::holding_statement(&mut core, "ord-2"),
+    );
+    let before = entries(&core);
+    assert_eq!(
+        segments_support::handing::prove_citing(&mut core, &mut hand_on, &linked, &other, &cited),
+        Err(HandOnError::Unproven(Unproven::AlreadyStarted))
+    );
+    // Another statement of the very same record.
+    assert_eq!(
+        segments_support::handing::prove_citing(
+            &mut core,
+            &mut hand_on,
+            &linked,
+            &record,
+            &another
+        ),
+        Err(HandOnError::Unproven(Unproven::AlreadyStarted))
+    );
+    assert_eq!(starts(&core), 1, "one start, whatever was asked");
+    assert_eq!(entries(&core), before, "nothing recorded");
+    // The same entry retried is answered with the one receipt, recorded once.
+    assert_eq!(
+        segments_support::handing::prove_citing(
+            &mut core,
+            &mut hand_on,
+            &linked,
+            &record,
+            &statement
+        ),
+        Ok(first)
+    );
+    assert_eq!(starts(&core), 1);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// A stranger's new terms are refused the same for an order that exists and one that doesn't, before Core says whether
 /// it follows the order, and policy is not asked: only the order's customer, as the log's acceptance names it, learns
 /// more (`REQ-AUZ-7`).
@@ -1915,6 +1985,117 @@ fn a_pending_hand_on_keeps_its_linked_order_from_another() {
         part_of(&core, "ord-5").state,
         OrderState::WaitingForCustomer
     );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The review's retry (finding 2 of M3's milestone review): the first order's `handed_on` is in the log and the
+/// linked order's `route_chosen` can't be appended now, so the hand-on stays pending, built for `ord-2`. Asked again
+/// naming `ord-3`, it is refused and nothing is recorded: the start built for `ord-2` is never recorded under
+/// `ord-3`'s id, and the caller is never told `ord-3` was handed on. Retried naming `ord-2`, it completes.
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn a_pending_hand_on_retried_for_another_linked_order_is_refused() {
+    let (world, mut core) = waiting_for_the_customer();
+    for n in [2, 3] {
+        seed_linked(
+            &mut core,
+            &Named::another(n),
+            &customer(),
+            &linked_record(&format!("ord-{n}")),
+        );
+    }
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    let mut hand_on = HandOn::new();
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Chosen, Fault::Unavailable));
+    }
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Append(
+            rutent_contracts::core_internal::calls::AppendFailure::Unavailable
+        )),
+        "the route_chosen can't be appended now"
+    );
+    assert_eq!(count(&core, is_handed_on), 1, "the handed_on is in the log");
+    let before = entries(&core);
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-3", &plan, "acc-ord-3"),
+        Err(HandOnError::PendingForAnother {
+            pending: id("ord-2")
+        }),
+        "the hand-on pending is for ord-2"
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    assert!(
+        core.segments.order(&id("ord-3")).is_none(),
+        "Core follows no ord-3"
+    );
+    let done = hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2")
+        .expect("the pending hand-on, retried for its own linked order");
+    assert_eq!(done.route_chosen.subject.order.as_str(), "ord-2");
+    assert_eq!(count(&core, is_handed_on), 1);
+    assert!(core.segments.order(&id("ord-2")).is_some());
+    assert!(core.segments.order(&id("ord-3")).is_none());
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A hand-on pending for `ord-2`, its `handed_on` not yet in the log, retried naming an `ord-3` another part has
+/// taken: the retry is refused as the pending one's (`PendingForAnother`), before the free-order check, so the
+/// `ord-2` hand-on isn't dropped and then completes when retried for its own order.
+// verifies: REQ-ORD-43, INV-4
+#[test]
+fn a_pending_hand_on_survives_a_retry_naming_a_taken_linked_order() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    another_order_waiting(&mut core, &mut world, 5);
+    for n in [2, 3] {
+        seed_linked(
+            &mut core,
+            &Named::another(n),
+            &customer(),
+            &linked_record(&format!("ord-{n}")),
+        );
+    }
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    let mut hand_on = HandOn::new();
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Handed, Fault::Unavailable));
+    }
+    assert!(matches!(
+        hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Append(_))
+    ));
+    assert_eq!(
+        count(&core, is_handed_on),
+        0,
+        "its handed_on isn't in the log"
+    );
+    hand_on_from(
+        &mut core,
+        &mut hand_on,
+        "ord-5",
+        "ord-3",
+        &plan,
+        "acc-ord-3",
+    )
+    .expect("another part takes ord-3");
+    let before = entries(&core);
+    assert_eq!(
+        hand_on_to(&mut core, &mut hand_on, "ord-3", &plan, "acc-ord-3"),
+        Err(HandOnError::PendingForAnother {
+            pending: id("ord-2")
+        })
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    hand_on_to(&mut core, &mut hand_on, "ord-2", &plan, "acc-ord-2")
+        .expect("the pending hand-on wasn't dropped");
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }

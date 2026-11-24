@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 113] = [
+pub static RELATIONS: [Relation; 114] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -4915,6 +4915,37 @@ pub static RELATIONS: [Relation; 113] = [
                     && other != &e.what,
                 &[],
             ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "one-start-per-linked-order",
+        spec: &["REQ-ORD-40", "INV-5", "INV-4"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "a handed-on order starts once: no other holding record, of another withdrawal, starts the same order",
+        fields: &[],
+        // One start per record is `one-start-per-holding-record`'s; this is one per linked order: another record of
+        // another transaction for the same order is a second start. The same record again, or the same entry, is the
+        // first row's and a retry's. A record naming no transaction proves no start, so it conflicts with none.
+        cites: |e, _| match &e.what {
+            What::HoldingWithdrawal { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::HoldingWithdrawal { order, record, .. },
+                Some(What::HoldingWithdrawal {
+                    order: other_order,
+                    record: r,
+                    ..
+                }),
+            ) => {
+                let (ours, theirs) = (record_transaction(record, h), record_transaction(r, h));
+                judge(
+                    order == other_order && ours.is_some() && theirs.is_some() && ours != theirs,
+                    &[],
+                )
+            }
             _ => Match::NotTarget,
         },
     },

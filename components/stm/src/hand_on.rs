@@ -18,11 +18,14 @@ pub enum HandOnRefusal {
     StartsAwayFromTheValue,
 }
 
-/// Whether the first order's part holds value for the second order: waiting for the customer, or stuck (the
-/// operator may hand a stuck order on, `REQ-ORD-43`), or already handed on to this very order.
+/// Whether the first order's part holds value for the second order, exactly where the transition would hand it on
+/// (`after_handed_on`): stuck (the operator's resolution), or waiting for the customer after a failed final deposit
+/// (`deposit_failed_at` set: only the customer's own choice then, `INV-10`), or already handed on to this very order.
+/// A part waiting at its floor, its final deposit not yet tried, holds none: the transition refuses it.
 fn holds_value_for(part: &Part, second: &Order) -> bool {
     let for_second = match part.state {
-        OrderState::WaitingForCustomer | OrderState::Stuck => true,
+        OrderState::WaitingForCustomer => part.deposit_failed_at.is_some(),
+        OrderState::Stuck => true,
         OrderState::HandedOn => part.linked_order.as_ref() == Some(&second.order_id),
         _ => false,
     };
@@ -33,8 +36,9 @@ fn holds_value_for(part: &Part, second: &Order) -> bool {
 /// one of `first`'s parts sits.
 ///
 /// - `second` names `first` as `handed_on_from`, and is another order than `first`.
-/// - A part of `first` holds value for `second`, by [`value_at`]: it waits for the customer or is stuck with its
-///   value at an inner node, or it was handed on to `second`. Where it failed its final deposit, that node is
+/// - A part of `first` holds value for `second`, by [`value_at`]: it waits for the customer after a failed final
+///   deposit (not at its floor, which the transition refuses) or is stuck with its value at an inner node, or it was
+///   handed on to `second`. Where it failed its final deposit, that node is
 ///   `deposit_failed_at`, which [`value_at`] reads from the segments, and the part's own check keeps equal.
 /// - Every part of `second` starts at that endpoint: the same inner node, in the same unit.
 ///

@@ -3159,6 +3159,15 @@ fn holding_account_withdrawal_record_without_its_node_is_invalid() {
     assert_case_refused("holding-withdrawal-rests-on-its-record--publisher");
 }
 
+// verifies: REQ-ORD-40, INV-5, INV-4
+#[test]
+fn a_second_holding_record_of_another_transaction_for_the_same_order_is_refused_by_the_log() {
+    // One start per linked order, not only one per record: the same start again is a retry.
+    assert_case_refused("one-start-per-linked-order--conflict");
+    assert_case("one-start-per-linked-order--the-same-start-again");
+    assert_case_refused("one-start-per-holding-record--conflict");
+}
+
 // verifies: REQ-ORD-40, INV-5
 #[test]
 fn route_handed_on_whose_first_move_rests_on_no_holding_account_record_is_refused() {

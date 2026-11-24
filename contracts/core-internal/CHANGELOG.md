@@ -28,7 +28,8 @@
     README no longer says, is here.
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
+  row and field. With `T-020-44`'s round, merged beside it: twenty-eight schemas, 179 valid fixtures and 179 invalid,
+  744 admission cases and 58 attribution cases; 114 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse
@@ -1019,3 +1020,10 @@
   valid fixtures and a summary's, and three invalid ones, the Rust types refusing all three. Twenty-eight schemas, 163
   valid fixtures and 171 invalid ones. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version
   moves. (DEC-4, DEC-20, T-020-41)
+- Folded into 1.0.0 before its release: a linked order starts once (`T-020-44`, M3's milestone review). The log held one
+  start per record (`one-start-per-holding-record`), not one per linked order, so a second, different holding record
+  of the same order was admitted. A new row, `one-start-per-linked-order`, refuses a `holding_withdrawal` of an order
+  when another of that order cites a record of another transaction; the same record again stays the first row's and a
+  retry. Admitted: the same start again. Refused: a second record of another transaction for ord-2. 730 admission
+  cases and 56 attribution cases; 110 relations and 5 closing ones, three stated. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version moves. (DEC-4, DEC-20,
+  REQ-ORD-40, INV-5, INV-4, T-020-44)
