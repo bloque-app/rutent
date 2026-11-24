@@ -6273,3 +6273,23 @@ tests. The four scenario tests are named by their first words: `confirmation_nam
   The verified-attribution requirement on a report's, confirmation's or decline's evidence has no rule-off red:
   `Core::recorded` reads every kit statement verified, and no scenario builds an unverified one; the probe covers the
   digests' half only.
+
+### T-020-40, fix round 2 (the re-review of `9bb5de85`)
+
+- **1. No statement is exempt by its shape.** No log rule ties an `operation` or `arrival-question` statement to the
+  operator, so the skip is gone (`digests_from_a_party` holds every named statement to a verified party). The two
+  assembly tests' `evidence_about` now names a provider's result about the order. The probe at `party.rs` expects an
+  outsider's verified statement in question shape refused.
+- **2. The walk takes the log's own verdict both ways.** Admitted: each cited maker reads as a party. Refused with
+  the party rule's message, whatever the fixture says it breaks: some cited maker reads as no party. Every case
+  without `breaks` must be admitted live, so a dropped case fails.
+- **3. `evidence_of_an_outcome_must_be_a_verified_statement_of_another_party_than_the_reporters`** calls
+  `from_a_party` with an unverified statement and with the report's own evidence.
+- Left as is: "a digest naming nothing in the log passes" (on the owner's form).
+- **Rule-offs** (from the fix commit):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the contract's arrival-reserve arm of `party_to_the_order` (`relations.rs`, restored) | the walk |
+  | question shapes skipped again | the digest probe |
+  | `from_a_party`: verified attribution not required | the unverified-evidence test |
