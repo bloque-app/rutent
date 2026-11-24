@@ -1135,3 +1135,44 @@ the two changed `T-022-02` tests and `--operator-key` held.
 - **After review of the plan change (PR #243):** the revocation rule is the contract's attribution rule
   (`StatementKeys::signs_for`, `attribute`'s step 8), so it is `T-020-39`'s item (7); `T-022-09` waits on it in wave 34
   and edits `log/keys.rs` only.
+
+## T-022-09: a statement received after its grant's revocation is refused
+
+Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `components/core-audit/src/log/keys.rs`
+(a `DEC-20` path, waiting for the owner's click at the release into `main`) and its tests in `tests/log.rs`.
+
+- **The rule.** `Keys::signs_for` now reads the statement's received time (`T-020-39`'s item 7 passed it, and the
+  register ignored it): where `Register::revoked_before_receipt(provider, made_at, received)` holds, the answer is no
+  whatever the `made_at`, so the statement is recorded unattributed, as any other the register can't attribute. It is
+  the contract's `revoked_before_receipt` read over the register's done changes (`grants`) rather than a call into the
+  contract, since `signs_for` holds no history: each grant (a tuple's, or a verifier's class) in force at `made_at`
+  (its latest change at or before it, by the effect's time, the later on a tie) must have a revocation after
+  `made_at` and no later than `received`. The operator's key is read before it and is untouched.
+- **Owner's rulings applied.** `thr3-backdated-after-revocation` ("F-022 row"): refuse. `revoked-key-late-genuine`
+  (applied default): a genuine result made before the revocation and received after it is refused too; its provider
+  re-signs under its new grant. A revocation at the instant of receipt counts as before it (`<= received`).
+- **Defaults.** (1) A grant made again is a new grant but the revocation of the same tuple still stands in the window:
+  a statement made before the revocation and received after it stays refused though a grant stands again at its
+  receipt, as the contract's function reads it (the revocation is looked for by grant, any time in
+  `(made_at, received]`). (2) No grant in force at `made_at` leaves the rule false, and `in_force` refuses it apart.
+  (3) The statement's own `received_at` is the only clock, never the log's: a statement received before the
+  revocation stays attributed though appended after it.
+- **Tests (`tests/log.rs`).** New: `a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time`
+  [`THR-3`], `a_statement_received_before_the_revocation_stays_attributed` [`REQ-AUD-2`],
+  `a_statement_after_a_grant_made_again_is_attributed_only_from_the_new_grant` [`THR-3`], seen red on their
+  assertions before the code. Flipped, as the row asks: `a_verifiers_class_grant_is_read_at_its_statements_own_time`
+  now expects "its class, made inside the window", received five seconds after the revocation, unattributed. Its
+  last case of the first block ("claimed as a provider, backdated") expected a refusal for the role; no key attributes
+  it now, so it is recorded unattributed like the others of that block (a test artefact, not a Core bug: the class
+  grant's limit on a role is still tested, with the grant in force, by
+  `a_verifiers_class_grant_attributes_its_judgements_of_that_class_alone`). `T-022-02`'s key tests pass unchanged.
+- **Gaps.** None open. `T-025-05` reads this row's diff in place of the residual it carried (a key revoked since can
+  sign a statement backdated before its revocation).
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | A: `signs_for` skips `revoked_before_receipt` | the refusal test, the grant-made-again test, the class test |
+  | B: `<= received` becomes `< received` (revocation at the instant of receipt) | the refusal test |
+  | C: the revocation need not be no later than `received` | `a_provider_signs_only_under_a_grant_in_force`, the stays-attributed test |
+  | D: the revocation need not be after `made_at` | the grant-made-again test |

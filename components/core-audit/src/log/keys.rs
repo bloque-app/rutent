@@ -38,6 +38,12 @@
 //! - **A key signs a provider's statements at `made_at`** where a grant of the provider is in force then, and both
 //!   the advertisement accepted last and the one in force at `made_at` list it for `statements` (the catalogue's
 //!   rule, so a retired key can't sign a statement backdated to before its retirement).
+//! - **A statement received after its grant's revocation** is attributed to no one, whatever its `made_at`
+//!   (`THR-3`, item `thr3-backdated-after-revocation`): where every grant of the provider in force at `made_at` was
+//!   revoked after it and no later than the statement's `received_at` (`Register::revoked_before_receipt`, the
+//!   contract's `revoked_before_receipt` over the register), a backdated statement of a revoked key and a genuine
+//!   result made before the revocation alike, a revocation at the instant of receipt counting as before it. A
+//!   grant made again is a new grant: it attributes only what is made under it.
 //! - **The party a maker states for** is the publisher its advertisement accepted last names, for a provider, and the
 //!   operator's party for the operator and for a module the operator publishes: one with a done release the log
 //!   held no grant of when the release was done, and no advertisement. `attribute` holds such a module to the
@@ -414,6 +420,38 @@ impl Register {
         })
     }
 
+    /// Whether every grant of `provider` in force at `made_at` was revoked after it and no later than `received`,
+    /// the time the log received the statement: core-internal's `revoked_before_receipt` (`THR-3`, `T-020-39`),
+    /// read from the register's done changes as the contract reads them from the history. Each grant, a tuple's or
+    /// a verifier's class, is in force at `made_at` where its latest change at or before it, by the effect's time and
+    /// the later one on a tie, granted; a grant made again after its revocation is a new grant and holds nothing
+    /// made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
+    /// refuses apart. A revocation at the instant of receipt counts as before it.
+    fn revoked_before_receipt(&self, provider: &str, made_at: i128, received: i128) -> bool {
+        let Some(tuples) = self.grants.get(provider) else {
+            return false;
+        };
+        let mut in_force = tuples
+            .values()
+            .filter(|changes| {
+                changes
+                    .iter()
+                    .filter(|(t, _)| *t <= made_at)
+                    .fold(None, |last: Option<&(i128, bool)>, c| match last {
+                        Some(l) if l.0 > c.0 => Some(l),
+                        _ => Some(c),
+                    })
+                    .is_some_and(|(_, granted)| *granted)
+            })
+            .peekable();
+        in_force.peek().is_some()
+            && in_force.all(|changes| {
+                changes
+                    .iter()
+                    .any(|(t, granted)| !granted && *t > made_at && *t <= received)
+            })
+    }
+
     /// Accepts the advertisement `received`, recorded at `at`, or says nothing about why not: a refusal changes
     /// nothing.
     fn join(
@@ -565,16 +603,21 @@ impl StatementKeys for Keys<'_> {
         maker: &Id,
         key: &SignedWith,
         at: &Timestamp,
-        // The statement's receipt: core-internal's rule on a statement received after its grants' revocation
-        // (`revoked_before_receipt`, `T-020-39`) is `T-022-09`'s to hold here; until then the key is trusted at
-        // `at` alone.
-        _received: &Timestamp,
+        received: &Timestamp,
     ) -> Result<bool, AppendFailure> {
         let settings = self.settings;
         if maker == &settings.operator {
             return Ok(key.key == settings.deployment.operator_key);
         }
-        let at = at.unix_nanos();
+        let (at, received) = (at.unix_nanos(), received.unix_nanos());
+        // A statement received after the revocation of every grant that would attribute it is attributed to no
+        // one, whatever its `made_at` (`THR-3`).
+        if self
+            .register
+            .revoked_before_receipt(maker.as_str(), at, received)
+        {
+            return Ok(false);
+        }
         let Some(history) = self.register.ads.get(maker.as_str()) else {
             return Ok(false);
         };
