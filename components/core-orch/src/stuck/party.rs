@@ -413,7 +413,7 @@ mod tests {
             let Entry::Stated(s) = &history[at].1 else {
                 panic!("a statement");
             };
-            digests_from_a_party(&[s.commitment.clone()], &order, &history)
+            digests_from_a_party(std::slice::from_ref(&s.commitment), &order, &history)
         };
         let nothing = |_: &mut Value| {};
         let shape =
