@@ -1717,6 +1717,10 @@ repository records with an owner are not listed here.
 
 Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; its strict step ran with the switch on and reported `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. At the milestone's tip `74249d38`, with this row merged, `ci` run `44394538585` ran the table strictly with the switch on: `232 rows: 211 verified, 5 inspected, 1 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`; every other check at that commit passed, `STM on VOS` run `44394538454` included. The run's evidence-table step reports form items not checked, as `decisions/` sits outside the repository, so `form:cat5-timing-residual` is not validated against the form in CI.
 
+### The second run, after the owner's answers of 2026-11-18
+
+Waves 33 to 36 (`T-020-39` to `T-020-43`, `T-021-11` to `T-021-13`, `T-022-09`, `T-022-10`, `T-024-20` and `T-025-05`'s second pass) are in. At their tip `dcefd125`, `ci` run `45408502192` ran the table strictly with the switch on: `232 rows: 212 verified, 5 inspected, 0 partly met, 0 unverified, 3 M4's, 12 deferred` and `0 table findings, 0 against the base (strict mode, the switch on)`. `REQ-CAT-5` moved from partly met to verified when the owner accepted its timing residual (`cat5-timing-residual`). Every other check at that commit passed; `dcefd125` changed only `T-025-05`'s notes, and `STM on VOS` last ran on code at `2caa6f55`, run `45401193749`, green. This run changed no line of the scope file.
+
 ## T-024-20: `REQ-AUD-6`'s "no balance" half, scanned
 
 - **What it is.** `T-025-03`'s scan module (`conformance/scenarios/src/secrets.rs`) gains `Kind::Balance` and `run_balanced`:
@@ -1739,9 +1743,8 @@ Strict CI run at this row's commit `5293e64b`: `ci` run `44384830692`, green; it
   only in the evidence store` (every hit is on the shelf, and the log holds the check and not the figure). The VOS half
   (`vos_journal_and_files_after_a_full_run_hold_no_simulated_balance_outside_the_evidence_store`, and its control
   `scan_finds_a_balance_let_into_three_vos_replicas_journal_and_files`) is in `vos-program/scenarios/tests/secrets.rs`,
-  which `stm-vos.yml` runs with `--test secrets`; it type-checks here with `cargo check --tests --features vos` and has not
-  run (CI's run id goes here: **pending, on the push of `m3` that integrates the row**; the reference half's `ci` run id
-  likewise).
+  which `stm-vos.yml` runs with `--test secrets`. It ran on the push that integrated the row, `a3bc16b4`: `STM on VOS` run
+  `45359496351` green, the reference half's `ci` run `45359495691` green.
 - **Defaults.** (1) The shelf is the one surface exempt, by the name `evidence shelf`: the scan fails closed on every other
   surface, and a new surface is scanned unless it is the shelf. (2) A reserve's opening balance is read, not assumed:
   the probes. (3) The VOS control plants in the journal only; a balance in Core's log doesn't touch the host, so the
