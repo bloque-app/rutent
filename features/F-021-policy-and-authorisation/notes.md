@@ -1911,6 +1911,31 @@ five lifecycle actions is `T-020-49`'s. No contract shape changes.
   | `declare_exploited` left out of `CARRY_OUT` | the same two |
   | `accept` listed with another change | `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect` |
 
+### T-021-15, fix round 1 (the review of `d2a8f0d9`, PR #296)
+
+- **Finding 1, should-fix: `OfOperator`.** The setting arm and the generic `Change` arm asked only `operator_holds`
+  (the stated role and the register's permission), so a login of another party (`bridge-pay`) that the register of
+  actors lists in the operator's role, holding `Setting(OperatorFee)`, was permitted. Both arms now ask
+  `of_operator_holds`, as `GrantRead` and `RevokeRead` do: the register must also say the login is the deployment
+  operator's (`Source::OfOperator`). The generic arm is every catalogue change's, so the fix covers the five lifecycle
+  actions, promotion, `roll_back`, grants, `set_slippage` and `reinstate` alike (one rule, fail closed). The plan row's
+  "held to the operator (`OfOperator`)" is read as this. Test: `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`
+  (all 11 changes and 8 settings); the registers of the tests that permit an operator now link its party to the
+  operator (`Register::of_the_operator`), the only edits to existing tests.
+- **Finding 2, low.** `setting_naming_the_wrong_provider_is_no_request`: a slippage setting whose request names another
+  provider is `Err(Refused)` at `decide`, policy never consulted, nothing recorded. The contract's `check` decides it
+  (policy reads nothing of values); this pins it in this crate. It passed at once, and its rule is the contract's, which
+  this row doesn't edit, so it has no rule-off here (`T-020-45`'s `each_invalid_fixture_breaks_only_the_rule_it_names`
+  holds the rule).
+- **Finding 3, low.** `operator_setting_without_its_permission_is_refused` gains the role-binding case for a setting.
+- **Red first.** The new test failed on `Change(Grant)`: `Permit` for `NotPermitted`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
+  | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

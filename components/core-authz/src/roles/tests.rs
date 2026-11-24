@@ -318,6 +318,17 @@ impl Register {
         self
     }
 
+    /// The register, with `who`'s login acting for its party and that party linked to the deployment operator's, so the
+    /// register says the login is the operator's (`Source::OfOperator`, `T-021-15`).
+    fn of_the_operator(self, who: &Actor) -> Self {
+        let linked = self.links.contains(&(who.party.clone(), id("operator")));
+        let mut register = self.acting(who.acts.as_str(), who.party.as_str());
+        if who.party.as_str() != "operator" && !linked {
+            register = register.linking(who.party.as_str(), "operator");
+        }
+        register
+    }
+
     /// The register, with `who`'s login acting for its party in its role, and in no role it isn't listed for
     /// (`T-021-14`).
     fn listing(mut self, who: &Actor) -> Self {
@@ -1337,7 +1348,10 @@ fn each_permission_alone_allows_only_its_own_action() {
     let as_operator = actor("fx-desk", "fx-ops-1", Role::Operator, ActorKind::Person);
     let as_provider = actor("fx-desk", "fx-ops-1", Role::Provider, ActorKind::Person);
     let stale = Permission::Change(CatalogueChange::MarkStale);
-    let mut policy = engine(Kept::default(), Register::holding(&as_operator, &[stale]));
+    let mut policy = engine(
+        Kept::default(),
+        Register::holding(&as_operator, &[stale]).of_the_operator(&as_operator),
+    );
     for (permission, request) in every_permission(&as_provider) {
         if permission == Permission::PostRoute {
             continue;
@@ -2955,7 +2969,9 @@ fn roll_back_without_its_permission_is_refused() {
     every_other.push(Permission::CarryOnward);
     let mut policy = engine(
         Kept::with_a_decision_record(),
-        Register::holding(&operator(), &every_other).and_holding(&core(), &every_other),
+        Register::holding(&operator(), &every_other)
+            .and_holding(&core(), &every_other)
+            .of_the_operator(&operator()),
     );
     for caller in [operator(), core()] {
         let asked = rolled_back(&caller);
@@ -2983,7 +2999,9 @@ fn roll_back_without_its_permission_is_refused() {
     // log admits the effect on that permit; Core's own actor holding it is still refused (an operator's act only).
     let mut policy = engine(
         Kept::with_a_decision_record(),
-        Register::holding(&operator(), &[own]).and_holding(&core(), &[own]),
+        Register::holding(&operator(), &[own])
+            .and_holding(&core(), &[own])
+            .of_the_operator(&operator()),
     );
     let asked = rolled_back(&operator());
     let decision = policy.decide(&asked).unwrap();
@@ -3238,7 +3256,9 @@ fn operator_setting_without_its_permission_is_refused() {
         };
         let mut policy = engine(
             Kept::with_a_decision_record(),
-            Register::holding(&operator(), &every_other).and_holding(&core(), &every_other),
+            Register::holding(&operator(), &every_other)
+                .and_holding(&core(), &every_other)
+                .of_the_operator(&operator()),
         );
         for caller in [operator(), core()] {
             let asked = setting_of(&caller);
@@ -3265,7 +3285,9 @@ fn operator_setting_without_its_permission_is_refused() {
         // Held alone by the operator's login it permits; Core's own actor holding it is still refused.
         let mut policy = engine(
             Kept::with_a_decision_record(),
-            Register::holding(&operator(), &[own]).and_holding(&core(), &[own]),
+            Register::holding(&operator(), &[own])
+                .and_holding(&core(), &[own])
+                .of_the_operator(&operator()),
         );
         let asked = setting_of(&operator());
         let decision = policy.decide(&asked).unwrap();
@@ -3285,6 +3307,37 @@ fn operator_setting_without_its_permission_is_refused() {
             "Core's own actors set no setting"
         );
     }
+
+    // The role-binding of a setting (`Source::OfOperator`): a login of another party the register lists in the
+    // operator's role, holding the setting's permission, is refused, and so is the same login holding nothing else.
+    let outsider = actor(
+        "bridge-pay",
+        "bridge-pay-ops",
+        Role::Operator,
+        ActorKind::Person,
+    );
+    let own = Permission::Setting(SettingKind::OperatorFee);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&outsider, &[own])
+            .listing(&outsider)
+            .and_holding(&operator(), &[own])
+            .of_the_operator(&operator()),
+    );
+    let (_, asked) = every_setting_asked(&outsider).remove(0);
+    let decision = policy.decide(&asked).unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "another party's login");
+    assert_eq!(policy.log().entry_of(&decision).who, outsider);
+    assert_eq!(
+        policy.log.effect(&asked, forged(&decision)),
+        no_permitting_decision()
+    );
+    let (_, own_ask) = every_setting_asked(&operator()).remove(0);
+    assert_eq!(
+        policy.decide(&own_ask).unwrap().outcome,
+        Answer::Permit {},
+        "the operator's own login, beside it"
+    );
 
     // `Change(SetSetting)` names no setting, so it permits none, held with nothing else; and a request that names no
     // setting fails its check, whatever is held.
@@ -3355,7 +3408,9 @@ fn lifecycle_action_without_its_permission_is_refused() {
         every_other.push(Permission::CarryOnward);
         let mut policy = engine(
             Kept::with_a_decision_record(),
-            Register::holding(&operator(), &every_other).and_holding(&core(), &every_other),
+            Register::holding(&operator(), &every_other)
+                .and_holding(&core(), &every_other)
+                .of_the_operator(&operator()),
         );
         for caller in [operator(), core()] {
             let asked = asked_by(&caller);
@@ -3385,7 +3440,9 @@ fn lifecycle_action_without_its_permission_is_refused() {
 
         let mut policy = engine(
             Kept::with_a_decision_record(),
-            Register::holding(&operator(), &[own]).and_holding(&core(), &[own]),
+            Register::holding(&operator(), &[own])
+                .and_holding(&core(), &[own])
+                .of_the_operator(&operator()),
         );
         let asked = asked_by(&operator());
         let decision = policy.decide(&asked).unwrap();
@@ -3446,7 +3503,8 @@ fn publisher_is_refused_marking_its_own_version_stale() {
             .and_holding(&claimed, &[own])
             .and_holding(&operator(), &[own])
             .listing(&publisher)
-            .listing(&operator()),
+            .listing(&operator())
+            .of_the_operator(&operator()),
     );
     let asked = stale(&publisher);
     let decision = policy.decide(&asked).unwrap();
@@ -3486,4 +3544,85 @@ fn publisher_is_refused_marking_its_own_version_stale() {
             .effect(&asked, decision.permit().unwrap())
             .is_ok()
     );
+}
+
+/// A login of another party that the register of actors lists in the operator's role is not the operator's: a provider's
+/// login, `bridge-pay`'s, holding every permission there is for the settings and the catalogue changes, the five
+/// lifecycle actions, promotion and roll back among them, is refused each, the decision recorded with its actor and the
+/// log taking no effect, the deployment's policy never asked; the operator's own login holding the same is permitted
+/// (`Source::OfOperator`, as granting a read asks it; `REQ-AUZ-6`, `REQ-AUZ-1`, `REQ-MDL-5`).
+// verifies: REQ-AUZ-6, REQ-MDL-5
+#[test]
+fn another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change() {
+    let outsider = actor(
+        "bridge-pay",
+        "bridge-pay-ops",
+        Role::Operator,
+        ActorKind::Person,
+    );
+    let held: Vec<Permission> = every_permission_held();
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&outsider, &held)
+            .and_holding(&operator(), &held)
+            .listing(&outsider)
+            .listing(&operator())
+            .of_the_operator(&operator()),
+    );
+    let mut asked = 0;
+    for (permission, request) in every_permission(&outsider) {
+        if !matches!(permission, Permission::Change(_) | Permission::Setting(_)) {
+            continue;
+        }
+        asked += 1;
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{permission:?}");
+        assert_eq!(policy.log().entry_of(&decision).who, outsider);
+        assert_eq!(
+            policy.log.effect(&request, forged(&decision)),
+            no_permitting_decision(),
+            "{permission:?}"
+        );
+    }
+    assert_eq!(asked, 11 + 8, "every catalogue change and every setting");
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
+    for (permission, request) in every_permission(&operator()) {
+        if !matches!(permission, Permission::Change(_) | Permission::Setting(_)) {
+            continue;
+        }
+        let decision = policy.decide(&request).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{permission:?}");
+    }
+}
+
+/// A `set_setting` naming another provider than its setting is about is refused at `decide` by the contract's check, as
+/// no request, before policy is consulted and with nothing recorded: policy reads nothing of a setting's value
+/// (`T-021-15`'s default), so this pins that the contract is the one place that decides it (`REQ-AUZ-6`).
+// verifies: REQ-AUZ-6
+#[test]
+fn setting_naming_the_wrong_provider_is_no_request() {
+    let mut request = every_setting_asked(&operator())
+        .into_iter()
+        .find(|(k, _)| *k == SettingKind::SlippageLimit)
+        .unwrap()
+        .1;
+    let Action::ChangeCatalogue { provider, .. } = &mut request.action else {
+        panic!("a catalogue change");
+    };
+    *provider = id("another-provider");
+    let held: Vec<Permission> = every_permission_held();
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &held).of_the_operator(&operator()),
+    );
+    let before = policy.log.0.len();
+    assert!(matches!(
+        policy.decide(&request),
+        Err(AppendFailure::Refused(_))
+    ));
+    assert_eq!(policy.policy.1.ruled, 0, "policy was never consulted");
+    assert_eq!(policy.log.0.len(), before, "nothing recorded");
 }
