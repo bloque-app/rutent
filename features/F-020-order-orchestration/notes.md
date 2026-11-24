@@ -6641,3 +6641,4 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
   | `erasable_overriding_since` counts no citation | the core-audit test |
   | the look after the effect on an override is the plain override check | the core-orch late-citation test |
   | `reconcile` reports every citation of an overridden statement | the override scenario (on the rebound store) |
+  | the look after the effect is given the effect's receipt in place of the decision's | both core-orch override tests (the fake store records the receipt it is given) |

@@ -188,6 +188,8 @@ struct Store {
     checks: RefCell<Vec<&'static str>>,
     /// An entry rests on the statement that the log took after the permitting decision.
     cited_after: Cell<bool>,
+    /// The decision receipts `erasable_overriding_since` was given, in order.
+    since_asked: RefCell<Vec<Receipt>>,
 }
 
 impl Store {
@@ -202,6 +204,7 @@ impl Store {
             cited: Cell::new(false),
             checks: RefCell::new(Vec::new()),
             cited_after: Cell::new(false),
+            since_asked: RefCell::new(Vec::new()),
         }
     }
 }
@@ -235,8 +238,9 @@ impl Statements for Store {
     fn erasable_overriding_since(
         &mut self,
         commitment: &Digest,
-        _decision: &Receipt,
+        decision: &Receipt,
     ) -> Result<(), AppendFailure> {
+        self.since_asked.borrow_mut().push(decision.clone());
         self.erasable_overriding(commitment)?;
         match self.cited_after.get() {
             true => Err(AppendFailure::Refused(Violation("evidence rested on"))),
@@ -263,6 +267,18 @@ impl Statements for Store {
         self.kept.set(false);
         Ok(())
     }
+}
+
+/// The receipt of the log's `decide` entry.
+fn decision_receipt(log: &Entries) -> Receipt {
+    log.0
+        .borrow()
+        .iter()
+        .find_map(|(r, e)| match e {
+            Entry::Verified(v) if matches!(v.what, What::Decide { .. }) => Some(r.clone()),
+            _ => None,
+        })
+        .expect("the permitting decision's entry")
 }
 
 /// A log holding the stated entry that names the statement, which the `erasure` entry's own row needs.
@@ -552,6 +568,11 @@ fn operators_decided_override_erases_a_cited_statement_and_history_still_checks(
             ..
         }
     ));
+    assert_eq!(
+        *store.since_asked.borrow(),
+        [decision_receipt(&log)],
+        "the look after the effect is asked since the permitting decision, not the effect"
+    );
     assert!(
         store
             .checks
@@ -646,6 +667,11 @@ fn override_is_refused_for_a_citation_made_after_its_decision() {
             Err(NotErased::Failed { .. })
         ),
         "{refused:?}"
+    );
+    assert_eq!(
+        *store.since_asked.borrow(),
+        [decision_receipt(&log)],
+        "the look after the effect is asked since the permitting decision, not the effect"
     );
     assert_eq!(
         log.what(),
