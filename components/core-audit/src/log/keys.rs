@@ -395,7 +395,9 @@ impl Register {
             // A statement's received time is what `revoked_before_receipt` reads (`THR-3`), and orchestration, which
             // writes it, must not date a late statement before a revocation: where the log holds a revocation of
             // its maker's grant after its received time, that time is held to the log's own clock, as an
-            // advertisement's is. A statement received that long before it is appended is unavailable, not refused.
+            // advertisement's is. A statement received that long before it is appended is unavailable, not refused,
+            // and a retry with the same received time fails again: it is sent again with the time of the new append,
+            // and is then recorded unattributed, being received after the revocation.
             Entry::Stated(StatedEntry {
                 attribution,
                 received_at,

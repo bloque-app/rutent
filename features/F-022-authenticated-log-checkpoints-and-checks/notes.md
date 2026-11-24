@@ -1194,8 +1194,9 @@ Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `
   grant exists, the one case where the received time decides attribution. **Residual for `T-025-05`:** within the skew
   (300 s by default) of the log's clock, orchestration can still date a statement received a few minutes before a
   revocation that is that recent; and the received time stays the writer's word for a maker with no revocation, where
-  it decides nothing. A statement the log couldn't take (`Unavailable`) is Core's to retry with its true received time,
-  which is then refused as any late one.
+  it decides nothing. A statement the log couldn't take (`Unavailable`) can't be taken on a retry with the same
+  received time, which is still behind the clock and fails again; it has to be sent again with the time of the new
+  append, and is then recorded unattributed, being received after the revocation.
 - **The flipped test (finding 4).** `a_verifiers_class_grant_is_read_at_its_statements_own_time`'s first block is
   restored: its statements are received before the revocation (`2026-11-06T23:59:59Z`) and appended after it, with
   its original assertions (the class read at `made_at`, a backdated other class, result and provider claim refused),
