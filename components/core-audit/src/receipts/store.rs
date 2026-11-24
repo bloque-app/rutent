@@ -792,10 +792,15 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         let (commitment, overrides) = {
             let log = self.log.borrow();
             let d = decided(log.entries(), at)?;
-            (d.commitment.clone(), d.overrides)
+            (
+                d.commitment.clone(),
+                d.overrides.then(|| d.decision.clone()),
+            )
         };
-        if overrides {
-            self.erasable_overriding(&commitment)?;
+        // The override lifts the citations made before its decision alone: one the log took after it refuses the
+        // erasure here, not erased and then reported `ERASED_YET_CITED` (`T-022-11`, the review's Low).
+        if let Some(decision) = overrides {
+            self.erasable_overriding_since(&commitment, &decision)?;
         } else {
             self.erasable(&commitment)?;
         }

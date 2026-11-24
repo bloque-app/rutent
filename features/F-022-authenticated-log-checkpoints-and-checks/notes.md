@@ -1250,3 +1250,47 @@ path). Core's half is `T-020-42`; policy's is `T-021-13`.
   builds a decision, effect and `done` result by hand: `overrides` is false without the flag and true with it (and
   names the decision's receipt), and an effect that sets the flag on a decision that doesn't is `NO_DECIDED_ERASURE`.
   Rule-off F5 (`overrides: true || ...`) turns it red.
+
+## T-022-11: the register counts a revocation from its effect, and the store's override erase reads its decision
+
+Branch `f-022/t-022-11-revocation-window`, from `f01bc669`. Edits `components/core-audit/src/log/keys.rs`,
+`src/receipts/store.rs` and their tests (a `DEC-20` path). Starts from `T-020-45`'s rule: a revocation counts from its
+admitted effect until a `failed` result undoes it.
+
+- **(1) L5, the register (`keys.rs`).** `Register::record` takes a `revoke_grant` effect into `grants` when the effect is
+  recorded (its time, `false`, its index in the log, which is the history's length), and a `failed` result of a
+  revocation's effect takes that entry out again. The `done` result no longer adds a revocation (it would count twice);
+  a grant still counts from its `done` result. `in_force`, `revoked_before_receipt` and `revoked_after` (the clock hold
+  on a late statement) all read `grants`, so all three follow. A statement received between a revocation's effect and
+  its result is unattributed; once the result fails, it attributes again.
+- **(2) The override erase (`store.rs`).** `BoundStore::erase` calls `erasable_overriding_since(commitment, decision)`
+  with the permitting decision's receipt where the decision overrides, so a citation the log took after that decision
+  refuses the erasure (`EVIDENCE_RESTED_ON`) and nothing is erased, instead of erasing and reporting `ERASED_YET_CITED`.
+  `T-022-10`'s `citation_made_after_an_overrides_decision_is_still_reported` is now
+  `store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision`: `erase` is refused, the statement stays
+  kept, and on reopening `refused_erasures` reports the decided erasure the store refused (`EVIDENCE_RESTED_ON`) while
+  `unsettled_erasures` is empty. `reconcile`'s `ERASED_YET_CITED` check stays, a defence for a log whose store erased
+  before this rule.
+- **(3) The drift test.** `log::keys::tests::contracts_revoked_before_receipt_and_the_registers_agree_over_the_attribution_fixtures`
+  (a unit test, since the register is private to the log) reads every history-bearing fixture of core-internal's
+  `fixtures/attribution`, renumbers its receipts to their places (the log numbers them so; results still name their
+  effects), feeds the entries to a `Register` through `record`, and compares the register's `revoked_before_receipt`
+  with the contract's at five received times per fixture (the claim's own, the made time, and +1 s, +1 day, +30 days).
+- **Tests (`tests/log.rs`).** `a_statement_received_between_a_revocations_effect_and_its_result_is_unattributed`
+  [`THR-3`] and `a_revocation_whose_result_failed_attributes_again` [`THR-3`], seen red on their assertions before the
+  code; the store test above, red on its first assertion before the code. The drift test passes on first run (written
+  after the code); its red was watched by the rule-offs below.
+- **Defaults.** (1) A revocation whose effect has no result yet counts, as the contract reads it. (2) The drift test is
+  a unit test over a register fed by `record`, not through an admitting log: fixture histories carry hand-numbered
+  receipts that `admit_entry` would not take. (3) After a refused override erase, the log keeps its `done` result: the
+  store reports it, orchestration decides the retry.
+- **Gaps.** None open for this row. The contract's `in_force`-at-`made_at` reading is not compared (the contract
+  exposes only `revoked_before_receipt`).
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: a revocation counts from its `done` result only | both log tests, the drift test |
+  | R2: a `failed` result does not undo a revocation | `a_revocation_whose_result_failed_attributes_again`, `a_grant_trusts_only_the_keys_it_names_once_done`, the drift test |
+  | R3: `erase` calls `erasable_overriding`, not `..._since` | the store refusal test |
+  | R4: the receipt bound `<= received` becomes `< received` | the drift test, `a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time` |

@@ -1713,6 +1713,83 @@ fn a_statement_after_a_grant_made_again_is_attributed_only_from_the_new_grant() 
     ));
 }
 
+/// A revocation counts from its admitted effect, not from its `done` result: a statement made inside the grant's
+/// window and received after the effect but before its result is attributed to no one (`THR-3`, `F-025`'s L5,
+/// `T-020-45`'s rule).
+// verifies: THR-3
+#[test]
+fn a_statement_received_between_a_revocations_effect_and_its_result_is_unattributed() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    let at = "2026-11-07T00:00:00Z";
+    set_now(at);
+    // The effect is admitted; its result is not given yet.
+    let revoke = run
+        .try_change_catalogue("us-bank", "revoke_grant", at)
+        .unwrap();
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-e-1",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:01Z"
+    ));
+    // The result, once given, changes nothing for it, nor for a later one.
+    run.end(&revoke, "done", at);
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-e-2",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:02Z"
+    ));
+    // One received before the effect stays attributed.
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-e-3",
+        "2026-11-06T15:04:05Z",
+        "2026-11-06T23:59:59Z"
+    ));
+}
+
+/// A revocation whose result failed is undone: the grant stands, and a statement received after the effect attributes
+/// again (`THR-3`).
+// verifies: THR-3
+#[test]
+fn a_revocation_whose_result_failed_attributes_again() {
+    let mut run = Run::new(MemoryStore::new());
+    run.admit_providers();
+    let at = "2026-11-07T00:00:00Z";
+    set_now(at);
+    let revoke = run
+        .try_change_catalogue("us-bank", "revoke_grant", at)
+        .unwrap();
+    assert!(!answered_received(
+        &mut run,
+        "us-bank",
+        "tx-f-1",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:01Z"
+    ));
+    run.end(&revoke, "failed", at);
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-f-2",
+        "2026-11-06T15:04:05Z",
+        "2026-11-07T00:00:02Z"
+    ));
+    // The grant stands for a statement made after the failed revocation too.
+    assert!(answered_received(
+        &mut run,
+        "us-bank",
+        "tx-f-3",
+        "2026-11-07T00:00:03Z",
+        "2026-11-07T00:00:04Z"
+    ));
+}
+
 /// A provider holding several grants is refused only where every grant in force at the statement's making was
 /// revoked: with another tuple's grant still standing, a statement received after one revocation stays attributed,
 /// and once the other is revoked too, it is refused (`THR-3`).

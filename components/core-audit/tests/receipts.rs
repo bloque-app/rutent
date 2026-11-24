@@ -1573,11 +1573,11 @@ fn store_erases_a_cited_statement_on_a_decided_override_and_history_still_checks
     assert!(run.store.missing().is_empty());
 }
 
-/// A citation made after the override's decision is still reported, though the store erases on the override: the
-/// operator decided to erase what was cited then, not what a later entry came to rest on (`INV-7`).
-// verifies: INV-7
+/// An override lifts the citations made before its decision alone: a citation the log took between the decision and
+/// the effect refuses the erasure, and nothing is erased, so nothing is left to report (`REQ-AUD-13`, `INV-7`).
+// verifies: REQ-AUD-13, INV-7
 #[test]
-fn citation_made_after_an_overrides_decision_is_still_reported() {
+fn store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision() {
     let dir = TempDir::new("override-late");
     let mut run = Run::open(&dir).unwrap();
     let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
@@ -1587,17 +1587,26 @@ fn citation_made_after_an_overrides_decision_is_still_reported() {
             log.append(&measure_citing(&at, "seg-2")).unwrap();
         })
         .unwrap();
-    run.store.erase(&done).unwrap();
-    run.append(&erasure(&cited, "done")).unwrap();
-    assert_eq!(run.fetch("fx-desk", &cited).unwrap(), Fetched::Erased);
+    assert_eq!(
+        run.store.erase(&done),
+        Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+    );
+    assert!(!run.store.is_erased(&cited));
+    assert!(matches!(
+        run.fetch("fx-desk", &cited).unwrap(),
+        Fetched::Kept(_)
+    ));
     drop(run);
 
+    // Reopened: nothing was erased, so no erased statement is cited; the decided erasure the store refused is the
+    // one finding.
     let run = Run::open(&dir).unwrap();
-    assert!(run.store.refused_erasures().is_empty());
+    assert!(!run.store.is_erased(&cited));
     assert_eq!(
-        run.store.unsettled_erasures(),
-        [(done, Violation(ERASED_YET_CITED))]
+        run.store.refused_erasures(),
+        [(done, Violation(EVIDENCE_RESTED_ON))]
     );
+    assert!(run.store.unsettled_erasures().is_empty());
 }
 
 // --- Receipts' rules -----------------------------------------------------------------------------------------------
