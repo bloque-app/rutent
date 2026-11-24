@@ -78,10 +78,14 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 54] = [
+const RUST_RULES: [(&str, &str); 55] = [
+    (
+        "verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment",
+        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
+    ),
     (
         "verified-entry-of-a-quote-awaiting-its-customer-shown-with-a-firm-rate",
-        "a quote an order waits on its customer to accept is shown without a firm rate",
+        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
     ),
     (
         "verified-entry-of-a-quote-awaiting-its-customer-naming-a-segment-twice",
@@ -4456,8 +4460,14 @@ fn quote_an_order_waits_on_its_customer_to_accept_is_told_from_the_log() {
     );
     let back = through_rust("verified-entry", &plain).unwrap();
     assert_eq!(back, plain);
+    // Asked again and firm now, it still waits on the customer, and names no slow segment; its summary names it by
+    // its digest.
+    let firm = "verified-entry-of-a-quote-awaiting-its-customer-asked-again-firm";
+    assert_accepted_by_both(firm);
+    assert_accepted_by_both("verified-entry-of-a-notice-summary-of-a-waiting-order-delivered");
     for name in [
         "verified-entry-of-a-quote-awaiting-its-customer-shown-with-a-firm-rate",
+        "verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment",
         "verified-entry-of-a-quote-awaiting-its-customer-naming-a-segment-twice",
     ] {
         assert_rejected(name);

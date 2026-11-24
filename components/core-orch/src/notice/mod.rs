@@ -82,8 +82,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Delivery, Operator, Reads};
 use rutent_contracts::core_internal::{
-    Actor, Awaiting, Charge, Entry, NoticeEnd, Outcome, Raise, ReadCheck, ReadOutcome, Receipt,
-    Role, What,
+    Actor, Awaiting, Charge, Entry, NoticeEnd, OrderRefusalClass, Outcome, Raise, ReadCheck,
+    ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{Id, Timestamp};
@@ -173,6 +173,33 @@ pub struct AheadCharge {
     pub counted_at: Timestamp,
 }
 
+/// Where an entry sits in the log: when it was made and its index.
+#[derive(Clone, Copy)]
+struct Placed<'a> {
+    at: &'a Timestamp,
+    index: u64,
+}
+
+/// The orders `entries` show accepted, refused or started: none is waited on for its customer.
+fn settled_orders(entries: &[(Receipt, Entry)]) -> BTreeSet<&str> {
+    entries
+        .iter()
+        .filter_map(|(_, entry)| match entry {
+            Entry::Verified(v) => match &v.what {
+                What::Acceptance { order, .. } => Some(order.as_str()),
+                What::OrderRefusal {
+                    order: Some(order), ..
+                } => Some(order.as_str()),
+                What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. }) => {
+                    Some(input.subject.order.as_str())
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect()
+}
+
 /// An order the notices follow.
 #[derive(Debug, Clone)]
 struct Followed {
@@ -193,6 +220,8 @@ pub struct Notices {
     /// which holds for an append-only log (see the module's notes on what a read compares).
     last: Option<Receipt>,
     requesters: BTreeMap<String, Id>,
+    /// The orders a `shown` entry says wait on a customer, by the party they wait for.
+    waiting_on: BTreeMap<String, Id>,
     orders: BTreeMap<String, Followed>,
     ahead: BTreeSet<(String, String)>,
     undelivered: Vec<Undelivered>,
@@ -223,6 +252,7 @@ impl Notices {
             read: 0,
             last: None,
             requesters: BTreeMap::new(),
+            waiting_on: BTreeMap::new(),
             orders: BTreeMap::new(),
             ahead: BTreeSet::new(),
             undelivered: Vec::new(),
@@ -330,6 +360,7 @@ impl Notices {
         let unread = self.unread(recorded)?;
         // What the log's summaries show ended is known before anything is sent, so a restart sends none of it again.
         self.learn(recorded);
+        let settled = settled_orders(unread);
         let mut sent = 0;
         for (receipt, entry) in unread {
             if let Some(order) = about(entry)
@@ -369,7 +400,30 @@ impl Notices {
                     ..
                 } = &v.what
             {
-                sent += self.waiting(order, shown, awaiting, &v.when.at, notice_key, transport)?;
+                self.waiting_on
+                    .insert(order.as_str().to_owned(), awaiting.requester.clone());
+                // An order the log shows accepted, refused or started since is waited on no more: told of nothing.
+                if !settled.contains(order.as_str()) {
+                    let at = Placed {
+                        at: &v.when.at,
+                        index: receipt.index.get(),
+                    };
+                    sent += self.waiting(order, shown, awaiting, at, notice_key, transport)?;
+                }
+            }
+            if let Entry::Verified(v) = entry
+                && let What::OrderRefusal {
+                    order: Some(order),
+                    class,
+                    ..
+                } = &v.what
+                && let Some(requester) = self.waiting_on.get(order.as_str()).cloned()
+            {
+                let at = Placed {
+                    at: &v.when.at,
+                    index: receipt.index.get(),
+                };
+                sent += self.wait_ended(order, *class, &requester, at, notice_key, transport)?;
             }
             if let Entry::Verified(v) = entry
                 && let What::Acceptance { order, parties, .. } = &v.what
@@ -390,31 +444,42 @@ impl Notices {
         Ok(sent)
     }
 
-    /// An order waiting for its customer's acceptance of a slow route (`REQ-QTE-10`), told to the customer it waits
-    /// for and to the operator, each once for each quote shown, as the log holds it. The order has no state yet, so it
-    /// has no sequence, and the notice has no place in the log's summaries: a restart tells it again, which a
-    /// receiver holds once. Answers how many were sent.
+    /// An order waiting for its customer's acceptance of a quote (`REQ-QTE-10`), told to the customer it waits for
+    /// and to the operator, each once for each quote shown, as the log holds it. The order has no state yet, so it
+    /// has no sequence: the notice is named by its receiver, the order and the quote's digest, kept in the ledger,
+    /// tried again where the transport didn't take it, and summarised in the log as the order's are (`NoticeOf::Waiting`),
+    /// so a restart sends none the ledger or the log shows delivered. Answers how many were sent.
     fn waiting(
         &mut self,
         order: &Id,
         quote: &Digest,
         awaiting: &Awaiting,
-        at: &Timestamp,
+        placed: Placed<'_>,
         key: &mut dyn NoticeKey,
         transport: &mut dyn Transport,
     ) -> Result<usize, NoticeError> {
+        let written = serde_json::to_string(quote).ok();
         let customer = Receiver {
             party: awaiting.requester.clone(),
             role: Role::Customer,
         };
         let mut sent = 0;
         for to in [self.operator.clone(), customer] {
+            let named = Key::Waiting {
+                to: to.clone(),
+                order: order.as_str().to_owned(),
+                quote: written.clone(),
+            };
+            if self.is_delivered(&named) {
+                continue;
+            }
             let notice = Notice {
                 deployment: self.deployment.clone(),
                 to: to.clone(),
                 about: About::Waiting {
                     order: order.clone(),
-                    at: At::from(at),
+                    at: At::from(placed.at),
+                    index: placed.index,
                     quote: quote.clone(),
                     valid_until: awaiting.valid_until.clone(),
                     slow: awaiting.slow.clone(),
@@ -422,7 +487,49 @@ impl Notices {
                 current: false,
             };
             let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
-            sent += usize::from(self.send(transport, to, None, sealed).is_some());
+            sent += usize::from(self.send(transport, to, Some(named), sealed).is_some());
+        }
+        Ok(sent)
+    }
+
+    /// The end of an order's wait for its customer, told to whom the wait was: nothing is waited for any more. Named in
+    /// the ledger, so a restart sends it no more once delivered. Answers how many were sent.
+    fn wait_ended(
+        &mut self,
+        order: &Id,
+        class: OrderRefusalClass,
+        requester: &Id,
+        placed: Placed<'_>,
+        key: &mut dyn NoticeKey,
+        transport: &mut dyn Transport,
+    ) -> Result<usize, NoticeError> {
+        let customer = Receiver {
+            party: requester.clone(),
+            role: Role::Customer,
+        };
+        let mut sent = 0;
+        for to in [self.operator.clone(), customer] {
+            let named = Key::Waiting {
+                to: to.clone(),
+                order: order.as_str().to_owned(),
+                quote: None,
+            };
+            if self.is_delivered(&named) {
+                continue;
+            }
+            let notice = Notice {
+                deployment: self.deployment.clone(),
+                to: to.clone(),
+                about: About::WaitEnded {
+                    order: order.clone(),
+                    at: At::from(placed.at),
+                    index: placed.index,
+                    class,
+                },
+                current: false,
+            };
+            let sealed = wire::seal(key, notice).ok_or(NoticeError::Unsigned)?;
+            sent += usize::from(self.send(transport, to, Some(named), sealed).is_some());
         }
         Ok(sent)
     }

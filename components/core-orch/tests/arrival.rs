@@ -3463,6 +3463,86 @@ fn a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_ea
     );
 }
 
+/// A slow route's quote asked again past its validity may come back firm: it is shown as a plain quote, with no slow
+/// segment named, which the order still waits on its customer to accept, since the customer was asked; the old digest
+/// is refused, and accepting the new one starts the order (`REQ-QTE-15`, `REQ-QTE-10`).
+// verifies: REQ-QTE-15, REQ-QTE-10
+#[test]
+fn a_requote_that_comes_back_firm_is_shown_and_accepted_by_the_customer() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (_, order, first) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+
+    // The validity passes and the route is firm now.
+    env.clock.set(START + 3 * 3_600);
+    slow(&mut env, 60);
+    let asked = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &first,
+    )
+    .expect("the log takes the quote shown anew");
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    let (quote, second, valid_until, expired) =
+        awaited(&env, &arrivals, &order).expect("a quote shown anew");
+    assert_ne!(second, first);
+    assert!(quote.price.no_firm_rate.is_empty(), "no slow segment named");
+    assert_eq!(
+        quote.shown_as,
+        rutent_contracts::core_internal::ShownAs::Quote
+    );
+    assert!(valid_until.is_some() && !expired);
+    // The log says it waits on the customer still, naming no slow segment.
+    let last = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Shown { awaiting, .. } => Some(awaiting.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("a quote shown");
+    assert!(last.is_some_and(|a| a.slow.is_empty() && a.requester == customer().party));
+    assert_admitted(&env);
+
+    assert_eq!(
+        accept_slow(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &order,
+            &customer(),
+            &first
+        ),
+        Err(ArrivalError::NotTheQuoteShown)
+    );
+    let started = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    assert_eq!(env.acceptances().len(), 1);
+    assert_admitted(&env);
+}
+
 /// A deposit filed automatically whose route the router offers but can't be delivered as composed is never shown: the
 /// reserve reports net, its withdrawal says it gives out 500 more than it takes in, which the router confirms as
 /// stated, and its deposit takes that in at a fee of 500, so the route is no rate cycle the router drops. `show`

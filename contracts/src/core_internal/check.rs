@@ -601,13 +601,19 @@ impl What {
                 shown_as,
                 ..
             } => {
-                if *shown_as != ShownAs::QuoteWithoutFirmRate {
+                // A quote asked of the customer once stays one the customer accepts when it is asked again, firm now
+                // or not: a firm one names no slow segment, a slow one names at least one.
+                let slow = !awaiting.slow.is_empty();
+                if !matches!(
+                    (shown_as, slow),
+                    (ShownAs::QuoteWithoutFirmRate, true) | (ShownAs::Quote, false)
+                ) {
                     return Err(Violation(
-                        "a quote an order waits on its customer to accept is shown without a firm rate",
+                        "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
                     ));
                 }
                 let places: alloc::vec::Vec<_> = awaiting.slow.iter().map(|s| s.position).collect();
-                if places.is_empty() || !distinct(&places) {
+                if !distinct(&places) {
                     return Err(Violation(
                         "a quote awaiting its customer names its slow segments, each once",
                     ));

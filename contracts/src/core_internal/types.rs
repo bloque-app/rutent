@@ -2770,7 +2770,7 @@ pub struct NoticeReceiver {
 }
 
 /// What a notice was of. Schema: `urn:rutent:core-internal:verified-entry#/$defs/notice_of`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoticeOf {
     /// A change of an order: the `sequence`-th of its changes, counted from 1.
@@ -2784,6 +2784,14 @@ pub enum NoticeOf {
     Raise {
         /// The raise's id (`notice-summary-names-its-raise`).
         raise: Id,
+    },
+    /// An order's waiting for its customer's acceptance of a quote, told by the quote's digest: it has no sequence
+    /// before it starts (`T-020-41`).
+    Waiting {
+        /// The order.
+        order: Id,
+        /// The quote's digest, as the `shown` entry holds it.
+        quote: Digest,
     },
 }
 

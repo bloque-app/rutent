@@ -181,6 +181,8 @@ pub enum About {
         order: Id,
         /// When the quote was shown.
         at: At,
+        /// The place of the `shown` entry in the log, which orders one quote of the order after another.
+        index: u64,
         /// The quote's digest: what the acceptance names.
         quote: Digest,
         /// When it stops standing, where any figure it rests on states a validity.
@@ -188,6 +190,18 @@ pub enum About {
         valid_until: Option<Timestamp>,
         /// The slow segments.
         slow: Vec<SlowSegment>,
+    },
+    /// An order that waited for its customer's acceptance ended without one: nothing is waited for any more. Its
+    /// customer's acceptance that starts the order is told by the order's own first notice.
+    WaitEnded {
+        /// The order.
+        order: Id,
+        /// When it ended.
+        at: At,
+        /// The place of the refusal entry in the log.
+        index: u64,
+        /// The class its customer is told.
+        class: OrderRefusalClass,
     },
     /// A difference raised to the operator, and nothing that moves value (ADR-0009). The operator's alone.
     Raise {
@@ -226,7 +240,7 @@ impl About {
     pub fn order(&self) -> Option<&str> {
         match self {
             About::Order { order, .. } => Some(order.as_str()),
-            About::Waiting { order, .. } => Some(order.as_str()),
+            About::Waiting { order, .. } | About::WaitEnded { order, .. } => Some(order.as_str()),
             About::Raise { .. }
             | About::Ahead { .. }
             | About::Heartbeat { .. }

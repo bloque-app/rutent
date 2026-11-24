@@ -1551,7 +1551,7 @@
           ]
         },
         "awaiting": {
-          "description": "Where the quote is one an order filed on an automatic deposit waits on its customer to accept: whom it waits for, until when the quote stands, which segments are slow (REQ-QTE-10, REQ-ORD-20, T-020-41). Only on a quote shown without a firm rate, which the Rust types check.",
+          "description": "Where the quote is one an order filed on an automatic deposit waits on its customer to accept: whom it waits for, until when the quote stands, which segments are slow, none where a requote came back firm (REQ-QTE-10, REQ-ORD-20, T-020-41). Only on a quote, as the Rust types check.",
           "$ref": "#/$defs/awaiting"
         }
       }
@@ -1574,9 +1574,8 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
         },
         "slow": {
-          "description": "The segments over three days, at least one, each once, which the Rust types check.",
+          "description": "The segments over three days, each once; none where the quote is firm. Which the Rust types check against how it is shown.",
           "type": "array",
-          "minItems": 1,
           "items": {
             "$ref": "#/$defs/slow_segment"
           }
@@ -2758,7 +2757,7 @@
       }
     },
     "notice_of": {
-      "description": "What a notice was of: a change of an order, at its sequence, or a raise.",
+      "description": "What a notice was of: a change of an order, at its sequence, a raise, or an order waiting for its customer, by the quote's digest.",
       "type": "object",
       "required": [
         "kind"
@@ -2767,7 +2766,8 @@
         "kind": {
           "enum": [
             "order",
-            "raise"
+            "raise",
+            "waiting"
           ]
         }
       },
@@ -2800,6 +2800,21 @@
           },
           "then": {
             "$ref": "#/$defs/notice_of_raise"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "waiting"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/notice_of_waiting"
           }
         }
       ]
@@ -2839,6 +2854,27 @@
         "raise": {
           "description": "The raise's id (notice-summary-names-its-raise).",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "notice_of_waiting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "quote"
+      ],
+      "properties": {
+        "kind": {
+          "const": "waiting"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "quote": {
+          "description": "The quote's digest, as its shown entry holds it.",
+          "$ref": "urn:rutent:module-interface:common#/$defs/digest"
         }
       }
     },

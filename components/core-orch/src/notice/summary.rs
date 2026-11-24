@@ -151,6 +151,14 @@ fn key_of(to: &NoticeReceiver, of: &NoticeOf) -> Key {
         NoticeOf::Raise { raise } => Key::Raise {
             raise: raise.as_str().to_owned(),
         },
+        NoticeOf::Waiting { order, quote } => Key::Waiting {
+            to: Receiver {
+                party: to.party.clone(),
+                role: to.role,
+            },
+            order: order.as_str().to_owned(),
+            quote: serde_json::to_string(quote).ok(),
+        },
     }
 }
 
@@ -162,7 +170,11 @@ impl Notices {
 
     /// Queues the summary of the notice named `key`, once it ended, unless the log holds one or it is queued.
     pub(super) fn queue_summary(&mut self, key: &Key, last_try: u32, end: NoticeEnd) {
-        if self.ended.contains_key(key) || self.pending.iter().any(|p| &p.key == key) {
+        // The end of a wait has no summary: the ledger's mark is all of it.
+        if matches!(key, Key::Waiting { quote: None, .. })
+            || self.ended.contains_key(key)
+            || self.pending.iter().any(|p| &p.key == key)
+        {
             return;
         }
         self.pending.push(Pending::new(key.clone(), last_try, end));
@@ -301,6 +313,21 @@ impl Notices {
                     raise: Id::new(raise)?,
                 },
             ),
+            Key::Waiting {
+                to,
+                order,
+                quote: Some(quote),
+            } => (
+                NoticeReceiver {
+                    party: to.party.clone(),
+                    role: to.role,
+                },
+                NoticeOf::Waiting {
+                    order: Id::new(order)?,
+                    quote: serde_json::from_str(quote).ok()?,
+                },
+            ),
+            Key::Waiting { quote: None, .. } => return None,
         };
         let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,

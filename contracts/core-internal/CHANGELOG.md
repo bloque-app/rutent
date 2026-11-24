@@ -984,7 +984,10 @@
   accept (`T-020-41`, item `deposit-no-firm-rate`, "Wait for the customer"). `shown` gains an optional `awaiting`
   (`Awaiting`: the party it waits for, until when the quote stands, and its slow segments, `SlowSegment`: place and
   declared seconds, no provider or amount), written only for such a quote, so the notices tell the customer from the
-  log alone (`REQ-ORD-20`). Its check: only on a quote shown without a firm rate, naming at least one slow segment,
-  each once; absent, a `shown` reads and writes as before. One valid fixture and two invalid ones, the Rust types
-  refusing both. Twenty-eight schemas, 161 valid fixtures and 170 invalid ones. 1.0.0 isn't on `develop`, so it folds
-  into the unreleased major and no version moves. (DEC-4, DEC-20, T-020-41)
+  log alone (`REQ-ORD-20`). Its check: on a quote shown without a firm rate it names at least one slow segment, and on
+  a plain quote, which a quote asked again after the customer was asked may come back as, none; each place once;
+  never on a price. Absent, a `shown` reads and writes as before. A notice's summary may be `of` an order waiting for
+  its customer (`NoticeOf::Waiting`: the order and the quote's digest), since such a notice has no sequence. Two
+  valid fixtures and a summary's, and three invalid ones, the Rust types refusing all three. Twenty-eight schemas, 163
+  valid fixtures and 171 invalid ones. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version
+  moves. (DEC-4, DEC-20, T-020-41)

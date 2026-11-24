@@ -6311,3 +6311,44 @@ assembly's `arrivals.rs`; no `contracts/` or `DEC-20` path.
   | `Notices::notify` sends no waiting notice | the notices test, the scenario |
   | the filing writes no `awaiting` on a requote | `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted` |
   | `awaiting` never says expired | the same |
+
+### T-020-41, fix round 2 (the re-review of `1bc97afa`)
+
+- **Finding 1, a requote that comes back firm** (blocker, fixed). Asked once, a customer is asked of every requote of
+  the order, firm now or not, and the contract refused `awaiting` there. The cleanest fix keeps `awaiting` on every
+  such quote, since the notice carries the new quote's validity, and tightens the check to say what it means: `awaiting`
+  is on a quote shown without a firm rate naming at least one slow segment, or on a plain quote naming none (a
+  requote that came back firm), each place once, never on a price. The other option, `awaiting` only where `slow` is
+  non-empty, would have left a firm requote with no validity and no notice to carry it. The schema's `minItems` is gone
+  (the Rust check holds the pairing); fixtures: one valid (`--asked-again-firm`), one more invalid
+  (`--without-a-firm-rate-naming-no-slow-segment`). The reviewer's probe is
+  `a_requote_that_comes_back_firm_is_shown_and_accepted_by_the_customer`: the old digest is refused, the new quote is
+  plain, names no slow segment, is told as still waiting, and its acceptance starts the order.
+- **Finding 2, a restart** (fixed). The waiting notice is named in the ledger (`Key::Waiting { to, order, quote }`),
+  so a restart sends none the ledger shows delivered and an undelivered one is tried again by `retry`; and it is
+  summarised in the log as the order's notices are, for which core-internal gains `NoticeOf::Waiting { order, quote }`
+  (folded into the unreleased 1.0.0, one valid fixture; `NoticeOf` no longer derives `Hash`, since provider's
+  `Digest` doesn't and nothing hashed it). A wait is told only while the log shows no acceptance, refusal or start of
+  the order after it: the read skips an order its own unread entries settle. Its end is told by `About::WaitEnded`,
+  named in the ledger alone (no summary), so an `Inbox` can drop the wait; a restart with the ledger sends it no more.
+  Test: `a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_order_waits`.
+- **Finding 3, the inbox** (fixed). The waiting notice carries the place of its `shown` entry in the log (`index`);
+  the `Inbox` keeps the latest by it, whatever order the notices come in, and drops the wait when the order's first
+  notice arrives (it started) or `WaitEnded` does; a late older notice doesn't bring it back. Test:
+  `an_inbox_holds_the_latest_waiting_quote_and_none_once_the_order_started_or_the_wait_ended`.
+- **A limit, said**: a restart without a durable ledger tells again what the log still shows waiting (at least
+  once); only the ledger and the log's summaries make a restart quiet, as for every other notice.
+- **Rule-offs of this round** (each alone, from the committed fix; script `scratchpad/ruleoff3.py`): see the table the
+  commit's body holds and below.
+
+  | Rule switched off | Red |
+  |---|---|
+  | the contract's firm pairing: a plain quote may carry `awaiting` | the contract test (the firm fixture) |
+  | the contract's pairing check whole | the contract test (the invalid fixtures) |
+  | the filing writes no `awaiting` where `slow` is empty | the firm-requote test |
+  | the waiting notice's ledger mark is not read | the restart and retry test |
+  | an order the log shows settled is still told as waiting | the restart test |
+  | the end of a wait is not told | the restart test |
+  | the inbox keeps the first notice, not the latest | the inbox test |
+  | the inbox keeps the wait after the order starts | the inbox test |
+
