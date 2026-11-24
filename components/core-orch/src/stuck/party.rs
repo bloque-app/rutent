@@ -95,7 +95,7 @@ fn linked_orders<'a>(order: &'a str, history: &'a Recorded) -> Vec<&'a str> {
                     ..
                 } => out.push((order.as_str(), linked_order.as_str())),
                 // A decide step joins the orders only where policy permitted it: a refused one decided nothing.
-                What::StuckDecide { request, .. } if v.outcome == (Outcome::Permitted {}) => {
+                What::StuckDecide { request, .. } if matches!(v.outcome, Outcome::Permitted {}) => {
                     if let Resolution::HandOn { linked_order, .. } = &request.resolution {
                         out.push((request.order.as_str(), linked_order.as_str()));
                     }
@@ -165,7 +165,7 @@ pub(super) fn involves(statement: &StatedEntry, order: &Id, history: &Recorded) 
                 ..
             } => ours(o) && by == maker,
             // A permitted decide step's mover; a refused one names no one.
-            What::StuckDecide { request, .. } if v.outcome == (Outcome::Permitted {}) => {
+            What::StuckDecide { request, .. } if matches!(v.outcome, Outcome::Permitted {}) => {
                 ours(&request.order)
                     && matches!(&request.resolution,
                         Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } if by == maker)

@@ -6218,3 +6218,22 @@ scenario kit; no `contracts/` edit.
   refused (T-020-39 gap 5): left to the lead. (2) `party.rs` ports the log's rule; drift is guarded by the differential
   tests over the contract's cases only. (3) The part with one party only stays held (T-020-39 gap 9), on the owner's form.
 - **Rule-off table** below.
+
+Rule-offs (each switched off alone from commit `833f27fa`, its tests run through the lock, the file restored with
+`git checkout`; script `scratchpad/ruleoff.py`). "Scenarios" is `stuck` and `stuck_mover`; "lib" `core-orch`'s `party`
+tests. The four scenario tests are named by their first words: `confirmation_naming…`, `decline_resting…`,
+`silent_move_reported…`, `stuck_resolution_resting…`.
+
+| Rule switched off | Red |
+|---|---|
+| `from_a_party`: the party check | all four |
+| `from_a_party`: the reporter's own party | `confirmation_naming…`, `decline_resting…` |
+| `from_a_party`: a statement the history lacks refused | all four |
+| `digests_from_a_party` whole | `stuck_resolution_resting…` |
+| the digests' limit to provider results | none in scenarios: `assembly_stuck` and `assembly_hand_on` go red on it (the first statement about their order is Core's question), as seen before the limit was added |
+| the kit's live-world guard | `second_world_with_other_ends_is_refused_while_the_first_lives` (a `should_panic` failure, not matched by the script's pattern) |
+| `involves`: plans' providers | lib `the_makers_the_log_admits…`; scenarios: five silent-move tests (`silent_move_on_a_stuck_part_settles…`, `segments_move_confirmed_done_*`, `declined_report_of_a_silent_move…`) |
+| `involves`: moves' providers | none: a subset of the plans' (`move-segment-is-in-its-orders-plan`), kept as defence |
+| `involves`: resolve effect's mover, permitted decide's mover, arrival's reserve, holding withdrawal's holder, its publisher, hand-on closure | lib `the_makers_the_log_admits…` |
+| `involves`: node publishers | lib `the_publisher_of_a_node…` |
+| `involves`: a decide step read whatever policy answered | lib `the_makers_the_log_refuses…` |
