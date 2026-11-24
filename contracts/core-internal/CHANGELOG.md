@@ -995,6 +995,6 @@
   start per record (`one-start-per-holding-record`), not one per linked order, so a second, different holding record
   of the same order was admitted. A new row, `one-start-per-linked-order`, refuses a `holding_withdrawal` of an order
   when another of that order cites a record of another transaction; the same record again stays the first row's and a
-  retry. Admitted: the same start again. Refused: a second record of another transaction for ord-2. Two admission
-  cases. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version moves. (DEC-4, DEC-20,
+  retry. Admitted: the same start again. Refused: a second record of another transaction for ord-2. 730 admission
+  cases and 56 attribution cases; 110 relations and 5 closing ones, three stated. 1.0.0 isn't on `develop`, so it folds into the unreleased major and no version moves. (DEC-4, DEC-20,
   REQ-ORD-40, INV-5, INV-4, T-020-44)

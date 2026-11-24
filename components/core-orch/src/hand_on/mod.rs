@@ -750,6 +750,15 @@ impl HandOn {
             let built = Self::build_hand_on(parts, &handing)?;
             self.hand_ons.insert(at.clone(), built);
         }
+        // A hand-on pending was built for one linked order, its `handed_on` perhaps in the log already: a retry names
+        // that one. It is never recorded under another's id (`INV-4`); the caller isn't told another was handed on.
+        let pending = self.hand_ons.get(&at).ok_or(HandOnError::Unknown)?;
+        if pending.route_chosen.1.subject.order.as_str() != handing.linked.as_str() {
+            return Err(HandOnError::PendingForAnother {
+                pending: Id::new(pending.route_chosen.1.subject.order.as_str())
+                    .ok_or(HandOnError::Id("a linked order"))?,
+            });
+        }
         // Before the first record, and again before each retry of it: the linked order is free, in the log and
         // among the hand-ons pending here, so the `route_chosen` that follows is the linked order's first
         // (`order-is-opened-once`). A hand-on whose linked order was taken meanwhile is dropped, nothing recorded.
@@ -761,15 +770,6 @@ impl HandOn {
         {
             self.hand_ons.remove(&at);
             return Err(taken);
-        }
-        // A hand-on pending was built for one linked order, its `handed_on` perhaps in the log already: a retry names
-        // that one. It is never recorded under another's id (`INV-4`); the caller isn't told another was handed on.
-        let pending = self.hand_ons.get(&at).ok_or(HandOnError::Unknown)?;
-        if pending.route_chosen.1.subject.order.as_str() != handing.linked.as_str() {
-            return Err(HandOnError::PendingForAnother {
-                pending: Id::new(pending.route_chosen.1.subject.order.as_str())
-                    .ok_or(HandOnError::Id("a linked order"))?,
-            });
         }
         let pending = self.hand_ons.get_mut(&at).ok_or(HandOnError::Unknown)?;
         // The first order's record first: the linked order's points back to it (`handed-on-route-points-back`).
