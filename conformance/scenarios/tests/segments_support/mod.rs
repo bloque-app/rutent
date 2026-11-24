@@ -2051,7 +2051,21 @@ impl Core {
         log.entries
             .iter()
             .enumerate()
-            .map(|(at, (entry, _))| (log.receipt_at(at), entry.clone()))
+            .map(|(at, (entry, _))| {
+                // The real log attributes each statement it records; this one answers before it does, so the
+                // history Core is handed reads each as verified, as the real log's would.
+                let entry = match entry {
+                    Entry::Stated(s) => {
+                        let mut s = s.clone();
+                        s.attribution = rutent_contracts::core_internal::Attribution::Verified {
+                            who: s.attribution.maker().clone(),
+                        };
+                        Entry::Stated(s)
+                    }
+                    other => other.clone(),
+                };
+                (log.receipt_at(at), entry)
+            })
             .collect()
     }
 

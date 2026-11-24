@@ -1316,6 +1316,11 @@ impl Stuck {
     /// The decide step (see the module's docs): Core's own checks first, then policy's decision, recorded by
     /// policy. A permitting decision answering Core's own request is kept for its move; any other is answered and
     /// kept for nothing.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decide(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1505,6 +1510,11 @@ impl Stuck {
     /// ([`ResolveError::ReportDeclined`]). Nothing is carried out again. Policy's side of reporting and confirming is
     /// `T-021-06`'s. The evidence a report names is, for a move the production mover carried out, a statement it took
     /// ([`Delivering::statement`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn known_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1591,6 +1601,11 @@ impl Stuck {
     /// frees the part for a new decision. The log records who reported and who confirmed, each with its evidence. The
     /// roles a confirmer may hold (no customer, not the desk of the provider holding the funds, `THR-70`) are
     /// policy's rule (`T-021-06`).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1681,6 +1696,11 @@ impl Stuck {
     /// comes back as the error it is, with nothing changed. A permitted decline settles nothing and frees nothing:
     /// the part stays held, the report no longer stands, and a new one of the same move is admitted
     /// ([`Stuck::known_outcome`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decline_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1753,6 +1773,11 @@ impl Stuck {
     /// one settles nothing until another actor confirms it ([`Stuck::confirm_segment_outcome`],
     /// [`Stuck::confirm_segment_done`]) and stands until it is confirmed or declined
     /// ([`Stuck::decline_segment_outcome`]), after which another takes its place (`one-report-per-effect`).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn report_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1835,6 +1860,11 @@ impl Stuck {
     /// final result, `failed`, and the segment's `segment_failed` ([`Segments::confirmed_failed`]): the segment is no
     /// longer in motion, its value still held, and the part can be decided (`AC-6`). Only failed is taken here: done
     /// settles the segment, which takes graded evidence ([`Stuck::confirm_segment_done`]).
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -1852,6 +1882,11 @@ impl Stuck {
     /// result, `done`, and the segment's `segment_settled` on the evidence graded ([`Segments::confirmed_done`]). A
     /// done that grades to nothing yet, or that rests on no late result Core took, settles nothing
     /// ([`ResolveError::Ungraded`]): nothing is recorded, the report stands and the part stays held.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn confirm_segment_done(
         &mut self,
         parts: &mut Parts<'_>,
@@ -2000,6 +2035,11 @@ impl Stuck {
     /// a stuck resolution's: by an actor of another party and login than its reporter, naming the report and its own
     /// evidence, through policy. It settles nothing and frees nothing, and a new report of the segment's move is
     /// admitted in its place. A report whose confirmation policy permitted is settled and declined no more.
+    ///
+    /// `history` is taken as the log's own entries, never a caller's, as [`Stuck::follow`]'s `recorded` is: this holds
+    /// only where the assembly passes the log's entries. It holds the evidence to a party the order involves
+    /// (`confirmer-evidence-party`); a forged history could admit an outsider's word, which only the log would then
+    /// refuse.
     pub fn decline_segment_outcome(
         &mut self,
         parts: &mut Parts<'_>,
@@ -2806,7 +2846,7 @@ fn from_a_party(
     history: &Recorded,
 ) -> Result<(), ResolveError> {
     let statement = party::statement_at(evidence, history).ok_or(ResolveError::OutsideTheOrder)?;
-    if !party::involves(statement, order, history) {
+    if !party::verified_party(statement, order, history) {
         return Err(ResolveError::OutsideTheOrder);
     }
     if let Some(reported) = reported_with
@@ -2818,19 +2858,23 @@ fn from_a_party(
     Ok(())
 }
 
-/// Whether each of a decision's evidence digests that names a provider's result the history holds names a party's word about
-/// `order`. A digest the history holds no result under is a document or Core's own question, not a provider's word, and no
-/// maker is read of it.
+/// Whether each of a decision's evidence digests that names a statement the history holds names a party's word about
+/// `order`, whatever its kind (a result, a judgement, a hold, an arrival answer): a statement whose maker the log
+/// verified, by a party the order involves. Core's own questions (an operation, an arrival question) are no
+/// provider's word and are skipped. A digest the history holds no statement under names no maker, and passes: it
+/// fails open, which `F-020`'s notes name.
 fn digests_from_a_party(
     evidence: &[Digest],
     order: &Id,
     history: &Recorded,
 ) -> Result<(), ResolveError> {
+    use rutent_contracts::provider_role::{ARRIVAL_QUESTION_SHAPE, OPERATION_SHAPE};
     for (_, entry) in history {
         if let Entry::Stated(statement) = entry
             && evidence.contains(&statement.commitment)
-            && statement.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
-            && !party::involves(statement, order, history)
+            && ![OPERATION_SHAPE, ARRIVAL_QUESTION_SHAPE]
+                .contains(&statement.what.statement.as_str())
+            && !party::verified_party(statement, order, history)
         {
             return Err(ResolveError::OutsideTheOrder);
         }

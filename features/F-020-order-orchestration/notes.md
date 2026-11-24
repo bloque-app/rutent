@@ -6237,3 +6237,26 @@ tests. The four scenario tests are named by their first words: `confirmation_nam
 | `involves`: resolve effect's mover, permitted decide's mover, arrival's reserve, holding withdrawal's holder, its publisher, hand-on closure | lib `the_makers_the_log_admits…` |
 | `involves`: node publishers | lib `the_publisher_of_a_node…` |
 | `involves`: a decide step read whatever policy answered | lib `the_makers_the_log_refuses…` |
+
+### T-020-40, fix round 1 (the review of `66cf48df`)
+
+- **1. Every kind of statement a decision's digests name is held to a party** (`stuck/mod.rs`
+  `digests_from_a_party`): the limit to result shapes is gone. Only Core's own questions (`OPERATION_SHAPE`,
+  `ARRIVAL_QUESTION_SHAPE`) are skipped, explicitly, so `assembly_stuck` and `assembly_hand_on`, which decide on
+  Core's question, are unchanged. The probe is `decision_evidence_digests_are_held_to_a_verified_party_whatever_their_kind`
+  (`party.rs`): the contract's outside result, relabelled a judgement, is refused; a party's judgement passes.
+- **2. The differential test walks the contract's folder** (`orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case`):
+  every admission case whose entry cites evidence (report, confirmation, decline, part evidence; both rows and the
+  worlds), the log's verdict computed with `admit_entry` through either handle. Admitted: each cited maker reads as a
+  party. Refused on `party` (the two rows): one does not. Floors on the number of cases read, so a silently skipped
+  folder is red. A new or changed contract case reaches it with no edit here.
+- **3. Verified attribution is required** for the digest check, and for the evidence of a report, confirmation or
+  decline (`party::verified_party`). The kit's history (`Core::recorded`) reads each statement verified, as the real
+  log's does.
+- **4. Defaults that fail open, named.** A digest naming no statement the history holds passes: it fails open. It
+  can't fail closed here: the evidence store may hold documents, and about thirty scenario sites decide on a
+  placeholder digest. Owner: the lead (a row on what a decision's digest may name). The shape limit no longer exists.
+- **5. Doc lines** on the eight entry points: `history` is taken as the log's own entries.
+- **Rule-offs of the round** (from the fix commit, as above; "walk" is the differential test, "probe" the digest
+  probe, "assembly" `assembly_stuck` and `assembly_hand_on`):
+

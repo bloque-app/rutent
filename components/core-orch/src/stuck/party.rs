@@ -120,6 +120,13 @@ fn linked_orders<'a>(order: &'a str, history: &'a Recorded) -> Vec<&'a str> {
     orders
 }
 
+/// Whether `statement` is a verified statement by a party `order` involves: an unverified one names only who it
+/// claims made it, and rests on no key.
+pub(super) fn verified_party(statement: &StatedEntry, order: &Id, history: &Recorded) -> bool {
+    matches!(statement.attribution, Attribution::Verified { .. })
+        && involves(statement, order, history)
+}
+
 /// Whether `statement` is made by a party `order` involves (see the module's docs).
 pub(super) fn involves(statement: &StatedEntry, order: &Id, history: &Recorded) -> bool {
     let maker = &statement.attribution.maker().acts;
@@ -248,6 +255,7 @@ mod tests {
     //! contract's admission cases for the `party` field of `outcome-confirmation-cites-verified-evidence` is read
     //! here, and the maker of the evidence it cites is a party to its order exactly where the log admits it.
 
+    use rutent_contracts::core_internal::{DeploymentOperator, Through, admit_entry};
     use serde_json::Value;
 
     use super::*;
@@ -274,63 +282,163 @@ mod tests {
             .collect()
     }
 
-    /// Whether the maker of the evidence the case's entry cites is a party to the order it speaks of.
+    const ROW: &str = "outcome-confirmation-cites-verified-evidence";
+
+    /// The evidence a report, confirmation, decline or part-evidence entry cites, and the order it speaks of.
+    fn cited(entry: &Entry) -> Option<(Id, Vec<Receipt>)> {
+        let Entry::Verified(v) = entry else {
+            return None;
+        };
+        match &v.what {
+            What::ReportOutcome { request, .. } => {
+                Some((request.order.clone(), vec![request.evidence.clone()]))
+            }
+            What::ConfirmOutcome { request, .. } => {
+                Some((request.order.clone(), vec![request.confirmed_with.clone()]))
+            }
+            What::DeclineOutcome { request, .. } => {
+                Some((request.order.clone(), vec![request.declined_with.clone()]))
+            }
+            What::PartEvidence {
+                order, rests_on, ..
+            } => Some((order.clone(), rests_on.clone())),
+            _ => None,
+        }
+    }
+
+    /// Whether the log admits `entry` after `history`, through either of its handles.
+    fn admitted(case: &Value, history: &[(Receipt, Entry)], entry: &Entry) -> bool {
+        let operator = match &case["operator"] {
+            Value::Null => DeploymentOperator {
+                maker: Id::new("operator").expect("an id"),
+                party: Id::new("operator").expect("an id"),
+            },
+            named => DeploymentOperator {
+                maker: Id::new(named["maker"].as_str().expect("a maker")).expect("an id"),
+                party: Id::new(named["party"].as_str().expect("a party")).expect("an id"),
+            },
+        };
+        [Through::Policy, Through::General]
+            .into_iter()
+            .any(|through| admit_entry(history, entry, through, &operator).is_ok())
+    }
+
+    /// Orchestration's reading of "a party the order involves" follows the log's, case by case, over every
+    /// admission case the contract holds whose entry cites evidence a stuck order rests on (a report, a confirmation,
+    /// a decline, a part's evidence), `world--*` and each row's alike: where the log admits the entry, the maker of
+    /// each statement it cites is a party to its order; where it refuses it on the `party` field, one is not. A rule
+    /// the contract widens or narrows turns this red, and so does a new case, with nobody editing it here.
+    // verifies: REQ-AUZ-4
+    #[test]
+    fn orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case() {
+        let dir = format!(
+            "{}/../../contracts/core-internal/fixtures/admission",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut read = 0;
+        let (mut admitted_cases, mut party_cases) = (0, 0);
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the fixtures")
+            .map(|f| f.expect("a file").path())
+            .collect();
+        names.sort();
+        for path in names {
+            let case: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("a file"))
+                    .expect("JSON");
+            let Ok(entry) = serde_json::from_value::<Entry>(case["entry"].clone()) else {
+                continue;
+            };
+            let Some((order, receipts)) = cited(&entry) else {
+                continue;
+            };
+            let history = history_of(&case);
+            let party = |receipt: &Receipt| {
+                statement_at(receipt, &history)
+                    .map(|statement| involves(statement, &order, &history))
+            };
+            let name = path.display();
+            read += 1;
+            if admitted(&case, &history, &entry) {
+                admitted_cases += 1;
+                for receipt in &receipts {
+                    assert_ne!(party(receipt), Some(false), "{name}: admitted, so a party");
+                }
+            } else if case["breaks"] == "party"
+                && [ROW, "part-evidence-rests-on-statements"]
+                    .contains(&case["row"].as_str().unwrap_or(""))
+            {
+                party_cases += 1;
+                assert!(
+                    receipts.iter().any(|r| party(r) == Some(false)),
+                    "{name}: refused for its party, so a statement of no party"
+                );
+            }
+        }
+        // The walk reads the cases it means to: none of them silently skipped.
+        assert!(read >= 60, "{read} cases read");
+        assert!(admitted_cases >= 25, "{admitted_cases} admitted");
+        assert!(party_cases >= 8, "{party_cases} refused for their party");
+    }
+
+    /// Whether the statement the case's entry cites is made by a party to its order.
     fn party_to_it(case: &Value, history: &[(Receipt, Entry)]) -> bool {
-        let request = &case["entry"]["what"]["request"];
-        let cited = ["confirmed_with", "declined_with", "evidence"]
-            .iter()
-            .find_map(|field| request.get(field).filter(|v| !v.is_null()))
-            .expect("an entry citing evidence");
-        let receipt: Receipt = serde_json::from_value(cited.clone()).expect("a receipt");
-        let order: Id = serde_json::from_value(request["order"].clone()).expect("an order");
-        let statement = statement_at(&receipt, history).expect("a statement of the history");
+        let entry: Entry = serde_json::from_value(case["entry"].clone()).expect("an entry");
+        let (order, receipts) = cited(&entry).expect("an entry citing evidence");
+        let statement = statement_at(&receipts[0], history).expect("a statement of the history");
         involves(statement, &order, history)
     }
 
-    const ROW: &str = "outcome-confirmation-cites-verified-evidence";
-
+    /// A decision's evidence digests are held to a party whatever the statement's kind, Core's own questions apart,
+    /// and only where the log verified the maker: an outside provider's judgement is refused as its result is, and
+    /// a statement claiming a party's name with no verified signature is refused too.
     // verifies: REQ-AUZ-4
     #[test]
-    fn the_makers_the_log_refuses_are_no_party_to_the_order() {
-        for name in [
-            "party",
-            "a-move-values-report-on-an-outside-providers-statement",
-            "a-decline-on-an-outside-providers-statement",
-            "a-confirmation-on-a-provider-a-holding-check-names",
-            "a-confirmation-on-the-mover-a-refused-decide-names",
-            "a-confirmation-on-a-provider-of-an-order-no-hand-on-joins",
-            "a-confirmation-on-a-provider-of-an-order-a-refused-decide-hands-on-to",
-        ] {
-            let case = read(&format!("{ROW}--{name}"));
-            assert!(!party_to_it(&case, &history_of(&case)), "{name}");
-        }
-    }
-
-    // verifies: REQ-AUZ-4, REQ-ORD-1
-    #[test]
-    fn the_makers_the_log_admits_are_each_a_party_to_the_order() {
-        for name in [
-            "a-confirmation-on-the-mover-a-permitted-decide-names",
-            "a-confirmation-on-the-mover-its-resolve-effect-names",
-            "a-confirmation-on-the-reserve-its-arrival-came-to",
-            "a-confirmation-on-the-holder-a-holding-withdrawal-names",
-            "a-confirmation-on-the-publisher-a-holding-withdrawal-names",
-            "a-confirmation-on-a-provider-of-an-order-a-hand-on-input-joins",
-            "a-confirmation-on-a-provider-of-a-route-handed-on-from-the-order",
-            "a-confirmation-on-a-provider-of-an-order-a-holding-withdrawal-joins",
-            "a-confirmation-on-a-provider-of-an-order-a-resolve-effect-hands-on-to",
-            "a-confirmation-on-a-provider-of-an-order-a-permitted-decide-hands-on-to",
-            "a-confirmation-on-another-provider-of-its-route",
-            "a-confirmation-on-a-provider-only-a-recalculated-route-names",
-            "a-hand-ons-confirmation-on-another-makers-statement",
-        ] {
-            let case = read(&format!("{ROW}--{name}"));
-            assert!(party_to_it(&case, &history_of(&case)), "{name}");
-        }
-        for name in ["settled_es", "report_es", "decline"] {
-            let case = read(&format!("world--{name}"));
-            assert!(party_to_it(&case, &history_of(&case)), "{name}");
-        }
+    fn decision_evidence_digests_are_held_to_a_verified_party_whatever_their_kind() {
+        use crate::stuck::{ResolveError, digests_from_a_party};
+        use rutent_contracts::provider_role::{JUDGEMENT_SHAPE, OPERATION_SHAPE};
+        // The statement the case's entry cites, after `edit`, named as a decision's evidence.
+        let probe = |case: &str, edit: &dyn Fn(&mut Value)| {
+            let case = read(&format!("{ROW}--{case}"));
+            let mut history = history_of(&case);
+            let entry: Entry = serde_json::from_value(case["entry"].clone()).expect("an entry");
+            let (order, receipts) = cited(&entry).expect("evidence");
+            let at = history
+                .iter()
+                .position(|(r, _)| *r == receipts[0])
+                .expect("the cited statement");
+            let mut value = serde_json::to_value(&history[at].1).expect("JSON");
+            edit(&mut value);
+            history[at].1 = serde_json::from_value(value).expect("an entry");
+            let Entry::Stated(s) = &history[at].1 else {
+                panic!("a statement");
+            };
+            digests_from_a_party(&[s.commitment.clone()], &order, &history)
+        };
+        let nothing = |_: &mut Value| {};
+        let shape =
+            |shape: &'static str| move |v: &mut Value| v["what"]["statement"] = shape.into();
+        // An outside provider's result is refused; so is its judgement, which only the result's shape was held to.
+        assert_eq!(probe("party", &nothing), Err(ResolveError::OutsideTheOrder));
+        assert_eq!(
+            probe("party", &shape(JUDGEMENT_SHAPE)),
+            Err(ResolveError::OutsideTheOrder)
+        );
+        // Core's own question is no provider's word.
+        assert_eq!(probe("party", &shape(OPERATION_SHAPE)), Ok(()));
+        // A party's statement passes where verified, and not where it only claims its maker.
+        let route = "a-confirmation-on-another-provider-of-its-route";
+        assert_eq!(probe(route, &nothing), Ok(()));
+        assert_eq!(
+            probe(route, &shape(JUDGEMENT_SHAPE)),
+            Ok(()),
+            "a party's judgement is a party's word"
+        );
+        let claimed = |v: &mut Value| {
+            let who = v["attribution"]["who"].clone();
+            v["attribution"] = serde_json::json!({"signature": "unverified", "claimed_by": who});
+        };
+        assert_eq!(probe(route, &claimed), Err(ResolveError::OutsideTheOrder));
     }
 
     /// A statement stating for the publisher of a node the order crossed counts only where the history binds the
