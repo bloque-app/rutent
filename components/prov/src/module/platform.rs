@@ -2320,7 +2320,16 @@ impl<W: World> Platform<W> {
         let Some(admitted_at) = time_of(at) else {
             return Admitted::ClockOutOfRange;
         };
-        let assertion = match admission::read(received_assertion, &self.envelope) {
+        // Judged at the platform's clock, never the assertion's own `made_at` (provider-role 4.0.0).
+        let versions = rutent_contracts::provider_role::ProtocolVersions::only(
+            self.envelope.protocol_version.as_str(),
+        );
+        let assertion = match admission::read(
+            received_assertion,
+            &self.envelope.deployment,
+            &versions,
+            admitted_at.as_str(),
+        ) {
             Ok(assertion) => assertion,
             Err(why) => return Admitted::Unverified(why),
         };

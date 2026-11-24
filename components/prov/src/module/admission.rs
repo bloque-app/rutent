@@ -45,12 +45,11 @@ use rutent_contracts::module_interface::{
     validate_operator_assertion,
 };
 use rutent_contracts::provider_role::{
-    Availability, CanonicalError, ContextMismatch, PublicKey, ShapeMismatch, Statement,
-    canonicalize,
+    Availability, CanonicalError, ContextMismatch, Deployment, ProtocolVersions, PublicKey,
+    ShapeMismatch, Statement, canonicalize,
 };
 
 use crate::catalogue::{Catalogue, CatalogueError, Instant, StatementRefusal};
-use crate::module::types::Envelope;
 
 /// Why the platform refused a release on its assertion, before reading its binaries. The module-interface
 /// contract's `AdmissionRefusal` has no reason for an assertion that doesn't verify, so the platform names its
@@ -227,25 +226,22 @@ fn judge_operators_release(
 }
 
 /// Reads an assertion from the bytes it arrived in: a release assertion statement, with a signing input, for the
-/// deployment and protocol version the platform serves (`REQ-PRT-1`, `THR-8`). The platform admits what these bytes
-/// say, and judges these same bytes.
+/// `deployment` and a protocol version in force, `versions` (`REQ-PRT-1`, `THR-8`), judged at `admitted_at`, the
+/// platform's clock when it admits the release, never the assertion's own `made_at`, so a release can't be dated back
+/// past a protocol version's cutover (`REQ-PRT-4`, `THR-64`). The platform admits what these bytes say, and judges
+/// these same bytes.
 pub fn read(
     received: &[u8],
-    envelope: &Envelope,
+    deployment: &Deployment,
+    versions: &ProtocolVersions,
+    admitted_at: &str,
 ) -> Result<Statement<ReleaseAssertion>, Unverified> {
     let assertion: Statement<ReleaseAssertion> =
         serde_json::from_slice(received).map_err(|_| Unverified::Unreadable)?;
     canonicalize(received).map_err(Unverified::NoSigningInput)?;
     assertion.check_shape().map_err(Unverified::WrongShape)?;
     assertion
-        // One version in force, the platform's, so the time isn't read (provider-role 4.0.0).
-        .check_context(
-            &envelope.deployment,
-            &rutent_contracts::provider_role::ProtocolVersions::only(
-                envelope.protocol_version.as_str(),
-            ),
-            &assertion.made_at,
-        )
+        .check_context(deployment, versions, admitted_at)
         .map_err(Unverified::WrongContext)?;
     Ok(assertion)
 }
