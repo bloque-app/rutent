@@ -971,3 +971,38 @@ fn releases_of_a_platform_that_ended_unclean_run_once_the_operator_confirms_them
     ));
     assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
 }
+
+// verifies: REQ-MDL-3, REQ-MDL-20
+#[test]
+fn a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inner = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(Breakable {
+            inner: inner.clone(),
+            broken: broken.clone(),
+        }),
+        TestWorld::default(),
+    );
+    admit_version(&mut s, RESERVE, "1.0.0");
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    let world = stop(s);
+    let mut s = Signed::on(Box::new(inner), world);
+    assert!(matches!(
+        readmitted(&mut s, RESERVE, "1.0.0"),
+        Admitted::Artefact(_)
+    ));
+    // A new release is accepted and placed, and nothing runs it: no process, no operation, until the operator confirms.
+    admit_version(&mut s, RESERVE, "1.1.0");
+    assert!(s.platform.lifecycle().is_accepted(RESERVE, "1.1.0"));
+    assert_eq!(s.platform.active_version(RESERVE), None);
+    assert_eq!(s.platform.version_process(RESERVE, "1.1.0"), None);
+    assert_eq!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 3)),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.1.0"));
+}

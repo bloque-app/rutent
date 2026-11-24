@@ -274,3 +274,26 @@ fn status_question_about_an_unsegmented_transaction_runs_on_the_version_that_car
     );
     assert_eq!(s.platform.operations_run_on(RESERVE, "1.1.0"), 0);
 }
+
+// verifies: REQ-ORD-1
+#[test]
+fn status_question_about_a_segment_with_nothing_carried_out_in_it_is_refused() {
+    let mut s = Signed::new();
+    admit(&mut s, RESERVE, "1.0.0", &["withdrawal", "status_query"]);
+    // Another transaction's operation is carried out; the one asked about has a segment and no operation in the record,
+    // so its kind would be the caller's word.
+    assert!(matches!(
+        s.platform.handle(RESERVE, &withdrawal(RESERVE, 2)),
+        Handled::Answered(_)
+    ));
+    s.platform
+        .begin_segment(RESERVE, &id(&format!("tx-{RESERVE}-1")))
+        .expect("a segment");
+    let run = s.platform.operations_run(RESERVE);
+    assert_eq!(
+        s.platform
+            .status(RESERVE, &id("status-question-1"), &withdrawal(RESERVE, 1)),
+        Handled::Refused(PlatformRefusal::Unavailable)
+    );
+    assert_eq!(s.platform.operations_run(RESERVE), run);
+}

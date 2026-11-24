@@ -1238,10 +1238,17 @@ impl<W: World> Platform<W> {
         slot.accepted.push(artefact.clone());
         slot.machines.insert(version.clone(), machine);
         let placement = self.lifecycle.placement(provider);
-        let started = self.spawn(provider, &version);
+        // A provider whose releases wait for the operator's confirmation starts nothing: the release is accepted and
+        // placed as a restored one is, and runs once the operator confirms (`T-013-11`).
+        let held_out = self.unconfirmed.contains(provider);
+        let started = if held_out {
+            None
+        } else {
+            self.spawn(provider, &version)
+        };
         let mut next = self.lifecycle.clone();
         next.accept(provider, &version);
-        if started.is_some() {
+        if started.is_some() || held_out {
             next.started(provider, &version, placement, at);
         }
         let mut acceptances = self.acceptances.get(provider).cloned().unwrap_or_default();
@@ -2935,22 +2942,20 @@ impl<W: World> Platform<W> {
             .lifecycle
             .segment(&asked_about)
             .is_some_and(|segment| segment.provider == provider);
-        if record.is_none() && !in_a_segment {
+        // The kind of the operation asked about is the platform's own record's, never the caller's: a segment begun with
+        // nothing carried out under it in the record has no operation to ask about.
+        let Some(record) = record else {
             return Handled::Refused(PlatformRefusal::Unavailable);
-        }
+        };
         // What the platform holds is what it asks about: the operation it carried out, and the answer it holds, not
         // what the caller says of them. On the version the transaction's segment runs on, or, where none holds it, the
         // one that carried it out; where the record doesn't keep which, nothing is asked.
-        let operation = record.map_or_else(
-            || about.statement.clone(),
-            |carried| carried.operation.statement.clone(),
-        );
-        let held =
-            record.and_then(|carried| carried.answer.as_deref().map(|a| a.statement.clone()));
+        let operation = record.operation.statement.clone();
+        let held = record.answer.as_deref().map(|a| a.statement.clone());
         let version = if in_a_segment {
             None
         } else {
-            match record.and_then(|carried| carried.version.clone()) {
+            match record.version.clone() {
                 Some(version) => Some(version),
                 None => return Handled::Refused(PlatformRefusal::Unavailable),
             }

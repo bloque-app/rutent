@@ -151,10 +151,12 @@ impl<'a> Asked<'a> {
                         .map(|held| json(serde_json::to_value(held)))
                         .transpose()?
                         .filter(|held| {
+                            // A final answer: done, failed, or refused for good. Not one that lifts, or says nothing.
                             matches!(
                                 held["outcome"]["status"].as_str(),
                                 Some("succeeded" | "failed")
-                            )
+                            ) || (held["outcome"]["status"] == "refused"
+                                && held["outcome"]["refusal"]["class"] == "final")
                         });
                     Ok((json(serde_json::to_value(about.operation))?, held))
                 })
@@ -717,6 +719,18 @@ mod tests {
         let failed: ResultBody = serde_json::from_value(failed).expect("a failed withdrawal");
         assert_eq!(
             sign(Some(&failed)).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // A refusal for good binds the nested result too; one that lifts doesn't.
+        let refused = |class: &str| -> ResultBody {
+            let mut body = serde_json::to_value(&nested).expect("JSON");
+            body["outcome"] = serde_json::json!({
+                "status": "refused", "refusal": { "class": class }
+            });
+            serde_json::from_value(body).expect("a refusal")
+        };
+        assert_eq!(
+            sign(Some(&refused("final"))).err(),
             Some(SigningError::NestedNotAsked)
         );
         // One that isn't final doesn't hold the provider to it.
