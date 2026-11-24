@@ -84,6 +84,46 @@ fn done(history: &History, receipt: &Receipt) -> bool {
     })
 }
 
+/// Whether the effect at `receipt` has a `failed` result in `history`: the change didn't take place.
+fn failed(history: &History, receipt: &Receipt) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(e, Entry::Verified(VerifiedEntry {
+            what: What::Result { effect },
+            outcome: Outcome::Failed {},
+            ..
+        }) if effect == receipt)
+    })
+}
+
+/// The grants and revocations `history` holds, in its order, each with its effect's time: a grant once its change is
+/// `done`, as [`dated_catalogue_changes`] reads it, and a revocation from its admitted `revoke_grant` effect until a
+/// `failed` result undoes it, so a revocation counts before its `done` result (`F-025`'s L5, finding 6 of `M3`'s
+/// milestone review, `T-020-45`).
+fn dated_grants_and_revocations(history: &History) -> impl Iterator<Item = (&Action, i128)> {
+    history.iter().filter_map(|(receipt, e)| match e {
+        Entry::Verified(VerifiedEntry {
+            what:
+                What::Effect {
+                    action:
+                        action @ Action::ChangeCatalogue {
+                            change: change @ (CatalogueChange::Grant | CatalogueChange::RevokeGrant),
+                            ..
+                        },
+                    ..
+                },
+            when,
+            ..
+        }) => {
+            let counts = match change {
+                CatalogueChange::Grant => done(history, receipt),
+                _ => !failed(history, receipt),
+            };
+            counts.then(|| (action, when.at.unix_nanos()))
+        }
+        _ => None,
+    })
+}
+
 /// Whether a segment of `module` under `transaction` began or ran on `version`, by the segment record the platform
 /// handed over (`began_on`, `runs_on`).
 fn ran_on(history: &History, module: &Id, transaction: &Id, version: &Id) -> bool {
@@ -298,14 +338,47 @@ fn signed_by_its_maker(
     )
 }
 
+/// A grant or a revocation of `maker`'s, as `revoked_before_receipt` reads it: what is granted, when, and whether it
+/// grants.
+fn granted_change<'a>(
+    maker: &Id,
+    action: &'a Action,
+    when: i128,
+) -> Option<(Granted<'a>, i128, bool)> {
+    let Action::ChangeCatalogue {
+        change,
+        provider,
+        tuple,
+        class,
+        ..
+    } = action
+    else {
+        return None;
+    };
+    let granted = match (tuple, class) {
+        (Some(tuple), None) => Granted::Tuple(tuple),
+        (None, Some(class)) => Granted::Class(class),
+        _ => return None,
+    };
+    let grant = match change {
+        CatalogueChange::Grant => true,
+        CatalogueChange::RevokeGrant => false,
+        _ => return None,
+    };
+    (provider == maker).then_some((granted, when, grant))
+}
+
 /// Whether every grant of `maker` in force at `made_at`, a statement's own time, was revoked no later than
 /// `received`, the time the log received it: the contract's rule for a statement received after its grants'
 /// revocation (item `thr3-backdated-after-revocation`, `T-020-39`, `THR-3`), which [`StatementKeys::signs_for`]
 /// answers no for, whatever the `made_at`. A grant is a tuple's or a verifier's class, read as
 /// `classes_alone` reads them: by each effect's time, of a change this log holds done, the latest at or before
-/// `made_at` in force where it is a grant. A grant made again after its revocation is a new grant, which attributes
-/// only what is made under it. False where no grant of `maker` was in force at `made_at`, which the key register's
-/// own trust refuses apart, and false while any grant in force then stands at `received`.
+/// `made_at` in force where it is a grant. A revocation counts from its admitted `revoke_grant` effect, by the
+/// effect's time, whether its result is `done` or not yet given, until a `failed` result undoes it (`T-020-45`, `F-025`'s
+/// L5): a statement received between a revocation's effect and its result is unattributed. A grant made again after
+/// its revocation is a new grant, which attributes only what is made under it. False where no grant of `maker` was in
+/// force at `made_at`, which the key register's own trust refuses apart, and false while any grant in force then
+/// stands at `received`.
 pub fn revoked_before_receipt(
     history: &History,
     maker: &Id,
@@ -313,30 +386,10 @@ pub fn revoked_before_receipt(
     received: &Timestamp,
 ) -> bool {
     let (made, received) = (made_at.unix_nanos(), received.unix_nanos());
+    // A grant takes force from its `done` change; a revocation from its effect, until a `failed` result undoes it.
     let changes = || {
-        dated_catalogue_changes(history).filter_map(|(action, when)| {
-            let Action::ChangeCatalogue {
-                change,
-                provider,
-                tuple,
-                class,
-                ..
-            } = action
-            else {
-                return None;
-            };
-            let granted = match (tuple, class) {
-                (Some(tuple), None) => Granted::Tuple(tuple),
-                (None, Some(class)) => Granted::Class(class),
-                _ => return None,
-            };
-            let grant = match change {
-                CatalogueChange::Grant => true,
-                CatalogueChange::RevokeGrant => false,
-                _ => return None,
-            };
-            (provider == maker).then_some((granted, when, grant))
-        })
+        dated_grants_and_revocations(history)
+            .filter_map(|(action, when)| granted_change(maker, action, when))
     };
     // The grants in force at the statement's making: each one's last change at or before it, by its effect's time,
     // the later in the log on a tie.
@@ -349,7 +402,7 @@ pub fn revoked_before_receipt(
         }
     }
     let mut in_force = last.iter().filter(|(.., grant)| *grant).peekable();
-    // Each of them revoked after the making and no later than the receipt.
+    // Each of them revoked after the making and no later than the receipt, from the revocation's effect.
     in_force.peek().is_some()
         && in_force.all(|(granted, ..)| {
             changes()

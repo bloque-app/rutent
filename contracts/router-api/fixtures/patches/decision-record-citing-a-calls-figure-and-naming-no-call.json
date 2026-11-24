@@ -5,6 +5,11 @@
       "op": "add",
       "path": "/statement/candidates/0/parts/0/operations/1/figures/-",
       "value": "r2-calls"
+    },
+    {
+      "op": "replace",
+      "path": "/signature/value",
+      "value": "jxuj0gOSfQqFzgA3HkEDacuZBRcJ16guhHLIT3E8eUSB-QK60PQDHoA_I1Qk_-Feawz6GxE_LvwSVsFwDvq4DQ"
     }
   ]
 }

@@ -175,6 +175,13 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 Action::PostRoute { .. } => {
                     operator_holds(caller, Permission::PostRoute).map(Needs::from)
                 }
+                // An operator's setting (`T-020-45`) has no rule until `T-021-15` gives each its permission: the
+                // fixed rule refuses it whoever asks, before the deployment's policy, as `roll_back` was until
+                // `T-021-12`.
+                Action::ChangeCatalogue {
+                    change: CatalogueChange::SetSetting,
+                    ..
+                } => None,
                 Action::ChangeCatalogue { change, .. } => {
                     operator_holds(caller, Permission::Change(*change)).map(Needs::from)
                 }

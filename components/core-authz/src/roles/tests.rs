@@ -440,6 +440,8 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             | CatalogueChange::SetSlippage
             | CatalogueChange::Promote
             | CatalogueChange::RollBack => {}
+            // An operator's setting has no rule until `T-021-15`, which lists it (`T-020-45`).
+            CatalogueChange::SetSetting => unreachable!(),
         }
         let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
         request.request = id(&format!("req-{change:?}").to_lowercase());
@@ -457,6 +459,7 @@ fn every_permission(caller: &Actor) -> Vec<(Permission, DecisionRequest)> {
             },
             statement_key: (change == CatalogueChange::AcceptModule)
                 .then(|| rutent_contracts::provider_role::PublicKey::new(ADVERTISING_KEY).unwrap()),
+            setting: None,
         };
         asked.push((Permission::Change(change), request));
     }
@@ -2022,4 +2025,28 @@ fn operator_with_the_override_permission_alone_is_refused() {
             "it never reached the deployment's policy"
         );
     }
+}
+
+/// An operator's setting (core-internal's `set_setting`, `T-020-45`) has no rule until `T-021-15` gives each setting
+/// its permission: the fixed rule refuses it whoever asks, the operator's login holding every permission there is and
+/// `Change(SetSetting)` itself included, before the deployment's policy is asked (`REQ-AUZ-1`, `REQ-AUZ-6`).
+// verifies: REQ-AUZ-1
+#[test]
+fn operator_setting_is_refused_while_no_rule_answers_it() {
+    let mut every: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    every.push(Permission::Change(CatalogueChange::SetSetting));
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every),
+    );
+    let mut request: DecisionRequest = valid!("decision-request-to-set-the-operators-fee");
+    request.caller = operator();
+    assert_eq!(policy.decide(&request).unwrap().outcome, NOT_PERMITTED);
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "it never reached the deployment's policy"
+    );
 }

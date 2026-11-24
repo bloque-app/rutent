@@ -21,9 +21,48 @@ fn distinct<T: PartialEq>(items: &[T]) -> bool {
 /// `Ok` when `items` holds at least one item and none twice, else the violation.
 fn listed<T: PartialEq>(items: &[T], rule: &'static str) -> Result<(), Violation> {
     if items.is_empty() || !distinct(items) {
-        return Err(Violation(rule));
+        broke(rule)?;
     }
     Ok(())
+}
+
+/// The refusal of `rule`, broken: `Err` unless a contract test switched the rule off on this thread
+/// (`without_rule`), so it can see that a value it reads breaks that rule alone (`T-020-45`).
+fn broke(rule: &'static str) -> Result<(), Violation> {
+    if switched_off(rule) {
+        Ok(())
+    } else {
+        Err(Violation(rule))
+    }
+}
+
+#[cfg(feature = "rule-switches")]
+std::thread_local! {
+    static OFF: core::cell::RefCell<alloc::vec::Vec<&'static str>> = const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+}
+
+#[cfg(feature = "rule-switches")]
+fn switched_off(rule: &str) -> bool {
+    OFF.with(|off| off.borrow().contains(&rule))
+}
+
+#[cfg(not(feature = "rule-switches"))]
+fn switched_off(_: &str) -> bool {
+    false
+}
+
+/// Runs `f` with the shape rule `rule`, as its refusal names it, switched off on this thread, so a contract test sees
+/// whether an invalid fixture breaks that rule alone: read with it off, the fixture is accepted exactly when no other
+/// rule refuses it (`T-020-45`, the milestone review's Low on fixtures pinned by their first refusal). Built only with
+/// the `rule-switches` feature, which the contract's own tests turn on and nothing shipped does.
+#[cfg(feature = "rule-switches")]
+pub fn without_rule<T>(rule: &'static str, f: impl FnOnce() -> T) -> T {
+    OFF.with(|off| off.borrow_mut().push(rule));
+    let out = f();
+    OFF.with(|off| {
+        off.borrow_mut().retain(|r| *r != rule);
+    });
+    out
 }
 
 impl Action {
@@ -36,13 +75,14 @@ impl Action {
             class,
             advertising_keys,
             statement_key,
+            setting,
             ..
         } = self
         {
             if change.is_about_a_release() != version.is_some() {
-                return Err(Violation(
+                broke(
                     "a catalogue change names a version exactly when it is about a module release",
-                ));
+                )?;
             }
             // A verifier's grant, and its revocation, name its class in place of a tuple (`T-020-30`).
             if class.is_some()
@@ -51,25 +91,27 @@ impl Action {
                     CatalogueChange::Grant | CatalogueChange::RevokeGrant
                 ) || tuple.is_some())
             {
-                return Err(Violation(
+                broke(
                     "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple",
-                ));
+                )?;
             }
             if change.is_about_a_tuple() != (tuple.is_some() || class.is_some()) {
-                return Err(Violation(
-                    "a catalogue change names a tuple exactly when it is about a tuple",
-                ));
+                broke("a catalogue change names a tuple exactly when it is about a tuple")?;
             }
             let grant = *change == CatalogueChange::Grant;
             if grant != !advertising_keys.is_empty() || !distinct(advertising_keys) {
-                return Err(Violation(
+                broke(
                     "a catalogue change names advertising keys, at least one, each once, exactly when it is a grant",
-                ));
+                )?;
             }
             if (*change == CatalogueChange::AcceptModule) != statement_key.is_some() {
-                return Err(Violation(
+                broke(
                     "a catalogue change names a statement key exactly when it accepts a module release",
-                ));
+                )?;
+            }
+            // An operator's setting names itself and its value, and nothing of a release or a tuple (`T-020-45`).
+            if change.is_a_setting() != setting.is_some() {
+                broke("a catalogue change names an operator's setting exactly when it sets one")?;
             }
         }
         Ok(())
@@ -81,9 +123,9 @@ impl DecisionRequest {
     /// `StuckOrders::move_stuck`, after its decide step (ADR-0011).
     pub fn check(&self) -> Result<(), Violation> {
         if matches!(self.action, Action::ResolveStuck { .. }) {
-            return Err(Violation(
+            broke(
                 "a decision request never asks to move a stuck order's value: only a stuck move does",
-            ));
+            )?;
         }
         self.action.check()
     }
@@ -100,9 +142,7 @@ impl Effect {
 /// An effect's action: one that takes effect, never a customer's acceptance of fault.
 fn effect_action(action: &Action) -> Result<(), Violation> {
     if matches!(action, Action::AcceptFault { .. }) {
-        return Err(Violation(
-            "a customer's acceptance of fault is a decision, and takes no effect",
-        ));
+        broke("a customer's acceptance of fault is a decision, and takes no effect")?;
     }
     action.check()
 }
@@ -134,7 +174,7 @@ impl SessionRequest {
     /// Checks that the session it asks for ends after it is asked for.
     pub fn check(&self) -> Result<(), Violation> {
         if self.until.unix_nanos() <= self.at.unix_nanos() {
-            return Err(Violation("a session ends after the time it is asked for"));
+            broke("a session ends after the time it is asked for")?;
         }
         Ok(())
     }
@@ -144,9 +184,7 @@ impl Charge {
     /// Checks that the work is charged to the accountable party the caller acts for (`REQ-AUZ-8`).
     pub fn check(&self) -> Result<(), Violation> {
         if self.party != self.caller.party {
-            return Err(Violation(
-                "work is charged to the accountable party its caller acts for",
-            ));
+            broke("work is charged to the accountable party its caller acts for")?;
         }
         Ok(())
     }
@@ -160,9 +198,7 @@ impl PersonQuestion {
             "a question names who it asks, at least one, each once",
         )?;
         if !distinct(&self.asked_before) {
-            return Err(Violation(
-                "a question names each provider already asked about its order once",
-            ));
+            broke("a question names each provider already asked about its order once")?;
         }
         if let Authority::ShortlistedRoute {
             providers,
@@ -175,9 +211,7 @@ impl PersonQuestion {
                 "a shortlisted route names its providers, at least one, each once",
             )?;
             if !distinct(verifiers) {
-                return Err(Violation(
-                    "a shortlisted route names each verifier its tuples need once",
-                ));
+                broke("a shortlisted route names each verifier its tuples need once")?;
             }
             // The verifiers that receive the subject are asked too, and recorded and bounded with the providers
             // (`REQ-CPL-5`); anyone else is off the route.
@@ -186,9 +220,9 @@ impl PersonQuestion {
                 .iter()
                 .all(|p| providers.contains(p) || verifiers.contains(p))
             {
-                return Err(Violation(
+                broke(
                     "a question on a shortlisted route asks only the shortlisted providers and the verifiers its tuples need",
-                ));
+                )?;
             }
         }
         Ok(())
@@ -200,14 +234,10 @@ impl PermissionChange {
     /// (`REQ-AUZ-7`).
     pub fn check(&self) -> Result<(), Violation> {
         if !matches!(self.grantee.role, Role::Regulator | Role::Checker) {
-            return Err(Violation(
-                "a read permission is a regulator's or a checker's",
-            ));
+            broke("a read permission is a regulator's or a checker's")?;
         }
         if self.by.role != Role::Operator {
-            return Err(Violation(
-                "a read permission is granted or revoked by the operator",
-            ));
+            broke("a read permission is granted or revoked by the operator")?;
         }
         Ok(())
     }
@@ -219,26 +249,18 @@ impl ReportPair {
     /// it states (`REQ-CAT-11`), so the comparison can take the charge off it.
     pub fn check(&self) -> Result<(), Violation> {
         if self.sent.party == self.received.party {
-            return Err(Violation(
-                "a segment's two reports are by two different parties",
-            ));
+            broke("a segment's two reports are by two different parties")?;
         }
         if self.segment != self.sent.segment {
-            return Err(Violation(
-                "a report pair's segment is the one its sent report is about",
-            ));
+            broke("a report pair's segment is the one its sent report is about")?;
         }
         if self.sent.segment == self.received.segment {
-            return Err(Violation(
-                "a report pair's received report is about another segment than its sent report",
-            ));
+            broke("a report pair's received report is about another segment than its sent report")?;
         }
         if let ReportedAs::Gross { charge } = &self.terms.reporting
             && self.sent.amount.checked_sub(charge).is_none()
         {
-            return Err(Violation(
-                "a gross report's charge is no more than the amount sent",
-            ));
+            broke("a gross report's charge is no more than the amount sent")?;
         }
         Ok(())
     }
@@ -249,7 +271,7 @@ impl HoldingReading {
     pub fn check(&self) -> Result<(), Violation> {
         let orders: alloc::vec::Vec<_> = self.held_for.iter().map(|h| &h.order).collect();
         if !distinct(&orders) {
-            return Err(Violation("a holding account reading names each order once"));
+            broke("a holding account reading names each order once")?;
         }
         Ok(())
     }
@@ -275,26 +297,23 @@ impl HandedOver {
                 moves,
                 ..
             } => {
-                let broken = Violation(
-                    "a segment record's moves lead from the version it began on to the one it runs on",
-                );
+                let broken = "a segment record's moves lead from the version it began on to the one it runs on";
                 let mut at = began_on;
+                let mut led = true;
                 for step in moves {
                     if &step.from != at || step.from == step.to {
-                        return Err(broken);
+                        led = false;
                     }
                     at = &step.to;
                 }
-                if at != runs_on {
-                    return Err(broken);
+                if !led || at != runs_on {
+                    broke(broken)?;
                 }
             }
             HandedOver::SecretUse { operation, of, .. } => {
                 let for_a_secret = matches!(of, UseOf::Secret { .. });
                 if for_a_secret != operation.is_some() {
-                    return Err(Violation(
-                        "a proxy use names its operation exactly when it asked for a secret",
-                    ));
+                    broke("a proxy use names its operation exactly when it asked for a secret")?;
                 }
             }
             _ => {}
@@ -319,9 +338,9 @@ impl Raise {
             && (word.is_some() != (*reason != HoldingIncomparable::NoReading)
                 || asset.is_some() != (*reason != HoldingIncomparable::NoReading))
         {
-            return Err(Violation(
+            broke(
                 "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
-            ));
+            )?;
         }
         if let Difference::Charge {
             no_formula: Some(_),
@@ -330,9 +349,7 @@ impl Raise {
         } = &self.difference
             && maximum.as_str() != "0"
         {
-            return Err(Violation(
-                "a charge marked as having no formula names a maximum of nothing",
-            ));
+            broke("a charge marked as having no formula names a maximum of nothing")?;
         }
         let same = match &self.difference {
             Difference::Reports { sent, received, .. } => sent == received,
@@ -355,9 +372,9 @@ impl Raise {
             } => !found.differs(moved, stated),
         };
         if same {
-            return Err(Violation(
+            broke(
                 "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
-            ));
+            )?;
         }
         Ok(())
     }
@@ -415,7 +432,9 @@ impl What {
             | What::InputNotTaken { .. }
             | What::NoticeSummary { .. }
             | What::PublicMismatch { .. }
-            | What::PartEvidence { .. } => matches!(outcome, Outcome::Observed {}),
+            | What::PartEvidence { .. }
+            | What::WaitEnded { .. }
+            | What::OrderOpened { .. } => matches!(outcome, Outcome::Observed {}),
         }
     }
 
@@ -434,12 +453,12 @@ impl What {
             What::Raise { raise } => raise.check(),
             What::Input { input } => input
                 .check()
-                .map_err(|_| Violation("a recorded input breaks the state-machine contract")),
+                .or_else(|_| broke("a recorded input breaks the state-machine contract")),
             What::HoldingCheck { orders, .. } => {
                 if distinct(orders) {
                     Ok(())
                 } else {
-                    Err(Violation("a holding check names each order once"))
+                    broke("a holding check names each order once")
                 }
             }
             What::GrantPermission { change, .. } | What::RevokePermission { change, .. } => {
@@ -456,25 +475,23 @@ impl What {
                 // automatic deposit: it rests on the deposit's arrival.
                 if *basis == AcceptanceBasis::GivenOnDeposit {
                     if !yeses.is_empty() || session.is_none() {
-                        return Err(Violation(
+                        broke(
                             "an acceptance given on a deposit names the session it was asked in and no reserve's yes",
-                        ));
+                        )?;
                     }
                 } else if given != !yeses.is_empty() || given != session.is_some() {
-                    return Err(Violation(
+                    broke(
                         "an acceptance given names the reserve's yes and the session it was asked in, and an automatic deposit neither",
-                    ));
+                    )?;
                 }
                 let parts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.part).collect();
                 if !distinct(&parts) {
-                    return Err(Violation("an acceptance names each part's yes once"));
+                    broke("an acceptance names each part's yes once")?;
                 }
                 // Each part rests on a yes of its own: two parts never cite one receipt.
                 let receipts: alloc::vec::Vec<_> = yeses.iter().map(|y| &y.reserve_yes).collect();
                 if !distinct(&receipts) {
-                    return Err(Violation(
-                        "an acceptance cites a yes of its own for each part",
-                    ));
+                    broke("an acceptance cites a yes of its own for each part")?;
                 }
                 Ok(())
             }
@@ -483,24 +500,22 @@ impl What {
             } if !distinct(verifiers)
                 || (*round == RoutingRound::Choice && !verifiers.is_empty()) =>
             {
-                Err(Violation(
+                broke(
                     "a decision record names the verifiers its tuples need only on a shortlist's, each once",
-                ))
+                )
             }
             What::DecisionRecord {
                 round, shortlisted, ..
             } => match (round, shortlisted) {
                 // A shortlist may keep no provider: its record is what a `no_route` input cites (`REQ-AUD-4`).
-                (RoutingRound::Shortlist, Some(providers)) if !distinct(providers) => {
-                    Err(Violation(
-                        "a shortlist's decision record names its providers, each once, and none where it kept none",
-                    ))
-                }
+                (RoutingRound::Shortlist, Some(providers)) if !distinct(providers) => broke(
+                    "a shortlist's decision record names its providers, each once, and none where it kept none",
+                ),
                 (RoutingRound::Shortlist, Some(_)) => Ok(()),
                 (RoutingRound::Choice, None) => Ok(()),
-                _ => Err(Violation(
+                _ => broke(
                     "a decision record names shortlisted providers exactly when it is a shortlist's",
-                )),
+                ),
             },
             What::Evidence { rests_on, .. } => listed(
                 rests_on,
@@ -519,25 +534,21 @@ impl What {
                 ..
             } => {
                 if node.network != movement.network.as_str() {
-                    return Err(Violation(
-                        "a public end's mismatch is at the network its movement is on",
-                    ));
+                    broke("a public end's mismatch is at the network its movement is on")?;
                 }
                 if found.differs(moved, stated) {
                     Ok(())
                 } else {
-                    Err(Violation(
+                    broke(
                         "a public end's mismatch names a figure the network and the provider differ on",
-                    ))
+                    )
                 }
             }
             What::Arrival {
                 order: Some(_),
                 notice: None,
                 ..
-            } => Err(Violation(
-                "an arrival naming an order names the notice of the deposit it is of",
-            )),
+            } => broke("an arrival naming an order names the notice of the deposit it is of"),
             What::Replay {
                 nodes,
                 found,
@@ -559,9 +570,9 @@ impl What {
                     _ => 0,
                 };
                 if rests_on.len() > 1 + nodes.len().saturating_sub(silent) {
-                    return Err(Violation(
+                    broke(
                         "a replay names at most one record for each node it replayed that recorded something",
-                    ));
+                    )?;
                 }
                 match found {
                     ReplayFound::Mismatch { mismatches } => {
@@ -572,9 +583,7 @@ impl What {
                         if mismatches.iter().all(|m| nodes.contains(&m.node)) {
                             Ok(())
                         } else {
-                            Err(Violation(
-                                "a replay's mismatch is against a node it replayed",
-                            ))
+                            broke("a replay's mismatch is against a node it replayed")
                         }
                     }
                     ReplayFound::NothingRecorded { nodes: silent } => {
@@ -585,9 +594,7 @@ impl What {
                         if silent.iter().all(|n| nodes.contains(n)) {
                             Ok(())
                         } else {
-                            Err(Violation(
-                                "a replay's node that recorded nothing is one it replayed",
-                            ))
+                            broke("a replay's node that recorded nothing is one it replayed")
                         }
                     }
                     ReplayFound::ConsistentWithTheExit {} => Ok(()),
@@ -608,15 +615,13 @@ impl What {
                     (shown_as, slow),
                     (ShownAs::QuoteWithoutFirmRate, true) | (ShownAs::Quote, false)
                 ) {
-                    return Err(Violation(
+                    broke(
                         "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
-                    ));
+                    )?;
                 }
                 let places: alloc::vec::Vec<_> = awaiting.slow.iter().map(|s| s.position).collect();
                 if !distinct(&places) {
-                    return Err(Violation(
-                        "a quote awaiting its customer names its slow segments, each once",
-                    ));
+                    broke("a quote awaiting its customer names its slow segments, each once")?;
                 }
                 Ok(())
             }
@@ -640,7 +645,9 @@ impl What {
             | What::DeclineOutcome { .. }
             | What::NoticeSummary { .. }
             | What::HoldingWithdrawal { .. }
-            | What::InputNotTaken { .. } => Ok(()),
+            | What::InputNotTaken { .. }
+            | What::WaitEnded { .. }
+            | What::OrderOpened { .. } => Ok(()),
             What::ReversalCarrier {
                 carrier,
                 showing,
@@ -657,9 +664,9 @@ impl What {
                     Carrier::Customer | Carrier::Operator => accepted,
                 };
                 if !shaped {
-                    return Err(Violation(
+                    broke(
                         "a reversal's carrier other than its provider rests on a showing and an act of acceptance, and the provider on neither",
-                    ));
+                    )?;
                 }
                 Ok(())
             }
@@ -672,35 +679,36 @@ impl VerifiedEntry {
     pub fn check(&self) -> Result<(), Violation> {
         self.what.check()?;
         if !self.what.allows(&self.outcome) {
-            return Err(Violation("an entry's outcome is one its call can have"));
+            broke("an entry's outcome is one its call can have")?;
         }
         if let What::Charge { counted_at, .. } = &self.what
             && counted_at.is_some() != (self.outcome == (Outcome::Permitted {}))
         {
-            return Err(Violation(
+            broke(
                 "a charge says when its engine counted it exactly where it was counted, permitted within its bound",
-            ));
+            )?;
         }
         if let What::CheckRead { check } = &self.what
             && self.outcome == (Outcome::Permitted {})
             && matches!(check.reader.role, Role::Regulator | Role::Checker)
             && check.permission.is_none()
         {
-            return Err(Violation(
-                "a regulator's or a checker's permitted read names its permission",
-            ));
+            broke("a regulator's or a checker's permitted read names its permission")?;
         }
         if let What::CheckRead { check } = &self.what
             && self.outcome == (Outcome::Permitted {})
         {
             let broad = matches!(
                 check.reads,
-                Reads::Trail {} | Reads::Order { .. } | Reads::OrderState { .. }
+                Reads::Trail {}
+                    | Reads::Order { .. }
+                    | Reads::OrderState { .. }
+                    | Reads::FiledOrder { .. }
             );
             if check.reader.role == Role::Provider && broad {
-                return Err(Violation(
+                broke(
                     "a provider's permitted read is of a segment, never an order, its state or the trail",
-                ));
+                )?;
             }
             // The operator reads an order's state and age without a permission (`REQ-ORD-5`), and its own
             // evidence; anything else it reads rests on a permission.
@@ -708,32 +716,28 @@ impl VerifiedEntry {
                 && check.permission.is_none()
                 && !matches!(
                     check.reads,
-                    Reads::OrderState { .. } | Reads::Evidence { .. }
+                    Reads::OrderState { .. } | Reads::FiledOrder { .. } | Reads::Evidence { .. }
                 )
             {
-                return Err(Violation(
-                    "an operator's permitted read without a permission is of an order's state or its own evidence",
-                ));
+                broke(
+                    "an operator's permitted read without a permission is of an order's state, a filed order's or its own evidence",
+                )?;
             }
             if check.reader.role == Role::Customer && matches!(check.reads, Reads::Trail {}) {
-                return Err(Violation(
-                    "a customer's permitted read is of its own orders, never the trail",
-                ));
+                broke("a customer's permitted read is of its own orders, never the trail")?;
             }
         }
         if let What::OpenSession { request, opened } = &self.what {
             let permitted = matches!(self.outcome, Outcome::Permitted {});
             if permitted != opened.is_some() {
-                return Err(Violation(
-                    "a session entry names the session exactly when it was opened",
-                ));
+                broke("a session entry names the session exactly when it was opened")?;
             }
             if let Some(opened) = opened {
                 let ends = opened.expires_at.unix_nanos();
                 if ends <= request.at.unix_nanos() || ends > request.until.unix_nanos() {
-                    return Err(Violation(
+                    broke(
                         "an opened session ends after it was asked for and no later than its until",
-                    ));
+                    )?;
                 }
             }
         }
@@ -749,9 +753,7 @@ impl About {
             && self.transaction.is_none()
             && self.node.is_none()
         {
-            return Err(Violation(
-                "a stated entry's about names an order, a segment, a transaction or a node",
-            ));
+            broke("a stated entry's about names an order, a segment, a transaction or a node")?;
         }
         Ok(())
     }
@@ -780,9 +782,9 @@ impl StatedEntry {
                     || about.segment.is_some()
                     || about.transaction.is_some())
             {
-                return Err(Violation(
+                broke(
                     "a stated entry names a node only as a publisher's record of the segments inside it, about no segment or transaction",
-                ));
+                )?;
             }
         }
         // The relay is another actor than the maker; a sibling under the same publisher may relay its statement.
@@ -792,9 +794,7 @@ impl StatedEntry {
             .as_ref()
             .is_some_and(|relay| &relay.acts == maker)
         {
-            return Err(Violation(
-                "a stated entry's relay is a party other than its maker",
-            ));
+            broke("a stated entry's relay is a party other than its maker")?;
         }
         Ok(())
     }

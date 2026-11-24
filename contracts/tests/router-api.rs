@@ -574,7 +574,7 @@ const RUST_RULES: [(&str, &str); 135] = [
 
 /// Invalid fixtures the schemas reject, each with the exact (instance location, keyword) pairs of the one rule it
 /// breaks, without repeats.
-const SCHEMA_RULES: [(&str, &[(&str, &str)]); 81] = [
+const SCHEMA_RULES: [(&str, &[(&str, &str)]); 83] = [
     ("policy-bounds-without-operator-fee", &[("", "required")]),
     ("policy-bounds-without-slippage-limits", &[("", "required")]),
     (
@@ -599,6 +599,14 @@ const SCHEMA_RULES: [(&str, &[(&str, &str)]); 81] = [
     (
         "operation-naming-a-call-for-a-holding-balance",
         &[("/calls/0/kind", "not")],
+    ),
+    (
+        "operation-naming-a-call-for-a-status-question",
+        &[("/calls/0/kind", "not")],
+    ),
+    (
+        "catalogue-snapshot-calls-figure-asking-for-a-hold",
+        &[("/figures/37/value/calls/0/kinds/1", "not")],
     ),
     (
         "catalogue-snapshot-calls-figure-from-the-operator",

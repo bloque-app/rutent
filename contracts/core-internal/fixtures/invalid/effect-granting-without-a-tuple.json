@@ -2,7 +2,10 @@
   "action": {
     "kind": "change_catalogue",
     "change": "grant",
-    "provider": "fx-desk"
+    "provider": "fx-desk",
+    "advertising_keys": [
+      "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    ]
   },
   "decision": {
     "request": "req-100",

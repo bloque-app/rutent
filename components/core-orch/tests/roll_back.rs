@@ -163,6 +163,7 @@ fn change(kind: CatalogueChange, version: &str) -> Action {
         class: None,
         advertising_keys: Vec::new(),
         statement_key: None,
+        setting: None,
     }
 }
 
@@ -176,6 +177,7 @@ fn unversioned() -> Action {
         class: None,
         advertising_keys: Vec::new(),
         statement_key: None,
+        setting: None,
     }
 }
 

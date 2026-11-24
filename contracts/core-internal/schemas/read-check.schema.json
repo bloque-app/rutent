@@ -47,7 +47,8 @@
             "segment",
             "trail",
             "resource",
-            "evidence"
+            "evidence",
+            "filed_order"
           ]
         }
       },
@@ -140,6 +141,21 @@
           },
           "then": {
             "$ref": "#/$defs/reads_evidence"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "filed_order"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/reads_filed_order"
           }
         }
       ]
@@ -250,6 +266,28 @@
         "resource": {
           "description": "The resource, by name.",
           "$ref": "urn:rutent:core-internal:common#/$defs/token"
+        }
+      }
+    },
+    "reads_filed_order": {
+      "description": "The status of an order whose parties the log doesn't hold yet, its acceptance not logged, named by its filed request's requester (REQ-AUZ-8, REQ-AUZ-7, T-020-45).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "requester"
+      ],
+      "properties": {
+        "kind": {
+          "const": "filed_order"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "requester": {
+          "description": "The party that filed the request: the order's requester, which policy holds an agent's party to (REQ-AUZ-8, T-021-16).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     }

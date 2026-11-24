@@ -220,7 +220,12 @@ impl Catalogue {
         canonicalize(received).map_err(JoinRefusal::NoSigningInput)?;
         statement.check_shape().map_err(JoinRefusal::WrongShape)?;
         statement
-            .check_context(&deployment, &protocol_version)
+            // One version in force, the catalogue's, so the time isn't read (provider-role 4.0.0).
+            .check_context(
+                &deployment,
+                &rutent_contracts::provider_role::ProtocolVersions::only(protocol_version.as_str()),
+                &statement.made_at,
+            )
             .map_err(JoinRefusal::WrongContext)?;
         let ad = &statement.statement;
         if ad.declarations.tracking.is_empty() {

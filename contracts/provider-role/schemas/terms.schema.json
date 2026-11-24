@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:terms",
   "title": "Terms",
-  "description": "A provider's own signed terms for one of its tuples (REQ-QTE-5, REQ-QTE-6): the tuple, by its provider and both ends, its fee formula, and, where the tuple sets a rate, its slippage regime. Its maker is the tuple's provider. Core keeps it and appends it as a stated entry; it binds from the later of its made_at and Core's received_at, never made_at alone, so terms dated before a segment started but received after it never bind that segment. That the maker is the tuple's provider, and the slippage regime present exactly where the tuple's ends hold different assets, are checked by the contract's Rust (check_terms).",
+  "description": "A provider's own signed terms for one of its tuples (REQ-QTE-5, REQ-QTE-6): the tuple, by its provider and both ends, its fee formula, and, where the tuple sets a rate, its slippage regime. Its maker is the tuple's provider. It binds from the later of its made_at and the time its reader received it, never made_at alone, so terms dated before a segment started but received after it never bind that segment. That the maker is the tuple's provider, and the slippage regime present exactly where the tuple's ends hold different assets, are checked by the contract's Rust (check_terms). A provider may hand it back in a dry-run answer's terms (4.0.0).",
   "$ref": "urn:rutent:provider-role:statement-envelope",
   "properties": {
     "shape": {

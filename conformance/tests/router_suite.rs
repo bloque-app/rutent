@@ -754,3 +754,45 @@ fn a_router_that_drops_a_batching_route_only_when_it_shortlists_fails_the_choice
         routed_case::<Reference<BATCHING_DROPPED_ONLY_WHEN_SHORTLISTING>>("policy-shortlist");
     assert!(recompute(&shortlist).passes());
 }
+
+/// The six decision-record fixtures that name the router's version carry real signatures over their current text, by
+/// the key their envelope names (the milestone review's Low on stale signatures, `T-020-45`): `rutent-core`'s
+/// statements key, as the suites derive it. The other fixtures' signatures are the contracts' placeholders.
+// verifies: DEC-4
+#[test]
+fn decision_record_fixtures_naming_the_routers_version_carry_signatures_that_verify() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/router-api/fixtures");
+    let mut signed = 0;
+    for kind in ["valid", "invalid"] {
+        for entry in std::fs::read_dir(dir.join(kind)).expect("the fixtures") {
+            let path = entry.expect("an entry").path();
+            let bytes = std::fs::read(&path).expect("a fixture");
+            let value: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            if value
+                .pointer("/statement/router_version")
+                .and_then(|v| v.as_str())
+                != Some("rutent-router-0.6.0")
+            {
+                continue;
+            }
+            assert_eq!(
+                rutent_conformance::signing::verify(&bytes),
+                Ok(()),
+                "{}",
+                path.display()
+            );
+            let key = rutent_conformance::signing::public_key(
+                &rutent_conformance::signing::statements_key("rutent-core"),
+            );
+            assert_eq!(
+                value["signature"]["key"],
+                key.as_str(),
+                "{}",
+                path.display()
+            );
+            signed += 1;
+        }
+    }
+    assert_eq!(signed, 6);
+}

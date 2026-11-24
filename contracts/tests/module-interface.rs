@@ -19,7 +19,7 @@ use serde_json::Value;
 
 /// Every schema the contract's shapes reach, by contract and name; each is registered by its `$id`,
 /// `urn:rutent:<contract>:<name>`. The provider-role schemas are referred to, never copied.
-const SCHEMAS: [(&str, &str); 19] = [
+const SCHEMAS: [(&str, &str); 21] = [
     ("module-interface", "common"),
     ("module-interface", "declaration"),
     ("module-interface", "outside-request"),
@@ -39,6 +39,8 @@ const SCHEMAS: [(&str, &str); 19] = [
     ("provider-role", "judgement"),
     ("provider-role", "result"),
     ("provider-role", "reversal-confirmation"),
+    ("provider-role", "terms"),
+    ("provider-role", "hold"),
 ];
 
 /// The shapes fixtures are written in. A fixture's shape is the longest of these its file name starts with,
@@ -473,6 +475,14 @@ fn rust_rule_fixtures() -> Vec<(&'static str, String)> {
             one(RuleViolation::DeclaredCallOfHoldingBalance { call: 0 }),
         ),
         (
+            "declaration-call-of-status-query",
+            one(RuleViolation::DeclaredCallOfAnOperatorsQuestion { call: 0 }),
+        ),
+        (
+            "declaration-call-of-hold",
+            one(RuleViolation::DeclaredCallOfAnOperatorsQuestion { call: 0 }),
+        ),
+        (
             "declaration-call-declared-twice",
             one(RuleViolation::DeclaredTwice {
                 list: DeclaredList::Calls,
@@ -827,7 +837,11 @@ fn signed_result_members_hold(bundle: &SignedResult) -> Result<(), String> {
     // `validate_statement_key`'s, so a caller can't skip it.
     bundle
         .result
-        .check_context(&bundle.result.deployment, &bundle.result.protocol_version)
+        .check_context(
+            &bundle.result.deployment,
+            &provider_role::ProtocolVersions::only(bundle.result.protocol_version.clone()),
+            &bundle.result.made_at,
+        )
         .map_err(|e| format!("result: {e:?}"))
 }
 

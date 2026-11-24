@@ -740,6 +740,10 @@ impl Run {
                 // the order, and names that one, so a checker reads one deposit, not two
                 // (`arrival-names-its-earlier-arrival`).
                 earlier: Some(self.arrival.receipt.clone()),
+                // The account's holder, the filing's requester: whom a quote the order waits on its customer to accept
+                // waits for, which the log holds the waiting quote to (`waiting-quote-is-for-its-arrivals-holder`,
+                // `T-020-45`).
+                holder: Some(self.arrival.holder.clone()),
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

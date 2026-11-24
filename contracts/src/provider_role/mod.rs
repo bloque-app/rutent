@@ -9,11 +9,14 @@
 //! accepted one lists for `advertising`. Every key is a [`PublicKey`], compared by its decoded bytes.
 //! [`check_amounts`] ties a result's amounts to the operation it answers and names the segment's [`Remainder`].
 //! A provider's signed terms ([`TupleTerms`], [`check_terms`]) and a reserve's signed hold ([`Hold`],
-//! [`check_redemption`]) are statements of their own (3.1.0), and so is a reserve's notice of value arriving
+//! [`check_redemption`]) are statements of their own (3.1.0, folded into 4.0.0), handed back in a dry-run answer's `terms` and
+//! a hold request's answer (4.0.0), and so is a reserve's notice of value arriving
 //! ([`ArrivalNotice`], [`check_one_credit`]), and the operator's question of what arrived and the reserve's answer
 //! ([`ArrivalQuestion`], [`ArrivalAnswer`], [`check_answer`]). A publisher's record of the segments inside its
 //! private node ([`InnerSegments`], [`check_inner_segments`]) is labelled its publisher's word
-//! ([`Standing::PublishersWord`]).
+//! ([`Standing::PublishersWord`]). A status question ([`StatusQuery`], [`check_status_answer`]) and a hold request
+//! ([`HoldRequest`], [`check_hold_answer`]) are operations of their own (4.0.0), and a reader takes statements under
+//! the protocol versions in force ([`ProtocolVersions`], [`Statement::check_context`]).
 //! `contracts/provider-role/README.md` lists which rule lives where, and what the catalogue must hold.
 
 mod arrival;
@@ -30,13 +33,14 @@ mod validate;
 pub use arrival::{
     ARRIVAL_ANSWER_SHAPE, ARRIVAL_NOTICE_SHAPE, ARRIVAL_QUESTION_SHAPE, AnswerMismatch,
     ArrivalAnswer, ArrivalNotice, ArrivalOutcome, ArrivalQuestion, ArrivedCredits, CreditRestated,
-    Credits, check_answer, check_one_credit,
+    Credits, DepositDestination, check_answer, check_one_credit,
 };
 pub use canonical::{CanonicalError, canonicalize, member, signing_input, to_canonical};
 pub use envelope::{
-    ADVERTISEMENT_SHAPE, ContextMismatch, Deployment, JUDGEMENT_SHAPE, NotSignedByOperator,
-    OPERATION_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature,
-    SignatureScheme, Statement, StatementShape,
+    ADVERTISEMENT_SHAPE, ContextMismatch, Cutover, Deployment, JUDGEMENT_SHAPE,
+    NotSignedByOperator, OPERATION_SHAPE, ProtocolVersions, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Signature, SignatureScheme, Statement,
+    StatementShape,
 };
 pub use inner::{
     INNER_SEGMENTS_SHAPE, InnerSegment, InnerSegments, InnerSegmentsViolation, Standing,
@@ -56,4 +60,4 @@ pub use types::*;
 pub use validate::{RuleViolation, validate, validate_statement, validate_successor};
 
 /// The contract's version: the first heading of `contracts/provider-role/CHANGELOG.md`.
-pub const VERSION: &str = "3.1.0";
+pub const VERSION: &str = "4.0.0";

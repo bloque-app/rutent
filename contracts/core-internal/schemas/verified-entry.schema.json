@@ -145,7 +145,9 @@
             "decline_outcome",
             "notice_summary",
             "public_mismatch",
-            "part_evidence"
+            "part_evidence",
+            "wait_ended",
+            "order_opened"
           ]
         }
       },
@@ -793,6 +795,36 @@
           },
           "then": {
             "$ref": "#/$defs/what_part_evidence"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "wait_ended"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_wait_ended"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "call"
+            ],
+            "properties": {
+              "call": {
+                "const": "order_opened"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/what_order_opened"
           }
         }
       ]
@@ -1449,6 +1481,10 @@
         "earlier": {
           "description": "The receipt of the earlier arrival of the same deposit this one holds against an order: the deposit as it was first recorded, against no order, or an earlier filing of it, so a checker sees one deposit, not several (arrival-names-its-earlier-arrival, REQ-ORD-23). Absent on a deposit's first arrival.",
           "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "holder": {
+          "description": "The party that holds the account the value reached, as the reserve's notice names it: whom a quote its order waits on its customer to accept waits for (waiting-quote-is-for-its-arrivals-holder, T-020-45).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       },
       "allOf": [
@@ -2757,7 +2793,7 @@
       }
     },
     "notice_of": {
-      "description": "What a notice was of: a change of an order, at its sequence, a raise, or an order waiting for its customer, by the quote's digest.",
+      "description": "What a notice was of: a change of an order, at its sequence, a raise, or an order waiting for its customer, by the quote's digest, or the end of an order's wait (T-023-04).",
       "type": "object",
       "required": [
         "kind"
@@ -2767,7 +2803,8 @@
           "enum": [
             "order",
             "raise",
-            "waiting"
+            "waiting",
+            "wait_ended"
           ]
         }
       },
@@ -2815,6 +2852,21 @@
           },
           "then": {
             "$ref": "#/$defs/notice_of_waiting"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "wait_ended"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/notice_of_wait_ended"
           }
         }
       ]
@@ -2971,6 +3023,99 @@
           "items": {
             "$ref": "urn:rutent:core-internal:receipt"
           }
+        }
+      }
+    },
+    "what_wait_ended": {
+      "description": "The end of an order's wait for its customer's acceptance, unaccepted (T-020-45, T-020-51): once logged the order takes no acceptance, and its deposit is free for another order (one-order-per-deposit, GUA-1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "why"
+      ],
+      "properties": {
+        "call": {
+          "const": "wait_ended"
+        },
+        "order": {
+          "description": "The order whose wait ended.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "description": "Why it ended: past its own lifetime (T-020-51), the session the customer could accept in over, or the order refused while it waited.",
+          "enum": [
+            "past_its_lifetime",
+            "session_over",
+            "order_refused"
+          ]
+        }
+      }
+    },
+    "what_order_opened": {
+      "description": "An order as intake opened it, before any acceptance (T-020-45, for T-020-46's rebuild on reopening). The tuples' inputs are not here: they may carry accounts, so they stay out of the log (REQ-AUD-6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call",
+        "order",
+        "request",
+        "caller",
+        "parties",
+        "origin_reserve",
+        "session",
+        "destination",
+        "route"
+      ],
+      "properties": {
+        "call": {
+          "const": "order_opened"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "request": {
+          "description": "The request identifier it was opened under (REQ-ORD-19).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "caller": {
+          "description": "Who asked: the requester's person or agent, in the customer's role.",
+          "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+        },
+        "parties": {
+          "$ref": "#/$defs/parties"
+        },
+        "origin_reserve": {
+          "description": "The reserve the value leaves from.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "session": {
+          "description": "The user's session at the origin reserve (REQ-ORD-32).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "destination": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/destination"
+        },
+        "route": {
+          "description": "The route asked for, as the router's request names it.",
+          "$ref": "urn:rutent:router-api:request"
+        }
+      }
+    },
+    "notice_of_wait_ended": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order"
+      ],
+      "properties": {
+        "kind": {
+          "const": "wait_ended"
+        },
+        "order": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     }

@@ -635,6 +635,8 @@ fn kind(entry: &Entry) -> &'static str {
         What::NoticeSummary { .. } => "notice_summary",
         What::PublicMismatch { .. } => "public_mismatch",
         What::PartEvidence { .. } => "part_evidence",
+        What::WaitEnded { .. } => "wait_ended",
+        What::OrderOpened { .. } => "order_opened",
     }
 }
 

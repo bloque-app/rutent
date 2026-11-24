@@ -159,6 +159,16 @@ fn key_of(to: &NoticeReceiver, of: &NoticeOf) -> Key {
             order: order.as_str().to_owned(),
             quote: serde_json::to_string(quote).ok(),
         },
+        // The end of a wait (`T-020-45`), keyed as the module keys a `wait_ended` notice it sends: the wait's key with
+        // no quote. Nothing appends one yet: `T-023-04` does.
+        NoticeOf::WaitEnded { order } => Key::Waiting {
+            to: Receiver {
+                party: to.party.clone(),
+                role: to.role,
+            },
+            order: order.as_str().to_owned(),
+            quote: None,
+        },
     }
 }
 

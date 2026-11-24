@@ -279,6 +279,9 @@ fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
     let permitted = c.permission.is_some();
     let needs = match (c.reader.role, &c.reads) {
         (Role::Regulator | Role::Checker, _) if !permitted => return None,
+        // A filed order's status (`T-020-45`) has no rule until `T-021-16` answers it from the agent's scope and the
+        // filed request's requester: refused whoever reads.
+        (_, Read::FiledOrder { .. }) => return None,
         (Role::Customer, Read::Trail {})
         | (Role::Provider, Read::Trail {} | Read::Order { .. } | Read::OrderState { .. }) => {
             return None;

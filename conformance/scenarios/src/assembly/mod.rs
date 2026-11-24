@@ -1142,6 +1142,7 @@ impl Core {
                 class,
                 advertising_keys: vec![key.clone()],
                 statement_key: None,
+                setting: None,
             };
             let request = DecisionRequest {
                 request: self.fresh.id(),
@@ -2274,6 +2275,7 @@ mod tests {
             class: None,
             advertising_keys: Vec::new(),
             statement_key: None,
+            setting: None,
         };
         let request = DecisionRequest {
             request: core.fresh.id(),

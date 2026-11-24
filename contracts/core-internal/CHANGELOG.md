@@ -1,6 +1,34 @@
 # core-internal changelog
 
 ## 1.0.0
+- The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
+  while `develop` holds none of it:
+  - `F-025`'s L7: row `automatic-deposit-takes-a-firm-quote`, an `automatic_deposit` acceptance's quote is no `shown`
+    without a firm rate or awaiting its customer.
+  - R-AWAITING: `arrival.holder` (optional), and row `waiting-quote-is-for-its-arrivals-holder`, a `shown` with
+    `awaiting` waits for the holder of its order's arrival. Its slow places stay orchestration's: the log holds the
+    quote by digest alone (a gap in `F-020`'s notes).
+  - `F-025`'s L5: `revoked_before_receipt` counts a revocation from its admitted `revoke_grant` effect until a `failed`
+    result undoes it.
+  - Finding 8: `wait_ended {order, why: WaitEnd}`, rows `wait-ends-a-wait` and `ended-wait-takes-no-acceptance`, and
+    `one-order-per-deposit` freeing a deposit whose order's wait ended unaccepted (`GUA-1`); `NoticeOf::WaitEnded`, so a
+    restart sends the notice once (`T-023-04`).
+  - Finding 4 and `M2`'s item 6: `CatalogueChange::SetSetting` (`set_setting`) with `Action::ChangeCatalogue.setting`
+    (`OperatorSetting`, `SettingKind`); the five lifecycle actions were already changes of their own
+    (`LIFECYCLE_ACTIONS`, `is_a_lifecycle_action`).
+  - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
+  - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
+    (`T-020-46`).
+  - The review's Lows: the README's citation table names every admission fixture that exists and none that doesn't; a
+    fixture for the rule that a verifier's `class` is named only by a grant or its revocation
+    (`decision-request-to-set-slippage-naming-a-verifiers-class`); each Rust-only invalid fixture is read with its rule
+    switched off (`without_rule`, feature `rule-switches`) and must then be accepted, which found two fixtures breaking
+    a second rule (`effect-granting-without-a-tuple`, now naming its advertising keys) and four named by a prefix of
+    their rule (the raises', now named whole); the log's handling of provider-role's statements, which provider-role's
+    README no longer says, is here.
+
+  Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
+  row and field. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

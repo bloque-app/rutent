@@ -75,3 +75,12 @@ directory (see `README.md`).
   Each contract's changelog names the changes. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-39)
 - core-internal's quote awaiting its customer (`T-020-41`): `shown` gains an optional `awaiting` and a notice's summary may be of a waiting order (`NoticeOf::Waiting`), folded into its
   unreleased 1.0.0. Its changelog names the change. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-41)
+- The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`): provider-role's unreleased 3.1.0 becomes
+  4.0.0 (finding 9), with the protocol versions in force and their cutover dates in `check_context`, a status question
+  and a hold request of their own, terms handed back with a result and an arrival notice's automatic-deposit
+  destination; module-interface 5.0.0 follows it (its operation kinds are provider-role's); router-api's and
+  core-internal's unreleased majors take the rest, each changelog naming its changes. Shared files: the guard's new
+  rule, that each new entry of provider-role's changelog from 4.0.0 on says whether a party may ignore the change
+  (`REQ-PRT-2`), stated in this README; and `Cargo.toml`'s `rule-switches` feature, the crate a dev-dependency of
+  itself with it, so `tests/core-internal.rs` reads each invalid fixture with its one rule switched off, which adds one
+  dependency edge to the root `Cargo.lock` and moves no package. (DEC-4, DEC-20, REQ-PRT-2, T-020-45)

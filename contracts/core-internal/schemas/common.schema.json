@@ -189,7 +189,7 @@
       }
     },
     "catalogue_change": {
-      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13). The Rust types check these.",
+      "description": "A change to the catalogue, each a permission of its own (REQ-AUZ-6). accept_module, revoke_release, mark_stale, declare_exploited, reinstate, withdraw_release, promote and roll_back (a staging ended with the version in force kept, ADR-0014) are about one module release, and only they name its version; grant, revoke_grant and set_slippage are about one tuple, and only they name it, save that a grant and its revocation name a verifier's class in its place (REQ-CAT-13).; set_setting sets one of the operator's settings, and only it names one (T-020-45). The Rust types check these.",
       "enum": [
         "grant",
         "revoke_grant",
@@ -201,7 +201,8 @@
         "withdraw_release",
         "set_slippage",
         "promote",
-        "roll_back"
+        "roll_back",
+        "set_setting"
       ]
     },
     "action": {
@@ -457,6 +458,10 @@
         "statement_key": {
           "description": "The key the release's module signs its statements with: named exactly by accept_module, which the Rust types check.",
           "$ref": "urn:rutent:provider-role:common#/$defs/public_key"
+        },
+        "setting": {
+          "description": "The operator's setting it sets, and its value: named exactly by set_setting, which the Rust types check. For a setting about a provider, provider is that provider; for one about the whole deployment, the deployment's operator.",
+          "$ref": "#/$defs/operator_setting"
         }
       }
     },
@@ -641,6 +646,307 @@
         },
         "commitment": {
           "$ref": "urn:rutent:module-interface:common#/$defs/digest"
+        }
+      }
+    },
+    "operator_setting": {
+      "description": "One of the operator's settings and its value (T-020-45): what a set_setting change sets, so policy decides each and the log holds it. The values stay the deployment's to choose.",
+      "type": "object",
+      "required": [
+        "setting"
+      ],
+      "properties": {
+        "setting": {
+          "enum": [
+            "operator_fee",
+            "slippage_limit",
+            "evidence_floor",
+            "public_node",
+            "provider_ceiling",
+            "publisher_ceiling",
+            "cadence",
+            "cutover"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "operator_fee"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_operator_fee"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "slippage_limit"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_slippage_limit"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "evidence_floor"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_evidence_floor"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "public_node"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_public_node"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "provider_ceiling"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_provider_ceiling"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "publisher_ceiling"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_publisher_ceiling"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "cadence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_cadence"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "cutover"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_cutover"
+          }
+        }
+      ]
+    },
+    "operator_setting_operator_fee": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "formula"
+      ],
+      "properties": {
+        "setting": {
+          "const": "operator_fee"
+        },
+        "formula": {
+          "description": "The operator's own fee (REQ-QTE-2, REQ-QTE-5), as the router's bounds carry it.",
+          "$ref": "urn:rutent:router-api:policy-bounds#/properties/operator_fee"
+        }
+      }
+    },
+    "operator_setting_slippage_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "limit"
+      ],
+      "properties": {
+        "setting": {
+          "const": "slippage_limit"
+        },
+        "limit": {
+          "description": "A tuple's slippage limit (REQ-QTE-9), as the router's bounds carry it.",
+          "$ref": "urn:rutent:router-api:policy-bounds#/properties/slippage_limits/items"
+        }
+      }
+    },
+    "operator_setting_evidence_floor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "tuple",
+        "grade"
+      ],
+      "properties": {
+        "setting": {
+          "const": "evidence_floor"
+        },
+        "tuple": {
+          "$ref": "urn:rutent:router-api:policy-bounds#/$defs/tuple_key"
+        },
+        "grade": {
+          "description": "The weakest evidence the operator accepts on the tuple (REQ-ORD-39).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/evidence_grade"
+        }
+      }
+    },
+    "operator_setting_public_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "node",
+        "listed"
+      ],
+      "properties": {
+        "setting": {
+          "const": "public_node"
+        },
+        "node": {
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "listed": {
+          "description": "Whether the operator lists the node public.",
+          "type": "boolean"
+        },
+        "confirmations": {
+          "description": "The confirmations a movement at the node waits for before Core takes it as final, where the operator sets them (DEC-13).",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "operator_setting_provider_ceiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "ceiling"
+      ],
+      "properties": {
+        "setting": {
+          "const": "provider_ceiling"
+        },
+        "ceiling": {
+          "description": "A ceiling on value in flight at one provider (REQ-ORD-8), as the router's bounds carry it.",
+          "$ref": "urn:rutent:router-api:policy-bounds#/properties/provider_ceilings/items"
+        }
+      }
+    },
+    "operator_setting_publisher_ceiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "ceiling"
+      ],
+      "properties": {
+        "setting": {
+          "const": "publisher_ceiling"
+        },
+        "ceiling": {
+          "description": "A ceiling on value in flight across one publisher's providers (REQ-ORD-8), as the router's bounds carry it.",
+          "$ref": "urn:rutent:router-api:policy-bounds#/properties/publisher_ceilings/items"
+        }
+      }
+    },
+    "operator_setting_cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "job",
+        "seconds"
+      ],
+      "properties": {
+        "setting": {
+          "const": "cadence"
+        },
+        "job": {
+          "description": "One of Core's scheduled jobs, by name (T-020-48).",
+          "$ref": "#/$defs/token"
+        },
+        "seconds": {
+          "description": "Its period, in whole seconds.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "operator_setting_cutover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "version",
+        "cutover"
+      ],
+      "properties": {
+        "setting": {
+          "const": "cutover"
+        },
+        "version": {
+          "description": "An older protocol version.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/protocol_version"
+        },
+        "cutover": {
+          "description": "Its cutover date, from which a statement under it is void (REQ-PRT-4).",
+          "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
         }
       }
     }

@@ -501,7 +501,15 @@ impl Register {
         canonicalize(received).ok()?;
         statement.check_shape().ok()?;
         statement
-            .check_context(&settings.deployment, &settings.protocol_version)
+            // One version in force, the deployment's, so the time a statement is judged at isn't read (provider-role
+            // 4.0.0); its own `made_at` stands in.
+            .check_context(
+                &settings.deployment,
+                &rutent_contracts::provider_role::ProtocolVersions::only(
+                    settings.protocol_version.as_str(),
+                ),
+                &statement.made_at,
+            )
             .ok()?;
         validate_statement(&statement).ok()?;
         let ad = &statement.statement;

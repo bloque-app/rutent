@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 109] = [
+pub static RELATIONS: [Relation; 113] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3035,7 +3035,9 @@ pub static RELATIONS: [Relation; 109] = [
                 Some(other @ What::Arrival { order: Some(_), .. }),
             ) => judge(
                 deposit_of(arrival, h).is_some_and(|d| deposit_of(other, h) == Some(d))
-                    && other != &e.what,
+                    && other != &e.what
+                    // A deposit whose order's wait ended unaccepted is free for another order (`T-020-45`, `GUA-1`).
+                    && !matches!(other, What::Arrival { order: Some(o), .. } if wait_ended(o, h)),
                 &[],
             ),
             _ => Match::NotTarget,
@@ -3676,6 +3678,127 @@ pub static RELATIONS: [Relation; 109] = [
                     shown_as,
                     ..
                 } => judge(shown == quote, &[o == order, *shown_as != ShownAs::Price]),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "automatic-deposit-takes-a-firm-quote",
+        spec: &["REQ-QTE-10", "REQ-ORD-15"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an automatic deposit's acceptance is of no quote shown without a firm rate: a slow route waits for its customer",
+        fields: &[],
+        // `F-025`'s L7 (`T-020-45`): a route with no firm rate starts only on its customer's acceptance, so an
+        // `automatic_deposit` acceptance of a quote the log shows without a firm rate, or awaiting its customer, is
+        // refused, whatever orchestration did.
+        cites: |e, _| match &e.what {
+            What::Acceptance {
+                basis: AcceptanceBasis::AutomaticDeposit,
+                ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Acceptance { order, quote, .. }, Some(t)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            match &t.what {
+                What::Shown {
+                    order: o,
+                    shown,
+                    shown_as,
+                    awaiting,
+                } => judge(
+                    o == order
+                        && shown == quote
+                        && (*shown_as == ShownAs::QuoteWithoutFirmRate || awaiting.is_some()),
+                    &[],
+                ),
+                _ => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "waiting-quote-is-for-its-arrivals-holder",
+        spec: &["REQ-AUZ-7", "REQ-QTE-10"],
+        quantifier: Quantifier::Exists,
+        refusal: "a quote awaiting its customer is of an order filed on an arrival of this log",
+        fields: &[(
+            "holder",
+            "a quote awaiting its customer waits for the holder of the arrival its order was filed on",
+        )],
+        // R-AWAITING (`T-020-45`): the waiting notice goes to `awaiting.requester`, so it is held to the holder the
+        // order's arrival names, and a wrong requester can't send another party the order's notice.
+        cites: |e, _| match &e.what {
+            What::Shown {
+                awaiting: Some(_), ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::Shown {
+                    order,
+                    awaiting: Some(awaiting),
+                    ..
+                },
+                Some(What::Arrival {
+                    order: Some(arrived_for),
+                    holder,
+                    ..
+                }),
+            ) => judge(
+                arrived_for == order,
+                &[holder.as_ref() == Some(&awaiting.requester)],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "wait-ends-a-wait",
+        spec: &["REQ-QTE-10", "GUA-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "a wait's end is of an order this log shows waiting for its customer",
+        fields: &[],
+        // A `wait_ended` ends a wait the log holds: a quote of its order shown awaiting its customer (`T-020-45`).
+        cites: |e, _| match &e.what {
+            What::WaitEnded { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+            (
+                What::WaitEnded { order, .. },
+                Some(What::Shown {
+                    order: o,
+                    awaiting: Some(_),
+                    ..
+                }),
+            ) => judge(o == order, &[]),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "ended-wait-takes-no-acceptance",
+        spec: &["REQ-QTE-10", "GUA-1", "INV-8"],
+        quantifier: Quantifier::NoneOther,
+        refusal: "an order's wait ends once, and only unaccepted: an order whose wait ended takes no acceptance",
+        fields: &[],
+        // Once a wait ended its deposit may fund another order (`one-order-per-deposit`), so the order it ended takes
+        // no acceptance after it, and a wait ends only before any acceptance and only once (`T-020-45`).
+        cites: |e, _| match &e.what {
+            What::WaitEnded { .. } | What::Acceptance { .. } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let Some(t) = verified(t) else {
+                return Match::NotTarget;
+            };
+            match (&e.what, &t.what) {
+                (What::WaitEnded { order, .. }, What::Acceptance { order: o, .. })
+                | (What::WaitEnded { order, .. }, What::WaitEnded { order: o, .. })
+                | (What::Acceptance { order, .. }, What::WaitEnded { order: o, .. }) => {
+                    judge(o == order && t.what != e.what, &[])
+                }
                 _ => Match::NotTarget,
             }
         },
@@ -5149,6 +5272,13 @@ fn confirmation_of<'a>(effect: &Receipt, history: &'a History) -> Option<&'a Out
 /// The deposit an arrival is of: the signed transaction its notice names, the notice being its reserve's verified
 /// stated entry of `history` under that commitment (`arrival-names-its-notice`, which holds it to provider-role's
 /// arrival notice before any arrival citing it is admitted, so the shape isn't read again here).
+/// Whether `history` holds the end of `order`'s wait for its customer, unaccepted (`T-020-45`).
+fn wait_ended(order: &Id, history: &History) -> bool {
+    history.iter().any(|(_, e)| {
+        matches!(verified(e).map(|v| &v.what), Some(What::WaitEnded { order: o, .. }) if o == order)
+    })
+}
+
 fn deposit_of<'a>(arrival: &What, history: &'a History) -> Option<&'a Id> {
     let What::Arrival {
         notice: Some(notice),

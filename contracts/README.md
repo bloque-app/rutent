@@ -86,6 +86,9 @@ The first `## <version>` heading of a contract's `CHANGELOG.md` is its current v
   changed; one new at the base needs none. Only direct references count: the host follows the state machine, and a
   contract referencing the host would follow the host's own bump. A changelog whose first heading isn't a version is
   refused, touched or not, so it can't hide a major.
+- The protocol's contract, provider-role, says of each change whether a party may ignore it (`REQ-PRT-2`): every new
+  bullet of its changelog under a version from 4.0.0 on says `Ignorable: yes` or `Ignorable: no`, exactly one, and
+  one that says `Adds a protection` says `Ignorable: no` (`T-020-45`).
 
 The contract guard (`T-001-05`) checks exactly these rules against a base ref passed as an argument (default
 `origin/main`).
@@ -93,5 +96,6 @@ The contract guard (`T-001-05`) checks exactly these rules against a base ref pa
 ## Dependencies
 
 `serde` and `serde_json` are dependencies, and `jsonschema` (default features off) is a dev-dependency, pinned here
-once for every contract. Add nothing else without a reason in the feature notes. Every dependency needs a licence
+once for every contract. The crate is also its own dev-dependency, with the `rule-switches` feature, so the contract
+tests can switch one shape rule off at a time (`T-020-45`); nothing shipped turns it on. Add nothing else without a reason in the feature notes. Every dependency needs a licence
 decision in the record (`REQ-MOD-5`, `T-001-04`).

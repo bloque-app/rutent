@@ -14,6 +14,9 @@ use rutent_contracts::core_internal::calls::{
     StuckOrders, is_decision,
 };
 use rutent_contracts::core_internal::{
+    AcceptanceBasis, LIFECYCLE_ACTIONS, OperatorSetting, SettingKind, without_rule,
+};
+use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
     RELATIONS, Role, STATED_WITHOUT_ITS_KEPT_BYTES, SignedWith, Violation, What, admit_entry,
     attribute, granted_advertising_keys, release_statement_keys, revoked_before_receipt,
@@ -78,7 +81,23 @@ const REFERRED: [&str; 4] = [
 
 /// Invalid fixtures the schemas accept and the Rust types refuse, each with the refusal it must give. Every other
 /// invalid fixture is listed in `SCHEMA_RULES`.
-const RUST_RULES: [(&str, &str); 55] = [
+const RUST_RULES: [(&str, &str); 59] = [
+    (
+        "decision-request-to-set-a-setting-naming-none",
+        "a catalogue change names an operator's setting exactly when it sets one",
+    ),
+    (
+        "decision-request-to-mark-a-release-stale-naming-a-setting",
+        "a catalogue change names an operator's setting exactly when it sets one",
+    ),
+    (
+        "decision-request-to-set-slippage-naming-a-verifiers-class",
+        "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple",
+    ),
+    (
+        "verified-entry-of-a-wait-ended-as-done",
+        "an entry's outcome is one its call can have",
+    ),
     (
         "verified-entry-of-a-quote-awaiting-its-customer-without-a-firm-rate-naming-no-slow-segment",
         "a quote an order waits on its customer to accept names its slow segments exactly when it is shown without a firm rate",
@@ -137,7 +156,7 @@ const RUST_RULES: [(&str, &str); 55] = [
     ),
     (
         "raise-of-a-public-end-whose-figures-agree",
-        "a raise's difference is a real one",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
     ),
     (
         "verified-entry-of-an-effect-accepting-a-fault",
@@ -197,7 +216,7 @@ const RUST_RULES: [(&str, &str); 55] = [
     ),
     (
         "verified-entry-of-the-operators-permitted-read-of-an-order-without-a-permission",
-        "an operator's permitted read without a permission is of an order's state or its own evidence",
+        "an operator's permitted read without a permission is of an order's state, a filed order's or its own evidence",
     ),
     (
         "verified-entry-of-a-regulators-read-without-its-permission",
@@ -257,15 +276,15 @@ const RUST_RULES: [(&str, &str); 55] = [
     ),
     (
         "raise-of-a-charge-within-its-maximum",
-        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
     ),
     (
         "raise-of-reports-that-agree",
-        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
     ),
     (
         "raise-of-reports-not-comparable-in-one-asset",
-        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum",
+        "a raise's difference is a real one: two amounts or times that differ, a charge above its maximum, two reports in two assets or units, a public end's figure its mismatch names",
     ),
     (
         "report-pair-of-one-party-reporting-both",
@@ -310,7 +329,27 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 116] = [
+const SCHEMA_RULES: [SchemaRule; 120] = [
+    (
+        "decision-request-to-set-a-cadence-of-no-seconds",
+        &[("/action/setting", "required")],
+        "missing field `seconds`",
+    ),
+    (
+        "read-check-of-a-filed-order-without-its-requester",
+        &[("/reads", "required")],
+        "missing field `requester`",
+    ),
+    (
+        "verified-entry-of-a-wait-ended-without-why",
+        &[("/what", "required")],
+        "missing field `why`",
+    ),
+    (
+        "verified-entry-of-an-order-opened-without-its-destination",
+        &[("/what", "required")],
+        "missing field `destination`",
+    ),
     (
         "report-pair-whose-received-report-names-no-segment",
         &[("/received", "required")],
@@ -2534,6 +2573,7 @@ fn a_value_built_in_memory_is_held_to_the_same_rules_as_one_read() {
         class: None,
         advertising_keys: vec![],
         statement_key: None,
+        setting: None,
     };
     assert_eq!(
         effect.check(),
@@ -4487,7 +4527,7 @@ fn statement_received_after_its_grants_revocation_is_unattributed_by_the_contrac
         .collect();
     assert_eq!(
         cases.len(),
-        6,
+        7,
         "{:?}",
         cases.iter().map(|c| &c.0).collect::<Vec<_>>()
     );
@@ -4537,4 +4577,351 @@ fn read_admission(name: &str) -> Value {
             .join("admission")
             .join(format!("{name}.json")),
     )
+}
+
+// --- `T-020-45`: the contract round for `M3`'s milestone review of 2026-11-24 ------------------------------------
+
+/// `F-025`'s L7: an automatic deposit's acceptance of a quote the log shows without a firm rate, or awaiting its
+/// customer, is refused, whatever orchestration did; one of a firm quote is admitted.
+// verifies: REQ-QTE-10
+#[test]
+fn automatic_deposit_acceptance_of_a_quote_shown_without_a_firm_rate_is_refused_by_the_log() {
+    let row = "automatic-deposit-takes-a-firm-quote";
+    assert_case(&format!("{row}--a-firm-quote"));
+    for name in ["conflict", "conflict-a-firm-quote-awaiting-its-customer"] {
+        assert_case_refused(&format!("{row}--{name}"));
+        assert_case(&format!("{row}--{name}"));
+    }
+    // The same history, accepted by its customer on the deposit, stays the customer's to give.
+    let case = read_admission(&format!("{row}--conflict"));
+    let mut acceptance: Value = case["entry"].clone();
+    acceptance["what"]["basis"] = "given_on_deposit".into();
+    acceptance["what"]["session"] = "sess-1".into();
+    let entry: Entry = serde_json::from_value(acceptance).unwrap();
+    let history = case_history(&case);
+    let got = admit_entry(&history, &entry, Through::General, &deployment_operator());
+    assert_ne!(
+        got,
+        Err(Violation(
+            rows().into_iter().find(|r| r.0 == row).unwrap().3
+        )),
+        "a customer's acceptance on the deposit is not an automatic deposit's"
+    );
+    assert!(AcceptanceBasis::AutomaticDeposit.on_a_deposit());
+}
+
+/// R-AWAITING: a quote awaiting its customer waits for the holder its order's arrival names, so a wrong requester
+/// can't send another party the order's waiting notice.
+// verifies: REQ-AUZ-7
+#[test]
+fn waiting_notice_whose_requester_is_not_the_arrivals_holder_is_refused_by_the_log() {
+    let row = "waiting-quote-is-for-its-arrivals-holder";
+    assert_case(&format!("{row}--the-arrivals-holder"));
+    for name in ["holder", "holder-the-arrival-names-none", "missing"] {
+        assert_case_refused(&format!("{row}--{name}"));
+        assert_case(&format!("{row}--{name}"));
+    }
+}
+
+/// `F-025`'s L5: a revocation counts from its admitted effect, before its `done` result, so a statement received
+/// between the two is unattributed; a `failed` result undoes it, and the statement attributes again.
+// verifies: THR-3
+#[test]
+fn statement_received_between_a_revocations_effect_and_its_result_is_unattributed_by_the_contracts_rule()
+ {
+    for (name, expect) in [
+        (
+            "unverified--a-statement-received-between-its-grants-revocation-effect-and-result",
+            false,
+        ),
+        (
+            "verified--a-statement-received-after-a-revocation-whose-result-failed",
+            true,
+        ),
+    ] {
+        let (_, case) = attribution_cases()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no attribution case {name}"));
+        let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+        let history = case_history(&case);
+        let maker = claim.attribution.maker().acts.clone();
+        assert_eq!(
+            revoked_before_receipt(&history, &maker, &claim.when.at, &claim.received_at),
+            !expect,
+            "{name}: the contract's rule"
+        );
+        let got = attribute(
+            &claim,
+            &history,
+            &mut sources(&case),
+            &mut sources(&case),
+            &sources(&case),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            matches!(got.attribution, Attribution::Verified { .. }),
+            expect,
+            "{name}: attributed"
+        );
+    }
+}
+
+/// Finding 8: once an order's wait for its customer ended unaccepted, its deposit is free for another order, and the
+/// order it ended takes no acceptance after it; a wait ends only once, only before an acceptance, and only for a quote
+/// the log shows awaiting its customer.
+// verifies: GUA-1
+#[test]
+fn second_order_on_a_deposit_whose_wait_ended_unaccepted_is_admitted() {
+    assert_case("one-order-per-deposit--a-deposit-whose-wait-ended-unaccepted");
+    assert_case_refused("one-order-per-deposit--conflict");
+    assert_case("wait-ends-a-wait--a-quote-awaiting-its-customer");
+    assert_case_refused("wait-ends-a-wait--missing");
+    for name in [
+        "conflict",
+        "conflict-a-second-end",
+        "conflict-an-end-after-its-acceptance",
+    ] {
+        let name = format!("ended-wait-takes-no-acceptance--{name}");
+        assert_case_refused(&name);
+        assert_case(&name);
+    }
+}
+
+/// Finding 4 and `M2`'s item 6: an operator's setting is a catalogue change of its own, `set_setting`, naming the
+/// setting and its value, each of the eight kinds, and nothing of a release or a tuple; no other change names one.
+// verifies: REQ-AUZ-6
+#[test]
+fn operator_setting_is_a_catalogue_change_of_its_own() {
+    let mut kinds = Vec::new();
+    for (name, value) in fixtures("valid")
+        .into_iter()
+        .filter(|(_, v)| v["action"]["change"] == "set_setting")
+    {
+        let request: DecisionRequest = serde_json::from_value(value).unwrap();
+        let Action::ChangeCatalogue {
+            change,
+            setting: Some(setting),
+            version,
+            tuple,
+            ..
+        } = &request.action
+        else {
+            panic!("{name} sets a setting");
+        };
+        assert_eq!(*change, CatalogueChange::SetSetting, "{name}");
+        assert!(
+            change.is_a_setting() && !change.is_about_a_release() && !change.is_about_a_tuple()
+        );
+        assert!(version.is_none() && tuple.is_none(), "{name}");
+        kinds.push(setting.kind());
+        if let Some(provider) = setting.provider() {
+            let Action::ChangeCatalogue { provider: p, .. } = &request.action else {
+                unreachable!()
+            };
+            assert_eq!(p, provider, "{name}: a setting about a provider names it");
+        }
+    }
+    let mut every = vec![
+        SettingKind::OperatorFee,
+        SettingKind::SlippageLimit,
+        SettingKind::EvidenceFloor,
+        SettingKind::PublicNode,
+        SettingKind::ProviderCeiling,
+        SettingKind::PublisherCeiling,
+        SettingKind::Cadence,
+        SettingKind::Cutover,
+    ];
+    let key = |k: &SettingKind| format!("{k:?}");
+    kinds.sort_by_key(key);
+    every.sort_by_key(key);
+    assert_eq!(kinds, every, "a valid fixture for each setting");
+    assert_eq!(
+        serde_json::to_value(CatalogueChange::SetSetting).unwrap(),
+        "set_setting"
+    );
+    for name in [
+        "decision-request-to-set-a-setting-naming-none",
+        "decision-request-to-mark-a-release-stale-naming-a-setting",
+    ] {
+        assert_rejected(name);
+    }
+    let cadence: OperatorSetting = serde_json::from_value(
+        serde_json::json!({"setting": "cadence", "job": "land_settled", "seconds": 60}),
+    )
+    .unwrap();
+    assert_eq!(cadence.kind(), SettingKind::Cadence);
+    assert_eq!(cadence.provider(), None);
+}
+
+/// Finding 4 and `M2`'s item 6: each of the platform's lifecycle actions (`accept`, `withdraw`, `revoke`,
+/// `declare_exploited`, `mark_stale`) is a catalogue change of its own, about one release, which Core carries out only
+/// on a permitted effect, as `promote` and `roll_back`.
+// verifies: REQ-AUZ-6
+#[test]
+fn each_lifecycle_action_is_a_catalogue_change_of_its_own() {
+    let names: Vec<&str> = LIFECYCLE_ACTIONS.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        names,
+        [
+            "accept",
+            "withdraw",
+            "revoke",
+            "declare_exploited",
+            "mark_stale"
+        ]
+    );
+    let changes: Vec<CatalogueChange> = LIFECYCLE_ACTIONS.iter().map(|(_, c)| *c).collect();
+    for (i, change) in changes.iter().enumerate() {
+        assert!(!changes[..i].contains(change), "{change:?} twice");
+        assert!(change.is_about_a_release(), "{change:?} names its release");
+        assert!(change.is_a_lifecycle_action(), "{change:?}");
+        let action = |version: Option<&str>| -> Result<Action, String> {
+            let mut a = serde_json::json!({"kind": "change_catalogue", "change": change, "provider": "bridge-pay"});
+            if let Some(v) = version {
+                a["version"] = v.into();
+            }
+            if *change == CatalogueChange::AcceptModule {
+                a["statement_key"] = "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w".into();
+            }
+            serde_json::from_value(a).map_err(|e| e.to_string())
+        };
+        assert!(action(Some("2.1.0")).is_ok(), "{change:?}");
+        assert!(action(None).is_err(), "{change:?} without its release");
+    }
+    for change in [CatalogueChange::Promote, CatalogueChange::RollBack] {
+        assert!(change.is_a_lifecycle_action());
+    }
+    for change in [
+        CatalogueChange::Grant,
+        CatalogueChange::RevokeGrant,
+        CatalogueChange::Reinstate,
+        CatalogueChange::SetSlippage,
+        CatalogueChange::SetSetting,
+    ] {
+        assert!(!change.is_a_lifecycle_action(), "{change:?}");
+    }
+    for name in [
+        "decision-request-to-withdraw-a-release-awaiting-acceptance",
+        "decision-request-to-revoke-a-release",
+        "decision-request-to-declare-a-release-exploited",
+        "decision-request-to-mark-a-release-stale",
+        "decision-request-to-accept-a-module-release-with-its-statement-key",
+    ] {
+        assert_accepted_by_both(name);
+    }
+}
+
+/// The review's Low on fixtures pinned by their first refusal: each invalid fixture only the Rust types refuse breaks
+/// the one rule it names, so read with that rule switched off it is accepted; a fixture that broke two rules would be
+/// refused still, by the other.
+// verifies: DEC-4
+#[test]
+fn each_invalid_fixture_breaks_only_the_rule_it_names() {
+    let mut failures = Vec::new();
+    for (name, rule) in RUST_RULES {
+        let shape = shape_of(name);
+        let value = fixture("invalid", name);
+        match through_rust(shape, &value) {
+            Err(e) if e.contains(rule) => {}
+            other => failures.push(format!("{name}: {other:?}, not refused by its rule")),
+        }
+        if let Err(e) = without_rule(rule, || through_rust(shape, &value)) {
+            failures.push(format!("{name} breaks another rule than its own: {e}"));
+        }
+    }
+    // And the switch is the test's alone: off the closure, every rule is back.
+    let (name, rule) = RUST_RULES[0];
+    assert!(
+        through_rust(shape_of(name), &fixture("invalid", name)).is_err_and(|e| e.contains(rule))
+    );
+    // A fixture that breaks two rules is caught: the class rule's fixture with its version taken away and a tuple named.
+    let mut two = fixture(
+        "invalid",
+        "decision-request-to-set-slippage-naming-a-verifiers-class",
+    );
+    two["action"]["change"] = "grant".into();
+    let class_rule = "a catalogue change names a verifier's class only as a grant or its revocation, in place of a tuple";
+    two["action"]["tuple"] = "usdc-cop".into();
+    assert!(through_rust("decision-request", &two).is_err_and(|e| e.contains(class_rule)));
+    assert!(
+        without_rule(class_rule, || through_rust("decision-request", &two)).is_err(),
+        "a grant naming no advertising keys breaks a second rule"
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The review's Low on the README: its citation table names only admission fixtures that exist, and every admission
+/// fixture is named there, by its row's line, or by a family the README names (`world--*`, the handle cases).
+// verifies: DEC-4
+#[test]
+fn every_fixture_core_internals_readme_names_exists_and_every_fixture_is_named() {
+    let readme = fs::read_to_string(contract_dir().join("README.md")).unwrap();
+    let names: Vec<String> = admission_fixtures().into_iter().map(|(n, _)| n).collect();
+    let matches = |pattern: &str, name: &str| match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => name == pattern,
+    };
+    let token = |t: &str| {
+        t.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_*".contains(c))
+    };
+    let mut failures = Vec::new();
+    let mut named: Vec<String> = Vec::new();
+    for line in readme.lines().filter(|l| l.starts_with("| `")) {
+        let row = line[3..].split('`').next().unwrap();
+        let fixtures_cell = line.trim_end_matches(" |").rsplit(" | ").next().unwrap();
+        for t in fixtures_cell
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|t| token(t))
+        {
+            let pattern = if t.starts_with("world--") {
+                t.to_owned()
+            } else if let Some(rest) = t.strip_prefix("--") {
+                format!("{row}--{rest}")
+            } else {
+                continue;
+            };
+            if !names.iter().any(|n| matches(&pattern, n)) {
+                failures.push(format!("{row}: the README names {t}, which no fixture is"));
+            }
+            named.push(pattern);
+        }
+    }
+    for family in [
+        "world--*",
+        "decision-through-the-general-handle--*",
+        "record-through-policys-handle--*",
+    ] {
+        assert!(
+            readme.contains(&format!("`{family}`")),
+            "the README names {family}"
+        );
+        named.push(family.to_owned());
+    }
+    for name in &names {
+        if !named.iter().any(|p| matches(p, name)) {
+            failures.push(format!("{name} is named nowhere in the README"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A read of an order whose parties the log doesn't hold yet names its filed request's requester (`T-021-16`'s shape),
+/// a provider never reads one, and the operator reads one as it reads an order's state.
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn read_of_a_filed_order_names_its_requester() {
+    assert_accepted_by_both("read-check-by-an-agent-of-a-filed-orders-status");
+    let check: ReadCheck = serde_json::from_value(fixture(
+        "valid",
+        "read-check-by-an-agent-of-a-filed-orders-status",
+    ))
+    .unwrap();
+    assert!(matches!(
+        &check.reads,
+        rutent_contracts::core_internal::Reads::FiledOrder { requester, .. } if requester == &check.reader.party
+    ));
 }

@@ -220,7 +220,14 @@ pub fn read(
     canonicalize(received).map_err(Unverified::NoSigningInput)?;
     assertion.check_shape().map_err(Unverified::WrongShape)?;
     assertion
-        .check_context(&envelope.deployment, &envelope.protocol_version)
+        // One version in force, the platform's, so the time isn't read (provider-role 4.0.0).
+        .check_context(
+            &envelope.deployment,
+            &rutent_contracts::provider_role::ProtocolVersions::only(
+                envelope.protocol_version.as_str(),
+            ),
+            &assertion.made_at,
+        )
         .map_err(Unverified::WrongContext)?;
     Ok(assertion)
 }

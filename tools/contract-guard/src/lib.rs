@@ -23,6 +23,10 @@
 //!   included), needs a major bump too, though none of its own paths changed. A contract new at the base needs none.
 //!   Only direct references count: a chain of them moves one major at a time. A changelog whose first heading isn't
 //!   a version is refused, touched or not, so it never hides a major.
+//! - The protocol's contract (`provider-role`, whose version a statement names, `REQ-PRT-1`) says of each change
+//!   whether a party may ignore it (`REQ-PRT-2`): every new bullet of its changelog under a version from 4.0.0 on
+//!   says `Ignorable: yes` or `Ignorable: no`, exactly one of them, and one that says `Adds a protection` says
+//!   `Ignorable: no`, since a change adding a protection is never ignorable.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +35,11 @@ const SHARED: &str = "shared";
 const SHARED_CHANGELOG: &str = "contracts/CHANGELOG.md";
 const PLAN_PATH: &str = "PLAN.md";
 const LOCK_PATH: &str = "Cargo.lock";
+/// The protocol's contract: the one whose version a party's statement names (`REQ-PRT-1`), and whose changelog says
+/// of each change whether a party may ignore it (`REQ-PRT-2`).
+const PROTOCOL_CONTRACT: &str = "provider-role";
+/// The first version of the protocol's contract whose entries say whether a party may ignore them.
+const IGNORABLE_SINCE: (u64, u64, u64) = (4, 0, 0);
 /// The package whose dependencies the lockfile rule follows.
 const CONTRACTS_CRATE: &str = "rutent-contracts";
 
@@ -414,6 +423,43 @@ fn lock_moves(base: Option<&str>, head: Option<&str>) -> LockMoves {
 }
 
 /// Bullets present in the head changelog but not the base one.
+/// A protocol change says whether a party may ignore it (`REQ-PRT-2`): `Ignorable: yes` or `Ignorable: no`, exactly one,
+/// and `Ignorable: no` wherever it says `Adds a protection`. `Err` is the sentence that says why not.
+fn check_ignorable(bullet: &str) -> Result<(), String> {
+    let first = bullet.lines().next().unwrap_or(bullet);
+    let flat = bullet.split_whitespace().collect::<Vec<_>>().join(" ");
+    let yes = flat.contains("Ignorable: yes");
+    let no = flat.contains("Ignorable: no");
+    if yes == no {
+        return Err(format!(
+            "protocol changelog entry says neither or both of `Ignorable: yes` and `Ignorable: no` (REQ-PRT-2): {first}"
+        ));
+    }
+    if yes && flat.contains("Adds a protection") {
+        return Err(format!(
+            "protocol changelog entry adds a protection but says a party may ignore it (REQ-PRT-2): {first}"
+        ));
+    }
+    Ok(())
+}
+
+/// The new bullets of the protocol's changelog under a version from [`IGNORABLE_SINCE`] on.
+fn new_protocol_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
+    let before: Vec<String> = base
+        .map(sections)
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|section| bullets(&section.body))
+        .collect();
+    head.map(sections)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|section| semver(&section.version).is_some_and(|v| v >= IGNORABLE_SINCE))
+        .flat_map(|section| bullets(&section.body))
+        .filter(|bullet| !before.contains(bullet))
+        .collect()
+}
+
 fn new_bullets(base: Option<&str>, head: Option<&str>) -> Vec<String> {
     let before = base.map(all_bullets).unwrap_or_default();
     head.map(all_bullets)
@@ -491,6 +537,13 @@ pub fn check(
         for bullet in new_bullets(base_text.as_deref(), head_text.as_deref()) {
             if let Err(message) = check_decisions(&bullet, &defined) {
                 violations.push(violation(name, message));
+            }
+        }
+        if name == PROTOCOL_CONTRACT {
+            for bullet in new_protocol_bullets(base_text.as_deref(), head_text.as_deref()) {
+                if let Err(message) = check_ignorable(&bullet) {
+                    violations.push(violation(name, message));
+                }
             }
         }
         if !touched.contains(name) {

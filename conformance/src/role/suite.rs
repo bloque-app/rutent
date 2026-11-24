@@ -6,13 +6,13 @@ use rutent_contracts::provider_role::{
     ARRIVAL_QUESTION_SHAPE, Advertisement, AnswerMismatch, ArrivalAnswer, ArrivalNotice,
     ArrivalOutcome, ArrivalQuestion, BalanceOutcome, BalanceRefusal, BalanceRefused,
     BalanceVerification, Category, Conversion, ConversionOutcome, Credits, Denomination, Deposit,
-    Direction, EvidenceGrade, EvidencePiece, Fee, HoldingBalanceOutcome, Inputs, JudgementOutcome,
-    JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE, Operation, OuterNode,
-    PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal, ReversalConfirmationOutcome,
-    ReversalConfirmationRequest, ReversalConfirmationResult, ReversalOutcome, Signature,
-    SignatureScheme, Slippage, Statement, StatementShape, Terms, Tracking, Transfer,
-    TransferOutcome, Withdrawal, check_amounts, check_answer, check_one_credit, member,
-    signing_input, validate_statement,
+    Direction, EvidenceGrade, EvidencePiece, Fee, HoldOutcome, HoldingBalanceOutcome, Inputs,
+    JudgementOutcome, JudgementRequest, JudgementResult, KeyPurpose, NodeRef, OPERATION_SHAPE,
+    Operation, OuterNode, PublicKey, Refusal, ReserveMovementOutcome, ResultBody, Reversal,
+    ReversalConfirmationOutcome, ReversalConfirmationRequest, ReversalConfirmationResult,
+    ReversalOutcome, Signature, SignatureScheme, Slippage, Statement, StatementShape,
+    StatusOutcome, Terms, Tracking, Transfer, TransferOutcome, Withdrawal, check_amounts,
+    check_answer, check_one_credit, member, signing_input, validate_statement,
 };
 
 /// An operation, the result that answers it, and the terms of the tuple it runs through.
@@ -76,6 +76,10 @@ enum Kind {
     Reversal,
     ReversalConfirmation,
     HoldingBalance,
+    /// A status question (provider-role 4.0.0), which no stand-in role is asked yet.
+    StatusQuery,
+    /// A hold request (provider-role 4.0.0), which no stand-in role is asked yet.
+    Hold,
 }
 
 /// A refusal's class, whichever kind of refusal it is (`REQ-CAT-18`).
@@ -180,6 +184,8 @@ fn kind_of(operation: &Operation) -> (Kind, Option<&str>) {
         Operation::Reversal(o) => (Kind::Reversal, Some(&o.transaction)),
         Operation::ReversalConfirmation(o) => (Kind::ReversalConfirmation, Some(&o.transaction)),
         Operation::HoldingBalance(o) => (Kind::HoldingBalance, Some(&o.transaction)),
+        Operation::StatusQuery(o) => (Kind::StatusQuery, Some(&o.transaction)),
+        Operation::Hold(o) => (Kind::Hold, Some(&o.transaction)),
     }
 }
 
@@ -274,6 +280,23 @@ fn view_of(body: &ResultBody) -> View {
             match &r.outcome {
                 HoldingBalanceOutcome::Answered(_) => Status::Answered,
                 HoldingBalanceOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+            },
+        ),
+        // Read as an answer, or a refusal (provider-role 4.0.0): no probe of the suite asks either yet.
+        ResultBody::StatusQuery(r) => (
+            Kind::StatusQuery,
+            Some(&r.transaction),
+            match &r.outcome {
+                StatusOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+                StatusOutcome::Answered(_) | StatusOutcome::NotKnown(_) => Status::Answered,
+            },
+        ),
+        ResultBody::Hold(r) => (
+            Kind::Hold,
+            Some(&r.transaction),
+            match &r.outcome {
+                HoldOutcome::Refused(r) => Status::Refused((&r.refusal).into()),
+                HoldOutcome::Held(_) => Status::Answered,
             },
         ),
         ResultBody::Judgement(r) => (
@@ -424,9 +447,13 @@ impl Run<'_> {
         if let Err(e) = statement.check_shape() {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));
         }
-        if let Err(e) =
-            statement.check_context(&self.context.deployment, &self.context.protocol_version)
-        {
+        if let Err(e) = statement.check_context(
+            &self.context.deployment,
+            &rutent_contracts::provider_role::ProtocolVersions::only(
+                self.context.protocol_version.as_str(),
+            ),
+            &statement.made_at,
+        ) {
             self.flag(Check::EnvelopeWellFormed, format!("{what}: {e:?}"));
         }
         // The operator key and the signing key need no check here: they are `PublicKey`s, which only their
@@ -700,7 +727,7 @@ impl Run<'_> {
             "naming another operator key, signed with the operator's",
             statement,
         ));
-        // `check_context` asks for the exact protocol version, so each of these is foreign.
+        // `check_context` takes the suite's one version in force, with no older one, so each of these is foreign.
         for (how, version) in other_protocol_versions(&self.context.protocol_version) {
             let tx = self.transaction();
             let mut statement = self.operation(build(tx));
@@ -2312,12 +2339,12 @@ mod tests {
     #[test]
     fn the_other_protocol_versions_are_valid_and_differ_from_the_current_one() {
         assert_eq!(
-            VERSION, "3.1.0",
+            VERSION, "4.0.0",
             "re-pin these values when the protocol version moves"
         );
         let others = other_protocol_versions(VERSION);
         let versions: Vec<&str> = others.iter().map(|(_, v)| v.as_str()).collect();
-        assert_eq!(versions, ["4.0.0", "3.1.1", "3.0.0"]);
+        assert_eq!(versions, ["5.0.0", "4.0.1", "3.0.0"]);
         for version in versions {
             assert!(
                 is_protocol_version(version),

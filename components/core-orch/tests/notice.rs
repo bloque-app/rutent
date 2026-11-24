@@ -542,8 +542,8 @@ fn log_of(orders: &[(&str, &str)]) -> Vec<Entry> {
 /// The refusals core-internal's own admission gives for the entries of `log` that none of the notices read: each
 /// a citation of a record the test doesn't build (the quote shown, the reserve's yes, the user's session, the
 /// router's decision record, the evidence, the stuck resolution's result, the statement an `afterwards` rests on,
-/// the authorisation that sets the customer's floor).
-const UNBUILT_CITATIONS: [&str; 9] = [
+/// the authorisation that sets the customer's floor, the arrival a waiting quote's order was filed on).
+const UNBUILT_CITATIONS: [&str; 10] = [
     "acceptance-is-of-the-quote-shown",
     "acceptance-rests-on-the-reserves-yes",
     "acceptance-is-asked-in-the-users-session",
@@ -553,6 +553,7 @@ const UNBUILT_CITATIONS: [&str; 9] = [
     "stuck-resolved-follows-a-done-resolution",
     "afterwards-rests-on-a-statement",
     "waiting-at-floor-rests-on-the-customers-floor",
+    "waiting-quote-is-for-its-arrivals-holder",
 ];
 
 /// Holds `log` to the log: every input in it is one the log takes from where its order stands

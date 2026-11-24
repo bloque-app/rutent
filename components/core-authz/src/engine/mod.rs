@@ -1195,6 +1195,8 @@ mod tests {
                 | CatalogueChange::SetSlippage
                 | CatalogueChange::Promote
                 | CatalogueChange::RollBack => {}
+                // An operator's setting has no rule until `T-021-15`, which lists it (`T-020-45`).
+                CatalogueChange::SetSetting => unreachable!(),
             }
             actions.push(Action::ChangeCatalogue {
                 change,
@@ -1209,6 +1211,7 @@ mod tests {
                 },
                 statement_key: (change == CatalogueChange::AcceptModule)
                     .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
+                setting: None,
             });
         }
         // Asking the fixtures' order's segment's provider to reverse it (`REQ-ORD-3`).

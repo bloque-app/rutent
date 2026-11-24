@@ -6642,3 +6642,178 @@ conformance assembly (`conformance/scenarios/`), the register, `erasure.rs` and 
   | the look after the effect on an override is the plain override check | the core-orch late-citation test |
   | `reconcile` reports every citation of an overridden statement | the override scenario (on the rebound store) |
   | the look after the effect is given the effect's receipt in place of the decision's | both core-orch override tests (the fake store records the receipt it is given) |
+
+## T-020-45: the contract round for `M3`'s milestone review of 2026-11-24
+
+Branch `f-020/t-020-45-contract-round-r1`, from `2ae0425c` (the PLAN PR #267 on `m3`'s tip). Edits `contracts/`
+(provider-role, module-interface, router-api, core-internal, the shared files) and `tools/contract-guard/` (`DEC-20`
+paths: they wait for the owner's click at the release into `main`), and the consumer files below. Wave 38's rows
+(`T-021-14`, `T-020-44`) were not on this base: `T-020-44` (`4b895b88`) is on its own branch, `T-021-14` has no commit
+yet, so this round starts from `m3`'s shapes and its merge with them is the lead's (gap 1).
+
+- **Versioning.** provider-role's unreleased 3.1.0 is 4.0.0 (finding 9; `develop` holds 3.0.0). module-interface,
+  released at 4.0.0 on `develop`, moves to 5.0.0: its `handles` and call kinds take provider-role's operation kinds
+  by reference, and `OperationKind` gains two variants. router-api (unreleased 4.0.0) and core-internal (unreleased
+  1.0.0) fold. state-machine and host don't refer to provider-role and are untouched. Fixtures keep naming protocol
+  2.0.1, as every major since 2.0.1 has (router's `calls.rs` pins it "so a provider-role bump leaves the fixture
+  standing"): the row's "every `protocol` literal" is read as the literals that name the protocol's current version,
+  which were `contracts/src/provider_role/mod.rs`'s `VERSION` and `conformance/src/role/suite.rs`'s pin; every other
+  reader uses `VERSION`. No guest names a protocol version.
+- **Item by item.**
+  1. provider-role 4.0.0, with a top entry naming finding 9.
+  2. `ArrivalNotice.destination: Option<DepositDestination {reserve, node, account, asset, set_by, set_for}>`; two
+     notices of one credit with other destinations restate it.
+  3. Read first: `TupleTerms` and `Hold` were statements of their own (3.1.0) and `Tracking::StatusQuery` was a
+     declaration, with no operation carrying any of them to or from a module (the commit body says so). New:
+     `Operation::StatusQuery {transaction, provider, about}` / `ResultBody::StatusQuery {transaction, about, outcome:
+     answered(result, nested) | not_known | refused}` with `check_status_answer`; `Operation::Hold(HoldRequest)` /
+     `ResultBody::Hold {transaction, outcome: held(hold, nested) | refused}` with `check_hold_answer`; `terms`
+     (optional, nested) on the three dry-run answers (`ReserveDryRunAnswer`, `TransferQuote`, `ConversionQuote`), so
+     terms come back on the round's question, before a segment starts (`REQ-QTE-6`); `ResultBody::transaction()` and
+     `ResultBody::terms()`. module-interface's `OperationKind::{StatusQuery, Hold}`, and a declaration's `calls` may
+     list neither (`DeclaredCallOfAnOperatorsQuestion`); router-api's `call_kind` and its checks refuse them too.
+  4. `check_context(deployment, &ProtocolVersions, at)`: `ProtocolVersions::only(v).with_older(old, cutover)`; a
+     statement under an older version is void from its cutover on (`ContextMismatch::PastCutover`), an unorderable time
+     voids it. The guard refuses a new entry of provider-role's changelog from 4.0.0 on that says neither or both of
+     `Ignorable: yes` / `Ignorable: no`, or that `Adds a protection` and says `Ignorable: yes`; 3.1.0's thirteen
+     entries, folded into 4.0.0, now say it.
+  5. core-internal, folded: row `automatic-deposit-takes-a-firm-quote` (L7); `arrival.holder` and row
+     `waiting-quote-is-for-its-arrivals-holder` (R-AWAITING); `revoked_before_receipt` counting a revocation from its
+     effect until a `failed` result (L5); `wait_ended {order, why}`, rows `wait-ends-a-wait` and
+     `ended-wait-takes-no-acceptance`, `one-order-per-deposit` freeing an ended wait's deposit (finding 8);
+     `NoticeOf::WaitEnded` (`T-023-04`); `CatalogueChange::SetSetting` with `Action::ChangeCatalogue.setting:
+     OperatorSetting` (eight kinds, `SettingKind`), the five lifecycle actions already changes of their own
+     (`LIFECYCLE_ACTIONS`, `is_a_lifecycle_action`); `Reads::FiledOrder {order, requester}`; `order_opened`.
+  6. Lows: the README's citation table repaired (seven stale names gone, twenty-five unlisted named, the handle
+     families named); `decision-request-to-set-slippage-naming-a-verifiers-class` for the class rule;
+     `without_rule` (feature `rule-switches`, the crate its own dev-dependency) and
+     `each_invalid_fixture_breaks_only_the_rule_it_names`, which found `effect-granting-without-a-tuple` breaking the
+     advertising-keys rule too (fixed: it names its keys) and four raises named by a prefix of their rule (now whole);
+     provider-role's README and five schema descriptions say what a provider states, core-internal's README the log's
+     side ("Provider-role's statements in the log"); router-api's six router-version decision records signed for real
+     over their current text by `rutent-core`'s statements key as the suites derive it, the five patched ones by a
+     patch op on `/signature/value`, verified by a conformance test.
+- **The rebuild's kinds (`T-020-46`).** Read piece by piece against the log: `Segments` (the started route is the
+  `route_chosen` input, each segment's state the inputs and results, the effects acted on every `move_value` effect,
+  which the platform's durable record answers once on a repeat, `T-013-10`); `Stuck` (`stuck_decide`, `stuck_move`,
+  their effects and results); `HandOn` (every pending piece is an entry built and not yet appended, so nothing to
+  rebuild, and what was appended is in the log: inputs, decides, holding withdrawals); `Issued` (every transaction
+  Core asked under that the log names; one asked with no answer logged is lost, and the fresh source makes reuse
+  improbable, not impossible: gap 4); the held quotes (`Holds::recorded`); the unsettled erasures (their effects and
+  results); `Exposures` (route and results). One piece had no summary: intake's order before its acceptance (its
+  request, parties, destination, session and route asked), now `order_opened`. Its tuples' inputs stay out of the log
+  (`REQ-AUD-6`): gap 5.
+- **Consumer edits** (to compile, no behaviour changed but where said): `check_context` with
+  `ProtocolVersions::only` in `components/core-audit/src/log/keys.rs`, `components/prov/src/catalogue/advertisements.rs`,
+  `components/prov/src/module/admission.rs` (a `DEC-20` file), `components/router/src/search.rs`,
+  `conformance/src/role/stand_in.rs`, `conformance/src/role/suite.rs`, `conformance/src/router/mod.rs` and
+  `conformance/tests/router_double/mod.rs`; `components/prov/src/module/output.rs` embeds `hold` and `terms`, which the
+  result schema now references; the two new kinds in `components/prov/src/proxy/tests/calls.rs`, the stand-ins'
+  `refuse_outside_role` and `transaction_of` and the suite's views (`conformance/src/role/`); `terms: None` and
+  `destination: None` in the stand-ins (the four literals of `stand_in.rs`, kept minimal beside `T-024-22`'s edits
+  there); `setting: None` in every `ChangeCatalogue` literal (core-authz's engine and roles tests, core-orch's
+  `segments/` and `tests/roll_back.rs`, the assembly's `holding.rs` and `mod.rs`, `authz_scenarios.rs`,
+  `segments_support/mod.rs`); `holder` on the two arrivals core-orch builds: `None` in `arrival/mod.rs`, and the
+  account's holder in `arrival/filing.rs`, the one edit that adds what the log records, since the waiting quote's row
+  reads it (without it the filing's waiting `shown` would be refused); `NoticeOf::WaitEnded` keyed as `wait_ended`
+  is in `notice/summary.rs`; `Read::FiledOrder` covers no entry (core-audit's `receipts/receipt.rs`) and is refused by
+  policy whoever reads (core-authz's `session/mod.rs`) until `T-021-16`; `set_setting` is answered by no rule
+  (core-authz's `roles/mod.rs`) until `T-021-15`, its test `operator_setting_is_refused_while_no_rule_answers_it`
+  [`REQ-AUZ-1`]; the two new kinds in core-audit's exhaustive `kind`; `tests/notice.rs` names the waiting quote's
+  arrival among the records its log doesn't build (a test artefact: the test logs a `shown` alone).
+- **Named tests.** provider-role: `statement_under_provider_role_3_0_0_is_taken_under_4_0_0_only_while_3_0_0_is_in_force`,
+  `statement_under_a_version_past_its_cutover_date_is_void`, `arrival_notice_naming_its_destination_and_who_set_it_is_valid`,
+  and beside them `status_question_is_answered_by_the_providers_own_result_for_the_transaction_asked_about`
+  [`REQ-ORD-1`], `hold_request_is_answered_by_the_reserves_own_hold_of_what_was_asked` [`REQ-QTE-15`],
+  `terms_handed_back_with_a_result_are_its_makers_own` [`REQ-QTE-6`]; the guard:
+  `changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard`,
+  `change_adding_a_protection_marked_ignorable_fails_the_contract_guard`; core-internal:
+  `automatic_deposit_acceptance_of_a_quote_shown_without_a_firm_rate_is_refused_by_the_log`,
+  `waiting_notice_whose_requester_is_not_the_arrivals_holder_is_refused_by_the_log`,
+  `statement_received_between_a_revocations_effect_and_its_result_is_unattributed_by_the_contracts_rule`,
+  `second_order_on_a_deposit_whose_wait_ended_unaccepted_is_admitted`, `operator_setting_is_a_catalogue_change_of_its_own`,
+  `each_lifecycle_action_is_a_catalogue_change_of_its_own`, `each_invalid_fixture_breaks_only_the_rule_it_names`,
+  `every_fixture_core_internals_readme_names_exists_and_every_fixture_is_named`, and beside them
+  `read_of_a_filed_order_names_its_requester` [`REQ-AUZ-8`, `REQ-AUZ-7`]; conformance:
+  `decision_record_fixtures_naming_the_routers_version_carry_signatures_that_verify` [`DEC-4`]. Written on the shapes
+  before their rules; the guard's pair failed on their assertions first, and the rest show their red in the rule-offs.
+- **Fixtures.** provider-role 10 valid, 15 invalid (two bundles, `answered-status-query-` and `answered-hold-`);
+  module-interface 2 invalid; router-api 2 invalid (one patched) and the six re-signed; core-internal 14 valid, 8
+  invalid, 16 admission cases, 2 attribution cases. Scripts in the row's scratch folder (`gen_pr.py`, `gen_ci.py`,
+  `gen_adm.py`, `resign.py`).
+- **Histories the log refused, sorted.** None of the earlier admission or world cases changed verdict under the new
+  rows. One test artefact: core-orch's `an_order_waiting_for_its_customers_acceptance_is_told_to_the_customer_and_the_operator`
+  logs a waiting `shown` with no arrival; named as an unbuilt citation, as its other unbuilt records are. No Core bug.
+- **Defaults** (reversible, each failing closed):
+  - fixtures keep naming protocol 2.0.1;
+  - a statement under an older version is void from the cutover instant on, and at a time that can't be ordered;
+  - the protocol's changelog rule binds provider-role alone, from 4.0.0 on, by its markers;
+  - terms ride on the dry-run answers, not on every result: stated before a segment starts;
+  - a hold is asked for by an operation of its own, since a hold names the choice round's record, which no dry run
+    can;
+  - neither new kind is a cross-module call (module-interface and router-api);
+  - `set_setting` for every setting, `provider` the deployment's operator for one about the whole deployment;
+    `set_slippage` stays;
+  - a filed order's read is refused by policy, and a `set_setting` by the fixed rule, until their owners;
+  - an operator reads a filed order without a permission as it reads an order's state, and a provider never;
+  - a wait ends once, only unaccepted, and its order takes no acceptance after it;
+  - the arrival's holder is optional, required only by the waiting quote's row;
+  - `order_opened` carries no tuple input.
+- **Gaps, with owners.**
+  1. Wave 38's shapes (`T-021-14`, `T-020-44`, whose `one-start-per-linked-order` row edits the same changelog, README
+     table and `relations.rs`) aren't on this base: the merge of the two is the lead's.
+  2. A waiting quote's slow places stay orchestration's: the log holds the quote by digest alone and no figure of its
+     segments' settlement times, so no row can check them (R-AWAITING's second half). Owner: the lead (a later round,
+     if the decision record's settlement figures are to enter the log).
+  3. Which protocol versions are in force, their cutover dates and the per-segment reading across a cutover are
+     `T-020-54`'s; router-api's bounds name one version (`ProtocolVersions::only`), so routing takes no older one.
+     Owner: `T-020-54`.
+  4. A question Core asked under a transaction with no answer logged leaves that transaction out of a rebuilt
+     `Issued`. Owner: `T-020-46`.
+  5. A reopened Core holds an open order's request from `order_opened` but not its tuples' inputs. Owner: `T-020-46`.
+  6. The platform's call judgement refuses `holding_balance` however it is named; `status_query` and `hold` named as a
+     call are refused by the contracts, not yet by the platform. Owner: `T-013-11`.
+  7. `set_setting`'s permissions are `T-021-15`'s, a filed order's read `T-021-16`'s, the wait's end `T-020-51`'s,
+     its notice summary `T-023-04`'s, the register's L5 reading `T-022-11`'s, the destination `T-020-50`'s, the
+     carriers' callers `T-020-47`'s and `T-013-11`'s.
+  8. The rest of the fixtures' signatures are the contracts' placeholders, as `conformance/src/signing.rs` says; only
+     the six router-version records are real.
+  9. The workspace suite runs in CI.
+- **Contract guard.** Against `origin/develop` (`fb883e01`): "1900 changed path(s) … no violations". CI's guard runs
+  against `m3`, where the folded versions equal the base's and it fails by design, as `T-020-39`'s did.
+- **Local checks** (through the lock): `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D
+  warnings`; `cargo test -p` `rutent-contracts`, `rutent-contract-guard`, `rutent-core-authz --lib`,
+  `rutent-core-audit`, `rutent-router`, `rutent-conformance`, `rutent-core-orch`, and the scenarios `deposit_waits`,
+  `assembly_arrivals`, `authz_scenarios`, `holds`, `notices`; the doc check; plan-check and tag-check `--strict` (0
+  findings, 2197 tests tagged). core-audit's `reopen` failed twice on one run at `EvidenceStore::open` and passed 11/11
+  on the rerun, nothing of this row in its path.
+- **Rule-off table** (each switched off alone from the committed checkpoint, its tests run through the lock, the file
+  restored with `git checkout`; script `ruleoff.py` in the row's scratch folder; none hung). "Fixtures" is the
+  contract's `every_valid_fixture_validates_and_every_invalid_one_is_rejected`, "table"
+  `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `in_force`: an older version never past its cutover | `statement_under_a_version_past_its_cutover_date_is_void` |
+  | `in_force`: no older version taken | the same, and `statement_under_provider_role_3_0_0_is_taken_under_4_0_0_only_while_3_0_0_is_in_force` |
+  | `same_figures`: the destination left aside | `arrival_notice_naming_its_destination_and_who_set_it_is_valid` |
+  | `check_status_answer`: each of its four mismatches, alone | fixtures, `status_question_is_answered_by_the_providers_own_result_for_the_transaction_asked_about` |
+  | `check_hold_answer`: each of its three mismatches, alone | fixtures, `hold_request_is_answered_by_the_reserves_own_hold_of_what_was_asked` |
+  | the nested status result's, hold's and terms' maker, each alone | fixtures, and the status, hold or terms test |
+  | module-interface: a call of an operator's question | module-interface's fixtures |
+  | router-api: `call_kind` excluding `holding_balance` alone (schema) | router-api's fixtures |
+  | the guard: neither or both markers | `changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard` |
+  | the guard: a protection marked ignorable | `change_adding_a_protection_marked_ignorable_fails_the_contract_guard` |
+  | the guard: protocol entries not read at all | both guard tests |
+  | `automatic-deposit-takes-a-firm-quote` cites nothing | `automatic_deposit_acceptance_of_a_quote_shown_without_a_firm_rate_is_refused_by_the_log`, table |
+  | the same, a quote awaiting its customer read as firm | the same two |
+  | `waiting-quote-is-for-its-arrivals-holder`: its holder field | `waiting_notice_whose_requester_is_not_the_arrivals_holder_is_refused_by_the_log`, table |
+  | L5: a revocation counted from its `done` result only | `statement_received_between_a_revocations_effect_and_its_result_is_unattributed_by_the_contracts_rule`, `statement_received_after_its_grants_revocation_is_unattributed_by_the_contracts_rule`, `the_log_not_the_writer_attributes_a_stated_entry` |
+  | L5: a failed revocation still counted | the first and the third |
+  | `wait-ends-a-wait` cites nothing | `second_order_on_a_deposit_whose_wait_ended_unaccepted_is_admitted`, table |
+  | `ended-wait-takes-no-acceptance`: an acceptance after the end | the same two |
+  | `ended-wait-takes-no-acceptance`: a second end | the same two |
+  | `one-order-per-deposit`: an ended wait frees nothing | the same two |
+  | `check`: a setting named exactly by `set_setting` | `operator_setting_is_a_catalogue_change_of_its_own`, `each_invalid_fixture_breaks_only_the_rule_it_names`, fixtures, `every_invalid_fixture_is_rejected_by_the_rust_types_too` |
+  | the rule switch never switching off | `each_invalid_fixture_breaks_only_the_rule_it_names` |
+  | `is_a_lifecycle_action` leaving out `promote` and `roll_back` | `each_lifecycle_action_is_a_catalogue_change_of_its_own` |

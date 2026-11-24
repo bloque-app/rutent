@@ -161,6 +161,9 @@ fn covers(reads: &Read, entry: &Entry) -> bool {
         Read::Segment { order, segment, .. } => names(entry, order, Some(segment)),
         Read::Trail {} => true,
         Read::Resource { .. } => false,
+        // A filed order's status is the state of an order the log holds no acceptance of yet: no entry is it
+        // (`T-020-45`).
+        Read::FiledOrder { .. } => false,
     }
 }
 

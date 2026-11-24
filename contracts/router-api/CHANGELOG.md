@@ -1,6 +1,16 @@
 # router-api changelog
 
 ## 4.0.0
+- Following provider-role 4.0.0 and module-interface 5.0.0 (`T-020-45`, findings 4 and 9 of `M3`'s milestone review):
+  this contract's schemas name both contracts' URNs and its Rust uses their modules, so its shapes change with them,
+  in this unreleased major. A cross-module call's kind (`call_kind`, `CallKind`) is never one of the operator's own
+  questions: `status_query` and `hold` join `holding_balance` among the kinds no module may call for, in the schema
+  and in `Operation::check` and the calls figure's check. Two invalid fixtures,
+  `operation-naming-a-call-for-a-status-question` and `catalogue-snapshot-calls-figure-asking-for-a-hold`. A statement
+  figure is judged void at the bounds' one protocol version, by provider-role's `check_context` with no older version
+  in force, at the snapshot's `taken_at`: what it took before. The six decision-record fixtures that name the router's
+  version carry real signatures over their current text (the review's Low on stale signatures). (DEC-4, DEC-20,
+  REQ-PRT-1, REQ-ORD-1, REQ-QTE-15, REQ-MDL-21, T-020-45)
 - A candidate dropped for a batched payout names its reason (item `shared-movement-reading`, `T-020-39`):
   `DropReason::BatchedPayout {part, operation}` (`batched_payout`), a part whose last operation, its deposit, is at a
   reserve tuple declaring provider-role's `payouts: batched`. `Candidate::check` holds it to its part's last operation

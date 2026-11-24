@@ -8,6 +8,11 @@
         "callee": "p-z",
         "kind": "withdrawal"
       }
+    },
+    {
+      "op": "replace",
+      "path": "/signature/value",
+      "value": "6jLIlwdv5zubxh4v-k-vdLf1t3Xje-uEQiW_HjfFrbaZkjqhYsc741IwIg86oCZCuHvZxV14lYw5FETiqQBJDg"
     }
   ]
 }

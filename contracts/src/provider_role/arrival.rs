@@ -27,7 +27,8 @@ use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{
-    ContextMismatch, Deployment, NotSignedByOperator, ShapeMismatch, Statement, StatementShape,
+    ContextMismatch, Deployment, NotSignedByOperator, ProtocolVersions, ShapeMismatch, Statement,
+    StatementShape,
 };
 use super::outcome::{BalanceRefused, NoDetail};
 use super::types::{Denomination, OuterNode};
@@ -54,6 +55,37 @@ pub struct ArrivalNotice {
     pub account: String,
     /// The party that holds the account.
     pub holder: String,
+    /// Where an automatic deposit of this credit goes, as the reserve sets it from its customer's parameters
+    /// (`REQ-ORD-13`; finding 5 of `M3`'s milestone review, 4.0.0). Absent, the reserve names none, and the deposit
+    /// goes to its holder.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub destination: Option<DepositDestination>,
+}
+
+/// Where an automatic deposit goes, as its reserve names it in the arrival notice (`REQ-ORD-13`, `REQ-AUZ-9`; 4.0.0):
+/// the reserve, outer node, account and asset the deposit is delivered to, set from the customer's parameters, and who
+/// set those parameters for whom. The reserve states it; it is a destination like any other, which the reader still
+/// resolves to its owner (`REQ-ORD-24`) and holds inside the deposit's authorisation. Schema:
+/// `urn:rutent:provider-role:arrival-notice#/$defs/destination`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DepositDestination {
+    /// The reserve the deposit is delivered at.
+    pub reserve: String,
+    /// The reserve's outer node it is delivered to.
+    pub node: OuterNode,
+    /// The account or address there, by reference.
+    pub account: String,
+    /// The asset it is delivered in, and the unit it is counted in.
+    pub asset: Denomination,
+    /// Who set the parameters the destination comes from: the customer, or the agent or person acting for it.
+    pub set_by: String,
+    /// Whose parameters they are: the customer the deposit is for.
+    pub set_for: String,
 }
 
 impl StatementShape for ArrivalNotice {
@@ -61,14 +93,15 @@ impl StatementShape for ArrivalNotice {
 }
 
 impl ArrivalNotice {
-    /// Whether `other` states the same arrival: the same outer node, asset and unit, amount, account and holder.
-    /// The transaction, the credit's reference, is left aside.
+    /// Whether `other` states the same arrival: the same outer node, asset and unit, amount, account and holder,
+    /// and the same destination or none. The transaction, the credit's reference, is left aside.
     pub fn same_figures(&self, other: &Self) -> bool {
         self.node == other.node
             && self.asset == other.asset
             && self.amount == other.amount
             && self.account == other.account
             && self.holder == other.holder
+            && self.destination == other.destination
     }
 }
 
@@ -207,13 +240,14 @@ impl StatementShape for ArrivalAnswer {
         &self,
         maker: &str,
         deployment: &Deployment,
-        protocol_version: &str,
+        versions: &ProtocolVersions,
+        at: &str,
     ) -> Result<(), ContextMismatch> {
         match &self.outcome {
             ArrivalOutcome::Arrived(arrived) => arrived
                 .notices
                 .iter()
-                .try_for_each(|notice| notice.check_as_nested(maker, deployment, protocol_version)),
+                .try_for_each(|notice| notice.check_as_nested(maker, deployment, versions, at)),
             _ => Ok(()),
         }
     }

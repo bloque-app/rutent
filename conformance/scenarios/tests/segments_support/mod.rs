@@ -1391,6 +1391,7 @@ fn seed_arrival(
                     notice: Some(notice),
                     part: split.then(|| id(plan.part_id.as_str())),
                     earlier: None,
+                    holder: None,
                 },
                 Outcome::Observed {},
             ),
@@ -2664,6 +2665,7 @@ pub fn release_change(
         class: None,
         advertising_keys: Vec::new(),
         statement_key,
+        setting: None,
     }
 }
 

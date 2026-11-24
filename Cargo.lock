@@ -1480,6 +1480,7 @@ name = "rutent-contracts"
 version = "0.0.0"
 dependencies = [
  "jsonschema",
+ "rutent-contracts",
  "serde",
  "serde_json",
 ]

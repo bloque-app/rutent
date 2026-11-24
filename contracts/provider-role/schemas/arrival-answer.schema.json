@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:provider-role:arrival-answer",
   "title": "Arrival answer",
-  "description": "A reserve's own signed answer to the operator's question of what arrived (urn:rutent:provider-role:arrival-question). It names the question's transaction, so its stated entry is about it and it counts only as that question's answer (REQ-ORD-1). It carries the reserve's arrival notice of each credit, whole and unchanged, the same notice it sends of its own accord, so the answer is that notice under the question's transaction; or says nothing arrived; or refuses, without saying when it lifts, since the question counts as a balance check (REQ-CAT-4, INV-9).",
+  "description": "A reserve's own signed answer to the operator's question of what arrived (urn:rutent:provider-role:arrival-question). It names the question's transaction, so it counts only as that question's answer (REQ-ORD-1). It carries the reserve's arrival notice of each credit, whole and unchanged, the same notice it sends of its own accord, so the answer is that notice under the question's transaction; or says nothing arrived; or refuses, without saying when it lifts, since the question counts as a balance check (REQ-CAT-4, INV-9).",
   "$ref": "urn:rutent:provider-role:statement-envelope",
   "properties": {
     "shape": {

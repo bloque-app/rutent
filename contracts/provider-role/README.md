@@ -5,7 +5,8 @@ This contract holds seven things:
 - what a provider advertises and declares to join the catalogue (`T-002-01`);
 - the operations each role is asked, and the results it gives (`T-002-02`);
 - the verifier's standalone judgement, and the reserve's reversal confirmation;
-- a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0);
+- a provider's signed terms for a tuple, and a reserve's signed hold of a quote (3.1.0), with the operator's status
+  question and hold request (4.0.0);
 - a reserve's signed notice of value arriving, the operator's question of what arrived and the reserve's answer
   (3.1.0);
 - a publisher's signed record of the segments inside its private node, labelled its word (3.1.0);
@@ -53,8 +54,13 @@ decision records. All its fields are required:
 
 - `deployment` `{name, operator_key}`: a globally unique deployment, bound to its operator by the operator's
   Ed25519 public key (`THR-8`).
-- `protocol_version`: `major.minor.patch`. The statement is void at any other deployment or version
-  (`REQ-PRT-1`).
+- `protocol_version`: `major.minor.patch`. The statement is void at any other deployment, and at any version the
+  reader doesn't hold in force (`REQ-PRT-1`). A reader holds its current version and, during a cutover, an older one
+  with its cutover date, from which a statement under it is void (`ProtocolVersions`, `check_context(deployment,
+  versions, at)`, `REQ-PRT-4`, 4.0.0).
+- Each change to this contract says in its changelog entry whether a party may ignore it, `Ignorable: yes` or
+  `Ignorable: no`; one that adds a protection is never ignorable, and the contract guard refuses an entry from 4.0.0 on
+  that says neither (`REQ-PRT-2`).
 - `shape`: the `$id` of the statement's schema. It is signed with the rest, so a result can't be presented as a
   quote. A schema for one kind of statement `$ref`s the envelope, fixes `shape` with `const`, and narrows
   `statement`.
@@ -214,7 +220,10 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Operations.** An operation is the operator's statement, signed with its `operator_key`.
   - Its `kind` is one of `withdrawal`, `deposit`, `balance_verification` and `reversal_confirmation` (reserve),
     `holding_balance` (a holding account's module, 3.0.0), `conversion` (exchange), `transfer` (ramp), `reversal` (exchange or ramp), or `judgement` (verifier)
-    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008).
+    (`REQ-CAT-9`, `REQ-CAT-15`, ADR-0008); or the operator's `status_query` and `hold` (4.0.0).
+  - A status query (4.0.0) is asked of a provider that declares `status_query` tracking, under a transaction of its
+    own, naming the transaction it is `about`. Its result names both, and is `answered` (the provider's own result for
+    `about`, whole), `not_known` or `refused` (`check_status_answer`). It changes nothing (`REQ-ORD-1`).
   - The value-moving kinds carry a `transaction`, the `provider` asked, their segment, `inputs` (`REQ-CAT-12`) and
     `dry_run` (`REQ-CAT-14`). A conversion and a transfer also carry a `direction`, `exact_in` or `exact_out`,
     which says which amount is stated.
@@ -277,28 +286,32 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
 - **Refusals.** A refusal's `class` is `lifts_at_known_time` (with `lifts_at`), `waits_on_person` or `final`
   (`REQ-CAT-18`).
 
-## Terms and holds (3.1.0)
+## Terms and holds (3.1.0, 4.0.0)
 
-Before 3.1.0 Core kept a provider's fee terms and a held quote only in memory, with nothing signed behind them,
-though core-internal places "stated terms with their times; a held quote" among stated entries. Each is now its
-maker's own statement, which Core keeps (`Evidence::keep`) and appends as a stated entry: terms about nothing, since
-their body names no transaction, and a hold about its own transaction, its id.
+A provider's fee terms and a reserve's held quote are each its maker's own signed statement. A provider hands its
+terms back in a dry-run answer's optional `terms` (4.0.0), and a reserve its hold in the answer to the operator's hold request
+(`hold`, 4.0.0). What a reader does with them, and how Core's log records them, is core-internal's README's.
 
 - **Terms** (`TupleTerms`, shape `urn:rutent:provider-role:terms`). The maker is the tuple's provider. The body
   names the tuple, by its provider and both ends (an inner node by identifier or an outer node by its network, and
   the asset with its unit), the fee formula (`flat`, `proportional`, optional `maximum`, in the tuple's input
   unit), and the slippage regime, present exactly where the tuple sets a rate: an exchange's, whose ends hold
-  different assets. Terms bind from the later of their `made_at` and Core's `received_at`, never `made_at` alone,
-  so terms added after a segment started but dated before it never bind it (router-api's
-  `StatedTerms::from_statement` builds the router's history entry so). A charge raised against a formula cites both
-  the result's entry and the terms' entry (core-internal).
+  different assets. Terms bind from the later of their `made_at` and the time the reader received them, never
+  `made_at` alone, so terms added after a segment started but dated before it never bind it (router-api's
+  `StatedTerms::from_statement`).
 - **A hold** (`Hold`, shape `urn:rutent:provider-role:hold`). Made by the reserve that starts each part of the
-  route. The body names its own `transaction`, its id, which its stated entry is about, so the log keys the hold
-  on it; the choice round's decision record by id and digest (`record`), the candidate held, what it
-  is `for`, an order or a session before its order exists, and its `valid_until`, at most the earliest validity
-  among the figures the candidate cites (router-api's `HeldQuote::check_hold`, which has the record). Redeeming is
-  refused for any order but the one it names, or one accepted in the session it names (`check_redemption`). The
-  acceptance that redeems it names its entry (core-internal).
+  route. The body names its own `transaction`, its id, unique to it; the choice round's decision record by id and
+  digest (`record`), the candidate held, what it is `for`, an order or a session before its order exists, and its
+  `valid_until`, at most the earliest validity among the figures the candidate cites (router-api's
+  `HeldQuote::check_hold`, which has the record). Redeeming is refused for any order but the one it names, or one
+  accepted in the session it names (`check_redemption`).
+- **The hold request and its answer** (4.0.0). `Operation::Hold` (`hold`) is the operator's request that a reserve
+  hold a chosen quote: the hold's transaction, the reserve, the record, the candidate, whom it is for and the validity
+  asked. The reserve answers with `ResultBody::Hold`, `held` carrying its own `Hold` whole (`NestedMaker` otherwise),
+  or `refused`. `check_hold_answer(request, answer)` holds it to the request (`AnswersAnotherRequest`,
+  `HoldsAnotherQuote`, `PastTheValidityAsked`).
+- **Terms handed back** (4.0.0). A withdrawal's, deposit's, transfer's or conversion's dry-run answer may carry the provider's
+  own signed `terms`, a nested statement of the result's maker (`ResultBody::terms`).
 
 | Rule | Where | Invalid fixture |
 |---|---|---|
@@ -309,38 +322,36 @@ their body names no transaction, and a hold about its own transaction, its id.
 | A hold is redeemed only for its order, or an order accepted in its session | Rust, `check_redemption`: `ForAnotherOrder`, `ForAnotherSession` | none: it relates a hold to its redemption; a test covers it |
 | A hold names the record it holds by id and digest, which must be its held quote's | router-api, `HeldQuote::check_hold` | none here: `hold-of-another-records-candidate-of-the-same-id` is a valid statement, refused against another record in router-api's tests |
 
-## Arrivals (3.1.0)
+## Arrivals (3.1.0, 4.0.0)
 
-Before 3.1.0 provider-role had no statement a reserve makes of value arriving. Core took what arrived from the
-assembly's port and kept the reserve's notice as bytes it read only for the transaction its body names, so nothing
-held the figures to the signed bytes (`T-020-04`'s gap). A notice is now the reserve's own statement, which Core
-keeps and appends as a stated entry.
+A reserve states what arrived at its accounts in a notice of its own, and answers the operator's question of what
+arrived with those notices. How Core's log keys a deposit on a notice is core-internal's README's.
 
 - **The notice** (`ArrivalNotice`, shape `urn:rutent:provider-role:arrival-notice`). Made by the reserve the value
   arrived at. The body names the `transaction` the reserve gives the credit, the reserve's outer `node`, by its
   network, the `asset` with the unit the amount is counted in, the `amount`, above zero, the `account` it reached and
-  the `holder`, the party that holds it (`REQ-ORD-14`, `REQ-ORD-23`).
+  the `holder`, the party that holds it (`REQ-ORD-14`, `REQ-ORD-23`). It may name the `destination` of an automatic
+  deposit (4.0.0, `REQ-ORD-13`): the reserve, outer node, account and asset the reserve set from its customer's
+  parameters, and who set them (`set_by`) for whom (`set_for`). Absent, it names none.
 - **The transaction is the per-credit reference.** It is the reserve's own, the same in every notice of the credit,
-  whenever signed. It is the deposit's signed transaction core-internal's log keys a deposit on
-  (`arrival-names-its-notice`, `one-order-per-deposit`), so the notice's stated entry is about it, as attribution
-  binds an entry's transaction to the body's.
+  whenever signed: the one reference a reader knows the credit by.
 - **One credit, one arrival.** `check_one_credit(earlier, later)` says two notices of the same maker and transaction
   are one credit where they state the same figures (`Credits::One`), refuses the same transaction with another node,
-  asset, unit, amount, account or holder (`CreditRestated::OtherFigures`), and takes another maker's or another
+  asset, unit, amount, account, holder or destination (`CreditRestated::OtherFigures`), and takes another maker's or another
   transaction's notice as another credit (`Credits::Two`). Times and signatures are left aside.
 - **Two references are two claims.** Two notices under different transactions are two signed claims, each
-  attributable to the reserve that made it (`REQ-AUD-2`). Neither this contract nor the log can tell them from two
+  attributable to the reserve that made it (`REQ-AUD-2`). Neither this contract nor a reader can tell them from two
   real credits: a reserve that states one credit twice, under two references, has signed for both, and the loss is
   that reserve's.
 - **The question of what arrived** (`ArrivalQuestion`, shape `urn:rutent:provider-role:arrival-question`). The
   operator's statement, signed with the deployment's `operator_key` (`check_signed_by_operator`), as an operation
   is. It names its own `transaction`, fresh for the order it is asked for, so its answer counts only as that
   transaction's (`REQ-ORD-1`); the reserve asked (`provider`); the holder's `session`; the `account`, the outer
-  `node`, and the `asset` with the unit it is counted in there. It names no order, as no operation does: Core's log binds it to the order it is asked for.
+  `node`, and the `asset` with the unit it is counted in there. It names no order, as no operation does.
   What arrived at an account tells whether its funds suffice for that much, so the question counts as a balance check
   (`REQ-CAT-4`) and is asked in the holder's session (`REQ-CAT-3`), outside the bound for the holder's own order.
 - **The answer** (`ArrivalAnswer`, shape `urn:rutent:provider-role:arrival-answer`). The reserve's statement. It
-  names the question's `transaction`, so its stated entry is about it, and its `outcome` by `status`: `arrived`, with
+  names the question's `transaction`, and its `outcome` by `status`: `arrived`, with
   the reserve's enveloped notice of each credit, whole and unchanged, at least one; `nothing_arrived`, carrying
   nothing; or `refused`, with a balance refusal's class, which never says when it lifts (`INV-9`). So the answer is
   the same notice the reserve sends of its own accord, by its transaction, under the question's transaction.
@@ -349,12 +360,10 @@ keeps and appends as a stated entry.
   (`AnswersAnotherQuestion`), made by the reserve asked (`OfAnotherReserve`), each notice of the outer node, asset
   and account asked about, the asset by its unit too, since an amount is read in its unit (`AtAnotherNode`,
   `InAnotherAsset`, `ToAnotherAccount`, by the notice's position).
-- **Kept one notice at a time.** A reader keeps each notice an answer carries as its own stated entry, about its
-  credit's transaction, and it is that entry an arrival cites. A deposit is keyed on a notice, never on the answer
-  that carried it: core-internal's `arrival-names-its-notice` takes only this contract's arrival notice as a
-  deposit's notice.
-- **Shapes of their own.** Not an operation kind and a result kind: those would add variants to `Operation` and
-  `ResultBody`, a major (3.0.0's ruling), which module-interface, released at 4.0.0, would have to follow.
+- **Each notice is the reserve's statement.** A notice an answer carries is the same statement the reserve sends of
+  its own accord, and a reader may take it alone.
+- **Shapes of their own.** Not an operation kind and a result kind, so `Operation` and `ResultBody` kept their
+  variants in 3.1.0.
 
 | Rule | Where | Invalid fixture |
 |---|---|---|
@@ -370,15 +379,15 @@ What the contract leaves to its reader: that the notice's maker is a reserve who
 node and asset (the catalogue's, `F-012`); that a credit taken once is taken once (Core's, `T-020-19`, holding each
 notice it took against the next by `check_one_credit`, a notice carried in an answer included); that a question's
 session is the account holder's, open, and counted against the bound unless for the holder's own order (`F-021`'s
-session register); and that a question is asked for the order its log names, under a transaction fresh for it, and
-its answer follows it (`T-020-19`, and core-internal's next round, `T-020-21`, for the log's row).
+session register); and that a question is asked for the order it is for, under a transaction fresh for it, and
+its answer follows it (`T-020-19`; core-internal says how the log binds them).
 
 ## Inner segments (3.1.0)
 
 `CMP-EVIDENCE`'s replay (`REQ-ORD-41`) reads what a publisher recorded of the segments inside its private node, and
 before 3.1.0 no contract shaped that record: the assembly's `Books` was filled by hand (`F-015`, `T-020-09`). The
-record is now the publisher's own statement (`InnerSegments`, shape `urn:rutent:provider-role:inner-segments`),
-which Core keeps and appends as a stated entry about nothing, since its body names no transaction of its own.
+record is now the publisher's own statement (`InnerSegments`, shape `urn:rutent:provider-role:inner-segments`). Its
+body names no transaction of its own.
 
 - **Who makes it.** A publisher holds no key, so the record is made and signed by one of its providers, stating for
   it, as any statement a publisher stands behind is. `check_inner_segments(record, advertisement)` is given the

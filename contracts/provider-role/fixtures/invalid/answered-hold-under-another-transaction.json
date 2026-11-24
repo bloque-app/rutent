@@ -1,0 +1,88 @@
+{
+  "request": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:operation",
+    "maker": "rutent-operator",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "hold",
+      "transaction": "tx-hold-1",
+      "provider": "reserve-bank-co",
+      "record": {
+        "id": "dr-0004",
+        "digest": {
+          "algorithm": "sha-256",
+          "value": "abababababababababababababababababababababababababababababababab"
+        }
+      },
+      "candidate": "c1",
+      "for": {
+        "kind": "order",
+        "order": "ord-1"
+      },
+      "valid_until": "2026-11-06T15:01:55Z"
+    }
+  },
+  "answer": {
+    "deployment": {
+      "name": "rutent-test",
+      "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+    },
+    "protocol_version": "2.0.1",
+    "shape": "urn:rutent:provider-role:result",
+    "maker": "reserve-bank-co",
+    "made_at": "2026-11-06T15:04:05Z",
+    "signature": {
+      "scheme": "ed25519",
+      "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+      "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+    },
+    "statement": {
+      "kind": "hold",
+      "transaction": "tx-hold-9",
+      "outcome": {
+        "status": "held",
+        "hold": {
+          "deployment": {
+            "name": "rutent-test",
+            "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+          },
+          "protocol_version": "2.0.1",
+          "shape": "urn:rutent:provider-role:hold",
+          "maker": "reserve-bank-co",
+          "made_at": "2026-11-06T15:00:30Z",
+          "signature": {
+            "scheme": "ed25519",
+            "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+            "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+          },
+          "statement": {
+            "transaction": "tx-hold-9",
+            "record": {
+              "id": "dr-0004",
+              "digest": {
+                "algorithm": "sha-256",
+                "value": "abababababababababababababababababababababababababababababababab"
+              }
+            },
+            "candidate": "c1",
+            "for": {
+              "kind": "order",
+              "order": "ord-1"
+            },
+            "valid_until": "2026-11-06T15:01:55Z"
+          }
+        }
+      }
+    }
+  }
+}

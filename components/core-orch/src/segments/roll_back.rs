@@ -154,6 +154,7 @@ impl Segments {
             class: None,
             advertising_keys: Vec::new(),
             statement_key: None,
+            setting: None,
         };
         let request = DecisionRequest {
             request: fresh.id(),

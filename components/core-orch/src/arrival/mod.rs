@@ -647,6 +647,8 @@ impl Arrivals {
                 notice: Some(noted.commitment.clone()),
                 part,
                 earlier: None,
+                // No filing waits on a quote here, so no holder is named (`T-020-45`).
+                holder: None,
             };
             noted.arrival = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

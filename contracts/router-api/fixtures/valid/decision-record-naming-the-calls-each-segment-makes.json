@@ -8,9 +8,9 @@
   "protocol_version": "2.0.1",
   "shape": "urn:rutent:router-api:decision-record",
   "signature": {
-    "key": "JddFbtX5xFFtDV_hZttVr9nJBVV9TlPxp99l7N3ZRlA",
+    "key": "p0AwCEnVN6NLtcUJ6GH0HoDgf3LvSwtjauPIgqgz4gE",
     "scheme": "ed25519",
-    "value": "lsrpbtB5rahgeQi2ugPWVTFXrjVELKI6MgYK5A_9vBVN_u10yk2KC0jqpnZr_3pYfecOg0seNUTRDVphTCJIGA"
+    "value": "0nC_35p2wkY1jjQ-FN_2TL8wvgMfneapmw6vwMjFBqx4y5FTEzKUyH6esgXcRT2bSHWJlDyQzC-Y8w3JzmuaDQ"
   },
   "statement": {
     "bounds": {

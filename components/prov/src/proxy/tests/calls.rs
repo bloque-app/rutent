@@ -41,6 +41,8 @@ fn operation(kind: OperationKind, callee: &str, transaction: &str) -> Operation 
         OperationKind::Reversal => "operation-reversal-of-a-failed-transfer",
         OperationKind::ReversalConfirmation => "operation-reversal-confirmation-for-one-credit",
         OperationKind::HoldingBalance => "operation-holding-balance",
+        OperationKind::StatusQuery => "operation-status-query",
+        OperationKind::Hold => "operation-hold-of-a-chosen-quote",
     };
     let mut value = fixture("provider-role", name);
     value["statement"]["provider"] = json!(callee);

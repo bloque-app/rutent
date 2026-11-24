@@ -344,9 +344,38 @@ pub enum CatalogueChange {
     /// `T-020-39`). Policy decides it under a permission of its own from `T-021-12`; until then no rule answers it,
     /// and it is refused.
     RollBack,
+    /// Setting one of the operator's settings: its fee formula, a tuple's slippage limit or evidence floor, a public
+    /// node's settings, a ceiling on value in flight, a schedule's cadence or a protocol version's cutover date
+    /// ([`OperatorSetting`]), each a decided change of its own whose action names the setting and its value, so it is
+    /// rebuilt from the log (finding 4 of `M3`'s milestone review, `M2`'s item 6, `T-020-45`). Policy decides it under
+    /// a permission of its own from `T-021-15`; until then no rule answers it.
+    SetSetting,
 }
 
+/// The platform's lifecycle actions on a module release, each a [`CatalogueChange`] of its own, which Core carries
+/// out only on a permitted effect, as it does `promote` and `roll_back` (finding 4 and `M2`'s item 6 of `M3`'s milestone
+/// review, `T-020-45`): the action's name on the platform and its change. Each is about one release.
+pub const LIFECYCLE_ACTIONS: [(&str, CatalogueChange); 5] = [
+    ("accept", CatalogueChange::AcceptModule),
+    ("withdraw", CatalogueChange::WithdrawRelease),
+    ("revoke", CatalogueChange::RevokeRelease),
+    ("declare_exploited", CatalogueChange::DeclareExploited),
+    ("mark_stale", CatalogueChange::MarkStale),
+];
+
 impl CatalogueChange {
+    /// Whether the change is one of the platform's lifecycle actions on a release that Core carries out only on a
+    /// permitted effect: the five of [`LIFECYCLE_ACTIONS`], `promote` and `roll_back`.
+    pub fn is_a_lifecycle_action(self) -> bool {
+        matches!(self, CatalogueChange::Promote | CatalogueChange::RollBack)
+            || LIFECYCLE_ACTIONS.iter().any(|(_, c)| *c == self)
+    }
+
+    /// Whether the change sets one of the operator's settings, and so names it.
+    pub fn is_a_setting(self) -> bool {
+        self == CatalogueChange::SetSetting
+    }
+
     /// Whether the change is about one module release, and so names its version.
     pub fn is_about_a_release(self) -> bool {
         matches!(
@@ -368,6 +397,120 @@ impl CatalogueChange {
             self,
             CatalogueChange::Grant | CatalogueChange::RevokeGrant | CatalogueChange::SetSlippage
         )
+    }
+}
+
+/// One of the operator's settings and its value (finding 4 of `M3`'s milestone review, `T-020-45`): what a
+/// `set_setting` change sets. The values stay the deployment's to choose (`T-020-49`); this names them so policy
+/// decides each and the log holds it. Schema: `urn:rutent:core-internal:common#/$defs/operator_setting`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "setting", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperatorSetting {
+    /// The operator's own fee, taken at the destination (`REQ-QTE-2`, `REQ-QTE-5`), as the router's bounds carry it.
+    OperatorFee {
+        /// The formula.
+        formula: crate::router_api::FeeFormula,
+    },
+    /// A tuple's slippage limit (`REQ-QTE-9`), as the router's bounds carry it.
+    SlippageLimit {
+        /// The limit, by its tuple.
+        limit: crate::router_api::SlippageLimit,
+    },
+    /// The weakest evidence the operator accepts on a tuple (`REQ-ORD-39`).
+    EvidenceFloor {
+        /// The tuple.
+        tuple: crate::router_api::TupleKey,
+        /// The floor.
+        grade: EvidenceGrade,
+    },
+    /// A public node's settings (`REQ-CAT-23`, `DEC-13`): whether the operator lists it public, and the confirmations
+    /// a movement at it waits for before Core takes it as final, where the operator sets them. Each network's values
+    /// are `F-031`'s to choose.
+    PublicNode {
+        /// The node.
+        node: OuterNode,
+        /// Whether the operator lists it public.
+        listed: bool,
+        /// The confirmations a movement waits for, where set.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        confirmations: Option<Count>,
+    },
+    /// A ceiling on value in flight at one provider (`REQ-ORD-8`), as the router's bounds carry it.
+    ProviderCeiling {
+        /// The ceiling.
+        ceiling: crate::router_api::ProviderCeiling,
+    },
+    /// A ceiling on value in flight across one publisher's providers (`REQ-ORD-8`), as the router's bounds carry it.
+    PublisherCeiling {
+        /// The ceiling.
+        ceiling: crate::router_api::PublisherCeiling,
+    },
+    /// How often one of Core's scheduled jobs runs (`T-020-48`).
+    Cadence {
+        /// The job, by name.
+        job: Token,
+        /// Its period, in whole seconds.
+        seconds: Count,
+    },
+    /// An older protocol version's cutover date, from which a statement under it is void (`REQ-PRT-4`, `T-020-54`).
+    Cutover {
+        /// The older version.
+        version: crate::router_api::ProtocolVersion,
+        /// The cutover date.
+        cutover: Timestamp,
+    },
+}
+
+/// Which of the operator's settings an [`OperatorSetting`] is: policy holds each under a permission of its own
+/// (`T-021-15`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SettingKind {
+    /// The operator's own fee.
+    OperatorFee,
+    /// A tuple's slippage limit.
+    SlippageLimit,
+    /// A tuple's evidence floor.
+    EvidenceFloor,
+    /// A public node's settings.
+    PublicNode,
+    /// A provider's ceiling.
+    ProviderCeiling,
+    /// A publisher's ceiling.
+    PublisherCeiling,
+    /// A scheduled job's cadence.
+    Cadence,
+    /// A protocol version's cutover date.
+    Cutover,
+}
+
+impl OperatorSetting {
+    /// Which setting it is.
+    pub fn kind(&self) -> SettingKind {
+        match self {
+            OperatorSetting::OperatorFee { .. } => SettingKind::OperatorFee,
+            OperatorSetting::SlippageLimit { .. } => SettingKind::SlippageLimit,
+            OperatorSetting::EvidenceFloor { .. } => SettingKind::EvidenceFloor,
+            OperatorSetting::PublicNode { .. } => SettingKind::PublicNode,
+            OperatorSetting::ProviderCeiling { .. } => SettingKind::ProviderCeiling,
+            OperatorSetting::PublisherCeiling { .. } => SettingKind::PublisherCeiling,
+            OperatorSetting::Cadence { .. } => SettingKind::Cadence,
+            OperatorSetting::Cutover { .. } => SettingKind::Cutover,
+        }
+    }
+
+    /// The provider it is about, where it is about one: a tuple's, or a provider's ceiling's. `None` for a setting of
+    /// the whole deployment.
+    pub fn provider(&self) -> Option<&Id> {
+        match self {
+            OperatorSetting::SlippageLimit { limit } => Some(&limit.tuple.provider),
+            OperatorSetting::EvidenceFloor { tuple, .. } => Some(&tuple.provider),
+            OperatorSetting::ProviderCeiling { ceiling } => Some(&ceiling.provider),
+            _ => None,
+        }
     }
 }
 
@@ -455,6 +598,16 @@ pub enum Action {
             skip_serializing_if = "Option::is_none"
         )]
         statement_key: Option<PublicKey>,
+        /// The operator's setting it sets, and its value: named exactly by `set_setting` (`T-020-45`). For a setting
+        /// about a provider (a tuple's, or a provider's ceiling), `provider` is that provider; for one about the whole
+        /// deployment (the operator's fee, a public node, a publisher's ceiling, a cadence, a cutover), the
+        /// deployment's operator.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        setting: Option<alloc::boxed::Box<OperatorSetting>>,
     },
     /// Asking the provider of a failed segment to reverse it, a decided action like any other (`REQ-ORD-3`,
     /// `REQ-ORD-11`): the segment owes its reversal, and the provider is the one that failed it.
@@ -936,6 +1089,15 @@ pub enum Reads {
     Evidence {
         /// The commitment the stated entry names it by.
         commitment: Digest,
+    },
+    /// The status of an order whose parties the log doesn't hold yet, its acceptance not logged: read by its filed
+    /// request's requester, which this names, so policy answers an agent's read from its scope and its party's being
+    /// that requester (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s milestone review, `T-020-45`, `T-021-16`).
+    FiledOrder {
+        /// The order.
+        order: Id,
+        /// The party that filed the request: the order's requester.
+        requester: Id,
     },
 }
 
@@ -2381,6 +2543,15 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         earlier: Option<Receipt>,
+        /// The party that holds the account the value reached, as the reserve's notice names it: whom a quote the
+        /// order waits on its customer to accept waits for (`waiting-quote-is-for-its-arrivals-holder`, R-AWAITING,
+        /// `T-020-45`). Absent where the filing names none.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        holder: Option<Id>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {
@@ -2729,6 +2900,51 @@ pub enum What {
         /// The receipts of the stated entries it rests on, at least one, each once.
         rests_on: Vec<Receipt>,
     },
+    /// The end of an order's wait for its customer's acceptance, unaccepted (finding 8 of `M3`'s milestone review,
+    /// `T-020-45`, `T-020-51`): the order filed on a deposit that waited on a quote its customer never accepted. Once
+    /// it is logged the order takes no acceptance, and its deposit is free for another order
+    /// (`one-order-per-deposit`); nothing moved, so the funds stay in the holder's account (`GUA-1`).
+    WaitEnded {
+        /// The order whose wait ended.
+        order: Id,
+        /// Why it ended.
+        why: WaitEnd,
+    },
+    /// An order as intake opened it, before any acceptance (`T-020-45`, for `T-020-46`'s rebuild on reopening): the
+    /// request it was opened under, who asked, its parties, its origin reserve, the session the reserve's yes is asked
+    /// in, its destination and the route asked for. The log holds nothing else of an order before its acceptance, so a
+    /// Core that reopens reads its open orders from here. The tuples' inputs are not here: they may carry accounts, so
+    /// they stay out of the log (`REQ-AUD-6`).
+    OrderOpened {
+        /// The order.
+        order: Id,
+        /// The request identifier it was opened under (`REQ-ORD-19`).
+        request: Id,
+        /// Who asked: the requester's person or agent, in the customer's role.
+        caller: alloc::boxed::Box<Actor>,
+        /// Its parties, recorded apart.
+        parties: alloc::boxed::Box<Parties>,
+        /// The reserve the value leaves from.
+        origin_reserve: Id,
+        /// The user's session at the origin reserve (`REQ-ORD-32`).
+        session: Id,
+        /// Where the value arrives.
+        destination: alloc::boxed::Box<Destination>,
+        /// The route asked for: from, to, amount, objective and any floor.
+        route: alloc::boxed::Box<crate::router_api::Request>,
+    },
+}
+
+/// Why an order's wait for its customer ended (`T-020-45`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitEnd {
+    /// The wait's own lifetime passed (`T-020-51`).
+    PastItsLifetime,
+    /// The session the customer could accept in is over.
+    SessionOver,
+    /// The order was refused while it waited, of the class its `order_refusal` names.
+    OrderRefused,
 }
 
 /// What an order waiting for its customer's acceptance of a slow route tells the customer: the party it waits for, when
@@ -2792,6 +3008,12 @@ pub enum NoticeOf {
         order: Id,
         /// The quote's digest, as the `shown` entry holds it.
         quote: Digest,
+    },
+    /// The end of an order's wait for its customer (`wait_ended`), told once: a restart reads this and sends it no
+    /// more (`T-023-04`, `T-020-45`).
+    WaitEnded {
+        /// The order.
+        order: Id,
     },
 }
 

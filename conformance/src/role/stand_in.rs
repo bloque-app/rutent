@@ -14,17 +14,17 @@ use rutent_contracts::provider_role::{
     BalanceOutcome, BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band,
     BoundedAvailability, BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote,
     ConversionResult, ConversionSettlement, Declarations, Denomination, EndUnits, Evidence,
-    EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee,
-    HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged, Judgement,
-    JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt, MovementSettlement,
-    NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
+    EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldOutcome,
+    HoldResult, HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged,
+    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
+    MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
     REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
     ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
     ReserveOffer, ReserveTuple, ResultBody, Reversal, ReversalConfirmation,
     ReversalConfirmationOutcome, ReversalConfirmationResult, ReversalOutcome, ReversalResult,
     ReversalSettlement, SafeInteger, Signature, SignatureScheme, SigningKey, Slippage, Statement,
-    Terms, Tracking, TransferOutcome, TransferQuote, TransferResult, Unbounded, Unknown,
-    VerifierOffer, VoidedBy,
+    StatusOutcome, StatusQueryResult, Terms, Tracking, TransferOutcome, TransferQuote,
+    TransferResult, Unbounded, Unknown, VerifierOffer, VoidedBy,
 };
 
 use super::{
@@ -232,7 +232,13 @@ impl Signer {
     /// deployment's operator key (`REQ-PRT-1`).
     fn accepts(&self, operation: &Statement<Operation>) -> bool {
         operation
-            .check_context(&self.context.deployment, &self.context.protocol_version)
+            .check_context(
+                &self.context.deployment,
+                &rutent_contracts::provider_role::ProtocolVersions::only(
+                    self.context.protocol_version.as_str(),
+                ),
+                &operation.made_at,
+            )
             .is_ok()
             && operation.check_signed_by_operator().is_ok()
     }
@@ -427,6 +433,15 @@ fn refuse_outside_role(operation: &Operation, refused: Refused) -> ResultBody {
         Operation::HoldingBalance(h) => ResultBody::HoldingBalance(HoldingBalanceResult {
             transaction: h.transaction.clone(),
             outcome: HoldingBalanceOutcome::Refused(refused),
+        }),
+        Operation::StatusQuery(q) => ResultBody::StatusQuery(StatusQueryResult {
+            transaction: q.transaction.clone(),
+            about: q.about.clone(),
+            outcome: StatusOutcome::Refused(refused),
+        }),
+        Operation::Hold(h) => ResultBody::Hold(HoldResult {
+            transaction: h.transaction.clone(),
+            outcome: HoldOutcome::Refused(refused),
         }),
     }
 }
@@ -766,6 +781,7 @@ impl Reserve {
                 amount,
                 account: credit.account,
                 holder: credit.holder,
+                destination: None,
             },
         ))
     }
@@ -845,6 +861,7 @@ impl Reserve {
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::AmountChanges],
                 settlement_seconds: seconds(self.shape.settles_in.unwrap_or(86_400)),
+                terms: None,
             });
         }
         if std::mem::take(&mut self.fail_next) {
@@ -1035,7 +1052,10 @@ impl Typed for Reserve {
         let from_the_operator = question
             .check_context(
                 &self.signer.context.deployment,
-                &self.signer.context.protocol_version,
+                &rutent_contracts::provider_role::ProtocolVersions::only(
+                    self.signer.context.protocol_version.as_str(),
+                ),
+                &question.made_at,
             )
             .is_ok()
             && question.check_signed_by_operator().is_ok();
@@ -1421,6 +1441,7 @@ impl Exchange {
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses, VoidedBy::RateMovesBeyondSlippage],
                 settlement_seconds: seconds(self.shape.settles_in.unwrap_or(60)),
+                terms: None,
             });
         }
         let failing = std::mem::take(&mut self.fail_next);
@@ -1853,6 +1874,7 @@ impl Ramp {
                 valid_until: VALID_UNTIL.to_owned(),
                 voided_by: vec![VoidedBy::ValidityPasses],
                 settlement_seconds: seconds(self.shape.settles_in.unwrap_or(600)),
+                terms: None,
             });
         }
         if std::mem::take(&mut self.fail_next) {
@@ -2180,5 +2202,7 @@ fn transaction_of(body: &ResultBody) -> Option<String> {
         ResultBody::Reversal(r) => Some(r.transaction.clone()),
         ResultBody::ReversalConfirmation(r) => Some(r.transaction.clone()),
         ResultBody::HoldingBalance(r) => Some(r.transaction.clone()),
+        ResultBody::StatusQuery(r) => Some(r.transaction.clone()),
+        ResultBody::Hold(r) => Some(r.transaction.clone()),
     }
 }

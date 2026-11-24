@@ -458,6 +458,7 @@ impl Core {
             class: None,
             advertising_keys: Vec::new(),
             statement_key: Some(wallet.statement_key()),
+            setting: None,
         };
         let request = DecisionRequest {
             request: self.fresh.id(),

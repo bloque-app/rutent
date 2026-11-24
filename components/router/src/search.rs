@@ -189,19 +189,23 @@ impl<'a> Search<'a> {
     /// Whether a statement is void: its envelope names another deployment or protocol version than the bounds'
     /// (`REQ-PRT-1`). Other figures are never void.
     pub(crate) fn is_void(&self, figure: &Figure) -> bool {
-        let (deployment, version) = (
+        // One version in force, the bounds', judged at the snapshot's time (provider-role 4.0.0).
+        let (deployment, versions, at) = (
             &self.bounds.deployment,
-            self.bounds.protocol_version.as_str(),
+            rutent_contracts::provider_role::ProtocolVersions::only(
+                self.bounds.protocol_version.as_str(),
+            ),
+            self.snapshot.taken_at.as_str(),
         );
         match &figure.value {
             FigureValue::FreshQuote { quote, .. } => {
-                quote.check_context(deployment, version).is_err()
+                quote.check_context(deployment, &versions, at).is_err()
             }
             FigureValue::DryRun { result, .. } => {
-                result.check_context(deployment, version).is_err()
+                result.check_context(deployment, &versions, at).is_err()
             }
             FigureValue::Eligibility { judgement, .. } => {
-                judgement.check_context(deployment, version).is_err()
+                judgement.check_context(deployment, &versions, at).is_err()
             }
             _ => false,
         }

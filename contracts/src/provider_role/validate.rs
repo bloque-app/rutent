@@ -187,7 +187,7 @@ impl Advertisement {
 /// `.` sorting before `Z`. A time that isn't in that form (an offset such as `+05:00`, lowercase `t` or `z`, a
 /// leap second, garbage) can't be ordered, so it is never newer and nothing is newer than it: this returns
 /// `false`, which fails closed.
-fn made_after(later: &str, earlier: &str) -> bool {
+pub(crate) fn made_after(later: &str, earlier: &str) -> bool {
     /// The time as (seconds as fixed-width text, fraction padded to nine digits), or `None` if it isn't in the
     /// schema's form.
     fn parts(time: &str) -> Option<(&str, String)> {

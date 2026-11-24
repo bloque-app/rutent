@@ -143,6 +143,15 @@ impl Operation {
                 "an operation names no call for a holding balance",
             ));
         }
+        if self
+            .calls
+            .iter()
+            .any(|c| matches!(c.kind, CallKind::StatusQuery | CallKind::Hold))
+        {
+            return Err(Violation(
+                "an operation names no call for a status question or a hold",
+            ));
+        }
         if self.fee.asset != self.from.asset.id {
             return Err(Violation("an operation's fee is in its from asset"));
         }
@@ -753,6 +762,15 @@ impl CatalogueSnapshot {
                         "a calls figure declares no call for a holding balance",
                     ));
                 }
+                if calls.iter().any(|c| {
+                    c.kinds
+                        .iter()
+                        .any(|k| matches!(k, CallKind::StatusQuery | CallKind::Hold))
+                }) {
+                    return Err(Violation(
+                        "a calls figure declares no call for a status question or a hold",
+                    ));
+                }
                 if calls.iter().any(|c| repeats(&c.kinds)) {
                     return Err(Violation(
                         "a calls figure lists each kind once for its callee",
@@ -973,15 +991,18 @@ impl DecisionRecord {
     /// the provider-role `check_context`; `None` for a figure that isn't a statement.
     fn is_void(&self, id: &Id) -> Option<bool> {
         let figure = self.snapshot.figures.iter().find(|f| &f.figure_id == id)?;
-        let (deployment, version) = (
+        // The bounds name one protocol version, so a figure is taken under it alone, judged at the snapshot's time
+        // (provider-role 4.0.0's versions in force: none older here).
+        let (deployment, versions, at) = (
             &self.bounds.deployment,
-            self.bounds.protocol_version.as_str(),
+            crate::provider_role::ProtocolVersions::only(self.bounds.protocol_version.as_str()),
+            self.snapshot.taken_at.as_str(),
         );
         let context = match &figure.value {
-            FigureValue::FreshQuote { quote, .. } => quote.check_context(deployment, version),
-            FigureValue::DryRun { result, .. } => result.check_context(deployment, version),
+            FigureValue::FreshQuote { quote, .. } => quote.check_context(deployment, &versions, at),
+            FigureValue::DryRun { result, .. } => result.check_context(deployment, &versions, at),
             FigureValue::Eligibility { judgement, .. } => {
-                judgement.check_context(deployment, version)
+                judgement.check_context(deployment, &versions, at)
             }
             _ => return None,
         };

@@ -926,3 +926,87 @@ fn a_use_in_nested_braces_or_through_super_counts_as_a_use() {
         "expected the host to need a bump, got {violations:?}"
     );
 }
+
+/// A protocol change from 4.0.0 on, `entry` its one new bullet, at a bumped provider-role.
+fn protocol_change(entry: &str) -> Vec<Violation> {
+    let base = "# provider-role changelog\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n";
+    let head = format!(
+        "# provider-role changelog\n\n## 4.0.0\n{entry}\n\n## 3.0.0\n- Holding balance. (DEC-4, T-016-02)\n"
+    );
+    let fixture = Fixture::default()
+        .base_only("contracts/provider-role/CHANGELOG.md", base)
+        .head_only("contracts/provider-role/CHANGELOG.md", &head)
+        .changed_head(
+            "contracts/provider-role/schemas/operation.schema.json",
+            "{}",
+        );
+    run(
+        &[
+            "contracts/provider-role/CHANGELOG.md",
+            "contracts/provider-role/schemas/operation.schema.json",
+        ],
+        &fixture,
+    )
+}
+
+/// Each protocol change says whether a party may ignore it (`REQ-PRT-2`, finding 11 of `M3`'s milestone review): an
+/// entry of provider-role's changelog from 4.0.0 on that says neither, or both, fails; one that says either passes.
+// verifies: REQ-PRT-2
+#[test]
+fn changelog_entry_that_says_neither_ignorable_nor_not_fails_the_contract_guard() {
+    for entry in [
+        "- A status question. (DEC-4, T-020-45)",
+        "- A status question, which a party may ignore. (DEC-4, T-020-45)",
+        "- A status question. Ignorable: yes. Ignorable: no. (DEC-4, T-020-45)",
+    ] {
+        let violations = protocol_change(entry);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.subject == "provider-role" && v.message.contains("neither or both")),
+            "{entry}: expected an ignorable violation, got {violations:?}"
+        );
+    }
+    for entry in [
+        "- A status question. Ignorable: no. (DEC-4, T-020-45)",
+        "- Docs. Ignorable:\n  yes. (DEC-4, T-020-45)",
+    ] {
+        assert_eq!(protocol_change(entry), Vec::new(), "{entry}");
+    }
+    // Before 4.0.0 the protocol's entries said nothing of it, and another contract's never need to.
+    let old = Fixture::default()
+        .base_only("contracts/provider-role/CHANGELOG.md", "# provider-role changelog\n\n## 2.0.0\n- Keys. (DEC-4, T-002-03)\n")
+        .head_only(
+            "contracts/provider-role/CHANGELOG.md",
+            "# provider-role changelog\n\n## 2.1.0\n- Amounts. (DEC-4, T-002-03)\n\n## 2.0.0\n- Keys. (DEC-4, T-002-03)\n",
+        )
+        .changed_head("contracts/provider-role/schemas/operation.schema.json", "{}");
+    assert_eq!(
+        run(
+            &[
+                "contracts/provider-role/CHANGELOG.md",
+                "contracts/provider-role/schemas/operation.schema.json",
+            ],
+            &old,
+        ),
+        Vec::new()
+    );
+}
+
+/// A change that adds a protection is never ignorable (`REQ-PRT-2`, `THR-64`).
+// verifies: REQ-PRT-2
+#[test]
+fn change_adding_a_protection_marked_ignorable_fails_the_contract_guard() {
+    let violations =
+        protocol_change("- Cutovers. Adds a protection. Ignorable: yes. (DEC-4, T-020-45)");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.subject == "provider-role" && v.message.contains("adds a protection")),
+        "expected a protection violation, got {violations:?}"
+    );
+    assert_eq!(
+        protocol_change("- Cutovers. Ignorable: no. Adds a protection. (DEC-4, T-020-45)"),
+        Vec::new()
+    );
+}
