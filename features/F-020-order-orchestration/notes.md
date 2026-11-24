@@ -7047,7 +7047,9 @@ through the integrator or the operator. Edits `components/core-orch/src/arrival/
 - **3, low (gap): Core checks `set_for`, not `set_by`.** Who set the parameters (the customer, an integrator, the
   operator, an agent) is recorded in the arrival entry and read by nothing: whether that party may set them for the
   holder is the real reserve's to check before it names a destination. Owner `T-031-01`.
-- **4, low:** the `core-orch` test also replaces the kept notice (`alters`: other bytes under the same commitment) and
+- **4, low:** the `core-orch` test also replaces the kept notice (`SharedKept::replaces`, new in `intake_support`: the store
+  answers another statement, another holder, under the commitment of the one kept; `alters`, one byte more, is the
+  same statement and agrees) and
   expects the same refusal before an order opens; renamed `..._is_erased_or_replaced_is_refused_...`.
 - **5, low:** default (a) is named above as `standing-instruction-third-party`.
 - **6, low:** the fixture `--holder` is `--requester`, as the field it breaks.
@@ -7057,4 +7059,7 @@ through the integrator or the operator. Edits `components/core-orch/src/arrival/
   |---|---|
   | `well_formed`: the filing's destination is the notice's | `automatic_deposit_goes_where_its_reserve_sets_it_from_the_customers_parameters` |
   | the stand-in names the instruction's destination (`Reserve::notice_of`) | the same, and `stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice` |
-  | `open_run`: the kept notice agrees | `filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before_an_order_opens` (both parts) |
+  | `open_run`: the kept notice agrees | `filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before_an_order_opens` |
+  | `kept_notice_agrees`: the holder compared | the same, at its replaced step |
+- **Correction found after the first push of this round** (`61e6ea10`): its replaced-notice step used `alters`, which keeps the
+  statement and so was green; the follow-up commit carries `replaces` and the rule-off above.

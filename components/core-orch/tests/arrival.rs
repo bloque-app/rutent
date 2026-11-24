@@ -1967,8 +1967,19 @@ fn filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before
     assert!(env.started().is_empty());
     assert!(env.policy.asked.is_empty(), "no order opened");
     env.kept.forgets = false;
-    // A notice replaced in the store, kept under the same commitment as other bytes, agrees with nothing either.
-    env.kept.alters = true;
+    // A notice replaced in the store: the store answers another statement (another holder) under the commitment of the
+    // one kept, and it agrees with nothing either.
+    let kept_notice = env
+        .store
+        .borrow()
+        .kept
+        .iter()
+        .find(|b| String::from_utf8_lossy(b).contains("arrival-notice"))
+        .cloned()
+        .expect("the notice is kept");
+    let mut other: serde_json::Value = serde_json::from_slice(&kept_notice).unwrap();
+    other["statement"]["holder"] = "someone-else".into();
+    env.kept.replaces = Some(serde_json::to_vec(&other).unwrap());
     let mut replaced = filing(reserve_filer(), &deposited);
     replaced.request = id("deposit-replaced");
     let filed = file(&mut env, &mut providers, &mut arrivals, &replaced).unwrap();
@@ -1984,7 +1995,7 @@ fn filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before
     );
     assert!(env.started().is_empty());
     assert!(env.policy.asked.is_empty(), "no order opened");
-    env.kept.alters = false;
+    env.kept.replaces = None;
     let mut again = filing(reserve_filer(), &deposited);
     again.request = id("deposit-2");
     let filed = file(&mut env, &mut providers, &mut arrivals, &again).unwrap();
