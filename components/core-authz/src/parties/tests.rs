@@ -230,12 +230,12 @@ impl Sources for Registers {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
-            Source::ActsFor { acts, party, kind } => {
-                match self.acts_for.iter().find(|(a, _, _)| a == acts) {
-                    Some((_, p, k)) => yes(p == party && k == kind),
-                    None => Reply::Missing,
-                }
-            }
+            Source::ActsFor {
+                acts, party, kind, ..
+            } => match self.acts_for.iter().find(|(a, _, _)| a == acts) {
+                Some((_, p, k)) => yes(p == party && k == kind),
+                None => Reply::Missing,
+            },
             Source::AgentScope { party, scope } => {
                 self.asked.push(need.clone());
                 match self
@@ -329,17 +329,17 @@ impl Calls {
         };
         calls.decide.caller = caller.clone();
         calls.authorise.given_by = caller.clone();
-        // A stuck order's steps are the operator's (`T-021-06`): the caller takes them in that role, as the party and
-        // the kind it is.
+        // A stuck order's steps are the operator's (`T-021-06`), and so are granting and revoking a read permission
+        // (`T-021-14`): the caller takes them in that role, as the party and the kind it is.
         let operator = Actor {
             role: Role::Operator,
             ..caller.clone()
         };
         calls.decide_stuck.decider = operator.clone();
-        calls.move_stuck.mover = operator;
+        calls.move_stuck.mover = operator.clone();
         calls.open_session.requester = caller.clone();
         calls.check_read.reader = caller.clone();
-        calls.grant.by = caller.clone();
+        calls.grant.by = operator;
         calls.charge.caller = caller.clone();
         calls.charge.party = caller.party.clone();
         calls.ask.asker = caller.clone();
@@ -1609,4 +1609,78 @@ fn an_agent_accepts_a_fault_only_within_its_partys_scope() {
     let decision = policy.decide(&accept(&outside)).unwrap();
     assert_eq!(decision.outcome, refused(RefusalClass::NotPermitted));
     assert!(decision.permit().is_none());
+}
+
+/// An erasure that overrides its statement's citations is a call of its own in an agent's scope (`T-021-14`, the Low
+/// of `M3`'s milestone review): an agent of the operator scoped to erase a statement erases it, and is refused the
+/// override, and one scoped to the override alone overrides, and is refused the plain erasure. The scope asked of each
+/// names the call.
+// verifies: REQ-AUZ-8, REQ-AUD-13
+#[test]
+fn erasure_overriding_citations_is_a_scope_of_its_own() {
+    let erases = Actor {
+        role: Role::Operator,
+        ..agent("operator", "op-agent-1")
+    };
+    let overrides = Actor {
+        role: Role::Operator,
+        ..agent("operator", "op-agent-2")
+    };
+    let mut policy = engine(
+        Registers::of_the_fixtures()
+            .with(&erases, Some(vec![Scope::EraseStatement]))
+            .with(&overrides, Some(vec![Scope::EraseOverridingCitations])),
+        Uniform::default(),
+    );
+    let erasure = |by: &Actor, overriding: bool| {
+        let mut request: DecisionRequest = valid!("decision-request-to-erase-a-kept-statement");
+        request.caller = by.clone();
+        let Action::EraseStatement {
+            overrides_citations,
+            ..
+        } = &mut request.action
+        else {
+            panic!("an erasure");
+        };
+        *overrides_citations = overriding;
+        request
+    };
+    for (by, overriding, answer, scope) in [
+        (&erases, false, Answer::Permit {}, Scope::EraseStatement),
+        (
+            &erases,
+            true,
+            refused(RefusalClass::NotPermitted),
+            Scope::EraseOverridingCitations,
+        ),
+        (
+            &overrides,
+            true,
+            Answer::Permit {},
+            Scope::EraseOverridingCitations,
+        ),
+        (
+            &overrides,
+            false,
+            refused(RefusalClass::NotPermitted),
+            Scope::EraseStatement,
+        ),
+    ] {
+        let request = erasure(by, overriding);
+        assert_eq!(Scope::of(Asked::Decide(&request)), scope);
+        assert_eq!(
+            policy.consult(Asked::Decide(&request)),
+            answer,
+            "{} overriding: {overriding}",
+            by.acts.as_str()
+        );
+        let Some(Need {
+            from: Source::AgentScope { scope: asked, .. },
+            ..
+        }) = policy.sources.asked.last()
+        else {
+            panic!("a scope asked");
+        };
+        assert_eq!(*asked, scope, "the scope asked names the call");
+    }
 }

@@ -587,7 +587,12 @@ impl authz::Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         let yes = |b: bool| Reply::Given(if b { Said::Yes } else { Said::No });
         match &need.from {
-            authz::Source::ActsFor { acts, party, kind } => {
+            authz::Source::ActsFor {
+                acts,
+                party,
+                kind,
+                role,
+            } => {
                 let listed = [
                     core(),
                     customer(),
@@ -596,7 +601,9 @@ impl authz::Sources for Register {
                     other_provider_desk(),
                 ];
                 match listed.iter().find(|a| &a.acts == acts) {
-                    Some(actor) => yes(&actor.party == party && &actor.kind == kind),
+                    Some(actor) => {
+                        yes(&actor.party == party && &actor.kind == kind && &actor.role == role)
+                    }
                     None => Reply::Missing,
                 }
             }

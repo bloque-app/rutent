@@ -1684,6 +1684,104 @@ path: it waits for the owner's click at the release into `main`.
   | any role listed for both may override (no operator-only restriction) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
   | the override arm answers no rule (`None`) | `erasure_overriding_citations_is_permitted_only_with_its_own_permission`, `each_permission_alone_allows_only_its_own_action` |
 
+## T-021-14
+
+Branch `f-021/t-021-14-read-grants`, from `m3` at `2d62f1b9`. Finding 1 of `M3`'s milestone review (PR #143, review
+6043265441, High) and its Low on an agent's scope. Edits `components/core-authz/` (`roles/`, `parties/`, the engine's
+`Source` and the tests of `session/`, `engine/`, `funds/`, `cpl/` and `stuck/`), a `DEC-20` path that waits for the
+owner's click at the release into `main`, and the assembly's register of actors with three of its tests
+(`conformance/scenarios/src/assembly/policy.rs`; `tests/assembly_policy.rs`, `tests/assembly_wiring.rs`,
+`tests/bulk_measures.rs`, `tests/segments_support/mod.rs`, `F-024` files). No contract shape changes.
+
+- **The finding.** No fixed rule decided who may grant or revoke a read permission: `roles`' rule answered both calls
+  with no need, so a grant was held to its shape (`PermissionChange::check`: the grantee a regulator or a checker, the
+  grantor the operator, each by the role its request states) and to `ActsFor`, and `ActsFor` bound an actor's party
+  and kind, never its role. A customer's own login, stating the operator's role, granted itself the trail as a
+  regulator, read it, and revoked it, each permitted, and the log recorded the stated roles as fact.
+- **What changed.**
+  - **Read grants are the operator's, each a permission of its own.** `Permission::GrantRead` and
+    `Permission::RevokeRead` join the register's permissions, held login by login. `Asked::GrantPermission` asks an
+    operator's login the register lists for `GrantRead`, and `Asked::RevokePermission` one listed for `RevokeRead`,
+    each beside `Source::OfOperator`, the register's word that the login is the deployment operator's, in its party or
+    reaching it (as a stuck order's decider is held, `T-021-06`). Any other role is refused before the deployment's
+    policy is asked. A revocation still names a permission granted (`Register::granted`).
+  - **The role is bound in `ActsFor`.** `Source::ActsFor` gains `role`, the role the actor's request states, so the
+    register of actors answers whether the login acts for that party, as that kind, in that role. It is asked of every
+    actor every call names (`actors_named`), so a stated role is never taken on its word anywhere policy decides: a
+    grantor stating the operator's role, a grantee stating a regulator's or a checker's, a reader stating either, and
+    every other caller. The assembly's register (`Registers`) keeps each login's roles (`roles`, `acts_in`), listing an
+    actor adding its role, and listing it for another party or kind starting its roles afresh. Intake's own read of
+    the register (`core-orch`'s `Actors`, the assembly's `Acting`) still binds party and kind alone (gap 2).
+  - **The sweep covers every permission.** `each_permission_alone_allows_only_its_own_action` runs over all 25 of the
+    register's permissions (`every_permission_held`, an exhaustive match, so a permission a later row adds fails the
+    build until it is swept) and 28 calls (`every_call`): posting a route, the eleven catalogue changes, the plain
+    erasure and the override, a reversal and a late status asked by the operator and by Core carrying the order on,
+    value moved by Core and by the operator for a user, the operator's authorisation for a user, its read of an
+    order's state, granting and revoking a read, and a stuck order's four steps (decide, move, confirm, decline) in
+    the contract's worlds for them. Each permission is held alone by each actor that makes a call (the operator's
+    login, Core's carrier and an operator's desk); each call is permitted only where it is its own, recorded with its
+    actor, and only then reaches the deployment's policy. The override alone allows nothing, and beside the erase
+    permission allows the two erasures. The same permission held by another login or desk of the same parties gives
+    the callers none. Each call runs on a fresh engine over the sweep's register (`swept`).
+  - **The override is a scope of its own** (the Low). `Scope::EraseOverridingCitations` is the scope of an
+    `EraseStatement` whose `overrides_citations` is set; the plain erasure keeps `Scope::EraseStatement`.
+- **Tests.** `listed operator grants and revokes a regulator's read` and `customer's login stating the operator's role
+  grants, reads and revokes nothing` (the reviewer's probe, refused; the same login stating the operator's party too; a
+  login of another party listed in the operator's role and for both permissions; and a grant by the listed operator to
+  a grantee in a role it isn't listed in) in `roles/tests.rs`; the probe through the assembly
+  (`customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly`,
+  `tests/assembly_policy.rs`); `erasure overriding citations is a scope of its own` in `parties/tests.rs`; the widened
+  sweep; and `policys_sources_answer_from_the_records` asserting the assembly's register refuses the customer's login
+  stating the operator's role or a regulator's. Test artefacts, not Core bugs, fixed in the other rows' tests: their
+  registers never listed a grantor for the new permissions (`session/tests.rs`'s `Says` answers `op-login-2` the
+  operator's and holding both; the engine's table answers them for its grant and revocation; `roles`'
+  `actor_stating_another_party_acts_for_no_one` lists `GrantRead`), `parties/tests.rs`' `Calls::by` grants in the
+  operator's role as it takes a stuck order's steps, and `bulk_measures.rs` lists the operator's login for both. The
+  test registers of the other modules (`cpl`, `parties`, `stuck`, `funds`, `session`, `engine`) answer `ActsFor`
+  without reading the role, as they never read the kind where it isn't their subject.
+- **Defaults, reversible, each failing closed.**
+  1. Granting and revoking are two permissions, not one: a login listed to grant can't revoke, and one listed to revoke
+     can't grant, the reading that keeps each a separate permission as `REQ-AUZ-6` asks of every operator change.
+  2. Both are held to `OfOperator` as well as to the operator's role and the register of permissions, so a login of
+     another party wrongly listed in the operator's role, or for the permission, grants nothing.
+  3. Binding the role in `ActsFor`, rather than a register of who may act as a regulator or a checker: one rule for
+     every actor and call, the brief's preference. A login acts in each role the register lists it in; one listed in
+     none acts in none.
+  4. The override's scope stands alone: an agent scoped to erase isn't scoped to override, and one scoped to override
+     isn't scoped to the plain erasure (the permissions still ask both, `T-021-13`).
+  5. The assembly's default register lists no one for `GrantRead` or `RevokeRead`: the scenarios that grant list the
+     operator's login themselves, as `T-020-42` does for the override.
+- **Gaps, with owners.**
+  1. The deployment's register must list each operator login for `GrantRead` and `RevokeRead` it may use, and every
+     login in each role it acts in, regulators' and checkers' included: configuration, owner `F-021`'s register docs /
+     the deployment (`F-030`).
+  2. `core-orch`'s `Actors` (intake's and the arrival filing's read of the register) binds party and kind, not role.
+     Those reads tell an order's own requester its status and check a filer before policy decides; policy binds the role
+     on every call it decides. Owner: `F-020` (intake), with finding 6's intake read scope.
+  3. A read naming a permission is held to the grantee's party, not its role or login (`Register::refuses`, the log's
+     `permitted-read-rests-on-its-grant`): a login of the regulator's party listed in another role reads by it only
+     where `read_needs` lets that role read at all. Left as built; owner `F-021`, for the owner's form if a read is
+     to be held to the grantee's login.
+- **Red first.** With the shapes in and the rules stubbed (`ActsFor` carrying a fixed role, both grant calls answered by
+  no need, the override mapped to the erase scope): the permitted test failed on `revoking alone grants nothing`
+  (`NoAccountableParty` for `NotPermitted`), the probe test on the operator's grant (`NoAccountableParty` for `Permit`),
+  the sweep on `[PostRoute] alone allows no grant a read` (`Permit` for `NotPermitted`), and the scope test on
+  `Scope::of` (`EraseStatement` for `EraseOverridingCitations`).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, and for the assembly `cargo test -p rutent-scenarios --test
+  assembly_policy --test assembly_wiring`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a grant answered by no rule (the behaviour before the row) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action` |
+  | a revocation answered by no rule | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action` |
+  | `OfOperator` not asked beside the permission | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing` |
+  | a grant asks the revoke permission (one permission stands for both) | `listed_operator_grants_and_revokes_a_regulators_read`, `each_permission_alone_allows_only_its_own_action`, `actor_stating_another_party_acts_for_no_one`, `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt` |
+  | any role the register lists may grant or revoke (no operator-only restriction) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing` (asked past the shape check, which holds the grantor to the operator's role too) |
+  | `ActsFor` carries a fixed role, not the one stated | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `listed_operator_grants_and_revokes_a_regulators_read`, `route_outside_the_authorisation_needs_a_new_one` |
+  | the grantee not among the actors a grant names | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing`, `actor_stating_another_party_acts_for_no_one` |
+  | the override mapped to the erase scope | `erasure_overriding_citations_is_a_scope_of_its_own` |
+  | the assembly's register answers `ActsFor` whatever the role (`Registers::acts_in`) | `customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_in_the_assembly`, `policys_sources_answer_from_the_records` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

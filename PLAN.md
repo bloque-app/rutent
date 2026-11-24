@@ -716,6 +716,7 @@ the libraries' notes and the contracts' READMEs, has an owning row here, or is p
 | `T-021-11` | The origin account stays as the first authorisation set it, in v0 (items `origin-account-change`, "Payer only", and `third-party-payer-authorises`, "Requester only", whose notes settle it: the origin is fixed at the first authorisation and nobody changes it in v0, both to be widened together later; `F-020`'s notes, "The origin check of 2026-11-23"). Orchestration never moves it: its one path for new terms refuses any change of the origin reserve or account (`hand_on/rule.rs`, `Refused::ChangesOrigin`). Policy still permits a later authorisation that moves a part's origin account when the payer gives it (`funds/mod.rs`, `origin_in_force` and the payer check), and while a third-party payer gives no authorisation, that payer can only be the requester; so a requester who is the payer could move it through any other caller of the decision call. Policy refuses an authorisation that names another origin account than the one in force for a part it covers, whoever gives it, as `not_permitted`. A part whose authorisation in force names no origin account (`origin_in_force` answers `Some(None)`) may have one named once, by an authorisation policy otherwise permits, and from then it is held. `core-internal`'s `only-the-payer-moves-the-origin-account` stays as it is: it is the widened rule the owner's notes keep for later, which policy holds within until both are widened together. Touches a `DEC-20` path, after `T-020-39` in wave 33 | `T-021-04`, `T-021-08` | `REQ-AUZ-9`, `REQ-AUZ-3`, `REQ-AUZ-1` | `authorisation moving the origin account once one is in force is refused even from the payer` [`REQ-AUZ-9`]; `origin account named for the first time is set once and then held` [`REQ-AUZ-9`]; `authorisation restating the origin account in force is still permitted` [`REQ-AUZ-3`] | these tests pass, and `T-021-04`'s pass beside them, `only the payer moves the origin account` changed to expect the payer refused too |
 | `T-021-12` | `roll_back` gets its own permission (item `rollback-permission`, "Its own permission"). The platform's `roll_back` ends a release's staging and keeps the version in force (ADR-0014), and no permission names it: `core-authz`'s scan lists it among the entry points that carry out nothing (`engine/entry_points.rs`; `F-021`'s notes on `T-021-03`), so any caller may end a staging. Policy decides `T-020-39`'s `CatalogueChange::RollBack` under a permission of its own, apart from promotion and every other catalogue change, recorded with its actor (`REQ-AUZ-6`); the scan moves `roll_back` to the entry points reached only holding a permitted effect; and orchestration carries it out on that effect as it carries out `promote` (a seam of `F-020`'s `segments/`, which the commit body says). The row also updates `engine/mod.rs`'s note that `AC-17`'s reading is pending: the owner settled it as "not known" (`spec-ac17-not-known`, 2026-11-18). Touches a `DEC-20` path | `T-021-03`, `T-020-39` | `REQ-AUZ-6`, `REQ-AUZ-1`, `REQ-AUD-8`, ADR-0014 | `each permission alone allows only its own action` [`REQ-AUZ-6`, `REQ-AUD-8`], over every catalogue change, roll back included; `roll back without its permission is refused` [`REQ-AUZ-6`]; `staging is rolled back only on a permitted decision's effect` [`REQ-AUZ-1`] | these tests pass, and `T-021-01`'s pass with their counts moved by the one action |
 | `T-021-13` | Policy's rule for an erasure that overrides citations (item `erasure-of-cited-evidence`). `T-021-10` permits erasing a statement to an operator holding the erase permission, and the log and the store refuse it while a later entry cites the statement (`erasure-waits-while-anything-rests-on-the-statement`, as built). An erasure whose action sets `T-020-39`'s `overrides_citations` is permitted only to an operator holding a permission of its own, apart from the erase permission and never carried onward, and the decision names the statement and the override; without it the default holds. Edits `components/core-authz/`, after `T-021-12` in `roles`, the two run in turn in one wave | `T-021-10`, `T-020-39` | `REQ-AUD-13`, `REQ-AUZ-6`, `REQ-AUZ-1` | `erasure overriding citations is permitted only with its own permission` [`REQ-AUD-13`, `REQ-AUZ-6`]; `operator with the erase permission alone is refused an override` [`REQ-AUZ-1`] | these tests pass, and `T-021-10`'s pass unchanged beside them |
+| `T-021-14` | Who grants and revokes a read, and the role bound to its login (finding 1 of `M3`'s milestone review, PR #143, High; and its Low on an agent's scope). No fixed rule decided who may grant or revoke a read permission: a grant was checked for its shape and for `ActsFor` alone, and `ActsFor` bound an actor's party and kind, never its role, so a customer's login stating the operator's role granted itself the trail as a regulator, read it and revoked it, each permitted, and the log recorded the stated roles as fact (`REQ-AUZ-7`, `REQ-AUD-12`, `THR-7`). Granting a read and revoking one each become a permission of their own, held login by login in the register of permissions, asked only of an operator's login that the register also says is the deployment operator's (`Source::OfOperator`); and the register of actors binds the role each actor states as it binds its party and kind (`Source::ActsFor` gains `role`), so a stated role is never taken on its word, a grantee's regulator or checker role included. The sweep `each permission alone allows only its own action` widens to every permission of the register, each held alone and each call it lets through, the plain erasure, `AskReversal`, `AskStatus`, `ReadOrderState`, `ActForUser`, `CarryOnward`, a stuck order's four steps and the two read grants among them. An erasure overriding citations is a scope of its own in an agent's scope (`Scope::EraseOverridingCitations`). No contract shape changes. Edits `components/core-authz/` (`roles/`, `session/`'s docs and tests, `parties/`, the engine's `Source` and its tests), a `DEC-20` path, and the assembly's register of actors with its tests (`conformance/scenarios/`, `F-024` files, which the commit body names) | `T-021-03`, `T-021-02`, `T-021-13` | `REQ-AUZ-7`, `REQ-AUD-12`, `REQ-AUZ-6`, `REQ-AUZ-8`, `THR-7`, `REQ-AUD-13` | `listed operator grants and revokes a regulator's read` [`REQ-AUZ-7`, `REQ-AUD-12`, `REQ-AUZ-6`]; `customer's login stating the operator's role grants, reads and revokes nothing` [`REQ-AUZ-7`, `REQ-AUD-12`, `REQ-AUZ-6`, `THR-7`], through the engine and through the assembly; `each permission alone allows only its own action` [`REQ-AUZ-6`, `REQ-AUD-8`, `REQ-AUZ-7`], over every permission; `erasure overriding citations is a scope of its own` [`REQ-AUZ-8`, `REQ-AUD-13`] | these tests pass, and `T-021-02`'s, `T-021-03`'s and `T-021-05`'s pass beside them with only their registers taught the operator's read permissions and its role |
 
 #### `F-022` Authenticated log, checkpoints and checks
 
@@ -1027,6 +1028,9 @@ flowchart LR
     SR["T-025-05 security review"]
     T["T-024-10 evidence table"]
   end
+  subgraph W38["Wave 38: the milestone review's fixes"]
+    RG["T-021-14 read grants and bound roles"]
+  end
   M2 --> C
   C --> Q & Z & L & P
   Q --> S --> R --> X
@@ -1052,6 +1056,7 @@ flowchart LR
   AR --> AB
   LR & AB & AN --> SR & T
   SR --> T
+  T --> RG
 ```
 
 | Wave | Tasks |
@@ -1077,6 +1082,7 @@ flowchart LR
 | 35 | `T-020-42` |
 | 36 | `T-025-05` |
 | 37 | `T-024-10` |
+| 38 | `T-021-14` |
 
 **Critical path:** `T-020-01` → `T-020-02` → `T-020-05` → `T-020-06` → `T-020-08` → `T-020-10` → `T-020-11` →
 `T-020-16` → `T-020-17` → `T-020-20` → `T-020-30` → `T-020-36` → `T-020-38` → `T-020-39` → `T-021-13` → `T-020-42` →
@@ -1105,7 +1111,7 @@ waits on `T-020-41` and runs after `M3`'s exit.
 
 | Wave | Tasks |
 |---|---|
-| 38 | `T-031-01` |
+| 39 | `T-031-01` |
 
 ---
 

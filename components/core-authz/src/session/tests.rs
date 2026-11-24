@@ -140,12 +140,28 @@ impl Policy for Rules {
 /// Holders and records whose answers the test sets, which keep what they were asked.
 ///
 /// Every actor these tests name acts for the party it states, which the register answers (`Source::ActsFor`,
-/// `T-021-03`), and every agent within its party's scope (`Source::AgentScope`, `T-021-05`): those words are answered
-/// here and kept out of `asked`, which counts what the session and read rules ask.
+/// `T-021-03`), and every agent within its party's scope (`Source::AgentScope`, `T-021-05`); the fixtures' operator's
+/// login, `op-login-2`, is the operator's and holds the permissions to grant and revoke a read (`T-021-14`): those words
+/// are answered here and kept out of `asked`, which counts what the session and read rules ask.
 #[derive(Default)]
 struct Says {
     says: Vec<(Need, Reply<Said>)>,
     asked: Vec<Need>,
+}
+
+/// Whether `need` is the register's word that the fixtures' operator's login is the operator's, or holds the
+/// permission to grant or revoke a read (`T-021-14`).
+fn the_operators_grant(need: &Need) -> bool {
+    need.input.as_str() == "op-login-2"
+        && matches!(
+            need.from,
+            Source::OfOperator
+                | Source::Permissions {
+                    permission: crate::roles::Permission::GrantRead
+                        | crate::roles::Permission::RevokeRead,
+                    ..
+                }
+        )
 }
 
 impl Says {
@@ -162,7 +178,8 @@ impl Sources for Says {
         if matches!(
             need.from,
             Source::ActsFor { .. } | Source::AgentScope { .. }
-        ) {
+        ) || the_operators_grant(need)
+        {
             return Reply::Given(Said::Yes);
         }
         self.asked.push(need.clone());

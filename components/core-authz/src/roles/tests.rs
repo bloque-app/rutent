@@ -130,12 +130,17 @@ impl Kept {
 
     /// A log holding one coherent world: order `ord-1`, accepted by `cust-1` as its requester, beneficiary and payer.
     fn world() -> Self {
+        Kept::of_world("grant").0
+    }
+
+    /// A log holding the history of one case of the contract's world, and the request the case's entry records.
+    fn of_world(name: &str) -> (Self, Value) {
         let path = format!(
-            "{}/../../contracts/core-internal/fixtures/admission/world--grant.json",
+            "{}/../../contracts/core-internal/fixtures/admission/world--{name}.json",
             env!("CARGO_MANIFEST_DIR")
         );
         let world: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        Kept(
+        let kept = Kept(
             world["history"]
                 .as_array()
                 .unwrap()
@@ -147,7 +152,8 @@ impl Kept {
                     )
                 })
                 .collect(),
-        )
+        );
+        (kept, world["entry"]["what"]["request"].clone())
     }
 
     /// A log holding the decision record the fixtures' posted route cites, so a permitted post is admitted.
@@ -244,6 +250,15 @@ struct Register {
     requesters: Vec<(Id, Id)>,
     origins: Vec<(Id, Id)>,
     acts_for: Vec<(Id, Id)>,
+    /// The roles each listed login acts in, where a test binds them (`T-021-14`): a login with none listed acts in any
+    /// role, as an unlisted one acts for any party.
+    roles: Vec<(Id, Role)>,
+    /// Each party that acts for another: the links of an `ActsFor` chain past a login's own party (`T-021-06`).
+    links: Vec<(Id, Id)>,
+    /// Each order's parties, where a test lists them for a stuck order's steps: its requester, beneficiary or payer.
+    order_parties: Vec<(Id, Id)>,
+    /// What the evidence store keeps, where a test lists it: each commitment, and the order it is about.
+    kept: Vec<(rutent_contracts::module_interface::Digest, Option<Id>)>,
     others: Vec<(Need, Reply<Said>)>,
     /// The showings of fault the log holds: the order and segment each is about, how it is named, and when it was
     /// received.
@@ -302,6 +317,69 @@ impl Register {
         self
     }
 
+    /// The register, with `who`'s login acting for its party in its role, and in no role it isn't listed for
+    /// (`T-021-14`).
+    fn listing(mut self, who: &Actor) -> Self {
+        if !self
+            .acts_for
+            .contains(&(who.acts.clone(), who.party.clone()))
+        {
+            self.acts_for.push((who.acts.clone(), who.party.clone()));
+        }
+        self.roles.push((who.acts.clone(), who.role));
+        self
+    }
+
+    /// The register, with the party `from` acting for the party `to`.
+    fn linking(mut self, from: &str, to: &str) -> Self {
+        self.links.push((id(from), id(to)));
+        self
+    }
+
+    /// Everything `start`, a login or a party, reaches: itself, the parties it is listed for, and on along the links.
+    fn chain(&self, start: &Id) -> Vec<Id> {
+        let mut reached = vec![start.clone()];
+        let mut i = 0;
+        while i < reached.len() {
+            let at = reached[i].clone();
+            let next = self
+                .acts_for
+                .iter()
+                .chain(&self.links)
+                .filter(|(from, _)| from == &at)
+                .map(|(_, to)| to.clone());
+            for party in next.collect::<Vec<_>>() {
+                if !reached.contains(&party) {
+                    reached.push(party);
+                }
+            }
+            i += 1;
+        }
+        reached
+    }
+
+    /// What `start` reaches below the deployment operator's party: its chain, cut where it reaches the operator.
+    fn below_operator(&self, start: &Id) -> Vec<Id> {
+        let mut reached = vec![start.clone()];
+        let mut i = 0;
+        while i < reached.len() {
+            let at = reached[i].clone();
+            let next = self
+                .acts_for
+                .iter()
+                .chain(&self.links)
+                .filter(|(from, _)| from == &at)
+                .map(|(_, to)| to.clone());
+            for party in next.collect::<Vec<_>>() {
+                if party.as_str() != "operator" && !reached.contains(&party) {
+                    reached.push(party);
+                }
+            }
+            i += 1;
+        }
+        reached
+    }
+
     /// The register, with the log holding `showing` of `segment` of `order`, received at `received`.
     fn showing(
         mut self,
@@ -341,6 +419,11 @@ fn core() -> Actor {
     actor("rutent", "core-orch", Role::Core, ActorKind::Component)
 }
 
+/// Yes where `yes`, no where not.
+fn said(yes: bool) -> Said {
+    if yes { Said::Yes } else { Said::No }
+}
+
 /// Which of `records` names `key`: yes where it names `value` with it, no where it names another, missing where it
 /// holds no record of `key`.
 fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
@@ -353,10 +436,21 @@ fn record_of(records: &[(Id, Id)], key: &Id, value: &Id) -> Reply<Said> {
 impl Sources for Register {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         // The kind each actor states is the one its login is listed as: no test here turns on it (`T-021-05`'s do).
-        if let Source::ActsFor { acts, party, .. } = &need.from {
+        // The role it states is one its login is listed in, where a test lists any (`T-021-14`).
+        if let Source::ActsFor {
+            acts, party, role, ..
+        } = &need.from
+        {
             let listed = self.acts_for.iter().any(|(a, _)| a == acts);
             let acts_for = self.acts_for.iter().any(|(a, p)| a == acts && p == party);
-            return Reply::Given(if acts_for || !listed {
+            let roles: Vec<Role> = self
+                .roles
+                .iter()
+                .filter(|(a, _)| a == acts)
+                .map(|(_, r)| *r)
+                .collect();
+            let in_role = roles.is_empty() || roles.contains(role);
+            return Reply::Given(if (acts_for || !listed) && in_role {
                 Said::Yes
             } else {
                 Said::No
@@ -382,6 +476,32 @@ impl Sources for Register {
                 .iter()
                 .find(|(r, d, _)| r == reserve && *d == need.input.as_str())
                 .map_or(Reply::Missing, |(_, _, said)| said.clone()),
+            // A stuck order's sources, where a test lists their records (`T-021-06`'s, for the sweep).
+            Source::OfOperator => {
+                Reply::Given(said(self.chain(&need.input).contains(&id("operator"))))
+            }
+            Source::Reaches { from, to } => Reply::Given(said(self.chain(from).contains(to))),
+            Source::MeetsBelowOperator { from, with } => {
+                let theirs = self.below_operator(with);
+                Reply::Given(said(
+                    self.below_operator(from).iter().any(|p| theirs.contains(p)),
+                ))
+            }
+            Source::OrderParties(order) if !self.order_parties.is_empty() => Reply::Given(said(
+                self.order_parties
+                    .iter()
+                    .any(|(o, p)| o == order && p == &need.input),
+            )),
+            Source::Kept(commitment) if !self.kept.is_empty() => {
+                Reply::Given(said(self.kept.iter().any(|(c, about)| {
+                    c == commitment && about.as_ref().is_none_or(|o| o == &need.input)
+                })))
+            }
+            Source::KeptAbout(commitment) if !self.kept.is_empty() => {
+                Reply::Given(said(self.kept.iter().any(|(c, about)| {
+                    c == commitment && about.as_ref() == Some(&need.input)
+                })))
+            }
             Source::Requester(order) => record_of(&self.requesters, order, &need.input),
             Source::OrderOrigin(order) => record_of(&self.origins, order, &need.input),
             // The assembly's: the log holds the showing, and received it no later than the acceptance is decided.
@@ -619,72 +739,517 @@ fn suggested_route_has_no_standing_until_posted_and_names_its_suggester() {
     assert!(policy.log.effect(&posted, permit).is_ok());
 }
 
-/// Each of the operator's permissions, held alone by one login, allows that one action and refuses every other, each
-/// decision recorded with its actor; another login of the same party holds none of them. One party that is both a
-/// provider and the operator is refused every change in its provider's role, the register not asked, and allowed the
-/// one it holds in its operator's role, the two roles recorded apart.
-// verifies: REQ-AUZ-6, REQ-AUD-8
+/// Every permission of the register's, each once. The match has no catch-all, so a permission a later row adds fails
+/// this build until it is listed, and with it the sweep below.
+fn every_permission_held() -> Vec<Permission> {
+    let mut all = vec![Permission::PostRoute];
+    for (permission, _) in every_permission(&operator()) {
+        if let Permission::Change(_) = permission {
+            all.push(permission);
+        }
+    }
+    all.extend([
+        Permission::CarryOnward,
+        Permission::ActForUser,
+        Permission::ReadOrderState,
+        Permission::DecideStuck,
+        Permission::MoveStuck,
+        Permission::ConfirmOutcome,
+        Permission::AskReversal,
+        Permission::AskStatus,
+        Permission::DeclineOutcome,
+        Permission::EraseStatement,
+        Permission::EraseOverridingCitations,
+        Permission::GrantRead,
+        Permission::RevokeRead,
+    ]);
+    for permission in &all {
+        match permission {
+            Permission::PostRoute
+            | Permission::Change(_)
+            | Permission::CarryOnward
+            | Permission::ActForUser
+            | Permission::ReadOrderState
+            | Permission::DecideStuck
+            | Permission::MoveStuck
+            | Permission::ConfirmOutcome
+            | Permission::AskReversal
+            | Permission::AskStatus
+            | Permission::DeclineOutcome
+            | Permission::EraseStatement
+            | Permission::EraseOverridingCitations
+            | Permission::GrantRead
+            | Permission::RevokeRead => {}
+        }
+    }
+    all
+}
+
+/// The operator's desk that takes a stuck order's steps in the sweep: a person on a desk of its own, whose chain meets
+/// the world's decider's and reporter's only at the operator (`T-021-06`).
+fn desk() -> Actor {
+    actor(
+        "operator-desk-s",
+        "op-login-s",
+        Role::Operator,
+        ActorKind::Person,
+    )
+}
+
+/// The world's decider of a stuck order, on the operator's first desk, holding the decide step's permission alone.
+fn alice() -> Actor {
+    actor(
+        "operator-desk-a",
+        "alice",
+        Role::Operator,
+        ActorKind::Person,
+    )
+}
+
+/// An operator's login that grants a read before the sweep's revocation, holding the permission to grant alone.
+fn granter() -> Actor {
+    actor("operator", "op-login-g", Role::Operator, ActorKind::Person)
+}
+
+/// The register of the sweep: the fixtures' orders and reserve, the operator's logins and desks by their parties, a
+/// stuck order's world (`ord-1`, its customer `cust-1`, its holder `bank-co`, the evidence the store keeps about it),
+/// the decider and the granter the sweep's setup needs, and each of `holders` holding its permissions.
+fn swept(holders: &[(Actor, Vec<Permission>)]) -> Register {
+    let mut register = Register::default()
+        .with_order("ord-17", "cust-1", "us-bank")
+        .with_order("ord-19", "acme-treasury", "us-bank")
+        .declaring("us-bank", Reply::Given(Said::Yes))
+        .declaring_that("us-bank", AUTOMATIC_DEPOSIT, Reply::Given(Said::No))
+        .acting("op-login-2", "operator")
+        .acting("op-login-9", "operator")
+        .acting("op-login-g", "operator")
+        .acting("op-login-s", "operator-desk-s")
+        .acting("op-login-t", "operator-desk-t")
+        .acting("alice", "operator-desk-a")
+        .acting("op-login-5", "operator-desk-b")
+        .acting("cust-1", "cust-1")
+        .acting("bank-co", "bank-co")
+        .acting("core-orch", "rutent")
+        .acting("core-other", "rutent")
+        .linking("operator-desk-s", "operator")
+        .linking("operator-desk-t", "operator")
+        .linking("operator-desk-a", "operator")
+        .linking("operator-desk-b", "operator")
+        .and_holding(&alice(), &[Permission::DecideStuck])
+        .and_holding(&granter(), &[Permission::GrantRead]);
+    register.order_parties.push((id("ord-1"), id("cust-1")));
+    register.kept.push((
+        serde_json::from_value(json!({"algorithm": "sha-256", "value": "db".repeat(32)})).unwrap(),
+        Some(id("ord-1")),
+    ));
+    for (who, held) in holders {
+        register = register.and_holding(who, held);
+    }
+    register
+}
+
+/// An actor, and the permissions the register lists it for.
+type Held = (Actor, Vec<Permission>);
+
+/// How a call of the sweep is made, over an engine whose register lists the actors it is handed.
+type Runs = Box<dyn Fn(&[Held]) -> Ran>;
+
+/// What one call of the sweep answered: its answer, who its entry records where it has one, and whether it reached
+/// the deployment's policy.
+struct Ran {
+    answer: Answer,
+    who: Option<Actor>,
+    ruled: bool,
+}
+
+/// One call of the sweep: the permission it is the action of, its caller, and how it is made over an engine whose
+/// register lists `holders`.
+struct Call {
+    name: String,
+    owner: Permission,
+    caller: Actor,
+    run: Runs,
+}
+
+/// `request` decided over `log` and the sweep's register: a permit's effect the log admits where `effect` is set, and
+/// no effect on a refusal's forged permit.
+fn decided_in(
+    log: Kept,
+    holders: &[(Actor, Vec<Permission>)],
+    request: &DecisionRequest,
+    effect: bool,
+) -> Ran {
+    let mut policy = engine(log, swept(holders));
+    let decision = policy.decide(request).unwrap();
+    let entry = policy.log().entry_of(&decision).clone();
+    assert!(
+        matches!(&entry.what, What::Decide { request: r, .. } if r == request),
+        "recorded with its action"
+    );
+    match decision.permit() {
+        Some(permit) if effect => assert!(policy.log.effect(request, permit).is_ok()),
+        Some(_) => {}
+        None => assert_eq!(
+            policy.log.effect(request, forged(&decision)),
+            no_permitting_decision()
+        ),
+    }
+    Ran {
+        answer: decision.outcome,
+        who: Some(entry.who),
+        ruled: policy.policy.1.ruled == 1,
+    }
+}
+
+/// The verified entry the log took last.
+fn last_entry(log: &Kept) -> VerifiedEntry {
+    let Some((_, Entry::Verified(entry))) = log.0.last() else {
+        panic!("a verified entry");
+    };
+    entry.clone()
+}
+
+/// Every call a permission of the register's lets through, each with the one permission it is the action of: posting
+/// a route, each catalogue change, a plain erasure and one overriding its citations; asking a reversal and a late
+/// status, by the operator and by Core carrying the order on; moving value by Core and by the operator for a user,
+/// and the operator's authorisation for one; the operator's read of an order's state; granting and revoking a read;
+/// and a stuck order's four steps, its decision, its move, and confirming and declining a reported outcome.
+fn every_call() -> Vec<Call> {
+    use rutent_contracts::core_internal::calls::{
+        OutcomeDeclines as _, Reads as _, StuckOrders as _,
+    };
+    use rutent_contracts::core_internal::{
+        Decided, OutcomeConfirmation, OutcomeDecline, PermissionChange, ReadCheck, ReadOutcome,
+        StuckDecide, StuckMove,
+    };
+
+    let mut calls: Vec<Call> = Vec::new();
+    let decide = |name: String, owner, request: DecisionRequest, effect| Call {
+        name,
+        owner,
+        caller: request.caller.clone(),
+        run: Box::new(move |holders| {
+            decided_in(Kept::with_a_decision_record(), holders, &request, effect)
+        }),
+    };
+    for (owner, request) in every_permission(&operator()) {
+        calls.push(decide(format!("{owner:?}"), owner, request, true));
+    }
+    calls.push(decide(
+        "erase".into(),
+        Permission::EraseStatement,
+        erasure_asked(&operator()),
+        true,
+    ));
+    let reversal = |caller: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
+        request.request = id(&format!("req-reverse-{}", caller.acts.as_str()));
+        request.caller = caller.clone();
+        request.action = Action::AskReversal {
+            order: id("ord-17"),
+            segment: id("seg-2"),
+            provider: id("bridge-pay"),
+        };
+        request
+    };
+    let moved = |caller: &Actor| {
+        let mut request: DecisionRequest = valid!("decision-request-to-move-value");
+        request.request = id(&format!("req-move-{}", caller.acts.as_str()));
+        request.caller = caller.clone();
+        request
+    };
+    for (owner, caller) in [
+        (Permission::AskReversal, operator()),
+        (Permission::CarryOnward, core()),
+    ] {
+        calls.push(decide(
+            format!("ask reversal by {}", caller.acts.as_str()),
+            owner,
+            reversal(&caller),
+            false,
+        ));
+        calls.push(decide(
+            format!("ask status by {}", caller.acts.as_str()),
+            if owner == Permission::AskReversal {
+                Permission::AskStatus
+            } else {
+                owner
+            },
+            status_asked(&caller),
+            false,
+        ));
+    }
+    for (owner, caller) in [
+        (Permission::CarryOnward, core()),
+        (Permission::ActForUser, operator()),
+    ] {
+        calls.push(decide(
+            format!("move value by {}", caller.acts.as_str()),
+            owner,
+            moved(&caller),
+            false,
+        ));
+    }
+
+    // The operator's authorisation for a user, at a reserve that declared it can't require the user's own withdrawal.
+    calls.push(Call {
+        name: "authorise".into(),
+        owner: Permission::ActForUser,
+        caller: operator(),
+        run: Box::new(|holders| {
+            let mut given: Authorisation = valid!("authorisation-of-one-order-with-a-floor");
+            given.given_by = operator();
+            let mut policy = engine(Kept::default(), swept(holders));
+            let answer = policy.consult(Asked::Authorise(&given));
+            Ran {
+                answer,
+                who: None,
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+
+    // The operator's read of an order's state and age, with no read permission.
+    calls.push(Call {
+        name: "read an order's state".into(),
+        owner: Permission::ReadOrderState,
+        caller: operator(),
+        run: Box::new(|holders| {
+            let check: ReadCheck = serde_json::from_value(json!({
+                "request": "req-state",
+                "reader": operator(),
+                "reads": {"kind": "order_state", "order": "ord-1"},
+                "at": "2026-11-10T09:00:00Z",
+            }))
+            .unwrap();
+            let mut policy = engine(Kept::world(), swept(holders));
+            let read = policy.check_read(&check).unwrap();
+            Ran {
+                answer: match read.outcome {
+                    ReadOutcome::Allowed {} => Answer::Permit {},
+                    ReadOutcome::Refused { class } => Answer::Refuse { class },
+                },
+                who: Some(last_entry(&policy.log).who),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+
+    // Granting a regulator a read of the trail, and revoking one the granter granted first.
+    let grant = |by: &Actor, request: &str| {
+        let mut change: PermissionChange =
+            valid!("permission-change-granting-a-regulator-the-trail");
+        change.request = id(request);
+        change.by = by.clone();
+        change
+    };
+    calls.push(Call {
+        name: "grant a read".into(),
+        owner: Permission::GrantRead,
+        caller: operator(),
+        run: Box::new(move |holders| {
+            let mut policy = engine(Kept::world(), swept(holders));
+            let decision = policy
+                .grant_permission(&grant(&operator(), "req-grant"))
+                .unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+    calls.push(Call {
+        name: "revoke a read".into(),
+        owner: Permission::RevokeRead,
+        caller: operator(),
+        run: Box::new(move |holders| {
+            let mut policy = engine(Kept::world(), swept(holders));
+            let granted = policy
+                .grant_permission(&grant(&granter(), "req-grant-first"))
+                .unwrap();
+            assert!(granted.permit().is_some(), "the granter grants first");
+            let ruled = policy.policy.1.ruled;
+            let decision = policy
+                .revoke_permission(&grant(&operator(), "req-revoke"))
+                .unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == ruled + 1,
+            }
+        }),
+    });
+
+    // A stuck order's four steps, each by the operator's desk of the sweep, in the contract's world for it.
+    calls.push(Call {
+        name: "decide a stuck order".into(),
+        owner: Permission::DecideStuck,
+        caller: desk(),
+        run: Box::new(|holders| {
+            let (log, request) = Kept::of_world("sd");
+            let mut decide: StuckDecide = serde_json::from_value(request).unwrap();
+            decide.decider = desk();
+            decide.request = id("req-desk-decides");
+            let mut policy = engine(log, swept(holders));
+            let decision = policy.decide_stuck(&decide).unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+    calls.push(Call {
+        name: "move a stuck order".into(),
+        owner: Permission::MoveStuck,
+        caller: desk(),
+        run: Box::new(|holders| {
+            let (log, request) = Kept::of_world("sd");
+            let mut decide: StuckDecide = serde_json::from_value(request).unwrap();
+            decide.decider = alice();
+            decide.request = id("req-alice-decides");
+            let mut policy = engine(log, swept(holders));
+            let decided = policy.decide_stuck(&decide).unwrap();
+            assert!(
+                decided.permit().is_some(),
+                "alice decides first: {decided:?}"
+            );
+            let ruled = policy.policy.1.ruled;
+            let moved = StuckMove {
+                request: id("req-desk-moves"),
+                order: id("ord-1"),
+                carries_out: Decided {
+                    request: decided.request.clone(),
+                    decision: decided.decision.clone(),
+                },
+                mover: desk(),
+                at: Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
+            };
+            let decision = policy.move_stuck(&moved).unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == ruled + 1,
+            }
+        }),
+    });
+    calls.push(Call {
+        name: "confirm an outcome".into(),
+        owner: Permission::ConfirmOutcome,
+        caller: desk(),
+        run: Box::new(|holders| {
+            let (log, request) = Kept::of_world("settled_es");
+            let mut confirmation: OutcomeConfirmation = serde_json::from_value(request).unwrap();
+            confirmation.confirmer = desk();
+            confirmation.request = id("req-desk-confirms");
+            let mut policy = engine(log, swept(holders));
+            let decision = policy.confirm_outcome(&confirmation).unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+    calls.push(Call {
+        name: "decline an outcome".into(),
+        owner: Permission::DeclineOutcome,
+        caller: desk(),
+        run: Box::new(|holders| {
+            let (log, request) = Kept::of_world("decline");
+            let mut decline: OutcomeDecline = serde_json::from_value(request).unwrap();
+            decline.decliner = desk();
+            decline.request = id("req-desk-declines");
+            let mut policy = engine(log, swept(holders));
+            let decision = policy.decline_outcome(&decline).unwrap();
+            Ran {
+                answer: decision.outcome,
+                who: Some(policy.log().entry_of(&decision).who.clone()),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
+    calls
+}
+
+/// Each of the register's permissions, held alone by each actor that makes a call of the sweep (the operator's login,
+/// Core's carrier and the operator's desk), allows its own actions and refuses every other, each decision recorded
+/// with its actor and only its own action reaching the deployment's policy: every permission, posting a route, each
+/// catalogue change, the plain erasure and the override, a reversal and a late status asked, Core carrying an order on,
+/// the operator acting for a user, its read of an order's state, granting and revoking a read, and a stuck order's
+/// four steps (`T-021-14`'s widening). The override held alone allows nothing, and beside the erase permission allows
+/// the two erasures. Another login or desk of the same parties holding the permission gives the callers none of them.
+/// One party that is both a provider and the operator is refused every change in its provider's role, the register not
+/// asked, and allowed the one it holds in its operator's role, the two roles recorded apart.
+// verifies: REQ-AUZ-6, REQ-AUD-8, REQ-AUZ-7
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
-    let all = every_permission(&operator());
-    assert_eq!(
-        all.len(),
-        13,
-        "posting a route, eleven catalogue changes and the erasure that overrides citations"
-    );
-    for (held, _) in &all {
-        // The override asks the erase permission beside its own (`T-021-13`): its pair is the one set held for it, and
-        // the erase permission is no entry of this list, so nothing else is allowed by the pair.
-        let holds = if *held == Permission::EraseOverridingCitations {
-            vec![Permission::EraseStatement, *held]
-        } else {
-            vec![*held]
-        };
-        let mut policy = engine(
-            Kept::with_a_decision_record(),
-            Register::holding(&operator(), &holds),
+    let all = every_permission_held();
+    assert_eq!(all.len(), 25, "every permission of the register's");
+    let calls = every_call();
+    assert_eq!(calls.len(), 28, "every call a permission lets through");
+    for permission in &all {
+        assert!(
+            calls.iter().any(|c| &c.owner == permission),
+            "{permission:?} has a call in the sweep"
         );
-        for (permission, request) in &all {
-            let decision = policy.decide(request).unwrap();
-            let entry = policy.log().entry_of(&decision).clone();
-            assert_eq!(entry.who, operator(), "recorded with its actor");
-            assert!(
-                matches!(&entry.what, What::Decide { request: r, .. } if r == request),
-                "recorded with its action"
-            );
-            if permission == held {
+    }
+    let mut held_sets: Vec<Vec<Permission>> = all.iter().map(|p| vec![*p]).collect();
+    held_sets.push(vec![
+        Permission::EraseStatement,
+        Permission::EraseOverridingCitations,
+    ]);
+    let callers = [operator(), core(), desk()];
+    for held in &held_sets {
+        let holders: Vec<(Actor, Vec<Permission>)> =
+            callers.iter().map(|c| (c.clone(), held.clone())).collect();
+        for call in &calls {
+            let ran = (call.run)(&holders);
+            let allowed = held.contains(&call.owner)
+                && (call.owner != Permission::EraseOverridingCitations
+                    || held.contains(&Permission::EraseStatement));
+            if let Some(who) = &ran.who {
+                assert_eq!(who, &call.caller, "{}: recorded with its actor", call.name);
+            }
+            if allowed {
                 assert_eq!(
-                    decision.outcome,
+                    ran.answer,
                     Answer::Permit {},
-                    "{held:?} allows itself"
+                    "{held:?} allows {}",
+                    call.name
                 );
-                assert!(
-                    policy
-                        .log
-                        .effect(request, decision.permit().unwrap())
-                        .is_ok()
-                );
+                assert!(ran.ruled, "{}: its own action reached policy", call.name);
             } else {
                 assert_eq!(
-                    decision.outcome, NOT_PERMITTED,
-                    "{held:?} alone allows no {permission:?}"
+                    ran.answer, NOT_PERMITTED,
+                    "{held:?} alone allows no {}",
+                    call.name
                 );
-                assert_eq!(
-                    policy.log.effect(request, forged(&decision)),
-                    no_permitting_decision()
-                );
+                assert!(!ran.ruled, "{held:?}: {} never reached policy", call.name);
             }
         }
-        assert_eq!(
-            policy.policy.1.ruled, 1,
-            "only its own action reached policy"
-        );
 
-        // Another login of the operator's party holds none of them.
-        let other = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
-        for (permission, request) in every_permission(&other) {
-            let decision = policy.decide(&request).unwrap();
-            assert_eq!(decision.outcome, NOT_PERMITTED, "{permission:?}");
+        // Another login or desk of the same parties, and another of Core's actors, holding it: the callers hold none.
+        let others = [
+            actor("operator", "op-login-9", Role::Operator, ActorKind::Person),
+            actor("rutent", "core-other", Role::Core, ActorKind::Component),
+            actor(
+                "operator-desk-t",
+                "op-login-t",
+                Role::Operator,
+                ActorKind::Person,
+            ),
+        ];
+        let holders: Vec<(Actor, Vec<Permission>)> =
+            others.iter().map(|o| (o.clone(), held.clone())).collect();
+        for call in &calls {
+            let ran = (call.run)(&holders);
+            assert_eq!(
+                ran.answer, NOT_PERMITTED,
+                "{held:?} held by another login allows no {}",
+                call.name
+            );
         }
     }
 
@@ -726,6 +1291,299 @@ fn each_permission_alone_allows_only_its_own_action() {
         })
         .collect();
     assert!(roles.contains(&Role::Provider) && roles.contains(&Role::Operator));
+}
+
+/// A read permission, `permission`, over the trail, granted to or revoked from `grantee` by `by`, as request `request`.
+fn read_change(
+    request: &str,
+    permission: &str,
+    grantee: &Actor,
+    by: &Actor,
+) -> rutent_contracts::core_internal::PermissionChange {
+    serde_json::from_value(json!({
+        "request": request,
+        "permission": permission,
+        "grantee": grantee,
+        "scope": {"kind": "trail"},
+        "by": by,
+        "at": "2026-11-10T09:00:00Z",
+    }))
+    .unwrap()
+}
+
+/// A read of the trail by `reader`, naming `permission`, as request `request`.
+fn trail_read(
+    request: &str,
+    reader: &Actor,
+    permission: &str,
+) -> rutent_contracts::core_internal::ReadCheck {
+    serde_json::from_value(json!({
+        "request": request,
+        "reader": reader,
+        "reads": {"kind": "trail"},
+        "permission": permission,
+        "at": "2026-11-10T09:00:00Z",
+    }))
+    .unwrap()
+}
+
+/// The fixtures' regulator, `examiner-3` of `fin-regulator`.
+fn regulator() -> Actor {
+    actor(
+        "fin-regulator",
+        "examiner-3",
+        Role::Regulator,
+        ActorKind::Person,
+    )
+}
+
+/// The register of the read grants' tests: the operator's login `op-login-2` listed in the operator's role for both
+/// permissions, `op-login-g` for granting alone and `op-login-r` for revoking alone, all of the operator's party; the
+/// regulator listed in the regulator's role; the customer's own login listed for its own party in the customer's role
+/// alone, and holding nothing; and a provider's login listed, wrongly, in the operator's role and for both
+/// permissions, though its party is no part of the operator's.
+fn granting() -> Register {
+    let customer = actor("cust-1", "cust-1-web", Role::Customer, ActorKind::Person);
+    let revoker = actor("operator", "op-login-r", Role::Operator, ActorKind::Person);
+    let outsider = actor("bank-co", "bank-ops", Role::Operator, ActorKind::Person);
+    Register::default()
+        .listing(&operator())
+        .listing(&granter())
+        .listing(&revoker)
+        .listing(&regulator())
+        .listing(&customer)
+        .listing(&outsider)
+        .and_holding(
+            &operator(),
+            &[Permission::GrantRead, Permission::RevokeRead],
+        )
+        .and_holding(&granter(), &[Permission::GrantRead])
+        .and_holding(&revoker, &[Permission::RevokeRead])
+        .and_holding(&outsider, &[Permission::GrantRead, Permission::RevokeRead])
+}
+
+/// An operator's login the register lists in the operator's role, of the operator's party, and for the permission to
+/// grant a read, grants the regulator the register lists in the regulator's role a read of the trail: permitted and
+/// recorded with its actor, so the regulator's read naming it is allowed and recorded. A login listed for the
+/// permission to revoke revokes it, permitted and recorded, and the read is refused after. Granting and revoking are
+/// each a permission of its own: a login listed for granting alone revokes nothing, and one listed for revoking alone
+/// grants nothing.
+// verifies: REQ-AUZ-7, REQ-AUD-12, REQ-AUZ-6
+#[test]
+fn listed_operator_grants_and_revokes_a_regulators_read() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let revoker = actor("operator", "op-login-r", Role::Operator, ActorKind::Person);
+    let mut policy = engine(Kept::world(), granting());
+
+    // Revoking alone grants nothing.
+    let by_revoker = read_change("req-g0", "perm-reg-1", &regulator(), &revoker);
+    let decision = policy.grant_permission(&by_revoker).unwrap();
+    assert_eq!(
+        decision.outcome, NOT_PERMITTED,
+        "revoking alone grants nothing"
+    );
+    assert!(policy.register().grants.is_empty());
+
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    let decision = policy.grant_permission(&grant).unwrap();
+    assert_eq!(
+        decision.outcome,
+        Answer::Permit {},
+        "the listed operator grants"
+    );
+    let entry = policy.log().entry_of(&decision);
+    assert_eq!(entry.who, operator(), "recorded with its actor");
+    assert_eq!(policy.register().grants, std::slice::from_ref(&grant));
+
+    let read = trail_read("req-r1", &regulator(), "perm-reg-1");
+    let answer = policy.check_read(&read).unwrap();
+    assert_eq!(
+        answer.outcome,
+        ReadOutcome::Allowed {},
+        "the regulator reads"
+    );
+    assert_eq!(last_entry(&policy.log).who, regulator());
+
+    // Granting alone revokes nothing.
+    let by_granter = read_change("req-v0", "perm-reg-1", &regulator(), &granter());
+    let decision = policy.revoke_permission(&by_granter).unwrap();
+    assert_eq!(
+        decision.outcome, NOT_PERMITTED,
+        "granting alone revokes nothing"
+    );
+    assert!(policy.register().revoked.is_empty());
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r2", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Allowed {}
+    );
+
+    let revoke = read_change("req-v1", "perm-reg-1", &regulator(), &revoker);
+    let decision = policy.revoke_permission(&revoke).unwrap();
+    assert_eq!(
+        decision.outcome,
+        Answer::Permit {},
+        "the listed revoker revokes"
+    );
+    assert_eq!(policy.log().entry_of(&decision).who, revoker);
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r3", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        },
+        "the read is refused once revoked"
+    );
+    assert_eq!(
+        policy.policy.1.ruled, 4,
+        "the grant, two reads and the revocation"
+    );
+}
+
+/// The probe of finding 1 of `M3`'s milestone review: a customer's own login, listed for its own party in the
+/// customer's role and for nothing else, states the operator's role and grants itself a read of the trail as a
+/// regulator, reads the trail by it, and revokes it. Each is refused, none reaching the deployment's policy, and each
+/// refusal is recorded with the roles stated; the trail is read by no one. Stating the operator's party as well, it is
+/// refused the same. The customer's login stating the operator's role revokes nothing the operator granted, and the
+/// regulator still reads. A login the register lists, wrongly, in the operator's role and for both permissions, whose
+/// party is no part of the operator's, grants and revokes nothing; so does the operator's own login in another role
+/// it is listed in. And the listed operator's login grants nothing to a grantee stating a regulator's role the
+/// register doesn't list it in, the customer's own login among them.
+// verifies: REQ-AUZ-7, REQ-AUD-12, REQ-AUZ-6, THR-7
+#[test]
+fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads as _;
+
+    let mut policy = engine(Kept::world(), granting());
+    let as_operator = actor("cust-1", "cust-1-web", Role::Operator, ActorKind::Person);
+    let as_regulator = actor("cust-1", "cust-1-web", Role::Regulator, ActorKind::Person);
+    let of_the_operator = actor("operator", "cust-1-web", Role::Operator, ActorKind::Person);
+
+    for (n, by) in [as_operator.clone(), of_the_operator].iter().enumerate() {
+        let probe = read_change(&format!("req-probe-{n}"), "perm-probe", &as_regulator, by);
+        let decision = policy.grant_permission(&probe).unwrap();
+        assert!(
+            matches!(decision.outcome, Answer::Refuse { .. }),
+            "{by:?} grants nothing: {decision:?}"
+        );
+        let entry = policy.log().entry_of(&decision);
+        assert_eq!(entry.who, *by, "the refusal recorded with the role stated");
+        assert!(matches!(entry.outcome, Outcome::Refused { .. }));
+    }
+    assert!(policy.register().grants.is_empty(), "nothing granted");
+
+    let read = trail_read("req-probe-read", &as_regulator, "perm-probe");
+    let answer = policy.check_read(&read).unwrap();
+    assert!(
+        matches!(answer.outcome, ReadOutcome::Refused { .. }),
+        "the trail is read by no one"
+    );
+    assert!(matches!(
+        last_entry(&policy.log).outcome,
+        Outcome::Refused { .. }
+    ));
+    let revoke = read_change(
+        "req-probe-revoke",
+        "perm-probe",
+        &as_regulator,
+        &as_operator,
+    );
+    let decision = policy.revoke_permission(&revoke).unwrap();
+    assert!(matches!(decision.outcome, Answer::Refuse { .. }));
+
+    // The operator grants the regulator its read; the customer's login stating the operator's role can't revoke it.
+    let grant = read_change("req-g1", "perm-reg-1", &regulator(), &operator());
+    assert_eq!(
+        policy.grant_permission(&grant).unwrap().outcome,
+        Answer::Permit {}
+    );
+    let stolen = read_change("req-probe-steal", "perm-reg-1", &regulator(), &as_operator);
+    let decision = policy.revoke_permission(&stolen).unwrap();
+    assert!(
+        matches!(decision.outcome, Answer::Refuse { .. }),
+        "{decision:?}"
+    );
+    assert!(policy.register().revoked.is_empty(), "nothing revoked");
+    assert_eq!(
+        policy
+            .check_read(&trail_read("req-r1", &regulator(), "perm-reg-1"))
+            .unwrap()
+            .outcome,
+        ReadOutcome::Allowed {},
+        "the regulator still reads"
+    );
+
+    // A login listed in the operator's role and for both permissions, of a party that is no part of the operator's.
+    let outsider = actor("bank-co", "bank-ops", Role::Operator, ActorKind::Person);
+    let decision = policy
+        .grant_permission(&read_change(
+            "req-out-g",
+            "perm-out",
+            &regulator(),
+            &outsider,
+        ))
+        .unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "not the operator's");
+    let decision = policy
+        .revoke_permission(&read_change(
+            "req-out-v",
+            "perm-reg-1",
+            &regulator(),
+            &outsider,
+        ))
+        .unwrap();
+    assert_eq!(decision.outcome, NOT_PERMITTED, "not the operator's");
+
+    // In any role but the operator's, the operator's own login listed for both and in that role grants and revokes
+    // nothing, even asked past the request's shape check, which holds a grantor to the operator's role too.
+    let as_provider = actor("operator", "op-login-2", Role::Provider, ActorKind::Person);
+    let mut policy_as = engine(Kept::world(), granting().listing(&as_provider));
+    assert!(
+        read_change("req-shape", "p", &regulator(), &operator())
+            .check()
+            .is_ok()
+    );
+    let mut change = read_change("req-as-provider", "perm-reg-1", &regulator(), &operator());
+    change.by = as_provider;
+    assert_eq!(
+        policy_as.consult(Asked::GrantPermission(&change)),
+        NOT_PERMITTED
+    );
+    assert_eq!(
+        policy_as.consult(Asked::RevokePermission(&change)),
+        NOT_PERMITTED
+    );
+    assert_eq!(policy_as.policy.1.ruled, 0);
+
+    // The listed operator granting a grantee stating a regulator's role the register doesn't list it in.
+    for (n, grantee) in [
+        as_regulator.clone(),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Checker,
+            ActorKind::Person,
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let change = read_change(&format!("req-unlisted-{n}"), "perm-x", grantee, &operator());
+        let decision = policy.grant_permission(&change).unwrap();
+        assert_eq!(decision.outcome, NO_PARTY, "{grantee:?}");
+    }
+    assert_eq!(policy.register().grants, [grant]);
+    assert_eq!(
+        policy.policy.1.ruled, 2,
+        "only the operator's grant and the regulator's read reached policy"
+    );
 }
 
 /// The operator moving value, or giving an authorisation, for a user at an origin reserve that never declared it
@@ -1103,7 +1961,7 @@ fn actor_stating_another_party_acts_for_no_one() {
         use rutent_contracts::core_internal::PermissionChange;
         use rutent_contracts::core_internal::calls::Reads as _;
 
-        let register = Register::default()
+        let register = Register::holding(&operator(), &[Permission::GrantRead])
             .acting("op-login-2", "operator")
             .acting("examiner-3", "fin-regulator");
         let mut policy = engine(Kept::default(), register);

@@ -718,6 +718,7 @@ fn route_outside_the_authorisation_needs_a_new_one() {
             acts: id("evil-orch"),
             party: id("rutent"),
             kind: ActorKind::Component,
+            role: Role::Core,
         },
     };
     policy.sources.0.push((acts_for, Reply::Given(Said::No)));

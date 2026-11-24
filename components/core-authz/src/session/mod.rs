@@ -47,7 +47,9 @@
 //! [`Reads::grant_permission`], to the reader's party, its scope covers what the read is of, and it hasn't been
 //! revoked. That rule reads what the engine itself decided, which a fixed rule, a plain function of the request,
 //! can't hold, so it is asked first, beside the fixed rules: its refusal is the answer and the deployment's policy
-//! isn't asked. A revocation is held to it the same way: only a permission granted can be revoked.
+//! isn't asked. A revocation is held to it the same way: only a permission granted can be revoked. Who may grant or
+//! revoke one is `T-021-03`'s rule's, as `T-021-14` gave it: an operator's login the register lists for the one
+//! permission the call is, the deployment operator's by the register (`roles`, "Granting and revoking a read").
 //!
 //! A read is allowed or refused and nothing else, so one policy can't decide is refused as not permitted. Each is
 //! recorded: a read the log won't take as allowed, which a record that said yes wrongly would bring, is recorded and

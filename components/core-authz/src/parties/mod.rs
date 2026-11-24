@@ -98,6 +98,9 @@ pub enum Scope {
     ChangeCatalogue(CatalogueChange),
     /// Erasing a kept statement (`decide`, `erase_statement`).
     EraseStatement,
+    /// Erasing a kept statement although a later entry cites it (`decide`, `erase_statement` with
+    /// `overrides_citations`), a call apart from the plain erasure (`T-021-14`).
+    EraseOverridingCitations,
     /// Asking a failed segment's provider to reverse it (`decide`, `ask_reversal`).
     AskReversal,
     /// Asking a segment's provider for its late status (`decide`, `ask_status`).
@@ -138,6 +141,10 @@ impl Scope {
                 Action::MoveValue { .. } => Scope::MoveValue,
                 Action::PostRoute { .. } => Scope::PostRoute,
                 Action::ChangeCatalogue { change, .. } => Scope::ChangeCatalogue(*change),
+                Action::EraseStatement {
+                    overrides_citations: true,
+                    ..
+                } => Scope::EraseOverridingCitations,
                 Action::EraseStatement { .. } => Scope::EraseStatement,
                 Action::AskReversal { .. } => Scope::AskReversal,
                 Action::AskStatus { .. } => Scope::AskStatus,

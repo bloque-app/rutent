@@ -197,10 +197,12 @@ pub enum Source {
     /// withdrawal or the holding account's on a route handed on (`REQ-AUZ-9`).
     OrderOrigin(Id),
     /// The deployment's register of actors: whether the actor `acts`, as external authentication established it,
-    /// acts for the accountable party `party` its request states, as the kind of actor `kind` it states. External
-    /// authentication says who acts and nothing more (`REQ-AUZ-1`), so a party and a kind are only the request's word
-    /// until this says yes (`REQ-AUZ-8`): an agent's login stating itself a person would otherwise escape its scope.
-    /// It answers by `acts`, yes only where it lists that login for that party as that kind.
+    /// acts for the accountable party `party` its request states, as the kind of actor `kind` it states, in the role
+    /// `role` it states. External authentication says who acts and nothing more (`REQ-AUZ-1`), so a party, a kind and
+    /// a role are only the request's word until this says yes (`REQ-AUZ-8`): an agent's login stating itself a person
+    /// would otherwise escape its scope, and a customer's login stating itself the operator, a regulator or a checker
+    /// would be taken for one (`T-021-14`). It answers by `acts`, yes only where it lists that login for that party as
+    /// that kind, in that role.
     ActsFor {
         /// The actor.
         acts: Id,
@@ -208,6 +210,8 @@ pub enum Source {
         party: Id,
         /// The kind of actor its request says it is (`T-021-05`).
         kind: rutent_contracts::core_internal::ActorKind,
+        /// The role its request says it acts in (`T-021-14`).
+        role: rutent_contracts::core_internal::Role,
     },
     /// The scope an accountable party set for its agents (`REQ-AUZ-8`): whether the agent the input names (its
     /// `acts`), acting for `party`, may make the call `scope` names. It answers by the agent, as `Permissions` does,
@@ -398,7 +402,8 @@ pub(crate) struct Rule {
 /// sequences those edits (`PLAN.md` §4.4). `T-021-01` adds none: its rules are the consultation itself.
 pub(crate) const FIXED: &[Rule] = &[
     Rule {
-        name: "T-021-03: every actor a request names acts only for the party the register says it acts for",
+        name: "T-021-03: every actor a request names acts only for the party the register says it acts for, as \
+               the kind and in the role it lists (T-021-05, T-021-14)",
         needs: crate::roles::acts_for_needs,
         rule: crate::roles::acts_for_rule,
     },
@@ -414,7 +419,8 @@ pub(crate) const FIXED: &[Rule] = &[
     },
     Rule {
         name: "T-021-03: only the operator posts a route; each operator permission alone allows its own action; \
-               the operator acts for a user only at a reserve that declared it",
+               the operator acts for a user only at a reserve that declared it; only the operator's login holding \
+               its permission grants or revokes a read (T-021-14)",
         needs: crate::roles::needs,
         rule: crate::roles::rule,
     },
@@ -2472,20 +2478,34 @@ mod tests {
                 }),
             ),
             (
+                // By the operator's login holding the permission to grant, the operator's (`T-021-14`).
                 "grant_permission",
                 Call::Built(|e| {
-                    e.grant_permission(&fixture!(
-                        "permission-change-granting-a-regulator-the-trail"
-                    ))
-                    .is_ok_and(|d| d.permit().is_some())
+                    let change: PermissionChange =
+                        fixture!("permission-change-granting-a-regulator-the-trail");
+                    let by = &change.by;
+                    say(
+                        e,
+                        vec![holds(by, Permission::GrantRead), of_operator(by)],
+                        [],
+                    );
+                    e.grant_permission(&change)
+                        .is_ok_and(|d| d.permit().is_some())
                 }),
             ),
             (
-                // A permission granted before, held by the log and the register without a call of the table's.
+                // A permission granted before, held by the log and the register without a call of the table's, revoked
+                // by the operator's login holding the permission to revoke, the operator's (`T-021-14`).
                 "revoke_permission",
                 Call::Built(|e| {
                     let change: PermissionChange =
                         fixture!("permission-change-granting-a-regulator-the-trail");
+                    let by = &change.by;
+                    say(
+                        e,
+                        vec![holds(by, Permission::RevokeRead), of_operator(by)],
+                        [],
+                    );
                     let granted: VerifiedEntry = fixture!("verified-entry-of-a-permission-granted");
                     e.log
                         .log
