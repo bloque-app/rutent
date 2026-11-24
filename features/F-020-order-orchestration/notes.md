@@ -6217,3 +6217,49 @@ assembly's `arrivals.rs`; no `contracts/` or `DEC-20` path.
   (`move-rests-on-its-orders-acceptance`). The third, `split-deposit-arrival-names-its-part`'s `deposited`, is shown
   by `a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part` (core-orch): the filing
   never splits (one deposit funds one part), so the case offers the log the order's start with a second part.
+- **Defaults** (reversible, each failing closed):
+  - the customer's acceptance asks policy for the customer's own authorisation (a new one, as a carry-on by another
+    login does), in place of reusing the filer's; policy not knowing waits as `policy_not_known`, a refusal is
+    `ArrivalError::Refused` and the order keeps waiting;
+  - a quote with a slow segment is asked of the customer for good: once asked, a requoted route waits for its
+    customer too, even where it is now firm, so a customer never accepts a quote and then finds another started;
+  - a quote with no figure stating a validity doesn't expire (`earliest_expiry` is `None`), as a hold's doesn't;
+  - the customer accepts in the session the deposit was filed in (the acceptance cites it); there is no second
+    session parameter, and a wait whose session is over ends, with nothing moved;
+  - the customer's acceptance comes only from the order's requester's party, in the customer's role, listed in the
+    register of actors (a person or an agent); anyone else is `NotTheFiler`, as a stranger is told of a receipt;
+  - one deposit still funds one part, so the log's split row for the new basis is shown by an offered history, not a
+    filing.
+- **Gaps, with owners.**
+  1. The customer is told through its order's notice (`F-023`), but a waiting order has no input yet and the notices
+     follow an order from its `route_chosen` (`notice/mod.rs`, `change`), so nothing is sent while it waits: the quote
+     is read through `Arrivals::awaiting` and the log's `shown`. A notice of a waiting order needs `About` to carry it, a
+     contract shape (`DEC-4`): reported to the lead, owner `T-023-*` after the contract round.
+  2. `T-020-39`'s gap 4, that the log can't read that a `given_on_deposit` acceptance's route has no firm rate, stays:
+     `arrival/` holds it (the filing asks the customer only for a route with a slow segment and `Arrivals::accept`
+     only answers an order waiting for it), and no log row can check the route's price.
+  3. An acceptance the customer gives while policy doesn't know waits as `policy_not_known` with nothing recorded, and
+     the customer accepts again; no timer carries it (as intake's).
+- **Rule-off table** (each switched off alone from the committed checkpoint `dfb57a75`, its tests run through the lock,
+  the file restored with `git checkout`; script `scratchpad/ruleoff.py`). "Waits" is
+  `automatic_deposit_whose_only_route_has_no_firm_rate_waits_for_its_customer`, "accepts"
+  `customers_acceptance_of_the_slow_route_starts_it`, "nothing moves"
+  `nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder`, "validity"
+  `slow_routes_quote_past_its_validity_is_asked_again_before_it_is_accepted`, "split"
+  `a_split_start_of_an_order_accepted_on_a_deposit_rests_on_an_arrival_naming_each_part`, "scenario"
+  `deposit_waits.rs`'s one.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `filing.rs`: a slow route never asks the customer (it is accepted on the deposit) | waits, accepts, nothing moves, validity, split, scenario |
+  | `filing.rs`: the digest isn't held to the quote shown | accepts, validity |
+  | `filing.rs`: the acceptance's caller isn't held to the order's customer | accepts |
+  | `filing.rs`: the quote's validity isn't read | validity |
+  | `filing.rs`: a wait ends no more with its session | nothing moves |
+  | `filing.rs`: the customer's acceptance recorded on `automatic_deposit` | accepts, scenario |
+  | `relations.rs`, `move-rests-on-its-orders-acceptance`: `automatic_deposit` alone (gap 8) | scenario |
+  | `relations.rs`, `first-move-rests-on-its-parts-yes`'s deposit arm: `automatic_deposit` alone | scenario |
+  | `relations.rs`, `chosen-route-rests-on-its-orders-acceptance`: `automatic_deposit` alone (gap 8) | accepts, validity, split, scenario |
+  | `relations.rs`, `deposited` (`split-deposit-arrival-names-its-part`): `automatic_deposit` alone (gap 8) | split |
+
+  The three rows of gap 8 now each show a red; `contracts/` was edited only in these runs, and restored.
