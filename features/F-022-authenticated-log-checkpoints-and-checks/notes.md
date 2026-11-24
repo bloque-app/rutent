@@ -1176,3 +1176,43 @@ Branch `f-022/t-022-09-10-revocation-override`, from `m3` at `a3bc16b4`. Edits `
   | B: `<= received` becomes `< received` (revocation at the instant of receipt) | the refusal test |
   | C: the revocation need not be no later than `received` | `a_provider_signs_only_under_a_grant_in_force`, the stays-attributed test |
   | D: the revocation need not be after `made_at` | the grant-made-again test |
+
+## T-022-10: the evidence store erases a cited statement on a decided override
+
+Same branch, after `T-022-09`. Edits `components/core-audit/src/receipts/store.rs` and `tests/receipts.rs` (a `DEC-20`
+path). Core's half is `T-020-42`; policy's is `T-021-13`.
+
+- **Design.** `BoundStore::erase(at)` reads the erasure back from the log (`decided`, which `decided_erasure` now wraps):
+  the `done` result, its `erase_statement` effect, and the permitting `decide`, and takes `overrides_citations` from
+  that decision's own request action, never from the effect. Set, the store skips the citation check (`erasable_from`
+  with `citations_refuse` false) and erases: bytes and salt go, the commitment and the stated entry stay, a fetch
+  answers `Erased`, and the entries citing it stay as they are. Every other rule holds under an override: the statement
+  is kept and named by a stated entry, and an advertisement is never erased.
+- **API.** `erasable` is unchanged (the default, `EVIDENCE_RESTED_ON`). New `erasable_overriding`, for orchestration
+  (`T-020-42`) to run before asking policy for an override: it answers what the operator may ask, never what the store
+  does, which is the permitting decision's word read from the log.
+- **Findings.** In `reconcile`, `ERASED_YET_CITED` counts only entries after the override's decision: a citation made
+  before it no longer holds the erasure back, one made after it (the log admits those between the decision and the
+  effect) is reported in `unsettled_erasures`. Without an override every citation counts, as before.
+- **Defaults.** (1) "After the decision" is the decision's log index, not the effect's or the result's. (2) The store
+  erases an override even where a citation landed after the decision: the operator decided it, and the finding
+  reports it. (3) An override's decision that isn't `permitted`, or whose action differs from the effect's, is no
+  decided erasure (`NO_DECIDED_ERASURE`), as before.
+- **Tests (`tests/receipts.rs`).** `store refuses a cited statement's erasure without an override` [`REQ-AUD-13`],
+  `store erases a cited statement on a decided override and history still checks` [`REQ-AUD-13`, `AC-36`], `citation
+  made after an override's decision is still reported` [`INV-7`] (as `store_refuses_...`, `store_erases_...`,
+  `citation_made_after_...`). The first pins the default and passed before the code; the other two failed first. The
+  test helper `decide_erasure` gained `decide_erasure_as` (override flag, a hook between decision and effect); the
+  existing tests pass unchanged.
+- **Gaps.** The store's refusal of an erasure whose decision lacks the override can't be built through an admitting
+  log (the log refuses the effect while a statement is cited, and a citation after the effect begins), so no test
+  reaches "override read as always true"; the log's own row holds it (`T-020-39`). Owner: none, noted for `T-025-05`.
+  `T-020-42` calls `erasable_overriding` and passes `overrides_citations` only where the operator asked.
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: `erase` ignores the decision's override | the override test, the late-citation test |
+  | R2: every citation counts for `ERASED_YET_CITED`, whatever the decision's time | the override test |
+  | R3: no citation counts (nothing reported) | the late-citation test |
+  | R4: `erasable_overriding` still refuses a cited statement | the override test, the late-citation test |
