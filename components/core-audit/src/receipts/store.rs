@@ -894,3 +894,78 @@ impl Evidence for Keeper {
             .ok_or(AppendFailure::Refused(Violation(NOT_KEPT)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn receipt(index: u64) -> Value {
+        json!({"log": "log-main", "index": index,
+               "entry": {"algorithm": "sha-256", "value": format!("{index:02x}").repeat(32)}})
+    }
+
+    fn erase(overrides: bool) -> Value {
+        let mut action = json!({"kind": "erase_statement", "reason": "retention_ended",
+            "commitment": {"algorithm": "sha-256", "value": "ab".repeat(32)}});
+        if overrides {
+            action["overrides_citations"] = true.into();
+        }
+        action
+    }
+
+    /// A decided erasure by hand: a permitting decision of `decided`'s action, the effect of `effected`'s, and the
+    /// effect's `done` result, three entries at 0, 1 and 2.
+    fn path(decided: Value, effected: Value) -> Vec<(Receipt, Entry)> {
+        let who = json!({"party": "rutent", "acts": "core-orch", "role": "core", "kind": "component"});
+        let entries = [
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "decide", "decision": "dec-1",
+                            "request": {"request": "req-1", "caller": who, "action": decided,
+                                        "at": "2026-11-10T09:00:00Z"}},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "permitted"}}),
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "effect", "action": effected,
+                            "decision": {"request": "req-1", "decision": "dec-1", "answer": "permit",
+                                         "receipt": receipt(0)}},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "to_take_effect"}}),
+            json!({"kind": "verified", "who": who,
+                   "what": {"call": "result", "effect": receipt(1)},
+                   "when": {"at": "2026-11-10T09:00:00Z", "source": "core_clock"},
+                   "outcome": {"status": "done"}}),
+        ];
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                (
+                    serde_json::from_value(receipt(i as u64)).unwrap(),
+                    serde_json::from_value(e).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The store reads `overrides_citations` from the permitting decision's own action: false where the decision
+    /// doesn't set it, true where it does, and an effect that sets it on a decision that doesn't is no decided
+    /// erasure at all.
+    // verifies: REQ-AUD-13
+    #[test]
+    fn the_override_is_read_from_the_permitting_decision() {
+        let at = serde_json::from_value(receipt(2)).unwrap();
+        let plain = path(erase(false), erase(false));
+        assert!(!decided(&plain, &at).unwrap().overrides);
+        let overriding = path(erase(true), erase(true));
+        let d = decided(&overriding, &at).unwrap();
+        assert!(d.overrides);
+        assert_eq!(d.decision, &serde_json::from_value(receipt(0)).unwrap());
+        // The effect's word is never the decision's.
+        let claimed = path(erase(false), erase(true));
+        assert_eq!(
+            decided(&claimed, &at).err(),
+            Some(AppendFailure::Refused(Violation(NO_DECIDED_ERASURE)))
+        );
+    }
+}

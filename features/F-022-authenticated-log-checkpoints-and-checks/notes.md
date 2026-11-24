@@ -1230,8 +1230,9 @@ path). Core's half is `T-020-42`; policy's is `T-021-13`.
   test helper `decide_erasure` gained `decide_erasure_as` (override flag, a hook between decision and effect); the
   existing tests pass unchanged.
 - **Gaps.** The store's refusal of an erasure whose decision lacks the override can't be built through an admitting
-  log (the log refuses the effect while a statement is cited, and a citation after the effect begins), so no test
-  reaches "override read as always true"; the log's own row holds it (`T-020-39`). Owner: none, noted for `T-025-05`.
+  log (the log refuses the effect while a statement is cited, and a citation after the effect begins), so no
+  integration test reaches "override read as always true"; a unit test of `decided()` over a hand-built slice does
+  (fix round 1, below). The log's own row holds the rest (`T-020-39`).
   `T-020-42` calls `erasable_overriding` and passes `overrides_citations` only where the operator asked.
 - **Rule-off table.**
 
@@ -1241,3 +1242,10 @@ path). Core's half is `T-020-42`; policy's is `T-021-13`.
   | R2: every citation counts for `ERASED_YET_CITED`, whatever the decision's time | the override test |
   | R3: no citation counts (nothing reported) | the late-citation test |
   | R4: `erasable_overriding` still refuses a cited statement | the override test, the late-citation test |
+
+### Fix round 1 (`T-022-10`, after the review of `babc2cb3`)
+
+- **`decided()` unit-tested (finding 5).** `receipts::store::tests::the_override_is_read_from_the_permitting_decision`
+  builds a decision, effect and `done` result by hand: `overrides` is false without the flag and true with it (and
+  names the decision's receipt), and an effect that sets the flag on a decision that doesn't is `NO_DECIDED_ERASURE`.
+  Rule-off F5 (`overrides: true || ...`) turns it red.
