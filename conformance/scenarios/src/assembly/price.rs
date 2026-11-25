@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use rutent_core_orch::closing::{PriceDesk, Reported, Unreported, report_price};
+use rutent_core_orch::closing::{PriceDesk, Reported, RouteRun, Unreported, report_price};
+use rutent_core_orch::quote::PartRan;
 use rutent_core_orch::quote::Shown;
 
 use rutent_contracts::core_internal::Receipt;
@@ -27,14 +28,14 @@ impl Core {
     /// once. A price the log can't take now is tried again by the next run.
     pub(super) fn close(&mut self, order: &Id, record: &DecisionRecord) {
         let ran = self.life.ran_on(order, record);
-        let records: Vec<&DecisionRecord> = ran.iter().collect();
+        let routes = routes_run(&ran);
         let desk = PriceDesk {
             prices: &mut self.reported,
             log: &mut self.general,
             clock: &self.clock,
             core: &kit::core(),
         };
-        match report_price(desk, order, &records, &self.segments) {
+        match report_price(desk, order, &routes, &self.segments) {
             Ok(Some(reported)) => {
                 self.closed.unreported.remove(order.as_str());
                 self.closed
@@ -65,4 +66,44 @@ impl Core {
     pub fn price_unreported(&self, order: &Id) -> Option<&Unreported> {
         self.closed.unreported.get(order.as_str())
     }
+}
+
+/// The routes an order ran as the price takes them: the first over all its parts, the part recalculated cut to what
+/// settled on it, and each recalculated route over that part alone.
+fn routes_run(ran: &[(DecisionRecord, Option<usize>)]) -> Vec<RouteRun<'_>> {
+    if let [(only, _)] = ran {
+        return vec![RouteRun::whole(only)];
+    }
+    let ops = |record: &DecisionRecord, part: usize| {
+        record
+            .chosen()
+            .and_then(|c| c.parts.get(part))
+            .map_or(0, |p| p.operations.len())
+    };
+    ran.iter()
+        .enumerate()
+        .map(|(k, (record, settled))| {
+            let parts = if k == 0 {
+                let count = record.chosen().map_or(0, |c| c.parts.len());
+                (0..count)
+                    .map(|p| PartRan {
+                        order_part: p,
+                        candidate_part: p,
+                        ran: if p == 0 {
+                            settled.unwrap_or_else(|| ops(record, 0))
+                        } else {
+                            ops(record, p)
+                        },
+                    })
+                    .collect()
+            } else {
+                vec![PartRan {
+                    order_part: 0,
+                    candidate_part: 0,
+                    ran: settled.unwrap_or_else(|| ops(record, 0)),
+                }]
+            };
+            RouteRun { record, parts }
+        })
+        .collect()
 }

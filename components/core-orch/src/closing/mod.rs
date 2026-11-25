@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 mod price;
 mod public_end;
 
-pub use price::{PriceDesk, Reported, Unreported, report_price};
+pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_price};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{

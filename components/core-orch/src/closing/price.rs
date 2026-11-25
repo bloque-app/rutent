@@ -13,7 +13,7 @@ use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_contracts::state_machine::OrderState;
 use rutent_router::quote::Executed;
 
-use crate::quote::{ExecutedSegment, NotShown, PriceError, Priced, Prices, Shown};
+use crate::quote::{ExecutedSegment, NotShown, PartRan, PriceError, Priced, Prices, RouteRan, Shown};
 use crate::segments::Segments;
 use crate::snapshot::Clock;
 
@@ -50,11 +50,34 @@ pub enum Unreported {
     Price(PriceError),
 }
 
+/// A route an order ran, as the price takes it: its record, and what ran of it by order part. A route that ran whole
+/// names no part ([`RouteRun::whole`]).
+#[derive(Debug, Clone)]
+pub struct RouteRun<'a> {
+    /// The record that chose the route.
+    pub record: &'a DecisionRecord,
+    /// What ran of it: for each order part, the part of its candidate and how many of that part's segments ran on it.
+    /// Empty where the route ran whole, as the only route of an order does.
+    pub parts: Vec<PartRan>,
+}
+
+impl<'a> RouteRun<'a> {
+    /// A route that ran whole.
+    pub fn whole(record: &'a DecisionRecord) -> Self {
+        RouteRun {
+            record,
+            parts: Vec::new(),
+        }
+    }
+}
+
 /// Reports the executed price of `order`, once it is complete: every part complete and every segment settled on a result
-/// that counted. `records` are the records of the routes it ran, in order, the last the one it completed on: where its
-/// route was recalculated once, the price covers the segments settled on the first route as well as the second's. More
-/// than one recalculation, or a recalculated order of more than one part, is not reported (`NotShown`). `Ok(None)` while it isn't. A price already
-/// reported is answered again, not recorded again.
+/// that counted. `routes` are the routes it ran, in order, the last the one it completed on, each held to its own
+/// record and the last's bounds binding the price: an order whose parts, or some of them, were recalculated once or
+/// more is priced across all of them (`REQ-QTE-7`). `Ok(None)` while it isn't complete. A price already reported is
+/// answered again, not recorded again. It is not reported (`NotShown`) where what ran doesn't add up to the segments
+/// Core holds, where a record chose no route, or where a route's figures can't be composed (a segment past an amount,
+/// the operator's fee above what arrives): fail closed, with the reason kept.
 ///
 /// # Errors
 ///
@@ -63,12 +86,12 @@ pub enum Unreported {
 pub fn report_price(
     desk: PriceDesk<'_>,
     order: &Id,
-    records: &[&DecisionRecord],
+    routes: &[RouteRun<'_>],
     segments: &Segments,
 ) -> Result<Option<Reported>, Unreported> {
-    let Some(record) = records.last().copied() else {
+    if routes.is_empty() {
         return Ok(None);
-    };
+    }
     let Some(followed) = segments.order(order) else {
         return Ok(None);
     };
@@ -80,7 +103,7 @@ pub fn report_price(
     {
         return Ok(None);
     }
-    if record.chosen().is_none() {
+    if routes.iter().any(|r| r.record.chosen().is_none()) {
         return Ok(None);
     }
     let mut executed = Vec::new();
@@ -112,28 +135,20 @@ pub fn report_price(
             });
         }
     }
-    let priced = if let [only] = records {
-        let candidate = only
-            .chosen()
-            .ok_or(Unreported::NotShown(NotShown::NotTheRecords))?;
-        Priced::new(order, only, candidate, &executed)
-    } else if let [first, last] = records {
-        let (Some(c1), Some(c2)) = (first.chosen(), last.chosen()) else {
-            return Err(Unreported::NotShown(NotShown::NotTheRecords));
-        };
-        let ops = |c: &rutent_contracts::router_api::Candidate| {
-            c.parts.iter().map(|p| p.operations.len()).sum::<usize>()
-        };
-        let Some(ran_first) = executed.len().checked_sub(ops(c2)) else {
-            return Err(Unreported::NotShown(NotShown::Unexplained));
-        };
-        Priced::across(
-            order,
-            &[(first, c1, ran_first), (last, c2, ops(c2))],
-            &executed,
-        )
+    let priced = if let [only] = routes
+        && only.parts.is_empty()
+    {
+        Priced::new(order, only.record, chosen(only.record)?, &executed)
     } else {
-        Err(NotShown::Unexplained)
+        let mut ran = Vec::with_capacity(routes.len());
+        for route in routes {
+            ran.push(RouteRan {
+                record: route.record,
+                candidate: chosen(route.record)?,
+                parts: route.parts.clone(),
+            });
+        }
+        Priced::across(order, &ran, &executed)
     }
     .map_err(Unreported::NotShown)?;
     let (digest, receipt) = desk
@@ -145,4 +160,11 @@ pub fn report_price(
         receipt,
         price: priced.price().clone(),
     }))
+}
+
+/// The candidate `record` chose.
+fn chosen(record: &DecisionRecord) -> Result<&rutent_contracts::router_api::Candidate, Unreported> {
+    record
+        .chosen()
+        .ok_or(Unreported::NotShown(NotShown::NotTheRecords))
 }

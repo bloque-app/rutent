@@ -31,8 +31,8 @@ use rutent_contracts::router_api::{Amount, DecisionRecord, FeeFormula, Id, Times
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
     AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms,
-    PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, Signed, SlowSegment, Terms,
-    digest, executed, show,
+    PartRan, PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, RouteRan, Signed,
+    SlowSegment, Terms, digest, executed, executed_across, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};
@@ -955,6 +955,55 @@ fn price_rests_on_each_segments_own_result() {
             operation: 1
         })
     );
+}
+
+/// The price of an order of two parts, one route whole, is the same price composed across routes and parts: each part's
+/// segments in their part, in order, each on its own result, with the same lines as the route's own price; and a price
+/// is refused where what ran of a part isn't the segments Core holds (`REQ-QTE-7`, `T-020-47`).
+// verifies: REQ-QTE-7
+#[test]
+fn price_of_an_order_of_two_parts_covers_each_parts_segments() {
+    let record = split_route(quote_support::RESERVE, fee("0", "1", "100"));
+    let candidate = chosen(&record);
+    let quote = show(&record, candidate, None).expect("the split is shown");
+    let mut env = Env::new();
+    let segments: Vec<ExecutedSegment> = quote
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| ExecutedSegment {
+            executed: Executed {
+                amount_in: s.amount_in.clone(),
+                fee: s.fee.clone(),
+                amount_out: s.amount_out.clone(),
+            },
+            result: stated_result(&mut env, &format!("seg-{i}"), u64::try_from(i).unwrap()),
+        })
+        .collect();
+    let whole = executed(&record, candidate, &segments).expect("the route's own price");
+    let share = |order_part, ran| PartRan {
+        order_part,
+        candidate_part: order_part,
+        ran,
+    };
+    let across = |parts: Vec<PartRan>| {
+        executed_across(
+            &[RouteRan {
+                record: &record,
+                candidate,
+                parts,
+            }],
+            &segments,
+        )
+    };
+    assert_eq!(
+        across(vec![share(0, 2), share(1, 2)]).expect("across both parts"),
+        whole,
+        "the same price, composed part by part"
+    );
+    // A part whose segments the route didn't run in full isn't an execution of it.
+    assert!(across(vec![share(0, 2), share(1, 1)]).is_err());
+    assert!(across(vec![share(0, 2)]).is_err(), "a part left out");
 }
 
 // REQ-QTE-6 ---------------------------------------------------------------------------------------------------------

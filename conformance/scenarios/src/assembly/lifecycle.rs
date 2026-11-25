@@ -37,8 +37,9 @@ pub struct Lifecycle {
     histories: BTreeMap<String, History>,
     /// The route each order's part runs now, once recalculated: its record and its segments.
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
-    /// The records of the routes each recalculated order ran, in order, the first route's among them (`T-020-47`).
-    ran: BTreeMap<String, Vec<DecisionRecord>>,
+    /// The routes each recalculated order's first part ran, in order, the first route's among them, each with how many
+    /// of the part's segments settled on it, the last with none said (`T-020-47`).
+    ran: BTreeMap<String, Vec<(DecisionRecord, Option<usize>)>>,
     reversals: Reversals,
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
     status_asks:
@@ -47,11 +48,15 @@ pub struct Lifecycle {
 
 impl Lifecycle {
     /// The records of the routes `order` ran, the first `current` and, once recalculated, each after it.
-    pub(super) fn ran_on(&self, order: &Id, current: &DecisionRecord) -> Vec<DecisionRecord> {
+    pub(super) fn ran_on(
+        &self,
+        order: &Id,
+        current: &DecisionRecord,
+    ) -> Vec<(DecisionRecord, Option<usize>)> {
         self.ran
             .get(order.as_str())
             .cloned()
-            .unwrap_or_else(|| vec![current.clone()])
+            .unwrap_or_else(|| vec![(current.clone(), None)])
     }
 
     /// Nothing recorded yet.
@@ -240,12 +245,26 @@ impl Core {
         self.feed()?;
         let done = done?;
         if let Recalculation::Recalculated(recalculated) = &done {
+            // What settled on the routes before this one: the segments of the part settled so far, less what earlier
+            // routes already account for.
+            let settled = self.segments.order(order).map_or(0, |followed| {
+                followed.parts.first().map_or(0, |part| {
+                    part.segments
+                        .iter()
+                        .filter(|s| s.state == rutent_contracts::state_machine::SegmentState::Settled)
+                        .count()
+                })
+            });
             let first = self.started.get(order.as_str()).map(|s| s.record.clone());
             let ran = self.life.ran.entry(order.as_str().to_owned()).or_default();
             if ran.is_empty() {
-                ran.extend(first);
+                ran.extend(first.map(|record| (record, None)));
             }
-            ran.push(recalculated.record.clone());
+            let before: usize = ran.iter().filter_map(|(_, n)| *n).sum();
+            if let Some(last) = ran.last_mut() {
+                last.1 = Some(settled.saturating_sub(before));
+            }
+            ran.push((recalculated.record.clone(), None));
             self.life.routes.insert(
                 order.as_str().to_owned(),
                 (recalculated.record.clone(), recalculated.segments.clone()),

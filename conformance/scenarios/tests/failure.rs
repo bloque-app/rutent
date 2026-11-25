@@ -479,6 +479,38 @@ fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once()
     assert_eq!(prices(&core), 1, "once");
 }
 
+/// An order whose final deposit was refused twice, recalculated twice, completes on its third route and reports its
+/// executed price once, of the withdrawal settled on the first route and the deposit settled on the third: the route
+/// between them ran nothing that settled (`REQ-QTE-7`, `T-020-47`).
+// verifies: REQ-QTE-7
+#[test]
+fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
+    let (mut core, session) = core_with("AC-40", &[RESERVE]);
+    for _ in 0..2 {
+        core.world()
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    }
+    let (order, _) = run(
+        &mut core,
+        within("req-three-routes", &session, AMOUNT, RESERVE, OTHER),
+    );
+    for _ in 0..2 {
+        let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried")
+        else {
+            panic!("a route to the same destination was found");
+        };
+        core.run_recalculated(&order, &recalculated)
+            .expect("the recalculated part runs");
+    }
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    let (digest, receipt) = core.price_reported(&order).expect("Core reported the price");
+    assert!(core.price_unreported(&order).is_none());
+    let price = core.price_of(&order).expect("its figures");
+    assert_eq!(price.segments.len(), 2, "the withdrawal and the deposit that settled");
+    core.run(&order).expect("runs again");
+    assert_eq!(core.price_reported(&order), Some((digest, receipt)));
+}
+
 /// The seconds each operation takes in the p99 scenario, and what twice it is.
 const TAKES: u64 = 10;
 
