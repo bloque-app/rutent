@@ -7476,3 +7476,28 @@ assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/te
   `deposit_wait_setting_is_an_operator_setting_of_its_own` [`REQ-AUZ-6`]. Scenarios (`deposit_waits.rs`):
   `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens`,
   `a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved`.
+- **Red first, honestly.** The named tests were written beside the code, not before it: the first run of the arrival
+  tests failed on assertions (a wait ended by the old session rule, the clock's two-second drift against the shown
+  quote's time, an acceptance the log refused for a session it never opened) and the code and tests were fixed from
+  there. Each rule's red is shown by its rule-off below.
+- **Rule-offs** (each rule switched off alone from the committed checkpoint `387f5bfd`, the file restored with
+  `git checkout`; script `ruleoff.py` in the row's scratch folder). "Arrival" is `core-orch`'s `arrival` test file,
+  "scenario" `deposit_waits.rs`; the tests are named by their first words: `customer_accepts…`,
+  `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…` (reopens), `acceptance_on_a_waiting_quote…`,
+  `nothing_moves…` (`T-020-41`'s, changed).
+
+  | Rule switched off | Red |
+  |---|---|
+  | the wait ends again with the session it was filed in (`go_on`) | `customer_accepts…`, `filed_order_waiting…`, `nothing_moves…` |
+  | the customer's session isn't checked (`NoSession`) | `customer_accepts…` |
+  | a wait never passes its lifetime | `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…`, `nothing_moves…` |
+  | the end writes no `wait_ended` | `wait_past_its_lifetime…`, `freed_deposit…` (the log refuses the second order), `filed_order_waiting…` |
+  | the end leaves the deposit spent | `freed_deposit…` |
+  | a quote may outlast its wait | `wait_past_its_lifetime…`, `filed_order_waiting…` |
+  | a requote renews the wait | `acceptance_on_a_waiting_quote…`, `filed_order_waiting…` |
+  | `end_expired` ends nothing | `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…` |
+  | the waits aren't rebuilt from the log | `filed_order_waiting…` (and the scenario's reopening) |
+  | a reopened wait takes any digest | `filed_order_waiting…` |
+  | a deposit freed by a wait's end is held again after reopening | `filed_order_waiting…` |
+  | a reopened wait that routes nowhere ends the order | the scenario `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens` |
+  | `SettingKind` of `DepositWait` read as another kind | `deposit_wait_setting_is_an_operator_setting_of_its_own`; core-authz's `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
