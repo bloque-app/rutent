@@ -1392,9 +1392,9 @@ bytes, and every one is asked before an erasure is decided.
   re-check if a batch restatement check is wanted for the operator's review.
 - **Not reads of the store.** Policy's `Source::Kept` / `Source::KeptAbout` (`core-authz/src/stuck/mod.rs:223-236`) ask
   whether a commitment is kept, and Core's own sources answer from the log's stated entries (`core-authz`'s
-  `core_sources`, `T-020-55`; the assembly answered them before), never from the store; `Source::Declarations` is the one
-  source Core answers from the store's bytes (door 1's kind, through the log's read, `StoreRead`), an advertisement the
-  log trusts; the assembly's own reads for pricing and holding accounts (`assembly/price.rs:116`,
+  `core_sources`, `T-020-55`; the assembly answered them before), never from the store; `Source::Declarations` reads no
+  store: Core answers it from the advertisement the log's key register accepted (`AuditLog::accepted_advertisement`,
+  the review of `8f7ddefd`); the assembly's own reads for pricing and holding accounts (`assembly/price.rs:116`,
   `assembly/holding.rs:608`) use door 1 as the simulation's stand-in for `F-030`'s production assembly, which is to
   read the same way. A stuck decision's evidence no longer rests on that answer: orchestration holds each digest to a
   logged statement itself (`T-020-53`, `F-020`'s notes).

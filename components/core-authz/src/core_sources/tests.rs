@@ -178,6 +178,14 @@ fn the_deployment_is_asked_only_its_own_registers() {
     }
     assert_eq!(*asked.0.borrow(), deployments());
     assert_eq!(sources.order_record(&id("ord-1")), Reply::Missing);
+    // A reserve the log's key register accepted no advertisement of declares nothing, whatever is asked of it.
+    assert_eq!(
+        sources.supply(&Need {
+            input: id(NO_USER_WITHDRAWAL),
+            from: Source::Declarations(id("bank-co")),
+        }),
+        Reply::Missing
+    );
 }
 
 /// A log or a store that can't be read leaves each of Core's answers not known, never yes; an order register held

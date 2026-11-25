@@ -7721,9 +7721,9 @@ into `main`; `components/core-audit/` (`measures/trail.rs`), Core's crate. `F-02
     `FiledOrders` port forwards to, `withdrawn` dropping it), else the log's `order_opened`, else its acceptance (a
     linked order, which intake never opened). `OrderParties`: the order's acceptance, else that record.
   - `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`, `Kept`, `KeptAbout`: the log, read as `Records` read it.
-  - `Declarations`: the reserve's latest advertisement the log trusts with a reserve offer, its bytes from the
-    evidence store. Trusted: attributed verified, or signed with a key its maker's grant in force before it names
-    (`granted_advertising_keys`, the log's first trust); the bytes must name that maker, that key and the reserve.
+  - `Declarations`: since the review of `8f7ddefd` (below), the advertisement the log's key register accepted last for
+    the reserve, where the log holds its stated entry. At `8f7ddefd` it read the latest stated advertisement whose
+    claimed key its maker's grant named, which failed open.
 - **The differential, before anything moved** (`1657cc7c`). The assembly's engine went on answering from `Records`,
   and `Compared` asked `CoreSources` beside it on every input, recording each disagreement
   (`RUTENT_SOURCES_DIFF`, `RUTENT_SOURCES_COUNT`). `tests/sources_compared.rs` ran the seeded steps (seeds 11 to 15,
@@ -7805,8 +7805,8 @@ into `main`; `components/core-audit/` (`measures/trail.rs`), Core's crate. `F-02
 
 1. An order's record is the handed-over filing's, else the log's `order_opened`, else its acceptance; its parties are
    its acceptance's first. Where they could differ, the 772 compared answers never did.
-2. A reserve's declarations come only from an advertisement the log trusts (verified, or its maker's granted
-   advertising key), whose kept bytes name its maker, key and reserve; the latest such with a reserve offer is in force.
+2. A reserve's declarations come only from the advertisement the log's key register accepted last for it, whose
+   stated entry the log holds; none accepted, or one offering no reserve, declares nothing (the review of `8f7ddefd`).
 3. A log, a store or the order register that can't be read now gives not known; the deployment's registers held
    mutably elsewhere give not known too.
 4. `Holder`, `Provider` and `Consent` are the deployment's (its delegations, its providers' answers, a person's
@@ -7818,11 +7818,9 @@ into `main`; `components/core-audit/` (`measures/trail.rs`), Core's crate. `F-02
 
 ### Gaps, with owners
 
-1. The first-trust arm of `Declarations` matches the entry's key to the maker's grant and the bytes' maker, key and
-   reserve, but checks no signature (core-authz holds no curve, `DEC-2`); the log's key register does, and knows which
-   advertisement it accepted. R4 below: no test tells a trusted advertisement from any. A log record of an accepted
-   advertisement (core-internal) or a read of the register's acceptance (core-audit) would let Core trust exactly what
-   the log trusts. Owner: `F-022`, with the contract author for a record.
+1. ~~The first-trust arm of `Declarations` checks no signature.~~ It failed open (the review of `8f7ddefd`); closed by
+   reading the register's acceptance (below). A durable log record of an acceptance stays unbuilt: the register is
+   rebuilt from the log's own records on every opening, so none is needed for v0.
 2. A production assembly implements `DeploymentRegisters`, `LogEntries` and `KeptBytes`, forwards `FiledOrders` to
    `OpenedOrders`, and hands each waiting filing's rebuilt record over again on a reopen, as the scenario assembly does.
    Owner: `F-030`.
@@ -7857,3 +7855,58 @@ ones among them: `assembly_policy`, `assembly_wiring`, `stuck`, `stuck_mover`, `
 `audit_scenarios`, `bulk_measures`); the doc check (`RUSTDOCFLAGS="-D warnings"`); `plan-check --strict` (0 findings)
 and `tag-check --strict` (2384 tests, 0 findings). No provider's answer changed, so the role suite wasn't run apart.
 The full suite runs in CI.
+
+### T-020-55, the review of `8f7ddefd` (PR `#313`, comment 7173496820)
+
+- **The blocker: `Declarations` failed open.** Every advertisement enters the log as a stated entry attributed
+  unverified, and the log's key register (`core-audit/src/log/keys.rs`, `Register::join`) then accepts it or drops it.
+  Core trusted any such entry whose claimed key its maker's grant named, skipping every rule the register applies
+  (the signature, `validate_statement`'s maker = provider, deployment and version, newer than the last accepted, the
+  skew, `validate_successor`), and took the latest in log order. The reviewer's probes: a forged copy of
+  `sim-reserve-a`'s advertisement (garbage signature, declarations flipped, made in 2030) turned the operator's
+  authorisation for the user from refused to permitted; `sim-reserve-b`'s advertisement naming `sim-reserve-a`
+  flipped `sim-reserve-a`'s declarations. The 772-answer differential couldn't see it: every scenario's advertisements
+  are honest, as R4's green said.
+- **The fix, no contract change.** The register keeps each accepted advertisement's commitment
+  (`Accepted::commitment`), and `AuditLog::accepted_advertisement(provider)` exposes the one it accepted last: that
+  commitment and the reserve declaration it makes. core-authz's `AcceptedAdvertisements` (in place of `KeptBytes`)
+  reads it, and `CoreSources` takes the declaration only where the log holds a stated advertisement under that
+  commitment. None accepted, or one offering no reserve: missing, so the decision resting on it is refused; a log that
+  can't be read: not known. No fallback to the grant-key reading, and no read of the evidence store. The assembly's
+  `LogRead` answers both of Core's reads; `StoreRead` is gone, and `serde_json` is a dev-dependency of core-authz again.
+- **Tests** (`assembly_policy.rs`, each written before the fix and seen red at `8f7ddefd`).
+  `forged advertisement under a granted key changes no declaration` [`REQ-AUZ-9`, `REQ-CAT-6`] (red: `Yes, Yes` for
+  `No, No`) and `another provider's advertisement naming the reserve changes no declaration` [`REQ-AUZ-9`,
+  `REQ-CAT-6`] (the other reserve's signature copied, then signed anew validly with its own advertising key; red the
+  same), each also holding the operator's authorisation for the user refused. `old advertisement replayed after a newer
+  accepted one changes nothing` [`REQ-AUZ-9`, `REQ-CAT-6`]: the reserve advertises anew, validly, its declarations
+  flipped, and Core reads them; its older advertisement replayed changes nothing. Red at `8f7ddefd` on its first
+  assertion (the old reading didn't read the newer advertisement), not the replay's, which R13 and R14 hold.
+  `Core::append_advertisement` is their hook: a stated advertisement appended as `Core::advertise` appends one, with
+  no catalogue join.
+- **The two sources no scenario asked, directly.** `segment order answer is the log's plan for every segment`
+  [`REQ-AUZ-7`] and `statement answer is the log's maker for every statement` [`REQ-AUD-5`]: over a run order, every
+  segment of every `route_chosen` is its order's and no other's, and every commitment its first stated entry's maker's
+  party's and no other's; an unknown segment or commitment is nothing. Both passed at once (the code is `Records'`
+  moved), as a check of the move rather than a rule's red.
+- **Re-checked the same way.** `Kept` and `KeptAbout` ask only whether the log names a statement under a commitment
+  about the order, which is what the store keeps; `Showing` requires a verified result; `Statement` gives the party the
+  log attributed. None trusts a claim the log didn't make.
+- **Rule-off** (`scratchpad/t-020-55/ruleoff2.py`, from `207f3a47`, each alone, restored and touched):
+
+| Rule switched off | Tests that went red |
+|---|---|
+| R4: the register takes an advertisement with a bad signature or made past the skew (the probe's two defects) | `forged_advertisement_under_a_granted_key_changes_no_declaration`; core-audit's `a_dropped_or_crossed_key_never_signs_again`, `an_advertisement_orchestration_signed_names_no_key_of_the_provider` |
+| R4, as `8f7ddefd` read it (any stated advertisement under a granted key) | the three advertisement tests, at `8f7ddefd` before the fix |
+| R12: the register takes an advertisement another maker made (`validate_statement`, `validate_successor` off) | core-audit's four key-register tests; no scenario test, since the register's publisher check still refuses `sim-reserve-b`'s advertisement as `sim-reserve-a`'s |
+| R13: the register takes an advertisement no newer than the one it accepted | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`; core-audit's three |
+| R14: Core reads the register's first accepted advertisement, not its last | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` |
+| R15: the accepted advertisement read though the log holds no stated entry under it | `an_unreadable_log_or_store_gives_not_known` (core-authz) |
+| R16: a reserve with no accepted advertisement reads as declaring | `the_deployment_is_asked_only_its_own_registers` (core-authz, its assertion added after the first run of this rule-off, which turned nothing red) |
+| RP (the reviewer's): a permitted trail read handed `Withheld` | `regulator_holding_the_read_permission_is_handed_the_trail_and_the_read_is_recorded` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): fmt; workspace clippy `-D warnings`;
+  `rutent-core-authz` (160 pass) and `rutent-core-audit` (146); the policy scenario binaries (`assembly_policy`,
+  `assembly_wiring`, `stuck`, `stuck_mover`, `assembly_real_wallet`, `reopened`, `audit_scenarios`, `bulk_measures`,
+  `assembly_arrivals`, `deposit_waits`, `authz_scenarios`, `execution`, `deposit_destination`, `execution_routes`: 160
+  pass); the doc check; `plan-check --strict` (0 findings), `tag-check --strict` (2389 tests, 0 findings); the
+  contract guard against `origin/develop` (no violations). No contract or core-orch file changed in this round.
