@@ -555,8 +555,10 @@ pub struct Core {
     /// What goes wrong with an order and how it ends (`T-024-06`).
     pub(crate) life: lifecycle::Lifecycle,
     exposures: Exposures,
-    /// The prices reported, once per order (`T-024-04`).
+    /// The prices Core's closing reported, once per order (`T-020-47`).
     reported: rutent_core_orch::quote::Prices,
+    /// Each reported price as it was built, and why a completed order's wasn't, by order.
+    closed: price::Priced,
     releases: Releases,
     signer: Signer,
     fresh: Seeded,
@@ -883,6 +885,7 @@ impl Core {
             life: lifecycle::Lifecycle::new(),
             exposures: Exposures::new(),
             reported: rutent_core_orch::quote::Prices::new(),
+            closed: price::Priced::default(),
             releases: Releases::new(),
             signer: Signer {
                 key: RealKey::assembly(),
@@ -2208,6 +2211,8 @@ impl Core {
         let result = self.segments.run_part(&mut parts, live);
         // What settled at a public node a holding account holds is landed in it (`T-020-33`).
         self.land_settled();
+        // Core's closing: an order that completed reports its executed price, once (`REQ-QTE-7`, `T-020-47`).
+        self.close(live.order, live.record);
         self.feed()?;
         Ok(result?)
     }

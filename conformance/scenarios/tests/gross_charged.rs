@@ -213,7 +213,7 @@ fn operators_fee_is_figured_on_what_arrives_of_a_gross_segment() {
     }))
     .expect("a fee formula");
     core.set_operator_fee(formula.clone());
-    let (order, quote, ran) = ran(&mut core, &session, GROSS, "req-fee");
+    let (order, quote, _) = ran(&mut core, &session, GROSS, "req-fee");
 
     // The quote shows it apart, on what arrives: the providers' terms end at 995 000, the last charge of 5 000 is a
     // line of its own, and the operator's fee is figured on what is left.
@@ -233,9 +233,10 @@ fn operators_fee_is_figured_on_what_arrives_of_a_gross_segment() {
     assert_eq!(quote.delivers, amount("990000"));
 
     // The price reported once it ran, on what each segment did, says the same.
-    let (_, _, price) = core
-        .report_price(&order, &ran)
-        .expect("the price is reported");
+    let price = core
+        .price_of(&order)
+        .expect("Core reported the price when the order completed")
+        .clone();
     let fees: Vec<_> = price
         .segments
         .iter()

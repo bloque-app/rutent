@@ -619,6 +619,9 @@ struct InFlight {
     /// What its provider charged, as its result that counted states it, with what the check needs of it: kept once
     /// it settled (`T-020-14`).
     charged: Option<Charged>,
+    /// What its result that counted states of what it gave out at its destination, its charge within it where its
+    /// tuple reports gross: the figure the executed price is made of (`REQ-QTE-7`, `T-020-47`).
+    stated_out: Option<Amount>,
     /// What it reports having given out, for the segment after it (`T-020-35`).
     reported: Option<pairs::Sent>,
     /// The platform's refusal to begin it, kept before its result is appended.
@@ -1605,6 +1608,16 @@ impl Segments {
         })
     }
 
+    /// What the result that counted for `segment` of `order` states of what it gave out at its destination, as its
+    /// provider stated it (its charge within it where its tuple reports gross), once it settled: what the executed
+    /// price takes of it (`REQ-QTE-7`, `T-020-47`).
+    pub fn stated_out(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?
+            .stated_out
+            .as_ref()
+    }
+
     /// Every settled segment's actual settlement time as its `settlement` entry recorded it, with that entry's
     /// receipt, once the log took it: the history the stuck clock's p99 is read from (`REQ-ORD-29`, `T-020-11`).
     pub fn settlements(&self) -> Vec<Settlement> {
@@ -2197,6 +2210,7 @@ impl Segments {
                 ended: false,
                 outcome: None,
                 charged: None,
+                stated_out: None,
                 reported: None,
                 begin_refused: None,
                 verdict: None,
@@ -2730,6 +2744,7 @@ impl Segments {
             on.stated,
             (stated_in.as_str(), stated_fee),
         )?;
+        self.flight_mut(at)?.stated_out = Amount::new(stated_out.clone());
         self.check_charge(parts, live, at)?;
         // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`): a detection, so what it
         // can't build is parked and the settlement goes on (`ADR-0009`).

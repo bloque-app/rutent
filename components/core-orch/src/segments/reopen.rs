@@ -386,27 +386,29 @@ impl Segments {
         } else {
             None
         };
-        let charged = match &outcome {
-            Some(SegmentOutcome::Settled { .. }) => {
+        let judged = match &outcome {
+            Some(SegmentOutcome::Settled { .. }) => settled_result(
+                catalogue,
+                history,
+                reading,
+                (handed, &transaction),
+                (&record, &operation, &statement),
+            ),
+            _ => None,
+        };
+        let stated_out = judged.as_ref().and_then(|j| Amount::new(j.4.clone()));
+        let charged = match (&outcome, judged) {
+            (Some(SegmentOutcome::Settled { .. }), Some(judged)) => {
                 let started_at = match &history[handed.at].1 {
                     Entry::Verified(v) => v.when.at.clone(),
                     Entry::Stated(_) => return None,
                 };
-                settled_result(
-                    catalogue,
-                    history,
-                    reading,
-                    (handed, &transaction),
-                    (&record, &operation, &statement),
+                charged_of(
+                    handed,
+                    &started_at,
+                    (&record, &operation),
+                    (judged.1, judged.2, judged.3),
                 )
-                .and_then(|judged| {
-                    charged_of(
-                        handed,
-                        &started_at,
-                        (&record, &operation),
-                        (judged.1, judged.2, judged.3),
-                    )
-                })
             }
             _ => None,
         };
@@ -431,6 +433,7 @@ impl Segments {
             ended: outcome.as_ref().is_some_and(is_final),
             outcome,
             charged,
+            stated_out,
             reported: None,
             begin_refused: None,
             verdict: None,
@@ -1035,6 +1038,7 @@ fn settled_result(
     String,
     rutent_contracts::provider_role::Fee,
     Receipt,
+    String,
 )> {
     let cited = sign::cited(record, operation)?;
     let units = Units {
@@ -1071,8 +1075,15 @@ fn settled_result(
                 handed_on,
                 amount_in,
                 fee,
+                amount_out,
                 ..
-            }) => Some((Amount::new(handed_on)?, amount_in, fee, receipt.clone())),
+            }) => Some((
+                Amount::new(handed_on)?,
+                amount_in,
+                fee,
+                receipt.clone(),
+                amount_out,
+            )),
             _ => None,
         }
     })

@@ -777,6 +777,12 @@ impl Prices {
         prices
     }
 
+    /// The price reported for `order`, where the log took its entry: the digest it is named by and the entry's receipt.
+    pub fn of(&self, order: &Id) -> Option<(Digest, Receipt)> {
+        let (digest, step) = self.reported.get(order.as_str())?;
+        Some((digest.clone(), step.receipt.clone()?))
+    }
+
     /// Reports `priced` as its order's price: a `shown` entry, by `core` at Core's clock, naming its digest and
     /// `price` (`REQ-QTE-7`). Reported again, the entry first built is appended, or its receipt answered.
     pub fn report(
