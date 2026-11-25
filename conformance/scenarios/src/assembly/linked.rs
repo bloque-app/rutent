@@ -405,6 +405,6 @@ fn rounds_digest(order: &Id, route: &Request) -> Result<Digest, StepError> {
 
 /// The identifier of the segment at `place` in the linked order's part `part`, as [`Core::accept_linked`] names it.
 pub(super) fn segment_id(part: &stm::Id, place: usize) -> Result<stm::Id, StepError> {
-    stm::Id::new(&format!("{}-s{}", part.as_str(), place + 1))
+    stm::Id::new(format!("{}-s{}", part.as_str(), place + 1))
         .ok_or(StepError::NotNow("a segment identifier"))
 }

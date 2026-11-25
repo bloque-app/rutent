@@ -7019,6 +7019,11 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
     assembly's `move_stuck` only then); `Segments::reconcile_landings`, run on reopening, asks each account what it
     holds for each segment the log settled at its node and restores only what it lacks, never landing blind (the first
     round's known risk is closed).
+  - The assembly's hand-on after a reopening: the linked order's segment ids are derived from its part,
+    `{part}-s{n}` (`linked::segment_id`), which its logged acceptance names, so the accepted route is rebuilt from the
+    log and the decision record; `Core::hand_on` reads the holding account's withdrawal from the log where the mover
+    holds none (`withdrawn_in_the_log`: the hand-on's effect and `done` result, the wallet's verified answer about the
+    linked order, its record from the kept bytes).
   - The assembly: `Core::reopened` carries the operator key with the decision records it signed and the host's
     holding accounts (beside the platform), lists the accounts again (`relist_holdings`), replays an operator-published
     wallet's `AcceptModule`, and `rebuild_from_log` puts the pieces together and rebuilds each started order from the
@@ -7030,11 +7035,55 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   `pending_hand_on_is_rebuilt_from_the_log` [`REQ-ORD-43`] (`tests/hand_on.rs`);
   `holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_release` [`REQ-ORD-43`, `INV-1`],
   `stuck_order_is_handed_on_after_the_holding_accounts_module_restarts` [`REQ-ORD-43`] (`tests/assembly_real_wallet.rs`).
+  Beside the pending hand-on's own test, which runs on the scenario kit, the assembly's wiring has one of its own (the
+  lead's ask, a new name for `PLAN.md`): `pending_hand_on_is_rebuilt_from_the_log_through_the_assembly` [`REQ-ORD-43`,
+  `INV-4`], a crash right after the first order's `handed_on`, the assembly reopened, the hand-on asked again: the
+  linked `route_chosen` and the holding account's start each once, then the linked order's first move runs on the
+  route it logged and settles.
   Beside them: `reopened_segments_move_nothing_twice_where_the_log_would_take_a_second_move` [`INV-8`]
   (`tests/segments.rs`, against the kit's log, which admits a second move the real log refuses, so Core's own rule is
   what holds), `done_move_is_counted_as_moved_after_a_restart` [`INV-8`, `INV-4`] (a crash right after a resolution's
   `done` result, before its `stuck_resolved`) and `transactions_the_log_names_are_held_as_used_after_a_restart`
   [`INV-8`] (`tests/reopened.rs`).
+- **Rule-off table** (each switched off alone from the committed checkpoint, the binaries run through the lock with
+  the row's private wallet build, the file restored with `git checkout`; scripts `ruleoff.py`, `ruleoff2.py` in the
+  row's scratch folder). "Scenarios" are `reopened`, `hand_on`, `segments` and `assembly_real_wallet`; "table" is
+  core-internal's `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | Core's flights neither rebuilt nor held unread | `core_reopened_mid_order_carries_on_as_the_core_that_ran_on`, `exposures_are_rebuilt_from_the_log_so_routes_respect_the_ceiling_after_a_restart`, `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log`, `pending_hand_on_is_rebuilt_from_the_log`, `holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_release`, `reopened_segments_move_nothing_twice_where_the_log_would_take_a_second_move` |
+  | no flight rebuilt (each held unread) (first round) | the stuck and exposures tests |
+  | no hold for a segment rebuilt in flight (first round) | the exposures test |
+  | an effect failed alone read as in motion (first round) | the stuck test |
+  | no resting hold for a stuck part (first round) | the stuck test |
+  | no decision kept (first round) | the stuck test |
+  | `Issued::recorded` holds nothing | `transactions_the_log_names_are_held_as_used_after_a_restart` |
+  | a `done` move not counted as moved | `done_move_is_counted_as_moved_after_a_restart` |
+  | no inputs statement written | `core_reopened_mid_order_carries_on_as_the_core_that_ran_on` |
+  | intake reads no inputs back | the same |
+  | the assembly doesn't rebuild the hand-ons | `pending_hand_on_is_rebuilt_from_the_log_through_the_assembly` |
+  | `HandOn::reopened` finds nothing | `pending_hand_on_is_rebuilt_from_the_log` |
+  | a rebuilt hand-on built on the order as it stands | the same |
+  | no withdrawal read from the log | `pending_hand_on_is_rebuilt_from_the_log_through_the_assembly` |
+  | linked segment ids drawn fresh, not derived | the same |
+  | no restore before a hand-on's withdrawal | `stuck_order_is_handed_on_after_the_holding_accounts_module_restarts` |
+  | no landings reconciled on reopening | `holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_release` |
+  | a restore lands all, the wallet not asked | the same (the wallet would hold the log's amount twice) |
+  | a restore attributes beyond the log's amount | both wallet tests |
+  | row `opened-orders-inputs-are-a-kept-statement`: cites nothing; verified, shape, maker, about each unread | table, each |
+
+  `no_value_moves_twice_after_core_reopens` stays green with Core's rules off: the real log's
+  `part-waits-for-value-in-motion` refuses a second move too. Core's own rule is shown by
+  `reopened_segments_move_nothing_twice_where_the_log_would_take_a_second_move`, against the kit's log, which admits it.
+- **Local checks** (through the lock, the plain wallet built privately into the row's scratch folder and named by
+  `RUTENT_PLAIN_WALLET`): `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`
+  (after a `needless_borrows_for_generic_args` fix in `linked::segment_id`); `cargo test -p` `rutent-core-orch`,
+  `rutent-contracts`, `rutent-prov`, `rutent-core-authz --lib`; `rutent-scenarios`' `reopened`, `hand_on`, `segments`,
+  `assembly_real_wallet`, `assembly`, `assembly_stuck`, `assembly_hand_on`, `assembly_intake`, `assembly_wiring`,
+  `charge_check`, `holds`, `stuck_hand_on`, `stuck`, `closing`, `invariants`, `hand_on_record`, `landing` (all pass);
+  the doc check; plan-check and tag-check `--strict` (0 findings, 2263 tests tagged); the contract guard against
+  `origin/develop` ("1934 changed path(s) … no violations"). The full suite runs in CI.
 - **Tests first.** Not kept for the first round's rebuild, written before its tests; every test was then watched red on
   an assertion by switching its rule off (the table below), which for the first round is the base's behaviour.
 - **Defaults** (reversible, failing closed): a segment logged with no final outcome is never carried out again after a
