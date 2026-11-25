@@ -157,7 +157,7 @@ impl Arrivals {
                     })
                     .collect();
                 if let (Some((_, since)), Some((last, _))) = (shown.first(), shown.last())
-                    && let Some(run) = super::filing::Run::rebuilt(
+                    && let Some(mut run) = super::filing::Run::rebuilt(
                         held,
                         order,
                         authorisation,
@@ -166,6 +166,28 @@ impl Arrivals {
                         read_filing(kept, order, request.as_ref(), inputs.as_ref()),
                     )
                 {
+                    // The next routing chains to the order's last decision record and doesn't ask a verifier about the
+                    // person again (`REQ-AUD-4`), as it wouldn't have had the Core never stopped.
+                    let previous = history.iter().rev().find_map(|(r, e)| match e {
+                        Entry::Verified(v)
+                            if matches!(&v.what, What::DecisionRecord { order: o, .. } if o == order) =>
+                        {
+                            Some(r.clone())
+                        }
+                        _ => None,
+                    });
+                    let asked: Vec<Id> = verified()
+                        .filter_map(|(_, v)| match &v.what {
+                            What::AskAboutPerson { question, .. } if &question.order == order => {
+                                Some(question.ask.clone())
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+                    if let Some(previous) = previous {
+                        run.chain_to(previous, asked);
+                    }
                     arrivals.spent.remove(&key(earlier));
                     arrivals.runs.insert(key(earlier), run);
                 }

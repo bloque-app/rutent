@@ -82,6 +82,10 @@ fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
             .all(|v| !matches!(v.what, What::Acceptance { .. }))
     );
 
+    // The register of actors is the deployment's, not Core's to rebuild: the reserve the route's work is charged to is
+    // listed again, as it was when the deposit was filed.
+    core.registers()
+        .list(&component(SLOW, SLOW, Role::Provider));
     let later = core
         .open_session(&kit::customer())
         .expect("a session of its own, after the restart");

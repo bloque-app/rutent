@@ -767,6 +767,12 @@ impl Run {
             && self.filing.parties == filing.parties
     }
 
+    /// Chains the next routing to the order's last decision record, and to the verifiers already asked about the person
+    /// for it (`REQ-AUD-4`), as a wait rebuilt from the log holds them.
+    pub(super) fn chain_to(&mut self, previous: Receipt, asked_about_person: Vec<Id>) {
+        self.history = History::recorded(previous, asked_about_person);
+    }
+
     /// Takes the filing the filer states again for the one rebuilt from the log, where it is well formed.
     pub(super) fn adopt(&mut self, filing: &Filing) {
         if let Some(well) = well_formed(filing.clone(), &self.arrival) {
