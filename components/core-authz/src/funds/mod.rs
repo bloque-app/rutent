@@ -135,6 +135,14 @@ pub trait Recorded {
     /// where no plan lists the segment. A move is held to the authorisation in force for its own part, which the move
     /// doesn't name (`T-021-04`).
     fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure>;
+
+    /// What the log holds of the engine's register of sessions and read permissions:
+    /// [`crate::session::registered_in`] over its entries. An engine reopened over the log rebuilds its register from
+    /// it ([`Engine::reopen`], `T-021-17`). A handle that doesn't say can't be read so, and an engine reopened over it
+    /// refuses every call its register would answer.
+    fn registered(&mut self) -> Result<crate::session::Registered, ReadFailure> {
+        Err(ReadFailure::Unavailable)
+    }
 }
 
 /// The part of `order` that `segment` belongs to, by the plans `entries` hold: a `route_chosen` part listing it, or

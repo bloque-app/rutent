@@ -915,6 +915,7 @@ fn move_step_without_another_actors_decision_is_refused() {
     );
 
     let mut unbuilt = Unbuilt::new(PolicyPath(Rc::clone(&core.log)));
+    unbuilt.reopen();
     let not_known = decide(
         &mut core,
         &mut stuck,
@@ -2905,6 +2906,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
     let (result, other) = results_after_the_resolution(&mut core);
     let mut unbuilt = Unbuilt::new(PolicyPath(Rc::clone(&core.log)));
+    unbuilt.reopen();
     let (order, carries_out, actor) = (id(ORDER), decided(&first), segments_support::core());
     let history = core.recorded();
     let reported = on_parts(&mut core, |parts| {

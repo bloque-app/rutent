@@ -799,6 +799,10 @@ impl Core {
             records.clone(),
         );
         engine.set_clock(Box::new(clock.clone()));
+        // Policy's register of sessions and read permissions, rebuilt from the decisions the log holds, the
+        // register's only durable record: empty on a fresh disk, the register the engine that ran on held on a
+        // reopened one (`T-021-17`).
+        engine.reopen();
         let policy = PolicySide::new(
             Rc::new(RefCell::new(engine)),
             records.clone(),
@@ -821,6 +825,8 @@ impl Core {
             window_secs: 86_400,
         });
         catalogue.set_answer_within(CHECK_ANSWERED_WITHIN);
+        // The sessions policy's register holds, handed to the catalogue's again, as each was when it opened.
+        policy.engine().borrow().register().open_in(&mut catalogue);
         let prices = config.providers.iter().flat_map(kit::prices_of).collect();
 
         let feed = match carried_feed {

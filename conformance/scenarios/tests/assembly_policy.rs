@@ -507,3 +507,75 @@ fn customers_login_stating_the_operators_role_grants_reads_and_revokes_nothing_i
         .unwrap();
     assert!(matches!(read.outcome, ReadOutcome::Refused { .. }));
 }
+
+/// Policy's register of read permissions across a restart, through the assembly (`T-021-17`): the operator's listed
+/// login grants a regulator the trail, revokes it and grants it again under a fresh id; Core is opened again on its
+/// disk, and the reopened engine, its register rebuilt from the log, holds the first grant revoked and the second in
+/// force, and never grants the revoked id again, as the engine that ran on would.
+// verifies: REQ-AUZ-6, NFR-6
+#[test]
+fn read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly() {
+    use rutent_contracts::core_internal::ReadOutcome;
+    use rutent_contracts::core_internal::calls::Reads;
+    use rutent_core_authz::roles::Permission;
+
+    let scenario = Scenario::new(
+        "one order, accepted",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    });
+    let core = scenario.core(1, &mut Reference).0;
+    let operator = kit::operator_login();
+    let regulator = Actor {
+        party: id("fin-regulator"),
+        acts: id("examiner-3"),
+        role: Role::Regulator,
+        kind: ActorKind::Person,
+    };
+    // The deployment's registers are set again on each Core put together.
+    let listed = |core: &Core| {
+        core.registers().list(&regulator);
+        core.registers().permit(&operator, Permission::GrantRead);
+        core.registers().permit(&operator, Permission::RevokeRead);
+    };
+    listed(&core);
+    {
+        let mut policy = core.policy();
+        let grant = trail_change(&core, "req-grant", "perm-reg-1", &regulator, &operator);
+        assert!(policy.grant_permission(&grant).unwrap().permit().is_some());
+        let revoke = trail_change(&core, "req-revoke", "perm-reg-1", &regulator, &operator);
+        assert!(
+            policy
+                .revoke_permission(&revoke)
+                .unwrap()
+                .permit()
+                .is_some()
+        );
+        let again = trail_change(&core, "req-again", "perm-reg-2", &regulator, &operator);
+        assert!(policy.grant_permission(&again).unwrap().permit().is_some());
+    }
+
+    let core = scenario.reopen(core, 1, &mut Reference);
+    listed(&core);
+    let mut policy = core.policy();
+    let revoked = policy
+        .check_read(&trail_check(&core, "req-read-1", &regulator, "perm-reg-1"))
+        .unwrap();
+    assert!(
+        matches!(revoked.outcome, ReadOutcome::Refused { .. }),
+        "{revoked:?}"
+    );
+    let in_force = policy
+        .check_read(&trail_check(&core, "req-read-2", &regulator, "perm-reg-2"))
+        .unwrap();
+    assert_eq!(in_force.outcome, ReadOutcome::Allowed {});
+    let reused = trail_change(&core, "req-reused", "perm-reg-1", &regulator, &operator);
+    assert!(
+        policy.grant_permission(&reused).unwrap().permit().is_none(),
+        "a revoked id is never granted again"
+    );
+}

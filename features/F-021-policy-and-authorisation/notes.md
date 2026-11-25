@@ -2215,6 +2215,171 @@ folded into core-internal's unreleased 1.0.0; `components/core-authz/` (`stuck/`
   | a filed read asks the order's record of its requester | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused`; `agent_with_read_scope_reads_its_partys_filed_order` |
   | the row's `held_at` is the stuck part's resting node (field `at`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
   | policy asks the register for the resting node alone (another node asked first) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+## T-021-17
+
+Branch `f-021/t-021-17-policy-restart`, from `1bc91b21` (the batch holding `T-020-46`). Round 2 of `M3`'s milestone
+review of 2026-11-24, a medium under finding 3 (issue #303). Edits `components/core-authz/` (`session/`, `funds/`'s
+`Recorded` and the tests of `session/`, `funds/` and `parties/`), a `DEC-20` path that waits for the owner's click at
+the release into `main`, and the assembly's reopening with one of its tests (`conformance/scenarios/src/lib.rs`'s
+`PolicyHandle`, `conformance/scenarios/src/assembly/mod.rs`'s `assemble_with`, `tests/assembly_policy.rs`; `F-024`
+files). No contract shape changes: the log already holds every decision the register is rebuilt from.
+
+- **What the reopened engine lost, register by register.**
+  - `Register` (`session/`): the sessions opened, the read permissions granted and the revocations permitted were
+    pushed in memory after each permitted decision and read from nowhere else. A reopened engine held none: a revoked
+    grant's id could be granted again, a grant given before the restart read nothing, and a session's id could open
+    another session. **This was the gap.**
+  - `Authorised` (`funds/`) and `Charged` (`parties/`) were already the log's (`T-021-04`, `T-021-05`): before every
+    authorisation, move and charge the engine reads the log's permitted `authorise` and `charge` entries on its own
+    handle (`Recorded::permitted`, `Recorded::charged`) and rebuilds the register from them, so an engine opened
+    again holds what the log holds. Nothing in them needed a change; the row's two tests for them pin it, each seen
+    red by switching its read off (the table below). The milestone review's reading that these two were kept in
+    memory alone is not borne out by the code.
+- **What changed.**
+  - `session::Registered` and `session::registered_in`: the register a log holds, read from the verified entries
+    whose outcome is `permitted` of an `open_session` that opened a session (its request's account and holder, the
+    session and end it opened), a `grant_permission` and a `revoke_permission`, in log order, each kept once as the
+    engine that wrote it kept it. The one definition every `Recorded` reads by, as `permitted_in` and `charged_in`
+    are.
+  - `funds::Recorded::registered`: policy's handle reads it, one wire with the append. Its default fails
+    (`ReadFailure::Unavailable`): a handle that doesn't say can't be read so, and an engine reopened over it fails
+    closed. The assembly's `PolicyHandle` answers it from the log's entries.
+  - `Engine::reopen`: the register rebuilt from that read in place of what it held. A read that fails marks the
+    register unread (`Register::unread`), and then every call resting on it is refused `missing_input`, never
+    permitted: a read by a permission, a grant (whose id the engine can't check for reuse), a revocation and a session
+    (whose id it can't check for reissue); a customer's acceptance of fault finds no session open and is refused. A
+    read resting on no permission rests on nothing the register holds and is decided as ever.
+  - The assembly: `assemble_with` calls `reopen` on every policy engine it puts together (empty on a fresh disk, the
+    register the engine that ran on held on a reopened one) and hands the rebuilt sessions to the catalogue's register
+    again (`Register::open_in`), as each was handed when it opened.
+- **Test artefact, not a Core bug.** The session tests' engine that ran on starts over `Kept::world()`, whose log holds
+  a session (`sess-1`) it never opened; it is put together with `reopen` as every engine over a log is, so its
+  register and the reopened one's agree.
+- **Tests.** The three named: `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on`
+  [`REQ-AUZ-6`, `NFR-6`] (`session/tests.rs`: grant, revoke, grant again under a fresh id, then the restart; each probe
+  put to the engine that ran on and to the one reopened over a copy of its log, both judging alike: the revoked id
+  reads nothing and is never granted again, the fresh one reads, the grant in force asked again answers as it did,
+  and once revoked reads nothing; their registers equal), `authorisation_given_before_a_restart_is_held_after_it`
+  [`REQ-AUZ-1`, `NFR-6`] (`funds/tests.rs`) and `charge_recorded_before_a_restart_is_not_charged_again` [`NFR-6`]
+  (`parties/tests.rs`). New names for `PLAN.md`, each a rule of this row:
+  `session_opened_before_a_restart_is_held_after_it` [`REQ-CAT-3`, `NFR-6`] and
+  `register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer` [`NFR-6`, `REQ-AUZ-5`] (`session/tests.rs`);
+  `read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly` [`REQ-AUZ-6`, `NFR-6`]
+  (`tests/assembly_policy.rs`, the wiring).
+- **Red first.** With the shapes in and `registered_in` and `reopen` stubbed, the three session tests failed on their
+  assertions: the reopened engine refused `perm-reg-2`'s read (`NotPermitted` for `Allowed`), held no session (`[]`
+  against the one opened), and refused the blind read `NotPermitted` for `MissingInput`. The funds and parties tests
+  passed at their first run, their rules being in place since `T-021-04` and `T-021-05`; they are held by the
+  rule-offs below.
+- **Rule-off** (each switched off alone from the committed checkpoint, `cargo test -p rutent-core-authz --lib`, and
+  for the assembly `cargo test -p rutent-scenarios --test assembly_policy`, through the lock, the file restored with
+  `git checkout`; script `ruleoff.py` in the row's scratch folder):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `registered_in` reads nothing | `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on`, `session_opened_before_a_restart_is_held_after_it` |
+  | `registered_in` keeps every outcome, not only `permitted` (fix round 1) | `grant_refused_before_a_restart_is_not_held_after_it`; before fix round 1, no test (the review of `f6d5ec68`, finding 1) |
+  | no grant rebuilt | `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on` |
+  | no revocation rebuilt | the same |
+  | no session rebuilt | `session_opened_before_a_restart_is_held_after_it` |
+  | a read by a permission not refused while unread | `register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer` |
+  | a grant not refused while unread | the same (a fresh id would be permitted) |
+  | a revocation not refused while unread | the same (refused `not_permitted`, not `missing_input`) |
+  | a session not refused while unread | the same (the session would open) |
+  | an unread log starts the register empty (no `unread`) | the same |
+  | `Authorised` not read from the log (kept in memory) | `authorisation_given_before_a_restart_is_held_after_it` and 41 other funds, roles and engine tests (the register then never fills) |
+  | `Charged` not rebuilt from the log's read | `charge_recorded_before_a_restart_is_not_charged_again`, `counter_is_the_logs_across_a_restart` and five other parties tests |
+  | the assembly doesn't call `reopen` | `read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly` |
+  | `PolicyHandle` doesn't answer `registered` (the default) | the same and eight other `assembly_policy` tests: the engine fails closed, every session refused |
+
+  The first run left `charge_recorded_before_a_restart_is_not_charged_again` green with the rebuild off (counting the
+  charge afresh in an empty counter answered the same); the test now fills the party's bound before the restart, and
+  goes red. An unread branch first written into the acceptance of fault turned nothing red (a cleared register holds
+  no session, so the acceptance is refused already) and was taken out.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `cargo fmt --all -- --check`; `cargo clippy
+  --workspace --all-targets -- -D warnings` (after collapsing two `if`s of `registered_in` into match guards);
+  `cargo test -p rutent-core-authz` (150 pass); `rutent-scenarios`' `assembly_policy`, `assembly`, `reopened`,
+  `assembly_wiring`, `authz_scenarios` (all pass); the doc check; plan-check and tag-check `--strict` (0 findings,
+  2342 tests tagged). The full suite runs in CI.
+- **Defaults, reversible, each failing closed.**
+  1. The register is rebuilt once, when the engine is put together over the log (`reopen`), not read before every call
+     as `Authorised` and `Charged` are: each of its entries is written only by this engine's own permitted decision,
+     so between reopenings memory and log agree; two engines over one log at once would each hold only their own
+     grants, which v0's one policy engine per log never does.
+  2. A register that can't be read on reopening refuses every call resting on it as a missing input until a later
+     reopening reads it; nothing is retried in between.
+  3. `Recorded::registered`'s default fails, so a handle that doesn't override it fails closed rather than starting
+     empty.
+  4. Sessions are rebuilt whether or not they have ended: an ended one opens nothing and answers no acceptance, as in
+     the engine that ran on, and its id still opens no other session.
+- **Gaps, with owners.**
+  1. Two engines over one log at once (default 1): not v0's shape; were it, the register would be read before each
+     call as `Authorised` is. Owner: `F-021` if a deployment ever runs two.
+  2. The deployment's registers of actors and permissions (`Registers`) are configuration, set again on each Core put
+     together (`T-020-46`'s default), not policy's state: the deployment's, `F-030`.
+
+### T-021-17, fix round 1 (the review of `f6d5ec68`, PR #307)
+
+The reviewer's CHANGES (comment 7156746340) and the CI failure on `#307` (comment 7156992124), in one round on the same
+branch. Edits `components/core-authz/` (`session/` and the tests of `session/`, `roles/`, `parties/` and `engine/`), a
+`DEC-20` path, and `F-024` files: `conformance/scenarios/src/harness.rs`, `tests/charge_check.rs`,
+`tests/private_nodes.rs`, `tests/stuck.rs`, `tests/segments_support/mod.rs`.
+
+- **Finding 1, should-fix: the outcome filter pinned.** Nothing held that a decision refused before a restart isn't
+  rebuilt as permitted: with `registered_in` keeping every outcome, all 150 tests stayed green. New test
+  `grant_refused_before_a_restart_is_not_held_after_it` [`REQ-AUZ-6`, `NFR-6`] (`session/tests.rs`): the deployment
+  refuses a grant under a fresh id, a revocation of the grant in force and a session; each probe is put to the
+  engine that ran on and to the one reopened over a copy of its log. Both read nothing by the refused grant and grant
+  its id afresh, still read by the grant in force, and open a session under the refused session's id.
+- **Finding 2, low: `reopen` fails closed by default.** `Register::default` is unread, so `Engine::with_policy`
+  builds an engine whose register answers nothing until its first `reopen`: one put together over a log and never
+  reopened refuses every read by a permission, grant, revocation, session and acceptance as a missing input, never
+  permits from an empty register; one reopened over an empty log holds an empty register, read. New test
+  `engine_never_reopened_refuses_what_its_register_would_answer` [`NFR-6`, `REQ-AUZ-5`] (`session/tests.rs`), which
+  also reads by the grant once the same engine is reopened.
+- **Finding 3, low: `missing_input` for an acceptance.** `refuses_acceptance` answers `missing_input` on an unread
+  register, as the other readers do. New test
+  `acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_missing_input` [`REQ-AUZ-5`, `NFR-6`]
+  (`roles/tests.rs`, over `Blind`, a log policy can't read its register from, in the world where an acceptance in an
+  open session is permitted). Intake's and the arrival filing's session check (the assembly's `Held`, core-orch's
+  `SessionRegister` port, which answers `Option`) still refuses as "session not held": fail closed, but saying
+  `missing_input` there crosses core-orch's port. Left as it is; owner `T-020-52`, which edits intake's reads.
+- **Test artefacts, not Core bugs.** Every test engine over a log is now reopened: `session/tests.rs`' engines over
+  `Kept` (through `opened`); `roles`' and `parties`' `engine` helpers; the engine tests' unbuilt engine over `Taking`
+  and the call table's over `Seen`, whose logs answer `Recorded::registered`; the scenario kit's `Policy::new`
+  (`segments_support`, whose `PolicyPath` now answers it) and `stuck.rs`' two unbuilt engines. `roles`' `accepting`
+  world holds exactly the sessions it names: the world's log opened `sess-1` until 09:15, which the reopened engine
+  now rebuilds, where the world names its own until 09:10. `Assembly::new` (`lib.rs`, bound by `Log + PolicyLog`, not
+  `Entries`) stays unread: its unbuilt engine serves `tests/log-handles.rs`, which opens no session and grants
+  nothing, so it refuses, as the default means.
+- **The CI failure: a new session under the old id after a reopening.** `Core::open_session` always asks under the
+  deployment's one session id, so a second session after a reopening asks for another under an id already issued,
+  which the rebuilt register refuses, as the Core that ran on would. The tests relied on the gap; each now runs under
+  the session opened before: `charge_check`'s `terms_stated_before_core_reopens_bind_the_segments_after_it` (its
+  `req-second`), `private_nodes`' `private_rail_closed_before_core_reopens_stays_closed` (the deployment's session
+  id), and the harness's `Step::Restart`, which kept no session and opened a new one at the next order.
+  `reopened`'s `second_order_refused` asks for a session after the reopening at the same moment as before, the same
+  request again, which opens the same session.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib` through the lock, each rule switched off alone from the
+  round's committed checkpoint `203abc49`, the file restored with `git checkout`; script `ruleoff2.py` in the row's
+  scratch folder):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | `registered_in` keeps every outcome, not only `permitted` | `grant_refused_before_a_restart_is_not_held_after_it` |
+  | the register starts readable (`Register::default`'s `unread: false`) | `engine_never_reopened_refuses_what_its_register_would_answer` |
+  | an acceptance not refused while unread | `acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_missing_input` |
+- **Red first.** `grant_refused_before_a_restart_is_not_held_after_it` passes at head, its rule being in place since
+  the first round, so it is held by its rule-off, as the reviewer's probe was. The two lows' tests were written with
+  their changes, not before them, and each was seen red only by switching its rule off (the table above).
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): fmt; workspace clippy `-D warnings`;
+  `cargo test -p rutent-core-authz` (153 pass); `rutent-scenarios`' `charge_check`, `assembly`, `assembly_policy`,
+  `assembly_real_wallet`, `measures_called`, `private_nodes`, `reopened` (every binary that reopens Core), `stuck`,
+  `segments` (the kit's engines) and `log-handles` (`Assembly::new`'s engine), all pass; the doc check; plan-check and
+  tag-check `--strict` (0 findings, 2345 tests tagged). The full suite runs in CI.
+- **Defaults** (reversible, failing closed): an engine starts unread and answers its register only once reopened; an
+  acceptance on an unread register is a missing input; a scenario runs every order after a restart under the session
+  opened before it, held by the reopened Core.
 
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 

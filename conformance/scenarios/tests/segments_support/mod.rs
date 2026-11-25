@@ -622,6 +622,15 @@ impl rutent_core_authz::funds::Recorded for PolicyPath {
             segment,
         ))
     }
+
+    fn registered(
+        &mut self,
+    ) -> Result<rutent_core_authz::session::Registered, rutent_core_authz::funds::ReadFailure> {
+        let log = self.0.borrow();
+        Ok(rutent_core_authz::session::registered_in(
+            log.entries.iter().map(|(entry, _)| entry),
+        ))
+    }
 }
 
 /// Policy's read of a stuck order's steps, each entry with the receipt the log gave it (`T-021-06`).
@@ -727,13 +736,15 @@ pub struct Policy {
 impl Policy {
     pub fn new(log: Rc<RefCell<TestLog>>) -> Self {
         let refuse = Rc::new(Cell::new(None));
-        let engine = Engine::with_policy(
+        let mut engine = Engine::with_policy(
             PolicyPath(log),
             Deployment_ {
                 refuse: Rc::clone(&refuse),
             },
             Register,
         );
+        // Put together over its log, as every engine is (`T-021-17`).
+        engine.reopen();
         Self {
             engine,
             refuse,

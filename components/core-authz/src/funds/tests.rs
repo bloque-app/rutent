@@ -975,6 +975,44 @@ fn register_is_rebuilt_from_the_log_after_a_restart() {
     );
 }
 
+/// An authorisation given before a restart is held after it (`T-021-17`): the engine opened again over the same log
+/// lets a move inside it through, refuses one outside it, answers the same authorisation given again as the engine that
+/// gave it would, and refuses the operator's other terms after it, as it would have before the restart.
+// verifies: REQ-AUZ-1, NFR-6
+#[test]
+fn authorisation_given_before_a_restart_is_held_after_it() {
+    let (first, _, operators) = the_reviewers_three();
+    let order = first.order.clone();
+    let log = Shared::default();
+    let mut before = engine_over(&log);
+    assert_eq!(before.authorise(&first).unwrap().outcome, Answer::Permit {});
+    drop(before);
+
+    let mut after = engine_over(&log);
+    assert_eq!(
+        decided(
+            &mut after,
+            &move_under(0, &order, &first.authorisation, end_of(&first, "2500000"))
+        ),
+        Answer::Permit {},
+        "a move inside the authorisation given before the restart"
+    );
+    assert_eq!(
+        decided(
+            &mut after,
+            &move_under(
+                1,
+                &order,
+                &first.authorisation,
+                end_of(&operators, "2500000")
+            )
+        ),
+        REFUSED_OUTSIDE
+    );
+    assert_eq!(after.authorise(&first).unwrap().outcome, Answer::Permit {});
+    assert_eq!(after.authorise(&operators).unwrap().outcome, NOT_PERMITTED);
+}
+
 /// Two engines over one log hold one register: the customer's new destination given through one is in force in the
 /// other, whose next answers are held to it.
 // verifies: REQ-AUZ-3, INV-10
