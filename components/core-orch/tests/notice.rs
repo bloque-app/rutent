@@ -3056,7 +3056,7 @@ fn a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_ord
     assert_eq!(fresh.notify(&accepted, &mut key, &mut wire), Ok(0));
     assert!(wire.sent.is_empty());
 
-    // One it shows refused since is told that it ended, once, and nothing of a wait; a restart with the ledger
+    // One it shows refused since is told that it waited and then that it ended, once each; a restart with the ledger
     // sends no more.
     let refused = receipted(vec![
         waiting("a1"),
@@ -3072,10 +3072,11 @@ fn a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_ord
     ]);
     let ledger = Kept::default();
     let (mut wire, mut ended) = (Wire::default(), resuming(&ledger));
-    assert_eq!(ended.notify(&refused, &mut key, &mut wire), Ok(2));
+    assert_eq!(ended.notify(&refused, &mut key, &mut wire), Ok(4));
     let told = wire.to(&customer(ALICE));
-    assert_eq!(told.len(), 1);
-    assert_eq!(said(&told[0])["about"]["about"], "wait_ended");
+    assert_eq!(told.len(), 2);
+    assert_eq!(said(&told[0])["about"]["about"], "waiting");
+    assert_eq!(said(&told[1])["about"]["about"], "wait_ended");
     let mut wire = Wire::default();
     assert_eq!(
         resuming(&ledger).notify(&refused, &mut key, &mut wire),
@@ -3085,6 +3086,99 @@ fn a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_ord
 
 fn notices_fresh() -> Notices {
     notices()
+}
+
+/// The `shown` of `ord-w` awaiting `ALICE`, and the refusal that ends the wait, as the tests of the end of a wait read
+/// them.
+fn wait_then_refusal() -> Vec<(Receipt, Entry)> {
+    receipted(vec![
+        verified(
+            json!({
+                "call": "shown",
+                "order": "ord-w",
+                "shown": {"algorithm": "sha-256", "value": "a1".repeat(32)},
+                "shown_as": "quote_without_firm_rate",
+                "awaiting": {
+                    "requester": ALICE,
+                    "valid_until": "2026-11-12T11:00:00Z",
+                    "slow": [{"position": 1}]
+                }
+            }),
+            &time(1),
+        ),
+        verified(
+            json!({
+                "call": "order_refusal",
+                "request": "req-w",
+                "order": "ord-w",
+                "class": "no_route_right_now"
+            }),
+            &time(2),
+        ),
+    ])
+}
+
+/// The end of a wait is told once, and its summary is in the log: a restart with no ledger reads the summary and
+/// sends it no more (`T-023-04`, `T-020-45`).
+// verifies: REQ-ORD-20
+#[test]
+fn wait_ended_is_sent_once_across_a_restart() {
+    let log = wait_then_refusal();
+    held_to_the_log(&log, &unbuilt_refusals());
+    let mut journal = Journal::over(&log);
+    let mut key = TestKey::new();
+    let mut first = Wire::default();
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut first), 4);
+    assert_eq!(summarised(&mut n, &mut journal).written, 4);
+    let ended: Vec<Value> = journal
+        .summaries()
+        .into_iter()
+        .filter(|s| s["of"]["kind"] == "wait_ended")
+        .collect();
+    assert_eq!(ended.len(), 2, "one for each receiver");
+    for summary in &ended {
+        assert_eq!(
+            summary["of"],
+            json!({"kind": "wait_ended", "order": "ord-w"})
+        );
+        assert_eq!(summary["ended"], "delivered");
+    }
+    drop(n);
+
+    // The restart: no ledger, only the log. Nothing is sent, and nothing is summarised again.
+    let mut after = Wire::default();
+    let mut n = notices();
+    assert_eq!(notified(&mut n, &journal, &mut key, &mut after), 0);
+    assert!(after.sent.is_empty(), "the end of the wait is sent once");
+    assert_eq!(summarised(&mut n, &mut journal).written, 0);
+    assert_eq!(journal.summaries().len(), 4);
+    held_to_the_log(&journal.entries, &unbuilt_refusals());
+}
+
+/// A `shown` and the refusal that ends its wait in one unread batch: each receiver is told of the wait first, then of
+/// its end, so no one is told a wait ended that it wasn't told of (`T-023-04`, `AC-41`).
+// verifies: REQ-ORD-20, AC-41
+#[test]
+fn waiting_notice_comes_before_its_end_in_one_batch() {
+    let log = wait_then_refusal();
+    held_to_the_log(&log, &unbuilt_refusals());
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    assert_eq!(n.notify(&log, &mut key, &mut wire), Ok(4));
+    for to in [customer(ALICE), operator()] {
+        let told: Vec<String> = wire
+            .to(&to)
+            .iter()
+            .map(|b| {
+                said(b)["about"]["about"]
+                    .as_str()
+                    .expect("about")
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(told, ["waiting", "wait_ended"], "{to:?}");
+    }
 }
 
 /// A receiver holds the latest quote of an order by its place in the log, whatever order the notices come in, and

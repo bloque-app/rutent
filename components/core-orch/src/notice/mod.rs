@@ -180,16 +180,15 @@ struct Placed<'a> {
     index: u64,
 }
 
-/// The orders `entries` show accepted, refused or started: none is waited on for its customer.
+/// The orders `entries` show accepted or started: none is waited on for its customer, so none is told as waiting.
+/// An order they show refused is not here: its wait is told first, then its end (`T-023-04`), so no receiver is told
+/// a wait ended that it wasn't told of.
 fn settled_orders(entries: &[(Receipt, Entry)]) -> BTreeSet<&str> {
     entries
         .iter()
         .filter_map(|(_, entry)| match entry {
             Entry::Verified(v) => match &v.what {
                 What::Acceptance { order, .. } => Some(order.as_str()),
-                What::OrderRefusal {
-                    order: Some(order), ..
-                } => Some(order.as_str()),
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. }) => {
                     Some(input.subject.order.as_str())
                 }
@@ -402,7 +401,8 @@ impl Notices {
             {
                 self.waiting_on
                     .insert(order.as_str().to_owned(), awaiting.requester.clone());
-                // An order the log shows accepted, refused or started since is waited on no more: told of nothing.
+                // An order the log shows accepted or started since is waited on no more: told of nothing. One it shows
+                // refused is told as waiting first, and its end follows from the refusal's own entry.
                 if !settled.contains(order.as_str()) {
                     let at = Placed {
                         at: &v.when.at,
