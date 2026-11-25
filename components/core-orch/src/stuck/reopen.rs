@@ -393,7 +393,7 @@ fn reports_of(history: &[(Receipt, Entry)], effect: &Receipt) -> Reports {
         let Entry::Verified(v) = entry else {
             continue;
         };
-        if v.outcome != (Outcome::Permitted {}) {
+        if !matches!(v.outcome, Outcome::Permitted {}) {
             continue;
         }
         match &v.what {
