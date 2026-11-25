@@ -236,6 +236,12 @@ impl Measuring {
         }
     }
 
+    /// Drops each record waiting for the writer that `written` says the log already holds (`T-020-46`): a Core that
+    /// reopens keeps again only what a restart dropped.
+    pub(super) fn drop_written(&mut self, written: impl Fn(&MeasureRecord) -> bool) {
+        self.pending.retain(|record| !written(record));
+    }
+
     /// Keeps the record of `order`'s `segment`'s completed reversal, once.
     pub(super) fn reversed(
         &mut self,

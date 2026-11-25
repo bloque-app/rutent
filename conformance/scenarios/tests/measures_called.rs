@@ -371,3 +371,50 @@ fn completed_reversal_is_measured() {
     let _ = core.confirm_reversal(&order, &withdrawal);
     assert_eq!(core.write_measures(), 0);
 }
+
+/// A reversal completed before Core stopped, its record not yet written: the reopened Core keeps the record again from
+/// the log (`T-020-46`), so the writer's next call writes it, once, on the confirmation it rests on and the input that
+/// recorded it; the segments' records written before the stop aren't written again (`REQ-AUD-7`, `NFR-6`).
+// verifies: REQ-AUD-7, NFR-6
+#[test]
+fn reversal_completed_before_core_reopens_is_measured_once() {
+    let (mut core, session) = core_with("AC-8", &[RESERVE]);
+    let (order, ran) = run(
+        &mut core,
+        within("req-undone", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let withdrawal = accounted(&ran)[0].segment.clone();
+    core.write_measures();
+    core.world()
+        .script(RESERVE, Behaviour::crediting_a_reversal());
+    let done = core.confirm_reversal(&order, &withdrawal).expect("asked");
+    let Confirmation::Completed(completed) = done else {
+        panic!("the start is proven undone: {done:?}");
+    };
+    let before = records(&core).len();
+    let mut core =
+        rutent_scenarios::harness::Scenario::new("execution", "AC-8", given(&[RESERVE, OTHER]))
+            .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    assert_eq!(
+        core.write_measures(),
+        1,
+        "the reversal's record, which the restart dropped"
+    );
+    assert_eq!(core.write_measures(), 0, "and nothing twice");
+    let after = records(&core);
+    assert_eq!(after.len(), before + 1);
+    let reversals: Vec<_> = after
+        .iter()
+        .filter(|(_, r)| matches!(r.measure, Measure::Reversal {}))
+        .collect();
+    let [(_, record)] = reversals.as_slice() else {
+        panic!("one reversal record: {reversals:?}");
+    };
+    assert_eq!(record.provider.as_str(), RESERVE);
+    assert_eq!(record.segment.as_ref(), Some(&withdrawal));
+    assert!(
+        record.cites.contains(&completed.statement) && record.cites.contains(&completed.input),
+        "{:?}",
+        record.cites
+    );
+}

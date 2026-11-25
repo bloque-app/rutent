@@ -170,6 +170,7 @@ impl Segments {
                 let _ = segments.terms.state(stated, receipt, &terms);
             }
         }
+        segments.measure_what_the_log_lacks(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments
     }
@@ -362,10 +363,150 @@ impl Segments {
             relies: Vec::new(),
             priced: measured::Priced::of(&operation),
             heard: measured::hear(&record, &operation),
-            record_entry: None,
+            // The log's `decision_record` entry of the record, which the answers' measure records cite.
+            record_entry: history.iter().find_map(|(r, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::DecisionRecord {
+                        decision_record,
+                        order,
+                        ..
+                    } if order == handed.order && decision_record == record.record_id() => {
+                        Some(r.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            }),
             reopened: true,
         };
         Some((flight, held))
+    }
+
+    /// The measure records a restart dropped, kept again for the writer (`REQ-AUD-7`, `T-020-46`): each segment
+    /// rebuilt with its ending (settled, failed, refused, its withdrawal cancelled) gives its records again, on the
+    /// entries the log holds of it (its effect, the provider's answer, a failed result) and at the time the log
+    /// recorded its ending, as does each completed reversal, on its input and the provider's confirmation before it;
+    /// then every record the log already holds (the same provider, role, order, segment and measure) is dropped, so
+    /// nothing is measured twice, and what a writer cut short is kept.
+    fn measure_what_the_log_lacks(&mut self, history: &[(Receipt, Entry)]) {
+        let logged: Vec<&rutent_contracts::core_internal::MeasureRecord> = history
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Measure { record } => Some(record),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            })
+            .collect();
+        let about = |input: &RecordedInput, key: &(String, String)| {
+            input.subject.order.as_str() == key.0
+                && input
+                    .subject
+                    .segment
+                    .as_ref()
+                    .is_some_and(|s| s.as_str() == key.1)
+        };
+        let keys: Vec<(String, String)> = self.flights.keys().cloned().collect();
+        for key in &keys {
+            let (Some(order), Some(segment), Some(flight)) =
+                (Id::new(&key.0), Id::new(&key.1), self.flights.get(key))
+            else {
+                continue;
+            };
+            let (Some(outcome), Some(effect)) = (
+                flight.outcome.as_ref(),
+                flight.effect.as_ref().map(|e| e.receipt.clone()),
+            ) else {
+                continue;
+            };
+            let at = history.iter().rev().find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Input { input }
+                        if about(input, key)
+                            && matches!(
+                                input.observed,
+                                Observed::SegmentSettled { .. }
+                                    | Observed::SegmentFailed {}
+                                    | Observed::WithdrawalCancelled {}
+                            ) =>
+                    {
+                        Some(v.when.at.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            });
+            let Some(at) = at else {
+                continue;
+            };
+            let mut cites = vec![effect];
+            for step in ["stated", "result: failed"] {
+                if let Some(receipt) = flight.steps.get(step).and_then(|s| s.receipt.clone())
+                    && !cites.contains(&receipt)
+                {
+                    cites.push(receipt);
+                }
+            }
+            let ending = measured::Ending {
+                order: &order,
+                segment: &segment,
+                provider: &flight.provider,
+                priced: &flight.priced,
+                heard: &flight.heard,
+                outcome,
+                answers_rest_on: flight.record_entry.clone(),
+                cites,
+                at,
+            };
+            self.measuring.ended(&ending);
+        }
+        for (place, (receipt, entry)) in history.iter().enumerate() {
+            let Entry::Verified(v) = entry else {
+                continue;
+            };
+            let What::Input { input } = &v.what else {
+                continue;
+            };
+            let Some(segment) = input.subject.segment.as_ref() else {
+                continue;
+            };
+            if !matches!(input.observed, Observed::ReversalCompleted { .. }) {
+                continue;
+            }
+            let key = (
+                input.subject.order.as_str().to_owned(),
+                segment.as_str().to_owned(),
+            );
+            let (Some(order), Some(segment), Some(flight)) =
+                (Id::new(&key.0), Id::new(&key.1), self.flights.get(&key))
+            else {
+                continue;
+            };
+            let confirmation = history[..place].iter().rev().find_map(|(r, e)| match e {
+                Entry::Stated(s)
+                    if s.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(&order) && a.segment.as_ref() == Some(&segment)
+                    }) =>
+                {
+                    Some(r.clone())
+                }
+                _ => None,
+            });
+            let cites = confirmation.into_iter().chain([receipt.clone()]).collect();
+            let provider = flight.provider.clone();
+            self.measuring
+                .reversed(&order, &segment, &provider, v.when.at.clone(), cites);
+        }
+        self.measuring.drop_written(|record| {
+            logged.iter().any(|l| {
+                l.provider == record.provider
+                    && l.role == record.role
+                    && l.order == record.order
+                    && l.segment == record.segment
+                    && l.measure == record.measure
+            })
+        });
     }
 
     /// The part of `order` whose current plan holds `segment`, as the state machine rebuilt from the log has it.

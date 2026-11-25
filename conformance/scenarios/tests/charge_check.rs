@@ -557,6 +557,69 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     assert_eq!(prices(&core), 1, "one price for the order");
 }
 
+/// The measure records a run's segment endings gave, as the log holds them: by provider, role, segment and measure.
+fn measures_in_the_log(core: &Core) -> Vec<String> {
+    let mut kept: Vec<String> = core
+        .verified_whats()
+        .iter()
+        .filter_map(|w| match w {
+            What::Measure { record } => Some(format!(
+                "{} {:?} {:?} {:?}",
+                record.provider.as_str(),
+                record.role,
+                record.segment.as_ref().map(Id::as_str),
+                record.measure
+            )),
+            _ => None,
+        })
+        .collect();
+    kept.sort();
+    kept
+}
+
+/// The measure records Core keeps for its writer are rebuilt from the log when it reopens (`REQ-AUD-7`, `NFR-6`,
+/// `T-020-46`): an order run and Core reopened before the writer was called writes, after the reopening, every record
+/// the Core that ran on writes, once; an order whose records were written before the reopening writes none again.
+// verifies: REQ-AUD-7, NFR-6
+#[test]
+fn measure_records_a_restart_dropped_are_written_once_after_core_reopens() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, kit::RESERVE)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let reopen = |core: Core| {
+        Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference)
+    };
+
+    let (mut ran_on, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut ran_on, &session, kit::RESERVE, "req-measured");
+    let written = ran_on.write_measures();
+    assert!(written > 0, "the run's endings give records");
+    let expected = measures_in_the_log(&ran_on);
+
+    // Reopened before the writer was called: the records are written after it, each once.
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
+    let mut core = reopen(core);
+    assert_eq!(
+        core.write_measures(),
+        written,
+        "every record the restart dropped"
+    );
+    assert_eq!(core.write_measures(), 0, "and none twice");
+    assert_eq!(measures_in_the_log(&core), expected);
+
+    // Written before the reopening: none again after it.
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
+    assert_eq!(core.write_measures(), written);
+    let mut core = reopen(core);
+    assert_eq!(core.write_measures(), 0, "nothing measured twice");
+    assert_eq!(measures_in_the_log(&core), expected);
+}
+
 // verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {
