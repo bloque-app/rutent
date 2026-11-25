@@ -2357,4 +2357,11 @@ fn segment_a_destination_change_retired_is_not_held_again_after_a_restart() {
         Vec::new(),
         "the reopened Core holds nothing the change retired"
     );
+    // Nor where it can't read back the retired segment's operation: the log says it was retired.
+    segments_support::reopen_segments_reading(&mut core, &world.catalogue, Vec::new());
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "an unread segment the change retired"
+    );
 }

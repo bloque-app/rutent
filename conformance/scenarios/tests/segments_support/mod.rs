@@ -541,9 +541,19 @@ pub fn reopen_hand_on(core: &Core) -> rutent_core_orch::hand_on::HandOn {
 /// Core's segments and value in flight lost to a restart and rebuilt from the kit's log (`Segments::reopened`,
 /// `T-020-46`): the decision records are the kit's chosen record and `others`, the kept bytes the kit's store's.
 pub fn reopen_segments(core: &mut Core, catalogue: &Catalogue, others: &[DecisionRecord]) {
-    let history = handing::recorded_with_receipts(core);
     let mut records = vec![core.record.clone()];
     records.extend(others.iter().cloned());
+    reopen_segments_reading(core, catalogue, records);
+}
+
+/// [`reopen_segments`], reading back only `records` of the decision records Core signed (`T-020-46`): a segment
+/// whose record isn't among them can't be read back.
+pub fn reopen_segments_reading(
+    core: &mut Core,
+    catalogue: &Catalogue,
+    records: Vec<DecisionRecord>,
+) {
+    let history = handing::recorded_with_receipts(core);
     let mut reading = Reopened {
         records,
         store: &core.store,

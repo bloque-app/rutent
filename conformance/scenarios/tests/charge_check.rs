@@ -564,11 +564,12 @@ fn measures_in_the_log(core: &Core) -> Vec<String> {
         .iter()
         .filter_map(|w| match w {
             What::Measure { record } => Some(format!(
-                "{} {:?} {:?} {:?}",
+                "{} {:?} {:?} {:?} citing {}",
                 record.provider.as_str(),
                 record.role,
                 record.segment.as_ref().map(Id::as_str),
-                record.measure
+                record.measure,
+                record.cites.len()
             )),
             _ => None,
         })

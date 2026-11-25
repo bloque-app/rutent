@@ -441,12 +441,36 @@ impl Segments {
                 continue;
             };
             let mut cites = vec![effect];
-            for step in ["stated", "result: failed"] {
-                if let Some(receipt) = flight.steps.get(step).and_then(|s| s.receipt.clone())
-                    && !cites.contains(&receipt)
-                {
-                    cites.push(receipt);
-                }
+            // As the Core that ran on cites them: the effect, the provider's answer under the segment's transaction
+            // as the log took it, and a failed result where the segment failed on one.
+            let answer = flight
+                .steps
+                .get("stated")
+                .and_then(|s| s.receipt.clone())
+                .or_else(|| {
+                    history.iter().rev().find_map(|(r, e)| match e {
+                        Entry::Stated(stated)
+                            if stated.what.statement.as_str() == RESULT_SHAPE
+                                && stated.attribution.maker().acts == flight.provider
+                                && stated.about.as_ref().is_some_and(|a| {
+                                    a.order.as_ref() == Some(&order)
+                                        && a.segment.as_ref() == Some(&segment)
+                                        && a.transaction.as_ref() == Some(&flight.transaction)
+                                }) =>
+                        {
+                            Some(r.clone())
+                        }
+                        _ => None,
+                    })
+                });
+            cites.extend(answer);
+            if matches!(outcome, SegmentOutcome::Failed)
+                && let Some(receipt) = flight
+                    .steps
+                    .get("result: failed")
+                    .and_then(|s| s.receipt.clone())
+            {
+                cites.push(receipt);
             }
             let ending = measured::Ending {
                 order: &order,

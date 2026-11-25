@@ -617,3 +617,26 @@ fn linked_start_whose_record_cannot_be_read_back_is_proven_by_no_record_after_a_
     }
     assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
 }
+
+/// What the first order held at the reserve whose final deposit failed, after its part was handed on: nothing, on
+/// the Core that ran on and on the same log reopened, the hand-on having retired the deposit (`REQ-ORD-8`,
+/// `T-020-46`).
+// verifies: REQ-ORD-8
+#[test]
+fn segment_a_hand_on_retired_is_not_held_again_after_a_restart() {
+    let (world, mut core, _, record) = handed_on();
+    let held = |core: &Core| {
+        core.exposures
+            .held()
+            .filter(|h| h.order.as_str() == ORDER)
+            .map(|h| (h.provider.as_str().to_owned(), h.amount.as_str().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the Core that ran on holds nothing for it"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[record]);
+    assert_eq!(held(&core), Vec::new(), "nor the reopened one");
+}
