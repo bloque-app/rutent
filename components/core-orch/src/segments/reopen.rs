@@ -206,6 +206,8 @@ impl Segments {
                 let _ = segments.terms.state(stated, receipt, &terms);
             }
         }
+        // Which input rests on which judgement, and the reliances written (`REQ-CPL-12`).
+        segments.reliances = Reliances::recorded(history);
         segments.measure_what_the_log_lacks(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments

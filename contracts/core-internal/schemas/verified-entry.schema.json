@@ -2037,6 +2037,13 @@
         "relied_on_by": {
           "description": "The provider that relied on it, which carries the loss of a false one.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "inputs": {
+          "description": "The order's inputs, by name, that rest on the judgement (T-020-46): what a Core that reopens rebuilds which input rests on which judgement from. Left out where it names none.",
+          "type": "array",
+          "items": {
+            "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+          }
         }
       }
     },

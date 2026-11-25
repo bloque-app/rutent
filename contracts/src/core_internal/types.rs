@@ -2741,6 +2741,11 @@ pub enum What {
         judge: Id,
         /// The provider that relied on it, which carries the loss of a false one.
         relied_on_by: Id,
+        /// The order's inputs, by name, that rest on the judgement, as Core was told (`T-020-46`): what a Core that
+        /// reopens rebuilds which input rests on which judgement from, so a segment after the reopening that carries
+        /// one still writes its reliance (`REQ-CPL-12`). Left out where it names none.
+        #[serde(default, skip_serializing_if = "alloc::vec::Vec::is_empty")]
+        inputs: alloc::vec::Vec<Id>,
     },
     /// An operator command that needs no decision, naming its operator in the entry's `who` (`REQ-AUD-1`). The
     /// commands are a closed list: an action policy decides, a catalogue change or a hand-on travels only through

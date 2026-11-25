@@ -557,6 +557,25 @@ impl Holdings {
             .held_by_wallet(platform, operator, order, amount, transaction)
     }
 
+    /// The transaction a restore at `node`'s holding account for `order` goes under (`T-020-46`): derived from the
+    /// node, the order and the process the account's wallet module runs in now, as the platform reports it, so a
+    /// restore after the module restarted goes under a transaction no earlier process of it took, whichever Core
+    /// process asks, and a retry in the same process asks under the same one, which the platform answers as a repeat.
+    /// Its balance questions are derived from it in turn. Nothing of it is in the log, and nothing of it needs to be:
+    /// no fresh identifier of Core's is ever drawn for it. `None` where the module runs in no process.
+    pub fn restore_transaction<W: World>(
+        &self,
+        platform: &Platform<W>,
+        node: &str,
+        order: &str,
+    ) -> Option<String> {
+        let account = self.accounts.get(node)?;
+        let process = platform.process(&account.provider)?;
+        let digest =
+            crate::module::wire::sha256(format!("{node}\u{0}{order}\u{0}{process}").as_bytes());
+        Some(format!("restore-{}", &digest[..32]))
+    }
+
     /// Whether `node`'s holding account's module restarted since it last confirmed a movement
     /// ([`WalletHolding::restarted`]).
     pub fn restarted<W: World>(&self, platform: &Platform<W>, node: &str) -> bool {

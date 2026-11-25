@@ -2020,14 +2020,6 @@ impl Core {
         let core = kit::core();
         let operator = kit::operator();
         let mut policy = self.policy.clone();
-        // A transaction of Core's own for restoring what the log holds in a holding account whose module restarted,
-        // drawn only where one did (`T-020-46`).
-        let restarted = self
-            .holdings
-            .attributions()
-            .iter()
-            .any(|(node, _)| self.holdings.restarted(&self.fleet.platform, node));
-        let restore = restarted.then(|| self.fresh.id());
         let resting = self.segments.resting_totals();
         let readings = self.readings.clone();
         readings.refresh(&self.fleet.platform.world);
@@ -2056,7 +2048,6 @@ impl Core {
             holdings: &mut self.holdings,
             running: &running,
             bounds: &self.bounds,
-            restore,
             resting,
         };
         let accepted = holding::Accepted(&self.linked);
