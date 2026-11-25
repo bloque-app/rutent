@@ -211,6 +211,7 @@ pub fn show(
         .map(|(part, operation, evaluated)| {
             let answered = rests_on_an_answer(record, evaluated);
             Ok(Leg {
+                route: 0,
                 part,
                 operation,
                 evaluated,
@@ -224,7 +225,7 @@ pub fn show(
             })
         })
         .collect::<Result<Vec<Leg<'_>>, NotShown>>()?;
-    let mut shown = compose(record, candidate, &legs, false, floor)?;
+    let mut shown = compose(&[(record, candidate)], &legs, false, floor)?;
     // A segment over three days leaves the route no firm rate, and names it (`REQ-QTE-10`).
     if let Firmness::NoFirmRate { slow } = firmness(record, candidate) {
         shown.shown_as = ShownAs::QuoteWithoutFirmRate;
@@ -274,6 +275,7 @@ pub fn executed(
             return Err(NotShown::ResultCitedTwice { part, operation });
         }
         legs.push(Leg {
+            route: 0,
             part,
             operation,
             evaluated,
@@ -284,7 +286,59 @@ pub fn executed(
     if segments.len() != legs.len() {
         return Err(NotShown::Unexplained);
     }
-    compose(record, candidate, &legs, true, None)
+    compose(&[(record, candidate)], &legs, true, None)
+}
+
+/// The price executed by an order that ran more than one route: its route was recalculated from where its value sat, so
+/// the segments that settled on the first route are followed by those of the route recalculated, and the price is of
+/// them all, each on its own result, under the bounds the last route ran under (`REQ-QTE-7`, `T-020-47`). `routes` are
+/// the routes in the order they ran, each with the record that chose it, the candidate chosen and how many of its
+/// segments ran (a prefix, the whole of the last), of a single part; `segments` are the executed segments of them all,
+/// in order.
+pub fn executed_across(
+    routes: &[(&DecisionRecord, &Candidate, usize)],
+    segments: &[ExecutedSegment],
+) -> Result<Shown, NotShown> {
+    let Some((_, last, _)) = routes.last() else {
+        return Err(NotShown::NotTheRecords);
+    };
+    if routes.len() > 1 && (routes.iter().any(|(_, c, _)| c.parts.len() != 1) || last.parts.len() != 1)
+    {
+        return Err(NotShown::NotTheRecords);
+    }
+    let mut legs = Vec::new();
+    let mut offset = 0;
+    for (route, (_, candidate, ran)) in routes.iter().enumerate() {
+        for (i, (part, operation, evaluated)) in indexed(candidate).take(*ran).enumerate() {
+            let at = offset + i;
+            let operation = if routes.len() > 1 {
+                index(at)
+            } else {
+                operation
+            };
+            let segment = segments
+                .get(at)
+                .ok_or(NotShown::NotExecuted { part, operation })?;
+            if segments[..at].iter().any(|s| s.result == segment.result) {
+                return Err(NotShown::ResultCitedTwice { part, operation });
+            }
+            legs.push(Leg {
+                route,
+                part,
+                operation,
+                evaluated,
+                answered: true,
+                amounts: segment.executed.clone(),
+            });
+        }
+        offset += ran;
+    }
+    if segments.len() != legs.len() || routes.last().is_some_and(|(_, c, ran)| indexed(c).count() != *ran) {
+        return Err(NotShown::Unexplained);
+    }
+    let pairs: Vec<(&DecisionRecord, &Candidate)> =
+        routes.iter().map(|(r, c, _)| (*r, *c)).collect();
+    compose(&pairs, &legs, true, None)
 }
 
 /// The accepted answer a figure carries, as its amount in, its fee and its amount out: a dry run's or a fresh quote's.
@@ -366,6 +420,8 @@ fn gives_out(record: &DecisionRecord, operation: &Operation, answered: bool) -> 
 
 /// One segment, where it sits, as the router evaluated it, and its amounts: quoted or executed.
 struct Leg<'a> {
+    /// The route it sits on, by index among the routes composed: its record's terms and bounds bind it.
+    route: usize,
     part: u32,
     operation: u32,
     evaluated: &'a Operation,
@@ -457,13 +513,20 @@ fn handed_on(operation: &Operation, reporting: Reporting, amounts: &Executed) ->
 
 /// The lines shown, from each segment's amounts, labelled the price where `executed`, and otherwise a quote.
 fn compose(
-    record: &DecisionRecord,
-    candidate: &Candidate,
+    routes: &[(&DecisionRecord, &Candidate)],
     legs: &[Leg<'_>],
     executed: bool,
     floor: Option<&Amount>,
 ) -> Result<Shown, NotShown> {
-    if !record.candidates().iter().any(|c| c == candidate) || legs.is_empty() {
+    let Some(&(record, candidate)) = routes.last() else {
+        return Err(NotShown::NotTheRecords);
+    };
+    if routes
+        .iter()
+        .any(|(r, c)| !r.candidates().iter().any(|x| x == *c))
+        || legs.is_empty()
+        || legs.iter().any(|leg| leg.route >= routes.len())
+    {
         return Err(NotShown::NotTheRecords);
     }
     let mut amount_in = Amount::zero();
@@ -473,8 +536,8 @@ fn compose(
     let mut handed = Vec::with_capacity(legs.len());
     for (i, leg) in legs.iter().enumerate() {
         let (part, operation) = (leg.part, leg.operation);
-        let reporting =
-            reporting_of(record, leg.evaluated).ok_or(NotShown::NoTerms { part, operation })?;
+        let reporting = reporting_of(routes[leg.route].0, leg.evaluated)
+            .ok_or(NotShown::NoTerms { part, operation })?;
         // Priced, not answered: what the operation states arrives, and no charge is taken from it again.
         let counted = if leg.answered {
             reporting
@@ -590,39 +653,44 @@ fn compose(
 
     // What each segment is held to from its start (`REQ-QTE-9`): its fee committed and its rate within the tighter
     // of its quote's slippage and the operator's limit within three days, free past them.
-    let times = declared_times(record, candidate);
-    let held = commitments(record, candidate, &record.bounds.slippage_limits);
     let mut segments = Vec::with_capacity(legs.len());
-    for ((leg, time), (_, held)) in legs.iter().zip(times).zip(held) {
-        let held_to = match held {
-            Ok(Commitment::Free) => HeldTo::Free,
-            Ok(Commitment::Bound { rate_bps }) => HeldTo::Committed {
-                rate_bps,
-                operator_limit_bps: rate_bps.and_then(|_| operator_limit(record, leg.evaluated)),
-            },
-            Err(_) => {
-                return Err(NotShown::NoSlippageLimit {
-                    part: leg.part,
-                    operation: leg.operation,
-                });
-            }
-        };
-        segments.push(SegmentShown {
-            part: leg.part,
-            operation: leg.operation,
-            provider: leg.evaluated.provider.clone(),
-            from: leg.evaluated.from.clone(),
-            to: leg.evaluated.to.clone(),
-            amount_in: leg.amounts.amount_in.clone(),
-            fee: leg.amounts.fee.clone(),
-            amount_out: leg.amounts.amount_out.clone(),
-            reporting: reporting_of(record, leg.evaluated).ok_or(NotShown::NoTerms {
+    let mut at = 0;
+    for (route, (rec, cand)) in routes.iter().enumerate() {
+        let on_route = legs.iter().filter(|l| l.route == route).count();
+        let times = declared_times(rec, cand);
+        let held = commitments(rec, cand, &rec.bounds.slippage_limits);
+        for ((leg, time), (_, held)) in legs[at..at + on_route].iter().zip(times).zip(held) {
+            let held_to = match held {
+                Ok(Commitment::Free) => HeldTo::Free,
+                Ok(Commitment::Bound { rate_bps }) => HeldTo::Committed {
+                    rate_bps,
+                    operator_limit_bps: rate_bps.and_then(|_| operator_limit(rec, leg.evaluated)),
+                },
+                Err(_) => {
+                    return Err(NotShown::NoSlippageLimit {
+                        part: leg.part,
+                        operation: leg.operation,
+                    });
+                }
+            };
+            segments.push(SegmentShown {
                 part: leg.part,
                 operation: leg.operation,
-            })?,
-            declared_seconds: known(time.declared_seconds),
-            held_to,
-        });
+                provider: leg.evaluated.provider.clone(),
+                from: leg.evaluated.from.clone(),
+                to: leg.evaluated.to.clone(),
+                amount_in: leg.amounts.amount_in.clone(),
+                fee: leg.amounts.fee.clone(),
+                amount_out: leg.amounts.amount_out.clone(),
+                reporting: reporting_of(rec, leg.evaluated).ok_or(NotShown::NoTerms {
+                    part: leg.part,
+                    operation: leg.operation,
+                })?,
+                declared_seconds: known(time.declared_seconds),
+                held_to,
+            });
+        }
+        at += on_route;
     }
     Ok(Shown {
         shown_as: if executed {
@@ -680,6 +748,24 @@ pub struct Priced {
 }
 
 impl Priced {
+    /// `order`'s price where it ran more than one route ([`executed_across`]): named by the record and candidate of the
+    /// route it completed on.
+    pub fn across(
+        order: &Id,
+        routes: &[(&DecisionRecord, &Candidate, usize)],
+        segments: &[ExecutedSegment],
+    ) -> Result<Self, NotShown> {
+        let price = executed_across(routes, segments)?;
+        let &(record, candidate, _) = routes.last().ok_or(NotShown::NotTheRecords)?;
+        Ok(Priced {
+            order: order.clone(),
+            decision_record: record.record_id().clone(),
+            candidate: candidate.candidate_id.clone(),
+            results: segments.iter().map(|s| s.result.clone()).collect(),
+            price,
+        })
+    }
+
     /// `order`'s price, from each segment of `candidate`, chosen by `record`, as executed: refused until every
     /// segment has executed, each on its own result.
     pub fn new(

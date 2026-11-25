@@ -26,13 +26,15 @@ impl Core {
     /// Core's closing of `order`, run under `record`: where the order is complete, its executed price is reported
     /// once. A price the log can't take now is tried again by the next run.
     pub(super) fn close(&mut self, order: &Id, record: &DecisionRecord) {
+        let ran = self.life.ran_on(order, record);
+        let records: Vec<&DecisionRecord> = ran.iter().collect();
         let desk = PriceDesk {
             prices: &mut self.reported,
             log: &mut self.general,
             clock: &self.clock,
             core: &kit::core(),
         };
-        match report_price(desk, order, record, &self.segments) {
+        match report_price(desk, order, &records, &self.segments) {
             Ok(Some(reported)) => {
                 self.closed.unreported.remove(order.as_str());
                 self.closed

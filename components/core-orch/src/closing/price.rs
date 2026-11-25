@@ -50,8 +50,10 @@ pub enum Unreported {
     Price(PriceError),
 }
 
-/// Reports the executed price of `order` as `record`, the record of the route it ran, chose it, once it is complete:
-/// every part complete and every segment settled on a result that counted. `Ok(None)` while it isn't. A price already
+/// Reports the executed price of `order`, once it is complete: every part complete and every segment settled on a result
+/// that counted. `records` are the records of the routes it ran, in order, the last the one it completed on: where its
+/// route was recalculated once, the price covers the segments settled on the first route as well as the second's. More
+/// than one recalculation, or a recalculated order of more than one part, is not reported (`NotShown`). `Ok(None)` while it isn't. A price already
 /// reported is answered again, not recorded again.
 ///
 /// # Errors
@@ -61,9 +63,12 @@ pub enum Unreported {
 pub fn report_price(
     desk: PriceDesk<'_>,
     order: &Id,
-    record: &DecisionRecord,
+    records: &[&DecisionRecord],
     segments: &Segments,
 ) -> Result<Option<Reported>, Unreported> {
+    let Some(record) = records.last().copied() else {
+        return Ok(None);
+    };
     let Some(followed) = segments.order(order) else {
         return Ok(None);
     };
@@ -75,9 +80,9 @@ pub fn report_price(
     {
         return Ok(None);
     }
-    let Some(candidate) = record.chosen() else {
+    if record.chosen().is_none() {
         return Ok(None);
-    };
+    }
     let mut executed = Vec::new();
     for part in &followed.parts {
         for segment in &part.segments {
@@ -107,7 +112,24 @@ pub fn report_price(
             });
         }
     }
-    let priced = Priced::new(order, record, candidate, &executed).map_err(Unreported::NotShown)?;
+    let priced = if let [only] = records {
+        let candidate = only.chosen().ok_or(Unreported::NotShown(NotShown::NotTheRecords))?;
+        Priced::new(order, only, candidate, &executed)
+    } else if let [first, last] = records {
+        let (Some(c1), Some(c2)) = (first.chosen(), last.chosen()) else {
+            return Err(Unreported::NotShown(NotShown::NotTheRecords));
+        };
+        let ops = |c: &rutent_contracts::router_api::Candidate| {
+            c.parts.iter().map(|p| p.operations.len()).sum::<usize>()
+        };
+        let Some(ran_first) = executed.len().checked_sub(ops(c2)) else {
+            return Err(Unreported::NotShown(NotShown::Unexplained));
+        };
+        Priced::across(order, &[(first, c1, ran_first), (last, c2, ops(c2))], &executed)
+    } else {
+        Err(NotShown::Unexplained)
+    }
+    .map_err(Unreported::NotShown)?;
     let (digest, receipt) = desk
         .prices
         .report(desk.log, desk.clock, desk.core, &priced)

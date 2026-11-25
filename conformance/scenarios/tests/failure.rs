@@ -395,6 +395,81 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
     );
 }
 
+/// A final deposit that failed, with no route left to the destination, waits for the customer where the value sits: a
+/// failed deposit's reversal never applies, so it isn't timed, and a week later the order is still the customer's,
+/// never declared stuck (`REQ-ORD-43`, `INV-10`, `T-020-47`).
+// verifies: AC-40, REQ-ORD-43
+#[test]
+fn failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window() {
+    let (mut core, session) = core_with("AC-40", &[RESERVE]);
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Fail));
+    let (order, ran) = run(
+        &mut core,
+        within("req-failed-deposit", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let segments = segments_of(&ran);
+    assert!(matches!(segments[1].outcome, SegmentOutcome::Failed));
+    core.world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let outcome = core.recalculate(&order).expect("tried");
+    assert!(matches!(outcome, Recalculation::NoRoute { .. }), "{outcome:?}");
+    let recorded = core.record_no_route(&order, &outcome).expect("recorded");
+    assert_eq!(recorded.state, OrderState::WaitingForCustomer);
+    assert_eq!(
+        core.followed(&order).expect("followed").parts[0].segments[1].state,
+        SegmentState::FailedReversalOwed,
+        "the deposit's reversal is owed and never comes"
+    );
+    core.clock.advance(7 * 86_400);
+    let watched = core.watch(&order).expect("watched");
+    assert!(
+        matches!(watched, rutent_core_orch::stuck::Watch::Running),
+        "{watched:?}"
+    );
+    assert_eq!(state(&mut core, &order), OrderState::WaitingForCustomer);
+    assert!(!core.is_stuck(&order, &core.part_of(&order).expect("a part")));
+}
+
+/// An order completed on a route recalculated after its final deposit was refused reports its executed price once, of
+/// the segment settled on the first route and the one settled on the second (`REQ-QTE-7`, `T-020-47`).
+// verifies: REQ-QTE-7
+#[test]
+fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once() {
+    let (mut core, session) = core_with("AC-40", &[RESERVE]);
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let (order, _) = run(
+        &mut core,
+        within("req-recalculated-price", &session, AMOUNT, RESERVE, OTHER),
+    );
+    assert!(core.price_reported(&order).is_none(), "not complete yet");
+    let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
+        panic!("a route to the same destination was found");
+    };
+    core.run_recalculated(&order, &recalculated)
+        .expect("the recalculated part runs");
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    let (digest, receipt) = core.price_reported(&order).expect("Core reported the price");
+    assert!(core.price_unreported(&order).is_none());
+    let price = core.price_of(&order).expect("its figures");
+    assert_eq!(price.segments.len(), 2, "the first route's withdrawal and the second's deposit");
+    let prices = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| {
+                matches!(&v.what, rutent_contracts::core_internal::What::Shown {
+                    order: o, shown_as: rutent_contracts::core_internal::ShownAs::Price, ..
+                } if *o == order)
+            })
+            .count()
+    };
+    assert_eq!(prices(&core), 1);
+    core.run(&order).expect("runs again");
+    assert_eq!(core.price_reported(&order), Some((digest, receipt)));
+    assert_eq!(prices(&core), 1, "once");
+}
+
 /// The seconds each operation takes in the p99 scenario, and what twice it is.
 const TAKES: u64 = 10;
 

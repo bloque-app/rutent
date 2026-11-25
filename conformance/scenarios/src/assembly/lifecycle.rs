@@ -37,6 +37,8 @@ pub struct Lifecycle {
     histories: BTreeMap<String, History>,
     /// The route each order's part runs now, once recalculated: its record and its segments.
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
+    /// The records of the routes each recalculated order ran, in order, the first route's among them (`T-020-47`).
+    ran: BTreeMap<String, Vec<DecisionRecord>>,
     reversals: Reversals,
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
     status_asks:
@@ -44,6 +46,14 @@ pub struct Lifecycle {
 }
 
 impl Lifecycle {
+    /// The records of the routes `order` ran, the first `current` and, once recalculated, each after it.
+    pub(super) fn ran_on(&self, order: &Id, current: &DecisionRecord) -> Vec<DecisionRecord> {
+        self.ran
+            .get(order.as_str())
+            .cloned()
+            .unwrap_or_else(|| vec![current.clone()])
+    }
+
     /// Nothing recorded yet.
     pub fn new() -> Self {
         Self::default()
@@ -230,6 +240,12 @@ impl Core {
         self.feed()?;
         let done = done?;
         if let Recalculation::Recalculated(recalculated) = &done {
+            let first = self.started.get(order.as_str()).map(|s| s.record.clone());
+            let ran = self.life.ran.entry(order.as_str().to_owned()).or_default();
+            if ran.is_empty() {
+                ran.extend(first);
+            }
+            ran.push(recalculated.record.clone());
             self.life.routes.insert(
                 order.as_str().to_owned(),
                 (recalculated.record.clone(), recalculated.segments.clone()),

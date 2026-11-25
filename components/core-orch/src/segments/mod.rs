@@ -1597,11 +1597,14 @@ impl Segments {
             .and_then(|f| f.started)
     }
 
-    /// Whether `segment` of `order` failed and owes its reversal, as the order Core follows has it.
+    /// Whether `segment` of `order` failed and owes a reversal that can come, as the order Core follows has it: a
+    /// failed deposit's reversal never applies (its value rests where it was, for the customer to choose,
+    /// `REQ-ORD-43`), so it is never timed here.
     fn reversal_owed(&self, order: &Id, segment: &Id) -> bool {
         self.orders.get(order.as_str()).is_some_and(|t| {
             t.order.parts.iter().flat_map(|p| &p.segments).any(|s| {
                 s.segment_id.as_str() == segment.as_str()
+                    && s.kind != rutent_contracts::router_api::OperationKind::Deposit
                     && s.state == stm::SegmentState::FailedReversalOwed
             })
         })

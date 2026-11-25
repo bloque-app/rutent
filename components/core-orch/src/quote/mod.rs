@@ -44,6 +44,6 @@ pub use held::{
 pub use journal::APPEND_TRIES;
 pub use shown::{
     ExecutedSegment, HeldTo, NotShown, OperatorFee, PriceError, Priced, Prices, ReportedWithin,
-    SegmentShown, Shown, SlowSegment, digest, executed, show,
+    SegmentShown, Shown, SlowSegment, digest, executed, executed_across, show,
 };
 pub use terms::{InForce, NotTerms, Recorded, TakeError, Taken, Terms, TermsDesk};
