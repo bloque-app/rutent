@@ -505,6 +505,8 @@ pub struct Core {
     keeper: Keeper,
     policy: PolicySide,
     records: Records,
+    /// The records and Core's own sources, compared (`T-020-55`'s differential).
+    compared: policy::Compared,
     /// The platform with the simulated providers admitted to it.
     pub(crate) fleet: Fleet,
     /// Each simulated provider, as installed.
@@ -790,13 +792,24 @@ impl Core {
             verifier: Rc::default(),
             holdings: Rc::clone(&holdings),
         };
+        // Core's own sources beside the records, compared answer by answer (`T-020-55`'s differential).
+        let core_sources = policy::CoreSources::new(
+            policy::LogRead(Rc::clone(&log)),
+            policy::StoreRead(Rc::new(RefCell::new(store.for_the_log()))),
+            policy::Deployed(records.clone()),
+        );
+        let compared = policy::Compared {
+            old: records.clone(),
+            new: core_sources,
+            seen: Rc::default(),
+        };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.
         let deployment = Deployment::default();
         let mut engine: PolicyEngine = Engine::with_policy(
             PolicyHandle(Rc::clone(&log)),
             deployment.clone(),
-            records.clone(),
+            compared.clone(),
         );
         engine.set_clock(Box::new(clock.clone()));
         // Policy's register of sessions and read permissions, rebuilt from the decisions the log holds, the
@@ -836,6 +849,7 @@ impl Core {
             }
         };
         let mut core = Core {
+            compared,
             general: GeneralHandle(Rc::clone(&log)),
             log,
             clock,
@@ -1193,6 +1207,11 @@ impl Core {
     /// What policy's sources read.
     pub fn sources(&self) -> Records {
         self.records.clone()
+    }
+
+    /// What `T-020-55`'s differential saw: each answer of Core's own sources compared with the records'.
+    pub fn comparison(&self) -> policy::Comparison {
+        self.compared.seen.borrow().clone()
     }
 
     /// The deployment's registers.

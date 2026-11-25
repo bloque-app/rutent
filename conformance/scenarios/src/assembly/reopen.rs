@@ -233,6 +233,13 @@ impl Core {
                 continue;
             };
             if let Some(record) = self.arrivals.record(order) {
+                // The filing's record, as arrivals rebuilt it from the log, handed to Core's sources again as the
+                // filing handed it over when the order opened (`T-020-55`).
+                self.compared.new.opened_orders().opened(
+                    &record.order,
+                    &record.parties,
+                    &record.origin_reserve,
+                );
                 self.records
                     .orders
                     .borrow_mut()

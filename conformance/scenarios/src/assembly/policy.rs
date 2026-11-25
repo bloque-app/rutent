@@ -472,6 +472,168 @@ impl authz::Sources for Records {
     }
 }
 
+/// Core's log, as Core's own sources read it (`T-020-55`): not known where it is held mutably elsewhere at the moment.
+#[derive(Clone)]
+pub struct LogRead(pub(crate) Rc<RefCell<CoreLog>>);
+
+impl rutent_core_authz::core_sources::LogEntries for LogRead {
+    fn read<T>(
+        &mut self,
+        read: impl FnOnce(&[(rutent_contracts::core_internal::Receipt, Entry)]) -> T,
+    ) -> Result<T, rutent_core_authz::funds::ReadFailure> {
+        let log = self
+            .0
+            .try_borrow()
+            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(read(log.entries()))
+    }
+}
+
+/// Core's evidence store, as Core's own sources read it (`T-020-55`): the log's read of it, each statement's bytes
+/// only where they bear out the commitment they are kept under.
+#[derive(Clone)]
+pub struct StoreRead(pub(crate) Rc<RefCell<rutent_core_audit::receipts::store::LogsRead>>);
+
+impl rutent_core_authz::core_sources::KeptBytes for StoreRead {
+    fn bytes(
+        &mut self,
+        commitment: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Option<Vec<u8>>, rutent_core_authz::funds::ReadFailure> {
+        use rutent_contracts::core_internal::calls::KeptStatements;
+        let mut store = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        let kept = store
+            .kept(commitment)
+            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(kept.and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k)))
+    }
+}
+
+/// The deployment's registers as Core's sources ask them (`T-020-55`, before the move): the assembly's records,
+/// asked only of the deployment's own sources.
+#[derive(Clone)]
+pub struct Deployed(pub(crate) Records);
+
+impl rutent_core_authz::core_sources::DeploymentRegisters for Deployed {
+    fn registered(
+        &mut self,
+        asked: &rutent_core_authz::core_sources::Registered<'_>,
+    ) -> Reply<Said> {
+        authz::Sources::supply(
+            &mut self.0,
+            &Need {
+                input: asked.input().clone(),
+                from: asked.source().clone(),
+            },
+        )
+    }
+}
+
+/// Core's own sources, as the assembly puts them together (`T-020-55`).
+pub type CoreSources = rutent_core_authz::core_sources::CoreSources<LogRead, StoreRead, Deployed>;
+
+/// One answer Core's sources gave otherwise than the assembly's records (`T-020-55`'s differential).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disagreement {
+    /// What was asked: a source's input, or an order's record.
+    pub asked: String,
+    /// What the assembly's records answered.
+    pub old: String,
+    /// What Core's sources answered.
+    pub new: String,
+}
+
+/// What the differential saw: each answer compared, by its source's kind, and each disagreement.
+#[derive(Debug, Clone, Default)]
+pub struct Comparison {
+    /// The answers compared, by the source's kind.
+    pub compared: BTreeMap<String, usize>,
+    /// The answers that disagreed.
+    pub disagreed: Vec<Disagreement>,
+}
+
+/// The assembly's records and Core's own sources, side by side (`T-020-55`'s differential): every answer is the
+/// records', as before, and Core's is asked beside it and compared.
+#[derive(Clone)]
+pub struct Compared {
+    pub(crate) old: Records,
+    pub(crate) new: CoreSources,
+    pub(crate) seen: Rc<RefCell<Comparison>>,
+}
+
+fn kind_of(source: &Source) -> String {
+    let text = format!("{source:?}");
+    text.split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+impl Compared {
+    fn note<T: std::fmt::Debug + PartialEq>(&self, kind: String, asked: String, old: &T, new: &T) {
+        let mut seen = self.seen.borrow_mut();
+        if let Some(path) = std::env::var_os("RUTENT_SOURCES_COUNT") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_default();
+                let thread = std::thread::current().name().unwrap_or_default().to_owned();
+                let line = if old == new {
+                    format!("{kind}\tagree\n")
+                } else {
+                    format!("{kind}\tDIFFER\t{exe}\t{thread}\t{asked}\told={old:?}\tnew={new:?}\n")
+                };
+                let _ = file.write_all(line.as_bytes());
+            }
+        }
+        *seen.compared.entry(kind).or_default() += 1;
+        if old != new {
+            let disagreement = Disagreement {
+                asked,
+                old: format!("{old:?}"),
+                new: format!("{new:?}"),
+            };
+            match std::env::var("RUTENT_SOURCES_DIFF").as_deref() {
+                Ok("panic") => panic!("T-020-55 differential: {disagreement:?}"),
+                Ok(_) => eprintln!("T-020-55 differential: {disagreement:?}"),
+                Err(_) => {}
+            }
+            seen.disagreed.push(disagreement);
+        }
+    }
+}
+
+impl authz::Sources for Compared {
+    fn supply(&mut self, need: &Need) -> Reply<Said> {
+        let old = self.old.supply(need);
+        if !rutent_core_authz::core_sources::is_the_deployments(&need.from) {
+            let new = self.new.supply(need);
+            self.note(kind_of(&need.from), format!("{need:?}"), &old, &new);
+        }
+        old
+    }
+
+    fn order_record(&mut self, order: &Id) -> Reply<rutent_contracts::core_internal::Parties> {
+        let old = self.old.order_record(order);
+        let new = self.new.order_record(order);
+        self.note(
+            "OrderRecord".to_owned(),
+            format!("order_record({order:?})"),
+            &old,
+            &new,
+        );
+        old
+    }
+}
+
 /// The deployment's own policy: it needs nothing beyond the fixed rules, and permits what they let through, unless
 /// a scenario sets it to refuse.
 #[derive(Debug, Clone, Default)]
@@ -521,7 +683,7 @@ impl authz::Policy for Deployment {
 }
 
 /// The policy engine as the assembly builds it.
-pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
+pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Compared>;
 
 /// Policy, as the other parts reach it: the engine, for every policy call (decisions, authorisations, sessions, reads,
 /// charges, a stuck order's steps and a move's outcome, and questions about people, `T-021-07`'s, the last). Each call

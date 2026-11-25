@@ -24,17 +24,23 @@ use super::{Begun, Core, StepError, authorised, context};
 use crate::kit;
 
 /// Policy's order records, as a filing hands them over (`FiledOrders`).
-struct FiledOn(Rc<RefCell<BTreeMap<String, OrderRecord>>>);
+struct FiledOn(
+    Rc<RefCell<BTreeMap<String, OrderRecord>>>,
+    rutent_core_authz::core_sources::OpenedOrders,
+);
 
 impl FiledOrders for FiledOn {
     fn opened(&mut self, record: &OrderRecord) {
         self.0
             .borrow_mut()
             .insert(record.order.as_str().to_owned(), record.clone());
+        self.1
+            .opened(&record.order, &record.parties, &record.origin_reserve);
     }
 
     fn withdrawn(&mut self, order: &Id) {
         self.0.borrow_mut().remove(order.as_str());
+        self.1.withdrawn(order);
     }
 }
 
@@ -149,7 +155,10 @@ impl Core {
 
     /// Files an order on an automatic deposit; once it starts, its segments follow it.
     pub fn file(&mut self, filing: Filing) -> Result<Filed, StepError> {
-        let mut filed_on = FiledOn(Rc::clone(&self.records.orders));
+        let mut filed_on = FiledOn(
+            Rc::clone(&self.records.orders),
+            self.compared.new.opened_orders(),
+        );
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });
