@@ -967,7 +967,7 @@ impl Segments {
     /// segment's value that still rests there, no later segment having moved it on (`T-020-46`). What a holding
     /// account there is to hold for the order, and what a restore of it asks for.
     pub fn resting_totals(&self) -> BTreeMap<(String, String), Amount> {
-        let mut totals: BTreeMap<(String, String), Amount> = BTreeMap::new();
+        let mut resting: Vec<((String, String), &Amount)> = Vec::new();
         for ((order, segment), flight) in &self.flights {
             let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
                 continue;
@@ -996,14 +996,9 @@ impl Segments {
             if moved_on {
                 continue;
             }
-            let total = totals
-                .entry((node.clone(), order.clone()))
-                .or_insert_with(Amount::zero);
-            if let Some(sum) = total.checked_add(amount_out) {
-                *total = sum;
-            }
+            resting.push(((node.clone(), order.clone()), amount_out));
         }
-        totals
+        landing::totals(resting)
     }
 
     /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
