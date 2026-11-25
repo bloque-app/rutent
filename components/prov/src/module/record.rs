@@ -806,7 +806,7 @@ mod tests {
         }));
         FileRecord::create(&other).expect_err("a failed sync refuses the creation");
         // A system that can't sync a directory at all isn't failing.
-        let mut record = FileRecord::open(&path).expect("reopens");
+        let mut record = reopen(&path).expect("reopens");
         let cannot: [fn() -> io::Error; 2] = [
             || io::Error::from(io::ErrorKind::Unsupported),
             || io::Error::from_raw_os_error(22),
@@ -820,6 +820,24 @@ mod tests {
         record.append("four").expect("appends");
         assert_eq!(record.load().expect("loads"), ["let through 1", "four"]);
         let _ = fs::remove_dir_all(path.parent().expect("a directory"));
+    }
+
+    /// Opens a record a moment after its last holder was dropped. The lock is `flock`'s, shared by every copy of its
+    /// descriptor: other tests in this process spawn module processes, and a child forked while a record was open
+    /// holds a copy until its `exec` closes it (`O_CLOEXEC`), so the lock is free a moment after the drop, not at it.
+    /// Bounded, so a lock that stays held still fails the test.
+    fn reopen(path: &Path) -> io::Result<FileRecord> {
+        let mut opened = FileRecord::open(path);
+        for _ in 0..100 {
+            match &opened {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    opened = FileRecord::open(path);
+                }
+                _ => break,
+            }
+        }
+        opened
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -863,12 +881,12 @@ mod tests {
             .open(&path)
             .and_then(|mut f| f.write_all(b"{\"entry\":\"car"))
             .expect("writes");
-        let mut record = FileRecord::open(&path).expect("reopens");
+        let mut record = reopen(&path).expect("reopens");
         assert_eq!(record.load().expect("loads"), ["one", "two"]);
         record.replace(&["three".to_owned()]).expect("replaces");
         record.append("four").expect("appends");
         drop(record);
-        let mut record = FileRecord::open(&path).expect("reopens");
+        let mut record = reopen(&path).expect("reopens");
         assert_eq!(record.load().expect("loads"), ["three", "four"]);
         let _ = fs::remove_dir_all(path.parent().expect("a directory"));
     }
@@ -896,7 +914,7 @@ mod tests {
         record.append(&carrying("tx-3")).expect_err("refused");
         record.replace(&[]).expect_err("refused");
         drop(record);
-        let mut record = FileRecord::open(&path).expect("reopens");
+        let mut record = reopen(&path).expect("reopens");
         let lines = record.load().expect("loads");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert_eq!(lines[0], first);
@@ -938,21 +956,7 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         drop(first);
-        // The lock is `flock`'s, shared by every copy of its descriptor. Other tests in this process spawn module
-        // processes, and a child forked between the first's open and its drop holds a copy until its `exec` closes it
-        // (`O_CLOEXEC`), so the lock is free a moment after the drop, not at it. Bounded, so a lock that stays held
-        // still fails the test.
-        let mut opened = FileRecord::open(&path);
-        for _ in 0..100 {
-            match &opened {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    opened = FileRecord::open(&path);
-                }
-                _ => break,
-            }
-        }
-        opened.expect("free once the first is dropped");
+        reopen(&path).expect("free once the first is dropped");
         let _ = fs::remove_file(&alias);
         let _ = fs::remove_dir_all(dir);
     }
