@@ -72,8 +72,10 @@ use super::{ArrivalError, Arrivals, Filed, FiledOrders, FiledWait, Filing, Recor
 use crate::intake::{DESTINATION_INPUT, Desk, OrderRecord, Quote, Resolution};
 use crate::rounds::{self, History, NotOffered, Offer, Order, Presence, Routed, Routing};
 use crate::snapshot::check_part;
-use rutent_contracts::core_internal::{Actor, Parties};
+use rutent_contracts::core_internal::{Actor, FILING_INPUTS_SHAPE, FilingInputs, Parties};
+use rutent_contracts::router_api::Objective;
 use rutent_prov::catalogue::{CheckRefusal, Eligibility};
+use std::collections::BTreeMap;
 
 /// Where a permitted filing stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +138,9 @@ pub(super) struct Run {
     confirming: Option<Confirming>,
     /// The deposit's `arrival` naming the order, built once.
     held: Option<(Entry, Option<Receipt>)>,
+    /// The operator's statement of the filing's inputs and objective, built once and appended before the arrival that
+    /// names it (`filed-orders-inputs-are-a-kept-statement`, `T-020-51`).
+    held_inputs: Option<(Entry, Option<Receipt>)>,
     history: History,
     offered: Option<Offered>,
     /// The acceptance's id, the start, and the entries recording them not yet appended.
@@ -152,9 +157,13 @@ pub(super) struct Run {
     waiting_since: Option<i128>,
     /// The session the customer accepted in, once policy permitted its authorisation: the acceptance cites it.
     customer_session: Option<Id>,
-    /// Rebuilt from the log by a Core that reopened (`T-020-51`): `asked` and `filing` hold what the log holds of the
-    /// filing, and the quote shown before is the digest the log last shows, the quote itself gone with the Core.
+    /// Rebuilt from the log by a Core that reopened (`T-020-51`): `asked` and `filing` hold what the log and the
+    /// operator's kept statement hold of the filing, and the quote shown before is the digest the log last shows, the
+    /// quote itself gone with the Core. Until the filer states its filing again, which takes the same request.
     reopened: bool,
+    /// Whether the filing's statement couldn't be read back, or isn't the filing's: the wait is held and never accepted,
+    /// and ends at its lifetime (`T-020-51`).
+    held_back: bool,
     /// The digest of the quote the log last shows the order waiting on, for a wait rebuilt from it.
     last_shown: Option<Digest>,
     pub(super) started: Option<RecordedInput>,
@@ -432,6 +441,7 @@ impl Arrivals {
             pending,
             confirming: None,
             held: None,
+            held_inputs: None,
             history: History::new(),
             offered: None,
             accepting: None,
@@ -441,6 +451,7 @@ impl Arrivals {
             waiting_since: None,
             customer_session: None,
             reopened: false,
+            held_back: false,
             last_shown: None,
             started: None,
             logins: vec![(well.filer.clone(), authorisation.clone())],
@@ -454,20 +465,30 @@ impl Arrivals {
 impl Run {
     /// The wait of `order` for its customer, rebuilt from the log (`T-020-51`, `reopen.rs`): the deposit `arrival`
     /// held against it, the authorisation policy permitted, when its first quote was shown (`since`, in nanoseconds
-    /// since the Unix epoch) and the digest of the one the log shows last. The filing is what the log holds of it; the
-    /// filer that files the deposit again states the rest ([`Run::adopt`]). `None` where the log's authorisation names
-    /// no outer node to deliver to.
+    /// since the Unix epoch) and the digest of the one the log shows last. The filing is what the log holds of it and
+    /// the operator's statement of its inputs and objective, read back (`stated`: the request identifier the arrival
+    /// names, and the statement's inputs and objective); where that couldn't be read, or isn't the filing's, the wait is
+    /// held and never accepted.
     pub(super) fn rebuilt(
         arrival: Recorded,
         order: &Id,
         authorisation: Authorisation,
         since: i128,
         last: Digest,
+        stated: Option<(Id, BTreeMap<String, String>, Objective)>,
     ) -> Option<Self> {
+        let held_back = stated.is_none();
+        let (request, mut inputs, objective) = stated.unwrap_or_else(|| {
+            (
+                order.clone(),
+                BTreeMap::new(),
+                Objective::LowestTotalCost {},
+            )
+        });
         let holder = arrival.holder.clone();
         let account = authorisation.destination.account.as_str().to_owned();
         let filing = Filing {
-            request: order.clone(),
+            request,
             filer: authorisation.given_by.clone(),
             arrival: arrival.receipt.clone(),
             parties: Parties {
@@ -491,11 +512,14 @@ impl Run {
                     asset: authorisation.to_asset.clone(),
                 },
                 amount: arrival.amount.clone(),
-                objective: rutent_contracts::router_api::Objective::LowestTotalCost {},
+                objective,
                 floor: authorisation.floor.as_ref().map(|f| f.amount().clone()),
                 follows: None,
             },
-            inputs: std::iter::once((DESTINATION_INPUT.to_owned(), account)).collect(),
+            inputs: {
+                inputs.insert(DESTINATION_INPUT.to_owned(), account);
+                inputs
+            },
             needs: Vec::new(),
         };
         Some(Run {
@@ -509,6 +533,7 @@ impl Run {
             pending: Vec::new(),
             confirming: None,
             held: None,
+            held_inputs: None,
             history: History::new(),
             offered: None,
             accepting: None,
@@ -518,6 +543,7 @@ impl Run {
             waiting_since: Some(since),
             customer_session: None,
             reopened: true,
+            held_back,
             last_shown: Some(last),
             started: None,
             unanswered: false,
@@ -651,6 +677,13 @@ impl Run {
             self.end_wait(desk)?;
             return self.go_on::<R>(desk, arrivals);
         }
+        // A wait whose filing couldn't be read back is held, never accepted, until its lifetime ends.
+        if self.held_back {
+            return Ok(Filed::Waiting {
+                order: Some(self.order.clone()),
+                wait: FiledWait::CustomerAcceptance,
+            });
+        }
         let shown = match &self.offered {
             Some(offered) => &offered.digest,
             None => self.last_shown.as_ref().ok_or(ArrivalError::NotNow)?,
@@ -678,18 +711,7 @@ impl Run {
             if self.offered.is_none() {
                 self.filing.session = session.clone();
             }
-            // A wait rebuilt from the log holds only what the log holds of its filing, not the inputs its tuples may
-            // need (`REQ-AUD-6`): where that routes nowhere, the wait goes on and its filer restates the filing
-            // ([`Run::adopt`]), the order never ended for a route it couldn't ask for.
-            let saved = self.reopened.then(|| self.clone());
             self.route::<R>(desk, wait)?;
-            if let (Some(saved), true) = (saved, self.outcome.is_some()) {
-                *self = saved;
-                return Ok(Filed::Waiting {
-                    order: Some(self.order.clone()),
-                    wait: FiledWait::CustomerAcceptance,
-                });
-            }
             return self.go_on::<R>(desk, arrivals);
         }
         let authorisation = Authorisation {
@@ -737,7 +759,9 @@ impl Run {
     /// Whether `filing` is the filing of this wait, rebuilt from the log: the filer's party files the same deposit.
     pub(super) fn is_the_filing_reopened(&self, filing: &Filing) -> bool {
         self.reopened
+            && !self.held_back
             && self.outcome.is_none()
+            && self.filing.request == filing.request
             && self.filing.filer.party == filing.filer.party
             && self.asked.arrival == filing.arrival
             && self.filing.parties == filing.parties
@@ -960,6 +984,45 @@ impl Run {
                     return Ok(Some(waiting));
                 }
             };
+            // The filing's inputs and objective, which may carry accounts, as the operator's statement of them, kept in
+            // the evidence store: the log holds its salted commitment alone (`REQ-AUD-6`, `T-020-51`).
+            let inputs = match &self.held_inputs {
+                Some((Entry::Stated(entry), _)) => entry.commitment.clone(),
+                _ => {
+                    let made_at = journal::now(desk.parts.clock)?;
+                    let bytes = crate::rounds::sign_statement(
+                        desk.parts.operator_key,
+                        desk.bounds,
+                        FILING_INPUTS_SHAPE,
+                        &desk.operator.acts,
+                        &made_at,
+                        FilingInputs {
+                            order: self.order.clone(),
+                            inputs: self.filing.inputs.clone(),
+                            objective: self.filing.route.objective,
+                        },
+                    )
+                    .map_err(|_| ArrivalError::Unrecordable)?;
+                    let stated = crate::segments::stated_entry(
+                        desk.parts.evidence,
+                        &made_at,
+                        &bytes,
+                        desk.operator.clone(),
+                        desk.operator,
+                        None,
+                    )
+                    .map_err(|why| match why {
+                        crate::segments::Unappended::Append(failure) => ArrivalError::Log(failure),
+                        crate::segments::Unappended::Unrecordable => ArrivalError::Unrecordable,
+                    })?;
+                    let Entry::Stated(entry) = &stated else {
+                        return Err(ArrivalError::Unrecordable);
+                    };
+                    let commitment = entry.commitment.clone();
+                    self.held_inputs = Some((stated, None));
+                    commitment
+                }
+            };
             let what = What::Arrival {
                 reserve: self.arrival.reserve.clone(),
                 node: self.arrival.node.clone(),
@@ -983,8 +1046,15 @@ impl Run {
                 // Where the reserve's notice names the deposit to go, which the order's authorisation is held to
                 // (`automatic-deposit-rests-on-its-arrival`, `T-020-50`).
                 destination: self.arrival.destination.clone().map(Box::new),
+                // The request the filing was made under, and its inputs and objective as the operator stated them, so
+                // a Core that reopens reads the filing back (`filed-orders-inputs-are-a-kept-statement`, `T-020-51`).
+                request: Some(self.filing.request.clone()),
+                inputs: Some(inputs),
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
+        }
+        if let Some((stated, receipt)) = &mut self.held_inputs {
+            journal::once(&mut *desk.parts.log, stated, receipt)?;
         }
         let Some((entry, receipt)) = &mut self.held else {
             return Err(ArrivalError::NotNow);

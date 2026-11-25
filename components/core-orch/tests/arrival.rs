@@ -4759,8 +4759,8 @@ fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
         Some(lasts.clone()),
         "the wait goes on"
     );
-    // Its filer, filing the deposit again, is told the wait goes on, and records nothing: the log holds no request
-    // identifier for the filing, so the first filing of the deposit takes the wait. Another filing of it opens nothing.
+    // Its filer, filing the deposit again under the request the log names, is told the wait goes on, and records
+    // nothing. Another filing of it opens nothing.
     env.clock.set(START + 700);
     let before = env.len();
     assert!(matches!(
@@ -4916,4 +4916,240 @@ fn acceptance_on_a_waiting_quote_past_its_validity_asks_again() {
     );
     assert!(wait_ends_in_the_log(&env).is_empty());
     assert_admitted(&env);
+}
+
+/// The unique value the tests' filings carry as an input, which no entry of the log may hold (`REQ-AUD-6`).
+const PAYER_ACCOUNT: &str = "acct-payer-secret-77";
+
+/// A slow deposit of 1 000 filed by the reserve with an input of its own, in the short session: the arrival, the
+/// filing, the order and its quote's digest.
+fn waiting_with_inputs(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+    n: u32,
+    request: &str,
+) -> (Filing, Id, rutent_contracts::module_interface::Digest) {
+    slow(env, 4 * 86_400);
+    let deposited = deposit(env, providers, arrivals, 1000, n);
+    let mut one = filing(reserve_filer(), &deposited);
+    one.request = id(request);
+    one.session = short_session(env, "session-short", START + 600);
+    one.inputs
+        .insert("payer.bank_account".into(), PAYER_ACCOUNT.into());
+    let filed = file(env, providers, arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order), ..
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let (_, digest, _, _) = awaited(env, arrivals, &order).expect("its quote is shown");
+    (one, order, digest)
+}
+
+/// Reopens `arrivals` over `history`, as a Core that stopped and opened again reads its own log.
+fn reopened_over(env: &mut Env, providers: &mut Reserve, history: &[(Receipt, Entry)]) -> Arrivals {
+    env.with_providers(providers, |_, desk| {
+        Arrivals::reopened(history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
+    })
+}
+
+/// The hold arrivals of `history`, with the digest each names its filing's statement by, set by `change`.
+fn with_statements(
+    history: &[(Receipt, Entry)],
+    change: &dyn Fn(
+        &Id,
+        Option<rutent_contracts::module_interface::Digest>,
+    ) -> Option<rutent_contracts::module_interface::Digest>,
+) -> Vec<(Receipt, Entry)> {
+    history
+        .iter()
+        .cloned()
+        .map(|(receipt, mut entry)| {
+            if let Entry::Verified(v) = &mut entry
+                && let What::Arrival {
+                    order: Some(order),
+                    inputs,
+                    earlier: Some(_),
+                    ..
+                } = &mut v.what
+            {
+                *inputs = change(order, inputs.take());
+            }
+            (receipt, entry)
+        })
+        .collect()
+}
+
+/// A waiting deposit whose filing carried an input of its own is accepted after Core reopens with no new filing: the
+/// log holds the operator's statement of the filing's inputs and objective behind a commitment alone (no account in
+/// it), the reopened wait reads them back, asks the route again with them, and the customer accepts the quote shown
+/// anew, the filer never filing again (`REQ-QTE-10`, `REQ-AUD-6`).
+// verifies: REQ-QTE-10, REQ-AUD-6
+#[test]
+fn waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, order, digest) =
+        waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
+
+    // The log names the filing's request and the commitment of its statement, and holds no account of it.
+    let held: Vec<_> = env
+        .book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Arrival {
+                order: Some(o),
+                request,
+                inputs,
+                ..
+            } if o == &order => Some((request.clone(), inputs.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].0, Some(one.request.clone()));
+    assert!(held[0].1.is_some(), "the statement's commitment");
+    let log: String = entries(&env)
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect();
+    assert!(!log.contains(PAYER_ACCOUNT), "no account in the log");
+    assert_admitted(&env);
+
+    let history = env.history();
+    let mut reopened = reopened_over(&mut env, &mut providers, &history);
+    let filing = reopened.filing_of(&order).expect("the wait's filing");
+    assert_eq!(filing.request, one.request);
+    assert_eq!(
+        filing.inputs.get("payer.bank_account").map(String::as_str),
+        Some(PAYER_ACCOUNT),
+        "its inputs read back"
+    );
+    assert_eq!(filing.route.objective, one.route.objective);
+
+    // No new filing: the customer asks for the quote it was shown, is shown the route anew, and accepts that.
+    env.clock.set(START + 700);
+    let later = opened_session(&mut env, "session-later", START + 10_000);
+    let asked = accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &digest,
+    )
+    .unwrap();
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    let (_, second, _, _) = awaited(&env, &reopened, &order).expect("a quote shown anew");
+    assert_ne!(second, digest);
+    let accepted = accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(accepted, Filed::Started { .. }), "{accepted:?}");
+    assert_admitted(&env);
+}
+
+/// A reopened wait whose statement can't be read back (the store keeps none under the commitment, the arrival names
+/// none, or it is another filing's) stays held: it is told it waits, never accepted, never asked the route again, and
+/// ends at its lifetime like any wait (`REQ-QTE-10`).
+// verifies: REQ-QTE-10, REQ-AUD-6
+#[test]
+fn reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held() {
+    for why in [
+        "the store keeps nothing behind it",
+        "the arrival names no statement",
+        "the statement is another order's",
+    ] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = short_waits();
+        let (_, first, first_digest) =
+            waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
+        let (_, second, _) =
+            waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 1, "deposit-2");
+        let history = env.history();
+        let statement_of = |order: &Id| {
+            history.iter().find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::Arrival {
+                        order: Some(o),
+                        inputs: Some(i),
+                        earlier: Some(_),
+                        ..
+                    } if o == order => Some(i.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+        };
+        let nothing: rutent_contracts::module_interface::Digest =
+            serde_json::from_value(json!({ "algorithm": "sha-256", "value": "99".repeat(32) }))
+                .unwrap();
+        let others = statement_of(&second).expect("the other filing's statement");
+        let altered = with_statements(&history, &|order, own| {
+            if order != &first {
+                return own;
+            }
+            match why {
+                "the store keeps nothing behind it" => Some(nothing.clone()),
+                "the arrival names no statement" => None,
+                _ => Some(others.clone()),
+            }
+        });
+        let mut reopened = reopened_over(&mut env, &mut providers, &altered);
+        let later = opened_session(&mut env, "session-later", START + 10_000);
+        env.clock.set(START + 700);
+        let before = env.len();
+        for _ in 0..2 {
+            let told = accept_in(
+                &mut env,
+                &mut providers,
+                &mut reopened,
+                &first,
+                &customer(),
+                &later,
+                &first_digest,
+            )
+            .unwrap();
+            assert_eq!(
+                told,
+                Filed::Waiting {
+                    order: Some(first.clone()),
+                    wait: FiledWait::CustomerAcceptance
+                },
+                "{why}"
+            );
+        }
+        assert_eq!(env.len(), before, "{why}: nothing asked, shown or recorded");
+        assert!(
+            env.acceptances().is_empty() && env.started().is_empty(),
+            "{why}"
+        );
+        // It still waits, and ends at its lifetime, as every wait does.
+        let lasts = reopened.wait_ends(&first).expect("{why}: it still waits");
+        env.clock.set(seconds(&lasts));
+        let ended = env
+            .with_providers(&mut providers, |_, desk| reopened.end_expired(desk))
+            .unwrap();
+        assert!(ended.contains(&first), "{why}");
+    }
 }

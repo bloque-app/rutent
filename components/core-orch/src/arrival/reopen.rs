@@ -20,8 +20,11 @@
 //! ended), refusals before an order opened, and the reserve's questions under way (`confirming`).
 
 use rutent_contracts::core_internal::calls::KeptStatements;
-use rutent_contracts::core_internal::{Entry, Outcome, Receipt, What};
+use rutent_contracts::core_internal::{
+    Entry, FILING_INPUTS_SHAPE, FilingInputs, Outcome, Receipt, What,
+};
 use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::Statement;
 use rutent_contracts::router_api::Id;
 
 use super::{Arrivals, Arrived, Noted, Recorded, Report, key, read_notice, unbase64url};
@@ -103,6 +106,8 @@ impl Arrivals {
             let What::Arrival {
                 order: Some(order),
                 earlier: Some(earlier),
+                request,
+                inputs,
                 ..
             } = &v.what
             else {
@@ -158,6 +163,7 @@ impl Arrivals {
                         authorisation,
                         *since,
                         last.clone(),
+                        read_filing(kept, order, request.as_ref(), inputs.as_ref()),
                     )
                 {
                     arrivals.spent.remove(&key(earlier));
@@ -167,6 +173,36 @@ impl Arrivals {
         }
         arrivals
     }
+}
+
+/// The filing the operator's statement kept behind `inputs` states for `order`, under the request the arrival names: its
+/// inputs and objective. `None` where the arrival names no statement or request, the store keeps none (or keeps other
+/// bytes than its commitment names), it isn't a statement of the filing's shape, or it is of another order: the wait is
+/// then held, never accepted (`T-020-51`).
+fn read_filing(
+    kept: &mut dyn KeptStatements,
+    order: &Id,
+    request: Option<&Id>,
+    inputs: Option<&Digest>,
+) -> Option<(
+    Id,
+    std::collections::BTreeMap<String, String>,
+    rutent_contracts::router_api::Objective,
+)> {
+    let (request, commitment) = (request?, inputs?);
+    let found = kept.kept(commitment).ok()??;
+    if &found.commitment != commitment {
+        return None;
+    }
+    let bytes = unbase64url(found.bytes.as_str())?;
+    let statement = serde_json::from_slice::<Statement<FilingInputs>>(&bytes).ok()?;
+    (statement.shape == FILING_INPUTS_SHAPE && &statement.statement.order == order).then(|| {
+        (
+            request.clone(),
+            statement.statement.inputs,
+            statement.statement.objective,
+        )
+    })
 }
 
 /// The reserve's notice kept behind `commitment`, read back as `arrive` reads one reported by `reserve`.

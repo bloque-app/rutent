@@ -721,6 +721,8 @@ impl Arrivals {
                 holder: None,
                 // Nor is a destination: only a filing holds the deposit to one (`T-020-50`).
                 destination: None,
+                request: None,
+                inputs: None,
             };
             noted.arrival = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

@@ -2574,6 +2574,25 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         destination: Option<alloc::boxed::Box<DepositDestination>>,
+        /// The request identifier the filing that holds the deposit against its order was made under (`T-020-51`): so a
+        /// Core that reopens knows the filing a wait belongs to. Absent on a deposit's first arrival and on any not
+        /// held by a filing.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        request: Option<Id>,
+        /// The salted commitment of the operator's statement of the filing's inputs and objective
+        /// ([`FilingInputs`], shape [`FILING_INPUTS_SHAPE`]), kept in the evidence store and appended as a stated entry
+        /// before this one (`filed-orders-inputs-are-a-kept-statement`), so the log holds no account (`REQ-AUD-6`) and
+        /// a Core that reopens reads the filing back (`T-020-51`). Absent where the arrival isn't a filing's.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        inputs: Option<Digest>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {
@@ -3467,6 +3486,26 @@ pub struct OrderInputs {
     pub order: Id,
     /// Each input, by name: never empty, since an order with no input states none.
     pub inputs: alloc::collections::BTreeMap<String, String>,
+}
+
+/// The shape of the operator's statement of a filing's inputs and objective.
+pub const FILING_INPUTS_SHAPE: &str = "urn:rutent:core-internal:filing-inputs";
+
+/// The inputs and objective an order filed on an automatic deposit carries, as the operator states them when the
+/// filing holds the deposit against its order (`T-020-51`): the body of a statement of shape [`FILING_INPUTS_SHAPE`],
+/// kept in the evidence store behind a salted commitment that the `arrival` holding the deposit names, so a Core that
+/// reopens reads them back and the log holds no account (`REQ-AUD-6`). It names no transaction and is appended about
+/// nothing. Unlike an order's, its inputs may be empty: the objective is always stated. Schema:
+/// `urn:rutent:core-internal:filing-inputs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilingInputs {
+    /// The order.
+    pub order: Id,
+    /// Each input, by name; empty where the filing carries none.
+    pub inputs: alloc::collections::BTreeMap<String, String>,
+    /// What the router optimises the order's route for.
+    pub objective: crate::router_api::Objective,
 }
 
 /// A checkpoint opening's `shape`.

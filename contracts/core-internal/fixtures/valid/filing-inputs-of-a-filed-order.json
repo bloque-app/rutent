@@ -1,0 +1,9 @@
+{
+  "order": "ord-26",
+  "inputs": {
+    "payer.bank_account": "acct-1"
+  },
+  "objective": {
+    "kind": "lowest_total_cost"
+  }
+}

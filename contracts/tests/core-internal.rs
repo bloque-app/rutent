@@ -40,7 +40,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:core-internal:<shape>`.
-const SHAPES: [&str; 29] = [
+const SHAPES: [&str; 30] = [
     "common",
     "receipt",
     "decision-request",
@@ -70,6 +70,7 @@ const SHAPES: [&str; 29] = [
     "checkpoint",
     "checkpoint-opening",
     "order-inputs",
+    "filing-inputs",
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
@@ -334,7 +335,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 123] = [
+const SCHEMA_RULES: [SchemaRule; 124] = [
+    (
+        "filing-inputs-without-its-objective",
+        &[("", "required")],
+        "missing field `objective`",
+    ),
     (
         "decision-request-to-set-the-deposit-wait-of-no-seconds",
         &[("/action/setting", "required")],
@@ -1088,6 +1094,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "checkpoint" => round_trip::<Checkpoint>(value),
         "checkpoint-opening" => round_trip::<CheckpointOpening>(value),
         "order-inputs" => round_trip::<rutent_contracts::core_internal::OrderInputs>(value),
+        "filing-inputs" => round_trip::<rutent_contracts::core_internal::FilingInputs>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }

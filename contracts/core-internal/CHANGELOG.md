@@ -24,6 +24,15 @@
   - `T-020-51` (finding 8): `OperatorSetting::DepositWait {seconds}` (`deposit_wait`, `SettingKind::DepositWait`), a ninth
     operator setting, the lifetime of an order's wait for its customer on an automatic deposit. One valid fixture
     (`decision-request-to-set-the-deposit-wait`) and one invalid (`--of-no-seconds`).
+  - `T-020-51` (finding 8, gap 1): `arrival.request` and `arrival.inputs` (both optional), the request identifier of the
+    filing that holds a deposit against its order and the salted commitment of the operator's statement of the filing's
+    inputs and objective, a new shape `filing-inputs` (`FilingInputs`, `FILING_INPUTS_SHAPE`; a sibling of `order-inputs`,
+    whose inputs are never empty and which states no objective), kept in the evidence store so a Core that reopens reads
+    a waiting filing back and the log holds no account (`REQ-AUD-6`, `NFR-6`); row
+    `filed-orders-inputs-are-a-kept-statement`, its stated entry verified, of that shape, the deployment operator's own
+    and about nothing. Fixtures: valid `filing-inputs-of-a-filed-order`,
+    `verified-entry-of-an-arrival-holding-a-deposit-with-its-filings-inputs`; invalid `filing-inputs-without-its-objective`;
+    admission `--the-operators-statement` (admitted), `--missing`, `--verified`, `--inputs`, `--maker`, `--about`.
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).

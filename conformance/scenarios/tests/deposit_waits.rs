@@ -64,13 +64,14 @@ fn waiting(
 }
 
 /// A wait for the customer survives Core stopping and opening again on its disk: rebuilt from the log, it still waits,
-/// the customer accepts it in a session of its own opened after the restart (the quote it was shown is asked again, the
+/// the customer accepts it in a session of its own opened after the restart with no new filing (the filing's inputs
+/// and objective are read back from the operator's statement the log names; the quote it was shown is asked again, the
 /// quote itself being in no log), and the order runs to its end on that acceptance, every entry admitted by the real log
 /// (`REQ-QTE-10`, `AC-13`).
 // verifies: REQ-QTE-10, AC-13
 #[test]
 fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
-    let (core, filed_in, order, digest, refiling) = waiting("AC-13");
+    let (core, filed_in, order, digest, _) = waiting("AC-13");
     let lasts = core.wait_ends(&order).expect("a wait has its end");
     let mut core =
         Scenario::new("execution", "AC-13", slow_given()).reopen(core, 1, &mut Reference);
@@ -85,23 +86,8 @@ fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
         .open_session(&kit::customer())
         .expect("a session of its own, after the restart");
     let _ = filed_in;
-    core.registers()
-        .list(&component(SLOW, SLOW, Role::Provider));
-    // The log holds no inputs of the filing (`REQ-AUD-6`): the customer's acceptance can't ask the route again, and the
-    // wait goes on until the reserve files the deposit again, stating the filing it was told.
-    let asked = core
-        .accept_filed(&kit::customer(), &later, &order, &digest)
-        .expect("the acceptance is told as it stands");
-    assert_eq!(
-        asked,
-        Filed::Waiting {
-            order: Some(order.clone()),
-            wait: FiledWait::CustomerAcceptance
-        }
-    );
-    assert!(core.awaiting(&order).is_none(), "no quote to show yet");
-    let again = core.file(refiling).expect("the filing is taken again");
-    assert!(matches!(again, Filed::Waiting { .. }), "{again:?}");
+    // The log holds the operator's statement of the filing's inputs and objective, which the reopened wait read back:
+    // no new filing is needed, the customer's acceptance of the quote it was shown asks the route again with them.
     let asked = core
         .accept_filed(&kit::customer(), &later, &order, &digest)
         .expect("the acceptance is taken");

@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 115] = [
+pub static RELATIONS: [Relation; 116] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3737,6 +3737,59 @@ pub static RELATIONS: [Relation; 115] = [
                 &[
                     matches!(s.attribution, Attribution::Verified { .. }),
                     s.what.statement.as_str() == ORDER_INPUTS_SHAPE,
+                    maker_provider(s) == &e.operator.maker,
+                    s.about.is_none(),
+                ],
+            ),
+            _ => Match::NotTarget,
+        },
+    },
+    Relation {
+        name: "filed-orders-inputs-are-a-kept-statement",
+        spec: &["REQ-AUD-6", "NFR-6"],
+        quantifier: Quantifier::Exists,
+        refusal: "a filed order's inputs and objective are the operator's statement of them, which this log holds",
+        fields: &[
+            (
+                "verified",
+                "a filed order's inputs are a verified statement",
+            ),
+            (
+                "inputs",
+                "a filed order's inputs are core-internal's filing-inputs, not a question or another shape",
+            ),
+            (
+                "maker",
+                "a filed order's inputs are the deployment operator's own statement",
+            ),
+            (
+                "about",
+                "a filed order's inputs are appended about nothing: no order, segment or transaction",
+            ),
+        ],
+        // A filing's inputs may carry accounts, so the log holds only the salted commitment of the operator's
+        // statement of them and the objective, kept in the evidence store, which the `arrival` holding the deposit names
+        // and a Core that reopens reads back (`REQ-AUD-6`, `T-020-51`). The statement names no transaction, so attribution verifies it only about nothing.
+        // That its body names this order, and the inputs and objective it was filed with, is for whoever holds the kept
+        // bytes: Core on reopening, and a checker through `Evidence::fetch`.
+        cites: |e, _| match &e.what {
+            What::Arrival {
+                inputs: Some(_), ..
+            } => by_fields(0),
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, stated(t)) {
+            (
+                What::Arrival {
+                    inputs: Some(inputs),
+                    ..
+                },
+                Some(s),
+            ) => judge(
+                &s.commitment == inputs,
+                &[
+                    matches!(s.attribution, Attribution::Verified { .. }),
+                    s.what.statement.as_str() == FILING_INPUTS_SHAPE,
                     maker_provider(s) == &e.operator.maker,
                     s.about.is_none(),
                 ],
