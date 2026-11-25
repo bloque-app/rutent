@@ -51,7 +51,7 @@ pub trait Reopening {
 /// its decision record can't be read back, the value its signed operation states (or the order's own amount) at its
 /// provider, so the ceilings still bind (`REQ-ORD-8`, `THR-74`): an unread segment is never held at nothing.
 enum Hold {
-    Route(Operation),
+    Route(Box<Operation>),
     Stated {
         provider: Id,
         asset: rutent_contracts::provider_role::Denomination,
@@ -200,7 +200,7 @@ impl Segments {
             return stated_value(history, inputs, reading, handed);
         };
         self.flights.insert(key_of, rebuilt);
-        held.map(Hold::Route)
+        held.map(|operation| Hold::Route(Box::new(operation)))
     }
 
     fn read_flight(

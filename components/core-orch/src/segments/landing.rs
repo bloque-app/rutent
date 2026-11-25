@@ -83,12 +83,15 @@ pub(super) fn sum<'a>(amounts: impl IntoIterator<Item = &'a Amount>) -> Option<A
 /// order, so the values of one order still resting at one node are restored together, as their sum, once, and each
 /// reads placed where the account then holds it, never landed blind; one that moved on is read as passed. Answers how
 /// many it found placed.
+/// What `reconcile` restores at once: a node, asset and order, the places the log holds there for it, and their values.
+type Group = ((String, String, String), Vec<At>, Vec<Amount>);
+
 pub(super) fn reconcile(
     landing: &mut Landing,
     landings: &mut dyn Landings,
     found: Vec<Found>,
 ) -> usize {
-    let mut groups: Vec<((String, String, String), Vec<At>, Vec<Amount>)> = Vec::new();
+    let mut groups: Vec<Group> = Vec::new();
     for (at, node, asset, amount, moved_on) in found {
         if moved_on {
             landing.found(at, Some(false));

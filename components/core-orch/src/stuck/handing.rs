@@ -271,6 +271,7 @@ mod tests {
 
     /// Two values of one order rest at one node, the part handed on is one of them: the restore before its withdrawal
     /// is of both, the order's whole as the log holds it there, so the other part still finds its value (`T-020-46`).
+    // verifies: INV-1
     #[test]
     fn a_hand_ons_restore_is_the_orders_whole_at_its_node() {
         let mut resting = BTreeMap::new();

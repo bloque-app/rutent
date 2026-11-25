@@ -7214,21 +7214,124 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   `balance_verification` over a binary search of the amount (at most about 20 questions for six digits); a segment
   whose value moved on before a reopen is read as passed, its release not asked again; the deployment's registers and
   settings are set again on each Core put together.
-- **Owner's form (for the lead):** the alternative to the inputs commitment, a reopened order asking its customer again
-  for its tuples' inputs; built as the commitment, recommended.
+- **Owner's form:** the alternative to the inputs commitment, a reopened order asking its customer again for its
+  tuples' inputs; built as the commitment, recommended.
+- **Fix round 2** (the reviewer's CHANGES at `a079df9d`, PR #300; `b3092367` and then `m3`'s `98eae9b1` merged first,
+  the second for `ad648667`'s `Source::OfOperator` fix, without which `segments`'
+  `promotion_whose_staged_version_differs_from_its_permit_is_refused` fails at the base too). Each finding fixed:
+  1. *Re-landing per order.* `landing::reconcile` groups what the log holds by node, asset and order and restores the
+     sum once (`landing::sum`); `Wallets::withdraw` restores the order's whole at the node (`restored_whole`, from
+     `Segments::resting_totals`), never the part withdrawn alone.
+  2. *A release after a restart.* `Segments::land_settled` asks `Landings::restarted(node)` and, before a release,
+     restores per order what the log holds there (what rests and what is about to leave); a restore that can't be made
+     now (`NotNow`) leaves the releases for the next call, one not confirmed asks none.
+  3. *The missing `stuck_resolved`.* `Stuck::reopened` keeps each part whose resolution's `done` the log holds without
+     its `stuck_resolved` (`Finishing`), and `Stuck::finish_reopened` appends it once on reopening, as a Core that ran
+     on would.
+  4. *What the reopened Core rebuilds besides.* `HandOn::reopened` now also rebuilds the stranded refusals (a linked
+     order's refusal in the log, its hand-on not taken back: a retry takes it back once), the linked orders opened (the
+     first order's value at rest, the starting reserve, the route's first segment) and the starts and spent records the
+     log took (`started_in_the_log`, each record read back from the holder's kept answer; a start whose record can't be
+  read back refuses every record, `unread_starts`, where before it took another record of the started order). The assembly restarts a
+     linked order from its `handed_on_from` (`restarted_linked`) and rebuilds its accepted route
+     (`reaccept_linked`). `Prices::recorded` holds each order's executed price as reported; the segments rebuild each
+     settled segment's charge (`charged_of`, from the kept result) and read the providers' terms back; a segment whose
+     answer the log holds and nothing of its grading goes on from that answer (`resumed_answer`), never asked again;
+     `Unsettled::reopened` finds the erasures decided and done but not recorded, settled once. HandOn's changes and
+     resumes need no rebuild: once the log takes one, the state machine rebuilt from the log moves the part out of
+     `WaitingForCustomer` (`after_restart`), so a retry is refused `NotWaiting` before anything is built; one built and
+     not taken is not in the log, and is built again as the first time.
+  5. *Failing closed.* (a) A segment handed over whose operation can't be read back is held at the value it states
+     (`Hold::Stated`, from the question's kept bytes or else `order_opened`'s amount), unless the log says its value
+     moved on. (b) Each decision record Core signs is kept in the evidence store and appended as the operator's stated
+     entry of router-api's decision-record shape, about nothing, before its `decision_record` entry; a reopened Core
+     reads its records from the store (`records_in_the_store`), never from memory: the signer is no longer carried
+     across a reopening. No contract shape was needed beyond the authorised core-internal fold.
+  6. *An unreadable inputs statement.* `Intake::reopened` holds the order (`Intake::held`, `request_of` answers
+     `None`): it is never run again with its inputs missing, and a statement naming another order counts as unreadable.
+  7. *An empty inputs map.* `OrderInputs::check` refuses it ("an order's inputs name at least one input"); invalid
+     fixture `order-inputs-naming-no-input`.
+- **Fix round 2's tests.** The seven named in `PLAN.md`:
+  `pending_hand_on_is_rebuilt_from_the_log_through_the_assembly` (`tests/assembly_real_wallet.rs`),
+  `charge_raise_recorded_before_core_reopens_is_not_raised_again` (`tests/charge_check.rs`),
+  `private_node_segment_record_queued_before_core_reopens_is_written_once`,
+  `private_rail_closed_before_core_reopens_stays_closed` (`tests/private_nodes.rs`),
+  `holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log` (`tests/assembly_real_wallet.rs`),
+  `executed_price_reported_before_core_reopens_is_not_reported_again` (`components/core-orch/tests/quote.rs`),
+  `wallets_balance_answer_attributes_every_order_it_holds` (`components/prov/tests/holding_wallet.rs`). New names for
+  `PLAN.md`, each a rule of this round: `release_after_a_holding_accounts_module_restarts_restores_first`
+  (`tests/landing.rs`) [`INV-1`, `REQ-ORD-43`]; `two_values_of_one_order_at_one_node_are_restored_as_their_sum`
+  (core-orch, `segments::landing`) [`INV-1`]; `a_hand_ons_restore_is_the_orders_whole_at_its_node` (core-orch,
+  `stuck::handing`) [`INV-1`]; `in_flight_segment_whose_decision_record_is_unreadable_is_held_at_its_stated_value`
+  [`REQ-ORD-8`, `THR-74`], `erasure_done_before_core_reopens_is_settled_once` [`NFR-6`],
+  `order_whose_inputs_statement_names_another_order_is_held_on_reopening` [`NFR-6`],
+  `segment_answered_before_core_reopens_goes_on_from_its_logged_answer` [`NFR-6`, `INV-8`] (`tests/reopened.rs`);
+  `charge_raise_cut_short_before_core_reopens_is_raised_once` [`NFR-6`, `REQ-QTE-5`],
+  `terms_stated_before_core_reopens_bind_the_segments_after_it` [`REQ-QTE-6`, `NFR-6`] (`tests/charge_check.rs`);
+  `executed_price_reported_through_the_assembly_before_core_reopens_is_not_reported_again` [`REQ-QTE-7`, `NFR-6`]
+  (`tests/charge_check.rs`); `stranded_hand_on_is_taken_back_after_a_restart` [`REQ-ORD-43`] (`tests/hand_on.rs`);
+  `linked_start_and_its_spent_record_are_rebuilt_from_the_log_after_a_restart` [`REQ-ORD-43`, `REQ-ORD-40`],
+  `linked_start_whose_record_cannot_be_read_back_is_proven_by_no_record_after_a_restart` [`REQ-ORD-43`]
+  (`tests/hand_on_record.rs`; the kit states the holding account's withdrawal answer as the wallet does,
+  `holding_withdrawal_statement`). `done_move_is_counted_as_moved_after_a_restart` now also asks for the
+  `stuck_resolved` once after the reopening. The assembly's disk crashes after a stated entry by its shape too.
+- **Tests first, fix round 2.** The probe tests of findings 1 and 2 (`two_values_…`, `release_after_…`) were written
+  first and watched red on their assertions before the fix; the others were written beside their rules and each
+  watched red by switching its rule off (the table below).
+- **Fix round 2's rule-off table** (script `ruleoff3.py` in the row's scratch folder; "wide" is the scenario binaries
+  `reopened`, `hand_on`, `hand_on_record`, `segments`, `landing`, `assembly_real_wallet` and `charge_check`). Several
+  wide runs also showed `segments`' promotion test red: that is the base's failure fixed by `ad648667`, merged since.
+
+  | Rule switched off | Red |
+  |---|---|
+  | restores not grouped per order | `two_values_of_one_order_at_one_node_are_restored_as_their_sum` |
+  | no restore before a release | `release_after_a_holding_accounts_module_restarts_restores_first` |
+  | a hand-on's restore lands its own value, not the order's whole | `a_hand_ons_restore_is_the_orders_whole_at_its_node` |
+  | a resolution done not finished on reopening | `done_move_is_counted_as_moved_after_a_restart` |
+  | decision records not read from the store | the reopened NFR-6, stuck, re-landing, assembly hand-on, holdings and both reopened raise tests |
+  | decision record not kept as a stated entry | the same seven |
+  | an unread segment not held at its stated value | `in_flight_segment_whose_decision_record_is_unreadable_is_held_at_its_stated_value` |
+  | `OrderInputs` admits an empty map | core-internal's fixture tests (`every_valid_fixture_…`, `every_invalid_fixture_…`) |
+  | `Prices::recorded` holds nothing | `executed_price_reported_before_core_reopens_is_not_reported_again` |
+  | the assembly reports prices afresh | `executed_price_reported_through_the_assembly_before_core_reopens_is_not_reported_again` |
+  | a settled segment's charge not rebuilt | both reopened raise tests |
+  | terms not read back | `terms_stated_before_core_reopens_bind_the_segments_after_it` |
+  | an answered segment not resumed from its logged answer | `segment_answered_before_core_reopens_goes_on_from_its_logged_answer` |
+  | a refused hand-on not rebuilt | `stranded_hand_on_is_taken_back_after_a_restart` |
+  | an opened linked order not rebuilt | `linked_start_and_its_spent_record_are_rebuilt_from_the_log_after_a_restart` |
+  | starts and spent records not rebuilt | both linked start tests |
+  | an unreadable start proven by any record | `linked_start_whose_record_cannot_be_read_back_is_proven_by_no_record_after_a_restart` |
+  | a linked order not restarted | `holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log` |
+  | linked acceptances not rebuilt | the same |
+  | unsettled erasures not found | `erasure_done_before_core_reopens_is_settled_once` |
+  | an unreadable inputs statement not held | `order_whose_inputs_statement_names_another_order_is_held_on_reopening` |
+  | an inputs statement's order not checked | the same |
+- **Fix round 2's local checks** (through the lock, the row's private plain-wallet build named by
+  `RUTENT_PLAIN_WALLET`): `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` (after
+  boxing `Hold::Route`'s operation and naming `landing::reconcile`'s group type); `cargo test -p` `rutent-core-orch`,
+  `rutent-core-authz --lib`, `rutent-contracts`, `rutent-prov`; `rutent-scenarios`' `reopened`, `hand_on`,
+  `hand_on_record`, `segments`, `landing`, `private_nodes`, `charge_check`, `assembly_real_wallet`, `assembly`,
+  `assembly_stuck`, `assembly_hand_on`, `assembly_intake`, `assembly_wiring`, `holds`, `stuck_hand_on`, `stuck`,
+  `closing`, `invariants`, `audit_scenarios`, `stuck_mover` (all pass); the doc check; plan-check and tag-check
+  `--strict` (0 findings, 2322 tests tagged); the contract guard against `origin/develop` ("1950 changed path(s) …
+  no violations"). Against `origin/m3`, the pull request's own base, the guard flags core-internal's 1.0.0 as not
+  bumped, as it does for every row folding into an unreleased major on `m3` (`T-021-16`'s too); the fold is the
+  lead's authorisation. The full suite runs in CI.
+- **Fix round 2's defaults** (reversible, failing closed): an order whose inputs statement can't be read back, or names
+  another order, is held on reopening, never run; a segment whose operation can't be read back is held at its stated
+  value; decision records live in the evidence store as the operator's stated entries; a restore after a module
+  restart is per order and of its whole at the node; a segment answered before the stop goes on from the logged answer
+  and is never asked again; a linked start the log holds whose record can't be read back refuses every record, the one
+  the log took included, the caller reading its receipt from the log; a change or resume retried after a reopening is refused `NotWaiting` where a Core that ran
+  on would answer its receipt (nothing is appended twice either way).
 - **Gaps, with owners.**
-  1. Not rebuilt: the mover's flights (a move in motion answers unknown), `HandOn`'s changes, resumes and stranded
-     refusals, the notices' and arrivals' state (`T-020-51`), the unsettled erasures (`Unsettled::settle`'s resume), the
-     measure and pair bookkeeping, a settled segment's fees where a crash cut them, linked orders' `Started`, the
-     assembly's accepted linked routes. Owner: the lead (a later round, or `F-030` start-up).
-  2. A part whose resolution's `done` reached the log but not its `stuck_resolved` stays stuck after a reopen, its
-     value counted moved and nothing more moved: the `stuck_resolved` isn't appended for it. Owner: the lead.
-  3. The release side of a landing (`Segments::land_settled`, a segment that moved on) doesn't restore after a module
-     restart: no scenario releases there after one. A release answered `NotKnown` stays unconfirmed. Owner: the lead.
-  4. Where production keeps the decision records Core signs, which the log names by digest only. Owner: the lead
-     (`F-030` or a contract round).
-  5. `Platform::open` with a file record exists, but no assembly opens one; a restarted platform holds no release until
-     each is admitted again (`T-013-10`'s carry-over). Owner: `T-024-21` with `F-013`.
-  6. The carry-over's stale comments in core-orch's stuck and reversal code (the handed-on withdrawal read as the
-     route's first segment): none found in `stuck/` and `reversal/`; the durability comments of `Segments`, `Stuck`,
-     `follow_recorded` and the assembly's `reopened` now say what is rebuilt. Owner: the reviewer, to point at any left.
+  1. The notices' and arrivals' state after a reopening (filings, waits): `T-020-51`.
+  2. The measures and the pair bookkeeping (`write_measures`): `T-020-48`, which runs them on Core's schedule.
+  3. A move in motion when Core stopped answers unknown after the reopening (`Kept::Lost`); asking its status again at
+     the provider's cadence is `T-020-47`'s and `T-020-48`'s ("a status question again for each segment still
+     unknown").
+  4. `Platform::open` with a file record exists, but no assembly opens one; a restarted platform holds no release
+     until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, the real restart in the invariant runs.
+  5. The carry-over's stale comments in core-orch's stuck and reversal code: none found in `stuck/` and `reversal/`;
+     the durability comments of `Segments`, `Stuck`, `HandOn`, `follow_recorded` and the assembly's `reopened` say what
+     is rebuilt. For the reviewer to point at any left.
