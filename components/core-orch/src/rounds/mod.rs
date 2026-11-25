@@ -1560,4 +1560,141 @@ mod tests {
             "no need names the no, and the route is refused all the same"
         );
     }
+
+    /// The rounds hand back the terms of Core's own answers only for the tuple asked, each once, and only from an
+    /// answer they kept: never terms of other decimals, another node or another provider than asked, nor from an answer
+    /// not Core's, not recorded, or refused by its snapshot. A second layer behind the platform's signer, which compares
+    /// a tuple's asset by its id alone (`T-020-56`'s review, gap 4; `REQ-QTE-6`). The reviewer's probe, kept.
+    // verifies: REQ-QTE-6
+    #[test]
+    fn terms_handed_back_are_only_those_of_the_tuple_asked_in_an_answer_kept() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/provider-role/fixtures/valid/result-withdrawal-handing-back-its-terms.json");
+        let bytes = std::fs::read(path).unwrap();
+        let tuple: TupleKey = serde_json::from_value(serde_json::json!({
+            "provider": "acme-co",
+            "from": { "node": { "network": "co-ach" }, "asset": { "id": "COP", "decimals": 2 } },
+            "to": { "node": "bank-ledger", "asset": { "id": "COP", "decimals": 2 } },
+        }))
+        .unwrap();
+        let receipt: rutent_contracts::core_internal::Receipt = serde_json::from_value(serde_json::json!({
+            "log": "log-1", "index": 1, "entry": { "algorithm": "sha-256", "value": format!("{:064x}", 1) },
+        }))
+        .unwrap();
+        let answer = |provider: &str,
+                      tuple: TupleKey,
+                      ours: bool,
+                      receipt: Option<rutent_contracts::core_internal::Receipt>,
+                      refused: bool,
+                      bytes: Vec<u8>| Answer {
+            provider: Id::new(provider).unwrap(),
+            tuple,
+            asked: crate::snapshot::Asked::FreshQuote,
+            transaction: Id::new("tx-012"),
+            bytes,
+            ours,
+            yes: false,
+            receipt,
+            refusal_recorded: refused,
+        };
+        let honest = || {
+            answer(
+                "acme-co",
+                tuple.clone(),
+                true,
+                Some(receipt.clone()),
+                false,
+                bytes.clone(),
+            )
+        };
+        assert_eq!(
+            terms_handed_back(&[honest(), honest()]).len(),
+            1,
+            "honest, once"
+        );
+        let mut other = tuple.clone();
+        other.to.asset.decimals = 0;
+        let mut other_node = tuple.clone();
+        other_node.to.node = serde_json::from_value(serde_json::json!("other-ledger")).unwrap();
+        let mut forged: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        forged["statement"]["outcome"]["terms"]["statement"]["tuple"]["to"]["node"] =
+            "other-ledger".into();
+        let forged = serde_json::to_vec(&forged).unwrap();
+        let cases = [
+            (
+                "other decimals",
+                answer(
+                    "acme-co",
+                    other,
+                    true,
+                    Some(receipt.clone()),
+                    false,
+                    bytes.clone(),
+                ),
+            ),
+            (
+                "other node asked",
+                answer(
+                    "acme-co",
+                    other_node,
+                    true,
+                    Some(receipt.clone()),
+                    false,
+                    bytes.clone(),
+                ),
+            ),
+            (
+                "terms for another node than asked",
+                answer(
+                    "acme-co",
+                    tuple.clone(),
+                    true,
+                    Some(receipt.clone()),
+                    false,
+                    forged,
+                ),
+            ),
+            (
+                "other provider",
+                answer(
+                    "other-co",
+                    tuple.clone(),
+                    true,
+                    Some(receipt.clone()),
+                    false,
+                    bytes.clone(),
+                ),
+            ),
+            (
+                "not ours",
+                answer(
+                    "acme-co",
+                    tuple.clone(),
+                    false,
+                    Some(receipt.clone()),
+                    false,
+                    bytes.clone(),
+                ),
+            ),
+            (
+                "unrecorded",
+                answer("acme-co", tuple.clone(), true, None, false, bytes.clone()),
+            ),
+            (
+                "refused",
+                answer(
+                    "acme-co",
+                    tuple.clone(),
+                    true,
+                    Some(receipt.clone()),
+                    true,
+                    bytes.clone(),
+                ),
+            ),
+        ];
+        for (name, a) in cases {
+            let got = terms_handed_back(&[a]);
+            assert!(got.is_empty(), "{name}");
+        }
+    }
 }

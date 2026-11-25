@@ -6,7 +6,8 @@
 //! asked nothing, and its quote is shown unheld. The request is the operator's `hold` operation, under a transaction of
 //! its own, naming the choice round's decision record by its id and the digest the log names it by, its chosen
 //! candidate, the session the reserve's yes was asked in (which tells the reserve nothing it wasn't told), and a validity
-//! no later than the earliest expiry of the figures the candidate cites. It is appended before it is sent, and the
+//! as long as the quote's figures are: the earliest expiry of the figures the candidate cites, so the hold never lapses
+//! before the quote it holds. It is appended before it is sent, and the
 //! answer after it arrives ([`crate::rounds`]' lone question), as a round's are. The answer is held to the request with
 //! provider-role's `check_hold_answer`, both signed statements, and the hold it carries is taken through
 //! [`Holds::take`](crate::quote::Holds::take): kept, appended as its own stated entry about its own transaction, and
@@ -30,8 +31,8 @@ use super::Desk;
 use crate::quote::{HoldDesk, RecordedAs};
 use crate::rounds::{self, Recorded as Round};
 
-/// How long Core asks a reserve to hold a quote whose figures name no expiry, in seconds: the default
-/// `T-020-56` takes, capped at the earliest expiry of the figures the candidate cites where they name one.
+/// How long Core asks a reserve to hold a quote whose figures name no expiry, in seconds: the default `T-020-56`
+/// takes where nothing bounds the quote, so a hold is never asked without an end.
 pub const HOLD_SECONDS: u64 = 300;
 
 /// Whether the reserve `origin`'s latest declaration says it answers hold requests (`REQ-QTE-15`): one with no
@@ -129,14 +130,14 @@ pub(super) fn ask(
     Some(taken.transaction.clone())
 }
 
-/// The validity Core asks: [`HOLD_SECONDS`] from now, to the whole second, and no later than the earliest expiry of
-/// the figures `candidate` cites; `None` where that is already past, so nothing is held.
+/// The validity Core asks: as long as the quote's figures are valid, to the whole second below the earliest expiry
+/// among the figures `candidate` cites, so the hold never lapses before the quote it holds (`T-020-56`'s review,
+/// finding 3); [`HOLD_SECONDS`] from now where they name none. `None` where that is already past, so nothing is held.
 fn validity(desk: &Desk<'_, '_>, chosen: &Round, candidate: &Candidate) -> Option<Timestamp> {
     let now = desk.parts.clock.now();
-    let asked = now.seconds.checked_add(HOLD_SECONDS)?;
     let until = match chosen.record.earliest_expiry(candidate) {
-        Some(expiry) => asked.min(u64::try_from(expiry.div_euclid(1_000_000_000)).ok()?),
-        None => asked,
+        Some(expiry) => u64::try_from(expiry.div_euclid(1_000_000_000)).ok()?,
+        None => now.seconds.checked_add(HOLD_SECONDS)?,
     };
     if until <= now.seconds {
         return None;

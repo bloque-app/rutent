@@ -942,6 +942,128 @@ mod tests {
         );
     }
 
+    /// `result` with `terms`, the provider's terms envelope from the withdrawal fixture, nested in its outcome, made by
+    /// `maker` for its tuple `from` → `to`, in the result's own deployment and protocol version.
+    fn with_terms(result: &str, maker: &str, from: Value, to: Value) -> Value {
+        let mut answered = fixture(result);
+        let mut terms = fixture("result-withdrawal-handing-back-its-terms")["statement"]["outcome"]
+            ["terms"]
+            .clone();
+        terms["maker"] = maker.into();
+        terms["deployment"] = answered["deployment"].clone();
+        terms["protocol_version"] = answered["protocol_version"].clone();
+        terms["statement"]["tuple"] =
+            serde_json::json!({ "provider": maker, "from": from, "to": to });
+        answered["statement"]["outcome"]["terms"] = terms;
+        answered
+    }
+
+    /// The terms of `answered`'s outcome with `change` made to their tuple.
+    fn changed(answered: &Value, change: impl FnOnce(&mut Value)) -> Value {
+        let mut other = answered.clone();
+        change(&mut other["statement"]["outcome"]["terms"]["statement"]["tuple"]);
+        other
+    }
+
+    /// The signer's rule for terms, for each kind of dry run besides a withdrawal's: a conversion's (at its one node,
+    /// from the asset it takes in to the one it gives out, so a rate the other way round, or terms at another node, are
+    /// refused), a transfer's (between its two nodes) and a deposit's (from its inner node to its outer one), each
+    /// signed for its own tuple and refused for its ends swapped (`T-020-56`'s review, finding 1; `REQ-QTE-6`, `THR-8`).
+    // verifies: REQ-QTE-6, THR-8
+    #[test]
+    fn terms_nested_in_a_conversions_transfers_or_deposits_dry_run_answer_are_signed_only_for_its_tuple()
+     {
+        let (private, declared, key) = keys([17u8; 32]);
+        let end = |node: Value, asset: &str, decimals: u8| serde_json::json!({ "node": node, "asset": { "id": asset, "decimals": decimals } });
+        let swap_ends = |t: &mut Value| {
+            let from = t["from"].clone();
+            t["from"] = t["to"].clone();
+            t["to"] = from;
+        };
+
+        // A conversion at `acme-ledger`, from COP to USDC.
+        let conversion = with_terms(
+            "result-conversion-dry-run-quote",
+            "acme-co",
+            end("acme-ledger".into(), "COP", 2),
+            end("acme-ledger".into(), "USDC", 6),
+        );
+        let asked = asking("operation-conversion-as-a-dry-run", &[]);
+        let signed = sign_as(&conversion, "acme-co", &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed["statement"]["outcome"]["terms"], &key));
+        let reversed = changed(&conversion, |t| {
+            let from = t["from"]["asset"].clone();
+            t["from"]["asset"] = t["to"]["asset"].clone();
+            t["to"]["asset"] = from;
+        });
+        let elsewhere = changed(&conversion, |t| t["to"]["node"] = "other-ledger".into());
+        for (case, refused) in [
+            ("the rate reversed", reversed),
+            ("at another node", elsewhere),
+        ] {
+            assert_eq!(
+                sign_as(&refused, "acme-co", &asked, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "conversion: {case}"
+            );
+        }
+
+        // A transfer from `acme-ledger` to `polygon`, in USDC.
+        let transfer = with_terms(
+            "result-transfer-dry-run-quote",
+            "bridge-pay",
+            end("acme-ledger".into(), "USDC", 6),
+            end("polygon".into(), "USDC", 6),
+        );
+        let mut asked: Value = fixture("operation-transfer-between-two-nodes")["statement"].clone();
+        asked["dry_run"] = true.into();
+        asked["transaction"] = "tx-010".into();
+        let asked: Operation = serde_json::from_value(asked).expect("a transfer");
+        let signed = sign_as(&transfer, "bridge-pay", &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed["statement"]["outcome"]["terms"], &key));
+        assert_eq!(
+            sign_as(
+                &changed(&transfer, swap_ends),
+                "bridge-pay",
+                &asked,
+                &private,
+                &declared
+            )
+            .err(),
+            Some(SigningError::NestedNotAsked),
+            "transfer: its ends swapped"
+        );
+
+        // A deposit from `bank-ledger` to `co-ach`, in COP: the withdrawal's answer, made a deposit's.
+        let mut deposit = with_terms(
+            "result-withdrawal-handing-back-its-terms",
+            "acme-co",
+            end("bank-ledger".into(), "COP", 2),
+            end(serde_json::json!({ "network": "co-ach" }), "COP", 2),
+        );
+        deposit["statement"]["kind"] = "deposit".into();
+        let asked: Operation = serde_json::from_value(serde_json::json!({
+            "kind": "deposit", "transaction": "tx-012", "provider": "acme-co",
+            "origin": "bank-ledger", "destination": { "network": "co-ach" }, "asset": "COP",
+            "amount": "25000000", "dry_run": true, "inputs": {},
+        }))
+        .expect("a deposit");
+        let signed = sign_as(&deposit, "acme-co", &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed["statement"]["outcome"]["terms"], &key));
+        assert_eq!(
+            sign_as(
+                &changed(&deposit, swap_ends),
+                "acme-co",
+                &asked,
+                &private,
+                &declared
+            )
+            .err(),
+            Some(SigningError::NestedNotAsked),
+            "deposit: its ends swapped"
+        );
+    }
+
     /// The hold a reserve nests in its answer to a hold request is signed with its key only where it is its hold of the
     /// quote asked: the request's transaction, record, candidate and whom it is for, valid no later than asked. A hold of
     /// another quote, past the validity asked, or in answer to another question, is not signed (`T-020-56`,

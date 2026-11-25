@@ -9,7 +9,7 @@ mod routing_support;
 
 use ed25519_dalek::Verifier as _;
 use routing_support::*;
-use rutent_conformance::sim::{Behaviour, Role, Spec};
+use rutent_conformance::sim::{Act, Behaviour, Role, Spec};
 use rutent_contracts::core_internal::{
     Action, Attribution, Difference, Encoded, Entry, KeptStatement, Outcome, Raise, Receipt, Salt,
     VerifiedEntry, What,
@@ -19,6 +19,7 @@ use rutent_contracts::router_api::Id;
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::notice::{About, Inbox, Receiver, Taken, Verifier};
 use rutent_core_orch::quote::Checked;
+use rutent_core_orch::recalc::Recalculation;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, KeptThrough, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
@@ -339,6 +340,60 @@ fn terms_a_module_stated_before_its_segment_started_bind_its_charge() {
             "it rests on the terms the provider stated before its segment started"
         );
     }
+}
+
+/// The terms a provider hands back in a recalculation's dry runs bind the recalculated route's segments, as a quote's
+/// bind its route's (`REQ-QTE-6`, `T-020-56`'s review, gap 3): the order quoted on terms that allow the 7 the reserve
+/// charges, its deposit refused, then recalculated on the reserve's tighter terms of 3. The new deposit's charge is held
+/// to those, the latest stated before it started, and raised citing them; held to the quote's, it would pass.
+// verifies: REQ-QTE-6
+#[test]
+fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() {
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    states_terms(&mut core, CHARGING, "100");
+    let (order, digest) = quoted_at(&mut core, &session, CHARGING, "req-recalculated");
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    core.world()
+        .script_for(CHARGING, "deposit", Behaviour::act(Act::Refuse));
+    core.run(&order)
+        .expect("the order runs to its refused deposit");
+    assert!(core.raised().is_empty(), "the withdrawal's 7 is within 100");
+    let quoted = terms_entries(&core).len();
+
+    core.clock.advance(60);
+    core.world().script_dry_run(
+        CHARGING,
+        "deposit",
+        Behaviour::stating_terms_of_at_most("3"),
+    );
+    let Recalculation::Recalculated(recalculated) =
+        core.recalculate(&order).expect("the recalculation ran")
+    else {
+        panic!("a route to the same destination was found");
+    };
+    let receipts: Vec<Receipt> = terms_entries(&core)
+        .into_iter()
+        .skip(quoted)
+        .map(|(r, _)| r)
+        .collect();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "the new deposit's terms, taken in the recalculation"
+    );
+    core.run_recalculated(&order, &recalculated)
+        .expect("the recalculated part runs");
+    let raised = core.raised();
+    assert_eq!(raised.len(), 1, "the new deposit's 7 is above 3");
+    let Difference::Charge { terms, maximum, .. } = &raised[0].difference else {
+        panic!("a charge difference");
+    };
+    assert_eq!(maximum.as_str(), "3");
+    assert!(
+        terms.as_ref().is_some_and(|t| receipts.contains(t)),
+        "it rests on the terms the recalculation's dry run handed back"
+    );
 }
 
 // verifies: REQ-QTE-6

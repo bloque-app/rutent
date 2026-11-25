@@ -222,3 +222,48 @@ fn reserve_declaring_no_hold_requests_is_asked_for_none() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].0, held);
 }
+
+/// The hold Core takes lasts as long as the quote's figures, never less (`T-020-56`'s review, finding 3): asked until
+/// the earliest expiry among the figures its candidate cites, so the quote's acceptance still redeems it once more time
+/// has passed than the 300 seconds a quote whose figures name no expiry is held for (`REQ-QTE-15`).
+// verifies: REQ-QTE-15
+#[test]
+fn hold_core_takes_lasts_as_long_as_its_quotes_figures() {
+    let (mut core, session) = core_with("AC-23", &[HOLDING]);
+    let (order, digest) = offered_at(&mut core, HOLDING, &session, "req-held");
+    let [(hold, receipt)] = core.holds_taken().try_into().expect("one hold taken");
+    let record = core
+        .verified_whats()
+        .into_iter()
+        .rev()
+        .find_map(|w| match w {
+            What::DecisionRecord {
+                decision_record,
+                order: o,
+                ..
+            } if o == order => Some(decision_record),
+            _ => None,
+        })
+        .expect("the choice round's record");
+    let record = record_named(&core, &record);
+    let chosen = record.chosen().expect("chosen");
+    let expiry = record
+        .earliest_expiry(chosen)
+        .expect("the stand-in's figures name their expiry");
+    let held = core
+        .holds()
+        .held(&hold)
+        .expect("held")
+        .valid_until()
+        .unix_nanos();
+    assert_eq!(
+        held,
+        expiry.div_euclid(1_000_000_000) * 1_000_000_000,
+        "held to the whole second below the earliest expiry of the quote's figures"
+    );
+    // Ten minutes on, past the 300 seconds a figure naming no expiry is held for, within the customer's session.
+    core.clock.advance(600);
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("the quote's acceptance still redeems its hold");
+    assert_eq!(acceptances(&core), vec![(order.clone(), Some(receipt))]);
+}

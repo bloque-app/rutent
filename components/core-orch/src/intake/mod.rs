@@ -73,9 +73,7 @@ use rutent_contracts::state_machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::quote::{
-    AcceptedQuote, HoldError, Holds, Recorded, Redemption, TakeError, TakesTerms, TermsDesk,
-};
+use crate::quote::{AcceptedQuote, HoldError, Holds, Recorded, Redemption, TakesTerms};
 use crate::rounds::{self, History, Need, Offer, Order, Parts, Presence, Routing, RoutingError};
 use crate::snapshot::{Price, check_part};
 
@@ -1397,36 +1395,21 @@ fn refusal(request: &Id, order: Option<&Id>, class: OrderRefusalClass) -> What {
 
 /// Records an `order_refusal` of `class`, naming the order where one exists.
 /// Takes each of `terms`, a provider's own terms one of Core's dry runs handed back ([`rounds::Routed::terms`]),
-/// through the desk's [`TakesTerms`], for the segments that start after them (`REQ-QTE-6`, `T-020-56`): presented by
-/// the provider that made them, which the platform handed them from. A log or store that can't take them now is an
-/// error, and the same call again takes them once (`Terms::take` keeps the same terms once); terms that aren't kept
-/// otherwise (not terms, unattributed, refused, not what the store keeps) are left out, failing closed: the price, or
-/// terms stated before, binds the segment instead.
+/// through the desk's [`TakesTerms`] (`crate::quote::take_handed_back`, `REQ-QTE-6`, `T-020-56`).
 pub(crate) fn take_terms(desk: &mut Desk<'_, '_>, terms: &[Vec<u8>]) -> Result<(), IntakeError> {
-    for bytes in terms {
-        let maker = serde_json::from_slice::<serde_json::Value>(bytes)
-            .ok()
-            .and_then(|v| v["maker"].as_str().and_then(Id::new));
-        let Some(maker) = maker else {
-            continue;
-        };
-        let presented_by = crate::relay::presenter(desk.parts.catalogue, &maker, Role::Provider);
-        let terms_desk = TermsDesk {
+    crate::quote::take_handed_back(
+        &mut *desk.terms,
+        crate::quote::HandedBack {
             evidence: &mut *desk.parts.evidence,
             log: &mut *desk.parts.log,
             kept: &mut *desk.kept,
             recorded: desk.recorded,
             clock: desk.parts.clock,
             catalogue: desk.parts.catalogue,
-            presented_by: &presented_by,
-        };
-        if let Err(TakeError::Append(AppendFailure::Unavailable)) =
-            desk.terms.take_terms(terms_desk, bytes)
-        {
-            return Err(IntakeError::Log(AppendFailure::Unavailable));
-        }
-    }
-    Ok(())
+        },
+        terms,
+    )
+    .map_err(IntakeError::Log)
 }
 
 fn refuse(

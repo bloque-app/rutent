@@ -273,6 +273,69 @@ impl TakesTerms for Terms {
     }
 }
 
+/// Takes each of `terms`, a provider's own terms one of Core's dry runs handed back (`crate::rounds::Routed::terms`),
+/// through `taker`, for the segments that start after them (`REQ-QTE-6`, `T-020-56`): presented by the provider that
+/// made them, which the platform handed them from. A log or store that can't take them now is an error, and the same
+/// call again takes them once (`Terms::take` keeps the same terms once); terms that aren't kept otherwise (not terms,
+/// unattributed, refused, not what the store keeps) are left out, failing closed: the price, or terms stated before,
+/// binds the segment instead. Intake, a filing and a recalculation each take their routing's terms through it.
+pub(crate) fn take_handed_back(
+    taker: &mut dyn TakesTerms,
+    desk: HandedBack<'_>,
+    terms: &[Vec<u8>],
+) -> Result<(), AppendFailure> {
+    let HandedBack {
+        evidence,
+        log,
+        kept,
+        recorded,
+        clock,
+        catalogue,
+    } = desk;
+    for bytes in terms {
+        let maker = serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| {
+                v["maker"]
+                    .as_str()
+                    .and_then(rutent_contracts::router_api::Id::new)
+            });
+        let Some(maker) = maker else {
+            continue;
+        };
+        let presented_by = crate::relay::presenter(
+            catalogue,
+            &maker,
+            rutent_contracts::core_internal::Role::Provider,
+        );
+        let terms_desk = TermsDesk {
+            evidence: &mut *evidence,
+            log: &mut *log,
+            kept: &mut *kept,
+            recorded,
+            clock,
+            catalogue,
+            presented_by: &presented_by,
+        };
+        if let Err(TakeError::Append(AppendFailure::Unavailable)) =
+            taker.take_terms(terms_desk, bytes)
+        {
+            return Err(AppendFailure::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+/// What taking the terms a routing handed back reaches: [`TermsDesk`] but who presented them, which is each one's maker.
+pub(crate) struct HandedBack<'a> {
+    pub evidence: &'a mut dyn Evidence,
+    pub log: &'a mut dyn Log,
+    pub kept: &'a mut dyn KeptStatements,
+    pub recorded: &'a dyn Recorded,
+    pub clock: &'a dyn Clock,
+    pub catalogue: &'a Catalogue,
+}
+
 /// The bytes base64url text without padding writes, or `None` where it isn't such text.
 pub(super) fn from_base64url(text: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
