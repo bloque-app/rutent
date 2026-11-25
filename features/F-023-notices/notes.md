@@ -446,3 +446,11 @@ Rule-offs, each alone, `core-orch`'s notice tests run:
 **Red first:** `wait_ended_is_sent_once_across_a_restart` failed on its assertion (2 sent, 4 expected) before the
 code. The second test's red was shown by its rule-off only (the filter I first ran missed it). `T-023-01`'s to
 `T-023-03`'s tests pass beside them (the whole `notice` test file: 40 passed).
+
+### T-023-04, review round 1 (Low)
+
+A refusal no longer settles an order in `settled_orders`, so a `shown` after the refusal of the same order in one
+unread batch would have been told as waiting. `notify` now keeps the orders the batch showed refused so far, and a
+later `shown` of one is read for nothing: no waiting notice, and no wait recorded for a later `wait_ended`. Fails
+closed. Test: `a_shown_after_its_orders_refusal_in_one_batch_is_told_of_nothing` (a second quote, so the delivered
+first one doesn't hide the gap). Rule-off, alone: the guard removed turns that test red (the other 40 stay green).

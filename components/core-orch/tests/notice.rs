@@ -3235,3 +3235,25 @@ fn an_inbox_holds_the_latest_waiting_quote_and_none_once_the_order_started_or_th
     assert_eq!(alice.take(&Ed25519, &told[1]), Ok(Taken::Earlier));
     assert_eq!(alice.waiting_on(&id("ord-w")), None);
 }
+
+/// A `shown` that comes after the refusal of its order in one unread batch is told of nothing: the order is ended, so
+/// no one is told it waits (`T-023-04`, fail closed).
+// verifies: REQ-ORD-20, AC-41
+#[test]
+fn a_shown_after_its_orders_refusal_in_one_batch_is_told_of_nothing() {
+    let mut entries = wait_then_refusal();
+    // Another quote of the order, shown after its refusal: not the delivered one again, so only the refusal keeps it
+    // from being told.
+    let mut again = serde_json::to_value(&entries[0].1).expect("json");
+    again["what"]["shown"]["value"] = json!("b2".repeat(32));
+    let again: Entry = serde_json::from_value(again).expect("an entry");
+    entries.push((entries[0].0.clone(), again));
+    let log = receipted(entries.into_iter().map(|(_, e)| e).collect());
+    let (mut key, mut wire) = (TestKey::new(), Wire::default());
+    let mut n = notices();
+    // The first `shown` and the refusal tell the wait and its end (4); the `shown` after the refusal tells nothing.
+    assert_eq!(n.notify(&log, &mut key, &mut wire), Ok(4));
+    for to in [customer(ALICE), operator()] {
+        assert_eq!(wire.to(&to).len(), 2, "{to:?}");
+    }
+}

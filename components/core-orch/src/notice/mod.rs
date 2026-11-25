@@ -360,6 +360,8 @@ impl Notices {
         // What the log's summaries show ended is known before anything is sent, so a restart sends none of it again.
         self.learn(recorded);
         let settled = settled_orders(unread);
+        // The orders this batch has shown refused so far: a `shown` of one that comes after is told of nothing.
+        let mut refused_so_far: BTreeSet<&str> = BTreeSet::new();
         let mut sent = 0;
         for (receipt, entry) in unread {
             if let Some(order) = about(entry)
@@ -398,6 +400,7 @@ impl Notices {
                     awaiting: Some(awaiting),
                     ..
                 } = &v.what
+                && !refused_so_far.contains(order.as_str())
             {
                 self.waiting_on
                     .insert(order.as_str().to_owned(), awaiting.requester.clone());
@@ -410,6 +413,13 @@ impl Notices {
                     };
                     sent += self.waiting(order, shown, awaiting, at, notice_key, transport)?;
                 }
+            }
+            if let Entry::Verified(v) = entry
+                && let What::OrderRefusal {
+                    order: Some(order), ..
+                } = &v.what
+            {
+                refused_so_far.insert(order.as_str());
             }
             if let Entry::Verified(v) = entry
                 && let What::OrderRefusal {
