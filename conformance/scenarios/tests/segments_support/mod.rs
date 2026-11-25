@@ -679,6 +679,9 @@ impl authz::Sources for Register {
                 }
                 _ => false,
             }),
+            // The deployment operator's logins (`T-021-15`): a catalogue change is held to one, as the assembly's
+            // registers answer it.
+            authz::Source::OfOperator => yes(need.input == operator().acts),
             authz::Source::OrderParties(order) => {
                 yes(order.as_str() == ORDER && need.input == customer().party)
             }
