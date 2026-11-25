@@ -9,9 +9,9 @@
 //!   ([`EvidenceStore::bind`]), once, so only that log's records erase.
 //! - **The log's two handles.** The policy engine holds the policy handle ([`PolicyHandle`]), and nothing else
 //!   does; orchestration holds the general handle ([`GeneralHandle`]) and no other (`DEC-2`, `T-020-01`).
-//! - **Policy.** `CMP-CORE-AUTHZ`'s engine, its fixed rules first, each input answered from a real record
-//!   ([`policy::Records`]); the calls it doesn't build yet answered beside it on its own handle
-//!   ([`policy::PolicySide`]). Core's own actor is listed as carrying the user's authorisation onward, so it can move
+//! - **Policy.** `CMP-CORE-AUTHZ`'s engine, its fixed rules first, each input answered by Core's own sources from its
+//!   log and evidence store, and the deployment's registers for what is the deployment's alone ([`policy::Deployed`],
+//!   `T-020-55`); every call reaches it through [`policy::PolicySide`]. Core's own actor is listed as carrying the user's authorisation onward, so it can move
 //!   value, and the operator's login holds each catalogue change the assembly makes.
 //! - **One clock.** Core's snapshots and segments, policy's session bound, the log's skew and the simulated world
 //!   read one [`SharedClock`].
@@ -21,7 +21,8 @@
 //!   segment runs under one.
 //! - **Arrivals** (`T-020-04`, `arrivals.rs`). `Arrivals` is held beside intake, on the same desk; the orders open at a
 //!   reserve are intake's started orders whose first segment hasn't settled; each order a filing opens is put into
-//!   policy's order records before policy is asked about it, and dropped where none opens (`FiledOrders`); an order
+//!   Core's sources' record of it (`OpenedOrders`) before policy is asked about it, and dropped where none opens
+//!   (`FiledOrders`); an order
 //!   started on an automatic deposit is followed from its start as arrivals answers it (`Arrivals::start`); and the
 //!   operator's login holds `ActForUser`, to file for a reserve that declared it.
 //! - **The providers in the log.** Each simulated provider is granted by a decided catalogue change, its effect
@@ -73,8 +74,7 @@ use rutent_contracts::core_internal::{
     VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ReserveDeclaration,
-    ResultBody, Statement,
+    ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
 };
 use rutent_contracts::router_api::{DECISION_RECORD_SHAPE, DecisionRecord, Id, PolicyBounds};
 use rutent_contracts::state_machine::{Observed, PartPlan, RecordedInput};
@@ -130,7 +130,7 @@ fn handed_over_by(catalogue: &Catalogue, bytes: &[u8]) -> Actor {
 use crate::{GeneralHandle, PolicyHandle};
 use durable::{Disk, LogDisk};
 use machine::{Delivery, Environment, Feed};
-use policy::{Deployment, PolicyEngine, PolicySide, Records, Registers};
+use policy::{Deployed, Deployment, PolicyEngine, PolicySide, Registers};
 
 /// The log as the assembly opens it: on its disk, reading the evidence store's bytes through the store's own read.
 pub type CoreLog = AuditLog<LogDisk, LogsRead>;
@@ -491,6 +491,9 @@ struct Carried {
     /// The host's holding accounts, beside the platform that runs their wallets: the host's attribution of each
     /// order and its own transactions' count go on with it (`T-020-46`).
     holdings: rutent_prov::holding::wallet::Holdings,
+    /// The deployment's register of holding accounts, its own configuration, which goes on as the deployment keeps it
+    /// (`T-020-55`): policy reads a node's holder from it, never from the host's holdings above.
+    holding_accounts: BTreeMap<String, String>,
 }
 
 /// Core, put together.
@@ -504,9 +507,9 @@ pub struct Core {
     bound: BoundStore<LogDisk, LogsRead>,
     keeper: Keeper,
     policy: PolicySide,
-    records: Records,
-    /// The records and Core's own sources, compared (`T-020-55`'s differential).
-    compared: policy::Compared,
+    /// Core's own sources, which policy's engine asks (`T-020-55`), and the deployment's registers beside them.
+    sources: policy::CoreSources,
+    deployed: Deployed,
     /// The platform with the simulated providers admitted to it.
     pub(crate) fleet: Fleet,
     /// Each simulated provider, as installed.
@@ -678,6 +681,7 @@ impl Core {
             ties: self.readings.ties(),
             // Policy's sources share the holdings (`T-021-16`), so they are taken out of the share, not moved.
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
+            holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
     }
@@ -694,6 +698,10 @@ impl Core {
         let carried_holdings = carried
             .as_mut()
             .map(|c| std::mem::take(&mut c.holdings))
+            .unwrap_or_default();
+        let holding_accounts = carried
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.holding_accounts))
             .unwrap_or_default();
         let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
             Some(c) => (
@@ -778,38 +786,29 @@ impl Core {
                 ORIGIN_ACCOUNT.to_owned(),
                 kit::customer().party.as_str().to_owned(),
             );
+            // The register of holding accounts the deployment kept, on a reopen (`T-020-55`).
+            r.holding_accounts = holding_accounts;
         }
-        // The operator's holding accounts, shared with policy's sources, which ask whose wallet holds a node's account
-        // (`T-021-16`).
-        // On a reopen they are the ones carried across it (`T-020-46`).
+        // The operator's holding accounts, the host's: on a reopen they are the ones carried across it (`T-020-46`).
         let holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>> =
             Rc::new(RefCell::new(carried_holdings));
-        let records = Records {
-            log: Rc::clone(&log),
-            orders: Rc::default(),
-            declarations: Rc::default(),
+        // Core's own sources, over its log and evidence store, and the deployment's registers beside them (`T-020-55`).
+        let deployed = Deployed {
             registers,
             verifier: Rc::default(),
-            holdings: Rc::clone(&holdings),
         };
-        // Core's own sources beside the records, compared answer by answer (`T-020-55`'s differential).
-        let core_sources = policy::CoreSources::new(
+        let sources = policy::CoreSources::new(
             policy::LogRead(Rc::clone(&log)),
             policy::StoreRead(Rc::new(RefCell::new(store.for_the_log()))),
-            policy::Deployed(records.clone()),
+            deployed.clone(),
         );
-        let compared = policy::Compared {
-            old: records.clone(),
-            new: core_sources,
-            seen: Rc::default(),
-        };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.
         let deployment = Deployment::default();
         let mut engine: PolicyEngine = Engine::with_policy(
             PolicyHandle(Rc::clone(&log)),
             deployment.clone(),
-            compared.clone(),
+            sources.clone(),
         );
         engine.set_clock(Box::new(clock.clone()));
         // Policy's register of sessions and read permissions, rebuilt from the decisions the log holds, the
@@ -818,7 +817,7 @@ impl Core {
         engine.reopen();
         let policy = PolicySide::new(
             Rc::new(RefCell::new(engine)),
-            records.clone(),
+            sources.clone(),
             deployment.clone(),
         );
 
@@ -849,7 +848,6 @@ impl Core {
             }
         };
         let mut core = Core {
-            compared,
             general: GeneralHandle(Rc::clone(&log)),
             log,
             clock,
@@ -857,7 +855,8 @@ impl Core {
             bound,
             keeper,
             policy,
-            records,
+            sources,
+            deployed,
             fleet,
             installed,
             catalogue,
@@ -1204,9 +1203,15 @@ impl Core {
         self.policy.clone()
     }
 
-    /// What policy's sources read.
-    pub fn sources(&self) -> Records {
-        self.records.clone()
+    /// Policy's sources: Core's own, over its log and evidence store, and the deployment's registers beside them
+    /// (`T-020-55`).
+    pub fn sources(&self) -> policy::CoreSources {
+        self.sources.clone()
+    }
+
+    /// Sets what the deployment's verifier stand-in does from now on (`T-024-07`).
+    pub fn verifier_is(&self, verifier: policy::Verifier) {
+        self.deployed.verifier_is(verifier);
     }
 
     /// `reader`'s read of the audit trail, by the identified `permission` it names (`REQ-AUD-12`, `T-020-55`): Core's
@@ -1231,14 +1236,9 @@ impl Core {
         })
     }
 
-    /// What `T-020-55`'s differential saw: each answer of Core's own sources compared with the records'.
-    pub fn comparison(&self) -> policy::Comparison {
-        self.compared.seen.borrow().clone()
-    }
-
     /// The deployment's registers.
     pub fn registers(&self) -> std::cell::RefMut<'_, Registers> {
-        self.records.registers.borrow_mut()
+        self.deployed.registers.borrow_mut()
     }
 
     /// Grants `installed`, tuple by tuple: each decided by the operator's login as a catalogue change naming the
@@ -1407,13 +1407,6 @@ impl Core {
                     let at = rutent_core_authz::session::instant(&s.received_at);
                     self.grant_verifier(&one);
                     kit::join(&mut self.catalogue, &one, at);
-                    let statement = one.advertisement.statement();
-                    if let Some(reserve) = &statement.statement.offers.reserve {
-                        self.records.declarations.borrow_mut().insert(
-                            statement.statement.provider.clone(),
-                            ReserveDeclaration::clone(&reserve.declaration),
-                        );
-                    }
                 }
                 continue;
             };
@@ -1510,7 +1503,6 @@ impl Core {
         let listing =
             |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
         let statement = installed.advertisement.statement();
-        let provider = kit::id(&statement.statement.provider);
         let publisher = &statement.statement.publisher;
         let bytes = installed.advertisement.bytes();
         let kept = rutent_contracts::core_internal::calls::Evidence::keep(&mut self.keeper, bytes)
@@ -1536,12 +1528,6 @@ impl Core {
         // Into Core's catalogue once the log holds it, at the time the log received it.
         let at = self.time_of_stated(&receipt);
         kit::join(&mut self.catalogue, installed, at);
-        if let Some(reserve) = &statement.statement.offers.reserve {
-            self.records.declarations.borrow_mut().insert(
-                provider.as_str().to_owned(),
-                ReserveDeclaration::clone(&reserve.declaration),
-            );
-        }
         Ok(())
     }
 
@@ -1622,8 +1608,8 @@ impl Core {
             fresh: &mut self.fresh,
             issued: &mut self.issued,
         };
-        let mut owners = Owners(Rc::clone(&self.records.registers));
-        let mut acting = Acting(Rc::clone(&self.records.registers));
+        let mut owners = Owners(Rc::clone(&self.deployed.registers));
+        let mut acting = Acting(Rc::clone(&self.deployed.registers));
         let mut held = Held(Rc::clone(self.policy.engine()));
         let mut authorisations = self.policy.clone();
         let mut desk = Desk {
@@ -1642,16 +1628,10 @@ impl Core {
         call(&mut self.intake, &mut desk)
     }
 
-    /// Takes `request`, and keeps intake's record of the order it opens for policy's sources.
+    /// Takes `request`. Policy's sources read the order it opens from the log's `order_opened` (`T-020-55`).
     pub fn request(&mut self, request: OrderRequest) -> Result<Told, StepError> {
         let told = self.with_desk(|intake, desk| intake.open(desk, request.clone()))?;
         if let Told::Exists { order, .. } = &told {
-            if let Some(record) = self.intake.record(order) {
-                self.records
-                    .orders
-                    .borrow_mut()
-                    .insert(order.as_str().to_owned(), record);
-            }
             self.requests.insert(order.as_str().to_owned(), request);
         }
         self.feed()?;

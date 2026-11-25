@@ -26,7 +26,6 @@ use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::NodeRef;
 use rutent_contracts::router_api::{Id, Request};
 use rutent_contracts::state_machine::{self as stm, PartPlan, SegmentPlan};
-use rutent_core_orch::intake::OrderRecord;
 use rutent_core_orch::rounds::{self, Fresh, History, Offer, Presence, Routing};
 use rutent_core_orch::segments::Ran;
 use rutent_core_orch::stuck::AcceptedRoute;
@@ -322,18 +321,7 @@ impl Core {
             given_by: linked.customer.clone(),
             at: self.clock.timestamp(),
         };
-        // Policy reads the order's requester from intake's records: the linked order is recorded there, as its
-        // acceptance names its parties (the original customer the requester), its origin the holding account.
-        let parties = self.parties_of(from)?;
-        self.records.orders.borrow_mut().insert(
-            accepted.order.as_str().to_owned(),
-            OrderRecord {
-                order: accepted.order.clone(),
-                request: kit::id(linked.route.request_id.as_str()),
-                parties,
-                origin_reserve: linked.holder.clone(),
-            },
-        );
+        // Policy's sources read the linked order's requester and origin from its acceptance in the log (`T-020-55`).
         let decision = Authorisations::authorise(&mut self.policy, &authorisation)
             .map_err(|_| StepError::NotNow("policy takes the linked order's authorisation"))?;
         if decision.permit().is_none() {

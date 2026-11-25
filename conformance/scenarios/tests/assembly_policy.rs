@@ -727,3 +727,132 @@ fn caller_without_the_read_permission_is_handed_nothing_of_the_trail() {
     );
     refused(&mut core, &regulator, Some("perm-reg-1"));
 }
+
+/// Policy's log-backed answers are Core's own (`T-020-55` (1), finding 4): over an order the assembled Core opened,
+/// accepted and ran, Core's sources answer its requester, origin reserve and parties, the order of a segment and the
+/// provider value moved through on it, the maker of a statement and its keeping about the order, and the origin
+/// reserve's declarations, each from the log and the evidence store. With the deployment's registers emptied and its
+/// verifier saying yes to anything, each of those answers is unchanged, as the deployment is asked none of them; the
+/// registers' own answers, which are all the assembly supplies, change with them.
+// verifies: REQ-AUZ-5
+#[test]
+fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deployments_registers() {
+    use rutent_contracts::core_internal::{Attribution, Parties};
+    use rutent_contracts::router_api::Id;
+    use rutent_core_authz::engine::{Need, Reply, Said, Source, Sources};
+    use rutent_core_authz::roles::{AUTOMATIC_DEPOSIT, NO_USER_WITHDRAWAL};
+    use rutent_scenarios::assembly::policy::{Registers, Verifier};
+
+    let (core, orders) = Scenario::new(
+        "one order, run",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    })
+    .when(Step::Run)
+    .core(1, &mut Reference);
+    let order = orders.first().cloned().expect("an order");
+    let whats = core.verified_whats();
+    let (parties, origin): (Parties, _) = whats
+        .iter()
+        .find_map(|w| match w {
+            What::Acceptance {
+                order: o,
+                parties,
+                origin_reserve,
+                ..
+            } if o == &order => Some((parties.clone(), origin_reserve.clone())),
+            _ => None,
+        })
+        .expect("the order's acceptance");
+    let (segment, provider) = whats
+        .iter()
+        .find_map(|w| match w {
+            What::Effect {
+                action:
+                    rutent_contracts::core_internal::Action::MoveValue {
+                        order: o,
+                        segment,
+                        provider,
+                        ..
+                    },
+                ..
+            } if o == &order => Some((segment.clone(), provider.clone())),
+            _ => None,
+        })
+        .expect("a move of the order's value");
+    let (commitment, maker) = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Stated(s)
+                if matches!(s.attribution, Attribution::Verified { .. })
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order) =>
+            {
+                Some((s.commitment.clone(), s.attribution.maker().party.clone()))
+            }
+            _ => None,
+        })
+        .expect("a verified statement about the order");
+    let need = |input: &Id, from: Source| Need {
+        input: input.clone(),
+        from,
+    };
+    let cores = vec![
+        need(&parties.requester, Source::Requester(order.clone())),
+        need(&origin, Source::OrderOrigin(order.clone())),
+        need(&parties.payer, Source::OrderParties(order.clone())),
+        need(&order, Source::SegmentOrder(segment.clone())),
+        need(
+            &provider,
+            Source::SegmentProvider {
+                order: order.clone(),
+                segment,
+            },
+        ),
+        need(&maker, Source::Statement(commitment.clone())),
+        need(&order, Source::KeptAbout(commitment)),
+        need(
+            &id(NO_USER_WITHDRAWAL),
+            Source::Declarations(origin.clone()),
+        ),
+        need(&id(AUTOMATIC_DEPOSIT), Source::Declarations(origin.clone())),
+    ];
+    let mut sources = core.sources();
+    let before: Vec<Reply<Said>> = cores.iter().map(|n| sources.supply(n)).collect();
+    for (n, answer) in cores.iter().zip(&before).take(7) {
+        assert_eq!(answer, &Reply::Given(Said::Yes), "{n:?}");
+    }
+    for (n, answer) in cores.iter().zip(&before).skip(7) {
+        assert!(matches!(answer, Reply::Given(_)), "{n:?}: {answer:?}");
+    }
+    assert_eq!(
+        sources.order_record(&order),
+        Reply::Given(parties.clone()),
+        "the order's record, from the log"
+    );
+    let customer = kit::customer();
+    let acts = need(
+        &customer.acts,
+        Source::ActsFor {
+            acts: customer.acts.clone(),
+            party: customer.party.clone(),
+            kind: customer.kind,
+            role: customer.role,
+        },
+    );
+    assert_eq!(sources.supply(&acts), Reply::Given(Said::Yes));
+
+    // The deployment's registers emptied, its verifier saying yes to anything: Core's answers stand, the registers'
+    // change.
+    *core.registers() = Registers::default();
+    core.verifier_is(Verifier::Yes);
+    let after: Vec<Reply<Said>> = cores.iter().map(|n| sources.supply(n)).collect();
+    assert_eq!(after, before, "Core's own answers are no register's");
+    assert_eq!(sources.order_record(&order), Reply::Given(parties));
+    assert_eq!(sources.supply(&acts), Reply::Missing, "the register's own");
+}
