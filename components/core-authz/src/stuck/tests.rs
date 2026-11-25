@@ -1577,7 +1577,18 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
         let before = policy.log.entries.len();
         let decided = policy.decide_stuck(&hand_on).unwrap();
         assert_eq!(policy.log.entries.len(), before + 1, "{by}: recorded");
-        decided.outcome
+        // The entry records the node the register placed the mover at, on a permit alone (`held_at`).
+        let Some((
+            _,
+            Entry::Verified(VerifiedEntry {
+                what: What::StuckDecide { held_at, .. },
+                ..
+            }),
+        )) = policy.log.entries.last()
+        else {
+            panic!("{by}: a decide step recorded");
+        };
+        (decided.outcome, held_at.clone())
     };
     let with_wallets = |unreachable: bool| {
         let mut register = Register::of_the_world();
@@ -1593,17 +1604,25 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
     };
     assert_eq!(
         wallet_hand_on(with_wallets(false), "plain-wallet", "req-wallet"),
-        Answer::Permit {}
+        (Answer::Permit {}, Some(id("ledger-in")))
     );
     assert_eq!(
         wallet_hand_on(with_wallets(false), "far-wallet", "req-far-wallet"),
-        refuse(RefusalClass::NotPermitted)
+        (refuse(RefusalClass::NotPermitted), None)
     );
     assert_eq!(
         wallet_hand_on(with_wallets(true), "plain-wallet", "req-wallet-unreached"),
-        Answer::NotKnown {
-            cause: NotKnownCause::VerifierUnreachable
-        }
+        (
+            Answer::NotKnown {
+                cause: NotKnownCause::VerifierUnreachable
+            },
+            None
+        )
+    );
+    // A mover the log already ties records no node: the world's hand-on by `fx-desk`, a provider of its route.
+    assert_eq!(
+        wallet_hand_on(with_wallets(false), "fx-desk", "req-fx-desk"),
+        (Answer::Permit {}, None)
     );
 
     // The holder a holding withdrawal names, read over the contract's admitted history of one: a holder the order its

@@ -1502,7 +1502,7 @@ fn done_hand_on(
         .ok_or(HandOnError::NoDoneResolution)?;
     let decided_for_part = recorded.iter().any(|(_, e)| {
         verified(e).is_some_and(|v| {
-            matches!(&v.what, What::StuckDecide { request, decision }
+            matches!(&v.what, What::StuckDecide { request, decision, .. }
                 if request.request == carries_out.request
                     && *decision == carries_out.decision
                     && request.part == *handing.part)

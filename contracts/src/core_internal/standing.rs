@@ -211,10 +211,11 @@ pub(crate) fn decided_part<'a>(
     history: &'a History,
 ) -> Option<&'a str> {
     history.iter().find_map(|(_, e)| match &verified(e)?.what {
-        What::StuckDecide { request, decision }
-            if request.order.as_str() == order
-                && request.request == carries.request
-                && *decision == carries.decision =>
+        What::StuckDecide {
+            request, decision, ..
+        } if request.order.as_str() == order
+            && request.request == carries.request
+            && *decision == carries.decision =>
         {
             Some(request.part.as_str())
         }

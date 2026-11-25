@@ -4219,12 +4219,15 @@ fn stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log() {
         "a-confirmation-on-the-mover-a-refused-decide-names",
         "a-confirmation-on-a-provider-of-an-order-no-hand-on-joins",
         "a-confirmation-on-a-provider-of-an-order-a-refused-decide-hands-on-to",
+        // Naming a provider a mover makes it no party: a permitted decide step's mover, or a resolution's, that
+        // nothing else this log holds ties to the order (`T-021-16`, R-MOVER), its only refusal `party`.
+        "a-confirmation-on-the-mover-a-permitted-decide-names",
+        "a-confirmation-on-the-mover-its-resolve-effect-names",
     ] {
         assert_case_refused(&format!("{row}--{name}"));
     }
     for name in [
-        "a-confirmation-on-the-mover-a-permitted-decide-names",
-        "a-confirmation-on-the-mover-its-resolve-effect-names",
+        "a-confirmation-on-a-mover-its-decide-step-held-at-a-node",
         "a-confirmation-on-the-reserve-its-arrival-came-to",
         "a-confirmation-on-the-holder-a-holding-withdrawal-names",
         "a-confirmation-on-the-publisher-a-holding-withdrawal-names",
@@ -4256,8 +4259,10 @@ fn stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log() {
             "{name} is admitted"
         );
     }
-    // Built in memory: the resolution's mover alone, bank-co with the order's arrival at it taken out, is a holder its
-    // value rested at; a provider only on the route of the order a hand-on joins it to is a party to it too.
+    // Built in memory: the resolution's mover alone, bank-co with the order's arrival at it taken out, is no party
+    // (`T-021-16`, R-MOVER: being named a mover ties no one to the order), and is one once its permitted decide step
+    // records the node the register of holding accounts placed it at (`held_at`); a provider only on the route of the
+    // order a hand-on joins it to is a party to it too.
     let case = read_admission("world--report_es");
     let entry: Entry = serde_json::from_value(case["entry"].clone()).unwrap();
     let no_arrival: Vec<(Receipt, Entry)> = case_history(&case)
@@ -4272,10 +4277,35 @@ fn stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log() {
             )
         })
         .collect();
+    let party = rows()
+        .into_iter()
+        .find(|r| r.0 == row)
+        .and_then(|r| r.4.iter().find(|(f, _)| *f == "party"))
+        .map(|(_, refusal)| *refusal)
+        .unwrap();
     assert_eq!(
         admit_entry(&no_arrival, &entry, Through::Policy, &deployment_operator()),
+        Err(Violation(party)),
+        "the resolution's mover alone"
+    );
+    let held: Vec<(Receipt, Entry)> = no_arrival
+        .into_iter()
+        .map(|(r, mut e)| {
+            if let Entry::Verified(VerifiedEntry {
+                what: What::StuckDecide { held_at, .. },
+                outcome: rutent_contracts::core_internal::Outcome::Permitted {},
+                ..
+            }) = &mut e
+            {
+                *held_at = Some(Id::new("ledger-in").unwrap());
+            }
+            (r, e)
+        })
+        .collect();
+    assert_eq!(
+        admit_entry(&held, &entry, Through::Policy, &deployment_operator()),
         Ok(()),
-        "the resolution's mover"
+        "the resolution's mover, its decide step held at a node"
     );
     let case = read_admission(&format!(
         "{row}--a-hand-ons-confirmation-on-another-makers-statement"

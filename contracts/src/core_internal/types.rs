@@ -2317,6 +2317,17 @@ pub enum What {
         request: StuckDecide,
         /// The decision.
         decision: Id,
+        /// The inner node whose holding account the deployment's register says the decision's mover
+        /// (`resolution.by`) holds, as policy asked it (`T-021-16`): present exactly where nothing else this log holds
+        /// ties that mover to the order, as for a hand-on through a public node's wallet (`T-020-33`).
+        /// `stuck-decide-held-at-is-a-held-node` holds it to a node a segment of the order's routes ends at, and
+        /// only then is that mover a party to the order (`party_to_the_order`).
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        held_at: Option<Id>,
     },
     /// A stuck order's move step, and the decision's id.
     StuckMove {

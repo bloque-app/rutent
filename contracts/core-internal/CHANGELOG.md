@@ -22,6 +22,14 @@
     `automatic-deposit-rests-on-its-arrival`: the arrival's holder is the acceptance's requester, a destination it names
     is the one (and to asset) of the authorisation the acceptance names, and it was set for that requester.
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
+  - R-MOVER (`T-021-16`, `F-025`'s second pass): `stuck_decide.held_at` (optional), the inner node whose holding account
+    the deployment's register says the decision's mover holds, which policy records where nothing else the log holds
+    ties that mover to the order (a hand-on through a public node's wallet, `T-020-33`); row
+    `stuck-decide-held-at-is-a-held-node`, a node a segment of the order's routes ends at, named only for such a mover;
+    and `party_to_the_order` takes a permitted decide step's mover, or a resolution's, as a party only where it is a
+    holder the order involves by the log's other entries or its decide step records `held_at`. Four admission cases
+    (three of the new row, one confirmation on a mover held at a node); two earlier ones on an untied mover are now
+    refused on `party`. 115 relations.
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).
   - The review's Lows: the README's citation table names every admission fixture that exists and none that doesn't; a

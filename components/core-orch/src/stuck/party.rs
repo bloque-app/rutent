@@ -3,7 +3,8 @@
 //! The statement a stuck resolution rests on (a decision's evidence, a report's, a confirmation's or a decline's)
 //! must come from a party the order involves: a provider of a segment on any route the order was given, across its
 //! recalculations, changed destinations and hand-ons; the holder of a holding account its value rested at (the
-//! reserve of an arrival of the order, a stuck resolution's mover where policy permitted its decide step, a holding
+//! reserve of an arrival of the order, a stuck resolution's mover where it is one of these or its permitted decide step
+//! records the node the register of holding accounts placed it at (`held_at`, `T-021-16`), a holding
 //! withdrawal's holder and its publisher); or the publisher of a node it crossed, as the history binds the node
 //! (a replay or evidence of the order resting on a statement stating for the publisher). Never the customer, whom no
 //! statement is of, and never the reporter's own party, whose word a confirmation can't be.
@@ -120,6 +121,78 @@ fn linked_orders<'a>(order: &'a str, history: &'a Recorded) -> Vec<&'a str> {
     orders
 }
 
+/// The segments of a route `observed` gives its order: a chosen route's, a recalculated one's, or one whose destination
+/// changed; none for any other input.
+fn route_segments(observed: &Observed) -> Vec<&SegmentPlan> {
+    match observed {
+        Observed::RouteChosen { parts, .. } => {
+            parts.iter().flat_map(|p| p.segments.iter()).collect()
+        }
+        Observed::RouteRecalculated { segments, .. }
+        | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `by` is a holder `order` involves by what the history holds, a decide step's or a resolution's mover aside
+/// (the log's `holder_of_the_order`, `T-021-16`): its origin reserve, a provider of a segment on a route the order was
+/// given, the reserve of an arrival held against it, or a holding withdrawal's holder of it or of the order it was
+/// handed on from.
+fn holder_of_the_order(order: &Id, by: &Id, history: &Recorded) -> bool {
+    history
+        .iter()
+        .filter_map(|(_, e)| verified(e))
+        .any(|v| match &v.what {
+            What::Acceptance {
+                order: o,
+                origin_reserve,
+                ..
+            } => o == order && origin_reserve == by,
+            What::Input { input } if input.subject.order.as_str() == order.as_str() => {
+                route_segments(&input.observed)
+                    .iter()
+                    .any(|s| s.provider.as_str() == by.as_str())
+            }
+            What::Arrival {
+                reserve,
+                order: Some(o),
+                ..
+            } => o == order && reserve == by,
+            What::HoldingWithdrawal {
+                order: o,
+                handed_on_from,
+                holder,
+                ..
+            } => (o == order || handed_on_from == order) && holder == by,
+            _ => false,
+        })
+}
+
+/// The `held_at` of the permitted decide step of `order` that `carries_out` names, where it records one.
+fn held_at_of<'a>(
+    order: &Id,
+    carries_out: &rutent_contracts::core_internal::Decided,
+    history: &'a Recorded,
+) -> Option<&'a Id> {
+    history
+        .iter()
+        .filter_map(|(_, e)| verified(e))
+        .filter(|v| matches!(v.outcome, Outcome::Permitted {}))
+        .find_map(|v| match &v.what {
+            What::StuckDecide {
+                request,
+                decision,
+                held_at,
+            } if &request.order == order
+                && request.request == carries_out.request
+                && *decision == carries_out.decision =>
+            {
+                held_at.as_ref()
+            }
+            _ => None,
+        })
+}
+
 /// Whether `statement` is a verified statement by a party `order` involves: an unverified one names only who it
 /// claims made it, and rests on no key.
 pub(super) fn verified_party(statement: &StatedEntry, order: &Id, history: &Recorded) -> bool {
@@ -162,20 +235,31 @@ pub(super) fn involves(statement: &StatedEntry, order: &Id, history: &Recorded) 
                 },
                 ..
             } => ours(o) && provider == maker,
+            // A resolution's mover, and a permitted decide step's (a refused one names no one), only where it is a
+            // holder the order involves by the log's other entries, or the decide step records where the register of
+            // holding accounts placed it (`held_at`, `T-021-16`), as the log reads them.
             What::Effect {
                 action:
                     Action::ResolveStuck {
                         order: o,
+                        carries_out,
                         resolution: Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. },
                         ..
                     },
                 ..
-            } => ours(o) && by == maker,
-            // A permitted decide step's mover; a refused one names no one.
-            What::StuckDecide { request, .. } if matches!(v.outcome, Outcome::Permitted {}) => {
+            } => {
+                ours(o)
+                    && by == maker
+                    && (holder_of_the_order(o, by, history)
+                        || held_at_of(o, carries_out, history).is_some())
+            }
+            What::StuckDecide {
+                request, held_at, ..
+            } if matches!(v.outcome, Outcome::Permitted {}) => {
                 ours(&request.order)
                     && matches!(&request.resolution,
-                        Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } if by == maker)
+                        Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } if by == maker
+                            && (holder_of_the_order(&request.order, by, history) || held_at.is_some()))
             }
             What::Arrival {
                 reserve,

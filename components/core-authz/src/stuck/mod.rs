@@ -571,14 +571,17 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
 
     /// The decision's rules read from the log: its decider is, or reaches, no party of the order, and the provider it
     /// names as holding the value and moving it is a holder the order involves ([`involves_holder`], `T-021-16`).
-    fn decide_check(&mut self, request: &StuckDecide) -> Check {
+    /// Where the register of holding accounts placed that provider, the node it holds, for the decision's entry to
+    /// record (`held_at`).
+    fn decide_check(&mut self, request: &StuckDecide) -> (Check, Option<Id>) {
         let Ok(entries) = self.log.receipted() else {
-            return Check::Refuse(RefusalClass::MissingInput);
+            return (Check::Refuse(RefusalClass::MissingInput), None);
         };
-        first!(
-            self.not_the_customer(&entries, &request.decider, &request.order),
-            self.holder_check(&entries, &request.order, holder_of(&request.resolution)),
-        )
+        let customer = self.not_the_customer(&entries, &request.decider, &request.order);
+        if customer != Check::Clear {
+            return (customer, None);
+        }
+        self.holder_check(&entries, &request.order, holder_of(&request.resolution))
     }
 
     /// Whether `by` is a holder `order` involves: by the log ([`involves_holder`]), or, where the log ties it to
@@ -586,26 +589,36 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     /// ([`held_nodes`], `Source::HoldingAccount`): the holding account of a node a segment of a route the order was
     /// given ends at, where the value of a hand-on through a public node's wallet rests (`T-020-33`). A yes for one
     /// node clears it; a no or nothing for a node asks the next; none yes refuses, and a register out of reach, with
-    /// no yes, leaves the answer not known.
-    fn holder_check(&mut self, entries: &[(Receipt, Entry)], order: &Id, by: &Id) -> Check {
+    /// no yes, leaves the answer not known. A yes answers the node, which the decision's entry records as `held_at`,
+    /// so the log reads the mover as the order's only on it (`stuck-decide-held-at-is-a-held-node`).
+    fn holder_check(
+        &mut self,
+        entries: &[(Receipt, Entry)],
+        order: &Id,
+        by: &Id,
+    ) -> (Check, Option<Id>) {
         if involves_holder(entries, order, by) {
-            return Check::Clear;
+            return (Check::Clear, None);
         }
         let mut found = Check::Refuse(RefusalClass::NotPermitted);
         for node in held_nodes(entries, order) {
+            // A node no identifier can name is none the log could record: it places no one.
+            let Some(held) = Id::new(node.as_str()) else {
+                continue;
+            };
             let need = Need {
                 input: by.clone(),
                 from: Source::HoldingAccount { node },
             };
             match self.sources.supply(&need) {
-                Reply::Given(Said::Yes) => return Check::Clear,
+                Reply::Given(Said::Yes) => return (Check::Clear, Some(held)),
                 Reply::Given(Said::No) | Reply::Missing => {}
                 Reply::Unreachable => {
                     found = Check::NotKnown(NotKnownCause::VerifierUnreachable);
                 }
             }
         }
-        found
+        (found, None)
     }
 
     /// The move's rules, read from the log: it carries out a permitted decision of its order, whose decider isn't its
@@ -622,6 +635,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
                         What::StuckDecide {
                             request: decide,
                             decision,
+                            ..
                         },
                     outcome: Outcome::Permitted {},
                     ..
@@ -755,14 +769,18 @@ impl<L: PolicyLog + Receipted, P: Policy, S: Sources> StuckOrders for Engine<L, 
     fn decide_stuck(&mut self, request: &StuckDecide) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
         let consulted = self.consult(Asked::DecideStuck(request));
-        let check = match consulted {
-            Answer::Refuse { .. } => Check::Clear,
+        let (check, held_at) = match consulted {
+            Answer::Refuse { .. } => (Check::Clear, None),
             _ => self.decide_check(request),
         };
         let answer = held(consulted, check);
+        // Where the register of holding accounts placed the mover, its node, recorded only on a permit: a refusal
+        // names no one (`T-021-16`).
+        let held_at = held_at.filter(|_| matches!(answer, Answer::Permit {}));
         let what = |decision| What::StuckDecide {
             request: request.clone(),
             decision,
+            held_at,
         };
         self.answer(
             &request.request,
