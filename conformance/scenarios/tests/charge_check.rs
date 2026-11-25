@@ -502,6 +502,59 @@ fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
     }
 }
 
+/// An order's executed price reported through the assembly before Core stopped: the reopened Core holds it as
+/// reported from the log's `shown` entry (`Prices::recorded`), so the report asked again after the reopening is
+/// answered with the entry the log took, and the log holds one price for the order (`REQ-QTE-7`, `NFR-6`, `T-020-46`).
+// verifies: REQ-QTE-7, NFR-6
+#[test]
+fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_reported_again() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, kit::RESERVE)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let (order, told) = quoted(
+        &mut core,
+        request_at(
+            kit::RESERVE,
+            "req-priced",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    let ran = core.run(&order).expect("the order runs");
+    let (_, receipt, _) = core.report_price(&order, &ran).expect("reported");
+    let prices = |core: &Core| {
+        core.verified_whats()
+            .iter()
+            .filter(|w| {
+                matches!(w, What::Shown { order: o, shown_as: rutent_contracts::core_internal::ShownAs::Price, .. }
+                    if *o == order)
+            })
+            .count()
+    };
+    assert_eq!(prices(&core), 1);
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    let again = core.report_price(&order, &ran);
+    assert!(
+        matches!(&again, Ok((_, r, _)) if *r == receipt),
+        "the price the log took answers again: {again:?}"
+    );
+    assert_eq!(prices(&core), 1, "one price for the order");
+}
+
 // verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {

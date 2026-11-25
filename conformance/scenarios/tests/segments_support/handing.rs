@@ -298,6 +298,37 @@ pub fn holding_statement(core: &mut Core, linked: &str) -> Receipt {
     super::stated_results(core, &id(linked), None, &transaction, &[origin_reserve()]).remove(0)
 }
 
+/// The holding account's answer to its withdrawal for `linked`, as the wallet states it (`T-020-46`): succeeded,
+/// under `{reserve}`'s transaction `tx-handed-on`, giving out `amount`, its evidence the wallet's own piece
+/// `{reserve}-withdrawal-tx-handed-on` (the record [`rutent_prov::holding::wallet::proof_of_withdrawal`] reads), signed
+/// by the origin reserve and kept, so a Core that reopens reads the record back from the evidence store.
+pub fn holding_withdrawal_statement(core: &mut Core, linked: &str, amount: &str) -> Receipt {
+    let reserve = super::origin_reserve();
+    let transaction = "tx-handed-on";
+    let answer = serde_json::json!({
+        "kind": "withdrawal",
+        "transaction": transaction,
+        "outcome": {
+            "status": "succeeded",
+            "amount_in": amount,
+            "amount_out": amount,
+            "fee": { "asset": "COP", "amount": "0" },
+            "evidence": [
+                { "grade": 3, "reference": format!("{reserve}-withdrawal-{transaction}"), "by": reserve }
+            ]
+        }
+    });
+    super::stated_answers(
+        core,
+        &id(linked),
+        None,
+        transaction,
+        &[reserve],
+        (true, Some(&answer)),
+    )
+    .remove(0)
+}
+
 /// Proves `linked`'s start on `record`, the holding account's record of its withdrawal, citing a statement of it
 /// the holding account made now ([`holding_statement`]): Core records the `holding_withdrawal`.
 pub fn prove(

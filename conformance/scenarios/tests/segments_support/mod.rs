@@ -1219,6 +1219,19 @@ fn stated_results_asking(
     makers: &[&str],
     ask: bool,
 ) -> Vec<Receipt> {
+    stated_answers(core, order, segment, transaction, makers, (ask, None))
+}
+
+/// [`stated_results_asking`], each maker's result `answer` where one is given (`T-020-46`: a holding account's
+/// withdrawal answer as the wallet states it).
+pub(crate) fn stated_answers(
+    core: &mut Core,
+    order: &Id,
+    segment: Option<&str>,
+    transaction: &str,
+    makers: &[&str],
+    (ask, answer): (bool, Option<&Value>),
+) -> Vec<Receipt> {
     let made_at = core.clock.now().timestamp().unwrap();
     let (question, results) = answered_under(
         &mut core.store,
@@ -1228,7 +1241,7 @@ fn stated_results_asking(
         segment,
         transaction,
         makers,
-        ask,
+        (ask, answer),
     );
     let mut log = core.log.borrow_mut();
     if let Some(question) = question {
@@ -1253,7 +1266,7 @@ fn answered_under(
     segment: Option<&str>,
     transaction: &str,
     makers: &[&str],
-    ask: bool,
+    (ask, answer): (bool, Option<&Value>),
 ) -> (Option<Entry>, Vec<Entry>) {
     let order = order.clone();
     let body = json!({ "kind": "balance_verification", "transaction": transaction });
@@ -1261,7 +1274,7 @@ fn answered_under(
         let mut e = seed_envelope(
             rutent_contracts::provider_role::RESULT_SHAPE,
             maker,
-            body.clone(),
+            answer.unwrap_or(&body).clone(),
         );
         e["made_at"] = made_at.as_str().into();
         rutent_conformance::signing::sign_value(&mut e, &statements_key_of(maker));

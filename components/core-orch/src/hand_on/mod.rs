@@ -493,6 +493,9 @@ pub struct HandOn {
     /// The hand-ons a Core that reopened found refused in the log, by order and part (`T-020-46`): the first order's
     /// `handed_on` taken, its linked order's refusal recorded, its `hand_on_taken_back` not; a retry takes it back.
     refused: BTreeMap<(String, String), (Id, Receipt)>,
+    /// The linked orders a Core that reopened found started in the log whose holding record it can't read back
+    /// (`T-020-46`): failing closed, each refuses every record, since the one the log took can't be told from another.
+    unread_starts: std::collections::BTreeSet<String>,
 }
 
 /// A hand-on the log holds half of: the first order's `handed_on`, with its receipt, and the first order as it stood
@@ -715,6 +718,8 @@ impl HandOn {
             if v.who.role != Role::Core || self.started.contains_key(linked.as_str()) {
                 continue;
             }
+            // Held unread until its record is read back below.
+            self.unread_starts.insert(linked.as_str().to_owned());
             let Some(stated) = history.iter().find_map(|(r, e)| match e {
                 Entry::Stated(s) if r == record => Some(s),
                 _ => None,
@@ -771,6 +776,7 @@ impl HandOn {
                 (holder.as_str().to_owned(), reference),
                 linked.as_str().to_owned(),
             );
+            self.unread_starts.remove(linked.as_str());
             self.started.insert(
                 linked.as_str().to_owned(),
                 Started {
@@ -1390,6 +1396,10 @@ impl HandOn {
         start: Start<'_>,
     ) -> Result<Receipt, HandOnError> {
         let (linked, record) = (start.linked, start.record);
+        // A start the log took whose record a reopened Core can't read back: failing closed, no record proves it.
+        if self.unread_starts.contains(linked.as_str()) {
+            return Err(HandOnError::Unproven(Unproven::AlreadyStarted));
+        }
         // A linked order has one start: the entry the log took, retried, is answered with its receipt; another
         // record or statement of it is refused, nothing recorded (`one-start-per-linked-order`).
         if let Some(taken) = self.started.get(linked.as_str()) {
