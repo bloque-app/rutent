@@ -7451,23 +7451,42 @@ assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/te
      no route still ends the order as before, its deposit spent (`OrderRefused` is never written).
   4. The quote shown on a rebuilt wait is gone (the log holds its digest alone): the customer's acceptance of the digest
      the log last shows asks the route again, shown anew, as a quote past its validity does; any other digest is
-     `NotTheQuoteShown`. A rebuilt wait holds what the log holds of its filing (the deposit, the authorisation, the
-     destination, the to asset, the floor, the holder as every party); its request identifier, objective, other inputs,
-     judgements and session are not in the log (the inputs are kept out of it by `REQ-AUD-6`), so the route is asked
-     again with the destination alone, and **where that offers nothing the wait goes on** and the customer is told it
-     waits: the filer filing the deposit again restates the filing (`Run::adopt`: any filing of that deposit by the same
-     filer's party takes the wait, whatever its request identifier) and the next acceptance asks the route with it.
+     `NotTheQuoteShown`. The filing is read back from the log and the operator's kept statement of its inputs and
+     objective (the lead's ruling, below): its request identifier, inputs and objective come from there, so the route is
+     asked again with no restated filing. A wait whose statement can't be read, or isn't the filing's, is **held**:
+     told it waits, never accepted, never asked the route again, ended at its lifetime. Its session is the customer's,
+     the one it accepts in.
   5. The session a rebuilt wait asks its route in is the customer's, the one it accepts in.
+- **Gap 1, closed** (the lead's ruling, 2026-11-25: fix now, pre-production). The `arrival` entry that holds a deposit
+  against a filed order gains `request` and `inputs`, the salted commitment of the operator's signed statement of the
+  filing's inputs and objective (`FilingInputs`, shape `filing-inputs`, a sibling of `order-inputs`: a filing's inputs
+  may be empty and it states an objective), kept in the evidence store and appended as a stated entry about nothing
+  before the arrival (no account in the log, `REQ-AUD-6`). Row `filed-orders-inputs-are-a-kept-statement`, in the style
+  of `opened-orders-inputs-are-a-kept-statement`: verified, of that shape, the deployment operator's own, about
+  nothing. `core-internal`, folded into the unreleased 1.0.0 (a `DEC-20` path): schema, README, changelog, fixtures
+  (valid `filing-inputs-of-a-filed-order` and an arrival naming them, invalid `filing-inputs-without-its-objective`, six
+  admission cases). `Arrivals::reopened` reads the statement back, held to its shape and to the order. The filer's
+  restating the filing now takes the wait only under the same request. Tests:
+  `waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing` [`REQ-QTE-10`, `REQ-AUD-6`],
+  `reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held` [`REQ-QTE-10`, `REQ-AUD-6`] (the store keeps
+  nothing behind the commitment, the arrival names none, the statement is another order's), and the scenario, which no
+  longer files again after the reopening. Rule-offs, each alone from the commit of that change:
+
+  | Rule switched off | Red |
+  |---|---|
+  | the arrival names no statement | `waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing` |
+  | the arrival names no request | the same |
+  | the statement's order isn't checked on reading | `reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held` |
+  | a wait whose filing wasn't read back is accepted | the same |
+  | the statement isn't appended before its arrival | 35 arrival tests (the log refuses the arrival) |
+  | the log row cites nothing (`--missing`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the log row takes a statement about something (`--about`) | the same |
+
 - **Gaps, with owners.**
-  1. A filing's inputs, objective, request identifier and session aren't in the log, so a reopened wait can be accepted
-     only after its filer restates the filing, or where the destination alone is enough for the route. Closing it needs a
-     field on the `arrival` entry that holds the deposit (a salted commitment to a kept `order-inputs` statement, as
-     `order_opened.inputs` is, plus the request identifier): a `core-internal` shape this row wasn't given. Owner: the
-     lead, with `T-020-46`'s `order-inputs` shape.
-  2. The orders started or ended, and the filings refused, aren't rebuilt: a repeat of such a filing after a reopening is
+  1. The orders started or ended, and the filings refused, aren't rebuilt: a repeat of such a filing after a reopening is
      told the deposit is held (`Conflicting`, or `NotFileable`) and not how it ended. Fail closed; `T-024-21`'s restarted
      runs read it.
-  3. The setting's decided path and its rebuild from the log: `T-020-49`. Its schedule's call to `end_expired`: `T-020-48`.
+  2. The setting's decided path and its rebuild from the log: `T-020-49`. Its schedule's call to `end_expired`: `T-020-48`.
 - **Named tests** (`components/core-orch/tests/arrival.rs`): `customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own`
   [`REQ-QTE-10`, `AC-13`], `wait_past_its_lifetime_ends_and_frees_its_deposit` [`GUA-1`],
   `freed_deposit_is_filed_again_and_routed_once` [`REQ-ORD-15`],
