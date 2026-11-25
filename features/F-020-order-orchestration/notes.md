@@ -7697,7 +7697,7 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
   there with its caller in Core; the one read with no caller (`Evidence::fetch`) is named out of `v0` with its reason.
 
 
-## T-020-47: Core's own callers in the run (parts 1, 3, 5 and half of 4; parts 2 and the rest of 4 open)
+## T-020-47: Core's own callers in the run (parts 1, 3, 5 and the second half of 4)
 
 Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/` (`closing/`, `segments/`, `reversal/`,
 `stuck/` comments), the assembly and the simulated providers (`F-024` files: `conformance/scenarios/src/assembly/`,
@@ -7726,22 +7726,31 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
   once; asking again at the provider's cadence is `T-020-48`'s. A price whose route isn't the record's chosen one (a
   recalculated route) is not reported: `Core::price_unreported` says why.
 - **Gaps, with owners.**
-  1. **(2) not done: terms and holds.** Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
+  1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
      to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
      state both, (c) Core to take them from the answers (`Segments::take_terms`, `Holds::take`) and the assembly's
      `state_terms`/`state_hold` to go. For holds a **contract shape is missing**: nothing in the advertisement or the
      declaration says a reserve answers hold requests (module-interface's `handles` is the module's, which Core doesn't
      read), so Core can't tell when to ask without asking every reserve at every quote. Owner: the lead, a decision on that
      signal, then this row's remainder.
-  2. **(4, first half) not done: a reversal out of a held node landing the value again.** Under the state machine's rules
+  2. **Moved to `T-020-56`: (4), first half, a reversal out of a held node landing the value again.** Its starting point: Under the state machine's rules
      (`rules.rs::after_segment_input`) a `reversal_completed` applies only to a failed non-deposit segment, an unknown one,
      or the part's settled starting segment; a settled segment out of a node is never reversed, so a landing is never
      released and then due again. The one path left is a hand-on's linked order whose first move out of the held node fails
      and is reversed; that needs a decision on who is landed for. Left as it is; owner: the lead.
   3. A reopened Core doesn't rebuild `reversal_txs`, so a record listing a reversal is skipped again until the next
-     reversal; owner `T-020-48` (its rebuild).
+     reversal; owner `T-020-48`.
   4. Unknown then failed is driven for a ramp's transfer only; a reserve's or exchange's unknown still resolves as before.
   5. "Ends failed on the provider's answer": Core keeps the answer and moves nothing; the mover's report of the failure
      (`Stuck::report_segment_outcome`) takes a `Late` from `Segments::late_statement`, which no assembly step calls yet.
      Owner: `T-020-48`.
-- **Rule-off table.** See the report; run last.
+- **Rule-off table** (each switched off alone, its test run through the lock, file restored with `git checkout`; script
+  `ruleoff.py` in the row's scratch folder). Parts 2 and 4a moved to `T-020-56`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | part 5: a failed segment owing its reversal is timed (`carried_since`) | `owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck` |
+  | part 1: an order's price is reported once (`Prices::report` rebuilds) | `completed_orders_executed_price_is_reported_once_by_core` |
+  | part 3: an unknown segment is asked once | `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
+  | part 3: the answer is held to its question (`check_status_answer`) | `status_answer_to_another_question_keeps_nothing` (a unit test added for it: no scenario had a mismatching answer) |
+  | part 4: the order's reversal transactions are its own in a node's record | `private_node_record_listing_a_reversal_is_read` |
