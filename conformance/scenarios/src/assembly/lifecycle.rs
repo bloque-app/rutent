@@ -444,6 +444,39 @@ impl Core {
         }
     }
 
+    /// The answers the providers give `order`'s segments past their deadline, which the platform takes and hands on to
+    /// Core as late deliveries (`T-024-23`, `AC-5`): each is kept once, as a statement, and moves nothing. The
+    /// receipts of what was kept, in the order the answers came; none where no provider answers late.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::late_delivery`].
+    pub fn receive_late(
+        &mut self,
+        order: &Id,
+    ) -> Result<Vec<rutent_contracts::core_internal::Receipt>, StepError> {
+        let Some(followed) = self.segments.order(order).cloned() else {
+            return Ok(Vec::new());
+        };
+        let mut sent = std::collections::BTreeMap::new();
+        for segment in followed.parts.iter().flat_map(|p| p.segments.iter()) {
+            let id = kit::id(segment.segment_id.as_str());
+            if let Some((transaction, _)) = self.segments.sent(order, &id) {
+                sent.insert(transaction.as_str().to_owned(), id);
+            }
+        }
+        let transactions = sent.keys().cloned().collect();
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        let mut kept = Vec::new();
+        for (_, transaction, bytes) in self.fleet.late_answers(&transactions) {
+            let Some(segment) = sent.get(&transaction) else {
+                continue;
+            };
+            kept.push(self.late_delivery(order, segment, &bytes)?);
+        }
+        Ok(kept)
+    }
+
     // Reversals and endings ----------------------------------------------------------------------------------------
 
     /// Runs `with` over Core's reversals, handed the parts they reach and, for a reversal asked of a failed provider,
@@ -566,6 +599,195 @@ impl Core {
         })?;
         self.feed()?;
         done.map_err(StepError::Reversal)
+    }
+
+    /// Hands Core the failed provider's showing that the failure of `segment` was not its own: its signed failed result
+    /// for the segment's own transaction, which names the customer's fault or the operator's (`REQ-ORD-11`,
+    /// `T-024-23`). Until the party it names accepts it, the provider carries the reversal.
+    ///
+    /// # Errors
+    ///
+    /// As `Reversals::show_fault`.
+    pub fn show_fault(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        bytes: &[u8],
+    ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
+        let part = self.part_of(order)?;
+        let done = self.asking(order, |reversals, parts, _| {
+            reversals.show_fault(
+                parts,
+                At {
+                    order,
+                    part: &part,
+                    segment,
+                },
+                bytes,
+            )
+        })?;
+        self.feed()?;
+        done.map_err(StepError::Reversal)
+    }
+
+    /// The party the showing of `segment` names, `by`, accepting it: the operator by its command; the customer by
+    /// policy's decision of its `accept_fault` in `session`, which Core then reads from its own log
+    /// (`reversal-carrier-rests-on-its-acceptance`). It carries the reversal from then.
+    ///
+    /// # Errors
+    ///
+    /// If the showing isn't in the log, policy can't decide, or as `Reversals::accept_fault`.
+    pub fn accept_fault(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        by: &Actor,
+        session: &Id,
+    ) -> Result<reversal::Carrier, StepError> {
+        use rutent_contracts::core_internal::calls::Decisions as _;
+        use rutent_contracts::core_internal::{Action, DecisionRequest, ShowingNamed};
+        let part = self.part_of(order)?;
+        if by.role == rutent_contracts::core_internal::Role::Customer {
+            let showing = self
+                .log
+                .borrow()
+                .entries()
+                .iter()
+                .rev()
+                .find_map(|(_, e)| match e {
+                    Entry::Stated(s)
+                        if s.what.statement.as_str()
+                            == rutent_contracts::provider_role::RESULT_SHAPE
+                            && s.about.as_ref().and_then(|a| a.segment.as_ref())
+                                == Some(segment) =>
+                    {
+                        Some(s.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or(StepError::NotNow("a showing is in the log"))?;
+            let transaction = showing
+                .about
+                .as_ref()
+                .and_then(|a| a.transaction.clone())
+                .ok_or(StepError::NotNow("the showing names its transaction"))?;
+            let request = DecisionRequest {
+                request: kit::id(&format!(
+                    "accept-fault-{}-{}",
+                    segment.as_str(),
+                    self.log.borrow().entries().len()
+                )),
+                caller: by.clone(),
+                action: Action::AcceptFault {
+                    order: order.clone(),
+                    segment: segment.clone(),
+                    showing: ShowingNamed {
+                        transaction,
+                        commitment: showing.commitment,
+                    },
+                    session: session.clone(),
+                },
+                at: self.clock.timestamp(),
+            };
+            self.policy
+                .clone()
+                .decide(&request)
+                .map_err(|_| StepError::NotNow("policy decides"))?;
+        }
+        let done = self.asking(order, |reversals, parts, _| {
+            reversals.accept_fault(
+                parts,
+                At {
+                    order,
+                    part: &part,
+                    segment,
+                },
+                if by.role == rutent_contracts::core_internal::Role::Customer {
+                    reversal::Accepting::Customer { by }
+                } else {
+                    reversal::Accepting::Operator { by }
+                },
+            )
+        })?;
+        self.feed()?;
+        done.map_err(StepError::Reversal)
+    }
+
+    /// The party the showing of `segment` names, `by`, disputing it: the part is declared stuck, in a dispute
+    /// (`REQ-ORD-11`), and the provider carries the reversal meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// As `Reversals::dispute`.
+    pub fn dispute_fault(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        by: &Actor,
+    ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
+        let part = self.part_of(order)?;
+        let (_, _) = self.current_route(order)?;
+        let entries = self.log.borrow().entries().to_vec();
+        self.life.reversals.follow(order, &entries);
+        let (core, operator) = (kit::core(), kit::operator());
+        let mut parts = reversal::Parts {
+            clock: &self.clock,
+            catalogue: &mut self.catalogue,
+            log: &mut self.general,
+            evidence: &mut self.keeper,
+            fresh: &mut self.fresh,
+            issued: &self.issued,
+            segments: &mut self.segments,
+            exposures: &mut self.exposures,
+            core: &core,
+            operator: &operator,
+        };
+        let done = self.life.reversals.dispute(
+            &mut parts,
+            &mut self.stuck,
+            At {
+                order,
+                part: &part,
+                segment,
+            },
+            by,
+        );
+        self.feed()?;
+        done.map_err(StepError::Reversal)
+    }
+
+    /// The provider's result Core kept for `segment` of `order`, as its bytes: the signed statement the evidence store
+    /// holds behind the log's commitment, which is what a provider's showing of fault is made of (`REQ-ORD-11`).
+    /// `None` where Core kept none. The platform answers a repeat of an operation whose segment ended with a refusal,
+    /// so the answer is read from what Core kept, as it arrived, and not asked of the provider again.
+    pub fn kept_result(&mut self, order: &Id, segment: &Id) -> Option<Vec<u8>> {
+        let commitment = self
+            .log
+            .borrow()
+            .entries()
+            .iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                Entry::Stated(s)
+                    if s.what.statement.as_str()
+                        == rutent_contracts::provider_role::RESULT_SHAPE
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order)
+                        && s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(segment) =>
+                {
+                    Some(s.commitment.clone())
+                }
+                _ => None,
+            })?;
+        let kept = rutent_core_audit::receipts::store::Shelf::load(&mut self.disk.shelf())
+            .ok()?
+            .kept;
+        let held = kept.iter().find(|k| k.kept.commitment == commitment)?;
+        rutent_core_audit::log::kept::from_base64url(held.kept.bytes.as_str())
+    }
+
+    /// Who carries the reversal of `segment` of `order`, as Core holds it.
+    pub fn reversal_carrier(&self, order: &Id, segment: &Id) -> Option<reversal::Carrier> {
+        self.life.reversals.carrier(order, segment).cloned()
     }
 
     /// Asks the failed provider of `segment` to reverse it: its answer is its own word.

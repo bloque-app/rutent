@@ -203,6 +203,8 @@ pub struct Fleet {
     installed: BTreeMap<String, Installed>,
     /// The placeholder-key seeds in use, each with the provider that holds it.
     seeds: BTreeMap<u8, String>,
+    /// The transactions whose late answers the platform has taken ([`Fleet::late_answers`]), each once.
+    late_taken: BTreeSet<String>,
 }
 
 impl Fleet {
@@ -243,6 +245,7 @@ impl Fleet {
             context,
             installed: BTreeMap::new(),
             seeds: BTreeMap::new(),
+            late_taken: BTreeSet::new(),
         }
     }
 
@@ -519,6 +522,43 @@ impl Fleet {
             &self.catalogue,
             ADMITTED_AT,
         )
+    }
+
+    /// The answers simulated providers give past their deadline, for the operations named by `transactions`
+    /// (`T-024-23`, `AC-5`): each provider whose books hold an operation it answered late, one it took effect on and
+    /// never answered within its deadline, answers it now, as the module that served it signs it, once. The platform
+    /// ends a call at its deadline and kills the process, so an answer that comes after is the provider's own repeat of
+    /// what it did, which the platform takes: provider, transaction and the signed answer.
+    pub fn late_answers(
+        &mut self,
+        transactions: &BTreeSet<String>,
+    ) -> Vec<(String, String, Vec<u8>)> {
+        let providers: Vec<String> = self.installed.keys().cloned().collect();
+        let mut answers = Vec::new();
+        for provider in providers {
+            let owed: Vec<(String, Statement<Operation>)> = self
+                .platform
+                .world
+                .journal(&provider)
+                .iter()
+                .filter(|entry| entry.behaviour.late)
+                .filter_map(|entry| {
+                    let transaction =
+                        rutent_conformance::sim::transaction_of(&entry.operation.statement)?;
+                    (transactions.contains(&transaction) && !self.late_taken.contains(&transaction))
+                        .then(|| (transaction, entry.operation.clone()))
+                })
+                .collect();
+            for (transaction, operation) in owed {
+                if let Handled::Answered(result) = self.platform.handle(&provider, &operation)
+                    && let Ok(bytes) = serde_json::to_vec(&*result)
+                {
+                    self.late_taken.insert(transaction.clone());
+                    answers.push((provider.clone(), transaction, bytes));
+                }
+            }
+        }
+        answers
     }
 
     /// Hands one operation to `provider`'s module.
