@@ -7858,3 +7858,96 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 |---|---|
 | the same body is the result held (bytes compared instead) | `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not` |
 | a differing body is kept beside the first (first wins) | `kept_unknown_statement_does_not_shadow_a_later_final_delivery` |
+
+## T-020-48: Core's own schedule, `tick` (finding 4 of the milestone review of 2026-11-24)
+
+Branch `f-020/t-020-48-core-tick`, from `28972690` (m3-next's batch holding `T-020-47`). Edits `components/core-orch/` (the
+new module `schedule`, declared in `lib.rs`; `reversal/` for the second ask and the kept statements) and the `F-024` files
+the commit body names: the assembly (`conformance/scenarios/src/assembly/`: the new `schedule.rs`, `mod.rs`, `audit.rs`,
+`holding.rs`, `measures.rs`, `arrivals.rs`, `lifecycle.rs`), `secrets.rs`, and the scenario tests. No `DEC-20` path, no
+contract edited, no simulated provider or stand-in touched (the sim guests are not rebuilt).
+
+- **`schedule`.** `Schedule::tick(now, &mut dyn Duties) -> Round`: one entry point, the one call the deployment keeps (on a
+  timer) and the scenarios make on Core's clock. `Duties` is its port, over the parts the assembly holds; the schedule holds
+  no value and decides nothing, it adds *when*. Jobs, in the order a tick runs them: late answers (`AC-5`), landing,
+  measures, the holding check of each account, the publishers' records, a status question again, what a kept answer says
+  handed to the stuck mover, the waits ended (`Arrivals::end_expired`), the pairs a restart dropped. `Cadences`: each job's
+  cadence is an operator setting with a default (`Job::name` is the token `T-020-49`'s `cadence` setting uses; its decided
+  path and its rebuild from the log are `T-020-49`'s). Defaults: every job each tick, but the holding check (an hour: it asks
+  a module) and a status question (an hour per segment, or its provider's cadence). The times each job last ran are in memory:
+  a reopened Core runs everything on its first tick, which is safe (each job is once-only by its own rule).
+- **The assembly** (`Core::tick`, `set_cadence`, `set_status_cadence`) exposes no `holding_reading`, `check_holding`,
+  `land_settled`, `write_measures`, `receive_late`, `publishers_records` or `end_expired_waits`: each is a private function the
+  tick calls. A run no longer lands what settled: the schedule does (scenarios that need the landing tick once).
+- **Holding check, public node.** The account's module's `holding_balance`, asked through the platform, beside the host's
+  attribution, handed to `Compare`; never a reading handed in. **Private node:** the publisher's module's signed answer to
+  the same question, `word: publisher`, beside what Core's segments rest at the node (`resting_totals`). No simulated provider
+  stands in for a publisher's account, so a scenario installs the plain wallet as one (`Core::install_publisher_account`).
+- **Late answers** (`AC-5`): each tick takes the late answers the platform holds for every order's segments
+  (`Fleet::late_answers`, once each) and keeps each as `late_delivery` did: the same result held is the same entry.
+  `late_answer_the_platform_receives_moves_nothing_twice` runs on `tick`.
+- **A status question again** (`Reversals::ask_unknown_status_again`): for each segment still unknown at a provider that
+  declares `status_query`, once its provider's cadence has passed since the last question (the run's own ask counts as the
+  first), under a fresh transaction. The answer is kept by the rule of `T-020-47` (the same body is the same entry).
+- **A kept answer to the stuck mover.** For an unknown segment of a part Core declared stuck, a kept statement whose outcome is
+  `failed` is taken through `Segments::late_statement` and its `Late` is handed to `Stuck::report_segment_outcome`, with the
+  move's mover as reporter. It settles nothing until another actor confirms it (`AC-6`); a report already made is not told again.
+  Only `failed` is handed on (the row's case); a statement that says settled is left kept.
+- **Defaults** (reversible, fail closed). (1) Cadences as above. (2) A provider's status cadence is the operator's per provider
+  (`set_status_cadence`), else an hour. (3) A reading whose module doesn't answer is an `Err` in the round and no check is
+  recorded: nothing is raised from a missing reading. (4) Asset decimals are the kit's two.
+- **Gaps, with owners.**
+  1. **A contract shape is missing: the log's record of an unbuilt pair.** The row has each pair a restart dropped recorded
+     once in the log with its reason. `core-internal` has no entry or raise for it (`Difference` has `Reports`,
+     `ReportsNotComparable`, … none fits a pair never built; a `Raise` needs at least one cited receipt, and a pair dropped by a
+     restart cites none). Shape needed: a `Difference` kind `pair_not_built { order, segment, why }` (`why`: `no_sent_report`
+     naming the segment whose sent report is missing, `no_flight`, `not_an_amount`, `refused`) whose `cites` may be the later
+     segment's result statement. Not edited (contracts). Done instead: each round reports each pair once to its caller
+     (`Round::unbuilt_pairs`), told once, never skipped. Owner: the lead (contract round, `DEC-20`), then this row's remainder.
+     The `NoSentReport` label is kept: it already names the segment whose sent report is missing (`Unbuilt::NoSentReport(sent)`).
+  2. **A provider's declared cadence has no contract shape.** `Declarations` carries `tracking` only. Core holds the cadence
+     per provider as an operator setting. Owner: the lead (a `Declarations` field) and `T-020-49` (the setting's decided path).
+  3. **The stand-ins' answers carry a fixed time from before the move**, so the log refuses a report resting on the status
+     answer as it comes (`an outcome's evidence was made no earlier than its move`); the scenario restates the answer at Core's
+     clock. A stand-in artefact (`conformance/src/role/stand_in.rs` `made_at`), owner `F-024`; the tick tells the refusal in its round.
+  4. **No operation reads a publisher's record of its private node, nor does a simulated provider answer `holding_balance` for
+     one.** "Through the platform" is the assembly's platform handle for the records (`Readings::refresh` over the platform's
+     world), and a real plain wallet stands for the publisher's account. Owner: `F-024`/`F-013` if the platform is to carry a
+     record question.
+  5. The report of a statement that says the move settled (`Resolved::Done`) is not handed on. Owner: `T-020-48`'s next round if wanted.
+- **The lead's four items (reviewer of `T-020-47`, added to the row).**
+  1. *Closing is Core's.* `Job::Close` (`Duties::close_completed`): each tick closes the orders that completed and reports
+     their price once (`closing::report_logged_price`); a run closes nothing, and the assembly's `Core::close` has no caller but the
+     tick. A reopened Core closes again what it hadn't (the log holds the price entry, so one is never twice). Tests
+     `completed_order_is_closed_and_its_price_reported_by_cores_schedule`, `order_completed_before_core_reopens_is_closed_after_it`
+     (`charge_check.rs`); the scenarios that read a price after a run tick first.
+  2. *A floor window* (`stuck/timing.rs`, `History::figure_or_floor`, `FLOOR_SECONDS` = an hour, stuck at twice it): a segment at a
+     tuple with no history and an advertised time the record couldn't give (`u64::MAX`) was never timed, so an owed reversal there
+     never made its order stuck. Test `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` is a unit test of the
+     figure the watch runs on: no scenario of the kit has a record that cites no settlement time (the record contract refuses one),
+     so the watch's own call is read, not driven. Default: an hour (reversible).
+  3. *`Reversals::later` holds the maker.* The same result held only where both statements' maker is the segment's provider and the
+     bodies are equal. Test `another_providers_answer_of_the_same_body_is_not_the_result_held` (`tests/reversal.rs`).
+  4. *`segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` now ends failed.* It runs on: the order
+     stuck, the schedule reports the provider's failed statement to the mover, and another actor (another desk, holding
+     `ConfirmOutcome`) confirms it on another party's statement (`Core::confirm_reported_failure`, a scenario call: the
+     confirmation is a person's decision, not the schedule's). The segment ends `FailedReversalOwed`. Two stand-in artefacts the
+     test works round: the stand-in's answers carry a fixed time before the move (the log refuses it as evidence), so the test
+     restates the answer at Core's clock with a fault shown, another body kept beside; and the evidence of another party must come
+     from a provider of another publisher (`OUT`).
+- **Rule-off table** (each alone, its test run through the lock, file restored; scripts `ruleoff.sh`, `ruleoff2.sh`).
+
+  | Rule switched off | Red |
+  |---|---|
+  | the late-answers job takes nothing | `late_answer_the_platform_receives_moves_nothing_twice` |
+  | a status question is not asked again | `unknown_segment_is_asked_again_at_its_providers_cadence` |
+  | a kept answer is not handed to the mover | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule`, `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
+  | landing off | `settled_segments_land_and_measures_are_written_on_cores_schedule` |
+  | measures off | the same |
+  | the publishers' records are not read | `publishers_records_are_read_through_the_platform_for_a_replay` |
+  | the holding check off | `holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator`, `private_nodes_holding_reading_is_its_publishers_signed_word` |
+  | a job ignores its cadence | `a_job_runs_when_its_cadence_has_passed_and_not_before` |
+  | the unbuilt pairs told at every tick | `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once` |
+  | the schedule closes nothing | `completed_order_is_closed_and_its_price_reported_by_cores_schedule`, `order_completed_before_core_reopens_is_closed_after_it` |
+  | no floor window | `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` |
+  | the maker isn't held | `another_providers_answer_of_the_same_body_is_not_the_result_held` |

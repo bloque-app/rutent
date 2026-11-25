@@ -330,3 +330,35 @@ fn pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens() {
     assert!(core.unbuilt_reports().is_empty(), "the log holds them");
     assert_eq!(core.write_pairs(), Ok(0));
 }
+
+/// The pairs a restart dropped reach the operator through Core's schedule: each tick's answer carries each once, with
+/// its reason, whose label names the segment whose sent report is missing, and a later tick tells nothing more
+/// (`REQ-ORD-9`, `ADR-0009`, `T-020-48`). Nothing is written, and nothing is skipped silently.
+// verifies: REQ-ORD-9
+#[test]
+fn pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once() {
+    let (core, order, segments) = ran_across("AC-1");
+    let mut core = rutent_scenarios::harness::Scenario::new(
+        "execution",
+        "AC-1",
+        given(&[IN, EXCHANGE, QUICK, OUT]),
+    )
+    .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    let round = core.tick();
+    assert!(round.did(rutent_core_orch::schedule::Job::UnbuiltPairs));
+    assert_eq!(round.unbuilt_pairs.len(), 3, "{:?}", round.unbuilt_pairs);
+    for (n, parked) in round.unbuilt_pairs.iter().enumerate() {
+        assert_eq!(parked.order, order);
+        assert_eq!(parked.segment, segments[n + 1].segment);
+        assert_eq!(
+            parked.why,
+            Unbuilt::NoSentReport(segments[n].segment.clone()),
+            "it names the segment whose sent report the restart took"
+        );
+    }
+    assert!(
+        core.tick().unbuilt_pairs.is_empty(),
+        "told once, not again at each tick"
+    );
+    assert_eq!(core.write_pairs(), Ok(0), "none written");
+}

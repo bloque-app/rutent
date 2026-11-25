@@ -143,13 +143,10 @@ fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
 fn a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved() {
     let (mut core, _, order, _, _) = waiting("AC-13");
     let lasts = core.wait_ends(&order).expect("a wait has its end");
-    assert_eq!(core.end_expired_waits().expect("the schedule runs"), []);
+    assert_eq!(core.tick().ended, []);
     core.clock
         .set_nanos(u128::try_from(lasts.unix_nanos()).unwrap());
-    assert_eq!(
-        core.end_expired_waits().expect("the schedule runs"),
-        std::slice::from_ref(&order)
-    );
+    assert_eq!(core.tick().ended, std::slice::from_ref(&order));
     let ends: Vec<_> = entries(&core)
         .into_iter()
         .filter_map(|v| match v.what {

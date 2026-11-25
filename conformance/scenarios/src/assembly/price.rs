@@ -1,6 +1,6 @@
 //! The executed price an order reports once every segment has executed (`REQ-QTE-7`, `T-020-47`).
 //!
-//! Core's closing reports it, once, when the order completes: `Core::close` runs after every part Core runs and asks
+//! Core's closing reports it, once, when the order completes: Core's schedule closes each order it follows on its tick (`Core::tick`, `T-020-48`) and asks
 //! `rutent_core_orch::closing::report_price`, which builds the price from what the segments kept of each result that
 //! counted. No scenario reports a price: it reads what Core reported ([`Core::price_reported`], [`Core::price_of`]).
 
@@ -23,9 +23,11 @@ pub(super) struct Priced {
 }
 
 impl Core {
-    /// Core's closing of `order`, run under `record`: where the order is complete, its executed price is reported
-    /// once. A price the log can't take now is tried again by the next run.
-    pub(super) fn close(&mut self, order: &Id) {
+    /// Core's closing of `order`: where the order is complete, its executed price is reported once. A price the log
+    /// can't take now is tried again by the next tick. Called by Core's schedule alone (`T-020-48`); answers whether
+    /// this call reported it.
+    pub(super) fn close(&mut self, order: &Id) -> bool {
+        let before = self.reported.of(order).is_some();
         // The record of each route the order ran, as Core signed it and the log names it by digest.
         let mut records = BTreeMap::new();
         if let Some((first, later)) = self.segments.routes_ran(order) {
@@ -60,6 +62,7 @@ impl Core {
                     .insert(order.as_str().to_owned(), why);
             }
         }
+        !before && self.reported.of(order).is_some()
     }
 
     /// The digest and the entry's receipt of the price Core reported for `order`, if it did.

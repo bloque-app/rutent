@@ -14,6 +14,12 @@ pub const HISTORY: usize = 20;
 /// as up. A reading, reversible, on the owner's form.
 pub const WINDOW: usize = 200;
 
+/// The figure the stuck clock runs on where a tuple has neither a history nor an advertised time (the router's "never
+/// settles", `u64::MAX`): an hour, so it times twice that. Without it a segment at such a tuple, an owed reversal
+/// among them, would never be timed and its order never stuck (`INV-3`, `REQ-ORD-3`); a floor fails closed. A
+/// reading, reversible.
+pub const FLOOR_SECONDS: u64 = 3_600;
+
 /// How far a tuple's p99 must move from the one last taken as its baseline, in basis points of that baseline, to
 /// be a material change raised to the operator (`REQ-ORD-6`, `THR-24`): half of it, either way. The first p99 is
 /// compared with the advertised time the same way. A reading, reversible.
@@ -114,6 +120,13 @@ impl History {
         }
         (advertised != u64::MAX).then_some((StuckBasis::TwiceAdvertised, advertised))
     }
+
+    /// [`History::figure`], held to the floor ([`FLOOR_SECONDS`]) where neither a history nor an advertised time is
+    /// known, so every segment the clock times has a figure.
+    pub fn figure_or_floor(&self, advertised: u64) -> (StuckBasis, u64) {
+        self.figure(advertised)
+            .unwrap_or((StuckBasis::TwiceAdvertised, FLOOR_SECONDS))
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +139,28 @@ mod tests {
             .filter_map(|_| history.add(seconds, advertised))
             .collect();
         (history, changes)
+    }
+
+    // verifies: INV-3, REQ-ORD-3
+    #[test]
+    fn owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window() {
+        // No history and no advertised time: `figure` times nothing, the clock's figure is the floor.
+        assert_eq!(History::new().figure(u64::MAX), None);
+        let (basis, figure) = History::new().figure_or_floor(u64::MAX);
+        assert_eq!(
+            (basis, figure),
+            (StuckBasis::TwiceAdvertised, FLOOR_SECONDS)
+        );
+        assert!(
+            !over_time(figure, 2 * FLOOR_SECONDS),
+            "not at twice the floor"
+        );
+        assert!(over_time(figure, 2 * FLOOR_SECONDS + 1), "past it: stuck");
+        // An advertised time or a history is never replaced by it.
+        assert_eq!(
+            History::new().figure_or_floor(60),
+            (StuckBasis::TwiceAdvertised, 60)
+        );
     }
 
     // verifies: REQ-ORD-29

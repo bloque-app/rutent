@@ -1,13 +1,11 @@
 //! The check of a holding account against what its orders hold, as the assembly runs it (`REQ-AUD-15`, `AC-39`;
 //! `T-024-05`).
 //!
-//! Nothing in Core's orchestration reads a holding account's balance or calls the comparison: `CMP-CORE-AUDIT`'s
-//! [`Compare`] is built and tested on its own (`T-022-05`), and its caller is `F-030`'s. Until that caller exists,
-//! the assembly gives a scenario the two steps the production caller would take, with the parts Core already holds:
-//! the reading of a node's account ([`Core::holding_reading`]), the real plain wallet's own figure beside the host's
-//! attribution, and the check of a reading ([`Core::check_holding`]), which [`Compare`] records through the general
-//! handle on Core's log and raises to the operator on Core's own channel, the notices'. Both only read; the check
-//! can reach nothing that moves value.
+//! Core's schedule reads each holding account and checks it (`T-020-48`, `schedule.rs`): the reading of a node's
+//! account (`Core::holding_reading`), the real plain wallet's own figure beside the host's attribution, and the check
+//! of a reading (`Core::check_holding`), which [`Compare`] records through the general handle on Core's log and
+//! raises to the operator on Core's own channel, the notices'. Both only read; the check can reach nothing that moves
+//! value. Neither is a call of the assembly's own: a scenario calls [`Core::tick`], and a reading is never handed in.
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Comparisons};
 use rutent_contracts::core_internal::{HoldingReading, Receipt, ReportPair};
@@ -34,7 +32,7 @@ impl Core {
     /// # Panics
     ///
     /// If the clock's time can't be written as a timestamp.
-    pub fn holding_reading(
+    pub(super) fn holding_reading(
         &mut self,
         node: &str,
         decimals: u8,
@@ -89,7 +87,10 @@ impl Core {
     /// # Errors
     ///
     /// If the log can't take the check's record or the raise's.
-    pub fn check_holding(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
+    pub(super) fn check_holding(
+        &mut self,
+        reading: &HoldingReading,
+    ) -> Result<Receipt, AppendFailure> {
         let channel = rutent_core_orch::notice::Channel {
             notices: &mut self.notices,
             key: &mut self.notice_signer,

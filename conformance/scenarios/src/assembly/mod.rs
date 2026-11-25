@@ -58,6 +58,7 @@ pub mod policy;
 pub mod price;
 pub mod releases;
 mod reopen;
+pub mod schedule;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -575,6 +576,12 @@ pub struct Core {
     pub faults: Faults,
     /// Where a planted swap moves the state machine.
     pub swap_to: Option<Box<dyn Environment>>,
+    /// Core's schedule: what each tick runs and when it last did (`T-020-48`). A restart forgets it, so a reopened
+    /// Core runs every job on its first tick.
+    schedule: rutent_core_orch::schedule::Schedule,
+    /// The accounts a private node's publisher keeps for the value resting inside it, by node: the module that
+    /// answers for it and its asset (`REQ-CAT-23`, `T-020-48`).
+    publisher_accounts: BTreeMap<String, schedule::PublisherAccount>,
 }
 
 /// Why a step of Core's failed.
@@ -901,6 +908,8 @@ impl Core {
             deployment,
             faults: Faults::default(),
             swap_to: None,
+            schedule: rutent_core_orch::schedule::Schedule::new(),
+            publisher_accounts: BTreeMap::new(),
         };
         // Each provider is granted before the advertisement it sends was made; then the clock moves to the
         // scenario's start, and each advertisement is recorded as received then.
@@ -1046,19 +1055,6 @@ impl Core {
     /// Core's record of value in flight and of the orders declared stuck, to read (`T-024-04`).
     pub fn exposures(&self) -> &Exposures {
         &self.exposures
-    }
-
-    /// The records the publishers keep of the segments inside private node `node`, one for each provider that serves
-    /// in it, as Core reads them to replay a route (`T-024-14`, `REQ-ORD-41`): what each provider's book says now,
-    /// signed as the provider, held to its advertisement. A record that fails either is not among them.
-    pub fn publishers_records(
-        &self,
-        node: &str,
-    ) -> Vec<
-        rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::InnerSegments>,
-    > {
-        self.readings.refresh(&self.fleet.platform.world);
-        self.readings.published_in(node)
     }
 
     /// What Core's books give for private node `node` and the segments run under `transactions`, as the closing reads
@@ -2209,10 +2205,9 @@ impl Core {
             channel: &mut channel,
         };
         let result = self.segments.run_part(&mut parts, live);
-        // What settled at a public node a holding account holds is landed in it (`T-020-33`).
-        self.land_settled();
-        // Core's closing: an order that completed reports its executed price, once (`REQ-QTE-7`, `T-020-47`).
-        self.close(live.order);
+        // What settled at a public node a holding account holds is landed in it by Core's schedule, on its next tick
+        // (`T-020-33`, `T-020-48`): a run lands nothing itself.
+        // Core's closing is its schedule's (`REQ-QTE-7`, `T-020-48`): a run closes nothing.
         self.feed()?;
         // A segment the run left unknown is asked where it stands, once, at a provider that declares a status query
         // (`REQ-ORD-1`, `T-020-47`).

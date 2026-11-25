@@ -436,6 +436,87 @@ fn ramp_left_unknown() -> Failed {
     }
 }
 
+/// The ramp's own word on the transfer, restated at Core's clock as a provider's later answer would be (the stand-in's
+/// own answer carries a fixed time, from before the move, which the log refuses as the evidence of an outcome), of
+/// another body than the one held (it shows a fault) so that it is kept beside it.
+fn restated_failure(core: &mut Core, order: &Id, ramp: &Id) -> Vec<u8> {
+    let kept = core.kept_result(order, ramp).expect("kept");
+    let mut word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    assert_eq!(word["statement"]["outcome"]["status"], "failed");
+    word["statement"]["outcome"]["fault"] = "operator".into();
+    word["made_at"] = core.clock.timestamp().as_str().into();
+    for piece in word["statement"]["outcome"]["evidence"]
+        .as_array_mut()
+        .expect("evidence")
+    {
+        if piece.get("made_at").is_some() {
+            piece["made_at"] = core.clock.timestamp().as_str().into();
+        }
+    }
+    rutent_conformance::signing::sign_value(&mut word, &statements_key(QUICK));
+    serde_json::to_vec(&word).unwrap()
+}
+
+/// Another provider's statement about the ramp's transfer, as the exchange of the route would make it: of another
+/// maker than the ramp, so it states nothing of the move itself and only backs a confirmation.
+fn by_another_party(core: &mut Core, order: &Id, ramp: &Id) -> Vec<u8> {
+    let kept = core.kept_result(order, ramp).expect("kept");
+    let mut word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    word["maker"] = OUT.into();
+    word["made_at"] = core.clock.timestamp().as_str().into();
+    rutent_conformance::signing::sign_value(&mut word, &statements_key(OUT));
+    serde_json::to_vec(&word).unwrap()
+}
+
+/// Core's schedule reports the failure the provider stated to the stuck mover, and another actor confirms it with
+/// another maker's statement: the segment ends failed. Returns the round's report.
+fn ended_failed(core: &mut Core, order: &Id, ramp: &Id) {
+    core.clock.advance(2 * kit::DECLARED + 5);
+    assert!(matches!(
+        core.watch(order).expect("watched"),
+        rutent_core_orch::stuck::Watch::Stuck(_)
+    ));
+    let word = restated_failure(core, order, ramp);
+    core.late_delivery(order, ramp, &word)
+        .expect("kept beside the answer held");
+    let round = core.tick();
+    let report = round
+        .reported
+        .iter()
+        .find_map(|r| r.taken.as_ref().ok().map(|v| (*v, r.statement.clone())))
+        .unwrap_or_else(|| panic!("the mover's report was taken: {:?}", round.reported));
+    assert!(core.is_unknown(order, ramp), "reported, not yet confirmed");
+    let other = by_another_party(core, order, ramp);
+    // A person at another desk than the reporter's, whom policy lets confirm an outcome.
+    let confirmer = rutent_contracts::core_internal::Actor {
+        party: id("desk-b"),
+        acts: id("bob"),
+        role: rutent_contracts::core_internal::Role::Operator,
+        kind: rutent_contracts::core_internal::ActorKind::Person,
+    };
+    {
+        let mut registers = core.registers();
+        registers.list(&rutent_contracts::core_internal::Actor {
+            party: kit::operator().party,
+            acts: id("desk-b"),
+            role: rutent_contracts::core_internal::Role::Operator,
+            kind: rutent_contracts::core_internal::ActorKind::Component,
+        });
+        registers.list(&confirmer);
+        registers.permit(
+            &confirmer,
+            rutent_core_authz::roles::Permission::ConfirmOutcome,
+        );
+    }
+    let moved = core
+        .confirm_reported_failure(order, ramp, &confirmer, (report.0, &report.1), &other)
+        .expect("another actor confirms it");
+    assert!(
+        matches!(moved, rutent_core_orch::stuck::Moved::CarriedOut { .. }),
+        "{moved:?}"
+    );
+}
+
 /// How many questions of the status of a segment Core's log holds an effect of.
 fn status_asks(core: &Core) -> usize {
     entries(core)
@@ -491,6 +572,15 @@ fn segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_ans
     // Asked once: a run again asks no more.
     core.run(&order).expect("runs again");
     assert_eq!(status_asks(&core), 1);
+    // Core only keeps the answer, and moves nothing: the segment is unknown still. It ends failed on the provider's
+    // answer through the stuck mover: the schedule reports it, another actor confirms it (`AC-6`, `T-020-48`).
+    assert!(core.is_unknown(&order, &ramp));
+    ended_failed(&mut core, &order, &ramp);
+    assert_eq!(
+        segment_state(&core, &order, &ramp),
+        SegmentState::FailedReversalOwed,
+        "the segment ended failed, its reversal owed"
+    );
     admitted(&core);
 }
 
@@ -546,6 +636,122 @@ fn status_answer_moves_nothing() {
         "nothing moved on the answer: {:?}",
         &log[asking..]
     );
+    admitted(&core);
+}
+
+/// A segment still unknown is asked its status again by Core's schedule, at its provider's cadence and no sooner: the
+/// run asked once, the schedule asks again under a fresh transaction once the cadence has passed, and what the provider
+/// answers is the result it gave, held, so nothing new is kept and nothing moves (`REQ-ORD-1`, `T-020-48`).
+// verifies: REQ-ORD-1
+#[test]
+fn unknown_segment_is_asked_again_at_its_providers_cadence() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    assert_eq!(status_asks(&core), 1, "the run asked once");
+    let first = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    core.set_status_cadence(QUICK, 600);
+    let effects_before = effects(&core);
+    let results_before = core.log().entries().len();
+    // Not due: its provider's cadence counts from the question the run put.
+    assert!(core.tick().statuses.is_empty(), "not due yet");
+    core.clock.advance(599);
+    assert!(core.tick().statuses.is_empty(), "599 seconds is not 600");
+    assert_eq!(status_asks(&core), 1);
+    // Due: asked again, under a fresh transaction, and what comes of it is held.
+    core.clock.advance(1);
+    let round = core.tick();
+    assert_eq!(round.statuses.len(), 1, "{:?}", round.statuses);
+    let again = &round.statuses[0];
+    assert_eq!(
+        (&again.unknown.order, &again.unknown.segment),
+        (&order, &ramp)
+    );
+    assert!(again.asked.is_ok(), "{again:?}");
+    assert_eq!(status_asks(&core), 2);
+    assert_ne!(
+        core.status_asked(&order, &ramp)
+            .and_then(|a| a.as_ref().ok())
+            .map(|a| a.transaction.clone()),
+        Some(first.transaction.clone()),
+        "a fresh transaction of Core's own"
+    );
+    assert_eq!(
+        again.kept, first.answer,
+        "the provider's answer is the result it gave, held: the one entry"
+    );
+    // Nothing moved on it, and the segment is as it was.
+    assert_eq!(effects(&core), effects_before, "no value moves");
+    assert!(core.is_unknown(&order, &ramp));
+    assert!(core.log().entries().len() > results_before);
+    // And not again before its cadence has passed once more.
+    core.clock.advance(599);
+    assert!(core.tick().statuses.is_empty());
+    core.clock.advance(1);
+    assert_eq!(core.tick().statuses.len(), 1);
+    assert_eq!(status_asks(&core), 3);
+    admitted(&core);
+}
+
+/// What a provider says of a stuck move, kept from Core's status question, reaches the move's mover: the schedule
+/// hands the kept statement to the stuck mover's report, so a segment its provider says failed is reported, not left
+/// unknown until its window. Nothing is settled by it until another actor confirms (`REQ-ORD-1`, `AC-6`, `T-020-48`).
+// verifies: REQ-ORD-1, AC-6
+#[test]
+fn segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let reports = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| matches!(v.what, What::ReportOutcome { .. }))
+            .count()
+    };
+    // Not stuck yet: nothing is reported, whatever the provider said.
+    assert!(core.tick().reported.is_empty());
+    core.clock.advance(2 * kit::DECLARED + 5);
+    assert!(matches!(
+        core.watch(&order).expect("watched"),
+        rutent_core_orch::stuck::Watch::Stuck(_)
+    ));
+    assert_eq!(reports(&core), 0);
+    let word = restated_failure(&mut core, &order, &ramp);
+    core.late_delivery(&order, &ramp, &word)
+        .expect("kept beside the answer held");
+    let round = core.tick();
+    // The stand-in's own answer, with its fixed time from before the move, is refused by the log (the evidence of an
+    // outcome is made no earlier than its move): a stand-in's artefact, and the report is not taken. The restated one
+    // is taken, once.
+    let taken: Vec<_> = round.reported.iter().filter(|r| r.taken.is_ok()).collect();
+    assert_eq!(taken.len(), 1, "{:?}", round.reported);
+    assert_eq!(taken[0].unknown.segment, ramp);
+    assert!(
+        round
+            .reported
+            .iter()
+            .filter(|r| r.taken.is_err())
+            .all(|r| format!("{:?}", r.taken).contains("no earlier than its move")),
+        "{:?}",
+        round.reported
+    );
+    assert_eq!(reports(&core), 1, "the log holds the mover's report");
+    // The report settles nothing: the move is unknown until another actor confirms.
+    assert!(core.is_unknown(&order, &ramp));
+    assert_eq!(state(&mut core, &order), OrderState::Stuck);
+    // Told once: a later tick takes none again.
+    assert!(core.tick().reported.iter().all(|r| r.taken.is_err()));
+    assert_eq!(reports(&core), 1);
     admitted(&core);
 }
 
@@ -817,26 +1023,31 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         rutent_core_orch::stuck::Watch::Stuck(_)
     ));
     let held = core.stuck_values();
-    // The provider's answer comes late and the platform hands it on. Core's own status question, asked when the segment
-    // was left unknown, already brought the provider's result of it, kept once as its statement: the late answer is that
-    // result held, never a second result statement for the segment (`T-020-47`).
-    let (log_before, inputs_before, effects_before) = (
-        core.log().entries().len(),
-        core.inputs().len(),
-        effects(&core),
-    );
-    let kept = core.receive_late(&order).expect("received");
-    assert_eq!(kept.len(), 1, "one late answer");
-    assert_eq!(
-        core.log().entries().len(),
-        log_before,
-        "no second statement"
-    );
-    assert!(
-        core.receive_late(&order).expect("received").is_empty(),
-        "the platform takes it once"
-    );
-    assert_eq!(core.log().entries().len(), log_before);
+    // The provider's answer comes late and the platform hands it on: Core's own schedule takes it, with no call of a
+    // test's (`T-020-48`). Core's own status question, asked when the segment was left unknown, already brought the
+    // provider's result of it, kept once as its statement: the late answer is that result held, never a second result
+    // statement for the segment (`T-020-47`).
+    let results = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.what.statement.as_str().ends_with("result")
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order))
+            })
+            .count()
+    };
+    core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
+    let (results_before, inputs_before, effects_before) =
+        (results(&core), core.inputs().len(), effects(&core));
+    let round = core.tick();
+    assert_eq!(round.late.len(), 1, "one late answer: {:?}", round.late);
+    assert!(round.late[0].kept.is_ok(), "{:?}", round.late[0]);
+    assert_eq!(results(&core), results_before, "no second statement");
+    assert!(core.tick().late.is_empty(), "the platform takes it once");
+    assert_eq!(results(&core), results_before);
+    let log_before = core.log().entries().len();
     // The same answer handed to Core directly, past the fleet's once: Core itself moves nothing and records nothing new.
     let segment = id(
         core.followed(&order).expect("followed").parts[0].segments[1]

@@ -37,9 +37,9 @@ pub struct Lifecycle {
     histories: BTreeMap<String, History>,
     /// The route each order's part runs now, once recalculated: its record and its segments.
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
-    reversals: Reversals,
+    pub(super) reversals: Reversals,
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
-    status_asks:
+    pub(super) status_asks:
         BTreeMap<(String, String), Result<rutent_core_orch::reversal::StatusAsked, String>>,
 }
 
@@ -447,39 +447,6 @@ impl Core {
         }
     }
 
-    /// The answers the providers give `order`'s segments past their deadline, which the platform takes and hands on to
-    /// Core as late deliveries (`T-024-23`, `AC-5`): each is kept once, as a statement, and moves nothing. The
-    /// receipts of what was kept, in the order the answers came; none where no provider answers late.
-    ///
-    /// # Errors
-    ///
-    /// As [`Core::late_delivery`].
-    pub fn receive_late(
-        &mut self,
-        order: &Id,
-    ) -> Result<Vec<rutent_contracts::core_internal::Receipt>, StepError> {
-        let Some(followed) = self.segments.order(order).cloned() else {
-            return Ok(Vec::new());
-        };
-        let mut sent = std::collections::BTreeMap::new();
-        for segment in followed.parts.iter().flat_map(|p| p.segments.iter()) {
-            let id = kit::id(segment.segment_id.as_str());
-            if let Some((transaction, _)) = self.segments.sent(order, &id) {
-                sent.insert(transaction.as_str().to_owned(), id);
-            }
-        }
-        let transactions = sent.keys().cloned().collect();
-        self.fleet.platform.world.set_clock(self.clock.instant());
-        let mut kept = Vec::new();
-        for (_, transaction, bytes) in self.fleet.late_answers(&transactions) {
-            let Some(segment) = sent.get(&transaction) else {
-                continue;
-            };
-            kept.push(self.late_delivery(order, segment, &bytes)?);
-        }
-        Ok(kept)
-    }
-
     // Reversals and endings ----------------------------------------------------------------------------------------
 
     /// Runs `with` over Core's reversals, handed the parts they reach and, for a reversal asked of a failed provider,
@@ -821,7 +788,7 @@ impl Core {
     /// What the provider answers is kept as its statement and moves nothing (`INV-4`); a question policy refuses or the
     /// log can't take now is kept in [`Core::status_asks`] for a reader, and the run goes on.
     pub(super) fn ask_unknown_status(&mut self, live: &Live<'_>) {
-        self.ask_unknown_among(live.order, live.part, live.segments);
+        self.ask_unknown_among(live.order, live.part, live.segments, false);
     }
 
     /// Core's step over `order`'s own part, as after a run of it (also what a Core that reopened takes up).
@@ -832,25 +799,34 @@ impl Core {
     pub fn ask_unknown_statuses(&mut self, order: &Id) -> Result<(), StepError> {
         let part = self.part_of(order)?;
         let (_, segments) = self.current_route(order)?;
-        self.ask_unknown_among(order, &part, &segments);
+        self.ask_unknown_among(order, &part, &segments, false);
         Ok(())
     }
 
-    fn ask_unknown_among(&mut self, order: &Id, part: &Id, segments: &[Id]) {
+    /// Asks where each of `segments` stands that Core holds unknown: once, as the run's step does, or again, as the
+    /// schedule does at its provider's cadence (`again`, `T-020-48`).
+    pub(super) fn ask_unknown_among(
+        &mut self,
+        order: &Id,
+        part: &Id,
+        segments: &[Id],
+        again: bool,
+    ) {
         for segment in segments {
-            if self.segments.unknown_move(order, segment).is_none() {
+            let Some(unknown) = self.segments.unknown_move(order, segment) else {
                 continue;
-            }
+            };
             let done = self.reversing(order, |reversals, parts, _, moving| {
-                reversals.ask_unknown_status(
-                    parts,
-                    moving,
-                    At {
-                        order,
-                        part,
-                        segment,
-                    },
-                )
+                let at = At {
+                    order,
+                    part,
+                    segment,
+                };
+                if again {
+                    reversals.ask_unknown_status_again(parts, moving, at)
+                } else {
+                    reversals.ask_unknown_status(parts, moving, at)
+                }
             });
             let asked = match done {
                 Ok(Ok(Some(asked))) => Ok(asked),
@@ -859,6 +835,18 @@ impl Core {
                 Err(other) => Err(other),
             };
             let _ = self.feed();
+            if !again {
+                // The step that left the segment unknown asked once: the schedule's cadence counts from it.
+                let now = self.clock_seconds();
+                self.schedule.note_asked(
+                    &rutent_core_orch::schedule::Unknown {
+                        order: order.clone(),
+                        segment: segment.clone(),
+                        provider: unknown.provider.as_str().to_owned(),
+                    },
+                    now,
+                );
+            }
             self.life.status_asks.insert(
                 (order.as_str().to_owned(), segment.as_str().to_owned()),
                 asked.map_err(|why| format!("{why:?}")),

@@ -746,10 +746,10 @@ impl Core {
     }
 
     /// Lands in the holding accounts the value of each segment that settled at a public node they hold, as Core does
-    /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. The assembly calls
-    /// it after each run of a part, so where the value rests is Core's own record, and a scenario calls it again to
-    /// show that nothing lands twice. Answers how many it placed now.
-    pub fn land_settled(&mut self) -> usize {
+    /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. Core's schedule
+    /// calls it each tick ([`Core::tick`], `T-020-48`), so where the value rests is Core's own record: no scenario
+    /// calls it, and none can land twice. Answers how many it placed now.
+    pub(super) fn land_settled_now(&mut self) -> usize {
         let at = self.clock.instant();
         self.fleet.platform.world.set_clock(at);
         let Some(made_at) = self.clock.now().timestamp() else {
@@ -769,7 +769,7 @@ impl Core {
     /// Value arrives at the holding account of `node` for `order`, as the operator lands it by hand
     /// (`REQ-CAT-23`): the wallet is asked, in a statement signed with the operator's key, to place it in the account.
     /// For a scenario that lands value where no segment settles (`AC-39`'s account checks, `private_nodes.rs`); where a segment settles
-    /// at the node, Core lands it itself ([`Core::land_settled`]).
+    /// at the node, Core lands it itself (its schedule's landing, [`Core::tick`]).
     ///
     /// # Errors
     ///

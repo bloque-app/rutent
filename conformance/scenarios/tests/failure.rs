@@ -455,6 +455,7 @@ fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once()
     core.run_recalculated(&order, &recalculated)
         .expect("the recalculated part runs");
     assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.tick();
     let (digest, receipt) = core
         .price_reported(&order)
         .expect("Core reported the price");
@@ -505,6 +506,7 @@ fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
             .expect("the recalculated part runs");
     }
     assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.tick();
     let (digest, receipt) = core
         .price_reported(&order)
         .expect("Core reported the price");
@@ -550,6 +552,7 @@ fn executed_price_is_reported_correctly_after_core_reopens_mid_recalculation() {
     core.run_recalculated(&order, &third).expect("it runs");
     assert_eq!(core.routes_ran(&order), 3);
     assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.tick();
     assert!(core.price_unreported(&order).is_none());
     assert!(core.price_reported(&order).is_some(), "reported");
     let price = core.price_of(&order).expect("its figures");

@@ -212,7 +212,7 @@ impl Core {
 
     /// Ends every wait for a customer past its lifetime, as Core's schedule does (`T-020-51`, `T-020-48`): the orders
     /// ended.
-    pub fn end_expired_waits(&mut self) -> Result<Vec<Id>, StepError> {
+    pub(super) fn end_expired_waits(&mut self) -> Result<Vec<Id>, StepError> {
         let ended = self.with_arrivals(|arrivals, desk| arrivals.end_expired(desk))?;
         self.feed()?;
         Ok(ended)
