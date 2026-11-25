@@ -464,6 +464,13 @@ pub enum OperatorSetting {
         /// The cutover date.
         cutover: Timestamp,
     },
+    /// How long an order filed on an automatic deposit waits for its customer to accept a quote shown without a firm
+    /// rate, counted from the first quote shown (`REQ-QTE-10`, `T-020-51`): past it the wait ends and its deposit is
+    /// free again.
+    DepositWait {
+        /// The lifetime of a wait, in whole seconds.
+        seconds: Count,
+    },
 }
 
 /// Which of the operator's settings an [`OperatorSetting`] is: policy holds each under a permission of its own
@@ -486,6 +493,8 @@ pub enum SettingKind {
     Cadence,
     /// A protocol version's cutover date.
     Cutover,
+    /// The lifetime of an order's wait for its customer on an automatic deposit.
+    DepositWait,
 }
 
 impl OperatorSetting {
@@ -500,6 +509,7 @@ impl OperatorSetting {
             OperatorSetting::PublisherCeiling { .. } => SettingKind::PublisherCeiling,
             OperatorSetting::Cadence { .. } => SettingKind::Cadence,
             OperatorSetting::Cutover { .. } => SettingKind::Cutover,
+            OperatorSetting::DepositWait { .. } => SettingKind::DepositWait,
         }
     }
 

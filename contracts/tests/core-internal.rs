@@ -334,7 +334,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 122] = [
+const SCHEMA_RULES: [SchemaRule; 123] = [
+    (
+        "decision-request-to-set-the-deposit-wait-of-no-seconds",
+        &[("/action/setting", "required")],
+        "missing field `seconds`",
+    ),
     (
         "order-inputs-naming-no-input",
         &[("/inputs", "minProperties")],
@@ -4778,6 +4783,7 @@ fn operator_setting_is_a_catalogue_change_of_its_own() {
         SettingKind::PublisherCeiling,
         SettingKind::Cadence,
         SettingKind::Cutover,
+        SettingKind::DepositWait,
     ];
     let key = |k: &SettingKind| format!("{k:?}");
     kinds.sort_by_key(key);
@@ -4799,6 +4805,41 @@ fn operator_setting_is_a_catalogue_change_of_its_own() {
     .unwrap();
     assert_eq!(cadence.kind(), SettingKind::Cadence);
     assert_eq!(cadence.provider(), None);
+}
+
+/// Finding 8 (`T-020-51`): how long a wait for a customer lasts is an operator's setting of its own, `deposit_wait`, set
+/// by a catalogue change like the others and held by policy under a permission of its own; a lifetime of no seconds is
+/// no setting.
+// verifies: REQ-AUZ-6
+#[test]
+fn deposit_wait_setting_is_an_operator_setting_of_its_own() {
+    let name = "decision-request-to-set-the-deposit-wait";
+    let request: DecisionRequest = serde_json::from_value(
+        fixtures("valid")
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is a valid fixture"))
+            .1,
+    )
+    .unwrap();
+    let Action::ChangeCatalogue {
+        change,
+        setting: Some(setting),
+        ..
+    } = &request.action
+    else {
+        panic!("it sets a setting");
+    };
+    assert_eq!(*change, CatalogueChange::SetSetting);
+    assert_eq!(setting.kind(), SettingKind::DepositWait);
+    assert!(matches!(&**setting, OperatorSetting::DepositWait { .. }));
+    assert_eq!(
+        setting.provider(),
+        None,
+        "a setting of the whole deployment"
+    );
+    assert_ne!(setting.kind(), SettingKind::Cadence);
+    assert_rejected("decision-request-to-set-the-deposit-wait-of-no-seconds");
 }
 
 /// Finding 4 and `M2`'s item 6: each of the platform's lifecycle actions (`accept`, `withdraw`, `revoke`,

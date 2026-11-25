@@ -21,6 +21,9 @@
     reserve's notice names an automatic deposit to go to with who set it for whom, and three fields of
     `automatic-deposit-rests-on-its-arrival`: the arrival's holder is the acceptance's requester, a destination it names
     is the one (and to asset) of the authorisation the acceptance names, and it was set for that requester.
+  - `T-020-51` (finding 8): `OperatorSetting::DepositWait {seconds}` (`deposit_wait`, `SettingKind::DepositWait`), a ninth
+    operator setting, the lifetime of an order's wait for its customer on an automatic deposit. One valid fixture
+    (`decision-request-to-set-the-deposit-wait`) and one invalid (`--of-no-seconds`).
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).

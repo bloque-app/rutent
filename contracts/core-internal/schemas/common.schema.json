@@ -665,7 +665,8 @@
             "provider_ceiling",
             "publisher_ceiling",
             "cadence",
-            "cutover"
+            "cutover",
+            "deposit_wait"
           ]
         }
       },
@@ -788,6 +789,21 @@
           },
           "then": {
             "$ref": "#/$defs/operator_setting_cutover"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "setting"
+            ],
+            "properties": {
+              "setting": {
+                "const": "deposit_wait"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/operator_setting_deposit_wait"
           }
         }
       ]
@@ -947,6 +963,23 @@
         "cutover": {
           "description": "Its cutover date, from which a statement under it is void (REQ-PRT-4).",
           "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "operator_setting_deposit_wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "setting",
+        "seconds"
+      ],
+      "properties": {
+        "setting": {
+          "const": "deposit_wait"
+        },
+        "seconds": {
+          "description": "How long an order filed on an automatic deposit waits for its customer to accept a quote shown without a firm rate, in whole seconds from the first quote shown (REQ-QTE-10, T-020-51).",
+          "$ref": "#/$defs/count"
         }
       }
     }
