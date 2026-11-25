@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 117] = [
+pub static RELATIONS: [Relation; 118] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3222,6 +3222,46 @@ pub static RELATIONS: [Relation; 117] = [
                 ),
                 _ => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "refiling-rests-on-policys-permit",
+        spec: &["REQ-ORD-23", "REQ-AUZ-1"],
+        quantifier: Quantifier::Exists,
+        refusal: "a refiling rests on policy's permitted decision of the refiling in this log",
+        fields: &[
+            (
+                "action",
+                "a refiling's decision is a decide of refile_arrival naming its arrival, order and filer, not another action",
+            ),
+            ("yes", "a refiling's decision is permitted"),
+            (
+                "filer",
+                "a refiling's decision was asked by the actor that files it",
+            ),
+        ],
+        // The decision, not a writer's label (`T-020-52`): policy's `decide` of `refile_arrival`, which the log holds
+        // whole, permitted, asked by the filer, naming the arrival, the order and the filer the refiling names. That
+        // the filer is the deployment's operator or the arrival's reserve is policy's to decide and
+        // `refiling-files-an-arrival-anew` holds as well.
+        cites: |e, _| match &e.what {
+            What::Refiling { decision, .. } => alloc::vec![by_receipt(decision, 0)],
+            _ => none(),
+        },
+        answers: |e, _, t, _| match (&e.what, verified(t)) {
+            (What::Refiling { arrival, order, .. }, Some(v)) => match &v.what {
+                What::Decide { request, .. } => judge(
+                    true,
+                    &[
+                        matches!(&request.action, Action::RefileArrival { arrival: a, order: o, filer }
+                            if a == arrival && o == order && filer == &e.who),
+                        v.outcome == (Outcome::Permitted {}),
+                        request.caller == e.who,
+                    ],
+                ),
+                _ => Match::NotTarget,
+            },
+            _ => Match::NotTarget,
         },
     },
     Relation {

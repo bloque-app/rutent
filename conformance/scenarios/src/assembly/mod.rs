@@ -479,6 +479,10 @@ impl StatusReads for Reading {
 struct Held(Rc<RefCell<PolicyEngine>>);
 
 impl SessionRegister for Held {
+    fn unread(&mut self) -> bool {
+        self.0.borrow().register().is_unread()
+    }
+
     fn held(&mut self, session: &Id) -> Option<HeldSession> {
         self.0
             .borrow()
@@ -792,6 +796,8 @@ impl Core {
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);
+            // The operator's login files an arrival anew where policy decides it (`REQ-ORD-23`, `T-020-52`).
+            r.permit(&kit::operator_login(), Permission::RefileArrival);
             r.accounts.insert(
                 context.account.clone(),
                 kit::customer().party.as_str().to_owned(),
@@ -1615,6 +1621,7 @@ impl Core {
         let mut acting = Acting(Rc::clone(&self.records.registers));
         let mut held = Held(Rc::clone(self.policy.engine()));
         let mut authorisations = self.policy.clone();
+        let mut decisions = self.policy.clone();
         let mut reads = Reading {
             policy: self.policy.clone(),
             orders: Rc::clone(&self.records.orders),
@@ -1623,6 +1630,7 @@ impl Core {
             parts: &mut parts,
             destinations: &mut owners,
             authorisations: &mut authorisations,
+            decisions: &mut decisions,
             actors: &mut acting,
             sessions: &mut held,
             reads: &mut reads,

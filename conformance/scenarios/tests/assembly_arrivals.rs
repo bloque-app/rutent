@@ -218,45 +218,69 @@ fn the_operators_login_files_a_differing_arrival_anew_on_the_real_log() {
         kind: ActorKind::Person,
     };
 
-    // The log's own row refuses a refiling by an actor whose party is the maker's name.
+    // The log's own row refuses a refiling by an actor whose party is the maker's name. Each refiling rests on policy's
+    // permitted decision of it (`T-020-52`), which the history holds beside it.
     let history: Vec<_> = core.log().entries().to_vec();
     let deployment_operator = DeploymentOperator {
         maker: operator.acts.clone(),
         party: operator.party.clone(),
     };
+    let at = core.clock.timestamp();
     let refiling_by = |who: &Actor| {
-        Entry::Verified(VerifiedEntry {
+        let mut decision = arrival.clone();
+        decision.index = rutent_contracts::provider_role::SafeInteger::try_from(9000u64)
+            .expect("a safe integer");
+        let permit = (
+            decision.clone(),
+            Entry::Verified(VerifiedEntry {
+                kind: VerifiedKind::Verified,
+                who: who.clone(),
+                what: What::Decide {
+                    request: rutent_contracts::core_internal::DecisionRequest {
+                        request: id("req-refile-by"),
+                        caller: who.clone(),
+                        action: rutent_contracts::core_internal::Action::RefileArrival {
+                            arrival: arrival.clone(),
+                            order: order.clone(),
+                            filer: who.clone(),
+                        },
+                        at: at.clone(),
+                    },
+                    decision: id("dec-refile-by"),
+                },
+                when: When {
+                    at: at.clone(),
+                    source: TimeSource::CoreClock,
+                },
+                outcome: Outcome::Permitted {},
+            }),
+        );
+        let mut held = history.clone();
+        held.push(permit);
+        let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,
             who: who.clone(),
             what: What::Refiling {
                 arrival: arrival.clone(),
                 order: order.clone(),
+                decision,
             },
             when: When {
-                at: core.clock.timestamp(),
+                at: at.clone(),
                 source: TimeSource::CoreClock,
             },
             outcome: Outcome::Observed {},
-        })
+        });
+        (held, entry)
     };
+    let (held, refiling) = refiling_by(&maker_as_party);
     assert!(
-        admit_entry(
-            &history,
-            &refiling_by(&maker_as_party),
-            Through::General,
-            &deployment_operator
-        )
-        .is_err(),
+        admit_entry(&held, &refiling, Through::General, &deployment_operator).is_err(),
         "the log refuses an actor whose party is the operator's maker"
     );
+    let (held, refiling) = refiling_by(&kit::operator_login());
     assert!(
-        admit_entry(
-            &history,
-            &refiling_by(&kit::operator_login()),
-            Through::General,
-            &deployment_operator
-        )
-        .is_ok(),
+        admit_entry(&held, &refiling, Through::General, &deployment_operator).is_ok(),
         "the log admits the operator's login"
     );
     // Core refuses the stranger before the log, and the operator's login's refiling is appended to the real log.
@@ -283,9 +307,33 @@ fn the_operators_login_files_a_differing_arrival_anew_on_the_real_log() {
         Err(StepError::Arrival(ArrivalError::NotTheFiler))
     ));
     assert_eq!(core.log().entries().len(), before, "nothing is recorded");
+    // Another login of the operator's, listed in its role but not for the permission to refile, is refused by policy
+    // itself: no refiling is appended, and policy's refusal is its own record.
+    let desk = Actor {
+        acts: id("operators-desk-login"),
+        ..kit::operator_login()
+    };
+    core.registers().list(&desk);
+    let before = core.log().entries().len();
+    assert!(matches!(
+        core.refile(&desk, &arrival),
+        Err(StepError::Arrival(ArrivalError::Refused { .. }))
+    ));
+    let refilings = |core: &Core| {
+        core.verified_whats()
+            .iter()
+            .filter(|w| matches!(w, What::Refiling { .. }))
+            .count()
+    };
+    assert_eq!(refilings(&core), 0, "no refiling is appended");
+    assert!(
+        core.log().entries().len() > before,
+        "policy recorded its refusal"
+    );
     let refiled = core
         .refile(&kit::operator_login(), &arrival)
         .expect("the operator's login files it anew");
+    assert_eq!(refilings(&core), 1);
     let recorded = core
         .log()
         .entries()

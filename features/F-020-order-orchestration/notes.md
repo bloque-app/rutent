@@ -7767,14 +7767,7 @@ and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is 
      `Intake`; no row rebuilds intake's. The test pins the observable result (nothing recorded, refused, quote refused
      too) and the guard stays as the second line. Owner: whoever rebuilds intake's quotes after a reopening (`T-020-46`'s
      follow-up, or `T-024-21`).
-  2. *`missing_input` for an unread session register.* Intake's and the arrival filing's session check still refuse
-     `refused_by_policy` when policy's register is unread or holds no session. `OrderRefusalClass` has no `missing_input`
-     (nor does the `order_refusal` entry or its schema), so the class can't be told without a contract shape: add
-     `MissingInput` (snake case `missing_input`) to core-internal's `order_refusal` class beside `refused_by_policy`
-     (`contracts/src/core_internal/types.rs`, the verified-entry schema, README and changelog, a fixture), and an
-     `unread()` answer on core-orch's `SessionRegister` port (the assembly's `Held` reads core-authz's `Register::unread`,
-     which is `pub(crate)` there). Not built: contracts are the lead's to authorise. Owner: the lead, then `F-021`.
-  3. A refiling is not a recorded policy decision (default 3): a shape would let the log hold who policy let file it.
+  2. Closed in round 2 (below): `missing_input`, and a refiling policy decides.
 - **Rule-off** (`scratchpad/t-020-52/ruleoff.py`, each rule switched off alone, the file restored from its own text and
   touched, `contracts/src/lib.rs` touched before each run; `rutent-core-orch`'s `intake_reads`, `intake` and `arrival`, and
   `rutent-scenarios`' `assembly_intake`, `assembly_arrivals` and `presence`):
@@ -7795,3 +7788,46 @@ and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is 
   One rule has no rule-off: the requester the read names is the caller's party or the record's. `kept_for` and `open` hold
   the caller to the requester's party first, so the two are the same party for every caller that reaches the check; the
   record is what the deployment is asked to confirm, by the check above that hands it over.
+
+### T-020-52, round 2 (the lead's authorisation: gaps 1 and 3 closed, a `DEC-20` path folded into core-internal's unreleased 1.0.0)
+
+- **`missing_input`.** `OrderRefusalClass::MissingInput` (`missing_input`) beside `refused_by_policy`; core-orch's
+  `SessionRegister::unread()` (the assembly's `Held` reads core-authz's `Register::is_unread()`, a narrow public
+  accessor); one shared check, `intake::session_refusal`, which intake's `open` and the arrival filing both ask: a
+  session held and open is no refusal, a register unread is `missing_input`, any other is `refused_by_policy`, as before.
+  A refused authorisation's `missing_input` (`RefusalClass`) still reads `refused_by_policy` in `class::refused`: not
+  this row's. Tests: `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input` (`intake_reads.rs`)
+  and the unread case of the arrival filing's refusal test (`arrival.rs`); the contract's valid fixture
+  `verified-entry-of-a-refusal-for-an-input-policy-could-not-read`.
+- **A refiling is a decided action.** Contract: `Action::RefileArrival {arrival, order, filer}` (`refile_arrival`,
+  decided, never an effect: `effect_action` refuses it), `refiling.decision` (a required receipt, the `decide` it rests
+  on), and the row `refiling-rests-on-policys-permit` (`REQ-ORD-23`, `REQ-AUZ-1`): the cited entry is a `decide` of
+  `refile_arrival` naming the refiling's arrival, order and filer (`action`), permitted (`yes`), asked by the actor that
+  files (`filer`). Schemas (`common`, `verified-entry`), README (the row), changelog, a valid and an invalid fixture
+  for the request, an invalid one for the entry without its decision, five admission cases; every refiling in the 454
+  admission cases that held one now rests on a decision of its own inserted before it (the receipts of the rest
+  untouched; script `migrate_refiling.py` in the row's scratch folder). 118 relations. No wider change was needed: the
+  `refiling` row cites a decision as `reversal_carrier` cites `accepted_with`.
+- **Policy** (`core-authz`). `Permission::RefileArrival` and `Scope::RefileArrival` (an agent's scope for it, beside
+  T-021-15's). The rule (`roles/mod.rs`): the filer the request names is its caller; the deployment operator's login
+  (`of_operator_holds`: the register lists it for the permission and its party is the operator's), or a reserve acting
+  for itself where it is the order's origin reserve (`Source::OrderOrigin`, which the assembly answers from intake's and
+  the filing's records); nobody else, Core's own actors and the user included. The assembly lists the operator's login
+  for the permission.
+- **Core.** `Desk::decisions: &mut dyn Decisions`; `Arrivals::refile` asks policy for `refile_arrival` once, before the
+  entry is built, and the entry cites the permit's receipt. A refusal is `ArrivalError::Refused {refused_by_policy}`, not
+  known is a log failure to retry; no refiling is appended (policy's refusal is its own record, which the log holds).
+  A refiling already built is appended as built: the same call again is the same refiling and asks nothing.
+- **Tests.** Contracts: `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`,
+  `an_order_refused_for_an_input_policy_could_not_read_is_told_its_class` (with the relation's five cases and the
+  fixtures). Core-authz: `arrival_is_refiled_by_the_operators_listed_login_or_the_reserve_it_came_to`,
+  `arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused` [`REQ-ORD-23`, `REQ-AUZ-1`], and the permission in
+  the sweeps (`each_permission_alone_allows_only_its_own_action`, the engine's every-action tests). Core-orch:
+  `arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is_appended`. The assembly's refiling test
+  files through the real engine: a login of the operator's the register lists in its role but not for the permission is
+  refused, no refiling appended and policy's refusal recorded, then the operator's login files.
+- **Gap 2 stays** (the `Intake::accept` guard of a held order is a named second guard, unreachable while a reopened
+  intake has no offered quote): unchanged, see round 1.
+- **Defaults** (reversible, each failing closed): (1) a reserve files only where it is the order's origin reserve, as the
+  assembly's order records say it; (2) the operator's permission is one for every arrival, not one per reserve; (3)
+  policy not knowing is a retry, never a refiling.

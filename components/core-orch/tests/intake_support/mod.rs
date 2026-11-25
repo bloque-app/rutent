@@ -13,14 +13,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, Evidence, Fetched, Kept, KeptStatements, Log, Reads, Signatures,
-    StatementKeys, is_decision,
+    AppendFailure, Authorisations, Decisions, Evidence, Fetched, Kept, KeptStatements, Log, Reads,
+    Signatures, StatementKeys, is_decision,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Answer, Authorisation, Decision, Destination, Entry, KeptStatement, Opened,
-    Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Reads as Read, Receipt,
-    RefusalClass, Role, SessionRequest, SignedWith, Through, TimeSource, VerifiedEntry,
-    VerifiedKind, What, When, admit_entry, attribute,
+    Action, Actor, ActorKind, Answer, Authorisation, Decision, DecisionRequest, Destination, Entry,
+    KeptStatement, Opened, Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome,
+    Reads as Read, Receipt, RefusalClass, Role, SessionRequest, SignedWith, Through, TimeSource,
+    VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, OuterNode, SafeInteger};
@@ -242,6 +242,64 @@ impl Authorisations for Policy {
     }
 }
 
+/// Policy's decisions, as far as intake and the arrivals reach them (`T-020-52`): an arrival's refiling, decided as
+/// the register of actors binds the caller (its party, kind and role) and, for an operator's login, the register
+/// listing it for the permission, and each decision recorded on policy's path before it is answered. It permits a
+/// refiling asked by the operator's login or by a reserve acting for itself, unless `refuse` says policy refuses
+/// every one; any other action is refused.
+pub struct Deciding {
+    pub book: Rc<RefCell<Book>>,
+    pub clock: Rc<TestClock>,
+    pub actors: Rc<RefCell<ActorRegister>>,
+    /// Whether policy refuses every refiling, whoever asks.
+    pub refuse: bool,
+    /// Each decision asked, as asked.
+    pub asked: Vec<DecisionRequest>,
+}
+
+impl Decisions for Deciding {
+    fn decide(&mut self, request: &DecisionRequest) -> Result<Decision, AppendFailure> {
+        self.asked.push(request.clone());
+        let caller = &request.caller;
+        let listed =
+            self.actors
+                .borrow()
+                .acts_for(&caller.acts, &caller.party, caller.kind, caller.role);
+        let answer = match &request.action {
+            Action::RefileArrival { filer, .. }
+                if listed
+                    && !self.refuse
+                    && filer == caller
+                    && matches!(caller.role, Role::Operator | Role::Provider) =>
+            {
+                Answer::Permit {}
+            }
+            _ => refusal(RefusalClass::NotPermitted),
+        };
+        let decision = id(&format!("dec-{}", request.request.as_str()));
+        let entry = Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: caller.clone(),
+            what: What::Decide {
+                request: request.clone(),
+                decision: decision.clone(),
+            },
+            when: When {
+                at: now(&self.clock),
+                source: TimeSource::CoreClock,
+            },
+            outcome: answer.outcome(),
+        });
+        let receipt = self.book.borrow_mut().push(Through::Policy, entry)?;
+        Ok(Decision {
+            request: request.request.clone(),
+            decision,
+            outcome: answer,
+            receipt,
+        })
+    }
+}
+
 /// The destination register: each destination's answer by account, set by the test; an account it holds nothing
 /// for resolves to [`OWNER`].
 #[derive(Debug, Default)]
@@ -432,11 +490,20 @@ impl StatusReads for ReadPolicy {
 #[derive(Debug, Default)]
 pub struct Sessions {
     pub held: BTreeMap<String, HeldSession>,
+    /// Whether the register is unread: it holds none of what it would (`T-021-17`).
+    pub unread: bool,
 }
 
 impl SessionRegister for Sessions {
     fn held(&mut self, session: &Id) -> Option<HeldSession> {
+        if self.unread {
+            return None;
+        }
         self.held.get(session.as_str()).cloned()
+    }
+
+    fn unread(&mut self) -> bool {
+        self.unread
     }
 }
 
@@ -543,6 +610,7 @@ pub struct Env {
     pub ids: Ids,
     pub issued: Issued,
     pub policy: Policy,
+    pub deciding: Deciding,
     pub reads: ReadPolicy,
     pub register: Register,
     pub bounds: PolicyBounds,
@@ -613,6 +681,13 @@ impl Env {
                 clock: clock.clone(),
                 actors: actors.clone(),
                 answer: Answer::Permit {},
+                asked: Vec::new(),
+            },
+            deciding: Deciding {
+                book: book.clone(),
+                clock: clock.clone(),
+                actors: actors.clone(),
+                refuse: false,
                 asked: Vec::new(),
             },
             reads: ReadPolicy {
@@ -719,6 +794,7 @@ impl Env {
             parts: &mut parts,
             destinations: &mut self.register,
             authorisations: &mut self.policy,
+            decisions: &mut self.deciding,
             actors: &mut self.acting,
             sessions: &mut self.sessions,
             reads: &mut self.reads,

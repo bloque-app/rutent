@@ -826,12 +826,18 @@ fn differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve() {
             panic!("a refiling is a verified entry");
         };
         assert_eq!(v.who, filer);
-        assert_eq!(
-            v.what,
-            What::Refiling {
-                arrival: arrival.clone(),
-                order: order.clone()
-            }
+        let What::Refiling {
+            arrival: filed,
+            order: against,
+            decision,
+        } = &v.what
+        else {
+            panic!("a refiling");
+        };
+        assert_eq!((filed, against), (arrival, &order));
+        // It rests on policy's permit of this refiling, a decision the log holds (`T-020-52`).
+        assert!(
+            matches!(at(&env, decision), Entry::Verified(d) if matches!(&d.what, What::Decide { .. }))
         );
     }
     // Filed anew again, it is the same refiling.
@@ -961,6 +967,77 @@ fn arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused(
     );
     // The operator's own login and the reserve's, in the roles they are listed in, file.
     assert!(refile(&mut env, &mut providers, &mut arrivals, &operator(), &first).is_ok());
+    assert_admitted(&env);
+}
+
+/// A refiling is decided by policy before it is recorded, and the entry cites the permit (`T-020-52`): a login the
+/// register lists for its role, but whose party policy doesn't let file, is refused with no refiling appended, and
+/// told of its class; policy's refusal is its own record. Filed once permitted, the entry names the permitting
+/// decision, which asks for this arrival, order and filer, and the log admits it.
+// verifies: REQ-ORD-23, REQ-AUZ-1
+#[test]
+fn arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is_appended() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let first = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&order)]),
+        &report(600, 0),
+    )
+    .unwrap()
+    {
+        Arrived::Held { arrival, .. } => arrival,
+        other => panic!("{other:?}"),
+    };
+    env.deciding.refuse = true;
+    let refiled_before = |env: &Env| {
+        env.book
+            .borrow()
+            .verified()
+            .iter()
+            .filter(|w| matches!(w, What::Refiling { .. }))
+            .count()
+    };
+    for filer in [operator(), reserve_filer()] {
+        assert_eq!(
+            refile(&mut env, &mut providers, &mut arrivals, &filer, &first),
+            Err(ArrivalError::Refused {
+                class: OrderRefusalClass::RefusedByPolicy
+            }),
+            "{filer:?}"
+        );
+    }
+    assert_eq!(refiled_before(&env), 0, "no refiling is appended");
+    assert_eq!(env.deciding.asked.len(), 2, "policy was asked each time");
+    assert_admitted(&env);
+
+    // Permitted, the refiling cites the permit that decided it.
+    env.deciding.refuse = false;
+    let receipt = refile(&mut env, &mut providers, &mut arrivals, &operator(), &first).unwrap();
+    let Entry::Verified(v) = at(&env, &receipt) else {
+        panic!("a refiling is a verified entry");
+    };
+    let What::Refiling { decision, .. } = &v.what else {
+        panic!("a refiling");
+    };
+    let Entry::Verified(decided) = at(&env, decision) else {
+        panic!("the permit is a verified entry");
+    };
+    assert!(matches!(
+        &decided.what,
+        What::Decide { request, .. }
+            if matches!(&request.action, rutent_contracts::core_internal::Action::RefileArrival { arrival, filer, .. }
+                if arrival == &first && filer == &operator())
+    ));
+    assert_eq!(
+        decided.outcome,
+        rutent_contracts::core_internal::Outcome::Permitted {}
+    );
+    assert_eq!(refiled_before(&env), 1);
     assert_admitted(&env);
 }
 
@@ -1236,6 +1313,21 @@ fn automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arriv
         })
     );
     assert_eq!(env.len(), len_refused);
+    assert!(env.started().is_empty());
+    assert_eq!(providers.asked(), 0);
+    // Policy's register of sessions unread: the filing is refused for its missing input, not as a session that isn't
+    // held (`T-021-17`, `T-020-52`), and nothing is asked.
+    env.sessions.unread = true;
+    let mut unread = filing(reserve_filer(), &deposited);
+    unread.request = id("deposit-6");
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &unread),
+        Ok(Filed::CantProceed {
+            order: None,
+            class: OrderRefusalClass::MissingInput
+        })
+    );
+    env.sessions.unread = false;
     assert!(env.started().is_empty());
     assert_eq!(providers.asked(), 0);
 

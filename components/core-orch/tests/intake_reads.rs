@@ -426,3 +426,40 @@ fn order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logge
     assert_eq!(kinds(&env).last(), Some(&"filed_order"));
     assert_admitted(&env);
 }
+
+/// A request in a session of policy's register that is unread is refused for its missing input, nothing created, and
+/// told that class; one whose session the register reads and doesn't hold is refused of policy's class, as before
+/// (`T-021-17`, `T-020-52`).
+// verifies: REQ-AUZ-5
+#[test]
+fn request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let mut other = order_request("client-req-2", customer());
+    other.session = id("session-nobody-opened");
+    assert_eq!(
+        env.open(&mut sim, &other),
+        Ok(Told::Refused {
+            class: rutent_contracts::core_internal::OrderRefusalClass::RefusedByPolicy
+        })
+    );
+    env.sessions.unread = true;
+    assert_eq!(
+        env.open(&mut sim, &order_request("client-req-1", customer())),
+        Ok(Told::Refused {
+            class: rutent_contracts::core_internal::OrderRefusalClass::MissingInput
+        })
+    );
+    assert!(
+        env.refusals().iter().any(|w| matches!(
+            w,
+            What::OrderRefusal {
+                order: None,
+                class: rutent_contracts::core_internal::OrderRefusalClass::MissingInput,
+                ..
+            }
+        )),
+        "recorded as an order refusal of its class, naming no order"
+    );
+    assert_admitted(&env);
+}

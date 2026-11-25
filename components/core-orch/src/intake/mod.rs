@@ -62,7 +62,7 @@ mod record;
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, KeptStatements, Log, Reads as ReadPort,
+    AppendFailure, Authorisations, Decisions, KeptStatements, Log, Reads as ReadPort,
 };
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
@@ -131,6 +131,11 @@ pub struct HeldSession {
 pub trait SessionRegister {
     /// The session `session`, if policy opened it.
     fn held(&mut self, session: &Id) -> Option<HeldSession>;
+
+    /// Whether policy's register is unread: it was never read from the log, or couldn't be, so `held` answers none
+    /// of what it would hold (`T-021-17`). A request in a session of it is refused for its missing input, not as one
+    /// whose session isn't held (`T-020-52`).
+    fn unread(&mut self) -> bool;
 }
 
 /// What intake reaches to ask policy whether a caller may be told an order's status (`REQ-AUZ-8`, `REQ-AUZ-7`;
@@ -338,6 +343,9 @@ pub struct Desk<'a, 'p> {
     pub destinations: &'a mut dyn Destinations,
     /// Policy's authorisations.
     pub authorisations: &'a mut dyn Authorisations,
+    /// Policy's decisions: the actions it decides beyond an order's authorisation, an arrival's refiling among them
+    /// (`T-020-52`).
+    pub decisions: &'a mut dyn Decisions,
     /// The register of actors.
     pub actors: &'a mut dyn Actors,
     /// Policy's session register.
@@ -1336,8 +1344,14 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         return Ok(kept);
     };
     // The reserve is asked about the holder's funds in this session: it must be the requester's, and open.
-    if !session_is_the_requesters(desk, &request)? {
-        refused(desk, &mut kept, OrderRefusalClass::RefusedByPolicy)?;
+    let now = record::now(desk.parts.clock)?;
+    if let Some(class) = session_refusal(
+        desk.sessions,
+        &request.session,
+        &request.parties.requester,
+        &now,
+    ) {
+        refused(desk, &mut kept, class)?;
         return Ok(kept);
     }
     let order = desk.parts.fresh.id();
@@ -1420,15 +1434,25 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
     Ok(kept)
 }
 
-/// Whether the request's session is one policy opened for its requester, still open by Core's clock.
-fn session_is_the_requesters(
-    desk: &mut Desk<'_, '_>,
-    request: &OrderRequest,
-) -> Result<bool, IntakeError> {
-    let now = record::now(desk.parts.clock)?;
-    Ok(desk.sessions.held(&request.session).is_some_and(|held| {
-        held.holder == request.parties.requester && held.expires_at.unix_nanos() > now.unix_nanos()
-    }))
+/// Why the request's session isn't one policy opened for its requester, still open by Core's clock: `None` where it
+/// is. The class is `refused_by_policy` for a session the register doesn't hold, holds for another party, or that has
+/// ended, and `missing_input` where the register is unread, as policy answers it (`T-021-17`, `T-020-52`).
+pub(crate) fn session_refusal(
+    sessions: &mut dyn SessionRegister,
+    session: &Id,
+    holder: &Id,
+    now: &Timestamp,
+) -> Option<OrderRefusalClass> {
+    let held = sessions.held(session).is_some_and(|held| {
+        &held.holder == holder && held.expires_at.unix_nanos() > now.unix_nanos()
+    });
+    if held {
+        None
+    } else if sessions.unread() {
+        Some(OrderRefusalClass::MissingInput)
+    } else {
+        Some(OrderRefusalClass::RefusedByPolicy)
+    }
 }
 
 /// Whether `again` repeats `first`: the same request in every field but who acts for the party, which the key

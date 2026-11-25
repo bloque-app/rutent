@@ -57,8 +57,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    About, Actor, ArrivalMatch, Count, Destination, Entry, OrderRefusalClass, Parties, Receipt,
-    Role, What,
+    About, Action, Actor, Answer, ArrivalMatch, Count, DecisionRequest, Destination, Entry,
+    OrderRefusalClass, Parties, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -796,9 +796,31 @@ impl Arrivals {
         let refiled = match self.refilings.get_mut(&key(arrival)) {
             Some(refiled) => refiled,
             None => {
+                // Policy decides the refiling first, as it decides any action (`T-020-52`): the entry cites its
+                // permit. A refusal, or no answer, records no refiling, and the same call again asks again.
+                let request = DecisionRequest {
+                    request: desk.parts.fresh.id(),
+                    caller: filer.clone(),
+                    action: Action::RefileArrival {
+                        arrival: arrival.clone(),
+                        order: order.clone(),
+                        filer: filer.clone(),
+                    },
+                    at: journal::now(desk.parts.clock)?,
+                };
+                let decision = desk.decisions.decide(&request)?;
+                let Some(permit) = decision.permit() else {
+                    return Err(match decision.outcome {
+                        Answer::NotKnown { .. } => ArrivalError::Log(AppendFailure::Unavailable),
+                        _ => ArrivalError::Refused {
+                            class: OrderRefusalClass::RefusedByPolicy,
+                        },
+                    });
+                };
                 let what = What::Refiling {
                     arrival: arrival.clone(),
                     order: order.clone(),
+                    decision: permit.receipt().clone(),
                 };
                 let entry = journal::build(desk.parts.clock, filer, what)?;
                 self.refilings.entry(key(arrival)).or_insert(Refiled {
