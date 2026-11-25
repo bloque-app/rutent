@@ -1362,7 +1362,8 @@ bytes, and every one is asked before an erasure is decided.
 | `Statements::erasable` (`erasure.rs:68`; the assembly's `Bound`, `assembly/erasure.rs:21`, to `BoundStore::erasable`) | `erase_statement` (`erasure.rs:293`) through `check(.., false)` (`:314`), before policy is asked; and again after the decision, `:347`, where no override was asked |
 | `Statements::erasable_overriding` (`erasure.rs:104`; `assembly/erasure.rs:25`, to `BoundStore::erasable_overriding`) | `erase_statement` through `check(.., true)` (`:314`) before policy is asked, reached from `erase_statement_overriding` (`:395`), the entry for an override |
 | `Statements::erasable_overriding_since` (`erasure.rs:79`, called at `:347`; `assembly/erasure.rs:29`, to `BoundStore::erasable_overriding_since`) | `erase_statement`, after the permitting decision, with the decision's receipt: citations made before it are lifted, none after |
-| `BoundStore::is_erased` (`store.rs:836`) | none in Core: the store's own `erasable_from` (`:736`) and `fetch` call it |
+| `BoundStore::is_erased` (`store.rs:836`) | none in Core: the store's own `reconcile` (`:643`) and `erasable_overriding_since` (`:736`) call it |
+| `BoundStore::missing` (`store.rs:682`), `refused_erasures` (`:689`), `unsettled_erasures` (`:701`) | none in Core, out of `v0`: the store's reports of its own reconciliation, read only by tests (core-audit's `receipts.rs`; the scenarios' `assembly_wiring.rs:555` and `audit_scenarios.rs:481` assert `missing()` is empty). An erasure the store refused or left unsettled is Core's to finish through `Unsettled::settle` (`T-020-46` rebuilds it), not through these reads; a deployment that shows them to its operator owns that call (`F-030`) |
 
 - **Left uncalled in `v0`, by choice: `Evidence::fetch` has no caller in Core.** It is the party and checker door the
   contract names (`contracts/core-internal/README.md:35` and `:261`: a kept statement leaves the store only through
