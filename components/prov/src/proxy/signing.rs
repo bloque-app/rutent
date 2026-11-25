@@ -722,17 +722,20 @@ mod tests {
             Some(SigningError::NestedNotAsked)
         );
         // A refusal for good binds the nested result too; one that lifts doesn't.
-        let refused = |class: &str| -> ResultBody {
+        let refused = |refusal: serde_json::Value| -> ResultBody {
             let mut body = serde_json::to_value(&nested).expect("JSON");
-            body["outcome"] = serde_json::json!({
-                "status": "refused", "refusal": { "class": class }
-            });
+            body["outcome"] = serde_json::json!({ "status": "refused", "refusal": refusal });
             serde_json::from_value(body).expect("a refusal")
         };
         assert_eq!(
-            sign(Some(&refused("final"))).err(),
+            sign(Some(&refused(serde_json::json!({ "class": "final" })))).err(),
             Some(SigningError::NestedNotAsked)
         );
+        // A refusal that lifts says nothing final: it doesn't bind the nested result.
+        let lifts = serde_json::json!({
+            "class": "lifts_at_known_time", "lifts_at": "2026-11-07T00:00:00Z"
+        });
+        assert!(sign(Some(&refused(lifts))).is_ok());
         // One that isn't final doesn't hold the provider to it.
         let mut unknown = serde_json::to_value(&nested).expect("JSON");
         unknown["outcome"] = serde_json::json!({ "status": "unknown" });

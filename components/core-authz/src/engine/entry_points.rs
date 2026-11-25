@@ -109,8 +109,9 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
 /// fails [`carry_out_is_pinned`] until it is listed here or in [`CARRY_OUT`].
 pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
     // A read: asks a provider's module where a transaction it was handed stands, and moves nothing (`REQ-ORD-1`,
-    // `INV-4`, `T-013-11`). Core asks through the platform's `Modules::status`, which the log's `ask_status` effect
-    // permits.
+    // `INV-4`, `T-013-11`). Asking status is itself decided (`ask_status`), but it is listed here and not in
+    // [`CARRY_OUT`], which would give the scan four false findings. The guard is the `effect` parameter of core-orch's
+    // `Modules::status`: only a permitted `ask_status` effect lets Core ask.
     (
         "status",
         "prov/src/module/platform.rs",
