@@ -1075,3 +1075,49 @@ fn real_plain_wallets_re_serialised_answer_verifies_under_its_published_key() {
         other => panic!("the wallet's answer is verified: {other:?}"),
     }
 }
+
+/// Two values of one order rest at the wallet's node as the log holds them, the wallet's module restarts, and one
+/// part is handed on: Core's withdrawal restores the order's whole value at the node first, so after the part leaves
+/// the wallet still holds the other value for the order and the host attributes it there (`INV-1`, `REQ-ORD-43`,
+/// `T-020-46`). Restoring the part alone would leave the order's other value unheld.
+// verifies: INV-1, REQ-ORD-43
+#[test]
+fn hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node() {
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let route = linked.route.plan[0].segments.clone();
+    assert!(stuck.core.restart_module(&wallet.provider));
+    let part: u128 = AMOUNT.parse().expect("an amount");
+    let whole = (2 * part).to_string();
+    stuck
+        .core
+        .withdraw_for_a_hand_on(&route, &order, AMOUNT, &whole)
+        .expect("withdrawn");
+    assert!(
+        wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-other", AMOUNT),
+        "the wallet still holds the order's other value"
+    );
+    let attributed: u128 = stuck
+        .core
+        .holdings()
+        .attributions()
+        .into_iter()
+        .filter(|(node, _)| node == NODE)
+        .flat_map(|(_, held)| held)
+        .filter(|h| h.order == order)
+        .map(|h| h.amount)
+        .sum();
+    assert_eq!(
+        attributed, part,
+        "the host attributes the other value at the node"
+    );
+}

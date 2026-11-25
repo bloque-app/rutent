@@ -2293,3 +2293,68 @@ fn stranded_hand_on_is_taken_back_after_a_restart() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// What a part held at the reserve whose final deposit failed, after the customer's new destination retired that
+/// deposit: nothing, on the Core that ran on and on the same log reopened. The reopened Core holds no segment the
+/// part's change retired, so new orders at that reserve aren't refused for value no longer in flight (`REQ-ORD-8`,
+/// `T-020-46`).
+// verifies: REQ-ORD-8
+#[test]
+fn segment_a_destination_change_retired_is_not_held_again_after_a_restart() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    let new = new_destination(customer());
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    let decision = hand_on::authorise(
+        &core.segments,
+        &mut stuck,
+        &mut core.policy,
+        &new,
+        &mut reader,
+    )
+    .expect("asked");
+    assert!(decision.permit().is_some(), "{decision:?}");
+    let record_id = id("dr-new-destination-ord-1");
+    let record = record_to_the_other_reserve(&mut world, &core, &record_id);
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    segments_support::handing::seed_acceptance(
+        &core,
+        ORDER,
+        "acc-ord-1-new-destination",
+        &new.authorisation,
+    );
+    let (order, part, actor, customer) =
+        (id(ORDER), id(PART), segments_support::core(), customer());
+    let (recorded, acceptance) = (recorded(&core), id("acc-ord-1-new-destination"));
+    hand_parts(&mut core, &mut stuck, |parts| {
+        HandOn::new().change_destination(
+            parts,
+            hand_on::Change {
+                order: &order,
+                part: &part,
+                record: &record,
+                acceptance: &acceptance,
+                recorded: &recorded,
+                customer: &customer,
+                core: &actor,
+            },
+        )
+    })
+    .expect("changed");
+    let held = |core: &Core| {
+        core.exposures
+            .held()
+            .map(|h| (h.provider.as_str().to_owned(), h.amount.as_str().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the Core that ran on holds nothing"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[record]);
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the reopened Core holds nothing the change retired"
+    );
+}

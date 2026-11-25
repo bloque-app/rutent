@@ -148,9 +148,10 @@ fn decisions(core: &Core) -> usize {
 const PAYERS_NAME: &str = "Jane Q Payer";
 
 /// After an order paid by a third party, not its customer, every record Core keeps names the payer by reference and
-/// nothing else of it (`REQ-CPL-11`). Through the assembly: the acceptance holds the payer's reference apart from the
-/// requester's and the beneficiary's, no other entry names it, and a personal detail the order carried reaches no
-/// entry. Over the segments kit, whose evidence store can be read: a detail the reserve's tuple doesn't require
+/// nothing else of it (`REQ-CPL-11`). Through the assembly: the acceptance and the order's `order_opened` (intake's
+/// record of the order as it opened, `T-020-46`) each hold the payer's reference apart from the requester's and the
+/// beneficiary's, in `parties.payer` alone, an identity as a reference as `REQ-AUD-6` allows; no other entry names it,
+/// and a personal detail the order carried reaches no entry. Over the segments kit, whose evidence store can be read: a detail the reserve's tuple doesn't require
 /// reaches neither the log nor the evidence store, while the payer's account reference it does require reaches the
 /// operation Core signed and kept. Core hands a provider only the inputs its tuple requires.
 // verifies: REQ-CPL-11
@@ -198,9 +199,9 @@ fn records_after_a_third_party_payment_hold_a_reference_at_most() {
     assert!(!named.is_empty(), "the order's acceptance names its payer");
     for entry in named {
         let what = &entry["what"];
-        assert_eq!(
-            what["call"], "acceptance",
-            "only the acceptance names the payer: {entry}"
+        assert!(
+            what["call"] == "acceptance" || what["call"] == "order_opened",
+            "only the acceptance and the order's opening name the payer: {entry}"
         );
         assert_eq!(what["parties"]["payer"], PAYER, "by reference");
         let mut rest = entry.clone();

@@ -368,6 +368,35 @@ impl Segments {
         Some((flight, held))
     }
 
+    /// The part of `order` whose current plan holds `segment`, as the state machine rebuilt from the log has it.
+    fn in_plan(
+        &self,
+        order: &str,
+        segment: &str,
+    ) -> Option<&rutent_contracts::state_machine::Part> {
+        self.orders.get(order).and_then(|t| {
+            t.order
+                .parts
+                .iter()
+                .find(|p| p.segments.iter().any(|s| s.segment_id.as_str() == segment))
+        })
+    }
+
+    /// Whether `order`'s `segment` was retired, as the state machine rebuilt from the log has it: a recalculation, a
+    /// resume or a destination change replaced it (the part's retired segments, [`Segments::retired`]), no current
+    /// plan of the followed order holds it, or its part was handed on. A Core that ran on released its hold then
+    /// (`retiring`), so a reopened one doesn't hold it again (`REQ-ORD-8`, `T-020-46`).
+    fn retired_in_the_log(&self, order: &str, segment: &str) -> bool {
+        let (Some(order_id), Some(segment_id)) = (Id::new(order), Id::new(segment)) else {
+            return false;
+        };
+        self.retired(&order_id, &segment_id)
+            || (self.orders.contains_key(order)
+                && self.in_plan(order, segment).is_none_or(|p| {
+                    p.state == rutent_contracts::state_machine::OrderState::HandedOn
+                }))
+    }
+
     /// Holds in `exposures` every segment rebuilt in flight, at the amount its operation moved, and marks every stuck
     /// order, as a Core that ran on would hold them (`REQ-ORD-8`): a segment with no final outcome, or one that
     /// failed or was refused, whose value stays held until its reversal or the part's resolution, unless the part was
@@ -404,17 +433,17 @@ impl Segments {
             let (Some(order_id), Some(segment_id)) = (Id::new(order), Id::new(segment)) else {
                 continue;
             };
-            let part = self.orders.get(order.as_str()).and_then(|t| {
-                t.order
-                    .parts
-                    .iter()
-                    .find(|p| p.segments.iter().any(|s| s.segment_id.as_str() == segment))
-                    .and_then(|p| Id::new(p.part_id.as_str()))
-            });
+            let part = self
+                .in_plan(order, segment)
+                .and_then(|p| Id::new(p.part_id.as_str()));
             let resolved = part
                 .as_ref()
                 .is_some_and(|p| self.ended_by_resolution(&order_id, p));
-            if !held || resolved || reversed(order, segment) {
+            if !held
+                || self.retired_in_the_log(order, segment)
+                || resolved
+                || reversed(order, segment)
+            {
                 continue;
             }
             let Some(Hold::Route(held)) = holds.get(&(order.clone(), segment.clone())) else {
@@ -447,7 +476,7 @@ impl Segments {
             let (Some(order_id), Some(segment_id)) = (Id::new(order), Id::new(segment)) else {
                 continue;
             };
-            if moved_on {
+            if moved_on || self.retired_in_the_log(order, segment) {
                 continue;
             }
             let _ = exposures.hold_resting(&order_id, &segment_id, provider, asset, amount);

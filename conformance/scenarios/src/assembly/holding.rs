@@ -358,6 +358,52 @@ impl Core {
         &mut self.holdings
     }
 
+    /// A hand-on's withdrawal of `amount` of `order`'s value for `route`, through Core's own [`Wallets`], as the mover
+    /// asks it, where the log holds `resting` of the order at the route's first node and the account's module may have
+    /// restarted: a test hook (`T-020-46`) for an order of two values at one node, which the kit's routes don't make.
+    /// Where the module restarted, a transaction of Core's own is drawn for the restore, as `move_stuck` draws it.
+    ///
+    /// # Errors
+    ///
+    /// The withdrawal's refusal.
+    pub fn withdraw_for_a_hand_on(
+        &mut self,
+        route: &[SegmentPlan],
+        order: &str,
+        amount: &str,
+        resting: &str,
+    ) -> Result<HandedOnStart, StartError> {
+        let node = match route.first().map(|s| &s.from.node) {
+            Some(rutent_contracts::provider_role::NodeRef::Inner(node)) => node.as_str().to_owned(),
+            _ => return Err(StartError::NoRecord),
+        };
+        let restarted = self.holdings.restarted(&self.fleet.platform, &node);
+        let restore = restarted.then(|| self.fresh.id());
+        let mut held = BTreeMap::new();
+        if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
+            held.insert((node, order.to_owned()), total);
+        }
+        let readings = self.readings.clone();
+        readings.refresh(&self.fleet.platform.world);
+        let running = RefCell::new(super::Running {
+            platform: &mut self.fleet.platform,
+            clock: &self.clock,
+            faults: &mut self.faults,
+            feed: &mut self.feed,
+            log: &self.log,
+            swap_to: self.swap_to.as_deref_mut(),
+            readings: &readings,
+        });
+        let mut wallets = HeldWallets {
+            holdings: &mut self.holdings,
+            running: &running,
+            bounds: &self.bounds,
+            restore,
+            resting: held,
+        };
+        wallets.withdraw(route, order, amount, &mut |_| true)
+    }
+
     /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
     /// holding account is asked anything (`T-020-17`). The acceptance and the decision record it names are the log's.
     pub fn accepted_linked(&mut self, route: AcceptedRoute) {
