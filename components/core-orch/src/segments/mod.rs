@@ -716,6 +716,21 @@ pub struct Segments {
     /// The transactions of the reversals Core carried out for each order: what a private node's publisher's record may
     /// list besides the order's segments, and be read (`REQ-ORD-41`, `T-020-47`).
     reversal_txs: BTreeMap<String, Vec<Id>>,
+    /// The routes each order ran: the record that chose its first route and each route recalculated since, in the order
+    /// the log took them, rebuilt with the order's state by a Core that reopens (`T-020-47`).
+    routes_ran: BTreeMap<String, (Id, Vec<Recalculated>)>,
+}
+
+/// A route recalculated for a part of an order: the record that chose it, and how many of the part's segments had
+/// settled by then, which is what ran on the routes before it ([`Segments::routes_ran`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recalculated {
+    /// The part.
+    pub part: Id,
+    /// The router's decision record of the new route, by id.
+    pub record: Id,
+    /// How many of the part's segments had settled when it was recalculated.
+    pub settled_before: usize,
 }
 
 /// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
@@ -1122,9 +1137,14 @@ impl Segments {
         let Some(mut order) = Stm::open(first) else {
             return false;
         };
+        self.note_route(None, first);
         for input in rest {
             if input.subject.order.as_str() == order.order_id.as_str() {
-                order = Stm::transition(&order, input);
+                let next = Stm::transition(&order, input);
+                if next.last_input.outcome == (stm::Outcome::Applied {}) {
+                    self.note_route(Some(&order), input);
+                }
+                order = next;
             }
         }
         self.orders.insert(
@@ -1420,8 +1440,9 @@ impl Segments {
         let next = Stm::transition(&tracked.order, input);
         let applied = next.last_input.outcome == (stm::Outcome::Applied {});
         if applied {
-            tracked.order = next;
+            let before = std::mem::replace(&mut tracked.order, next);
             tracked.since = clock.now();
+            self.note_route(Some(&before), input);
             // A recalculated route replaces the one a wait built and not yet recorded was judged on: that wait goes
             // with it, and the new route's floor is judged afresh (`T-020-10b`).
             if let (Observed::RouteRecalculated { .. }, Some(part)) =
@@ -1597,6 +1618,65 @@ impl Segments {
             .and_then(|f| f.started)
     }
 
+    /// The routes `order` ran: the id of the record that chose its first route, and each route recalculated or
+    /// re-destined since with what had settled in its part by then, in the order the log took them.
+    pub fn routes_ran(&self, order: &Id) -> Option<(&Id, &[Recalculated])> {
+        self.routes_ran
+            .get(order.as_str())
+            .map(|(first, later)| (first, later.as_slice()))
+    }
+
+    /// Notes the route `input` chooses for its order or part, `before` being the order as it stood: what the routes
+    /// before it came to is what had settled in the part by now.
+    fn note_route(&mut self, before: Option<&stm::Order>, input: &RecordedInput) {
+        let order = input.subject.order.as_str().to_owned();
+        match &input.observed {
+            Observed::RouteChosen {
+                decision_record, ..
+            } => {
+                if let Some(record) = Id::new(decision_record.as_str()) {
+                    self.routes_ran
+                        .entry(order)
+                        .or_insert_with(|| (record, Vec::new()));
+                }
+            }
+            Observed::RouteRecalculated {
+                decision_record, ..
+            }
+            | Observed::DestinationChanged {
+                decision_record, ..
+            } => {
+                let (Some(part), Some(before)) = (&input.subject.part, before) else {
+                    return;
+                };
+                let (Some(part), Some(record)) = (
+                    Id::new(part.as_str()),
+                    Id::new(decision_record.as_str()),
+                ) else {
+                    return;
+                };
+                let settled_before = before
+                    .parts
+                    .iter()
+                    .find(|p| p.part_id.as_str() == part.as_str())
+                    .map_or(0, |p| {
+                        p.segments
+                            .iter()
+                            .filter(|s| s.state == stm::SegmentState::Settled)
+                            .count()
+                    });
+                if let Some((_, later)) = self.routes_ran.get_mut(&order) {
+                    later.push(Recalculated {
+                        part,
+                        record,
+                        settled_before,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Whether `segment` of `order` failed and owes a reversal that can come, as the order Core follows has it: a
     /// failed deposit's reversal never applies (its value rests where it was, for the customer to choose,
     /// `REQ-ORD-43`), so it is never timed here.
@@ -1658,6 +1738,7 @@ impl Segments {
         let Some(order) = Stm::open(chosen) else {
             return false;
         };
+        self.note_route(None, chosen);
         self.orders.insert(
             order.order_id.as_str().to_owned(),
             Tracked {

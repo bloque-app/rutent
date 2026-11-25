@@ -50,6 +50,12 @@ pub enum Unreported {
     NotShown(NotShown),
     /// The price wasn't recorded.
     Price(PriceError),
+    /// A record that chose a route of the order chose none: there is nothing to price.
+    NoRoute,
+    /// Core holds no figures for a segment of the order's last parts: what its result that counted states isn't kept.
+    NotKept(Id),
+    /// A record of a route the order ran isn't held, so the route can't be priced.
+    RecordNotHeld(Id),
 }
 
 /// A route an order ran, as the price takes it: its record, and what ran of it by order part. A route that ran whole
@@ -106,19 +112,19 @@ pub fn report_price(
         return Ok(None);
     }
     if routes.iter().any(|r| r.record.chosen().is_none()) {
-        return Ok(None);
+        return Err(Unreported::NoRoute);
     }
     let mut executed = Vec::new();
     for part in &followed.parts {
         for segment in &part.segments {
             let Some(segment) = Id::new(segment.segment_id.as_str()) else {
-                return Ok(None);
+                return Err(Unreported::NotShown(NotShown::Unexplained));
             };
             let (Some(charged), Some(stated_out)) = (
                 segments.charged(order, &segment),
                 segments.stated_out(order, &segment),
             ) else {
-                return Ok(None);
+                return Err(Unreported::NotKept(segment));
             };
             executed.push(ExecutedSegment {
                 executed: Executed {
@@ -169,4 +175,82 @@ fn chosen(record: &DecisionRecord) -> Result<&rutent_contracts::router_api::Cand
     record
         .chosen()
         .ok_or(Unreported::NotShown(NotShown::NotTheRecords))
+}
+
+/// Reports the executed price of `order` from what Core holds of the routes it ran ([`Segments::routes_ran`], rebuilt
+/// from the log by a Core that reopens): the record that chose each route, read through `records`, and what had settled
+/// in a part when it was recalculated, which is what ran on the routes before. Otherwise as [`report_price`].
+///
+/// # Errors
+///
+/// As [`report_price`], and [`Unreported::RecordNotHeld`] where `records` holds none of a route's.
+pub fn report_logged_price(
+    desk: PriceDesk<'_>,
+    order: &Id,
+    segments: &Segments,
+    records: &dyn Fn(&Id) -> Option<DecisionRecord>,
+) -> Result<Option<Reported>, Unreported> {
+    let (Some((first, later)), Some(followed)) = (segments.routes_ran(order), segments.order(order))
+    else {
+        return Ok(None);
+    };
+    let held = |id: &Id| records(id).ok_or_else(|| Unreported::RecordNotHeld(id.clone()));
+    let first_record = held(first)?;
+    let later_records = later
+        .iter()
+        .map(|r| held(&r.record))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ops = |record: &DecisionRecord, part: usize| {
+        record
+            .chosen()
+            .and_then(|c| c.parts.get(part))
+            .map_or(0, |p| p.operations.len())
+    };
+    let part_of = |id: &Id| followed.parts.iter().position(|p| p.part_id.as_str() == id.as_str());
+    // What settled in a part before its first recalculation ran on the first route; what settled between two of its
+    // recalculations, on the route the first of them chose.
+    let share = |at: Option<usize>, record: &DecisionRecord, part: usize| {
+        let mine = at.map(|k| &later[k]);
+        let next = later
+            .iter()
+            .enumerate()
+            .skip(at.map_or(0, |k| k + 1))
+            .find(|(_, r)| part_of(&r.part) == Some(part));
+        match next {
+            Some((_, next)) => next
+                .settled_before
+                .saturating_sub(mine.map_or(0, |m| m.settled_before)),
+            None => ops(record, if at.is_some() { 0 } else { part }),
+        }
+    };
+    let mut routes = Vec::with_capacity(1 + later.len());
+    if later.is_empty() {
+        routes.push(RouteRun::whole(&first_record));
+    } else {
+        let count = first_record.chosen().map_or(0, |c| c.parts.len());
+        routes.push(RouteRun {
+            record: &first_record,
+            parts: (0..count)
+                .map(|p| PartRan {
+                    order_part: p,
+                    candidate_part: p,
+                    ran: share(None, &first_record, p),
+                })
+                .collect(),
+        });
+        for (k, (event, record)) in later.iter().zip(&later_records).enumerate() {
+            let Some(part) = part_of(&event.part) else {
+                return Err(Unreported::NotShown(NotShown::Unexplained));
+            };
+            routes.push(RouteRun {
+                record,
+                parts: vec![PartRan {
+                    order_part: part,
+                    candidate_part: 0,
+                    ran: share(Some(k), record, part),
+                }],
+            });
+        }
+    }
+    report_price(desk, order, &routes, segments)
 }

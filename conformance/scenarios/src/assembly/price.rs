@@ -6,13 +6,12 @@
 
 use std::collections::BTreeMap;
 
-use rutent_core_orch::closing::{PriceDesk, Reported, RouteRun, Unreported, report_price};
-use rutent_core_orch::quote::PartRan;
+use rutent_core_orch::closing::{PriceDesk, Reported, Unreported, report_logged_price};
 use rutent_core_orch::quote::Shown;
 
 use rutent_contracts::core_internal::Receipt;
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::router_api::{DecisionRecord, Id};
+use rutent_contracts::router_api::Id;
 
 use super::{Core, kit};
 
@@ -26,16 +25,28 @@ pub(super) struct Priced {
 impl Core {
     /// Core's closing of `order`, run under `record`: where the order is complete, its executed price is reported
     /// once. A price the log can't take now is tried again by the next run.
-    pub(super) fn close(&mut self, order: &Id, record: &DecisionRecord) {
-        let ran = self.life.ran_on(order, record);
-        let routes = routes_run(&ran);
+    pub(super) fn close(&mut self, order: &Id) {
+        // The record of each route the order ran, as Core signed it and the log names it by digest.
+        let mut records = BTreeMap::new();
+        if let Some((first, later)) = self.segments.routes_ran(order) {
+            let ids: Vec<Id> = std::iter::once(first.clone())
+                .chain(later.iter().map(|r| r.record.clone()))
+                .collect();
+            for id in ids {
+                if let Ok(record) = self.record_of(order, &id) {
+                    records.insert(id.as_str().to_owned(), record);
+                }
+            }
+        }
         let desk = PriceDesk {
             prices: &mut self.reported,
             log: &mut self.general,
             clock: &self.clock,
             core: &kit::core(),
         };
-        match report_price(desk, order, &routes, &self.segments) {
+        match report_logged_price(desk, order, &self.segments, &|id: &Id| {
+            records.get(id.as_str()).cloned()
+        }) {
             Ok(Some(reported)) => {
                 self.closed.unreported.remove(order.as_str());
                 self.closed
@@ -66,44 +77,4 @@ impl Core {
     pub fn price_unreported(&self, order: &Id) -> Option<&Unreported> {
         self.closed.unreported.get(order.as_str())
     }
-}
-
-/// The routes an order ran as the price takes them: the first over all its parts, the part recalculated cut to what
-/// settled on it, and each recalculated route over that part alone.
-fn routes_run(ran: &[(DecisionRecord, Option<usize>)]) -> Vec<RouteRun<'_>> {
-    if let [(only, _)] = ran {
-        return vec![RouteRun::whole(only)];
-    }
-    let ops = |record: &DecisionRecord, part: usize| {
-        record
-            .chosen()
-            .and_then(|c| c.parts.get(part))
-            .map_or(0, |p| p.operations.len())
-    };
-    ran.iter()
-        .enumerate()
-        .map(|(k, (record, settled))| {
-            let parts = if k == 0 {
-                let count = record.chosen().map_or(0, |c| c.parts.len());
-                (0..count)
-                    .map(|p| PartRan {
-                        order_part: p,
-                        candidate_part: p,
-                        ran: if p == 0 {
-                            settled.unwrap_or_else(|| ops(record, 0))
-                        } else {
-                            ops(record, p)
-                        },
-                    })
-                    .collect()
-            } else {
-                vec![PartRan {
-                    order_part: 0,
-                    candidate_part: 0,
-                    ran: settled.unwrap_or_else(|| ops(record, 0)),
-                }]
-            };
-            RouteRun { record, parts }
-        })
-        .collect()
 }

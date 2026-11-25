@@ -15,6 +15,8 @@ use rutent_contracts::state_machine::{Observed, OrderState, SegmentState};
 use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::Core;
+use rutent_scenarios::assembly::machine::Reference;
+use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
 
 /// Whether `observed` is a wait at the customer's floor.
@@ -515,6 +517,40 @@ fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
     );
     core.run(&order).expect("runs again");
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
+}
+
+/// A Core that reopens mid-recalculation, the order on its second route and the final deposit refused twice, rebuilds
+/// the routes the order ran from the log, so the price it reports once the order completes on a third route is of the
+/// first route's withdrawal and the last route's deposit, as the Core that ran on would report it (`REQ-QTE-7`,
+/// `T-020-47`).
+// verifies: REQ-QTE-7, NFR-6
+#[test]
+fn executed_price_is_reported_correctly_after_core_reopens_mid_recalculation() {
+    let scenario = Scenario::new("failure", "AC-40", given(&[RESERVE]));
+    let (mut core, session) = core_with("AC-40", &[RESERVE]);
+    for _ in 0..2 {
+        core.world()
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    }
+    let (order, _) = run(
+        &mut core,
+        within("req-reopened-routes", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let Recalculation::Recalculated(second) = core.recalculate(&order).expect("tried") else {
+        panic!("a second route");
+    };
+    core.run_recalculated(&order, &second).expect("it runs");
+    assert!(core.price_reported(&order).is_none(), "not complete yet");
+    let mut core = scenario.reopen(core, 1, &mut Reference);
+    let Recalculation::Recalculated(third) = core.recalculate(&order).expect("tried") else {
+        panic!("a third route");
+    };
+    core.run_recalculated(&order, &third).expect("it runs");
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    assert!(core.price_unreported(&order).is_none());
+    assert!(core.price_reported(&order).is_some(), "reported");
+    let price = core.price_of(&order).expect("its figures");
+    assert_eq!(price.segments.len(), 2, "the withdrawal and the deposit that settled");
 }
 
 /// The seconds each operation takes in the p99 scenario, and what twice it is.
