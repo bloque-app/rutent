@@ -378,7 +378,10 @@ impl Core {
             Some(rutent_contracts::provider_role::NodeRef::Inner(node)) => node.as_str().to_owned(),
             _ => return Err(StartError::NoRecord),
         };
-        let restarted = self.holdings.restarted(&self.fleet.platform, &node);
+        let restarted = self
+            .holdings
+            .borrow()
+            .restarted(&self.fleet.platform, &node);
         let restore = restarted.then(|| self.fresh.id());
         let mut held = BTreeMap::new();
         if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
@@ -740,8 +743,9 @@ impl Core {
         };
         let mut key = RealKey::assembly();
         let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let mut holdings = self.holdings.borrow_mut();
         let mut landing = Landing {
-            holdings: &mut self.holdings,
+            holdings: &mut holdings,
             platform: &mut self.fleet.platform,
             operator: &operator,
             fresh: &mut self.fresh,

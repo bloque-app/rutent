@@ -141,7 +141,10 @@ impl Stuck {
                 .collect()
         };
         for (_, v) in verified() {
-            let What::StuckDecide { request, decision } = &v.what else {
+            let What::StuckDecide {
+                request, decision, ..
+            } = &v.what
+            else {
                 continue;
             };
             if !matches!(v.outcome, Outcome::Permitted {}) {

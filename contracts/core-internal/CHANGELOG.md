@@ -30,7 +30,7 @@
     and `party_to_the_order` takes a permitted decide step's mover, or a resolution's, as a party only where it is a
     holder the order involves by the log's other entries or its decide step records `held_at`. Five admission cases
     (four of the new row, `--at` on a world with two inner nodes on the order's route; one confirmation on a mover held
-    at a node); two earlier ones on an untied mover are now refused on `party`. 115 relations.
+    at a node); two earlier ones on an untied mover are now refused on `party`.
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).
   - `order_opened.inputs` (`T-020-46`): the salted commitment of the operator's statement of an order's inputs, a new
@@ -46,8 +46,8 @@
     README no longer says, is here.
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. With `T-020-44`'s and `T-020-50`'s rounds, merged beside it: twenty-nine schemas, 181 valid fixtures and 182
-  invalid, 757 admission cases and 58 attribution cases; 115 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
+  row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s and `T-021-16`'s rounds, merged beside it: twenty-nine schemas, 181 valid
+  fixtures and 182 invalid, 762 admission cases and 58 attribution cases; 116 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

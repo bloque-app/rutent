@@ -82,15 +82,17 @@ impl Core {
     /// wallet a module the operator publishes, its node public, the way to its account recorded, as
     /// [`Core::install_wallet`] listed it (`REQ-CAT-23`, `T-020-46`).
     pub(super) fn relist_holdings(&mut self) {
-        let accounts: Vec<(String, String)> = self
-            .holdings
-            .attributions()
-            .into_iter()
-            .filter_map(|(node, _)| {
-                let provider = self.holdings.account(&node)?.provider().to_owned();
-                Some((node, provider))
-            })
-            .collect();
+        let accounts: Vec<(String, String)> = {
+            let holdings = self.holdings.borrow();
+            holdings
+                .attributions()
+                .into_iter()
+                .filter_map(|(node, _)| {
+                    let provider = holdings.account(&node)?.provider().to_owned();
+                    Some((node, provider))
+                })
+                .collect()
+        };
         for (node, provider) in accounts {
             let _ = self.catalogue.publish_operator_module(&provider);
             let _ = self.catalogue.add_public_node(&node);
