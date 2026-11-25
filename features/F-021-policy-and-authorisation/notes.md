@@ -1967,8 +1967,8 @@ untouched. No `Source` is added, so no test kit or assembly needs a new answer.
     admitting each (`Kept`, through `admit_entry`); a refusing deployment refuses the agent. Red first: `Refused` for
     `Allowed`.
 - **Defaults, reversible, each failing closed.**
-  1. A filed order's requester is the read's own word, which policy can't check against the log: intake must fill it
-     from its own record of the filed request (below). A customer reading a filed order asks no record.
+  1. ~~A filed order's requester is the read's own word.~~ Changed in round 4: policy asks the order's record
+     (`Source::Requester`); the read's word alone is never enough.
   2. The operator reads a filed order's status as an order's state (the contract's README), on `ReadOrderState`.
   3. A regulator or a checker reads a filed order only by a grant whose scope is exactly that filed read.
 - **For `T-020-52` (intake's side, not built here).** For every status intake tells of an order whose acceptance the
@@ -1978,7 +1978,9 @@ untouched. No `Source` is added, so no test kit or assembly needs a new answer.
   tells the status only on `ReadOutcome::Allowed`; on a refusal it tells no more than a refused reader is told
   (`T-023-01`). Once the order's acceptance is in the log, it reads `Reads::OrderState { order }` instead, which policy
   answers from the log's record (`Source::OrderParties`). A customer's own login and the operator's listed login read
-  through the same call. Policy records each check.
+  through the same call. Policy records each check. Since round 4 policy also asks `Source::Requester(order)` of the
+  order's record, so the deployment's sources must answer it from intake's own record of the filed request, as the
+  assembly's `Records` does from `FiledOrders::opened`'s records (`orders`).
 - **Gaps, with owners.** Intake's calls above: `T-020-52`.
 - **Rule-off** (`cargo test -p rutent-core-authz --lib`, each switched off alone by `scratchpad/t-021-16/ruleoff.py`,
   the file restored from its text before the mutation and touched):
@@ -2192,6 +2194,27 @@ folded into core-internal's unreleased 1.0.0; `components/core-authz/` (`stuck/`
   | the log's party rule: `held_at` makes the mover a party | the same three |
   | the port's mirror of the decide-step arm | `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case` |
   | policy records `held_at` on its yes | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+
+### T-021-16, round 4 (the review of `f4a125c9`, PR #305)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Should-fix: the filed read checked the read against itself (`requester == party`), so a customer naming itself read any filed order | The customer arm, and so an agent's, asks the order's record (`Source::Requester(order)`, the input the reader's party) beside the read's naming it: a no or nothing refuses `not_permitted` before the deployment is asked, a record out of reach leaves the fixed rules not known, which a read answers as refused | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused` (the reviewer's `mallory`, on no, nothing and out of reach; `cust-1`, whom the record names, reads it); `agent_with_read_scope_reads_its_partys_filed_order` now asks the record |
+| 2 | Low: `held_at` and its row took any inner node of any route | Narrowed to the stuck part's resting node: `resting_node(order, part, history)`, public in core-internal, the state machine's `value_at` of the part as the log's taken inputs leave it. The row gains field `at`; policy asks the register for that node alone | `stuck-decide-held-at-is-a-held-node--at` (a world whose `p2` runs through `ledger-mid` while `p3` rests at `ledger-in`; `mid-wallet` held at `ledger-mid` refused on `at`); the core-authz test's two-node cases (`mid-wallet` refused, `plain-wallet` permitted and recorded at `ledger-in`) |
+| 3 | Low: the assembly borrowed `Holdings` for `HoldingAccount` | `try_borrow`, a failed borrow answering out of reach | none: no flow holds the register mutably while policy is consulted |
+
+- **What changed besides.** core-orch's port needed no edit (it reads `held_at`'s presence, which the row now holds to the
+  resting node). The `--at` world is an admission case, not a `world--` log: its history is `world--sdh`'s with `p2`'s
+  three segments moved to `ledger-mid` (the withdrawal ends there, the exchange stays there, the deposit leaves from
+  there). A first attempt moved `p3-s2`, an exchange, off one node, which the state machine refuses ("an exchange
+  stays at one node"): a test artefact, fixed by moving `p2` instead.
+- **Rule-off** (`scratchpad/t-021-16/ruleoff4.py`, each alone, restored and touched, `contracts/src/lib.rs` with them):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a filed read asks the order's record of its requester | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused`; `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the row's `held_at` is the stuck part's resting node (field `at`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | policy asks the register for the resting node alone (another node asked first) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
 
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 

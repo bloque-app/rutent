@@ -32,10 +32,12 @@
 //! - a customer reads only an order, its state and age, or a segment of it, whose requester, beneficiary or payer it
 //!   is, which the order's record says (`Source::OrderParties`), and never the trail;
 //! - a customer reads a filed order's status (`Reads::FiledOrder`), an order whose acceptance the log doesn't hold
-//!   yet, only where its party is the filed request's requester the read names (`T-021-16`); no record is asked,
-//!   since the log holds none of the order's parties, so the requester is the caller's word, which intake takes from
-//!   its own record of the filed request (`T-020-52`). An agent reads one only within the scope its party set for
-//!   reading (`Scope::CheckRead`, `T-021-05`'s rule), and each read is recorded, allowed or refused;
+//!   yet, only where its party is the filed request's requester the read names and the order's record says that
+//!   party is its requester (`Source::Requester`: intake's own record of the filed request, since the log holds none
+//!   of the order's parties, `T-021-16`); the read's word alone is never enough. A record that says nothing refuses
+//!   (`not_permitted`, as an order that isn't the reader's), and one out of reach leaves it not known, which a read
+//!   answers as refused. An agent reads one only within the scope its party set for reading (`Scope::CheckRead`,
+//!   `T-021-05`'s rule), and each read is recorded, allowed or refused;
 //! - the operator reads an order's state and age, and a filed order's status, without a permission, through a login
 //!   the deployment's register of permissions lists for it (`Permission::ReadOrderState`, asked by the login's
 //!   `acts`, `REQ-ORD-5`);
@@ -297,7 +299,8 @@ fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
 /// - a customer reads an order, its state and age, or a segment of it, the order's record naming it a party, and
 ///   never the trail;
 /// - a customer reads a filed order's status, its acceptance not logged yet, where its party is the filed request's
-///   requester the read names (`T-021-16`), asking no record; an agent only within its party's scope for reading;
+///   requester the read names and the order's record says so (`Source::Requester`, `T-021-16`); an agent only within
+///   its party's scope for reading;
 /// - the operator reads an order's state and age, and a filed order's status, without a permission, the register
 ///   listing its login for that (`REQ-ORD-5`);
 /// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order,
@@ -328,10 +331,17 @@ fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
         | (Role::Provider, Read::Trail {} | Read::Order { .. } | Read::OrderState { .. }) => {
             return None;
         }
-        // A filed order's status, its acceptance not logged yet, so its parties are no record's to say (`T-020-45`,
-        // `T-021-16`): read by the filed request's requester, which the read names, and no other customer. An agent
-        // of the requester's is held to the scope its party set for reading by `T-021-05`'s rule, before this one.
-        (Role::Customer, Read::FiledOrder { requester, .. }) if requester == party => Vec::new(),
+        // A filed order's status, its acceptance not logged yet, so the log's record of its parties can't say
+        // (`T-020-45`, `T-021-16`): read by the filed request's requester only, the read naming the reader's party
+        // and the order's record saying that party is its requester (`Source::Requester`, intake's own record of the
+        // filed request), never the read's word alone (the review of `f4a125c9`). An agent of the requester's is held
+        // to the scope its party set for reading by `T-021-05`'s rule, before this one.
+        (Role::Customer, Read::FiledOrder { order, requester }) if requester == party => {
+            vec![Need {
+                input: party.clone(),
+                from: Source::Requester(order.clone()),
+            }]
+        }
         // The operator reads an order's state and age, and a filed order's status, without a permission, through a
         // login the register lists for it (`REQ-ORD-5`); anything else it reads rests on a permission.
         (Role::Operator, Read::OrderState { .. } | Read::FiledOrder { .. }) if !permitted => {

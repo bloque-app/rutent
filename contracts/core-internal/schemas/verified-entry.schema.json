@@ -958,7 +958,7 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         },
         "held_at": {
-          "description": "The inner node whose holding account the deployment's register says the decision's mover holds, as policy asked it: present exactly where nothing else the log holds ties that mover to the order (T-021-16).",
+          "description": "The inner node the stuck part's value rests at, whose holding account the deployment's register says the decision's mover holds, as policy asked it: present exactly where nothing else the log holds ties that mover to the order (T-021-16).",
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
         }
       }

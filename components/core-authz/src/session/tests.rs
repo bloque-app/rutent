@@ -1378,6 +1378,8 @@ fn agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_re
         engine.policy.1.ruled, 0,
         "the deployment's policy is never asked"
     );
+    // What these two asked of the order's record is counted elsewhere: only the reads below are held to asking none.
+    engine.sources.asked.clear();
 
     for (n, reader) in [
         agent_of("acme-treasury", "agent-8"),
@@ -1409,17 +1411,31 @@ fn agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_re
     );
 }
 
+/// The order's record asked whether `party` is the requester of `order`: intake's own record of the filed request.
+fn requester_of(party: &str, order: &str) -> Need {
+    Need {
+        input: id(party),
+        from: Source::Requester(id(order)),
+    }
+}
+
 /// An agent its party scoped for reading reads its party's filed order's status, as its party's person does, the
-/// deployment's policy still deciding; the log admits each read allowed, and the order's record is never asked, since
-/// the log holds no acceptance of it. The operator's login the register lists for an order's state reads it as it
-/// reads an order's state; a deployment that refuses refuses the agent too.
+/// order's record saying that party is its requester and the deployment's policy still deciding; the log admits each
+/// read allowed. The operator's login the register lists for an order's state reads it as it reads an order's state;
+/// a deployment that refuses refuses the agent too.
 // verifies: REQ-AUZ-7
 #[test]
 fn agent_with_read_scope_reads_its_partys_filed_order() {
     let mut engine = Engine::with_policy(
         Kept::world(),
         Rules::permitting(),
-        Says::of(vec![(reads_state("op-login-2"), Reply::Given(Said::Yes))]),
+        Says::of(vec![
+            (reads_state("op-login-2"), Reply::Given(Said::Yes)),
+            (
+                requester_of("acme-treasury", "ord-19"),
+                Reply::Given(Said::Yes),
+            ),
+        ]),
     );
     let fixture: ReadCheck = valid!("read-check-by-an-agent-of-a-filed-orders-status");
     assert_eq!(
@@ -1446,9 +1462,64 @@ fn agent_with_read_scope_reads_its_partys_filed_order() {
         read_recorded(&mut engine, &by_operator),
         ReadOutcome::Allowed {}
     );
-    assert_eq!(engine.sources.asked, [reads_state("op-login-2")]);
+    assert_eq!(
+        engine.sources.asked,
+        [
+            requester_of("acme-treasury", "ord-19"),
+            requester_of("acme-treasury", "ord-19"),
+            reads_state("op-login-2"),
+        ]
+    );
     assert_eq!(engine.policy.1.ruled, 3, "the deployment decided each");
 
-    let mut refusing = Engine::with_policy(Kept::world(), Rules::refusing(), Says::of(Vec::new()));
+    let mut refusing = Engine::with_policy(
+        Kept::world(),
+        Rules::refusing(),
+        Says::of(vec![(
+            requester_of("acme-treasury", "ord-19"),
+            Reply::Given(Said::Yes),
+        )]),
+    );
     assert_eq!(read_recorded(&mut refusing, &fixture), refused());
+}
+
+/// The reviewer's probe of `f4a125c9`: `mallory`, a customer, naming itself the requester of `cust-1`'s filed order,
+/// is refused, its refusal recorded, whatever the deployment's policy would say: the order's record says `mallory`
+/// isn't its requester, says nothing of the order, or can't be reached. The read's own word that its reader is the
+/// requester is never enough; `cust-1`, which the record names, reads it.
+// verifies: REQ-AUZ-7, REQ-AUD-12
+#[test]
+fn customer_naming_itself_the_requester_of_anothers_filed_order_is_refused() {
+    let mallory = || actor("mallory", "mallory", Role::Customer);
+    for (n, says) in [Reply::Given(Said::No), Reply::Missing, Reply::Unreachable]
+        .into_iter()
+        .enumerate()
+    {
+        let mut engine = Engine::with_policy(
+            Kept::world(),
+            Rules::permitting(),
+            Says::of(vec![
+                (requester_of("mallory", "ord-30"), says.clone()),
+                (requester_of("cust-1", "ord-30"), Reply::Given(Said::Yes)),
+            ]),
+        );
+        let probe = filed(&format!("req-64{n}"), mallory(), "ord-30", "mallory");
+        assert_eq!(read_recorded(&mut engine, &probe), refused(), "{says:?}");
+        assert_eq!(engine.sources.asked, [requester_of("mallory", "ord-30")]);
+        // A no or nothing refuses before the deployment is asked; a record out of reach leaves the fixed rules not
+        // known, which a read answers as refused, whatever the deployment then says.
+        if !matches!(says, Reply::Unreachable) {
+            assert_eq!(
+                engine.policy.1.ruled, 0,
+                "{says:?}: the deployment is never asked"
+            );
+        }
+        let own = filed(
+            &format!("req-65{n}"),
+            actor("cust-1", "cust-1", Role::Customer),
+            "ord-30",
+            "cust-1",
+        );
+        assert_eq!(read_recorded(&mut engine, &own), ReadOutcome::Allowed {});
+    }
 }

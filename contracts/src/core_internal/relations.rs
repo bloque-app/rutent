@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use super::Violation;
-use super::standing::{decided_part, standing};
+use super::standing::{decided_part, resting_node, standing};
 use super::types::*;
 use crate::provider_role::EvidenceGrade;
 use crate::router_api::Id;
@@ -1950,13 +1950,20 @@ pub static RELATIONS: [Relation; 115] = [
         spec: &["REQ-AUZ-4", "REQ-CAT-23"],
         quantifier: Quantifier::Exists,
         refusal: "a decide step's held_at names an inner node a segment ends at on a route this log gave the order",
-        fields: &[(
-            "by",
-            "a decide step names held_at only where nothing else this log holds ties its mover to the order",
-        )],
+        fields: &[
+            (
+                "at",
+                "a decide step's held_at is the inner node its stuck part's value rests at",
+            ),
+            (
+                "by",
+                "a decide step names held_at only where nothing else this log holds ties its mover to the order",
+            ),
+        ],
         // Policy records where the deployment's register of holding accounts placed a mover the log ties to nothing
-        // of the order (`T-021-16`): the node must be one the order's value can rest at, and the field never a second
-        // basis for a mover the log already ties.
+        // of the order (`T-021-16`): the node must be the one the stuck part's value rests at (`resting_node`, as
+        // `T-020-40`'s party reads a holding account's holder), not any node of its routes, and the field never a
+        // second basis for a mover the log already ties.
         cites: |e, _| match &e.what {
             What::StuckDecide {
                 held_at: Some(_), ..
@@ -1985,7 +1992,11 @@ pub static RELATIONS: [Relation; 115] = [
                 route_segments(&i.observed).iter().any(|s| {
                     matches!(&s.to.node, crate::provider_role::NodeRef::Inner(n) if n == node.as_str())
                 }),
-                &[!holder_of_the_order(&request.order, by, h)],
+                &[
+                    resting_node(request.order.as_str(), request.part.as_str(), h).as_deref()
+                        == Some(node.as_str()),
+                    !holder_of_the_order(&request.order, by, h),
+                ],
             )
         },
     },

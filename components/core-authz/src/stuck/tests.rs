@@ -1474,8 +1474,9 @@ fn held_by(request: &Value, by: &str, request_id: &str) -> StuckDecide {
 /// refused, its refusal recorded, though the deployment's policy would permit it; a permitted decide step naming that
 /// provider, earlier in the log, doesn't make it one the order involves. The log admits every entry. A hand-on's mover
 /// is held the same way, and a holding withdrawal's holder is one of the order it was handed on from. Where the log
-/// ties the mover to nothing, the wallet holding the account of a node the order's route ends a segment at moves it,
-/// by the deployment's register of holding accounts; a wallet holding a node the route doesn't reach is refused.
+/// ties the mover to nothing, the wallet holding the account of the node the stuck part's value rests at moves it, by
+/// the deployment's register of holding accounts, and the entry records that node; a wallet holding a node the route
+/// doesn't reach, or another node of the route, is refused.
 // verifies: REQ-AUZ-4
 #[test]
 fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
@@ -1563,33 +1564,42 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
     );
 
     // A hand-on through a public node's wallet (`T-020-33`): the log ties the wallet to nothing of the order, so the
-    // register of holding accounts is asked, for the order's held nodes alone. The wallet holding the account of
-    // `ledger-in`, where segments of `ord-1`'s route end, moves it; a wallet holding the account of a node the order's
-    // route doesn't reach is refused, and so is the first wallet once the register can't be reached (not known).
-    let wallet_hand_on = |register: Register, by: &str, request_id: &str| {
-        let (mut policy, request) = engine("sdh", register);
-        policy.log.admits = true;
-        let mut hand_on = decision_by(&request, &alice(), request_id);
-        let Resolution::HandOn { by: holder, .. } = &mut hand_on.resolution else {
-            panic!("the world's resolution is a hand-on");
+    // register of holding accounts is asked, for the node the stuck part's value rests at alone (`ledger-in`: `p3-s1`
+    // settled there, `p3-s2` waits). The wallet holding that node's account moves it; a wallet holding the account of
+    // a node the order's route doesn't reach is refused, and so is the first wallet once the register can't be
+    // reached (not known). On the contract's world with two inner nodes on the order's route
+    // (`stuck-decide-held-at-is-a-held-node--at`: `p2` runs through `ledger-mid`), the wallet of `ledger-mid`, a node of
+    // the route the stuck part's value doesn't rest at, is refused too.
+    let wallet_on =
+        |history: Option<Vec<(Receipt, Entry)>>, register: Register, by: &str, request_id: &str| {
+            let (mut policy, request) = engine("sdh", register);
+            if let Some(history) = history {
+                policy.log.entries = history;
+            }
+            policy.log.admits = true;
+            let mut hand_on = decision_by(&request, &alice(), request_id);
+            let Resolution::HandOn { by: holder, .. } = &mut hand_on.resolution else {
+                panic!("the world's resolution is a hand-on");
+            };
+            *holder = id(by);
+            let before = policy.log.entries.len();
+            let decided = policy.decide_stuck(&hand_on).unwrap();
+            assert_eq!(policy.log.entries.len(), before + 1, "{by}: recorded");
+            // The entry records the node the register placed the mover at, on a permit alone (`held_at`).
+            let Some((
+                _,
+                Entry::Verified(VerifiedEntry {
+                    what: What::StuckDecide { held_at, .. },
+                    ..
+                }),
+            )) = policy.log.entries.last()
+            else {
+                panic!("{by}: a decide step recorded");
+            };
+            (decided.outcome, held_at.clone())
         };
-        *holder = id(by);
-        let before = policy.log.entries.len();
-        let decided = policy.decide_stuck(&hand_on).unwrap();
-        assert_eq!(policy.log.entries.len(), before + 1, "{by}: recorded");
-        // The entry records the node the register placed the mover at, on a permit alone (`held_at`).
-        let Some((
-            _,
-            Entry::Verified(VerifiedEntry {
-                what: What::StuckDecide { held_at, .. },
-                ..
-            }),
-        )) = policy.log.entries.last()
-        else {
-            panic!("{by}: a decide step recorded");
-        };
-        (decided.outcome, held_at.clone())
-    };
+    let wallet_hand_on =
+        |register: Register, by: &str, request_id: &str| wallet_on(None, register, by, request_id);
     let with_wallets = |unreachable: bool| {
         let mut register = Register::of_the_world();
         register.kept.push((digest("31"), Some(id("ord-1"))));
@@ -1599,6 +1609,9 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
         register
             .holding_accounts
             .push(("ledger-far".to_owned(), id("far-wallet")));
+        register
+            .holding_accounts
+            .push(("ledger-mid".to_owned(), id("mid-wallet")));
         register.holdings_unreachable = unreachable;
         register
     };
@@ -1618,6 +1631,25 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
             },
             None
         )
+    );
+    let two_nodes = || admitted_history("stuck-decide-held-at-is-a-held-node--at");
+    assert_eq!(
+        wallet_on(
+            Some(two_nodes()),
+            with_wallets(false),
+            "mid-wallet",
+            "req-mid-wallet"
+        ),
+        (refuse(RefusalClass::NotPermitted), None)
+    );
+    assert_eq!(
+        wallet_on(
+            Some(two_nodes()),
+            with_wallets(false),
+            "plain-wallet",
+            "req-wallet-two"
+        ),
+        (Answer::Permit {}, Some(id("ledger-in")))
     );
     // A mover the log already ties records no node: the world's hand-on by `fx-desk`, a provider of its route.
     assert_eq!(

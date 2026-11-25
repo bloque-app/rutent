@@ -451,10 +451,14 @@ impl authz::Sources for Records {
             },
             Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
             // The wallet holding the node's account, by Core's own register of them (`T-021-16`): yes for it, no for
-            // another provider, nothing for a node with no account.
-            Source::HoldingAccount { node } => match self.holdings.borrow().account(node) {
-                Some(account) => said(account.provider() == input.as_str()),
-                None => Reply::Missing,
+            // another provider, nothing for a node with no account; out of reach where the register is held mutably
+            // elsewhere at the moment, so policy is never stopped on a borrow.
+            Source::HoldingAccount { node } => match self.holdings.try_borrow() {
+                Ok(holdings) => match holdings.account(node) {
+                    Some(account) => said(account.provider() == input.as_str()),
+                    None => Reply::Missing,
+                },
+                Err(_) => Reply::Unreachable,
             },
         }
     }

@@ -2320,8 +2320,8 @@ pub enum What {
         /// The inner node whose holding account the deployment's register says the decision's mover
         /// (`resolution.by`) holds, as policy asked it (`T-021-16`): present exactly where nothing else this log holds
         /// ties that mover to the order, as for a hand-on through a public node's wallet (`T-020-33`).
-        /// `stuck-decide-held-at-is-a-held-node` holds it to a node a segment of the order's routes ends at, and
-        /// only then is that mover a party to the order (`party_to_the_order`).
+        /// `stuck-decide-held-at-is-a-held-node` holds it to the inner node the stuck part's value rests at
+        /// (`resting_node`), and only then is that mover a party to the order (`party_to_the_order`).
         #[serde(
             default,
             deserialize_with = "some",

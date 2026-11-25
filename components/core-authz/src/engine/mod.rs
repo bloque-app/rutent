@@ -267,9 +267,9 @@ pub enum Source {
     },
     /// The deployment's register of holding accounts (`REQ-CAT-23`, `T-020-33`): whether the provider the input names
     /// holds the holding account of the inner node `node`. The log records no landing of value in a holding account,
-    /// so a stuck order's decision whose mover the log ties to nothing of the order asks it, and only for a node a
-    /// segment of a route the order was given ends at (`T-021-16`). It answers no, or nothing, for a node whose account
-    /// is another's or which has none.
+    /// so a stuck order's decision whose mover the log ties to nothing of the order asks it, and only for the node the
+    /// stuck part's value rests at (`T-021-16`). It answers no, or nothing, for a node whose account is another's or
+    /// which has none.
     HoldingAccount {
         /// The inner node, by its identifier.
         node: String,

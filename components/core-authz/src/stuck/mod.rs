@@ -74,8 +74,9 @@
 //!   holder of a holding account its value rested at (`T-020-40`'s parties, the holders alone). An earlier decide
 //!   step's or resolution's mover never counts, or the rule would rest on itself. The log records no landing of value
 //!   in a node's holding account, so where it ties the mover to nothing, the deployment's register of holding accounts
-//!   is asked (`Source::HoldingAccount`), only for a node a segment of the order's routes ends at: a hand-on through a
-//!   public node's wallet names that wallet (`T-020-33`). Otherwise the decision is refused, not permitted.
+//!   is asked (`Source::HoldingAccount`), only for the inner node the stuck part's value rests at (`resting_node`): a
+//!   hand-on through a public node's wallet names that wallet (`T-020-33`), and the decision's entry records the node
+//!   (`held_at`). Otherwise the decision is refused, not permitted.
 //! - **The move.** It carries out a decision the log holds as permitted, of its order, with the request and decision
 //!   it names, or it is refused. Its mover and that decision's decider are one actor, refused as the same actor
 //!   (`REQ-AUZ-4`, `REQ-AUZ-8`), or its mover is the desk of the provider the decision names, refused.
@@ -98,12 +99,12 @@
 use rutent_contracts::core_internal::calls::{
     AppendFailure, OutcomeDeclines, PolicyLog, StuckOrders,
 };
+use rutent_contracts::core_internal::resting_node;
 use rutent_contracts::core_internal::{
     Action, Actor, Answer, Decision, Entry, MoveOutcome, NotKnownCause, Outcome,
     OutcomeConfirmation, OutcomeDecline, OutcomeReport, Receipt, RefusalClass, Resolution, Role,
     StuckDecide, StuckMove, VerifiedEntry, What,
 };
-use rutent_contracts::provider_role::NodeRef;
 use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::{Observed, SegmentPlan};
 
@@ -448,42 +449,6 @@ fn involves_holder(entries: &[(Receipt, Entry)], order: &Id, by: &Id) -> bool {
     })
 }
 
-/// The inner nodes `order`'s value can rest at, by what the log holds: each inner node a segment ends at on a route the
-/// order was given (a taken `route_chosen`, `route_recalculated` or `destination_changed` input of the order, held as
-/// observed), each once, in log order. Never a node of another order's route, or one a segment only starts from.
-fn held_nodes(entries: &[(Receipt, Entry)], order: &Id) -> Vec<String> {
-    let mut nodes: Vec<String> = Vec::new();
-    for (_, entry) in entries {
-        let Entry::Verified(VerifiedEntry {
-            what: What::Input { input },
-            outcome: Outcome::Observed {},
-            ..
-        }) = entry
-        else {
-            continue;
-        };
-        if input.subject.order.as_str() != order.as_str() {
-            continue;
-        }
-        let plan: Vec<&SegmentPlan> = match &input.observed {
-            Observed::RouteChosen { parts, .. } => {
-                parts.iter().flat_map(|p| p.segments.iter()).collect()
-            }
-            Observed::RouteRecalculated { segments, .. }
-            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
-            _ => Vec::new(),
-        };
-        for segment in plan {
-            if let NodeRef::Inner(node) = &segment.to.node
-                && !nodes.contains(node)
-            {
-                nodes.push(node.clone());
-            }
-        }
-    }
-    nodes
-}
-
 impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     /// The register's word that `from` reaches `to`: a refusal for `class` where it does.
     fn reaches(&mut self, from: &Id, to: &Id, class: RefusalClass) -> Check {
@@ -581,44 +546,47 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         if customer != Check::Clear {
             return (customer, None);
         }
-        self.holder_check(&entries, &request.order, holder_of(&request.resolution))
+        self.holder_check(
+            &entries,
+            &request.order,
+            &request.part,
+            holder_of(&request.resolution),
+        )
     }
 
     /// Whether `by` is a holder `order` involves: by the log ([`involves_holder`]), or, where the log ties it to
-    /// nothing, by the deployment's register of holding accounts, asked only for the order's held nodes
-    /// ([`held_nodes`], `Source::HoldingAccount`): the holding account of a node a segment of a route the order was
-    /// given ends at, where the value of a hand-on through a public node's wallet rests (`T-020-33`). A yes for one
-    /// node clears it; a no or nothing for a node asks the next; none yes refuses, and a register out of reach, with
-    /// no yes, leaves the answer not known. A yes answers the node, which the decision's entry records as `held_at`,
-    /// so the log reads the mover as the order's only on it (`stuck-decide-held-at-is-a-held-node`).
+    /// nothing, by the deployment's register of holding accounts (`Source::HoldingAccount`), asked only for the inner
+    /// node the stuck `part`'s value rests at by the log (`resting_node`, `T-020-40`'s holder of a holding account its
+    /// value rested at): a hand-on through a public node's wallet names that node's wallet (`T-020-33`). A yes clears
+    /// it and answers the node, which the decision's entry records as `held_at`, so the log reads the mover as the
+    /// order's only on it (`stuck-decide-held-at-is-a-held-node`); a no or nothing refuses, as does a part whose value
+    /// rests at no inner node; a register out of reach leaves the answer not known.
     fn holder_check(
         &mut self,
         entries: &[(Receipt, Entry)],
         order: &Id,
+        part: &Id,
         by: &Id,
     ) -> (Check, Option<Id>) {
         if involves_holder(entries, order, by) {
             return (Check::Clear, None);
         }
-        let mut found = Check::Refuse(RefusalClass::NotPermitted);
-        for node in held_nodes(entries, order) {
-            // A node no identifier can name is none the log could record: it places no one.
-            let Some(held) = Id::new(node.as_str()) else {
-                continue;
-            };
-            let need = Need {
-                input: by.clone(),
-                from: Source::HoldingAccount { node },
-            };
-            match self.sources.supply(&need) {
-                Reply::Given(Said::Yes) => return (Check::Clear, Some(held)),
-                Reply::Given(Said::No) | Reply::Missing => {}
-                Reply::Unreachable => {
-                    found = Check::NotKnown(NotKnownCause::VerifierUnreachable);
-                }
-            }
+        let refused = (Check::Refuse(RefusalClass::NotPermitted), None);
+        // A node no identifier can name is none the log could record: it places no one.
+        let Some((node, held)) = resting_node(order.as_str(), part.as_str(), entries)
+            .and_then(|node| Id::new(node.as_str()).map(|held| (node, held)))
+        else {
+            return refused;
+        };
+        let need = Need {
+            input: by.clone(),
+            from: Source::HoldingAccount { node },
+        };
+        match self.sources.supply(&need) {
+            Reply::Given(Said::Yes) => (Check::Clear, Some(held)),
+            Reply::Given(Said::No) | Reply::Missing => refused,
+            Reply::Unreachable => (Check::NotKnown(NotKnownCause::VerifierUnreachable), None),
         }
-        (found, None)
     }
 
     /// The move's rules, read from the log: it carries out a permitted decision of its order, whose decider isn't its
