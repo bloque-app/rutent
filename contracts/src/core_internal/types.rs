@@ -3517,6 +3517,28 @@ pub struct FilingInputs {
     pub inputs: alloc::collections::BTreeMap<String, String>,
     /// What the router optimises the order's route for.
     pub objective: crate::router_api::Objective,
+    /// The judgements the route's tuples need of a person, as the filing named them; absent where it names none. The
+    /// kept statement fixes them with the rest of the filing, so a Core that reopens asks the route as it was asked.
+    #[serde(default, skip_serializing_if = "alloc::vec::Vec::is_empty")]
+    pub needs: alloc::vec::Vec<FilingNeed>,
+}
+
+/// A judgement a tuple's provider needs before it may be on a filed order's route: of which verifier, about which
+/// person and class, under the relying provider's subject reference (`REQ-CPL-6`, `T-020-51`). Schema:
+/// `urn:rutent:core-internal:filing-inputs#/$defs/need`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilingNeed {
+    /// The relying provider's tuple.
+    pub tuple: crate::router_api::TupleKey,
+    /// The person, by reference.
+    pub person: Id,
+    /// The verifier the provider's rules name.
+    pub verifier: Id,
+    /// The person's subject reference, the relying provider's.
+    pub subject: String,
+    /// The class.
+    pub class: String,
 }
 
 /// A checkpoint opening's `shape`.

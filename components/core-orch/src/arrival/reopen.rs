@@ -12,12 +12,18 @@
 //! - **The waits**: an order the log shows `shown` awaiting its customer, with no acceptance, no start, no refusal and no
 //!   `wait_ended` of its own, still waits. Its wait is rebuilt at the step where it waits, its lifetime counted from the
 //!   first quote the log shows for it. The quote itself isn't in the log (only its digest), so the customer's
-//!   acceptance of the quote the log last shows asks the route again, shown anew, as one past its validity does; the
-//!   filer filing the deposit again fills in what the log doesn't hold of the filing (its request identifier, the
-//!   objective, the inputs other than the destination's account, the judgements it needs and the session).
+//!   acceptance of the quote the log last shows asks the route again, shown anew, as one past its validity does. The
+//!   filing is read back from the log and the operator's kept statement of its inputs, objective and judgements
+//!   (`filed-orders-inputs-are-a-kept-statement`), so the route is asked as it was, with no restated filing; a statement
+//!   that can't be read, or isn't the filing's, holds the wait, never accepted. Only the session isn't in the log: the
+//!   customer's own, the one it accepts in, takes its place. The filer filing the deposit again under the same request is
+//!   told the wait as it stands and changes none of it.
 //!
-//! What it doesn't rebuild: orders started or ended (a repeat of their filing is told the deposit is held, not how it
-//! ended), refusals before an order opened, and the reserve's questions under way (`confirming`).
+//! What it doesn't rebuild: orders started or ended after the deposit was held (their deposit stays held, but a repeat of
+//! their filing is told `NotFileable` or that the deposit is held, not how it ended), a filing refused before an order
+//! opened (no arrival names an order, so the deposit is free and the same filing is evaluated afresh), a deposit its
+//! reserve said no to (filed again after a reopening, the reserve asked once more), and the reserve's questions under
+//! way (`confirming`).
 
 use rutent_contracts::core_internal::calls::KeptStatements;
 use rutent_contracts::core_internal::{
@@ -163,6 +169,7 @@ impl Arrivals {
                         authorisation,
                         *since,
                         last.clone(),
+                        request.clone(),
                         read_filing(kept, order, request.as_ref(), inputs.as_ref()),
                     )
                 {
@@ -206,11 +213,7 @@ fn read_filing(
     order: &Id,
     request: Option<&Id>,
     inputs: Option<&Digest>,
-) -> Option<(
-    Id,
-    std::collections::BTreeMap<String, String>,
-    rutent_contracts::router_api::Objective,
-)> {
+) -> Option<super::filing::StatedFiling> {
     let (request, commitment) = (request?, inputs?);
     let found = kept.kept(commitment).ok()??;
     if &found.commitment != commitment {
@@ -219,11 +222,23 @@ fn read_filing(
     let bytes = unbase64url(found.bytes.as_str())?;
     let statement = serde_json::from_slice::<Statement<FilingInputs>>(&bytes).ok()?;
     (statement.shape == FILING_INPUTS_SHAPE && &statement.statement.order == order).then(|| {
-        (
-            request.clone(),
-            statement.statement.inputs,
-            statement.statement.objective,
-        )
+        super::filing::StatedFiling {
+            request: request.clone(),
+            inputs: statement.statement.inputs,
+            objective: statement.statement.objective,
+            needs: statement
+                .statement
+                .needs
+                .into_iter()
+                .map(|n| crate::rounds::Need {
+                    tuple: n.tuple,
+                    person: n.person,
+                    verifier: n.verifier,
+                    subject: n.subject,
+                    class: n.class,
+                })
+                .collect(),
+        }
     })
 }
 

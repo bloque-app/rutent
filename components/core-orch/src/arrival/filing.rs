@@ -72,7 +72,9 @@ use super::{ArrivalError, Arrivals, Filed, FiledOrders, FiledWait, Filing, Recor
 use crate::intake::{DESTINATION_INPUT, Desk, OrderRecord, Quote, Resolution};
 use crate::rounds::{self, History, NotOffered, Offer, Order, Presence, Routed, Routing};
 use crate::snapshot::check_part;
-use rutent_contracts::core_internal::{Actor, FILING_INPUTS_SHAPE, FilingInputs, Parties};
+use rutent_contracts::core_internal::{
+    Actor, FILING_INPUTS_SHAPE, FilingInputs, FilingNeed, Parties,
+};
 use rutent_contracts::router_api::Objective;
 use rutent_prov::catalogue::{CheckRefusal, Eligibility};
 use std::collections::BTreeMap;
@@ -90,6 +92,18 @@ enum Step {
     Accept,
     /// It started, or ended.
     Done,
+}
+
+/// A filing as the operator's kept statement holds it, read back for a wait rebuilt from the log (`T-020-51`).
+pub(super) struct StatedFiling {
+    /// The request identifier the filing was made under.
+    pub(super) request: Id,
+    /// Its inputs.
+    pub(super) inputs: BTreeMap<String, String>,
+    /// Its objective.
+    pub(super) objective: Objective,
+    /// The judgements its route's tuples need.
+    pub(super) needs: Vec<crate::rounds::Need>,
 }
 
 /// The route offered, kept until its acceptance is recorded.
@@ -475,16 +489,21 @@ impl Run {
         authorisation: Authorisation,
         since: i128,
         last: Digest,
-        stated: Option<(Id, BTreeMap<String, String>, Objective)>,
+        held_request: Option<Id>,
+        stated: Option<StatedFiling>,
     ) -> Option<Self> {
         let held_back = stated.is_none();
-        let (request, mut inputs, objective) = stated.unwrap_or_else(|| {
-            (
-                order.clone(),
+        // A held wait has no statement to read: it is held and never asked the route, so what it holds is only its
+        // place. Its request is the arrival's where the arrival names one.
+        let (request, mut inputs, objective, needs) = match stated {
+            Some(s) => (s.request, s.inputs, s.objective, s.needs),
+            None => (
+                held_request.unwrap_or_else(|| order.clone()),
                 BTreeMap::new(),
                 Objective::LowestTotalCost {},
-            )
-        });
+                Vec::new(),
+            ),
+        };
         let holder = arrival.holder.clone();
         let account = authorisation.destination.account.as_str().to_owned();
         let filing = Filing {
@@ -520,7 +539,7 @@ impl Run {
                 inputs.insert(DESTINATION_INPUT.to_owned(), account);
                 inputs
             },
-            needs: Vec::new(),
+            needs,
         };
         Some(Run {
             asked: filing.clone(),
@@ -540,7 +559,7 @@ impl Run {
             outcome: None,
             customer: None,
             asks_the_customer: true,
-            waiting_since: Some(since),
+            waiting_since: Some(since.div_euclid(1_000_000_000) * 1_000_000_000),
             customer_session: None,
             reopened: true,
             held_back,
@@ -756,7 +775,8 @@ impl Run {
         self.outcome.is_some() && !self.pending.is_empty()
     }
 
-    /// Whether `filing` is the filing of this wait, rebuilt from the log: the filer's party files the same deposit.
+    /// Whether `filing` restates the filing of this wait, rebuilt from the log: the filer's party files the same deposit
+    /// under the same request.
     pub(super) fn is_the_filing_reopened(&self, filing: &Filing) -> bool {
         self.reopened
             && !self.held_back
@@ -773,13 +793,11 @@ impl Run {
         self.history = History::recorded(previous, asked_about_person);
     }
 
-    /// Takes the filing the filer states again for the one rebuilt from the log, where it is well formed.
-    pub(super) fn adopt(&mut self, filing: &Filing) {
-        if let Some(well) = well_formed(filing.clone(), &self.arrival) {
-            self.asked = filing.clone();
-            self.filing = well;
-            self.reopened = false;
-        }
+    /// Takes the filing the filer states again for the filing of the wait rebuilt from the log, so it is told the wait as
+    /// it stands. It changes nothing the log, the operator's statement and the authorisation fixed (the destination,
+    /// route, objective, inputs and judgements): the wait goes on as rebuilt (`T-020-51`).
+    pub(super) fn restated(&mut self, filing: &Filing) {
+        self.asked = filing.clone();
     }
 
     /// Ends its wait, recorded, and appends what it recorded: the order's end the log takes once and no more.
@@ -1006,6 +1024,18 @@ impl Run {
                             order: self.order.clone(),
                             inputs: self.filing.inputs.clone(),
                             objective: self.filing.route.objective,
+                            needs: self
+                                .filing
+                                .needs
+                                .iter()
+                                .map(|n| FilingNeed {
+                                    tuple: n.tuple.clone(),
+                                    person: n.person.clone(),
+                                    verifier: n.verifier.clone(),
+                                    subject: n.subject.clone(),
+                                    class: n.class.clone(),
+                                })
+                                .collect(),
                         },
                     )
                     .map_err(|_| ArrivalError::Unrecordable)?;

@@ -5,5 +5,32 @@
   },
   "objective": {
     "kind": "lowest_total_cost"
-  }
+  },
+  "needs": [
+    {
+      "tuple": {
+        "provider": "bank-co",
+        "from": {
+          "node": {
+            "network": "co-ach"
+          },
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        },
+        "to": {
+          "node": "bank-ledger",
+          "asset": {
+            "id": "COP",
+            "decimals": 2
+          }
+        }
+      },
+      "person": "person-ref-8",
+      "verifier": "kyc-check",
+      "subject": "subject-8",
+      "class": "kyc"
+    }
+  ]
 }

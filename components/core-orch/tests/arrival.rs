@@ -5153,3 +5153,72 @@ fn reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held() {
         assert!(ended.contains(&first), "{why}");
     }
 }
+
+/// A filing restated after a reopen changes nothing the log, the operator's kept statement and the authorisation fixed:
+/// another destination, another payer account and another objective are told the wait as it stands, the order starts on
+/// the destination policy authorised, with the inputs and objective the operator stated, and no entry holds what the
+/// restatement named (`REQ-AUD-6`, `REQ-AUZ-3`).
+// verifies: REQ-AUZ-3, REQ-AUD-6
+#[test]
+fn filing_restated_after_a_reopen_changes_nothing_the_statement_fixed() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, order, digest) =
+        waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
+    let history = env.history();
+    let mut reopened = reopened_over(&mut env, &mut providers, &history);
+    let fixed = reopened.filing_of(&order).expect("the wait's filing").clone();
+
+    let mut restated = one.clone();
+    restated.destination.account = id("acct-attacker-dest");
+    restated.inputs.insert(
+        "payer.bank_account".into(),
+        "acct-attacker-payer".into(),
+    );
+    restated.route.objective = rutent_contracts::router_api::Objective::FastestSettlement {};
+    env.clock.set(START + 700);
+    let told = file(&mut env, &mut providers, &mut reopened, &restated).unwrap();
+    assert!(matches!(told, Filed::Waiting { .. }), "{told:?}");
+    let now = reopened.filing_of(&order).expect("the wait's filing");
+    assert_eq!(now.destination, fixed.destination);
+    assert_eq!(now.inputs, fixed.inputs);
+    assert_eq!(now.route.objective, fixed.route.objective);
+
+    let later = opened_session(&mut env, "session-later", START + 10_000);
+    accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &digest,
+    )
+    .unwrap();
+    let (_, second, _, _) = awaited(&env, &reopened, &order).expect("a quote shown anew");
+    let started = accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    let log: String = entries(&env)
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect();
+    assert!(!log.contains("acct-attacker"), "nothing of the restatement");
+    for w in env.book.borrow().verified() {
+        if let What::Authorise { authorisation, .. } = w
+            && authorisation.order == order
+        {
+            assert_eq!(authorisation.destination, fixed.destination);
+        }
+    }
+    assert_admitted(&env);
+}

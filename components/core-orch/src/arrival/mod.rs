@@ -836,10 +836,11 @@ impl Arrivals {
         let arrival = key(&filing.arrival);
         let wait = self.wait_nanos();
         if let Some(run) = self.runs.get_mut(&arrival) {
-            // A wait rebuilt from the log (`T-020-51`) holds what the log holds of its filing: the filer that files it
-            // again fills the rest in.
+            // A wait rebuilt from the log (`T-020-51`) holds its filing as the log, the operator's kept statement and
+            // the authorisation fixed it: the filer that files it again is told the wait as it stands, and changes
+            // none of it.
             if run.is_the_filing_reopened(&filing) {
-                run.adopt(&filing);
+                run.restated(&filing);
             }
             if same_filing(&run.asked, &filing) {
                 if let Some(outcome) = run.outcome() {
