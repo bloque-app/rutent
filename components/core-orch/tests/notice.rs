@@ -3236,8 +3236,8 @@ fn an_inbox_holds_the_latest_waiting_quote_and_none_once_the_order_started_or_th
     assert_eq!(alice.waiting_on(&id("ord-w")), None);
 }
 
-/// A `shown` that comes after the refusal of its order in one unread batch is told of nothing: the order is ended, so
-/// no one is told it waits (`T-023-04`, fail closed).
+/// A `shown` that comes after the refusal of its order in the same unread batch is told of nothing (`T-023-04`, fail
+/// closed). The guard holds within the one batch the refusal is read in, and this test pins no more than that.
 // verifies: REQ-ORD-20, AC-41
 #[test]
 fn a_shown_after_its_orders_refusal_in_one_batch_is_told_of_nothing() {
