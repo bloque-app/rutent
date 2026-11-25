@@ -236,8 +236,10 @@ fn back_to_origin(amount: &str) -> Resolution {
     }
 }
 
-fn evidence() -> Vec<rutent_contracts::module_interface::Digest> {
-    vec![digest(&"ab".repeat(32))]
+/// What a decision rests on, as the log holds it: a statement of the order's own provider, stated now
+/// (`T-020-53`). Handed to [`decide`] as it stands, so the statement is made and logged where the decision is asked.
+fn evidence(core: &mut Core) -> Vec<rutent_contracts::module_interface::Digest> {
+    own_evidence(core)
 }
 
 /// Asks the decide step of the kit's stuck order of `policy`, by `decider`, for `resolution`.
@@ -247,9 +249,10 @@ fn decide(
     policy: &mut dyn rutent_contracts::core_internal::calls::StuckOrders,
     decider: &rutent_contracts::core_internal::Actor,
     resolution: &Resolution,
-    evidence: &[rutent_contracts::module_interface::Digest],
+    evidence: impl FnOnce(&mut Core) -> Vec<rutent_contracts::module_interface::Digest>,
 ) -> Result<rutent_contracts::core_internal::Decision, ResolveError> {
     let (order, part) = (id(&core.named.order), id(PART));
+    let evidence = evidence(core);
     let history = core.recorded();
     on_parts(core, |parts| {
         stuck.decide(
@@ -260,7 +263,7 @@ fn decide(
                 part: &part,
                 decider,
                 resolution,
-                evidence,
+                evidence: &evidence,
             },
             &history,
         )
@@ -443,7 +446,7 @@ fn no_route_at_a_failed_final_deposit_waits_for_the_customer() {
             &mut policy,
             &staff("desk-a", "alice"),
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::NotStuck)
@@ -918,7 +921,7 @@ fn move_step_without_another_actors_decision_is_refused() {
         &mut unbuilt,
         &alice,
         &resolution,
-        &evidence(),
+        evidence,
     )
     .expect("asked");
     assert!(matches!(not_known.outcome, Answer::NotKnown { .. }));
@@ -942,7 +945,7 @@ fn move_step_without_another_actors_decision_is_refused() {
         &mut policy,
         &alice,
         &resolution,
-        &evidence(),
+        evidence,
     )
     .expect("asked");
     assert!(matches!(permitted.outcome, Answer::Permit {}));
@@ -1010,7 +1013,7 @@ fn move_step_without_another_actors_decision_is_refused() {
             &mut answering_another,
             &alice,
             &resolution,
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::NotItsAnswer)
@@ -1041,7 +1044,7 @@ fn resolution_is_moved_once_by_another_party_on_its_decision() {
         &mut policy,
         &alice,
         &resolution,
-        &evidence(),
+        evidence,
     )
     .expect("asked");
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
@@ -1184,7 +1187,7 @@ fn resolution_is_moved_once_by_another_party_on_its_decision() {
             &mut policy,
             &alice,
             &resolution,
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::Resolved)
@@ -1217,10 +1220,12 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
     let (world, mut core, mut stuck) = stuck_by_no_route();
     let mut policy = PermitsEveryStep::new(&core.log);
     let alice = staff("desk-a", "alice");
+    // The statement it rests on is logged first, so the log's length is the decision's own to leave as it is.
+    let own = evidence(&mut core);
     let entries = core.log.borrow().entries.len();
     let refused =
         |core: &mut Core, stuck: &mut Stuck, policy: &mut PermitsEveryStep, r, e: &[_]| {
-            decide(core, stuck, policy, &alice, &r, e).map(|_| ())
+            decide(core, stuck, policy, &alice, &r, |_: &mut Core| e.to_vec()).map(|_| ())
         };
     assert_eq!(
         refused(
@@ -1242,7 +1247,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
         amount: PositiveAmount::new(AMOUNT).unwrap(),
     };
     assert_eq!(
-        refused(&mut core, &mut stuck, &mut policy, to_a_friend, &evidence()),
+        refused(&mut core, &mut stuck, &mut policy, to_a_friend, &own),
         Err(ResolveError::ElsewhereThanItsEnds)
     );
     assert_eq!(
@@ -1251,7 +1256,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
             &mut stuck,
             &mut policy,
             back_to_origin("1000001"),
-            &evidence()
+            &own
         ),
         Err(ResolveError::NotItsValue)
     );
@@ -1265,13 +1270,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
         amount: PositiveAmount::new("1").unwrap(),
     };
     assert_eq!(
-        refused(
-            &mut core,
-            &mut stuck,
-            &mut policy,
-            another_asset,
-            &evidence()
-        ),
+        refused(&mut core, &mut stuck, &mut policy, another_asset, &own),
         Err(ResolveError::NotItsValue)
     );
     let elsewhere: Id = id("sim-reserve-b");
@@ -1282,13 +1281,7 @@ fn resolution_elsewhere_or_beyond_the_stuck_value_is_refused() {
         amount: PositiveAmount::new(AMOUNT).unwrap(),
     };
     assert_eq!(
-        refused(
-            &mut core,
-            &mut stuck,
-            &mut policy,
-            another_provider,
-            &evidence()
-        ),
+        refused(&mut core, &mut stuck, &mut policy, another_provider, &own),
         Err(ResolveError::NotItsValue)
     );
     assert_eq!(policy.asked, 0, "policy isn't asked");
@@ -1332,7 +1325,7 @@ fn resumed_move_never_pays_a_part_twice() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("asked");
     let first = decide(
@@ -1341,7 +1334,7 @@ fn resumed_move_never_pays_a_part_twice() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("asked");
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
@@ -1356,7 +1349,7 @@ fn resumed_move_never_pays_a_part_twice() {
     ));
     let to = to_destination(&core, AMOUNT);
     assert_eq!(
-        decide(&mut core, &mut stuck, &mut policy, &alice, &to, &evidence()).map(|_| ()),
+        decide(&mut core, &mut stuck, &mut policy, &alice, &to, evidence).map(|_| ()),
         Err(ResolveError::MoveInProgress),
         "nothing more is decided while a move is in progress"
     );
@@ -1416,7 +1409,7 @@ fn resolution_moves_the_whole_of_what_the_part_holds() {
                 &mut policy,
                 &alice,
                 &back_to_origin(amount),
-                &evidence()
+                evidence
             )
             .map(|_| ()),
             Err(ResolveError::NotItsValue),
@@ -1430,7 +1423,7 @@ fn resolution_moves_the_whole_of_what_the_part_holds() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     assert!(matches!(
@@ -1463,7 +1456,7 @@ fn replayed_receipt_moves_nothing_without_its_record() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
@@ -1549,7 +1542,7 @@ fn failed_or_unknown_move_spends_its_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let Ok(Moved::CarriedOut {
@@ -1587,7 +1580,7 @@ fn failed_or_unknown_move_spends_its_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let Ok(Moved::CarriedOut {
@@ -1612,7 +1605,7 @@ fn failed_or_unknown_move_spends_its_decision() {
             &mut policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::OutcomeUnknown)
@@ -1662,7 +1655,7 @@ fn resolution_ends_come_from_cores_records() {
             &mut policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::NoEnds)
@@ -1720,7 +1713,7 @@ fn resolution_ends_come_from_cores_records() {
                 &mut policy,
                 &alice,
                 &resolution,
-                &evidence()
+                evidence
             )
             .is_ok()
         );
@@ -1748,7 +1741,7 @@ fn resolution_ends_come_from_cores_records() {
                 &mut policy,
                 &alice,
                 &to_a_friend,
-                &evidence()
+                evidence
             )
             .map(|_| ()),
             Err(ResolveError::ElsewhereThanItsEnds)
@@ -1871,7 +1864,7 @@ fn restart_keeps_a_stuck_part_from_moving() {
             &mut policy,
             &staff("desk-a", "alice"),
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::NotStuck)
@@ -1907,7 +1900,7 @@ fn unknown_withdrawal_holds_the_stuck_parts_decision_back() {
             &mut policy,
             &staff("desk-a", "alice"),
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::ValueInMotion(id(WITHDRAWAL)))
@@ -1996,7 +1989,7 @@ fn ends_followed_at_take_up_survive_a_recalculation() {
                 &mut policy,
                 &staff("desk-a", "alice"),
                 &resolution,
-                &evidence()
+                evidence
             )
             .is_ok_and(|d| matches!(d.outcome, Answer::Permit {})),
         );
@@ -2019,7 +2012,7 @@ fn effect_the_log_refuses_frees_the_part_and_spends_its_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     core.log
@@ -2058,7 +2051,7 @@ fn effect_the_log_refuses_frees_the_part_and_spends_its_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("the part is free to decide");
     assert!(matches!(
@@ -2152,7 +2145,7 @@ fn nothing_is_decided_while_a_parts_value_is_in_motion() {
     let alice = staff("desk-a", "alice");
     let to = to_destination(&core, AMOUNT);
     assert_eq!(
-        decide(&mut core, &mut stuck, &mut policy, &alice, &to, &evidence()).map(|_| ()),
+        decide(&mut core, &mut stuck, &mut policy, &alice, &to, evidence).map(|_| ()),
         Err(ResolveError::ValueInMotion(id(DEPOSIT)))
     );
     assert_eq!(policy.asked, 0, "policy isn't asked");
@@ -2166,7 +2159,7 @@ fn nothing_is_decided_while_a_parts_value_is_in_motion() {
         OrderState::Complete
     );
     assert_eq!(
-        decide(&mut core, &mut stuck, &mut policy, &alice, &to, &evidence()).map(|_| ()),
+        decide(&mut core, &mut stuck, &mut policy, &alice, &to, evidence).map(|_| ()),
         Err(ResolveError::NotStuck)
     );
     core.admitted(&world.catalogue)
@@ -2221,7 +2214,7 @@ fn settlement_recorded_late_keeps_a_stuck_parts_value_held() {
             &mut policy,
             &staff("desk-a", "alice"),
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .is_ok_and(|d| matches!(d.outcome, Answer::Permit {}))
     );
@@ -2337,7 +2330,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let Ok(Moved::CarriedOut {
@@ -2464,7 +2457,7 @@ fn unknown_move_takes_its_known_outcome_once_on_two_actors_word() {
             &mut policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::OutcomeUnknown)
@@ -2563,7 +2556,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
@@ -2604,7 +2597,7 @@ fn confirmed_failure_frees_the_part_for_a_new_decision() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("free for a new decision");
     assert!(matches!(
@@ -2739,7 +2732,7 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
             &mut policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::ValueInMotion(id(WITHDRAWAL)))
@@ -2759,7 +2752,7 @@ fn resolved_part_takes_no_rest_hold_when_its_settlement_is_recorded_late() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     assert!(matches!(
@@ -2807,7 +2800,7 @@ fn confirmation_names_the_report_it_confirms() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
@@ -2906,7 +2899,7 @@ fn outcome_report_under_policys_unbuilt_rules_settles_nothing() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let _ = moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob);
@@ -3060,7 +3053,7 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
             policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence(),
+            evidence,
         )
         .map(|_| ())
     };
@@ -3154,7 +3147,7 @@ fn silent_move_on_a_stuck_part_settles_on_two_actors_word_and_frees_the_part() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("decided once nothing of the part is in motion");
     let mut moves = Moves::stating(&core, []);
@@ -3386,7 +3379,7 @@ fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
         &mut policy,
         &alice,
         &delivery,
-        &evidence(),
+        evidence,
     )
     .expect("decided while the destination stood");
     replace_the_parts_destination(&mut core, &mut stuck);
@@ -3411,7 +3404,7 @@ fn decision_made_before_its_parts_ends_were_replaced_moves_nothing() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("its origin stands");
     assert!(matches!(
@@ -3479,7 +3472,7 @@ fn stalled_move_taken_on_after_its_parts_ends_were_replaced_moves_nothing() {
         &mut policy,
         &alice,
         &delivery,
-        &evidence(),
+        evidence,
     )
     .expect("decided while the destination stood");
     for _ in 0..rutent_core_orch::stuck::APPEND_TRIES {
@@ -3531,7 +3524,7 @@ fn stalled_move_taken_on_after_its_parts_ends_were_replaced_moves_nothing() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .expect("the part is free for a new decision");
     assert!(matches!(
@@ -3824,7 +3817,7 @@ impl Silent {
                 &mut self.policy,
                 &alice,
                 &back_to_origin(AMOUNT),
-                &evidence()
+                evidence
             )
             .map(|_| ()),
             Err(ResolveError::ValueInMotion(id(WITHDRAWAL)))
@@ -4228,7 +4221,7 @@ fn confirmation_naming_an_outside_providers_word_frees_nothing() {
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let Ok(Moved::CarriedOut {
@@ -4327,7 +4320,7 @@ fn confirmation_naming_an_outside_providers_word_frees_nothing() {
             &mut policy,
             &alice,
             &back_to_origin(AMOUNT),
-            &evidence()
+            evidence
         )
         .map(|_| ()),
         Err(ResolveError::OutcomeUnknown),
@@ -4360,7 +4353,7 @@ fn stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_re
                 &mut policy,
                 &alice,
                 &back_to_origin(AMOUNT),
-                &digests
+                |_: &mut Core| digests.clone()
             )
             .map(|_| ()),
             Err(ResolveError::OutsideTheOrder),
@@ -4374,7 +4367,7 @@ fn stuck_resolution_resting_on_a_statement_by_a_provider_outside_the_order_is_re
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &[own],
+        |_: &mut Core| vec![own.clone()],
     )
     .expect("the order's own provider's statement is taken");
     let Ok(Moved::CarriedOut {
@@ -4486,6 +4479,109 @@ fn stuck_after_a_second_route() -> (World, Core, Stuck) {
     stuck_by_no_route_in((world, core, outcome))
 }
 
+/// A stuck decision's evidence fails closed (`T-020-53`): a digest that names no statement the log holds, however the
+/// others stand, is refused before policy is asked, so the rule holds whatever a production assembly answers for
+/// policy's `Source::Kept`. A digest the log does hold a party's statement under is taken.
+// verifies: REQ-AUZ-5
+#[test]
+fn stuck_decision_whose_digest_names_no_logged_statement_is_refused() {
+    let alice = staff("desk-a", "alice");
+    let (world, mut core, mut stuck) = stuck_at_one_party();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let own = evidence(&mut core);
+    let placeholder = digest(&"ab".repeat(32));
+    let (asked, entries) = (policy.asked, core.log.borrow().entries.len());
+    for digests in [
+        vec![placeholder.clone()],
+        vec![own[0].clone(), placeholder.clone()],
+        vec![placeholder.clone(), own[0].clone()],
+    ] {
+        assert_eq!(
+            decide(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                &alice,
+                &back_to_origin(AMOUNT),
+                |_: &mut Core| digests.clone()
+            )
+            .map(|_| ()),
+            Err(ResolveError::NoEvidence),
+            "{digests:?}"
+        );
+    }
+    assert_eq!(policy.asked, asked, "policy is asked nothing");
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+    decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        |_: &mut Core| own.clone(),
+    )
+    .expect("a digest the log holds a party's statement under is taken");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// A stuck decision needs at least one digest naming a verified statement by a party to the order (`T-020-53`,
+/// `T-020-40`): none at all, a statement of a provider outside the order's, and one the log recorded unattributed
+/// (its maker only claimed) each leave it without, and a digest of such a statement beside a party's is refused too.
+// verifies: REQ-AUZ-4
+#[test]
+fn stuck_decision_needs_one_digest_naming_a_verified_statement_by_a_party_to_the_order() {
+    let alice = staff("desk-a", "alice");
+    let (world, mut core, mut stuck) = stuck_at_one_party();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let (own, outside) = results_after_the_move(&mut core, None, "tx-earlier");
+    let (own, outside) = (commitment_of(&core, &own), commitment_of(&core, &outside));
+    // From here the history names only who claims to have made a statement: no key behind it.
+    core.log.borrow_mut().claim_only_from_now();
+    let claimed = evidence(&mut core).remove(0);
+    let asked = policy.asked;
+    let cases: [(Vec<_>, ResolveError); 5] = [
+        (Vec::new(), ResolveError::NoEvidence),
+        (vec![outside.clone()], ResolveError::OutsideTheOrder),
+        (vec![claimed.clone()], ResolveError::OutsideTheOrder),
+        (
+            vec![own.clone(), claimed.clone()],
+            ResolveError::OutsideTheOrder,
+        ),
+        (
+            vec![claimed.clone(), own.clone()],
+            ResolveError::OutsideTheOrder,
+        ),
+    ];
+    for (digests, refusal) in cases {
+        assert_eq!(
+            decide(
+                &mut core,
+                &mut stuck,
+                &mut policy,
+                &alice,
+                &back_to_origin(AMOUNT),
+                |_: &mut Core| digests.clone()
+            )
+            .map(|_| ()),
+            Err(refusal),
+            "{digests:?}"
+        );
+    }
+    assert_eq!(policy.asked, asked, "policy is asked nothing");
+    decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        |_: &mut Core| vec![own.clone()],
+    )
+    .expect("one verified statement by a party to the order is enough");
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// A statement by a provider on an earlier route of the order backs a resolution (`confirmer-evidence-party`,
 /// `T-020-40`): the order was given a second route, of the deposit alone, which leaves the withdrawal's provider off
 /// it, and the part is stuck on that second route. The value rests at the withdrawal's provider's ledger, so it moves the
@@ -4513,7 +4609,7 @@ fn statement_by_a_provider_on_an_earlier_route_of_the_order_backs_a_resolution()
         &mut policy,
         &alice,
         &back_to_origin(AMOUNT),
-        &evidence(),
+        evidence,
     )
     .unwrap();
     let Ok(Moved::CarriedOut {

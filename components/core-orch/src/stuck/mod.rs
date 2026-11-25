@@ -2873,21 +2873,31 @@ fn from_a_party(
     Ok(())
 }
 
-/// Whether each of a decision's evidence digests that names a statement the history holds names a party's word about
-/// `order`, whatever its kind (a result, a judgement, a hold, an arrival answer, a question): a statement whose maker
-/// the log verified, by a party the order involves. Core's own questions are no exception: no log row ties a
-/// statement's shape to the operator, so a question shape alone proves nothing. A digest the history holds no
-/// statement under names no maker, and passes: it fails open, which `F-020`'s notes name.
+/// Whether a decision's evidence rests on the log: every digest names a statement the history holds, and each such
+/// statement is a party's word about `order`, whatever its kind (a result, a judgement, a hold, an arrival answer, a
+/// question): a statement whose maker the log verified, by a party the order involves. Core's own questions are no
+/// exception: no log row ties a statement's shape to the operator, so a question shape alone proves nothing. A digest
+/// the history holds no statement under names no maker and is refused (`NoEvidence`), so the rule fails closed
+/// whatever a production assembly answers for policy's `Source::Kept` (`T-020-53`); and as the evidence is never
+/// empty (`StuckDecide::check`) and every digest names a party's statement, the decision rests on at least one. Who
+/// counts as a party is [`party::verified_party`]'s alone.
 fn digests_from_a_party(
     evidence: &[Digest],
     order: &Id,
     history: &Recorded,
 ) -> Result<(), ResolveError> {
-    for (_, entry) in history {
-        if let Entry::Stated(statement) = entry
-            && evidence.contains(&statement.commitment)
-            && !party::verified_party(statement, order, history)
-        {
+    if evidence.is_empty() {
+        return Err(ResolveError::NoEvidence);
+    }
+    for digest in evidence {
+        let statement = history
+            .iter()
+            .find_map(|(_, entry)| match entry {
+                Entry::Stated(statement) if statement.commitment == *digest => Some(statement),
+                _ => None,
+            })
+            .ok_or(ResolveError::NoEvidence)?;
+        if !party::verified_party(statement, order, history) {
             return Err(ResolveError::OutsideTheOrder);
         }
     }

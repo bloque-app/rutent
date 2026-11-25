@@ -461,6 +461,47 @@ mod tests {
         assert_eq!(probe(route, &claimed), Err(ResolveError::OutsideTheOrder));
     }
 
+    /// A decision's evidence fails closed (`T-020-53`): no digest at all, and a digest the history holds no
+    /// statement under (alone or beside a party's), name no maker and are refused.
+    // verifies: REQ-AUZ-5
+    #[test]
+    fn decision_evidence_that_names_no_logged_statement_fails_closed() {
+        use crate::stuck::{ResolveError, digests_from_a_party};
+        let case = read(&format!(
+            "{ROW}--a-confirmation-on-another-provider-of-its-route"
+        ));
+        let history = history_of(&case);
+        let entry: Entry = serde_json::from_value(case["entry"].clone()).expect("an entry");
+        let (order, receipts) = cited(&entry).expect("evidence");
+        let own = statement_at(&receipts[0], &history)
+            .expect("a statement")
+            .commitment
+            .clone();
+        let unlogged: rutent_contracts::module_interface::Digest = serde_json::from_value(
+            serde_json::json!({"algorithm": "sha-256", "value": "ab".repeat(32)}),
+        )
+        .expect("a digest");
+        assert_eq!(
+            digests_from_a_party(std::slice::from_ref(&own), &order, &history),
+            Ok(())
+        );
+        assert_eq!(
+            digests_from_a_party(&[], &order, &history),
+            Err(ResolveError::NoEvidence)
+        );
+        for digests in [
+            vec![unlogged.clone()],
+            vec![own.clone(), unlogged.clone()],
+            vec![unlogged, own],
+        ] {
+            assert_eq!(
+                digests_from_a_party(&digests, &order, &history),
+                Err(ResolveError::NoEvidence),
+                "{digests:?}"
+            );
+        }
+    }
+
     /// A report's, confirmation's or decline's evidence is held to a verified statement too: one that only claims a
     /// party's name is refused, and another statement of the report's own party is the reporter's.
     // verifies: REQ-AUZ-4

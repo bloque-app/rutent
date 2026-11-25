@@ -6534,9 +6534,8 @@ tests. The four scenario tests are named by their first words: `confirmation_nam
 - **3. Verified attribution is required** for the digest check, and for the evidence of a report, confirmation or
   decline (`party::verified_party`). The kit's history (`Core::recorded`) reads each statement verified, as the real
   log's does.
-- **4. Defaults that fail open, named.** A digest naming no statement the history holds passes: it fails open. It
-  can't fail closed here: the evidence store may hold documents, and about thirty scenario sites decide on a
-  placeholder digest. Owner: the lead (a row on what a decision's digest may name). The shape limit no longer exists.
+- **4. Defaults that fail open, named.** A digest naming no statement the history holds passed: it failed open.
+  Closed by `T-020-53` (the section at the end of these notes).
 - **5. Doc lines** on the eight entry points: `history` is taken as the log's own entries.
 - **Rule-offs of the round** (from the fix commit, as above; "walk" is the differential test, "probe" the digest
   probe, "assembly" `assembly_stuck` and `assembly_hand_on`):
@@ -7397,3 +7396,47 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
      until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, which reopens the platform from its record.
   4. `stated_value` holds nothing where neither the question's bytes nor `order_opened`'s amount in that asset can be
      read: two losses at once, noted, not built for.
+
+## T-020-53: a stuck decision's evidence fails closed (and finding 4's evidence-store reads)
+
+The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-025`) and the form item
+`stuck-decision-digest-scope`.
+
+- **The rule.** `digests_from_a_party` (`stuck/mod.rs`) holds every digest of a stuck decision to the log: each must
+  name a stated entry the history holds (else `ResolveError::NoEvidence`), and that statement must be a verified
+  statement by a party the order involves (else `OutsideTheOrder`, as before). Nothing is asked of policy before it
+  (the check sits before `decide_stuck`). The evidence is never empty (`StuckDecide::check`), and an empty slice is
+  refused here too, so a decision rests on at least one statement of a party, and on no digest the log doesn't hold.
+  The rule holds whatever a production assembly answers for policy's `Source::Kept`. Who counts as a party stays in
+  one place, `party::verified_party` (`T-020-40`'s parties, as on this base): `T-021-16`'s narrowing of who counts as a
+  party reaches this check through it, with no edit here.
+- **Default (named).** A digest the log holds no statement under is `NoEvidence`, not `OutsideTheOrder`: it names no
+  maker to be outside of. Both refuse before policy is asked; only the error differs. Reversible.
+- **The scenarios.** No scenario decides a stuck order on a placeholder digest now: `stuck.rs` (46 tests),
+  `stuck_mover.rs`, `stuck_hand_on.rs` and `hand_on.rs` decide on a statement the kit logs where the decision is asked
+  (`segments_support::own_evidence`: the order's own provider's result, signed with its statements key, appended after
+  the operator's question it answers). `assembly_stuck`, `assembly_hand_on`, `assembly_real_wallet` and `reopened`
+  already named statements the log holds. `hand_on.rs`'s forged `stuck_decide` entry (a placeholder digest inside an
+  entry the log is shown to refuse) decides nothing and stays.
+- **The kit's history.** `Core::recorded` reads every statement verified, as the real log's would; `TestLog::
+  claim_only_from_now` leaves the statements appended after it as claimed only, which the second test below uses (the
+  `attributed` range moves only the receipts).
+- **Tests.** `stuck decision whose digest names no logged statement is refused` [`REQ-AUZ-5`]
+  (`stuck_decision_whose_digest_names_no_logged_statement_is_refused`, in `stuck.rs`): a placeholder alone, or beside or
+  before a party's own statement, is refused with policy asked nothing and nothing recorded; the party's own is taken.
+  `stuck decision needs one digest naming a verified statement by a party to the order` [`REQ-AUZ-4`]
+  (`stuck_decision_needs_one_digest_naming_a_verified_statement_by_a_party_to_the_order`): no digest, an outside
+  provider's, a claimed-only statement, and a claimed-only beside a party's, each refused; one verified statement of a
+  party is enough. A unit test, `decision_evidence_that_names_no_logged_statement_fails_closed` (`stuck/party.rs`,
+  [`REQ-AUZ-5`]), holds the function itself, the empty slice included.
+- **Rule-offs.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | A digest naming no logged statement passes (`ok_or(NoEvidence)` dropped for a skip) | `decision_evidence_that_names_no_logged_statement_fails_closed`; `stuck_decision_whose_digest_names_no_logged_statement_is_refused` |
+  | The verified-party check dropped | `decision_evidence_digests_are_held_to_a_verified_party_whatever_their_kind`; `stuck_decision_needs_one_digest_naming_a_verified_statement_by_a_party_to_the_order` |
+  | The empty-evidence refusal dropped | `decision_evidence_that_names_no_logged_statement_fails_closed` only: the scenario stays green, since `StuckDecide::check` refuses the empty evidence first in `decide` (`NoEvidence`); the guard holds the function itself |
+
+- **Finding 4: the evidence store's reads, in `F-022`'s notes.** Every read Core makes of the evidence store is listed
+  there with its caller in Core; the one read with no caller (`Evidence::fetch`) is named out of `v0` with its reason.
+

@@ -139,10 +139,6 @@ fn to_destination(core: &Core, amount: &str) -> Resolution {
     }
 }
 
-fn evidence() -> Vec<rutent_contracts::module_interface::Digest> {
-    vec![digest(&"ab".repeat(32))]
-}
-
 fn decide(
     core: &mut Core,
     stuck: &mut Stuck,
@@ -151,7 +147,7 @@ fn decide(
     resolution: &Resolution,
 ) -> Result<rutent_contracts::core_internal::Decision, ResolveError> {
     let (order, part) = (id(&core.named.order), id(PART));
-    let evidence = evidence();
+    let evidence = own_evidence(core);
     let history = core.recorded();
     on_parts(core, |parts| {
         stuck.decide(
