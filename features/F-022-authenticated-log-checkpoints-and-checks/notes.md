@@ -1250,3 +1250,81 @@ path). Core's half is `T-020-42`; policy's is `T-021-13`.
   builds a decision, effect and `done` result by hand: `overrides` is false without the flag and true with it (and
   names the decision's receipt), and an effect that sets the flag on a decision that doesn't is `NO_DECIDED_ERASURE`.
   Rule-off F5 (`overrides: true || ...`) turns it red.
+
+## T-022-11: the register counts a revocation from its effect, and the store's override erase reads its decision
+
+Branch `f-022/t-022-11-revocation-window`, from `f01bc669`. Edits `components/core-audit/src/log/keys.rs`,
+`src/receipts/store.rs` and their tests (a `DEC-20` path). Starts from `T-020-45`'s rule: a revocation counts from its
+admitted effect until a `failed` result undoes it.
+
+- **(1) L5, the register (`keys.rs`).** `Register::record` takes a `revoke_grant` effect into `grants` when the effect is
+  recorded (its time, `false`, its index in the log, which is the history's length), and a `failed` result of a
+  revocation's effect takes that entry out again. The `done` result no longer adds a revocation (it would count twice);
+  a grant still counts from its `done` result. `in_force`, `revoked_before_receipt` and `revoked_after` (the clock hold
+  on a late statement) all read `grants`, so all three follow. A statement received between a revocation's effect and
+  its result is unattributed; once the result fails, it attributes again.
+- **(2) The override erase (`store.rs`).** `BoundStore::erase` calls `erasable_overriding_since(commitment, decision)`
+  with the permitting decision's receipt where the decision overrides, so a citation the log took after that decision
+  refuses the erasure (`EVIDENCE_RESTED_ON`) and nothing is erased, instead of erasing and reporting `ERASED_YET_CITED`.
+  `T-022-10`'s `citation_made_after_an_overrides_decision_is_still_reported` is now
+  `store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision`: `erase` is refused, the statement stays
+  kept, and on reopening `refused_erasures` reports the decided erasure the store refused (`EVIDENCE_RESTED_ON`) while
+  `unsettled_erasures` is empty. `reconcile`'s `ERASED_YET_CITED` check stays, a defence for a log whose store erased
+  before this rule.
+- **(3) The drift test.** `log::keys::tests::contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures`
+  (a unit test, since the register is private to the log) reads every history-bearing fixture of core-internal's
+  `fixtures/attribution`, renumbers its receipts to their places (the log numbers them so; results still name their
+  effects), feeds the entries to a `Register` through `record`, and compares the register's `revoked_before_receipt`
+  with the contract's at five received times per fixture (the claim's own, the made time, and +1 s, +1 day, +30 days).
+- **Tests (`tests/log.rs`).** `statement_received_between_a_revocations_effect_and_its_result_is_unattributed`
+  [`THR-3`] and `revocation_whose_result_failed_attributes_again` [`THR-3`], seen red on their assertions before the
+  code; the store test above, red on its first assertion before the code. The drift test passes on first run (written
+  after the code); its red was watched by the rule-offs below.
+- **Defaults.** (1) A revocation whose effect has no result yet counts, as the contract reads it. (2) The drift test is
+  a unit test over a register fed by `record`, not through an admitting log: fixture histories carry hand-numbered
+  receipts that `admit_entry` would not take. (3) After a refused override erase, the log keeps its `done` result: the
+  store reports it, orchestration decides the retry.
+- **Gaps.** None open for this row. The contract's `in_force`-at-`made_at` reading is not compared (the contract
+  exposes only `revoked_before_receipt`).
+- **Rule-off table.**
+
+  | Rule switched off | Red |
+  |---|---|
+  | R1: a revocation counts from its `done` result only | both log tests, the drift test |
+  | R2: a `failed` result does not undo a revocation | `revocation_whose_result_failed_attributes_again`, `a_grant_trusts_only_the_keys_it_names_once_done`, the drift test |
+  | R3: `erase` calls `erasable_overriding`, not `..._since` | the store refusal test |
+  | R4: the receipt bound `<= received` becomes `< received` | the drift test, `a_statement_received_after_its_grants_revocation_is_refused_whatever_its_making_time` |
+
+### Fix round 1 (`T-022-11`, after the review of `13b6415e`)
+
+- **Names.** The three tests carry the plan's names (`statement_received_between_a_revocations_effect_and_its_result_is_unattributed`,
+  `revocation_whose_result_failed_attributes_again`, `contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures`).
+  `T-022-10`'s row named `citation made after an override's decision is still reported`, the test this row turned into
+  `store refuses an override erasure of a statement cited after its decision`: the row now names the new one (a
+  PLAN-only edit).
+- **An erased statement answers `Ok`.** `erasable_overriding_since` answers `Ok` for a statement erased already, after
+  the other rules, so a retried override erase after an erasure carried out under the older rule isn't refused (INV-8):
+  `a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok` (the reviewer's probe, as far as an admitting log lets it be built: it refuses a citation once an erasure has begun, so
+  the state of an erasure carried out under the older rule can't be reached, and the check is asked with an earlier
+  decision instead, which cites the same way). Rule-off F6 (drop the early `Ok`) turns it red.
+- **Drift test.** It asserts each fixture's receipt indices are unique and every result's effect is found, and compares
+  at the claimed `made_at` and at the time of every change in the history (ties with a grant's or a class's time).
+- **Residual for `T-025-05`.** Orchestration writes the results, so a `failed` it writes can undo a revocation policy
+  permitted. Before this row it could withhold `done` and so keep the revocation from counting: the power is the same,
+  moved from "withhold" to "undo". A revocation's effect still needs policy's permit; its result doesn't.
+
+### Fix round 2 (`T-022-11`, three lows of the approval at `1bf65bfa`)
+
+- **L1.** `a_store_erased_under_the_older_rule_is_not_reported_refused_when_bound_again`: after a refused override erase
+  (a citation between decision and effect), the kept file is deleted and the erased mark written straight into the
+  evidence store, then the store is bound again: nothing is reported refused, the retried erase answers `Ok`, and after
+  the `erasure` entry the late citation is the finding. Rule-off F6 (the early `Ok` dropped) turns it and
+  `a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok` red.
+- **L2.** The drift test also compares a copy of each fixture with every change effect dated at one instant and its
+  results last, in the opposite order. **Gap, owner `core-internal`'s contract (the round that exposes grants in force):**
+  the tie-break can't show through `revoked_before_receipt`: a tie matters to whether a grant is in force at `made_at`,
+  and the rule then needs a revocation strictly after `made_at`, which a tied change isn't, so the tie-break off (F2)
+  leaves the drift test green. It stays held by `changes_at_one_instant_are_ordered_by_their_effects`. No fixture has a
+  verifier's class grant, so the test's doc no longer claims classes are compared.
+- **L3.** `PLAN.md`'s `T-022-10` Work text says a citation after the decision refuses the erasure (`T-022-11`); the
+  register's doc is wrapped.

@@ -4,13 +4,14 @@
 //! The catalogue the state machine holds is state orchestration drives, so the log keeps its own register, fed only
 //! by what it recorded itself and by the deployment's settings ([`Settings`]: this deployment, its operator and the
 //! log's own clock), never by orchestration. A catalogue change counts only once the log holds a `done` result for
-//! its effect, as `core-internal` reads it:
+//! its effect, as `core-internal` reads it, except a revocation, which counts from its admitted effect until a
+//! `failed` result undoes it (`T-020-45`, `F-025`'s L5):
 //!
 //! - **The operator** signs as [`Settings::operator`] with the deployment's `operator_key`, and states for
 //!   [`Settings::operator_party`].
 //! - **A provider's grant** is in force from a `change_catalogue` effect of `grant` for one of its tuples to one of
-//!   `revoke_grant` for it, each at its effect's time, once each is done. The log admits such an effect only on an
-//!   unused permit of a permitting decision policy wrote (`admit_entry`), so orchestration can't grant a provider by
+//!   `revoke_grant` for it, each at its effect's time, a grant once it is done and a revocation from its effect. The log admits
+//!   such an effect only on an unused permit of a permitting decision policy wrote (`admit_entry`), so orchestration can't grant a provider by
 //!   itself; only where its time is within the skew of the log's own [`Clock`], which orchestration never writes
 //!   (dated ahead of it, it is refused; behind it, as a retry after the skew is, unavailable); and, for a grant or a
 //!   revocation, only where it is dated no earlier than its tuple's last change, so a tuple's changes run in the
@@ -189,7 +190,8 @@ pub(super) struct Register {
     ads: BTreeMap<String, Vec<Accepted>>,
     advertising_seen: Vec<PublicKey>,
     statements_seen: Vec<PublicKey>,
-    /// Each provider's tuples, each with its grants and revocations done, in the order their results arrived: the
+    /// Each provider's tuples, each with its grants done and its revocations admitted and not undone (from the
+    /// revocation's effect until a `failed` result, `T-020-45`), in the order they were recorded: the
     /// effect's time, whether it granted, and the effect's index in the log, which breaks a tie in time as the
     /// contract does (the later effect in the log wins).
     grants: BTreeMap<String, BTreeMap<String, Vec<Change>>>,
@@ -201,7 +203,7 @@ pub(super) struct Register {
     nodes: BTreeMap<String, String>,
 }
 
-/// A grant or revocation done: its effect's time, whether it granted, and its effect's index in the log.
+/// A grant done or a revocation counting: its effect's time, whether it granted, and its effect's index in the log.
 type Change = (i128, bool, u64);
 
 /// The change that decides a tuple's grant at `at`: the latest by its effect's time at or before it, the later effect
@@ -316,9 +318,64 @@ impl Register {
                     .dated
                     .entry(provider.as_str().to_owned())
                     .or_default()
-                    .entry(granted)
+                    .entry(granted.clone())
                     .or_insert(i128::MIN);
                 *last = (*last).max(when.at.unix_nanos());
+                // A revocation counts from its admitted effect, not from its result, until a `failed` result
+                // undoes it (`T-020-45`, `F-025`'s L5); a grant only once done. The entry's own index is the
+                // history's length.
+                if matches!(
+                    entry,
+                    Entry::Verified(VerifiedEntry {
+                        what: What::Effect {
+                            action: Action::ChangeCatalogue {
+                                change: CatalogueChange::RevokeGrant,
+                                ..
+                            },
+                            ..
+                        },
+                        ..
+                    })
+                ) {
+                    self.grants
+                        .entry(provider.as_str().to_owned())
+                        .or_default()
+                        .entry(granted)
+                        .or_default()
+                        .push((when.at.unix_nanos(), false, history.len() as u64));
+                }
+            }
+            // A revocation whose result failed is undone: it counts no more.
+            Entry::Verified(VerifiedEntry {
+                what: What::Result { effect },
+                outcome: Outcome::Failed {},
+                ..
+            }) => {
+                let Some(VerifiedEntry {
+                    what:
+                        What::Effect {
+                            action:
+                                Action::ChangeCatalogue {
+                                    change: CatalogueChange::RevokeGrant,
+                                    provider,
+                                    tuple,
+                                    class,
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                }) = effect_at(history, effect)
+                else {
+                    return;
+                };
+                if let Some(changes) = granted(tuple, class).and_then(|g| {
+                    self.grants
+                        .get_mut(provider.as_str())
+                        .and_then(|tuples| tuples.get_mut(&g))
+                }) {
+                    changes.retain(|(_, granted, index)| *granted || *index != effect.index.get());
+                }
             }
             Entry::Verified(VerifiedEntry {
                 what: What::Result { effect },
@@ -345,7 +402,8 @@ impl Register {
                     return;
                 };
                 match (change, granted(tuple, class)) {
-                    (CatalogueChange::Grant | CatalogueChange::RevokeGrant, Some(granted)) => {
+                    // A revocation was counted from its effect already.
+                    (CatalogueChange::Grant, Some(granted)) => {
                         self.grants
                             .entry(provider.as_str().to_owned())
                             .or_default()
@@ -467,10 +525,10 @@ impl Register {
 
     /// Whether every grant of `provider` in force at `made_at` was revoked after it and no later than `received`,
     /// the time the log received the statement: core-internal's `revoked_before_receipt` (`THR-3`, `T-020-39`),
-    /// read from the register's done changes as the contract reads them from the history. Each grant, a tuple's or
-    /// a verifier's class, is in force at `made_at` where its latest change at or before it, by the effect's time and
-    /// the later one on a tie, granted; a grant made again after its revocation is a new grant and holds nothing
-    /// made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
+    /// read from the register's grants done and revocations admitted (not undone) as the contract reads them from
+    /// the history. Each grant, a tuple's or a verifier's class, is in force at `made_at` where its latest change at
+    /// or before it, by the effect's time and the later one on a tie, granted; a grant made again after its
+    /// revocation is a new grant and holds nothing made before the revocation. False where no grant was in force at `made_at`, which [`Register::in_force`]
     /// refuses apart. A revocation at the instant of receipt counts as before it.
     fn revoked_before_receipt(&self, provider: &str, made_at: i128, received: i128) -> bool {
         let Some(tuples) = self.grants.get(provider) else {
@@ -675,5 +733,189 @@ impl StatementKeys for Keys<'_> {
         Ok(self.register.in_force(maker.as_str(), at)
             && then.lists(&key.key, KeyPurpose::Statements)
             && accepted.lists(&key.key, KeyPurpose::Statements))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rutent_contracts::core_internal::revoked_before_receipt as contracts_rule;
+    use serde_json::Value;
+    use std::path::Path;
+
+    /// The contract's attribution fixtures, by name, each with its history renumbered so a receipt's index is its
+    /// place in the history, as the log numbers them: a result still names its effect.
+    fn fixtures() -> Vec<(String, Value)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/core-internal/fixtures/attribution");
+        let mut out: Vec<(String, Value)> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                let case = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+                (p.file_stem().unwrap().to_string_lossy().into_owned(), case)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    fn history_of(name: &str, case: &Value) -> Vec<(Receipt, Entry)> {
+        let items = case["history"].as_array().cloned().unwrap_or_default();
+        let mut places: BTreeMap<u64, usize> = BTreeMap::new();
+        for (place, i) in items.iter().enumerate() {
+            let index = i["receipt"]["index"].as_u64().unwrap();
+            assert!(
+                places.insert(index, place).is_none(),
+                "{name}: receipt index {index} is not unique"
+            );
+        }
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(place, mut item)| {
+                item["receipt"]["index"] = place.into();
+                if let Some(effect) = item["entry"]["what"].get_mut("effect") {
+                    let at = effect["index"].as_u64().and_then(|i| places.get(&i));
+                    let at = at.unwrap_or_else(|| panic!("{name}: a result's effect is not found"));
+                    effect["index"] = (*at).into();
+                }
+                (
+                    serde_json::from_value(item["receipt"].clone()).unwrap(),
+                    serde_json::from_value(item["entry"].clone()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// `case` with every grant and revocation effect dated at the time of the first one, where it holds two or more:
+    /// the changes tie, and the later effect in the log decides each, though the results come last in the opposite order.
+    fn at_one_instant(case: &Value) -> Option<Value> {
+        let mut case = case.clone();
+        let mut first = None;
+        let mut changes = 0;
+        for item in case["history"].as_array_mut()? {
+            let entry = &mut item["entry"];
+            if entry["what"]["call"] == "effect"
+                && entry["what"]["action"]["kind"] == "change_catalogue"
+                && ["grant", "revoke_grant"].contains(&entry["what"]["action"]["change"].as_str()?)
+            {
+                let at = first.get_or_insert_with(|| entry["when"]["at"].clone());
+                entry["when"]["at"] = at.clone();
+                changes += 1;
+            }
+        }
+        // The results come last, in the opposite order to their effects, so the order the results arrive in is not
+        // the effects' order.
+        let items = case["history"].as_array_mut()?;
+        let (results, mut rest): (Vec<Value>, Vec<Value>) = std::mem::take(items)
+            .into_iter()
+            .partition(|i| i["entry"]["what"]["call"] == "result");
+        rest.extend(results.into_iter().rev());
+        *items = rest;
+        (changes >= 2).then_some(case)
+    }
+
+    /// The register as the log builds it from `history`, entry by entry.
+    fn register_of(case: &Value, history: &[(Receipt, Entry)]) -> Register {
+        let settings = Settings::new(
+            Id::new("log-main").unwrap(),
+            serde_json::from_value(case["deployment"].clone()).unwrap(),
+            Id::new("op-login-2").unwrap(),
+            Id::new("operator-party").unwrap(),
+        );
+        let mut register = Register::default();
+        for (place, (_, entry)) in history.iter().enumerate() {
+            register.record(&settings, &history[..place], entry, None);
+        }
+        register
+    }
+
+    /// The contract's `revoked_before_receipt` and the register's reading of it agree over every attribution
+    /// fixture, and over a copy of each with every change effect dated at one instant (so the later effect in the log
+    /// decides each tie), at the claim's own times and at the time of each entry in its history, each with five
+    /// received times around the making, so the port can't drift from the rule (`THR-3`, the review's Low on the
+    /// register). No fixture holds a verifier's class grant, so the classes' reading is compared by no case here. Nor does
+    /// the tie-break show here: a tie decides whether a grant is in force at `made_at`, and the rule then asks for a
+    /// revocation strictly after `made_at`, which no tied change is, so the rule's answer is the same either way (the
+    /// tie-break is held by `changes_at_one_instant_are_ordered_by_their_effects`).
+    // verifies: THR-3
+    #[test]
+    fn contracts_revoked_before_receipt_and_the_register_agree_over_the_attribution_fixtures() {
+        let (mut compared, mut revoked) = (0, 0);
+        let mut tied = 0;
+        let cases = fixtures().into_iter().flat_map(|(name, case)| {
+            let copy = at_one_instant(&case).map(|c| (format!("{name} (tied)"), c));
+            [Some((name, case)), copy].into_iter().flatten()
+        });
+        for (name, case) in cases {
+            if case["history"].as_array().is_none_or(|h| h.is_empty()) {
+                continue;
+            }
+            tied += usize::from(name.ends_with("(tied)"));
+            let claim: StatedEntry = serde_json::from_value(case["claim"].clone()).unwrap();
+            let history = history_of(&name, &case);
+            let register = register_of(&case, &history);
+            let maker = claim.attribution.maker().acts.clone();
+            let mut mades = vec![claim.when.at.clone()];
+            for (_, entry) in &history {
+                if let Entry::Verified(v) = entry {
+                    mades.push(v.when.at.clone());
+                }
+            }
+            for made in mades {
+                let at = |seconds: i128| {
+                    Timestamp::new(rfc3339(made.unix_nanos() + seconds * 1_000_000_000)).unwrap()
+                };
+                for received in [
+                    claim.received_at.clone(),
+                    made.clone(),
+                    at(1),
+                    at(86_400),
+                    at(30 * 86_400),
+                ] {
+                    let theirs = contracts_rule(&history, &maker, &made, &received);
+                    let ours = register.revoked_before_receipt(
+                        maker.as_str(),
+                        made.unix_nanos(),
+                        received.unix_nanos(),
+                    );
+                    assert_eq!(
+                        ours,
+                        theirs,
+                        "{name}, made {}, received {}",
+                        made.as_str(),
+                        received.as_str()
+                    );
+                    compared += 1;
+                    revoked += usize::from(theirs);
+                }
+            }
+        }
+        assert!(tied >= 5, "tied copies: {tied}");
+        assert!(compared >= 200, "{compared}");
+        assert!(revoked >= 8, "the fixtures revoke: {revoked}");
+    }
+
+    /// An RFC 3339 UTC timestamp for `nanos` since the epoch, in whole seconds.
+    fn rfc3339(nanos: i128) -> String {
+        let secs = (nanos / 1_000_000_000) as i64;
+        let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        // Civil date from days since 1970-01-01 (Hinnant's algorithm).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rest / 3600,
+            rest % 3600 / 60,
+            rest % 60
+        )
     }
 }

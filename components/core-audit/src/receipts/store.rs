@@ -722,13 +722,20 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
     /// [`BoundStore::erasable_overriding`], and no entry rests on the statement after the permitting decision at
     /// `decision` (`T-020-42`): the override lifts the citations made before that decision alone, so a citation the log
     /// took between the decision and the effect refuses it ([`EVIDENCE_RESTED_ON`]). Run it after the effect is
-    /// recorded, where the store would otherwise erase and then report [`ERASED_YET_CITED`].
+    /// recorded, where the store would otherwise erase and then report [`ERASED_YET_CITED`]. A statement erased
+    /// already answers `Ok`.
     pub fn erasable_overriding_since(
         &self,
         commitment: &Digest,
         decision: &Receipt,
     ) -> Result<(), AppendFailure> {
         self.erasable_overriding(commitment)?;
+        // A statement erased already answers `Ok`, as `erase` says, so a retry of an erasure carried out before
+        // this rule (or whose `erasure` entry is yet to be appended) is not refused for a later citation: the
+        // reconcile reports that as `ERASED_YET_CITED`.
+        if self.is_erased(commitment) {
+            return Ok(());
+        }
         if cited(
             self.log.borrow().entries(),
             commitment,
@@ -792,10 +799,15 @@ impl<S: Store, K: KeptStatements> BoundStore<S, K> {
         let (commitment, overrides) = {
             let log = self.log.borrow();
             let d = decided(log.entries(), at)?;
-            (d.commitment.clone(), d.overrides)
+            (
+                d.commitment.clone(),
+                d.overrides.then(|| d.decision.clone()),
+            )
         };
-        if overrides {
-            self.erasable_overriding(&commitment)?;
+        // The override lifts the citations made before its decision alone: one the log took after it refuses the
+        // erasure here, not erased and then reported `ERASED_YET_CITED` (`T-022-11`, the review's Low).
+        if let Some(decision) = overrides {
+            self.erasable_overriding_since(&commitment, &decision)?;
         } else {
             self.erasable(&commitment)?;
         }
