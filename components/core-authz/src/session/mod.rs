@@ -30,9 +30,9 @@
 //! rebuilds the register from those decisions ([`Engine::reopen`], [`registered_in`], read on policy's handle
 //! through [`crate::funds::Recorded::registered`]), so a revoked grant stays revoked, a grant given before the restart
 //! is in force after it, a revoked id is never granted again, and a session's id opens no other session. A log that
-//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation,
-//! session and acceptance of fault is refused as a missing input, never permitted (`REQ-AUZ-5`); a read resting on no
-//! permission rests on nothing the register holds, and is decided as ever.
+//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation
+//! and session is refused as a missing input, never permitted (`REQ-AUZ-5`), and an acceptance of fault finds no
+//! session open; a read resting on no permission rests on nothing the register holds, and is decided as ever.
 //!
 //! # Reads
 //!
@@ -296,9 +296,6 @@ impl Register {
         let Action::AcceptFault { session, .. } = &request.action else {
             return None;
         };
-        if self.unread {
-            return Some(RefusalClass::MissingInput);
-        }
         let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
         let open = self.sessions.iter().any(|s| {
             &s.session == session
@@ -509,8 +506,9 @@ impl<L: Recorded, P, S> Engine<L, P, S> {
     /// restart must (`T-021-17`): the sessions it opened, the grants and the revocations are what the log holds as
     /// permitted ([`Recorded::registered`], [`registered_in`]), so the engine judges each grant, revocation, read by
     /// a permission and session as the engine that ran on would. A log that can't be read leaves the register an
-    /// input the engine doesn't have: every call resting on it is refused as a missing input, never permitted, until
-    /// a later reopening reads it. Its clock stays as it is.
+    /// input the engine doesn't have: every read by a permission, grant, revocation and session is refused as a
+    /// missing input, never permitted, until a later reopening reads it, and an acceptance of fault finds no session
+    /// open and is refused. Its clock stays as it is.
     pub fn reopen(&mut self) {
         let register = &mut self.register;
         match self.log.registered() {

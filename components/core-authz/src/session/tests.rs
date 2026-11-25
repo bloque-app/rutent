@@ -1488,7 +1488,13 @@ fn register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer() {
     assert!(blind.grant_permission(&fresh).unwrap().permit().is_none());
     let mut revocation = again.clone();
     revocation.request = id("req-r3");
-    assert!(blind.revoke_permission(&revocation).unwrap().permit().is_none());
+    assert_eq!(
+        blind.revoke_permission(&revocation).unwrap().outcome,
+        rutent_contracts::core_internal::Answer::Refuse {
+            class: RefusalClass::MissingInput
+        },
+        "the grant it names can't be found"
+    );
     let answer = blind.open_session(&own_session("req-s2")).unwrap();
     assert!(matches!(answer.outcome, SessionOutcome::Refused { .. }), "{answer:?}");
     // A customer's read of its own order rests on no permission, so on nothing the register holds.

@@ -1339,11 +1339,13 @@ fn charge_recorded_before_a_restart_is_not_charged_again() {
     let mut ran_on = engine(registers(), bounds(4, 1));
     let counted = charge("req-1", &a, Work::Request, 3);
     assert_eq!(ran_on.charge(&counted).unwrap().outcome, within(1));
+    let next = charge("req-0", &a, Work::Request, 1);
+    assert_eq!(ran_on.charge(&next).unwrap().outcome, within(0));
 
     let mut reopened = engine(registers(), bounds(4, 1));
     reopened.log.entries = ran_on.log.entries.clone();
-    assert_eq!(reopened.charge(&counted).unwrap().outcome, within(1), "counted once");
-    assert_eq!(reopened.charged().used(&id("acme-treasury"), Limit::Work), 3);
+    assert_eq!(reopened.charge(&counted).unwrap().outcome, within(0), "counted once");
+    assert_eq!(reopened.charged().used(&id("acme-treasury"), Limit::Work), 4);
     let mut reissued = counted.clone();
     reissued.count = Count::new(1).unwrap();
     assert_eq!(
@@ -1355,7 +1357,7 @@ fn charge_recorded_before_a_restart_is_not_charged_again() {
     );
     assert_eq!(
         reopened
-            .charge(&charge("req-2", &a, Work::Request, 2))
+            .charge(&charge("req-2", &a, Work::Request, 1))
             .unwrap()
             .outcome,
         ChargeOutcome::Over { bound: safe(4) }
