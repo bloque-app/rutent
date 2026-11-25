@@ -7696,3 +7696,102 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
 - **Finding 4: the evidence store's reads, in `F-022`'s notes.** Every read Core makes of the evidence store is listed
   there with its caller in Core; the one read with no caller (`Evidence::fetch`) is named out of `v0` with its reason.
 
+
+## T-020-52: intake's status reads held to an agent's read scope, and the role bound in core-orch's register check
+
+Branch `f-020/t-020-52-intake-read-scope`, from `adb73186` (`T-021-16`'s filed reads, `T-021-17`, `T-020-46`,
+`T-020-51`). Finding 6 of `M3`'s milestone review (issue #275), the role binding `T-021-14`'s review left, a held order
+in `record` and `start`, and `T-021-17`'s leftover. Edits `components/core-orch/` (`intake/`, `arrival/`, their tests)
+and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is untouched.
+
+- **The read check** (`intake/mod.rs`, `Intake::read`). Every status intake tells goes through it: `open`, `quote`,
+  `accept` (and `accept_holding`) and `told`. Intake calls policy's `check_read` with `ReadCheck { reader: <the caller as
+  authentication established it>, reads, permission: None }`, `reads` being `Reads::FiledOrder { order, requester }` until
+  the order's acceptance is in the log and `Reads::OrderState { order }` from then on (`Kept::acceptance_logged`: the
+  acceptance appended, told or not, and kept past the order's end, so an order policy refused after its acceptance is
+  read as the log's order and one the log refused the acceptance of is still a filed order). The requester is the
+  requester of intake's own record of the filed request (`Kept::request.parties.requester`), never the caller's:
+  `kept_for` and `open` hold the caller to that party first, and the record is handed to the deployment before it is
+  asked (`StatusReads::filed`, the same record `Intake::record` gives), so policy's `Requester` source answers from it
+  (`T-021-16`, round 4). The status is told only on `ReadOutcome::Allowed`.
+- **What a refused reader is told** (`T-023-01`'s `CurrentError::Refused`, alone). `IntakeError::ReadRefused`, a unit
+  variant: no class, no state, no order identifier where the call was an `open`. What the call did stands (the order
+  opened, the quote shown, the acceptance recorded); the same call again asks again. `told` answers `None`, as for a
+  request that isn't the caller's. A check that couldn't be made or recorded is `IntakeError::Log`, nothing told.
+- **The port.** `Desk::reads: &mut dyn StatusReads` (policy's `Reads` plus `filed(&OrderRecord)`); the assembly's
+  `Reading` is policy's engine and the `Records::orders` map its `Requester`, `OrderOrigin` and `OrderParties` sources
+  read (the same map `FiledOrders::opened` fills for a filed order). `Intake::told` takes the desk, not only the register
+  of actors.
+- **The role in core-orch's register check.** `Actors::acts_for(acts, party, kind, role)`, answered by the assembly from
+  `Registers::acts_in` (policy's `ActsFor`, which binds party, kind and role). Intake's `open` and `speaks_for`, the
+  arrival filing's `listed_filer`, `has_a_listed_login` and `customer_accepts`, and the ended-order read of
+  `Arrivals::accept` pass the actor's stated role. `refile` asks it through `listed_filer`, as before, but the register
+  now answers for the role: a login of the operator's party the register lists as a customer, or of a reserve's, stating
+  the operator's or the provider's role is no filer, and nothing is written (`REQ-AUZ-4`).
+- **A held order.** `Intake::record` and `Intake::start` answer nothing for an order a reopened Core holds
+  (`T-020-46`: its inputs statement unreadable or another order's), so policy's sources hold no record of it and the
+  assembly follows no start of it; `request_of`, `quote` and `accept` already did.
+- **Tests** (each written against the old code and seen red on an assertion or on a missing rule, then green):
+  - `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake` [`REQ-AUZ-8`, `REQ-AUZ-7`] and
+    `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded` [`REQ-AUZ-8`, `REQ-ORD-5`,
+    `REQ-AUD-12`] (`conformance/scenarios/tests/assembly_intake.rs`, over the real policy engine, the agent listed and
+    scoped in the deployment's registers: the unscoped agent's `open` and `quote` are `ReadRefused`, the order opened all
+    the same, each check recorded refused and naming the requester intake's record holds; the scoped agent is told at
+    each call and the checks are recorded allowed, the filed order's and then the order's state);
+  - `arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused` [`REQ-AUZ-4`]
+    (`components/core-orch/tests/arrival.rs`), and the same in the assembly's register in `assembly_arrivals.rs`'s refiling
+    test;
+  - `held_order_accepted_before_a_restart_never_starts_after_it` [`NFR-6`, `REQ-AUD-6`]
+    (`components/core-orch/tests/intake_reads.rs`);
+  - `held_order_whose_waiting_quote_is_rebuilt_is_not_accepted` [`NFR-6`] (the accept-side test, see gap 1);
+  - beside them, over a double of the deployment's read policy, `intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_orders_state_after`,
+    `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged`,
+    `a_reader_policy_refuses_is_told_no_status_by_any_call_and_the_check_is_recorded`,
+    `status_is_told_only_when_policy_allows_it` and `status_is_not_told_where_policy_cannot_be_asked`.
+- **Effects on other tests, not rules relaxed.** Each status told is now checked and recorded, so the repeat tests that
+  compared the log's length around a repeated request count the log without policy's recorded reads
+  (`Env::len_but_reads`); `presence.rs`'s agent is scoped for `CheckRead`, as every agent that is told a status must be.
+- **Defaults** (reversible, each failing closed):
+  1. A caller refused the read is told `ReadRefused` and nothing else, though what its call did stands: an unscoped agent
+     that accepts a quote is told it may not read the status, and the acceptance is recorded. Alternative: ask the read
+     before acting, which would refuse an agent a call its scope allows.
+  2. Every caller is read through the same call, the customer's own login and an agent alike (as the brief says):
+     each status told is one recorded read.
+  3. `refile` asks the register of actors for the role the filer states (policy's `ActsFor`), not a recorded policy
+     decision of its own: no decision shape exists for a refiling.
+  4. A held order has no record for policy's sources: a read of one is refused, not allowed from a stale record.
+- **Gaps, with owners.**
+  1. *The accept-side guard of a held order is unreachable by any caller today.* A reopened intake rebuilds no quote
+     (`offered` is `None`; status `OutcomeToCome`), so an acceptance is refused as `NotNow` before the held check, and
+     switching the held check off turns no test red. `T-020-51` rebuilds waiting quotes in `Arrivals`, not in
+     `Intake`; no row rebuilds intake's. The test pins the observable result (nothing recorded, refused, quote refused
+     too) and the guard stays as the second line. Owner: whoever rebuilds intake's quotes after a reopening (`T-020-46`'s
+     follow-up, or `T-024-21`).
+  2. *`missing_input` for an unread session register.* Intake's and the arrival filing's session check still refuse
+     `refused_by_policy` when policy's register is unread or holds no session. `OrderRefusalClass` has no `missing_input`
+     (nor does the `order_refusal` entry or its schema), so the class can't be told without a contract shape: add
+     `MissingInput` (snake case `missing_input`) to core-internal's `order_refusal` class beside `refused_by_policy`
+     (`contracts/src/core_internal/types.rs`, the verified-entry schema, README and changelog, a fixture), and an
+     `unread()` answer on core-orch's `SessionRegister` port (the assembly's `Held` reads core-authz's `Register::unread`,
+     which is `pub(crate)` there). Not built: contracts are the lead's to authorise. Owner: the lead, then `F-021`.
+  3. A refiling is not a recorded policy decision (default 3): a shape would let the log hold who policy let file it.
+- **Rule-off** (`scratchpad/t-020-52/ruleoff.py`, each rule switched off alone, the file restored from its own text and
+  touched, `contracts/src/lib.rs` touched before each run; `rutent-core-orch`'s `intake_reads`, `intake` and `arrival`, and
+  `rutent-scenarios`' `assembly_intake`, `assembly_arrivals` and `presence`):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | no read check asked (every status told as before) | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake`; `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; the five double-backed tests in `intake_reads.rs` that ask a check (`intake_reads_a_filed_orders_status_…`, `order_ended_is_read_as_the_state_…`, `a_reader_policy_refuses_…`, `status_is_told_only_when_policy_allows_it`, `status_is_not_told_where_policy_cannot_be_asked`) |
+  | the order's state never read (always a filed order's) | `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; `intake_reads_a_filed_orders_status_…`; `order_ended_is_read_as_the_state_…` |
+  | a refused read tells the status all the same | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake`; `a_reader_policy_refuses_…`; `status_is_told_only_when_policy_allows_it` |
+  | intake's record isn't handed over before the check | 59 tests (every status told is refused, the deployment holding no record of the requester), the two named read tests among them |
+  | an order ended after its acceptance is read as a filed order's (`logged` not kept at the end) | `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged` |
+  | the assembly's register ignores the role (`acts_as` for `acts_in`) | `the_operators_login_files_a_differing_arrival_anew_on_the_real_log` (the login listed in the customer's role stating the operator's) |
+  | core-orch's register double answers every role as the customer's | 47 arrival and intake tests, `arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused` among them |
+  | a held order has a record | `held_order_accepted_before_a_restart_never_starts_after_it` |
+  | a held order starts | `held_order_accepted_before_a_restart_never_starts_after_it` |
+  | a held order is accepted (the guard in `Intake::accept`) | none: gap 1, the guard is unreachable |
+
+  One rule has no rule-off: the requester the read names is the caller's party or the record's. `kept_for` and `open` hold
+  the caller to the requester's party first, so the two are the same party for every caller that reaches the check; the
+  record is what the deployment is asked to confirm, by the check above that hands it over.
