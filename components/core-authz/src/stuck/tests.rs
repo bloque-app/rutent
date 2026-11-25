@@ -83,12 +83,31 @@ fn bob() -> Actor {
 struct Log {
     entries: Vec<(Receipt, Entry)>,
     unreadable: bool,
+    /// Holds every entry to core-internal's admission, as `CMP-CORE-AUDIT`'s log must (`T-021-16`'s tests).
+    admits: bool,
+}
+
+/// The deployment's operator, as the log's `StatementKeys::operator` answers it.
+fn the_operator() -> rutent_contracts::core_internal::DeploymentOperator {
+    rutent_contracts::core_internal::DeploymentOperator {
+        maker: id(OPERATOR),
+        party: id(OPERATOR),
+    }
 }
 
 impl PolicyLog for Log {
     fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
         let entry = Entry::Verified(entry.entry().clone());
         entry.check().map_err(AppendFailure::Refused)?;
+        if self.admits {
+            rutent_contracts::core_internal::admit_entry(
+                &self.entries,
+                &entry,
+                rutent_contracts::core_internal::Through::Policy,
+                &the_operator(),
+            )
+            .map_err(AppendFailure::Refused)?;
+        }
         let index = 9_000 + self.entries.len();
         let receipt: Receipt = serde_json::from_value(json!({
             "log": "log-main",
@@ -340,7 +359,7 @@ fn engine(case: &str, register: Register) -> (Tested, Value) {
     let (entries, request) = world(case);
     let log = Log {
         entries,
-        unreadable: false,
+        ..Log::default()
     };
     (Engine::with_policy(log, Permits, register), request)
 }
@@ -1417,4 +1436,157 @@ fn decider_confirmer_and_decliner_of_a_party_the_orders_record_names_are_refused
     let (mut policy, request) = engine("sd", named());
     let decide = decision_by(&request, &alice(), "req-decide");
     assert_eq!(policy.decide_stuck(&decide).unwrap().outcome, not_permitted);
+}
+
+/// The world's decision of `ord-1`, by `alice`, as `request_id`, its value held by `by` and delivered to `by`'s own
+/// account of the world's delivery.
+fn held_by(request: &Value, by: &str, request_id: &str) -> StuckDecide {
+    let mut decide = decision_by(request, &alice(), request_id);
+    let Resolution::Deliver { by: holder, .. } = &mut decide.resolution else {
+        panic!("the world's resolution is a delivery");
+    };
+    *holder = id(by);
+    decide
+}
+
+/// A decide step's mover is the provider holding the stuck value, so it must be one the order involves: its origin
+/// reserve (`us-bank`), a provider of a segment on a route it was given (`fx-desk`), or the holder of a holding account
+/// its value rested at (`bank-co`, the reserve of an arrival of the order). A mover the order doesn't involve is
+/// refused, its refusal recorded, though the deployment's policy would permit it; a permitted decide step naming that
+/// provider, earlier in the log, doesn't make it one the order involves. The log admits every entry. A hand-on's mover
+/// is held the same way, and a holding withdrawal's holder is one of the order it was handed on from.
+// verifies: REQ-AUZ-4
+#[test]
+fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
+    let (mut policy, request) = engine("sd", Register::of_the_world());
+    policy.log.admits = true;
+    let outside = held_by(&request, "outside-co", "req-outside");
+    let before = policy.log.entries.len();
+    let refused_outside = policy.decide_stuck(&outside).unwrap();
+    assert_eq!(refused_outside.outcome, refuse(RefusalClass::NotPermitted));
+    assert_eq!(
+        policy.log.last(),
+        (refused(RefusalClass::NotPermitted), before + 1),
+        "the refusal is recorded"
+    );
+
+    // Each on the world as it stood, since the log takes one resolution per transaction.
+    for (n, by) in ["bank-co", "us-bank", "fx-desk"].into_iter().enumerate() {
+        let (mut policy, request) = engine("sd", Register::of_the_world());
+        policy.log.admits = true;
+        let decided = policy
+            .decide_stuck(&held_by(&request, by, &format!("req-held-{n}")))
+            .unwrap();
+        assert!(decided.permit().is_some(), "{by}: {decided:?}");
+    }
+
+    // A permitted decide step naming the outside provider, as the log could hold one from before this rule: its mover
+    // is a party to the order by the log's reading, never by policy's.
+    let (_, earlier) = world("sd");
+    let mut entry: Entry = {
+        let case = format!(
+            "{}/../../contracts/core-internal/fixtures/admission/world--sd.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let case: Value = serde_json::from_str(&std::fs::read_to_string(case).unwrap()).unwrap();
+        serde_json::from_value(case["entry"].clone()).unwrap()
+    };
+    let Entry::Verified(VerifiedEntry {
+        what: What::StuckDecide {
+            request: decide, ..
+        },
+        ..
+    }) = &mut entry
+    else {
+        panic!("the world's decide step");
+    };
+    *decide = held_by(&earlier, "outside-co", "req-earlier");
+    let (mut policy, _) = engine("sd", Register::of_the_world());
+    policy.log.admits = true;
+    rutent_contracts::core_internal::admit_entry(
+        &policy.log.entries,
+        &entry,
+        rutent_contracts::core_internal::Through::Policy,
+        &the_operator(),
+    )
+    .unwrap();
+    let receipt = at_index(&policy.log.entries.last().unwrap().0, 8_999);
+    policy.log.entries.push((receipt, entry));
+    // Under a transaction of its own: the log takes one resolution per transaction, the earlier one's included.
+    let again = StuckDecide {
+        transaction: id("tx-again"),
+        ..held_by(&request, "outside-co", "req-again")
+    };
+    let again = policy.decide_stuck(&again).unwrap();
+    assert_eq!(again.outcome, refuse(RefusalClass::NotPermitted));
+
+    // A hand-on: the world's, held by `fx-desk`, a provider on the order's route, is permitted; held by an outside
+    // provider, refused.
+    // The store keeps the hand-on's evidence about `ord-1`, as it keeps the delivery's.
+    let mut register = Register::of_the_world();
+    register.kept.push((digest("31"), Some(id("ord-1"))));
+    let (mut policy, request) = engine("sdh", register);
+    policy.log.admits = true;
+    let mut hand_on = decision_by(&request, &alice(), "req-hand-on");
+    let decided = policy.decide_stuck(&hand_on).unwrap();
+    assert!(decided.permit().is_some(), "{decided:?}");
+    hand_on.transaction = id("tx-hand-on-outside");
+    let Resolution::HandOn { by, .. } = &mut hand_on.resolution else {
+        panic!("the world's resolution is a hand-on");
+    };
+    *by = id("outside-co");
+    hand_on.request = id("req-hand-on-outside");
+    assert_eq!(
+        policy.decide_stuck(&hand_on).unwrap().outcome,
+        refuse(RefusalClass::NotPermitted)
+    );
+
+    // The holder a holding withdrawal names, read over the contract's admitted history of one: a holder the order its
+    // value was handed on from involves, and the linked order too; no other order's, and no outsider.
+    let history = admitted_history(
+        "outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-holder-a-holding-withdrawal-names",
+    );
+    assert!(involves_holder(&history, &id("ord-1"), &id("holding-bank")));
+    assert!(involves_holder(&history, &id("ord-8"), &id("holding-bank")));
+    assert!(!involves_holder(
+        &history,
+        &id("ord-77"),
+        &id("holding-bank")
+    ));
+    assert!(!involves_holder(&history, &id("ord-1"), &id("outside-co")));
+
+    // A route recalculated and one whose destination changed (`exchange-c`, `exchange-b`, on no other route of
+    // `ord-1`).
+    let history = admitted_history("arrival-names-its-earlier-arrival--deposit");
+    assert!(involves_holder(&history, &id("ord-1"), &id("exchange-c")));
+    assert!(involves_holder(&history, &id("ord-1"), &id("exchange-b")));
+
+    // An order accepted with no route yet: its origin reserve alone, never another order's arrival reserve or route
+    // provider. The contract's case permits the decide step `bank-co` moves (R-MOVER); policy refuses it.
+    let history =
+        admitted_history("only-a-declared-stuck-part-is-resolved--no-plan-with-its-acceptance");
+    assert!(involves_holder(&history, &id("ord-21"), &id("us-bank")));
+    assert!(!involves_holder(&history, &id("ord-21"), &id("bank-co")));
+    assert!(!involves_holder(&history, &id("ord-21"), &id("fx-desk")));
+    assert!(involves_holder(&history, &id("ord-1"), &id("bank-co")));
+}
+
+/// The history of the contract's admission case `name`: the log as the case holds it before its entry.
+fn admitted_history(name: &str) -> Vec<(Receipt, Entry)> {
+    let path = format!(
+        "{}/../../contracts/core-internal/fixtures/admission/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let case: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            (
+                serde_json::from_value(h["receipt"].clone()).unwrap(),
+                serde_json::from_value(h["entry"].clone()).unwrap(),
+            )
+        })
+        .collect()
 }
