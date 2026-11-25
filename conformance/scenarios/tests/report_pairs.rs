@@ -295,3 +295,38 @@ fn adjacent_segments_of_one_provider_make_no_pair_and_leave_nothing_unbuilt() {
     assert_eq!(core.write_pairs(), Ok(0));
     assert!(pairs_of(&core).is_empty());
 }
+
+/// The pairs a run built and the writer wasn't called for, Core reopened: the reports they rest on went with the
+/// stopped process, so the reopened Core surfaces each as unbuilt, with why, never skipped silently, and writes none;
+/// pairs the log took before the stop are neither surfaced nor written again (`REQ-ORD-9`, `ADR-0009`, `T-020-46`).
+// verifies: REQ-ORD-9
+#[test]
+fn pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens() {
+    let reopen = |core: Core| {
+        rutent_scenarios::harness::Scenario::new(
+            "execution",
+            "AC-1",
+            given(&[IN, EXCHANGE, QUICK, OUT]),
+        )
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference)
+    };
+    let (core, order, segments) = ran_across("AC-1");
+    let mut core = reopen(core);
+    let unbuilt = core.unbuilt_reports();
+    assert_eq!(unbuilt.len(), 3, "{unbuilt:?}");
+    for (n, parked) in unbuilt.iter().enumerate() {
+        assert_eq!(parked.order, order);
+        assert_eq!(parked.segment, segments[n + 1].segment);
+        assert_eq!(
+            parked.why,
+            Unbuilt::NoSentReport(segments[n].segment.clone())
+        );
+    }
+    assert_eq!(core.write_pairs(), Ok(0), "none written");
+
+    let (mut core, _, _) = ran_across("AC-1");
+    assert_eq!(core.write_pairs(), Ok(3));
+    let mut core = reopen(core);
+    assert!(core.unbuilt_reports().is_empty(), "the log holds them");
+    assert_eq!(core.write_pairs(), Ok(0));
+}

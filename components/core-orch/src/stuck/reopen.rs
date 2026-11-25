@@ -110,7 +110,73 @@ impl Stuck {
             let _ = stuck.follow(segments, &entries, order);
         }
         stuck.rebuild_moves(history);
+        stuck.rebuild_reports(segments, history);
         stuck
+    }
+
+    /// The reports of each move whose outcome was unknown, from the log's `report_outcome`, `decline_outcome` and
+    /// `confirm_outcome` decisions (`AC-6`, `T-020-46`): a stuck move's and a segment's move's, each report's
+    /// version, the declined ones, which are never made or confirmed again, the one that stands, and a confirmation
+    /// of it policy permitted whose outcome isn't recorded yet. So a report made before the restart is confirmed
+    /// after it, and the log, which takes one standing report per effect (`one-report-per-effect`), is never asked
+    /// for a second.
+    fn rebuild_reports(&mut self, segments: &Segments, history: &[(Receipt, Entry)]) {
+        for motion in self.moving.values_mut() {
+            let Some(effect) = motion.effect.receipt.clone() else {
+                continue;
+            };
+            let made = reports_of(history, &effect);
+            motion.reports = made.made.len() as u64;
+            motion.declined = made
+                .made
+                .iter()
+                .filter(|(_, _, declined)| *declined)
+                .map(|(_, report, _)| report.clone())
+                .collect();
+            motion.reported = made.standing().map(|(_, report)| report.clone());
+        }
+        let parts: Vec<(Id, Vec<Id>)> = self
+            .declared
+            .iter()
+            .filter_map(|((order, _), declared)| {
+                let segments = declared.segments.iter().map(|(s, _)| s.clone()).collect();
+                Some((Id::new(order.as_str())?, segments))
+            })
+            .collect();
+        for (order, declared) in parts {
+            for segment in declared {
+                let Some(unknown) = segments.unknown_move(&order, &segment) else {
+                    continue;
+                };
+                let made = reports_of(history, &unknown.effect);
+                if made.made.is_empty() {
+                    continue;
+                }
+                let at = key(&order, &segment);
+                let declined: Vec<Report> = made
+                    .made
+                    .iter()
+                    .filter(|(_, _, declined)| *declined)
+                    .map(|(_, report, _)| report.clone())
+                    .collect();
+                self.segment_history
+                    .insert(at.clone(), (made.made.len() as u64, declined));
+                if let Some((reporter, report)) = made.standing() {
+                    if let Some((confirmer, with)) = &made.confirmed {
+                        self.segment_confirmed.insert(
+                            at.clone(),
+                            Permitted {
+                                confirmer: confirmer.clone(),
+                                version: report.version,
+                                evidence: with.clone(),
+                            },
+                        );
+                    }
+                    self.segment_reports
+                        .insert(at, (reporter.clone(), report.clone()));
+                }
+            }
+        }
     }
 
     /// The kept decisions, what moved and the moves in motion, from the log's decide and move steps, effects and
@@ -298,6 +364,84 @@ impl Stuck {
             );
         }
     }
+}
+
+/// A move's reports as the log holds them (`T-020-46`): each report policy permitted, in order, with its reporter, its
+/// version and whether a decline policy permitted names it; and the confirmation policy permitted of the one that
+/// stands, by its confirmer and the statement it was confirmed with.
+#[derive(Default)]
+struct Reports {
+    made: Vec<(Actor, Report, bool)>,
+    confirmed: Option<(Actor, Receipt)>,
+}
+
+impl Reports {
+    /// The report that stands: the last one made, unless it was declined.
+    fn standing(&self) -> Option<(&Actor, &Report)> {
+        self.made
+            .last()
+            .filter(|(_, _, declined)| !declined)
+            .map(|(reporter, report, _)| (reporter, report))
+    }
+}
+
+/// The reports of the move whose effect is `effect`, from `history` ([`Reports`]).
+fn reports_of(history: &[(Receipt, Entry)], effect: &Receipt) -> Reports {
+    let mut reports = Reports::default();
+    let mut confirmations: Vec<(Receipt, Actor, Receipt)> = Vec::new();
+    for (receipt, entry) in history {
+        let Entry::Verified(v) = entry else {
+            continue;
+        };
+        if v.outcome != (Outcome::Permitted {}) {
+            continue;
+        }
+        match &v.what {
+            What::ReportOutcome { request, .. } if request.effect == *effect => {
+                let version = reports.made.len() as u64 + 1;
+                reports.made.push((
+                    request.reporter.clone(),
+                    Report {
+                        outcome: match request.outcome {
+                            rutent_contracts::core_internal::MoveOutcome::Done => Resolved::Done,
+                            rutent_contracts::core_internal::MoveOutcome::Failed => {
+                                Resolved::Failed
+                            }
+                        },
+                        evidence: request.evidence.clone(),
+                        version,
+                        receipt: receipt.clone(),
+                    },
+                    false,
+                ));
+            }
+            What::DeclineOutcome { request, .. } if request.effect == *effect => {
+                if let Some(made) = reports
+                    .made
+                    .iter_mut()
+                    .find(|(_, report, _)| report.receipt == request.report)
+                {
+                    made.2 = true;
+                }
+            }
+            What::ConfirmOutcome { request, .. } if request.effect == *effect => {
+                confirmations.push((
+                    request.report.clone(),
+                    request.confirmer.clone(),
+                    request.confirmed_with.clone(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, standing)) = reports.standing() {
+        let standing = standing.receipt.clone();
+        reports.confirmed = confirmations
+            .into_iter()
+            .find(|(report, _, _)| *report == standing)
+            .map(|(_, confirmer, with)| (confirmer, with));
+    }
+    reports
 }
 
 impl Stuck {

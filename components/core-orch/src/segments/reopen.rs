@@ -206,9 +206,49 @@ impl Segments {
                 let _ = segments.terms.state(stated, receipt, &terms);
             }
         }
+        // The guard's refusals the log took, by order and the route's decision record, and each part's waits at its
+        // floor: answered again as the log took them, never recorded twice (`INV-8`).
+        for (receipt, entry) in history {
+            let Entry::Verified(v) = entry else {
+                continue;
+            };
+            match &v.what {
+                What::OrderRefusal {
+                    request,
+                    order: Some(order),
+                    class: OrderRefusalClass::NoRouteRightNow,
+                } if v.who.role == rutent_contracts::core_internal::Role::Core => {
+                    segments
+                        .refused_in_log
+                        .entry((order.as_str().to_owned(), request.as_str().to_owned()))
+                        .or_insert_with(|| receipt.clone());
+                }
+                What::Input { input } if input.observed == (Observed::WaitingAtFloor {}) => {
+                    let (Some(part), Ok(general)) =
+                        (&input.subject.part, GeneralEntry::try_from(entry.clone()))
+                    else {
+                        continue;
+                    };
+                    segments
+                        .floor_waits
+                        .entry((
+                            input.subject.order.as_str().to_owned(),
+                            part.as_str().to_owned(),
+                        ))
+                        .or_default()
+                        .push(FloorWait {
+                            input: input.clone(),
+                            entry: general,
+                            receipt: Some(receipt.clone()),
+                        });
+                }
+                _ => {}
+            }
+        }
         // Which input rests on which judgement, and the reliances written (`REQ-CPL-12`).
         segments.reliances = Reliances::recorded(history);
         segments.measure_what_the_log_lacks(history);
+        segments.park_unpaired_on_reopening(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments
     }

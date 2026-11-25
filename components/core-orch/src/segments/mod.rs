@@ -688,6 +688,10 @@ pub struct Segments {
     /// The refusal each part's guard recorded before a segment's first hand-over, by order and part: recorded once,
     /// and answered as recorded while the guard refuses for the same reason (`T-020-09`).
     refused: BTreeMap<(String, String), (RouteRefused, Receipt)>,
+    /// The guard's refusals a Core that reopened found in the log, by order and the decision record of the route
+    /// refused (`T-020-46`): the entry names no reason, so while the guard refuses that route the entry the log took
+    /// is the answer, and none is recorded again.
+    refused_in_log: BTreeMap<(String, String), Receipt>,
     /// The routes handed on whose start the holding account's own record proved, by order (`T-020-13`).
     proven: BTreeSet<String>,
     /// The charges checked against the formulas that bound them, each segment's once (`REQ-QTE-5`, `T-020-14`).
@@ -1905,6 +1909,18 @@ impl Segments {
                             reason,
                             class: OrderRefusalClass::NoRouteRightNow,
                         };
+                        if let Some(receipt) = self
+                            .refused_in_log
+                            .get(&(
+                                live.order.as_str().to_owned(),
+                                live.record.record_id().as_str().to_owned(),
+                            ))
+                            .cloned()
+                        {
+                            self.refused
+                                .insert(held, (refused.clone(), receipt.clone()));
+                            return Ok(Ran::Refused { refused, receipt });
+                        }
                         let receipt = record_route_refusal(
                             parts.log,
                             parts.clock,
