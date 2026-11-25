@@ -7464,8 +7464,11 @@ assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/te
   of `opened-orders-inputs-are-a-kept-statement`: verified, of that shape, the deployment operator's own, about
   nothing. `core-internal`, folded into the unreleased 1.0.0 (a `DEC-20` path): schema, README, changelog, fixtures
   (valid `filing-inputs-of-a-filed-order` and an arrival naming them, invalid `filing-inputs-without-its-objective`, six
-  admission cases). `Arrivals::reopened` reads the statement back, held to its shape and to the order. The filer's
-  restating the filing now takes the wait only under the same request. Tests:
+  admission cases). `Arrivals::reopened` reads the statement back, held to its shape and to the order. The
+  statement also holds the filing's judgements (`needs`, `FilingNeed`), so the whole filing but the session is fixed by
+  the log, the statement and the authorisation. A filer restating the filing after a reopening (same request, party and
+  deposit) is told the wait as it stands and **changes nothing**: there is no `adopt` (review of `9e2214ee`, blocker 1:
+  the restated destination, payer account and objective had started the order). Tests:
   `waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing` [`REQ-QTE-10`, `REQ-AUD-6`],
   `reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held` [`REQ-QTE-10`, `REQ-AUD-6`] (the store keeps
   nothing behind the commitment, the arrival names none, the statement is another order's), and the scenario, which no
@@ -7480,11 +7483,16 @@ assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/te
   | the statement isn't appended before its arrival | 35 arrival tests (the log refuses the arrival) |
   | the log row cites nothing (`--missing`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
   | the log row takes a statement about something (`--about`) | the same |
+  | a restated filing replaces the wait's filing (the old `adopt`) | `filing_restated_after_a_reopen_changes_nothing_the_statement_fixed` |
 
 - **Gaps, with owners.**
-  1. The orders started or ended, and the filings refused, aren't rebuilt: a repeat of such a filing after a reopening is
-     told the deposit is held (`Conflicting`, or `NotFileable`) and not how it ended. Fail closed; `T-024-21`'s restarted
-     runs read it.
+  1. What a reopening doesn't rebuild, by case (the review of `9e2214ee` probed each): an order started or ended after
+     the deposit was held keeps the deposit held (`one-order-per-deposit`, rebuilt as `spent`) and a repeat of its filing
+     is told `NotFileable` or that the deposit is held, not how it ended; a filing refused before an order opened leaves
+     no arrival naming an order, so the deposit is free after a reopening and the same filing is evaluated afresh (it may
+     be refused again, a second `order_refusal`), and another filing may start; a deposit its reserve said no to is
+     filed on again after a reopening, the reserve is asked once more and its second order ends before the deposit is
+     `NotFileable`, which fails open by one question, harmless for funds. All three are `T-024-21`'s (restarted runs).
   2. The setting's decided path and its rebuild from the log: `T-020-49`. Its schedule's call to `end_expired`: `T-020-48`.
 - **Named tests** (`components/core-orch/tests/arrival.rs`): `customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own`
   [`REQ-QTE-10`, `AC-13`], `wait_past_its_lifetime_ends_and_frees_its_deposit` [`GUA-1`],

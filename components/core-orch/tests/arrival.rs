@@ -5168,14 +5168,16 @@ fn filing_restated_after_a_reopen_changes_nothing_the_statement_fixed() {
         waiting_with_inputs(&mut env, &mut providers, &mut arrivals, 0, "deposit-1");
     let history = env.history();
     let mut reopened = reopened_over(&mut env, &mut providers, &history);
-    let fixed = reopened.filing_of(&order).expect("the wait's filing").clone();
+    let fixed = reopened
+        .filing_of(&order)
+        .expect("the wait's filing")
+        .clone();
 
     let mut restated = one.clone();
     restated.destination.account = id("acct-attacker-dest");
-    restated.inputs.insert(
-        "payer.bank_account".into(),
-        "acct-attacker-payer".into(),
-    );
+    restated
+        .inputs
+        .insert("payer.bank_account".into(), "acct-attacker-payer".into());
     restated.route.objective = rutent_contracts::router_api::Objective::FastestSettlement {};
     env.clock.set(START + 700);
     let told = file(&mut env, &mut providers, &mut reopened, &restated).unwrap();
