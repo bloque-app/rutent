@@ -377,6 +377,9 @@ pub struct Shape {
     /// A reserve whose inner node is on neither list: no publisher declares it private and the operator doesn't list
     /// it public (`T-024-05`, `REQ-CAT-22`), so the catalogue leaves its tuples off every route.
     pub undeclared_node: bool,
+    /// A reserve that declares it answers the operator's hold requests (provider-role 4.0.0, `REQ-QTE-15`,
+    /// `T-020-56`): its declaration says so, and its simulated provider holds the quote asked.
+    pub holds: bool,
 }
 
 /// A real value-moving operation's transaction: the one a repeat would name.
@@ -624,6 +627,7 @@ impl Reserve {
                     declaration: ReserveDeclaration {
                         can_require_user_initiated_withdrawal: true,
                         starts_routes_on_automatic_deposits: automatic_deposits,
+                        answers_hold_requests: None,
                         maker: identity.provider.clone(),
                         declared_in_version: "0.1.0".to_owned(),
                     },
@@ -690,6 +694,11 @@ impl Reserve {
                     tuple.terms.increment = Some(increment.to_string());
                 }
             }
+        }
+        if shape.holds
+            && let Some(offer) = advertisement.offers.reserve.as_mut()
+        {
+            offer.declaration.answers_hold_requests = Some(true);
         }
         if shape.public_node || shape.undeclared_node {
             advertisement.private_nodes.clear();

@@ -411,6 +411,12 @@ pub struct Routed {
     pub sent: Vec<Sent>,
     /// The balance checks the catalogue refused to let out, by reserve: those questions weren't sent.
     pub refused_checks: Vec<(Id, CheckRefusal)>,
+    /// The terms a provider handed back in its answer to one of Core's own dry runs, as they arrived inside it, each
+    /// once (provider-role 4.0.0, `REQ-QTE-6`, `T-020-56`): only from an answer the round kept and its snapshot didn't
+    /// refuse, made by the provider asked, of the very tuple it was asked about. Stated before any segment of the order
+    /// starts, so the caller takes them for the segments that do ([`crate::quote::TakesTerms`]); the router itself
+    /// reads none of them.
+    pub terms: Vec<Vec<u8>>,
 }
 
 /// Why a routing stopped. Nothing after the failing step was asked or recorded.
@@ -515,6 +521,7 @@ impl<R: Router> Rounds<R> {
             shortlist,
             choices,
             offer,
+            terms: terms_handed_back(&run.answers),
             sent: run.sent,
             refused_checks: run.refused_checks,
         };
@@ -1185,6 +1192,133 @@ fn cites_a_refusal(record: &DecisionRecord, operation: &Operation) -> bool {
     })
 }
 
+/// The terms each of Core's own answers handed back (`Routed::terms`), as JSON, each once: an answer the round kept
+/// (appended, its snapshot refusing none of it), of Core's own question, carrying terms made by the provider asked for
+/// the tuple it was asked about, and nothing else. The platform's signer signs terms only for that tuple; Core holds
+/// them to it again, so a provider's terms for another tuple, or another provider's, never bind a segment here.
+fn terms_handed_back(answers: &[Answer]) -> Vec<Vec<u8>> {
+    let mut terms: Vec<Vec<u8>> = Vec::new();
+    for answer in answers {
+        if !answer.ours || answer.refusal_recorded || answer.receipt.is_none() {
+            continue;
+        }
+        let Ok(result) = serde_json::from_slice::<Statement<ResultBody>>(&answer.bytes) else {
+            continue;
+        };
+        let Some(stated) = result.statement.terms() else {
+            continue;
+        };
+        let tuple = &stated.statement.tuple;
+        let asked = result.maker == answer.provider.as_str()
+            && stated.maker == answer.provider.as_str()
+            && tuple.provider == answer.provider.as_str()
+            && tuple.from.node == answer.tuple.from.node
+            && tuple.from.asset == answer.tuple.from.asset
+            && tuple.to.node == answer.tuple.to.node
+            && tuple.to.asset == answer.tuple.to.asset;
+        if !asked {
+            continue;
+        }
+        if let Ok(bytes) = serde_json::to_vec(stated)
+            && !terms.contains(&bytes)
+        {
+            terms.push(bytes);
+        }
+    }
+    terms
+}
+
+/// A question Core asks one provider alone, outside a round, and what came back (`T-020-56`'s hold request).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AskedAlone {
+    /// The question as Core signed it.
+    pub question: Vec<u8>,
+    /// The answer as it arrived, appended about the order and the question's transaction; `None` where nothing came
+    /// back or nothing that could be recorded.
+    pub answer: Option<Vec<u8>>,
+}
+
+/// A fresh transaction for a question about `order`: never one Core asked under, and naming nothing of the order, as
+/// a round's are; then counted as issued.
+pub(crate) fn fresh_transaction(parts: &mut Parts<'_>, order: &Id) -> Result<Id, RoutingError> {
+    let id = parts.fresh.id();
+    if parts.issued.contains(id.as_str()) || id.as_str().contains(order.as_str()) {
+        return Err(RoutingError::Transaction);
+    }
+    parts.issued.used.insert(id.as_str().to_owned());
+    Ok(id)
+}
+
+/// Asks `provider` the operator's `operation` about `order` under `transaction`, alone, as a round asks each of its
+/// questions: signed with the operator key under `bounds`' deployment and protocol version, appended about the order
+/// and the transaction before it is sent, and its answer, where one came back, appended about the same before anything
+/// reads it (`REQ-AUD-2`). What the answer says is the caller's to hold to the question.
+pub(crate) fn ask_alone(
+    parts: &mut Parts<'_>,
+    bounds: &PolicyBounds,
+    operator: &Actor,
+    order: &Id,
+    provider: &Id,
+    transaction: &Id,
+    operation: rutent_contracts::provider_role::Operation,
+) -> Result<AskedAlone, RoutingError> {
+    let made_at = parts.clock.now().timestamp().ok_or(RoutingError::Clock)?;
+    let question = ask::sign_question(
+        parts.operator_key,
+        bounds,
+        &operator.acts,
+        &made_at,
+        operation,
+    )?;
+    let about = || About {
+        order: Some(order.clone()),
+        segment: None,
+        transaction: Some(transaction.clone()),
+        node: None,
+    };
+    let unappended = |e| match e {
+        Unappended::Append(failure) => RoutingError::Log(failure),
+        Unappended::Unrecordable => RoutingError::Unsigned,
+    };
+    journal::append_stated(
+        parts.log,
+        parts.evidence,
+        parts.clock,
+        &question,
+        operator.clone(),
+        operator,
+        Some(about()),
+    )
+    .map_err(unappended)?;
+    let Some(bytes) = parts.providers.ask(provider, &question) else {
+        return Ok(AskedAlone {
+            question,
+            answer: None,
+        });
+    };
+    let maker = maker_in(parts.catalogue, &bytes, provider);
+    let presenter = relay::presenter(parts.catalogue, provider, maker.role);
+    match journal::append_stated(
+        parts.log,
+        parts.evidence,
+        parts.clock,
+        &bytes,
+        maker,
+        &presenter,
+        Some(about()),
+    ) {
+        Ok(_) => Ok(AskedAlone {
+            question,
+            answer: Some(bytes),
+        }),
+        Err(Unappended::Unrecordable) => Ok(AskedAlone {
+            question,
+            answer: None,
+        }),
+        Err(Unappended::Append(failure)) => Err(RoutingError::Log(failure)),
+    }
+}
+
 /// What an answer is about: its order and the transaction Core asked it under; a judgement, which names no
 /// transaction, about nothing (core-internal's README, "Two kinds of entry").
 fn about_answer(order: &Id, answer: &Answer) -> Option<About> {
@@ -1199,7 +1333,12 @@ fn about_answer(order: &Id, answer: &Answer) -> Option<About> {
 /// Who an answer claims made it: its provider, acting for its publisher, or for the operator where the operator
 /// publishes it; a judgement in the verifier's role.
 fn maker_of(catalogue: &Catalogue, answer: &Answer) -> Actor {
-    let envelope = serde_json::from_slice::<serde_json::Value>(&answer.bytes).ok();
+    maker_in(catalogue, &answer.bytes, &answer.provider)
+}
+
+/// [`maker_of`], for `bytes` that `provider` handed back.
+fn maker_in(catalogue: &Catalogue, bytes: &[u8], provider: &Id) -> Actor {
+    let envelope = serde_json::from_slice::<serde_json::Value>(bytes).ok();
     let judgement = envelope
         .as_ref()
         .is_some_and(|v| v.get("shape").and_then(|s| s.as_str()) == Some(JUDGEMENT_SHAPE));
@@ -1208,7 +1347,7 @@ fn maker_of(catalogue: &Catalogue, answer: &Answer) -> Actor {
     let acts = envelope
         .as_ref()
         .and_then(|v| v.get("maker").and_then(|m| m.as_str()).and_then(Id::new))
-        .unwrap_or_else(|| answer.provider.clone());
+        .unwrap_or_else(|| provider.clone());
     relay::presenter(
         catalogue,
         &acts,

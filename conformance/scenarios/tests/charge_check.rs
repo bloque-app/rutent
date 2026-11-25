@@ -1,25 +1,26 @@
 //! Core's own charge check (`T-020-14`): each settled segment's charge held to the formula that bound it by Core's
 //! segments, a charge above it raised to the operator through Core's own channel and recorded, the terms a provider
 //! stated binding from the segment's start and kept only as the evidence store holds them, and each segment's charge
-//! checked once. Over the assembled Core against the simulated providers; the log admits everything it takes.
+//! checked once. Over the assembled Core against the simulated providers; the log admits everything it takes. The
+//! terms are the providers' own, handed back in their answers to Core's dry runs and taken by Core (`T-020-56`): no
+//! scenario hands Core terms.
 
 mod routing_support;
 
 use ed25519_dalek::Verifier as _;
 use routing_support::*;
-use rutent_conformance::sim::{Role, Spec};
-use rutent_contracts::core_internal::calls::{AppendFailure, KeptStatements};
+use rutent_conformance::sim::{Behaviour, Role, Spec};
 use rutent_contracts::core_internal::{
-    Action, Difference, Encoded, Entry, KeptStatement, Outcome, Raise, Salt, VerifiedEntry, What,
+    Action, Attribution, Difference, Encoded, Entry, KeptStatement, Outcome, Raise, Receipt, Salt,
+    VerifiedEntry, What,
 };
-use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::notice::{About, Inbox, Receiver, Taken, Verifier};
-use rutent_core_orch::quote::{Checked, NotTerms, TakeError};
+use rutent_core_orch::quote::Checked;
 use rutent_scenarios::assembly::machine::Reference;
-use rutent_scenarios::assembly::{Core, Staged};
+use rutent_scenarios::assembly::{Core, KeptThrough, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
 use serde_json::json;
@@ -202,7 +203,8 @@ fn charge_within_the_formulas_maximum_raises_nothing() {
     }
 }
 
-/// The provider's signed terms for each tuple a run of `order` used, with a fee of at most `maximum`, made now.
+/// The provider's signed terms for each tuple a run of `order` used, with a fee of at most `maximum`, made now: terms
+/// a scenario has the evidence store answer in place of the ones the provider handed back, which Core never takes.
 fn terms_for(core: &Core, order: &Id, maximum: &str) -> Vec<Vec<u8>> {
     let context = rutent_scenarios::assembly::context();
     core.route_operations(order)
@@ -230,6 +232,115 @@ fn terms_for(core: &Core, order: &Id, maximum: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// On the next quote, `provider` hands back, in its answers to the dry runs of its withdrawal and its deposit, its
+/// terms of a fee of at most `maximum` for the tuple asked: its own statements, which the platform signs with its key
+/// (`T-020-56`).
+fn states_terms(core: &mut Core, provider: &str, maximum: &str) {
+    for kind in ["withdrawal", "deposit"] {
+        core.world()
+            .script_dry_run(provider, kind, Behaviour::stating_terms_of_at_most(maximum));
+    }
+}
+
+/// The receipts of the terms' stated entries the log holds, in order, with who the log attributed each to.
+fn terms_entries(core: &Core) -> Vec<(Receipt, Attribution)> {
+    core.log()
+        .entries()
+        .iter()
+        .filter_map(|(r, e)| match e {
+            Entry::Stated(s) if s.what.statement.as_str() == "urn:rutent:provider-role:terms" => {
+                Some((r.clone(), s.attribution.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// An order of `provider` for the whole amount, quoted: its id and its quote's digest.
+fn quoted_at(
+    core: &mut Core,
+    session: &Id,
+    provider: &str,
+    name: &str,
+) -> (Id, rutent_contracts::module_interface::Digest) {
+    let (order, told) = quoted(
+        core,
+        request_at(provider, name, AMOUNT, session, "lowest_total_cost"),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    (order, digest)
+}
+
+/// The terms the provider hands back in its answers to Core's own dry runs bind each segment of the order they were
+/// quoted for, from its start (`REQ-QTE-6`): they are the provider's own statements, as the platform's signer signed
+/// them and the log attributed them, taken by Core with no one handing them in; a charge within them raises nothing,
+/// and one above them is raised, the raise citing the terms that bound it (`T-020-56`).
+// verifies: REQ-QTE-6
+#[test]
+fn terms_a_module_stated_before_its_segment_started_bind_its_charge() {
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    // Terms that allow the 7 it charges: within them, nothing is raised, though the price quoted none.
+    states_terms(&mut core, CHARGING, "100");
+    let within = ran(&mut core, &session, CHARGING, "req-within");
+    let stated = terms_entries(&core);
+    assert_eq!(
+        stated.len(),
+        2,
+        "one for each tuple the route asked: {stated:?}"
+    );
+    for (_, attribution) in &stated {
+        assert!(
+            matches!(attribution, Attribution::Verified { who } if who.acts.as_str() == CHARGING),
+            "the provider's own terms, signed by the platform with its key: {attribution:?}"
+        );
+    }
+    assert_eq!(core.terms_held(), 2);
+    assert!(core.raised().is_empty(), "within the terms that bound it");
+    for segment in core.charged_segments(&within) {
+        assert!(matches!(
+            core.charge_checked(&within, &segment),
+            Some(Checked::Within)
+        ));
+    }
+
+    // Tighter terms, handed back on the next order's quote, bind its segments: 7 is above 3, and each raise cites
+    // the terms that bound it.
+    core.clock.advance(60);
+    states_terms(&mut core, CHARGING, "3");
+    let tight = ran(&mut core, &session, CHARGING, "req-tight");
+    let receipts: Vec<Receipt> = terms_entries(&core)
+        .into_iter()
+        .skip(stated.len())
+        .map(|(r, _)| r)
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    let raised = core.raised();
+    assert_eq!(raised.len(), 2, "both of the order's charges are above 3");
+    for raise in &raised {
+        let Difference::Charge {
+            order,
+            terms,
+            maximum,
+            ..
+        } = &raise.difference
+        else {
+            panic!("a charge difference");
+        };
+        assert_eq!(order, &tight);
+        assert_eq!(maximum.as_str(), "3");
+        assert!(
+            terms.as_ref().is_some_and(|t| receipts.contains(t)),
+            "it rests on the terms the provider stated before its segment started"
+        );
+    }
+}
+
 // verifies: REQ-QTE-6
 #[test]
 fn terms_stated_after_a_segment_started_do_not_bind_it() {
@@ -237,11 +348,12 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     let first = ran(&mut core, &session, CHARGING, "req-first");
     assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
 
-    // The provider then states terms that allow 7. The segments that ran are not held to them.
+    // The provider then hands back terms that allow 7, on the next order's quote. The segments that ran are not held
+    // to them.
     core.clock.advance(60);
-    for bytes in terms_for(&core, &first, "100") {
-        assert!(core.state_terms(&bytes).expect("kept").new);
-    }
+    states_terms(&mut core, CHARGING, "100");
+    let (second, digest) = quoted_at(&mut core, &session, CHARGING, "req-second");
+    assert_eq!(terms_entries(&core).len(), 2, "stated on the quote");
     core.run(&first).expect("runs again");
     assert_eq!(core.raised().len(), 2, "no raise is made or unmade by them");
     for (raise, _) in raise_entries(&core) {
@@ -256,7 +368,9 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
 
     // A segment that starts after them is held to them: 7 is within 100, and nothing is raised.
     core.clock.advance(60);
-    let second = ran(&mut core, &session, CHARGING, "req-second");
+    core.accept(&kit::customer(), &second, &digest)
+        .expect("accepted");
+    core.run(&second).expect("the order runs");
     assert_eq!(core.raised().len(), 2, "within the terms in force");
     let segments = core.charged_segments(&second);
     assert_eq!(segments.len(), 2);
@@ -269,13 +383,14 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
 
     // Terms stated tighter bind the segments after them, and the raise cites them.
     core.clock.advance(60);
-    let tight: Vec<Vec<u8>> = terms_for(&core, &first, "3");
-    let receipts: Vec<_> = tight
-        .iter()
-        .map(|b| core.state_terms(b).expect("kept").receipt)
-        .collect();
-    core.clock.advance(60);
+    states_terms(&mut core, CHARGING, "3");
+    let held = terms_entries(&core).len();
     let third = ran(&mut core, &session, CHARGING, "req-third");
+    let receipts: Vec<Receipt> = terms_entries(&core)
+        .into_iter()
+        .skip(held)
+        .map(|(r, _)| r)
+        .collect();
     let raised = core.raised();
     assert_eq!(raised.len(), 4, "the third order's two charges are above 3");
     for raise in raised.iter().filter(|r| match &r.difference {
@@ -293,44 +408,37 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     }
 }
 
-/// A read of the evidence store that keeps what the log's entry doesn't name: the right commitment, other bytes.
-struct Altered(Vec<u8>);
-
-impl KeptStatements for Altered {
-    fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        Ok(Some(KeptStatement {
-            commitment: commitment.clone(),
+/// A read of the evidence store that keeps what the log's entry doesn't name: the right commitment, `other` bytes.
+fn altered(other: Vec<u8>) -> Box<KeptThrough> {
+    Box::new(move |found: Option<KeptStatement>| {
+        found.map(|kept| KeptStatement {
+            commitment: kept.commitment,
             salt: Salt::new("A".repeat(43)).expect("a salt"),
-            bytes: Encoded::new(rutent_conformance::signing::base64url(&self.0)).expect("bytes"),
-        }))
-    }
+            bytes: Encoded::new(rutent_conformance::signing::base64url(&other)).expect("bytes"),
+        })
+    })
 }
 
-/// A read of the evidence store that answers the statement it was handed, byte for byte, under another commitment
-/// than the one asked for.
-struct Recommitted(Vec<u8>);
-
-impl KeptStatements for Recommitted {
-    fn kept(&mut self, commitment: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        let mut other = serde_json::to_value(commitment).expect("a digest is JSON");
-        let value = other["value"].as_str().expect("a digest value").to_owned();
-        let first = if value.starts_with('a') { 'b' } else { 'a' };
-        other["value"] = format!("{first}{}", &value[1..]).into();
-        Ok(Some(KeptStatement {
-            commitment: serde_json::from_value(other).expect("another digest"),
-            salt: Salt::new("A".repeat(43)).expect("a salt"),
-            bytes: Encoded::new(rutent_conformance::signing::base64url(&self.0)).expect("bytes"),
-        }))
-    }
+/// A read of the evidence store that answers the statement it kept, byte for byte, under another commitment than the
+/// one asked for.
+fn recommitted() -> Box<KeptThrough> {
+    Box::new(|found: Option<KeptStatement>| {
+        found.map(|kept| {
+            let mut other = serde_json::to_value(&kept.commitment).expect("a digest is JSON");
+            let value = other["value"].as_str().expect("a digest value").to_owned();
+            let first = if value.starts_with('a') { 'b' } else { 'a' };
+            other["value"] = format!("{first}{}", &value[1..]).into();
+            KeptStatement {
+                commitment: serde_json::from_value(other).expect("another digest"),
+                ..kept
+            }
+        })
+    })
 }
 
 /// A read of the evidence store that keeps nothing.
-struct Nothing;
-
-impl KeptStatements for Nothing {
-    fn kept(&mut self, _: &Digest) -> Result<Option<KeptStatement>, AppendFailure> {
-        Ok(None)
-    }
+fn nothing() -> Box<KeptThrough> {
+    Box::new(|_: Option<KeptStatement>| None)
 }
 
 // verifies: REQ-QTE-6, REQ-AUD-2
@@ -338,20 +446,26 @@ impl KeptStatements for Nothing {
 fn terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept() {
     let (mut core, session) = alone(CHARGING, "AC-14");
     let first = ran(&mut core, &session, CHARGING, "req-first");
-    let allowing = terms_for(&core, &first, "100");
     let other = terms_for(&core, &first, "101");
 
-    // The store keeps other bytes behind the commitment, or none: the terms are not kept.
+    // The store keeps other bytes behind the commitment, or none: the terms the provider handed back are appended, and
+    // not kept.
     let held = core.terms_held();
-    let refused = core.state_terms_read_by(&mut Altered(other[0].clone()), &allowing[0]);
-    assert_eq!(refused, Err(TakeError::NotKept(NotTerms::NotWhatIsKept)));
-    let refused = core.state_terms_read_by(&mut Nothing, &allowing[0]);
-    assert_eq!(refused, Err(TakeError::NotKept(NotTerms::NotWhatIsKept)));
+    states_terms(&mut core, CHARGING, "100");
+    core.read_kept_through(Some(altered(other[0].clone())));
+    let (second, digest) = quoted_at(&mut core, &session, CHARGING, "req-second");
+    states_terms(&mut core, CHARGING, "100");
+    core.read_kept_through(Some(nothing()));
+    quoted_at(&mut core, &session, CHARGING, "req-third");
+    core.read_kept_through(None);
+    assert_eq!(terms_entries(&core).len(), 4, "the log took each");
     assert_eq!(core.terms_held(), held, "nothing was kept");
 
     // So the next order's segments are held to the price, not to terms that rest on nothing the log holds.
     core.clock.advance(60);
-    let second = ran(&mut core, &session, CHARGING, "req-second");
+    core.accept(&kit::customer(), &second, &digest)
+        .expect("accepted");
+    core.run(&second).expect("the order runs");
     let flagged: Vec<_> = core
         .raised()
         .into_iter()
@@ -360,8 +474,9 @@ fn terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept(
     assert_eq!(flagged.len(), 2);
 
     // The store's own bytes behind the same commitment are kept.
-    assert!(core.state_terms(&allowing[0]).expect("kept").new);
-    assert_eq!(core.terms_held(), held + 1);
+    states_terms(&mut core, CHARGING, "100");
+    quoted_at(&mut core, &session, CHARGING, "req-fourth");
+    assert_eq!(core.terms_held(), held + 2);
 }
 
 // verifies: REQ-QTE-5
@@ -480,12 +595,13 @@ fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
         delivery: rutent_scenarios::assembly::machine::Delivery::Once,
     };
     let (mut core, session) = alone(CHARGING, "AC-14");
-    let first = ran(&mut core, &session, CHARGING, "req-first");
+    ran(&mut core, &session, CHARGING, "req-first");
     assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
+    // The provider hands back terms that allow 7 on a quote before Core stops, and none on the quote after it reopens.
     core.clock.advance(60);
-    for bytes in terms_for(&core, &first, "100") {
-        assert!(core.state_terms(&bytes).expect("kept").new);
-    }
+    states_terms(&mut core, CHARGING, "100");
+    quoted_at(&mut core, &session, CHARGING, "req-quoted");
+    assert_eq!(core.terms_held(), 2);
     let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
     core.clock.advance(60);
     // The session opened before the restart is still open, and the reopened Core holds it, as the Core that ran on
@@ -747,17 +863,20 @@ fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
 #[test]
 fn terms_whose_kept_statement_names_another_commitment_are_not_kept() {
     let (mut core, session) = alone(CHARGING, "AC-14");
-    let first = ran(&mut core, &session, CHARGING, "req-first");
-    let allowing = terms_for(&core, &first, "100");
+    ran(&mut core, &session, CHARGING, "req-first");
 
-    // The store answers the very statement handed in, under a commitment the entry doesn't name: it is not what
-    // the entry rests on, so the terms are not kept.
+    // The store answers the very statement the provider handed back, under a commitment the entry doesn't name: it is
+    // not what the entry rests on, so the terms are not kept.
     let held = core.terms_held();
-    let refused = core.state_terms_read_by(&mut Recommitted(allowing[0].clone()), &allowing[0]);
-    assert_eq!(refused, Err(TakeError::NotKept(NotTerms::NotWhatIsKept)));
+    states_terms(&mut core, CHARGING, "100");
+    core.read_kept_through(Some(recommitted()));
+    quoted_at(&mut core, &session, CHARGING, "req-second");
+    core.read_kept_through(None);
+    assert_eq!(terms_entries(&core).len(), 2, "the log took them");
     assert_eq!(core.terms_held(), held, "nothing was kept");
 
     // The store's own answer, under the commitment asked for, is kept.
-    assert!(core.state_terms(&allowing[0]).expect("kept").new);
-    assert_eq!(core.terms_held(), held + 1);
+    states_terms(&mut core, CHARGING, "100");
+    quoted_at(&mut core, &session, CHARGING, "req-third");
+    assert_eq!(core.terms_held(), held + 2);
 }

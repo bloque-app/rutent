@@ -18,11 +18,14 @@
 //!   what each did, labelled the price, recorded as a `shown` entry of `price`. Until then nothing is the price.
 //! - **[`Terms`]: stated terms with their times** (`REQ-QTE-6`). Each tuple's history of a provider's signed terms,
 //!   each with its stated entry's receipt, binding from the later of `made_at` and `received_at`; the terms that bind
-//!   a segment are the last binding at or before it started, and later ones never apply to it.
+//!   a segment are the last binding at or before it started, and later ones never apply to it. A provider hands them
+//!   back in its answer to Core's own dry run, where the platform's signer signed them for that tuple, and intake takes
+//!   them through [`TakesTerms`] before any segment of the order starts (`T-020-56`).
 //! - **[`Holds`]: a reserve's held quote** (`REQ-QTE-15`). A choice round's quote held on the reserve's signed hold,
 //!   labelled a quote, binding no provider; past its validity it starts nothing, and only the order it is for, or one
 //!   accepted in the session it is for, redeems it, once. The redemption hands back the hold's receipt, which an
-//!   acceptance of it cites.
+//!   acceptance of it cites. Intake asks a reserve for a hold only where its declaration says it answers hold requests,
+//!   and takes the hold its answer carries (`T-020-56`).
 //! - **[`Charges`]: a charge above its formula** (`REQ-QTE-5`, `AC-14`). A segment's charge, checked against the
 //!   formula that bound it at its start, raised to the operator where it is above it, naming its result's stated
 //!   entry and the stated entry of the terms that bound it, and the raise recorded.
@@ -47,4 +50,4 @@ pub use shown::{
     ReportedWithin, RouteRan, SegmentShown, Shown, SlowSegment, digest, executed, executed_across,
     show,
 };
-pub use terms::{InForce, NotTerms, Recorded, TakeError, Taken, Terms, TermsDesk};
+pub use terms::{InForce, NotTerms, Recorded, TakeError, Taken, TakesTerms, Terms, TermsDesk};

@@ -205,6 +205,7 @@ or with the accepted one's `statements` key (which `next` must then list for `ad
   - an optional fill `increment`;
   - `reporting`, `gross` or `net`;
   - `required_inputs` (`REQ-CAT-11`, `REQ-CAT-12`).
+- A reserve's declaration may say it answers hold requests (`answers_hold_requests`, 4.0.0; "Terms and holds").
 - `declarations` holds:
   - `tracking`, for every provider (`REQ-CAT-16`);
   - `evidence`: the weakest grade the provider gives, and its availability (`REQ-CAT-10`, `REQ-ORD-39`);
@@ -312,6 +313,10 @@ terms back in a dry-run answer's optional `terms` (4.0.0), and a reserve its hol
   or `refused`. `check_hold_answer(request, answer)` takes both signed statements and holds the answer to the
   request: made by the reserve asked (`OfAnotherReserve`), its transaction (`AnswersAnotherRequest`), the quote asked
   (`HoldsAnotherQuote`) and the validity asked (`PastTheValidityAsked`).
+- **Who answers hold requests** (4.0.0, `T-020-56`). A reserve's declaration says it with `answers_hold_requests`,
+  optional: `true` where it answers them, and absent or `false` where it doesn't, so the operator asks it for none
+  (`ReserveDeclaration::answers_hold_requests`). It is the reserve's own word at publishing, as its other two answers
+  are; a reserve that doesn't declare it is never asked, and a quote at it is shown unheld, as before 4.0.0.
 - **Terms handed back** (4.0.0). A withdrawal's, deposit's, transfer's or conversion's dry-run answer may carry the provider's
   own signed `terms`, a nested statement of the result's maker (`ResultBody::terms`).
 
@@ -475,7 +480,7 @@ class and regime each pick one closed shape, so a field that belongs to another 
 | An operation is one of the eight kinds | schema | `operation-of-an-unknown-kind` |
 | A reversal names the segment it reverses, a positive amount, and is never a dry run | schema | `operation-reversal-without-the-segment-it-reverses`, `operation-reversal-of-a-zero-amount`, `operation-reversal-as-a-dry-run` |
 | A reversal confirmation names no account | schema | `operation-reversal-confirmation-asking-about-an-account` |
-| An optional field is never `null` | schema, and Rust (`present`) | `operation-withdrawal-with-a-null-session`, `result-judgement-with-a-null-holder-key`, `advertisement-tuple-with-a-null-increment`, `advertisement-with-a-null-evidence-declaration`, `advertisement-with-a-null-safe-retry-declaration`, `advertisement-with-a-null-offer` |
+| An optional field is never `null` | schema, and Rust (`present`) | `operation-withdrawal-with-a-null-session`, `result-judgement-with-a-null-holder-key`, `advertisement-tuple-with-a-null-increment`, `advertisement-with-a-null-evidence-declaration`, `advertisement-with-a-null-safe-retry-declaration`, `advertisement-with-a-null-offer`, `advertisement-reserve-declaring-hold-requests-as-null` |
 | An operation names its transaction, and a withdrawal goes into an inner node | schema | `operation-without-a-transaction`, `operation-withdrawal-into-an-outer-node` |
 | A withdrawal dry run names its session | schema (`if`/`then`) | `operation-withdrawal-dry-run-without-a-session` |
 | A conversion or transfer states its direction | schema | `operation-conversion-without-a-direction` |

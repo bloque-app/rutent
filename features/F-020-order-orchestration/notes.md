@@ -7858,3 +7858,68 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 |---|---|
 | the same body is the result held (bytes compared instead) | `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not` |
 | a differing body is kept beside the first (first wins) | `kept_unknown_statement_does_not_shadow_a_later_final_delivery` |
+
+## T-020-56: terms, holds and the landing after a linked order's reversal, end to end
+
+Branch `f-020/t-020-56-terms-holds`, from `28972690` (m3-next's batch holding `T-020-47`). `T-020-47`'s parts 2 and 4a,
+finding 4 of `M3`'s milestone review. Edits `components/core-orch/` (`intake/`, `rounds/`, `quote/`, `segments/`,
+`arrival/filing.rs`), `components/prov/src/proxy/signing.rs` and `components/prov/src/catalogue/declaration.rs`,
+`contracts/provider-role/` and its Rust (`contracts/src/provider_role/types.rs`), and the simulated providers and the
+assembly (`F-024` files: `conformance/src/sim/mod.rs`, `conformance/src/role/stand_in.rs`,
+`conformance/scenarios/src/sim/fleet.rs`, `conformance/scenarios/src/assembly/`, and the scenarios `charge_check.rs`,
+`holds.rs`). `DEC-20` paths: `contracts/` and `components/prov/src/proxy/`.
+
+- **Design.**
+  1. *The signer* (`proxy/signing.rs`). Two nested shapes are signed in the provider's name besides a judgement, a
+     confirmation and a status answer's result: **terms** (`TERMS_SHAPE`) only in answer to a withdrawal's, deposit's,
+     transfer's or conversion's **dry run** at the provider asked, whose tuple names that provider and the operation's own
+     two ends (node and asset id; a conversion's node twice with its `from` and `to` assets); and a **hold**
+     (`HOLD_SHAPE`) only in answer to a **hold request** at the reserve asked, of the request's own transaction, record,
+     candidate and `for`, valid no later than asked (read as times). Neither in answer to anything else, a status
+     question included (`about` set). Anything else stays `NestedNotAsked`; a shape no result nests stays
+     `NestedOfAnotherShape`.
+  2. *provider-role 4.0.0* (unreleased, folded). `ReserveDeclaration.answers_hold_requests: Option<bool>`, read as false
+     where absent (`ReserveDeclaration::answers_hold_requests`); schema, one valid and one invalid fixture, the README's
+     two places, and a changelog entry marked **`Ignorable: yes`**: a reader that ignores it asks no reserve for a hold
+     and shows every quote unheld, as before the major, so it loses a hold, never a protection (`T-020-45` (4)'s rule).
+     The catalogue's `DeclarationRecord` carries it, compared within a version like the other two answers.
+  3. *Terms reach Core.* The rounds collect, from each of Core's own answers the round kept and its snapshot didn't
+     refuse, the terms its dry-run answer carries, made by the provider asked, for the very tuple asked
+     (`Routed::terms`, `terms_handed_back`). Intake (`Intake::quote`) and a filing (`Filing::route`) take each through
+     the desk's new `terms: &mut dyn TakesTerms` (`quote::TakesTerms`, implemented by `Segments`, which calls
+     `Segments::take_terms`) with the new `recorded` read of the log, before the quote is shown and so before any
+     segment starts (`REQ-QTE-6`). `Terms::take` holds them to what the evidence store keeps, as before.
+  4. *Holds reach Core* (`intake/hold.rs`). After the quote is shown, intake asks the reserve each part starts at, the
+     origin reserve, to hold it, **only where its latest declaration says it answers hold requests**: the operator's
+     `hold` under a fresh transaction (`rounds::fresh_transaction`), naming the choice round's record by id and the
+     digest the log names it by, the chosen candidate, `for: session` (the session the yes was asked in), and a
+     validity of `HOLD_SECONDS` (300) capped at the earliest figure expiry. Signed, appended about the order and the
+     transaction before it is sent, its answer appended after (`rounds::ask_alone`). The answer is held to the request
+     with `check_hold_answer` (both signed statements); the hold it carries is taken by `Holds::take` with the record and
+     its digest. The quote shown keeps the hold's transaction (`Offered.hold`), and `accept_holding` redeems it where the
+     caller names no other hold.
+  5. *The simulated providers state both.* `Behaviour.terms` (`Behaviour::stating_terms_of_at_most`): on a dry run it
+     accepts of a reserve's or ramp's tuple, the stand-in nests its terms (placeholder signature, the platform signs).
+     `Shape.holds` (the reserve `sim-reserve-holding`): its declaration says it answers hold requests and it holds the
+     quote asked; any other refuses a hold. Every simulated module's `handles` lists `hold` (`fleet::KINDS`): Core's own
+     gate is the declaration.
+  6. *The landing after a linked order's reversal* (`segments/`). `Segments::note_reversed` now asks
+     `returned_value`: where the reversed segment is the first move of a linked order's part (`handed_on_from`) out of
+     an inner node, the value is back there, the linked order's now, and `Landing::reverse(at, back_at_node)` marks it
+     owed a landing rather than a release; `returned` keeps its node, asset and amount (what the move took in). One
+     reading, `values_at_nodes` (settled segments through `settled_at_node`, reversed returns through
+     `returned_to_node`), now feeds `land_settled`, `resting_totals` and `reconcile_landings`. A returned value rests at
+     the node until a resolution or hand-on ends its part, or, the move retired by a recalculation, the new route's first
+     move settles or is itself reversed back; then it is released.
+  7. *The assembly.* `state_terms`, `state_terms_read_by` and `state_hold` are gone: no scenario calls `take_terms` or
+     `Holds::take`. `with_desk` hands the desk the log's read (`LogNow`) and the segments as `TakesTerms`;
+     `read_kept_through` has the store's read answer otherwise (what `charge_check`'s kept-statement tests need);
+     `holds_taken` lists the holds' entries; `holds_rebuilt_from_log` keeps each hold again from its kept bytes and the
+     record Core signed (the deployment's keeping, `F-030`).
+- **Tests.** Named: `terms_a_module_stated_before_its_segment_started_bind_its_charge` (`charge_check.rs`),
+  `hold_a_reserve_gave_in_its_answer_is_redeemed_on_acceptance` and `reserve_declaring_no_hold_requests_is_asked_for_none`
+  (`holds.rs`), `reversal_out_of_a_held_node_lands_the_value_there_again` (`segments/returned.rs`). Beside them:
+  `terms_nested_in_a_dry_run_answer_are_signed_only_for_the_tuple_asked`,
+  `hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked` (the signer),
+  `reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing`. Reworked onto the providers' answers, names
+  kept: `charge_check.rs`'s four terms tests and `holds.rs`'s two.

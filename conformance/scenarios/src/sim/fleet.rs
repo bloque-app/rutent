@@ -34,8 +34,9 @@ use super::disk;
 use super::world::SimWorld;
 
 /// Every kind of operation a module may be handed: a simulated provider refuses what is outside its role itself,
-/// as the role asks.
-pub const KINDS: [&str; 9] = [
+/// as the role asks. A hold request among them (`T-020-56`): only a reserve whose declaration says it answers them holds
+/// the quote asked, and Core asks no other.
+pub const KINDS: [&str; 10] = [
     "withdrawal",
     "deposit",
     "transfer",
@@ -45,6 +46,7 @@ pub const KINDS: [&str; 9] = [
     "reversal",
     "reversal_confirmation",
     "status_query",
+    "hold",
 ];
 
 /// The clock the admissions are judged at: 2026-11-07T00:00:00Z.

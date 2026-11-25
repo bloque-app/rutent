@@ -411,6 +411,8 @@ pub struct Env {
     pub prices: Vec<Price>,
     pub intake: Intake,
     pub holds: Holds,
+    /// The terms Core's dry runs handed back, taken as intake takes them (`T-020-56`).
+    pub terms: rutent_core_orch::quote::Terms,
     pub kept: SharedKept,
 }
 
@@ -482,6 +484,7 @@ impl Env {
             prices: prices(&[RESERVE]),
             intake: Intake::new(),
             holds: Holds::new(),
+            terms: rutent_core_orch::quote::Terms::new(),
             kept: SharedKept {
                 store: store_for_kept,
                 forgets: false,
@@ -578,6 +581,8 @@ impl Env {
             operator: &operator,
             holds: &mut self.holds,
             kept: &mut self.kept,
+            recorded: &Unread,
+            terms: &mut self.terms,
         };
         call(&mut self.intake, &mut desk)
     }
@@ -984,4 +989,17 @@ pub fn call_of(what: &What) -> &'static str {
 /// Fresh identifiers drawn by `ids` so far are never an order's; a helper for tests that need one.
 pub fn fresh_id(ids: &mut Ids) -> Id {
     ids.id()
+}
+
+/// A read of the log's recorded entries that finds none: no simulated provider here hands back terms or a hold, so
+/// nothing intake appends is read back (`T-020-56`).
+struct Unread;
+
+impl rutent_core_orch::quote::Recorded for Unread {
+    fn entry(
+        &self,
+        _: &rutent_contracts::core_internal::Receipt,
+    ) -> Option<rutent_contracts::core_internal::Entry> {
+        None
+    }
 }

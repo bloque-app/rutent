@@ -1218,6 +1218,9 @@ impl Run {
             operator: desk.operator,
         };
         let routed = rounds::route::<R>(desk.parts, routing, &mut self.history)?;
+        // The terms the providers handed back, stated before any segment starts, held for the segments that do
+        // (`REQ-QTE-6`, `T-020-56`).
+        crate::intake::take_terms(desk, &routed.terms).map_err(|_| AppendFailure::Unavailable)?;
         let candidate = match &routed.offer {
             Offer::NotOffered(why) => return self.end(desk, not_offered(&routed, why)),
             Offer::Offered { candidate, .. } => candidate,

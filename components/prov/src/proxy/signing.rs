@@ -14,13 +14,20 @@
 //! for: a judgement of the subject and class asked, a reversal confirmation of the segment, asset and amount
 //! asked, in the platform's deployment and protocol version (`REQ-PRT-1`, `THR-8`). So the platform never signs a
 //! statement about something the operator never asked, which could be lifted out and used alone.
+//!
+//! Two more are signed since `T-020-56` (provider-role 4.0.0's carriers, `REQ-QTE-6`, `REQ-QTE-15`): the provider's
+//! terms in its answer to a dry run, only for the tuple that dry run asks about (the provider asked, and the operation's
+//! own two ends and assets), and a reserve's hold in its answer to a hold request, only of the quote asked (its
+//! transaction, record, candidate and whom it is for) and valid no later than asked. Neither is signed in answer to
+//! anything else, a status question included: terms ride on a dry run alone, a hold on its request alone.
 
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::module_interface::SecretValue;
 use rutent_contracts::provider_role::{
-    Deployment, JUDGEMENT_SHAPE, Operation, PublicKey, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE,
-    ResultBody, Statement, signing_input,
+    Deployment, HOLD_SHAPE, JUDGEMENT_SHAPE, Operation, PublicKey, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, ResultBody, Statement, TERMS_SHAPE, signing_input,
 };
+use rutent_contracts::router_api::Timestamp;
 use serde_json::Value;
 
 const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -37,13 +44,14 @@ pub enum SigningError {
     /// A statement the module nested under the provider's name names another protocol version than the
     /// platform's.
     NestedOfAnotherVersion,
-    /// A statement the module nested under the provider's name is of a shape no result nests: only a judgement
-    /// and a reversal confirmation are, so the platform never signs, say, a result for another transaction that
-    /// could be lifted out and passed on alone.
+    /// A statement the module nested under the provider's name is of a shape no result nests: only a judgement, a
+    /// reversal confirmation, a status answer's result, a dry run's terms and a hold are, so the platform never signs,
+    /// say, an advertisement that could be lifted out and passed on alone.
     NestedOfAnotherShape,
     /// A statement the module nested under the provider's name isn't about what the operation asked: a judgement
-    /// of another subject or class, a confirmation of another segment, asset or amount, or either one in answer
-    /// to an operation of another kind.
+    /// of another subject or class, a confirmation of another segment, asset or amount, terms of another tuple than
+    /// the dry run's, a hold of another quote or past the validity asked, or any of them in answer to an operation of
+    /// another kind.
     NestedNotAsked,
     /// A status answer that names another question's transaction, or another transaction asked about, than the
     /// question it answers (`T-013-11`): the platform never signs a statement about something it wasn't asked.
@@ -176,6 +184,10 @@ impl<'a> Asked<'a> {
             // (provider-role 4.0.0, `T-013-11`): signed only in answer to a status question, and only if it is the
             // result of the transaction asked about and of an operation, never of a status question or a hold.
             RESULT_SHAPE => return self.asks_a_result(body),
+            // The provider's terms handed back in its answer to a dry run, and a reserve's hold in its answer to a hold
+            // request (provider-role 4.0.0, `T-020-56`): each only in answer to its own question.
+            TERMS_SHAPE => return self.asks_terms(body),
+            HOLD_SHAPE => return self.asks_a_hold(body),
             _ => return Err(SigningError::NestedOfAnotherShape),
         };
         // In answer to a status question, a statement the provider's own result nests is judged against the operation
@@ -189,6 +201,81 @@ impl<'a> Asked<'a> {
                 let (asked, answered) = (target.get(*field), body.get(*field));
                 asked.is_some() && asked == answered
             });
+        if asked {
+            Ok(())
+        } else {
+            Err(SigningError::NestedNotAsked)
+        }
+    }
+
+    /// Whether `body`, terms the provider nested, are its terms for the tuple the operation, a dry run, asks about: a
+    /// withdrawal's, deposit's, transfer's or conversion's dry run, never a real movement or another question, the
+    /// tuple's provider the one asked, and its two ends the operation's own nodes and assets (`REQ-QTE-6`). Never in
+    /// answer to a status question, whose result answers an operation already carried out, never a dry run.
+    fn asks_terms(&self, body: &Value) -> Result<(), SigningError> {
+        let operation = &self.operation;
+        let kind = operation.get("kind").and_then(Value::as_str);
+        let ends = match kind {
+            Some("withdrawal" | "deposit" | "transfer") => (
+                (operation.get("origin"), operation.get("asset")),
+                (operation.get("destination"), operation.get("asset")),
+            ),
+            Some("conversion") => (
+                (operation.get("node"), operation.get("from")),
+                (operation.get("node"), operation.get("to")),
+            ),
+            _ => return Err(SigningError::NestedNotAsked),
+        };
+        let tuple = body.get("tuple");
+        let end_is = |end: Option<&Value>, (node, asset): (Option<&Value>, Option<&Value>)| {
+            let end = end.unwrap_or(&Value::Null);
+            node.is_some()
+                && asset.is_some_and(Value::is_string)
+                && end.get("node") == node
+                && end.get("asset").and_then(|a| a.get("id")) == asset
+        };
+        let asked = self.about.is_none()
+            && operation.get("dry_run").and_then(Value::as_bool) == Some(true)
+            && operation.get("provider").and_then(Value::as_str) == Some(self.provider)
+            && tuple
+                .and_then(|t| t.get("provider"))
+                .and_then(Value::as_str)
+                == Some(self.provider)
+            && end_is(tuple.and_then(|t| t.get("from")), ends.0)
+            && end_is(tuple.and_then(|t| t.get("to")), ends.1);
+        if asked {
+            Ok(())
+        } else {
+            Err(SigningError::NestedNotAsked)
+        }
+    }
+
+    /// Whether `body`, a hold the reserve nested, is its hold of the quote the operation, a hold request, asks for: the
+    /// request's own transaction, the record, the candidate and whom it is for, and a validity no later than the one
+    /// asked, both read as times (`REQ-QTE-15`). Never in answer to anything but a hold request, a status question
+    /// included.
+    fn asks_a_hold(&self, body: &Value) -> Result<(), SigningError> {
+        let operation = &self.operation;
+        let same =
+            |field: &str| operation.get(field).is_some() && operation.get(field) == body.get(field);
+        let time = |value: &Value, field: &str| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .and_then(|text| Timestamp::new(text.to_owned()))
+                .map(|t| t.unix_nanos())
+        };
+        let asked = self.about.is_none()
+            && operation.get("kind").and_then(Value::as_str) == Some("hold")
+            && operation.get("provider").and_then(Value::as_str) == Some(self.provider)
+            && same("transaction")
+            && same("record")
+            && same("candidate")
+            && same("for")
+            && match (time(body, "valid_until"), time(operation, "valid_until")) {
+                (Some(held), Some(asked)) => held <= asked,
+                _ => false,
+            };
         if asked {
             Ok(())
         } else {
@@ -770,6 +857,181 @@ mod tests {
         assert_eq!(
             sign_about(&answered, &asked, &other, None, &private, &declared).err(),
             Some(SigningError::NestedNotAsked)
+        );
+    }
+
+    /// A dry run of the withdrawal the terms fixture's tuple is for: from `co-ach` to `bank-ledger`, in COP, at
+    /// `acme-co`, with `changes` made to its body.
+    fn dry_run_asked(changes: &[(&str, Value)]) -> Operation {
+        let mut operation = serde_json::json!({
+            "kind": "withdrawal", "transaction": "tx-012", "provider": "acme-co", "session": "sess-1",
+            "origin": { "network": "co-ach" }, "destination": "bank-ledger", "asset": "COP",
+            "amount": "25000000", "dry_run": true, "inputs": {},
+        });
+        for (field, value) in changes {
+            operation[*field] = value.clone();
+        }
+        serde_json::from_value(operation).expect("a withdrawal")
+    }
+
+    /// The terms a provider nests in its answer to a dry run are signed with its key only where they are its terms
+    /// for the tuple that dry run asks about: the provider asked, and the operation's own two ends and asset. Terms of
+    /// another tuple, in answer to a real movement, or in answer to another question, are not signed (`T-020-56`,
+    /// `REQ-QTE-6`, `THR-8`).
+    // verifies: REQ-QTE-6, THR-8
+    #[test]
+    fn terms_nested_in_a_dry_run_answer_are_signed_only_for_the_tuple_asked() {
+        let (private, declared, key) = keys([15u8; 32]);
+        let answered = fixture("result-withdrawal-handing-back-its-terms");
+        let signed = sign_as(
+            &answered,
+            "acme-co",
+            &dry_run_asked(&[]),
+            &private,
+            &declared,
+        )
+        .expect("signed");
+        assert!(verifies(&signed, &key));
+        assert!(verifies(&signed["statement"]["outcome"]["terms"], &key));
+
+        // A dry run of another tuple: another origin, destination or asset, or at another provider.
+        for (field, value) in [
+            ("origin", serde_json::json!({ "network": "co-other" })),
+            ("destination", "other-ledger".into()),
+            ("asset", "USD".into()),
+            ("provider", "other-co".into()),
+        ] {
+            assert_eq!(
+                sign_as(
+                    &answered,
+                    "acme-co",
+                    &dry_run_asked(&[(field, value)]),
+                    &private,
+                    &declared
+                )
+                .err(),
+                Some(SigningError::NestedNotAsked),
+                "{field}"
+            );
+        }
+        // Terms naming another provider's tuple, in the provider's own name.
+        let mut theirs = answered.clone();
+        theirs["statement"]["outcome"]["terms"]["statement"]["tuple"]["provider"] =
+            "other-co".into();
+        assert_eq!(
+            sign_as(&theirs, "acme-co", &dry_run_asked(&[]), &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // In answer to the real movement, not a dry run.
+        assert_eq!(
+            sign_as(
+                &answered,
+                "acme-co",
+                &dry_run_asked(&[("dry_run", false.into())]),
+                &private,
+                &declared
+            )
+            .err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // In answer to another question: a hold request.
+        let hold = asking("operation-hold-of-a-chosen-quote", &[]);
+        assert_eq!(
+            sign_as(&answered, "acme-co", &hold, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+    }
+
+    /// The hold a reserve nests in its answer to a hold request is signed with its key only where it is its hold of the
+    /// quote asked: the request's transaction, record, candidate and whom it is for, valid no later than asked. A hold of
+    /// another quote, past the validity asked, or in answer to another question, is not signed (`T-020-56`,
+    /// `REQ-QTE-15`, `THR-8`).
+    // verifies: REQ-QTE-15, THR-8
+    #[test]
+    fn hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked() {
+        let (private, declared, key) = keys([16u8; 32]);
+        let answered = fixture("result-hold-held");
+        let asked = asking("operation-hold-of-a-chosen-quote", &[]);
+        let signed =
+            sign_as(&answered, "reserve-bank-co", &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed, &key));
+        assert!(verifies(&signed["statement"]["outcome"]["hold"], &key));
+        // Held for less long than asked: signed.
+        let mut shorter = answered.clone();
+        shorter["statement"]["outcome"]["hold"]["statement"]["valid_until"] =
+            "2026-11-06T15:01:00Z".into();
+        assert!(sign_as(&shorter, "reserve-bank-co", &asked, &private, &declared).is_ok());
+
+        // A hold of another quote than asked, or for longer.
+        let mut cases: Vec<(&str, Value)> = vec![
+            ("transaction", "tx-hold-2".into()),
+            ("candidate", "c2".into()),
+            (
+                "for",
+                serde_json::json!({ "kind": "order", "order": "ord-2" }),
+            ),
+            ("valid_until", "2026-11-06T15:01:56Z".into()),
+        ];
+        let mut record = answered["statement"]["outcome"]["hold"]["statement"]["record"].clone();
+        record["id"] = "dr-0005".into();
+        cases.push(("record", record));
+        // The answer stays under the request's transaction; only the hold it nests differs.
+        for (field, value) in cases {
+            let mut other = answered.clone();
+            other["statement"]["outcome"]["hold"]["statement"][field] = value;
+            assert_eq!(
+                sign_as(&other, "reserve-bank-co", &asked, &private, &declared).err(),
+                Some(SigningError::NestedNotAsked),
+                "{field}"
+            );
+        }
+        // A request made to another reserve.
+        let elsewhere = asking(
+            "operation-hold-of-a-chosen-quote",
+            &[("provider", "another-reserve")],
+        );
+        assert_eq!(
+            sign_as(
+                &answered,
+                "reserve-bank-co",
+                &elsewhere,
+                &private,
+                &declared
+            )
+            .err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // In answer to another question: a dry run.
+        assert_eq!(
+            sign_as(
+                &answered,
+                "reserve-bank-co",
+                &dry_run_asked(&[("provider", "reserve-bank-co".into())]),
+                &private,
+                &declared
+            )
+            .err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // Nested in a status answer, about whatever operation: never a result of the question asked about.
+        let deployment = deployment(&answered);
+        let carried = asking("operation-withdrawal-from-a-bank-reserve", &[]);
+        let question = asking("operation-status-query", &[]);
+        let asked = Asked::of(&Answering {
+            provider: "reserve-bank-co",
+            deployment: &deployment,
+            protocol_version: "2.0.1",
+            operation: &question,
+            about: Some(crate::proxy::AboutAsked {
+                operation: &carried,
+                held: None,
+            }),
+        })
+        .expect("asked");
+        let mut holder = answered["statement"]["outcome"]["hold"].clone();
+        assert_eq!(
+            super::sign_nested(&mut holder, &asked, &key, &declared),
+            Err(SigningError::NestedNotAsked)
         );
     }
 
