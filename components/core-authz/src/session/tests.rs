@@ -1601,15 +1601,22 @@ fn grant_refused_before_a_restart_is_not_held_after_it() {
     );
     ran_on.policy.1.ruling = Ruling::Permit;
 
-    let says = Says::of(vec![(holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes))]);
-    let mut reopened =
-        Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says);
+    let says = Says::of(vec![(
+        holds("cust-1", "acct-ref-4"),
+        Reply::Given(Said::Yes),
+    )]);
+    let mut reopened = Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says);
     reopened.set_clock(nine());
     reopened.reopen();
     let regulator = actor("fin-regulator", "examiner-3", Role::Regulator);
     for engine in [&mut ran_on, &mut reopened] {
         let by = |request: &str, permission: &str| {
-            read(request, regulator.clone(), json!({"kind": "trail"}), Some(permission))
+            read(
+                request,
+                regulator.clone(),
+                json!({"kind": "trail"}),
+                Some(permission),
+            )
         };
         assert_eq!(
             read_recorded(engine, &by("req-601", "perm-reg-3")),
@@ -1644,7 +1651,10 @@ fn grant_refused_before_a_restart_is_not_held_after_it() {
 #[test]
 fn engine_never_reopened_refuses_what_its_register_would_answer() {
     let (ran_on, _, again) = ran_on_and_reopened();
-    let says = Says::of(vec![(holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes))]);
+    let says = Says::of(vec![(
+        holds("cust-1", "acct-ref-4"),
+        Reply::Given(Said::Yes),
+    )]);
     let mut engine = Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says);
     engine.set_clock(nine());
     let missing = ReadOutcome::Refused {
