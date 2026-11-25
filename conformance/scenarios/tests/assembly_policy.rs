@@ -579,3 +579,151 @@ fn read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_
         "a revoked id is never granted again"
     );
 }
+
+/// The regulator of these trail reads, and the operator's login that grants and revokes them, each listed, the login
+/// holding the permissions to grant and to revoke a read (`T-021-14`).
+fn trail_readers(core: &Core) -> (Actor, Actor) {
+    use rutent_core_authz::roles::Permission;
+    let operator = kit::operator_login();
+    let regulator = Actor {
+        party: id("fin-regulator"),
+        acts: id("examiner-3"),
+        role: Role::Regulator,
+        kind: ActorKind::Person,
+    };
+    core.registers().list(&regulator);
+    core.registers().permit(&operator, Permission::GrantRead);
+    core.registers().permit(&operator, Permission::RevokeRead);
+    (regulator, operator)
+}
+
+/// The record of the last read of the trail the log took: its check and outcome.
+fn last_read(core: &Core) -> (rutent_contracts::core_internal::ReadCheck, Outcome) {
+    let entry = last(core);
+    let What::CheckRead { check } = entry.what else {
+        panic!("the last entry records a read: {:?}", entry.what)
+    };
+    (check, entry.outcome)
+}
+
+/// A regulator's read of the trail through Core's own entry point (`REQ-AUD-12`, `T-020-55` (3)): the operator's
+/// login grants the regulator the trail, and the regulator, naming that permission, is handed the trail. Policy
+/// recorded the read before anything was handed: the trail is the log's entries and their receipts, up to and including
+/// that record and no further, and the read added that one entry. No statement's contents come with it: each stated
+/// entry names its statement by commitment alone, and none of the evidence store's bytes or salts is in the trail.
+// verifies: REQ-AUD-12
+#[test]
+fn regulator_holding_the_read_permission_is_handed_the_trail_and_the_read_is_recorded() {
+    use rutent_contracts::core_internal::calls::Reads;
+    use rutent_core_audit::measures::Handed;
+
+    let mut core = accepted();
+    let (regulator, operator) = trail_readers(&core);
+    let grant = trail_change(&core, "req-grant", "perm-reg-1", &regulator, &operator);
+    assert!(
+        core.policy()
+            .grant_permission(&grant)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    let before = core.log().len();
+    let Handed::Trail(trail) = core.read_trail(&regulator, Some(id("perm-reg-1"))) else {
+        panic!("a regulator holding the permission is handed the trail")
+    };
+    assert_eq!(core.log().len(), before + 1, "the read added its record");
+    assert_eq!(
+        trail.entries,
+        core.log().entries().to_vec(),
+        "the log's, whole"
+    );
+    assert_eq!(trail.entries.last().map(|(r, _)| r), Some(&trail.read));
+    let (check, outcome) = last_read(&core);
+    assert_eq!(outcome, Outcome::Permitted {});
+    assert_eq!(check.reader, regulator, "who read");
+    assert_eq!(
+        check.permission,
+        Some(id("perm-reg-1")),
+        "by which permission"
+    );
+    assert_eq!(
+        check.reads,
+        rutent_contracts::core_internal::Reads::Trail {},
+        "what"
+    );
+    // Statements by commitment alone: the trail's stated entries carry no bytes and no salt.
+    assert!(
+        trail
+            .entries
+            .iter()
+            .any(|(_, e)| matches!(e, Entry::Stated(_))),
+        "the run's statements are in the trail"
+    );
+    let text = serde_json::to_string(
+        &trail
+            .entries
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    for field in ["\"bytes\"", "\"salt\""] {
+        assert!(!text.contains(field), "a statement's contents: {field}");
+    }
+}
+
+/// A read of the trail through Core's entry point that policy doesn't allow hands over nothing of it (`REQ-AUD-12`,
+/// `REQ-AUZ-7`, `T-020-55` (3)): a regulator naming no permission, or one not granted; another regulator naming the
+/// first's grant; the customer's login; the deployment's policy refusing; and the regulator once its grant is revoked.
+/// Each is recorded refused, and each is told the same, `Withheld`, with no class, receipt or entry, whoever it is and
+/// whatever policy's reason.
+// verifies: REQ-AUD-12, REQ-AUZ-7
+#[test]
+fn caller_without_the_read_permission_is_handed_nothing_of_the_trail() {
+    use rutent_contracts::core_internal::calls::Reads;
+    use rutent_core_audit::measures::Handed;
+
+    let mut core = accepted();
+    let (regulator, operator) = trail_readers(&core);
+    let refused = |core: &mut Core, reader: &Actor, permission: Option<&str>| {
+        let before = core.log().len();
+        let handed = core.read_trail(reader, permission.map(id));
+        assert_eq!(handed, Handed::Withheld, "{reader:?} by {permission:?}");
+        assert_eq!(core.log().len(), before + 1, "the refusal is recorded");
+        let (check, outcome) = last_read(core);
+        assert_eq!(&check.reader, reader);
+        assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
+    };
+    refused(&mut core, &regulator, None);
+    refused(&mut core, &regulator, Some("perm-reg-1"));
+
+    let grant = trail_change(&core, "req-grant", "perm-reg-1", &regulator, &operator);
+    assert!(
+        core.policy()
+            .grant_permission(&grant)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    let other = Actor {
+        party: id("other-regulator"),
+        acts: id("examiner-9"),
+        ..regulator.clone()
+    };
+    core.registers().list(&other);
+    refused(&mut core, &other, Some("perm-reg-1"));
+    refused(&mut core, &kit::customer(), Some("perm-reg-1"));
+    core.deployment.refuse.set(Some(RefusalClass::NotPermitted));
+    refused(&mut core, &regulator, Some("perm-reg-1"));
+    core.deployment.refuse.set(None);
+
+    let revoke = trail_change(&core, "req-revoke", "perm-reg-1", &regulator, &operator);
+    assert!(
+        core.policy()
+            .revoke_permission(&revoke)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
+    refused(&mut core, &regulator, Some("perm-reg-1"));
+}

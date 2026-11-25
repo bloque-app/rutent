@@ -1209,6 +1209,28 @@ impl Core {
         self.records.clone()
     }
 
+    /// `reader`'s read of the audit trail, by the identified `permission` it names (`REQ-AUD-12`, `T-020-55`): Core's
+    /// entry point, at Core's clock under a fresh request id. Policy decides and records the read; the trail is handed
+    /// over only on a read it allowed and the log shows recorded, and every other reader is handed nothing of it
+    /// (`rutent_core_audit::measures::hand_trail`). The transport in front of it is the deployment's (`F-030`).
+    pub fn read_trail(
+        &mut self,
+        reader: &Actor,
+        permission: Option<Id>,
+    ) -> rutent_core_audit::measures::Handed {
+        let asked = rutent_core_audit::measures::TrailRequest {
+            request: self.fresh.id(),
+            reader: reader.clone(),
+            permission,
+            at: self.clock.timestamp(),
+        };
+        let mut policy = self.policy.clone();
+        let log = Rc::clone(&self.log);
+        rutent_core_audit::measures::hand_trail(&mut policy, &asked, || {
+            log.borrow().entries().to_vec()
+        })
+    }
+
     /// What `T-020-55`'s differential saw: each answer of Core's own sources compared with the records'.
     pub fn comparison(&self) -> policy::Comparison {
         self.compared.seen.borrow().clone()

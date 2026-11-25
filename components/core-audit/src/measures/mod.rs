@@ -26,7 +26,7 @@ pub use compute::{
     Answers, COUNTS, DryRuns, Failures, Provider, QuoteMeasure, Rate, Report, Window, measure,
 };
 pub use record::Record;
-pub use trail::{Failure, Read, ReadChecks, Trail, read_trail};
+pub use trail::{Failure, Handed, Read, ReadChecks, Trail, TrailRequest, hand_trail, read_trail};
 
 use crate::log::Unbuilt;
 

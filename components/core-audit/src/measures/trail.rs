@@ -67,6 +67,55 @@ pub enum Read {
     Refused(ReadAnswer),
 }
 
+/// What a reader of the trail is handed through Core's entry point ([`hand_trail`]): the trail, or nothing of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handed {
+    /// Policy allowed the read and the log shows it recorded: the trail as [`read_trail`] gives it, the entries and
+    /// their receipts up to the record of the read, each stated entry naming its statement by commitment alone.
+    Trail(Trail),
+    /// Nothing of the trail. Every reader not handed it is told this and only this, whether policy refused it, could
+    /// not decide it, or the log doesn't show it recorded: no class, no receipt, nothing of the log.
+    Withheld,
+}
+
+/// What a reader asks of Core's entry point to the trail: who reads, as external authentication established it in its
+/// stated role, and the identified permission the read rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailRequest {
+    /// The request's id, fresh for each read: policy's record of the read names it.
+    pub request: rutent_contracts::router_api::Id,
+    /// Who reads.
+    pub reader: rutent_contracts::core_internal::Actor,
+    /// The identified permission the read rests on (`REQ-AUZ-7`), where it names one.
+    pub permission: Option<rutent_contracts::router_api::Id>,
+    /// When, by Core's clock.
+    pub at: rutent_contracts::router_api::Timestamp,
+}
+
+/// Core's entry point to a reader's read of the audit trail (`REQ-AUD-12`, `T-020-55`): asks policy's read check for
+/// the caller, on [`read_trail`], and hands over the trail only on a read policy allowed and the log shows recorded.
+/// Policy records the read either way, before anything of the trail is looked at. The trail is the log's entries and
+/// their receipts, never a statement's contents, which stay in the evidence store (`F-022`'s notes name the paths a
+/// statement's bytes leave by). A read not handed the trail is [`Handed::Withheld`], the same for every such reader.
+/// The transport in front of it, and the reader's authentication, are the deployment's (`F-030`).
+pub fn hand_trail<P: ReadChecks>(
+    policy: &mut P,
+    asked: &TrailRequest,
+    history: impl FnOnce() -> Vec<(Receipt, Entry)>,
+) -> Handed {
+    let check = ReadCheck {
+        request: asked.request.clone(),
+        reader: asked.reader.clone(),
+        reads: Reads::Trail {},
+        permission: asked.permission.clone(),
+        at: asked.at.clone(),
+    };
+    match read_trail(policy, &check, history) {
+        Ok(Read::Released(trail)) => Handed::Trail(trail),
+        Ok(Read::Refused(_)) | Err(_) => Handed::Withheld,
+    }
+}
+
 /// Reads the audit trail for `check.reader`, as `policy` allows, and answers the trail only once the log shows the
 /// read recorded. `history` hands over the log's entries with their receipts, and is called only after policy has
 /// answered, so the record of the read is among them.
