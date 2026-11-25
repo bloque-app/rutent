@@ -1376,7 +1376,10 @@ bytes, and every one is asked before an erasure is decided.
   - `REQ-AUD-10`, the checker's check: the outside checker's run over the log and its copy of the evidence directory
     (`audit-check --evidence`); appointing and naming the checker is `F-033`'s (`M4`), as the scope file says.
   - `REQ-AUD-12`, a regulator's read of the trail: a read grant held to the operator (`T-021-14`), decided by policy's
-    read check and recorded (`assembly_policy.rs`, `bulk_measures.rs`); naming the regulator is `F-033`'s.
+    read check and recorded (`assembly_policy.rs`, `bulk_measures.rs`). Those tests hold the check, not the read:
+    `read_trail` (`core-audit/src/measures/trail.rs:73`) has no caller in Core yet, so the trail itself, its entries and
+    their receipts and never a statement's contents, reaches the regulator through `T-020-55` (3)'s entry point. Naming
+    the regulator is `F-033`'s.
  Default: fails closed (no caller, no read). Gap,
   owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that calls `fetch` under
   policy's read check (`REQ-AUZ-7`).
