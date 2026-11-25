@@ -229,8 +229,8 @@ mod sandboxed {
 #[cfg(feature = "outside")]
 mod outside {
     use rutent_conformance::sim::{
-        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY,
-        OPENING_KEY, PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
+        BEGIN, BOOK, BOOK_KEY, BOOK_LENGTH_KEY, CHAIN, CREDENTIAL, DEPLOYMENT_KEY, OPENING_KEY,
+        PRIVATE_NOTES_KEY, SETTLE, chain_host, rail_host, script_key,
     };
     use serde_json::{Value, json};
 

@@ -1442,6 +1442,7 @@ fn seed_arrival(
                     part: split.then(|| id(plan.part_id.as_str())),
                     earlier: None,
                     holder: None,
+                    destination: None,
                 },
                 Outcome::Observed {},
             ),

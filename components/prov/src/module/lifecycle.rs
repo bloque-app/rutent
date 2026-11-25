@@ -7,9 +7,16 @@
 //! - **Staging.** With a [`Staging`] policy set, an accepted release of a provider that already has a version in
 //!   force is staged beside it, never put in force at once: a share of the segments that begin from then on run
 //!   on it, and the rest on the version in force. It is put in force only by the operator's decision,
-//!   [`Lifecycle::promote`], and only once both the time window has passed and the staged version has handled the
-//!   minimum number of operations, so a provider with little traffic stays staged until its minimum is observed
-//!   (`PLAN.md` §6.2 risk 7). [`Lifecycle::roll_back`] ends the staging instead, and the version in force stays.
+//!   [`Lifecycle::promote`], and only once both the time window has passed and the staged version has *answered*
+//!   the minimum number of operations, so a provider with little traffic stays staged until its minimum is observed
+//!   (`PLAN.md` §6.2 risk 7). **What counts** (`T-013-11`, `REQ-MDL-4`): an operation the version's module answered
+//!   with a result that says what became of it, done or failed, or answers the question asked (a dry run's quote, a
+//!   balance, a judgement). Never one the platform refused after the module ran (a bad or oversized output, a limit,
+//!   a stop), and never one the module answered with a refusal of its own or with an outcome unknown or not known:
+//!   those are refusals, reported apart in [`Counts::refused`], so a version that refuses everything never reaches
+//!   its minimum. An operation refused before it reached a running process counts as neither, and so does a status
+//!   question, which asks about an operation already counted. A dry run a staged version answers counts as an answer,
+//!   as the form's reading takes it. [`Lifecycle::roll_back`] ends the staging instead, and the version in force stays.
 //!   While a release is staged no other is admitted, and no version is marked stale, since a stale mark would move
 //!   segments past the staging (`THR-16`).
 //! - **Segments.** A segment begins on one version ([`Lifecycle::begin_segment`]) and runs on it until it ends,
@@ -88,7 +95,7 @@ pub struct Staging {
 impl Staging {
     /// A policy giving the staged release `share` percent of the segments that begin, from 1 to 100, and
     /// requiring, before it is put in force, `window` seconds of the caller's clock since it was staged and
-    /// `minimum` operations it handled. `None` for a share outside 1 to 100.
+    /// `minimum` operations it answered. `None` for a share outside 1 to 100.
     pub fn new(share: u8, window: u64, minimum: u64) -> Option<Self> {
         (1..=100).contains(&share).then_some(Self {
             share,
@@ -107,7 +114,7 @@ impl Staging {
         self.window
     }
 
-    /// The minimum observation volume, in operations handled.
+    /// The minimum observation volume, in operations answered.
     pub fn minimum(&self) -> u64 {
         self.minimum
     }
@@ -127,14 +134,16 @@ pub enum Placement {
 pub struct Counts {
     /// Segments that began on it.
     pub segments: u64,
-    /// Operations it answered.
+    /// Operations it answered: what a staged version is promoted on.
     pub answered: u64,
-    /// Operations the platform refused for it.
+    /// Operations that reached it and came to no answer: refused by the platform after the module ran, or answered
+    /// by the module with a refusal of its own, an outcome unknown or one not known. Never counted towards a
+    /// promotion.
     pub refused: u64,
 }
 
 impl Counts {
-    /// Operations it handled, answered or refused.
+    /// Operations it handled, answered or refused. Not what a promotion reads: that is [`Counts::answered`].
     pub fn handled(&self) -> u64 {
         self.answered + self.refused
     }
@@ -185,6 +194,8 @@ pub enum DecisionKind {
     DeclaredExploited,
     /// The version was put back in force, the one in force having been revoked.
     Reinstated,
+    /// The operator confirmed a provider's releases after a restart the record couldn't vouch for (`T-013-11`).
+    Confirmed,
 }
 
 /// One recorded lifecycle decision.
@@ -252,9 +263,9 @@ pub enum LifecycleRefusal {
         /// When it does.
         until: Instant,
     },
-    /// The staged release has handled fewer operations than the minimum.
+    /// The staged release has answered fewer operations than the minimum: refusals don't count (`T-013-11`).
     TooFewObserved {
-        /// Operations it handled.
+        /// Operations it answered.
         observed: u64,
         /// The minimum.
         minimum: u64,
@@ -279,16 +290,48 @@ pub enum LifecycleRefusal {
     TakenUnrecorded,
 }
 
-#[derive(Debug, Clone)]
-struct Staged {
-    version: String,
-    since: Instant,
-    policy: Staging,
+/// A release staged beside the version in force, as the platform's record holds it (`T-013-11`): since when, under
+/// which policy, the share taken so far and what each version did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    /// The staged version.
+    pub version: String,
+    /// When it was staged, by the caller's clock.
+    pub since: Instant,
+    /// The policy it was staged under.
+    pub policy: Staging,
     /// Segments that began since it was staged, and how many of them it took.
-    began: u64,
-    taken: u64,
-    staged_counts: Counts,
-    in_force_counts: Counts,
+    pub began: u64,
+    /// How many of those it took.
+    pub taken: u64,
+    /// What the staged version did.
+    pub staged_counts: Counts,
+    /// What the version in force did meanwhile.
+    pub in_force_counts: Counts,
+}
+
+/// One provider's releases as the platform's record holds them (`T-013-11`): which were accepted, which version is in
+/// force and which is staged, with the staging's counts. The operator's marks are the record's own entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseState {
+    /// The versions accepted.
+    pub accepted: BTreeSet<String>,
+    /// The version in force.
+    pub in_force: Option<String>,
+    /// Every version put in force, in order.
+    pub history: Vec<String>,
+    /// The staged release.
+    pub staged: Option<Staged>,
+}
+
+impl ReleaseState {
+    /// Whether it holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.accepted.is_empty()
+            && self.in_force.is_none()
+            && self.history.is_empty()
+            && self.staged.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -365,6 +408,33 @@ impl Lifecycle {
     /// How upgrades are staged.
     pub fn staging(&self) -> Option<Staging> {
         self.policy
+    }
+
+    /// The provider's releases as they now stand, or `None` for a provider the lifecycle holds nothing of.
+    pub fn release_state(&self, provider: &str) -> Option<ReleaseState> {
+        let releases = self.providers.get(provider)?;
+        Some(ReleaseState {
+            accepted: releases.accepted.clone(),
+            in_force: releases.in_force.clone(),
+            history: releases.history.clone(),
+            staged: releases.staged.clone(),
+        })
+    }
+
+    /// Every provider the lifecycle holds anything of.
+    pub fn providers(&self) -> impl Iterator<Item = &str> {
+        self.providers.keys().map(String::as_str)
+    }
+
+    /// Holds `state` as the provider's releases, as the platform's record says they stood when the platform stopped
+    /// (`T-013-11`): the accepted versions, the one in force, the staged one and its counts. The operator's marks are
+    /// kept as they are. The processes come when each release is admitted again.
+    pub fn restore_release_state(&mut self, provider: &str, state: ReleaseState) {
+        let releases = self.providers.entry(provider.to_owned()).or_default();
+        releases.accepted = state.accepted;
+        releases.in_force = state.in_force;
+        releases.history = state.history;
+        releases.staged = state.staged;
     }
 
     /// The provider's release of `version` was accepted. It runs only once [`Lifecycle::started`] says so.
@@ -577,7 +647,8 @@ impl Lifecycle {
             .ok_or(PlatformRefusal::Unavailable)
     }
 
-    /// The provider's `version` handled an operation, answered or refused: counted towards a staging.
+    /// The provider's `version` handled an operation: counted towards a staging as answered or, where it came to no
+    /// answer, as refused. A promotion reads the answers only.
     pub fn observe(&mut self, provider: &str, version: &str, answered: bool) {
         let Some(releases) = self.providers.get_mut(provider) else {
             return;
@@ -697,6 +768,30 @@ impl Lifecycle {
         });
     }
 
+    /// Records that `by` confirmed the provider's releases as the record holds them.
+    pub fn confirmed(
+        &mut self,
+        provider: &str,
+        by: &str,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        let by = Identifier::new(by).ok_or(LifecycleRefusal::NoActor)?;
+        // The version the confirmation is recorded against: the one in force, else the staged one, else the last put in
+        // force (the operator may have taken the one in force out before confirming).
+        let version = self
+            .in_force(provider)
+            .or_else(|| self.staged(provider))
+            .map(str::to_owned)
+            .or_else(|| {
+                self.providers
+                    .get(provider)
+                    .and_then(|releases| releases.history.last().cloned())
+            })
+            .ok_or(LifecycleRefusal::NoSuchVersion)?;
+        self.record(provider, &version, DecisionKind::Confirmed, by, at);
+        Ok(())
+    }
+
     /// Records that the provider's release of `version`, waiting for its fresh acceptance, was withdrawn by `by`.
     pub fn withdrawn(
         &mut self,
@@ -711,7 +806,7 @@ impl Lifecycle {
     }
 
     /// Puts the provider's staged release in force, by `by` at the caller's clock `at`, once its window has passed
-    /// and it has handled its minimum. The staged version.
+    /// and it has answered its minimum ([`Counts::answered`]). The staged version.
     pub fn promote(
         &mut self,
         provider: &str,
@@ -731,7 +826,9 @@ impl Lifecycle {
         if at.0 < until.0 {
             return Err(LifecycleRefusal::WindowOpen { until });
         }
-        let observed = staged.staged_counts.handled();
+        // Answered, never refused or left unanswered (`T-013-11`): a version that refuses everything never reaches
+        // its minimum.
+        let observed = staged.staged_counts.answered;
         if observed < staged.policy.minimum {
             return Err(LifecycleRefusal::TooFewObserved {
                 observed,

@@ -1201,8 +1201,8 @@ mod tests {
                 | CatalogueChange::SetSlippage
                 | CatalogueChange::Promote
                 | CatalogueChange::RollBack => {}
-                // An operator's setting has no rule until `T-021-15`, which lists it (`T-020-45`).
-                CatalogueChange::SetSetting => unreachable!(),
+                // An operator's setting is listed below, one for each (`T-021-15`).
+                CatalogueChange::SetSetting => unreachable!("listed below"),
             }
             actions.push(Action::ChangeCatalogue {
                 change,
@@ -1219,6 +1219,20 @@ mod tests {
                     .then(|| rutent_contracts::provider_role::PublicKey::new(A_KEY).unwrap()),
                 setting: None,
             });
+        }
+        // Each of the operator's settings (`T-020-45`, `T-021-15`): one fixture of the contract for each.
+        for name in [
+            "decision-request-to-set-the-operators-fee",
+            "decision-request-to-set-a-tuples-slippage-limit",
+            "decision-request-to-set-a-tuples-evidence-floor",
+            "decision-request-to-set-a-public-nodes-settings",
+            "decision-request-to-set-a-providers-ceiling",
+            "decision-request-to-set-a-publishers-ceiling",
+            "decision-request-to-set-a-jobs-cadence",
+            "decision-request-to-set-a-protocol-versions-cutover",
+        ] {
+            let set: DecisionRequest = fixture!(name);
+            actions.push(set.action);
         }
         // Asking the fixtures' order's segment's provider to reverse it (`REQ-ORD-3`).
         actions.push(Action::AskReversal {
@@ -1262,6 +1276,16 @@ mod tests {
     #[test]
     fn staging_is_rolled_back_only_on_a_permitted_decisions_effect() {
         entry_points::staging_is_rolled_back_only_on_an_effect();
+    }
+
+    /// Each lifecycle action on a release, `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale`, is
+    /// listed among the methods that carry out a decided action, each with its own change, and is no longer a method
+    /// that carries out nothing, so orchestration may call it only where the effect it rests on is in hand, and
+    /// nowhere else (`T-021-15`, `REQ-AUZ-1`).
+    // verifies: REQ-AUZ-1
+    #[test]
+    fn the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect() {
+        entry_points::lifecycle_actions_are_carried_out_only_on_an_effect();
     }
 
     /// The outcome of the one entry the log took since the last look, which must pass its checks.
@@ -1471,7 +1495,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 17);
+        assert_eq!(actions.len(), 25);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1603,7 +1627,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 17 + 2 * 3 + 3 + 3,
+            3 * 25 + 2 * 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy

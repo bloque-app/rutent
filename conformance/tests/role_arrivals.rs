@@ -169,6 +169,82 @@ fn stand_in_reserve_signs_an_arrival_notice_that_passes_the_role_suite() {
     assert!(hookless.exercised.contains(&Exercised::NothingArrived));
 }
 
+/// The stand-in reserve names an automatic deposit's destination from the customer's standing instruction (`T-020-50`,
+/// `REQ-ORD-13`, `REQ-AUZ-9`): in its notices of the holder's credits, with who set it for whom, never in another
+/// holder's, and none where no instruction was set; the role suite holds what it signs.
+// verifies: REQ-ORD-13, REQ-AUZ-9
+#[test]
+fn stand_in_reserve_names_the_destination_its_customer_set_in_its_arrival_notice() {
+    let context = SuiteContext::default();
+    let mut reserve = Reserve::new(&context).with_deposit_instruction(
+        "standing-account",
+        "integrator-1",
+        "the-holder",
+    );
+    let bank = credit(&reserve, &context, "credit-1", "1000");
+    assert!(reserve.credit_arrival(&bank));
+    let notice = reserve.arrival_notice("credit-1").expect("a notice");
+    let named = notice
+        .statement()
+        .statement
+        .destination
+        .clone()
+        .expect("the notice names the instruction's destination");
+    assert_eq!(named.reserve, Reserve::PROVIDER);
+    assert_eq!(named.node, bank.node);
+    assert_eq!(named.asset, bank.asset);
+    assert_eq!(named.account, "standing-account");
+    assert_eq!(
+        (named.set_by.as_str(), named.set_for.as_str()),
+        ("integrator-1", "the-holder")
+    );
+    // Another holder's credit is no part of the instruction.
+    let other = BankCredit {
+        reference: "credit-2".to_owned(),
+        holder: "another-holder".to_owned(),
+        ..bank.clone()
+    };
+    assert!(reserve.credit_arrival(&other));
+    assert!(
+        reserve
+            .arrival_notice("credit-2")
+            .expect("a notice")
+            .statement()
+            .statement
+            .destination
+            .is_none()
+    );
+    // No instruction, no destination.
+    let mut plain = Reserve::new(&context);
+    assert!(plain.credit_arrival(&bank));
+    assert!(
+        plain
+            .arrival_notice("credit-1")
+            .expect("a notice")
+            .statement()
+            .statement
+            .destination
+            .is_none()
+    );
+    // What it signs passes the role suite, whose credits are the conformance holder's, so its notices name the
+    // destination.
+    let report = run_role_suite(
+        &mut Signing(Reserve::new(&context).with_deposit_instruction(
+            "standing-account",
+            "integrator-1",
+            "conformance-holder",
+        )),
+        &context,
+        &Ed25519Verifier,
+    );
+    assert!(
+        report.passed(),
+        "{:?} {:?}",
+        report.findings,
+        report.uncovered
+    );
+}
+
 // verifies: REQ-ORD-1
 #[test]
 fn stand_in_reserve_answers_the_arrival_question_under_the_questions_transaction() {

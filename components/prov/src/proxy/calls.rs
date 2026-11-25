@@ -198,7 +198,8 @@ pub struct CallJudgement {
 /// - `undeclared_callee`: `release`, the caller's own running release, doesn't declare the callee. A release of
 ///   another provider than the caller declares nothing for it;
 /// - `undeclared_kind`: it declares the callee, but not the kind forwarded, or the caller's code named another
-///   kind than the one forwarded, or the kind is `holding_balance`, which is never a call;
+///   kind than the one forwarded, or the kind is one that is never a call: `holding_balance`, a status question or
+///   a hold request, which are Core's own questions (`REQ-AUD-15`, `REQ-ORD-1`, `REQ-QTE-15`; provider-role 4.0.0);
 /// - `not_named_by_route`: no outside request of the caller's is in flight, or no segment of the transaction's
 ///   route names the caller's call to the callee for that kind.
 ///
@@ -210,8 +211,15 @@ pub fn judge_call(
 ) -> CallJudgement {
     // `holding_balance` is the operator's own question to a holding account, so that only the operator's audit reads
     // an account's balance through the host: a module may not declare it as a call, and a route may not name it. It
-    // is never a call that is declared, and never one a route names (`REQ-AUD-15`).
-    let barred = asked.kind == OperationKind::HoldingBalance;
+    // is never a call that is declared, and never one a route names (`REQ-AUD-15`). A status question about a
+    // transaction and a hold request are Core's own questions to a provider too (provider-role 4.0.0): the contracts
+    // refuse a declaration or a route that lists either (`DeclaredCallOfAnOperatorsQuestion`), and the platform's
+    // own judgement of a call refuses them however they are named, so a module can't ask another where a
+    // transaction stands or have a reserve hold a quote (`T-013-11`, `T-020-45`'s gap 6).
+    let barred = matches!(
+        asked.kind,
+        OperationKind::HoldingBalance | OperationKind::StatusQuery | OperationKind::Hold
+    );
     let naming = routes
         .naming(asked.transaction, asked.caller, asked.callee, asked.kind)
         .filter(|_| !barred);

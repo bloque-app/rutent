@@ -154,6 +154,10 @@ pub struct Spec {
     /// ([`Reserve::OPENING`]) where none (`T-024-22`).
     #[serde(default)]
     pub opening: Option<u128>,
+    /// The customer's standing instruction for a reserve's automatic deposits, as an integrator or the operator set it:
+    /// the account they go to, who set it, for whom (`T-020-50`); the reserve's notices of that holder's credits name it.
+    #[serde(default)]
+    pub deposit_instruction: Option<(String, String, String)>,
 }
 
 impl Spec {
@@ -164,7 +168,17 @@ impl Spec {
             provider: provider.to_owned(),
             automatic_deposits: false,
             opening: None,
+            deposit_instruction: None,
         }
+    }
+
+    /// This provider, a reserve holding the customer's standing instruction for its automatic deposits: `set_by` set
+    /// them for `set_for`, sending that holder's deposits to `account` (`T-020-50`).
+    #[must_use]
+    pub fn with_deposit_instruction(mut self, account: &str, set_by: &str, set_for: &str) -> Self {
+        self.deposit_instruction =
+            Some((account.to_owned(), set_by.to_owned(), set_for.to_owned()));
+        self
     }
 
     /// This provider, a reserve whose account holds `opening` when its books are empty: a run that scans for balances
@@ -309,8 +323,14 @@ impl Spec {
                     self.automatic_deposits,
                 )
                 .shaped(&shape_of(&self.provider));
-                Box::new(match self.opening {
+                let reserve = match self.opening {
                     Some(opening) => reserve.opening_with(opening),
+                    None => reserve,
+                };
+                Box::new(match &self.deposit_instruction {
+                    Some((account, set_by, set_for)) => {
+                        reserve.with_deposit_instruction(account, set_by, set_for)
+                    }
                     None => reserve,
                 })
             }

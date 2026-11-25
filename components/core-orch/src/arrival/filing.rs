@@ -3,11 +3,14 @@
 //!
 //! **Before an order exists**, nothing is opened, held, asked or routed, and a filing that stops here holds nothing:
 //! 1. the filing is for what arrived (from its outer node, in its asset, at its amount, with no `follows`), for the
-//!    account's holder as requester and beneficiary, naming no other account for the deposit; and its session is one
+//!    account's holder as requester and beneficiary, naming no other account for the deposit; the entry Core keeps of
+//!    the arrival states what the reserve's kept notice states (holder and destination); and its session is one
 //!    policy opened for that holder, still open. Otherwise an `order_refusal` naming no order;
-//! 2. the destination is resolved (`REQ-ORD-24`) to an owner, and that owner is the beneficiary: until the holder's
-//!    own standing instruction exists, an automatic deposit goes to its holder alone. Another owner, or a refusal, is
-//!    `destination_refused`; not yet resolved waits, with nothing recorded;
+//! 2. the destination is where the reserve's arrival notice names it, from the customer's standing instruction the
+//!    reserve holds (`T-020-50`; the owner's answer `automatic-deposit-destination`), or the holder's own account where
+//!    it names none; the filing is for that one and no other, and a destination set for another party than the
+//!    holder is `destination_refused`. It is resolved (`REQ-ORD-24`) to an owner, and that owner is the beneficiary:
+//!    another owner, or a refusal, is `destination_refused`; not yet resolved waits, with nothing recorded;
 //! 3. the order is drawn under a fresh identifier, its record handed to the assembly ([`super::FiledOrders`]) so
 //!    policy's sources can answer for it, and the authorisation, given by the filer, goes to policy, which holds a
 //!    reserve to its declaration and the operator to its permission (`F-021`). A refusal about the filer is answered
@@ -184,6 +187,16 @@ fn well_formed(mut filing: Filing, arrival: &Recorded) -> Option<Filing> {
     {
         return None;
     }
+    // Where the reserve's notice names a destination, the filing is for that one and no other (`T-020-50`): the
+    // reserve, its outer node, the account, and the asset delivered there.
+    if let Some(named) = &arrival.destination
+        && (filing.destination.reserve.as_str() != named.reserve
+            || filing.destination.node != named.node
+            || filing.destination.account.as_str() != named.account
+            || filing.route.to.asset != named.asset)
+    {
+        return None;
+    }
     let account = filing.destination.account.as_str().to_owned();
     match filing.inputs.get(DESTINATION_INPUT) {
         Some(given) if given != &account => return None,
@@ -274,6 +287,27 @@ impl Arrivals {
                 OrderRefusalClass::MalformedRequest,
             )?));
         };
+        // The entry Core records for the deposit states what the reserve's kept notice states (`T-020-50`, gap 10 of
+        // `T-020-45`): the log holds the entry to the order, and reads no notice's body.
+        if !super::kept_notice_agrees(desk, &arrival)? {
+            return Ok(Err(self.refuse_filing(
+                desk,
+                filing,
+                OrderRefusalClass::MalformedRequest,
+            )?));
+        }
+        // A destination set for another party is no destination for this holder's deposit (gap 11).
+        if arrival
+            .destination
+            .as_ref()
+            .is_some_and(|named| named.set_for != arrival.holder.as_str())
+        {
+            return Ok(Err(self.refuse_filing(
+                desk,
+                filing,
+                OrderRefusalClass::DestinationRefused,
+            )?));
+        }
         // The reserve is asked about the holder's funds in this session: it must be the holder's, and open.
         let now = journal::now(desk.parts.clock)?;
         let held = desk.sessions.held(&well.session).is_some_and(|held| {
@@ -286,7 +320,8 @@ impl Arrivals {
                 OrderRefusalClass::RefusedByPolicy,
             )?));
         }
-        // The deposit goes to its holder: the destination's owner is the beneficiary, who is the holder.
+        // The deposit goes to the destination its reserve names, or to its holder where it names none, and the
+        // destination's owner is the beneficiary, who is the holder, either way.
         match desk.destinations.resolve(&well.destination) {
             Resolution::Owner(owner) if owner == well.parties.beneficiary => {}
             Resolution::NotYet => {
@@ -744,6 +779,9 @@ impl Run {
                 // waits for, which the log holds the waiting quote to (`waiting-quote-is-for-its-arrivals-holder`,
                 // `T-020-45`).
                 holder: Some(self.arrival.holder.clone()),
+                // Where the reserve's notice names the deposit to go, which the order's authorisation is held to
+                // (`automatic-deposit-rests-on-its-arrival`, `T-020-50`).
+                destination: self.arrival.destination.clone().map(Box::new),
             };
             self.held = Some((journal::build(desk.parts.clock, desk.core, what)?, None));
         }

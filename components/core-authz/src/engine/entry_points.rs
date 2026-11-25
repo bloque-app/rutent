@@ -85,6 +85,13 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "prov/src/module/platform.rs",
         "change_catalogue: roll_back",
     ),
+    // Puts a provider's releases back in force after a restart whose record couldn't vouch for them (`T-013-11`): a
+    // lifecycle action of its own, which no `CatalogueChange` names yet (`T-021-15`, `T-020-49`).
+    (
+        "confirm",
+        "prov/src/module/platform.rs",
+        "change_catalogue: confirm_releases",
+    ),
     (
         "grant",
         "prov/src/catalogue/mod.rs",
@@ -101,6 +108,15 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
 /// action policy decides: none is one of `REQ-AUZ-6`'s permissions or a value-moving operation. A method added there
 /// fails [`carry_out_is_pinned`] until it is listed here or in [`CARRY_OUT`].
 pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
+    // A read: asks a provider's module where a transaction it was handed stands, and moves nothing (`REQ-ORD-1`,
+    // `INV-4`, `T-013-11`). Asking status is itself decided (`ask_status`), but it is listed here and not in
+    // [`CARRY_OUT`], which would give the scan four false findings. The guard is the `effect` parameter of core-orch's
+    // `Modules::status`: only a permitted `ask_status` effect lets Core ask.
+    (
+        "status",
+        "prov/src/module/platform.rs",
+        "a read that moves nothing",
+    ),
     (
         "set_bounds",
         "prov/src/module/platform.rs",
@@ -1205,6 +1221,65 @@ pub(super) fn staging_is_rolled_back_only_on_an_effect() {
         found_outside("fn f(&mut self) { self.platform.roll_back(\"p\", \"op\", at); }"),
         ["f: carries out `roll_back` outside orchestration"]
     );
+}
+
+/// The five lifecycle actions on a release (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`, core-internal's
+/// `LIFECYCLE_ACTIONS`) are each listed as carrying out the change of its own on the platform, not as carrying out
+/// none, so in orchestration each is called only where the effect it rests on is in hand; and the rule finds a call
+/// of each planted without one, in orchestration and outside it (`T-021-15`).
+pub(super) fn lifecycle_actions_are_carried_out_only_on_an_effect() {
+    use rutent_contracts::core_internal::LIFECYCLE_ACTIONS;
+
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    for (name, change) in LIFECYCLE_ACTIONS {
+        let change = serde_json::to_value(change).unwrap();
+        let action = format!("change_catalogue: {}", change.as_str().unwrap());
+        let on_the_platform = |list: &[(&str, &str, &str)]| {
+            list.iter()
+                .filter(|(n, f, a)| {
+                    *n == name && *f == "prov/src/module/platform.rs" && *a == action
+                })
+                .count()
+        };
+        assert_eq!(
+            on_the_platform(CARRY_OUT),
+            1,
+            "`{name}` is a carried out action, `{action}`"
+        );
+        assert!(
+            CARRIES_OUT_NOTHING
+                .iter()
+                .all(|(n, f, _)| !(*n == name && *f == "prov/src/module/platform.rs")),
+            "`{name}` is no method that carries out nothing"
+        );
+        assert_eq!(
+            orch(&format!(
+                "pub fn go(&mut self) {{ self.platform.{name}(\"p\", \"v\", \"op\"); }}"
+            )),
+            [format!(
+                "go: carries out `{name}` without the effect it rests on"
+            )]
+        );
+        assert_eq!(
+            orch(&format!(
+                "fn go(&mut self, effect: &Effect) {{ self.platform.{name}(\"p\", \"v\", self.by(effect)); }}"
+            )),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            found_outside(&format!(
+                "fn f(&mut self) {{ self.platform.{name}(\"p\", \"v\", \"op\"); }}"
+            )),
+            [format!("f: carries out `{name}` outside orchestration")]
+        );
+    }
 }
 
 fn found_outside(source: &str) -> Vec<String> {

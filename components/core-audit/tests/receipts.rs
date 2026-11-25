@@ -1573,11 +1573,12 @@ fn store_erases_a_cited_statement_on_a_decided_override_and_history_still_checks
     assert!(run.store.missing().is_empty());
 }
 
-/// A citation made after the override's decision is still reported, though the store erases on the override: the
-/// operator decided to erase what was cited then, not what a later entry came to rest on (`INV-7`).
-// verifies: INV-7
+/// An override lifts the citations made before its decision alone: a citation the log took between the decision and
+/// the effect refuses the erasure, and nothing is erased; on reopening the refused erasure is the one finding the
+/// store reports (`REQ-AUD-13`, `INV-7`).
+// verifies: REQ-AUD-13, INV-7
 #[test]
-fn citation_made_after_an_overrides_decision_is_still_reported() {
+fn store_refuses_an_override_erasure_of_a_statement_cited_after_its_decision() {
     let dir = TempDir::new("override-late");
     let mut run = Run::open(&dir).unwrap();
     let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
@@ -1587,9 +1588,93 @@ fn citation_made_after_an_overrides_decision_is_still_reported() {
             log.append(&measure_citing(&at, "seg-2")).unwrap();
         })
         .unwrap();
+    assert_eq!(
+        run.store.erase(&done),
+        Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+    );
+    assert!(!run.store.is_erased(&cited));
+    assert!(matches!(
+        run.fetch("fx-desk", &cited).unwrap(),
+        Fetched::Kept(_)
+    ));
+    drop(run);
+
+    // Reopened: nothing was erased, so no erased statement is cited; the decided erasure the store refused is the
+    // one finding.
+    let run = Run::open(&dir).unwrap();
+    assert!(!run.store.is_erased(&cited));
+    assert_eq!(
+        run.store.refused_erasures(),
+        [(done, Violation(EVIDENCE_RESTED_ON))]
+    );
+    assert!(run.store.unsettled_erasures().is_empty());
+}
+
+/// A statement erased already answers `Ok` to an override erase asked again, though a citation stands after the
+/// decision the check is given: the retry is idempotent, so orchestration can append its `erasure` entry (`INV-8`,
+/// `REQ-AUD-13`). The log refuses a citation once an erasure has begun, so the state of an erasure carried out under
+/// the older rule, with a citation after its decision, can't be built through it: the check is asked with an earlier
+/// decision, as `override_check_since_its_decision_refuses_a_later_citation` does, for the same effect.
+// verifies: INV-8, REQ-AUD-13
+#[test]
+fn a_retried_override_erase_of_an_erased_statement_cited_since_answers_ok() {
+    let dir = TempDir::new("override-retry");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    // Not yet erased: a citation after `at` refuses.
+    assert_eq!(
+        run.store.erasable_overriding_since(&cited, &at),
+        Err(AppendFailure::Refused(Violation(EVIDENCE_RESTED_ON)))
+    );
+    let done = run.decide_override(&cited, |_| {}).unwrap();
     run.store.erase(&done).unwrap();
+    assert!(run.store.is_erased(&cited));
+    // Erased: the same question, and the erase asked again, answer `Ok`.
+    assert_eq!(run.store.erasable_overriding_since(&cited, &at), Ok(()));
+    assert_eq!(run.store.erase(&done), Ok(()));
     run.append(&erasure(&cited, "done")).unwrap();
-    assert_eq!(run.fetch("fx-desk", &cited).unwrap(), Fetched::Erased);
+    drop(run);
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&cited));
+    assert!(run.store.refused_erasures().is_empty());
+    assert!(run.store.unsettled_erasures().is_empty());
+}
+
+/// A store that erased under the older rule, a citation standing after the override's decision, is bound again: the
+/// erasure is carried out already, so the retried erase answers `Ok`, nothing is reported refused, and once its
+/// `erasure` entry is appended the late citation is the one finding left (`INV-8`, `REQ-AUD-13`). The older rule's
+/// state is written straight into the evidence store (its kept file gone, its erased mark in place), not through the
+/// log, which refuses a citation once an erasure has begun.
+// verifies: INV-8, REQ-AUD-13
+#[test]
+fn a_store_erased_under_the_older_rule_is_not_reported_refused_when_bound_again() {
+    let dir = TempDir::new("older-rule");
+    let mut run = Run::open(&dir).unwrap();
+    let (cited, at) = run.state(&judgement("fx-desk", json!({"kind": "judgement"})), None);
+    run.append(&measure_citing(&at, "seg-1")).unwrap();
+    let done = run
+        .decide_override(&cited, |log| {
+            log.append(&measure_citing(&at, "seg-2")).unwrap();
+        })
+        .unwrap();
+    assert!(run.store.erase(&done).is_err());
+    drop(run);
+    let evidence = dir.evidence();
+    std::fs::remove_file(
+        evidence
+            .join("kept")
+            .join(format!("{}.json", cited.value.as_str())),
+    )
+    .unwrap();
+    std::fs::write(evidence.join("erased").join(cited.value.as_str()), b"").unwrap();
+
+    let run = Run::open(&dir).unwrap();
+    assert!(run.store.is_erased(&cited));
+    assert!(run.store.refused_erasures().is_empty());
+    assert_eq!(run.store.erase(&done), Ok(()));
+    run.append(&erasure(&cited, "done")).unwrap();
     drop(run);
 
     let run = Run::open(&dir).unwrap();

@@ -1846,6 +1846,96 @@ party-wide, and policy is stricter than the log.
   | an id in force may be granted again | `grant_reusing_a_permission_id_is_refused` |
   | a revoked id may be granted again | `grant_reusing_a_permission_id_is_refused` |
 
+## T-021-15
+
+Branch `f-021/t-021-15-settings-lifecycle`, from `f01bc669` (the review round's batch with `T-020-45`'s `set_setting` and
+lifecycle changes, and `T-021-14`'s role binding and widened sweep). Finding 4 and `M2`'s item 6 of `M3`'s milestone
+review (PR #143). Edits `components/core-authz/` (`roles/`, the engine's scan and its tests), a `DEC-20` path that
+waits for the owner's click at the release into `main`. Policy's half only: Core's carrying out of a setting and of the
+five lifecycle actions is `T-020-49`'s. No contract shape changes.
+
+- **What changed.**
+  - `Permission::Setting(SettingKind)` is a permission of its own for each of the eight settings (operator fee,
+    slippage limit, evidence floor, public node, provider ceiling, publisher ceiling, cadence, cutover). A
+    `change_catalogue` of `set_setting` is asked of an operator's login the register lists for the one permission its
+    setting's kind is, and of no other role, Core's own actors included; a register that says nothing gives a missing
+    input and so a refusal. The decision's entry records the request whole, so it names the setting, its value and the
+    actor (`REQ-AUD-8`). The special arm that answered no rule is gone. `Permission::Change(SetSetting)` names no
+    setting and permits none.
+  - The five lifecycle actions (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`) already had a
+    permission of their own, `Permission::Change(change)`, through the one arm every catalogue change has, held to an
+    operator's login: so the publisher never marks its own version stale (`REQ-MDL-5`), and a version declared exploited
+    is never carried onward by Core's actors. Nothing in the rule changes; the row's tests pin it and the sweep covers it.
+  - `engine/entry_points.rs`: the five were already in `CARRY_OUT` (each with its own `change_catalogue: <change>`) and in
+    none of `CARRIES_OUT_NOTHING`, since `T-021-01`; so there was nothing to move. A test pins it for each of
+    `LIFECYCLE_ACTIONS`.
+- **Tests.** `operator_setting_is_refused_while_no_rule_answers_it` is replaced by `operator_setting_without_its_permission_is_refused`
+  (each setting: refused with every other permission held, Core's actor included, permitted with its own alone and the log
+  admits the effect, `Change(SetSetting)` alone permits none, a setting-less request fails its check).
+  `lifecycle_action_without_its_permission_is_refused` (the five), `publisher_is_refused_marking_its_own_version_stale`
+  (the publisher in its own role, and its login stating the operator's role, which the register of actors refuses),
+  `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect`. `every_permission` lists the eight
+  settings, so `each_permission_alone_allows_only_its_own_action` runs over them (25 to 33 permissions, 28 to 36 calls);
+  `every_decided_action` lists them, so `T-021-01`'s two counts move by the eight (17 to 25, `3 * 17` to `3 * 25`): the
+  only edits to them.
+- **Defaults, reversible, each failing closed.**
+  - One permission per kind of setting, not one for all settings, as every catalogue change has its own (`REQ-AUZ-6`).
+  - Operator's logins only; never carried onward by Core's actors.
+  - Policy reads nothing of a setting's value or of the provider it is about: whether a value is sane (a ceiling above
+    zero, a cutover in the future) is the setting's check and the deployment's policy.
+  - A `set_setting` naming no setting is no request (the contract's check), and the arm gives it no rule if it ever got here.
+- **Gaps, with owners.**
+  1. The deployment's register must list `Setting(kind)` for the operator logins that may set each, and
+     `Change(AcceptModule)` etc. as before: configuration, owner `F-021`'s register docs / the deployment. The assembly's
+     register of actors lists no setting permission; `T-020-49`'s scenarios need it and grant it where used.
+  2. Carrying the settings and the lifecycle actions out on a permitted effect, and asking policy before the staging is
+     read (L6): `T-020-49`.
+  3. The plan's wording that the scan "moves" the five: they were already there; no edit was needed.
+- **Red first.** The setting tests failed on their permitted assertion (`Refuse` for `Permit`), `each permission alone`
+  on `Setting(OperatorFee) allows itself`, and the engine's two counts on policy's having decided 17 of 25 actions. The
+  lifecycle, publisher and scan tests passed at once, the behaviour being in place; they are held by the rule-offs below
+  (a test that passes at its first run, seen red only by switching its rule off).
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the setting arm answers no rule (`None`) | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `every_value_moving_action_is_refused_when_policy_denies`, `authenticated_caller_is_still_decided_by_policy` |
+  | one setting's permission stands for every setting | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | `Change(SetSetting)` stands for the setting | the same two |
+  | a setting asked of any role (no operator-only) | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `authenticated_caller_is_still_decided_by_policy` |
+  | no permission asked of a setting | `operator_setting_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission` |
+  | a lifecycle change asked of any role | `lifecycle_action_without_its_permission_is_refused`, `publisher_is_refused_marking_its_own_version_stale`, `each_permission_alone_allows_only_its_own_action`, `roll_back_without_its_permission_is_refused`, `authenticated_caller_is_still_decided_by_policy` |
+  | a lifecycle change asks no permission | `lifecycle_action_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action`, `roll_back_without_its_permission_is_refused`, `caller_without_the_erase_permission_is_refused`, `erasure_overriding_citations_is_permitted_only_with_its_own_permission` |
+  | one lifecycle permission stands for the five | `lifecycle_action_without_its_permission_is_refused`, `each_permission_alone_allows_only_its_own_action` |
+  | `mark_stale` left out of `CARRY_OUT` | `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect`, `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` |
+  | `declare_exploited` left out of `CARRY_OUT` | the same two |
+  | `accept` listed with another change | `the_scan_lists_every_lifecycle_action_as_carried_out_only_on_an_effect` |
+
+### T-021-15, fix round 1 (the review of `d2a8f0d9`, PR #296)
+
+- **Finding 1, should-fix: `OfOperator`.** The setting arm and the generic `Change` arm asked only `operator_holds`
+  (the stated role and the register's permission), so a login of another party (`bridge-pay`) that the register of
+  actors lists in the operator's role, holding `Setting(OperatorFee)`, was permitted. Both arms now ask
+  `of_operator_holds`, as `GrantRead` and `RevokeRead` do: the register must also say the login is the deployment
+  operator's (`Source::OfOperator`). The generic arm is every catalogue change's, so the fix covers the five lifecycle
+  actions, promotion, `roll_back`, grants, `set_slippage` and `reinstate` alike (one rule, fail closed). The plan row's
+  "held to the operator (`OfOperator`)" is read as this. Test: `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`
+  (all 11 changes and 8 settings); the registers of the tests that permit an operator now link its party to the
+  operator (`Register::of_the_operator`), the only edits to existing tests.
+- **Finding 2, low.** `setting_naming_the_wrong_provider_is_no_request`: a slippage setting whose request names another
+  provider is `Err(Refused)` at `decide`, policy never consulted, nothing recorded. The contract's `check` decides it
+  (policy reads nothing of values); this pins it in this crate. It passed at once, and its rule is the contract's, which
+  this row doesn't edit, so it has no rule-off here (`T-020-45`'s `each_invalid_fixture_breaks_only_the_rule_it_names`
+  holds the rule).
+- **Finding 3, low.** `operator_setting_without_its_permission_is_refused` gains the role-binding case for a setting.
+- **Red first.** The new test failed on `Change(Grant)`: `Permit` for `NotPermitted`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, file restored each time):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
+  | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

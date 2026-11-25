@@ -602,3 +602,33 @@ fn a_macro_exported_from_core_internal_fails_the_boundary_check() {
         )],
     );
 }
+
+/// A crate's dev-dependency on itself, as the contracts crate's for its test-only `rule-switches` feature
+/// (`T-020-45`), is no edge between two crates and passes; the same crate depending on itself outside its
+/// dev-dependencies, and a real dev-dependency on another crate of ours, are each still reported.
+// verifies: REQ-MOD-1, REQ-MOD-3
+#[test]
+fn a_crates_dev_dependency_on_itself_is_no_boundary_crossing() {
+    let own = "rutent-contracts = { path = \".\", features = [\"rule-switches\"] }";
+    let graph = fixture(&[
+        &manifest("rutent-contracts", "", own),
+        &manifest(
+            "rutent-router",
+            "rutent-contracts = { path = \"../contracts\" }",
+            "rutent-router = { path = \".\" }\nrutent-stm = { path = \"../stm\" }",
+        ),
+        &manifest("rutent-stm", "rutent-stm = { path = \".\" }", ""),
+    ]);
+    let found = violations(&graph, &["rutent-contracts", "rutent-router", "rutent-stm"]);
+    let pairs: Vec<_> = found
+        .iter()
+        .map(|v| (v.krate.as_str(), v.dep.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("rutent-router", "rutent-stm"),
+            ("rutent-stm", "rutent-stm"),
+        ]
+    );
+}

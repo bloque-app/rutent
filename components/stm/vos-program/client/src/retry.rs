@@ -3,7 +3,7 @@
 //! A node that starts on a data directory whose lock a just-killed node, or a child still to execute, holds exits
 //! at once, and the open fails with "exited before it started". The refusal is the store failing closed and passes in
 //! milliseconds, so the open of a cluster that exists is retried through `rutent-stm`'s bounded
-//! [`retry_open`](rutent_stm::open_retry::retry_open). A cluster that does not exist yet is opened once: a node
+//! [`retry_open`]. A cluster that does not exist yet is opened once: a node
 //! that fails to start the first time has a different fault.
 
 use rutent_contracts::state_machine::host::HostError;

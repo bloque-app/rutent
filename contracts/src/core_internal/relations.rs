@@ -964,29 +964,73 @@ pub static RELATIONS: [Relation; 115] = [
         spec: &["REQ-ORD-15", "REQ-ORD-32"],
         quantifier: Quantifier::Exists,
         refusal: "an acceptance on an automatic deposit rests on an arrival of its order in this log",
-        fields: &[(
-            "reserve",
-            "an automatic deposit's arrival is at the acceptance's origin reserve",
-        )],
+        fields: &[
+            (
+                "reserve",
+                "an automatic deposit's arrival is at the acceptance's origin reserve",
+            ),
+            (
+                "requester",
+                "an automatic deposit's arrival names the acceptance's requester as the holder, where it names one",
+            ),
+            (
+                "destination",
+                "an automatic deposit's arrival names the destination of the acceptance's authorisation, where it names one",
+            ),
+            (
+                "set_for",
+                "an automatic deposit's destination was set for the acceptance's requester",
+            ),
+        ],
         // An automatic deposit's acceptance, and one its customer gave on the deposit for a route with no firm rate
         // (`given_on_deposit`, `REQ-QTE-10`, `T-020-39`): each rests on the deposit, in place of a yes.
         cites: |e, _| match &e.what {
             What::Acceptance { basis, .. } if basis.on_a_deposit() => by_fields(0),
             _ => none(),
         },
-        answers: |e, _, t, _| match (&e.what, verified(t).map(|t| &t.what)) {
+        // `T-020-50`: the arrival's holder is the order's requester, and a destination its notice names is the one the
+        // order's authorisation is for, set for that requester. The log reads no notice's body, so this holds Core's
+        // own arrival entry to the order; Core checks the entry against the kept notice before it builds it.
+        answers: |e, _, t, h| match (&e.what, verified(t).map(|t| &t.what)) {
             (
                 What::Acceptance {
                     order,
                     origin_reserve,
+                    authorisation,
+                    parties,
                     ..
                 },
                 Some(What::Arrival {
                     reserve,
                     order: Some(arrived_for),
+                    holder,
+                    destination,
                     ..
                 }),
-            ) => judge(arrived_for == order, &[reserve == origin_reserve]),
+            ) => judge(
+                arrived_for == order,
+                &[
+                    reserve == origin_reserve,
+                    holder.as_ref().is_none_or(|h| h == &parties.requester),
+                    destination.as_ref().is_none_or(|d| {
+                        h.iter().any(|(_, e)| match permitted(e).map(|v| &v.what) {
+                            Some(What::Authorise {
+                                authorisation: a, ..
+                            }) => {
+                                &a.authorisation == authorisation
+                                    && a.destination.reserve.as_str() == d.reserve
+                                    && a.destination.node == d.node
+                                    && a.destination.account.as_str() == d.account
+                                    && a.to_asset == d.asset
+                            }
+                            _ => false,
+                        })
+                    }),
+                    destination
+                        .as_ref()
+                        .is_none_or(|d| d.set_for == parties.requester.as_str()),
+                ],
+            ),
             _ => Match::NotTarget,
         },
     },
