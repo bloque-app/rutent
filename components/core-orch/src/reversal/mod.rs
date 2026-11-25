@@ -570,6 +570,25 @@ impl Reversals {
         let mut bound = BTreeMap::new();
         let mut requester = None;
         let mut faults = Vec::new();
+        // The unknown segments Core asked the status of, and finished asking: a restarted Core asks them no more
+        // (`T-020-47`).
+        for (_, entry) in history {
+            let Some(v) = verified(entry) else { continue };
+            if let What::Result { effect } = &v.what
+                && let Some((_, Entry::Verified(asked))) = history.iter().find(|(r, _)| r == effect)
+                && let What::Effect {
+                    action:
+                        Action::AskStatus {
+                            order: o, segment, ..
+                        },
+                    ..
+                } = &asked.what
+                && o == order
+            {
+                self.unknown_asked
+                    .insert((order.as_str().to_owned(), segment.as_str().to_owned()));
+            }
+        }
         for (receipt, entry) in history {
             let Some(v) = verified(entry) else { continue };
             match &v.what {

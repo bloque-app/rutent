@@ -99,6 +99,31 @@ impl Segments {
             .transactions()
             .map(str::to_owned)
             .collect();
+        // The reversals Core carried out for each order: the operator's questions the log holds about an order, whose
+        // statement kept behind their commitment is a reversal. A private node's record that lists one is read again
+        // after a restart (`REQ-ORD-41`, `T-020-47`).
+        for (_, entry) in history {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            let Some(about) = &stated.about else {
+                continue;
+            };
+            let (Some(order), Some(transaction)) = (&about.order, &about.transaction) else {
+                continue;
+            };
+            if stated.what.statement.as_str() != rutent_contracts::provider_role::OPERATION_SHAPE {
+                continue;
+            }
+            let Some(bytes) = reading.kept(&stated.commitment) else {
+                continue;
+            };
+            if let Ok(question) = serde_json::from_slice::<Statement<ProviderOperation>>(&bytes)
+                && matches!(question.statement, ProviderOperation::Reversal(_))
+            {
+                segments.note_reversal_ran(order, transaction);
+            }
+        }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
                 (&input.observed, &input.subject.part)

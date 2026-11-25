@@ -18,7 +18,9 @@ use rutent_contracts::state_machine::{OrderState, SegmentState};
 use rutent_core_orch::recalc::Recalculation;
 use rutent_core_orch::reversal::{Carrier, Confirmation, NotCounted, ReversalError, Word};
 use rutent_core_orch::segments::SegmentOutcome;
+use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, StepError};
+use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
 
 const IN: &str = "sim-join-in";
@@ -545,6 +547,43 @@ fn status_answer_moves_nothing() {
         &log[asking..]
     );
     admitted(&core);
+}
+
+/// A segment Core asked the status of while it was unknown is not asked again by a Core that reopened on the log: the
+/// log holds the question's effect and its result (`T-020-47`).
+// verifies: REQ-ORD-1
+#[test]
+fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
+    let Failed {
+        core, order, ramp, ..
+    } = ramp_left_unknown();
+    assert_eq!(status_asks(&core), 1);
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
+    core.ask_unknown_statuses(&order).expect("the reopened Core takes it up");
+    assert_eq!(status_asks(&core), 1, "asked once, not again by the Core that reopened");
+    let _ = ramp;
+    admitted(&core);
+}
+
+/// The transactions of the reversals Core carried out are held again by a Core that reopened: a private node's record
+/// that lists one is still the order's own (`REQ-ORD-41`, `T-020-47`).
+// verifies: REQ-ORD-41
+#[test]
+fn reversals_core_carried_out_are_known_again_after_core_reopens() {
+    let mut failed = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+    let Failed {
+        core, order, ramp, ..
+    } = &mut failed;
+    core.owe_reversal(order, ramp).expect("owed");
+    core.ask_reversal(order, ramp).expect("asked");
+    let before = core.reversal_transactions(order);
+    assert_eq!(before.len(), 1, "one reversal Core carried out");
+    let order = order.clone();
+    let Failed { core, .. } = failed;
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let core = Scenario::new("execution", "AC-4", given).reopen(core, 1, &mut Reference);
+    assert_eq!(core.reversal_transactions(&order), before);
 }
 
 /// The duo world's route: `AMOUNT` of COP from `sim-duo-in`'s bank, converted by an exchange of another publisher at

@@ -837,17 +837,33 @@ impl Core {
     /// What the provider answers is kept as its statement and moves nothing (`INV-4`); a question policy refuses or the
     /// log can't take now is kept in [`Core::status_asks`] for a reader, and the run goes on.
     pub(super) fn ask_unknown_status(&mut self, live: &Live<'_>) {
-        for segment in live.segments {
-            if self.segments.unknown_move(live.order, segment).is_none() {
+        self.ask_unknown_among(live.order, live.part, live.segments);
+    }
+
+    /// Core's step over `order`'s own part, as after a run of it (also what a Core that reopened takes up).
+    ///
+    /// # Errors
+    ///
+    /// If the order didn't start.
+    pub fn ask_unknown_statuses(&mut self, order: &Id) -> Result<(), StepError> {
+        let part = self.part_of(order)?;
+        let (_, segments) = self.current_route(order)?;
+        self.ask_unknown_among(order, &part, &segments);
+        Ok(())
+    }
+
+    fn ask_unknown_among(&mut self, order: &Id, part: &Id, segments: &[Id]) {
+        for segment in segments {
+            if self.segments.unknown_move(order, segment).is_none() {
                 continue;
             }
-            let done = self.reversing(live.order, |reversals, parts, _, moving| {
+            let done = self.reversing(order, |reversals, parts, _, moving| {
                 reversals.ask_unknown_status(
                     parts,
                     moving,
                     At {
-                        order: live.order,
-                        part: live.part,
+                        order,
+                        part,
                         segment,
                     },
                 )
@@ -860,10 +876,15 @@ impl Core {
             };
             let _ = self.feed();
             self.life.status_asks.insert(
-                (live.order.as_str().to_owned(), segment.as_str().to_owned()),
+                (order.as_str().to_owned(), segment.as_str().to_owned()),
                 asked.map_err(|why| format!("{why:?}")),
             );
         }
+    }
+
+    /// The transactions of the reversals Core carried out for `order`, in the order it did (`REQ-ORD-41`).
+    pub fn reversal_transactions(&self, order: &Id) -> Vec<Id> {
+        self.segments.reversal_transactions(order).to_vec()
     }
 
     /// What Core's status question of the unknown `segment` of `order` came to: the question it asked, or why none was
