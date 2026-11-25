@@ -2214,6 +2214,10 @@ impl Core {
         // Core's closing: an order that completed reports its executed price, once (`REQ-QTE-7`, `T-020-47`).
         self.close(live.order, live.record);
         self.feed()?;
+        // A segment the run left unknown is asked where it stands, once, at a provider that declares a status query
+        // (`REQ-ORD-1`, `T-020-47`).
+        self.ask_unknown_status(live);
+        self.feed()?;
         Ok(result?)
     }
 

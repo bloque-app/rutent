@@ -408,6 +408,137 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
     }
 }
 
+/// What the ramp's transfer, left unknown by a ramp that says later that it failed, comes to: Core's run asks the ramp,
+/// which declares a status query, where it stands, and the answer, a failed result of the transfer's own transaction,
+/// is kept as the ramp's statement.
+fn ramp_left_unknown() -> Failed {
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT]);
+    core.world()
+        .script_for(QUICK, "transfer", Behaviour::unknown_that_failed());
+    let (order, ran) = run(&mut core, across("req-unknown", &session));
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(segments[2].outcome, SegmentOutcome::Unknown(_)),
+        "the ramp's outcome is not known: {segments:?}"
+    );
+    let ramp = segments[2].segment.clone();
+    Failed {
+        core,
+        session,
+        order,
+        ramp,
+    }
+}
+
+/// How many questions of the status of a segment Core's log holds an effect of.
+fn status_asks(core: &Core) -> usize {
+    entries(core)
+        .iter()
+        .filter(|v| {
+            matches!(
+                v.what,
+                What::Effect {
+                    action: Action::AskStatus { .. },
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// A segment the run left unknown, at a provider that declares a status query, is asked where it stands by Core's own
+/// run, under a transaction of Core's own; the provider answers that its transfer failed, and the answer is kept as
+/// the provider's statement of the segment's transaction (`REQ-ORD-1`, `T-020-47`).
+// verifies: REQ-ORD-1
+#[test]
+fn segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let asked = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    let receipt = asked.answer.clone().expect("the answer was kept");
+    assert_eq!(status_asks(&core), 1);
+    // The answer is the ramp's own result of the transfer's transaction, and it says the transfer failed.
+    let bytes = core.kept_result(&order, &ramp).expect("kept");
+    let kept: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+    assert_eq!(kept["maker"], QUICK);
+    assert_eq!(kept["statement"]["kind"], "transfer");
+    assert_eq!(kept["statement"]["outcome"]["status"], "failed", "{kept}");
+    assert_ne!(
+        kept["statement"]["transaction"].as_str(),
+        Some(asked.transaction.as_str()),
+        "it is about the transfer's transaction, not the question's own"
+    );
+    // The entry is the log's, about the order and the segment.
+    assert!(core.log().entries().iter().any(|(r, e)| {
+        *r == receipt
+            && matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                if s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(&ramp))
+    }));
+    // Asked once: a run again asks no more.
+    core.run(&order).expect("runs again");
+    assert_eq!(status_asks(&core), 1);
+    admitted(&core);
+}
+
+/// Core's answer to a status question moves nothing: the segment is as it was, unknown, no input or evidence is
+/// recorded on the answer, no move of value follows it, and the order stays where it was (`INV-4`).
+// verifies: INV-4
+#[test]
+fn status_answer_moves_nothing() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let asked = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    assert!(asked.answer.is_some());
+    assert_eq!(effects(&core), 3, "the withdrawal, the conversion and the transfer, and no more");
+    assert_eq!(
+        segment_state(&core, &order, &ramp),
+        SegmentState::OutcomeUnknown
+    );
+    assert!(matches!(
+        core.followed(&order).expect("followed").parts[0].segments[2].state,
+        SegmentState::OutcomeUnknown
+    ));
+    assert_eq!(state(&mut core, &order), OrderState::FirstSegmentSettled);
+    // No input follows the question's effect but its own result: nothing the state machine is fed.
+    let log = entries(&core);
+    let asking = log
+        .iter()
+        .position(|v| {
+            matches!(
+                v.what,
+                What::Effect {
+                    action: Action::AskStatus { .. },
+                    ..
+                }
+            )
+        })
+        .expect("the question's effect");
+    assert!(
+        log[asking..]
+            .iter()
+            .all(|v| !matches!(v.what, What::Input { .. } | What::Evidence { .. })),
+        "nothing moved on the answer: {:?}",
+        &log[asking..]
+    );
+    admitted(&core);
+}
+
 /// The duo world's route: `AMOUNT` of COP from `sim-duo-in`'s bank, converted by an exchange of another publisher at
 /// the public ledger `sim-duo-in`'s node is, and deposited at a reserve of a third in USD.
 const DUO_IN: &str = "sim-duo-in";

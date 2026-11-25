@@ -35,7 +35,7 @@ use super::world::SimWorld;
 
 /// Every kind of operation a module may be handed: a simulated provider refuses what is outside its role itself,
 /// as the role asks.
-pub const KINDS: [&str; 8] = [
+pub const KINDS: [&str; 9] = [
     "withdrawal",
     "deposit",
     "transfer",
@@ -44,6 +44,7 @@ pub const KINDS: [&str; 8] = [
     "judgement",
     "reversal",
     "reversal_confirmation",
+    "status_query",
 ];
 
 /// The clock the admissions are judged at: 2026-11-07T00:00:00Z.
@@ -88,6 +89,10 @@ impl RoleHarness for InProcess {
 
     fn force_outcome_unknown(&mut self) -> bool {
         self.0.force_outcome_unknown()
+    }
+
+    fn force_outcome_unknown_then_failure(&mut self) -> bool {
+        self.0.force_outcome_unknown_then_failure()
     }
 
     fn force_failure(&mut self) -> bool {
