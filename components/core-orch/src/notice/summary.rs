@@ -160,7 +160,7 @@ fn key_of(to: &NoticeReceiver, of: &NoticeOf) -> Key {
             quote: serde_json::to_string(quote).ok(),
         },
         // The end of a wait (`T-020-45`), keyed as the module keys a `wait_ended` notice it sends: the wait's key with
-        // no quote. Nothing appends one yet: `T-023-04` does.
+        // no quote (`T-023-04`).
         NoticeOf::WaitEnded { order } => Key::Waiting {
             to: Receiver {
                 party: to.party.clone(),
@@ -180,11 +180,7 @@ impl Notices {
 
     /// Queues the summary of the notice named `key`, once it ended, unless the log holds one or it is queued.
     pub(super) fn queue_summary(&mut self, key: &Key, last_try: u32, end: NoticeEnd) {
-        // The end of a wait has no summary: the ledger's mark is all of it.
-        if matches!(key, Key::Waiting { quote: None, .. })
-            || self.ended.contains_key(key)
-            || self.pending.iter().any(|p| &p.key == key)
-        {
+        if self.ended.contains_key(key) || self.pending.iter().any(|p| &p.key == key) {
             return;
         }
         self.pending.push(Pending::new(key.clone(), last_try, end));
@@ -337,7 +333,19 @@ impl Notices {
                     quote: serde_json::from_str(quote).ok()?,
                 },
             ),
-            Key::Waiting { quote: None, .. } => return None,
+            Key::Waiting {
+                to,
+                order,
+                quote: None,
+            } => (
+                NoticeReceiver {
+                    party: to.party.clone(),
+                    role: to.role,
+                },
+                NoticeOf::WaitEnded {
+                    order: Id::new(order)?,
+                },
+            ),
         };
         let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,

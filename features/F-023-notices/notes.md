@@ -407,3 +407,50 @@ No rule-off applies to `REQ-AUD-6`'s shape: the contract's type fixes it, so onl
 arm that skips a raise delivered by the ledger or a summary is covered by the arm after it (any delivered summary), so
 switching it off alone turns no test red; it stays for the ledger's raises. **Red first:** the API was stubbed (nothing
 summarised, no raise read) and seven tests failed on assertions before the code was built.
+
+## T-023-04
+
+`wait_ended` and the waiting notice (finding 6 of the milestone review of 2026-11-24; `T-020-41`'s two lows). Edits
+`components/core-orch/src/notice/` only; no `contracts/` change. The summary shape is `T-020-45`'s
+`NoticeOf::WaitEnded { order }`, found as written in `contracts/src/core_internal/types.rs`.
+
+- **A `wait_ended` notice leaves a summary.** The notice is keyed `Key::Waiting { quote: None }` (one for each receiver
+  and order). `queue_summary` no longer skips that key, and `build` writes `NoticeOf::WaitEnded { order }` for it,
+  with the receiver, the last try and the end like any other notice summary. `learn` already read it back (`key_of`),
+  so a restart with no ledger knows the end delivered and `send` sends it no more. Test:
+  `wait_ended_is_sent_once_across_a_restart` (4 sent, 4 summaries written, the restart sends 0 and writes 0).
+- **The waiting notice goes first.** `settled_orders` (the orders the unread entries show settled, so that no waiting
+  notice is told of them) no longer holds an order the batch shows refused: a `shown` and its refusal in one unread
+  batch send `waiting` and then `wait_ended` to each receiver. An order shown accepted or started in the batch is told
+  of neither, as before. Test: `waiting_notice_comes_before_its_end_in_one_batch` (each receiver is told, in order,
+  `waiting`, `wait_ended`). `a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_order_waits`
+  changed in its last part: a refused order is now told four notices (it was two), `waiting` then `wait_ended`.
+
+Defaults (reversible, fail closed):
+- A refused order whose `shown` is in the same batch is told as waiting, then as ended (the row's choice), not left
+  silent: the customer is told of a wait only to be told it ended. A reader that wants neither would drop the
+  refusal's case from `wait_ended` instead.
+- A `wait_ended` already delivered by the ledger before this row, with no summary, is not summarised (no migration;
+  nothing is in production), as for `T-023-03`.
+
+Gaps:
+- None found in the notice module. `F-024`'s assembly keeps calling `summarise` after `notify`, as `T-023-03` says.
+
+Rule-offs, each alone, `core-orch`'s notice tests run:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a `wait_ended` notice is queued for its summary | `wait_ended_is_sent_once_across_a_restart` |
+| a refused order's wait is told before its end (the order counts as settled again) | `waiting_notice_comes_before_its_end_in_one_batch`, `wait_ended_is_sent_once_across_a_restart`, `a_waiting_notice_survives_a_restart_is_retried_and_is_sent_only_while_the_order_waits` |
+
+**Red first:** `wait_ended_is_sent_once_across_a_restart` failed on its assertion (2 sent, 4 expected) before the
+code. The second test's red was shown by its rule-off only (the filter I first ran missed it). `T-023-01`'s to
+`T-023-03`'s tests pass beside them (the whole `notice` test file: 40 passed).
+
+### T-023-04, review round 1 (Low)
+
+A refusal no longer settles an order in `settled_orders`, so a `shown` after the refusal of the same order in one
+unread batch would have been told as waiting. `notify` now keeps the orders the batch showed refused so far, and a
+later `shown` of one is read for nothing: no waiting notice, and no wait recorded for a later `wait_ended`. Fails
+closed. Test: `a_shown_after_its_orders_refusal_in_one_batch_is_told_of_nothing` (a second quote, so the delivered
+first one doesn't hide the gap). Rule-off, alone: the guard removed turns that test red (the other 40 stay green).
