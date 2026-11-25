@@ -1936,6 +1936,61 @@ five lifecycle actions is `T-020-49`'s. No contract shape changes.
   | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
   | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
 
+## T-021-16
+
+Branch `f-021/t-021-16-mover-and-filed-reads`, from `0af4fa21` (wave 40's batch: `T-021-15`'s permissions, `T-020-45`'s
+`Reads::FiledOrder {order, requester}`, `T-020-40`'s parties). Finding 6 of `M3`'s milestone review of 2026-11-24: two
+policy items, one commit each. Edits `components/core-authz/` only (`session/`, `stuck/` and their tests), a `DEC-20`
+path that waits for the owner's click at the release into `main`. No contract shape changes; `contracts/` is
+untouched. No `Source` is added, so no test kit or assembly needs a new answer.
+
+### T-021-16, a filed order's read
+
+- **The rule** (`session/mod.rs`, `read_needs`). `Reads::FiledOrder {order, requester}` was refused whoever read
+  (`T-020-45`'s placeholder). Now: a customer reads it only where its party is the filed request's requester the read
+  names, asking no record (the log holds no acceptance yet, so `Source::OrderParties` can't answer); an agent of that
+  party is held first to the scope its party set for reading (`Scope::CheckRead`, `T-021-05`'s rule, unchanged), so an
+  agent its party didn't scope for reading is refused; the operator's login reads one without a permission as it reads
+  an order's state (`Permission::ReadOrderState`, the contract's README); a regulator or a checker only by a grant whose
+  scope covers it (the existing arm; the contract's `covers` gives only an exact `filed_order` scope); a provider, a
+  verifier and Core's own parts never (the rule's last arm). Every read is recorded, allowed or refused, as before
+  (`check_read`), and the deployment's policy is asked only after the fixed rules let it through.
+- **Tests** (each named test first, against the old rule):
+  - `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` [`REQ-AUZ-8`, `REQ-AUD-12`]
+    (`session/tests.rs`): the contract's fixture (`agent-7` of `acme-treasury`) and a second read, its party setting no
+    read scope (`Says::unscoping`, added: the register of agents' scopes saying no for one agent and call), each refused
+    and recorded, the deployment never asked; a scoped agent, its party's person and a provider, reading a filed
+    request of another party's, and a provider reading one naming itself, each refused and recorded, no record asked.
+    It passed at once, the old rule refusing every filed read; the rule-offs below are its red.
+  - `agent_with_read_scope_reads_its_partys_filed_order` [`REQ-AUZ-7`]: the fixture allowed, its party's person
+    allowed, the operator's listed login allowed (the register asked for `ReadOrderState`, nothing else), the log
+    admitting each (`Kept`, through `admit_entry`); a refusing deployment refuses the agent. Red first: `Refused` for
+    `Allowed`.
+- **Defaults, reversible, each failing closed.**
+  1. A filed order's requester is the read's own word, which policy can't check against the log: intake must fill it
+     from its own record of the filed request (below). A customer reading a filed order asks no record.
+  2. The operator reads a filed order's status as an order's state (the contract's README), on `ReadOrderState`.
+  3. A regulator or a checker reads a filed order only by a grant whose scope is exactly that filed read.
+- **For `T-020-52` (intake's side, not built here).** For every status intake tells of an order whose acceptance the
+  log doesn't hold yet, intake calls `Reads::check_read` with `ReadCheck { reader: <the caller as external
+  authentication established it, with its stated party, role and kind>, reads: Reads::FiledOrder { order, requester:
+  <the requester of intake's own record of the filed request, never the caller's word> }, permission: None, .. }` and
+  tells the status only on `ReadOutcome::Allowed`; on a refusal it tells no more than a refused reader is told
+  (`T-023-01`). Once the order's acceptance is in the log, it reads `Reads::OrderState { order }` instead, which policy
+  answers from the log's record (`Source::OrderParties`). A customer's own login and the operator's listed login read
+  through the same call. Policy records each check.
+- **Gaps, with owners.** Intake's calls above: `T-020-52`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, each switched off alone by `scratchpad/t-021-16/ruleoff.py`,
+  the file restored from its text before the mutation and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a customer's filed read held to the requester | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` |
+  | the operator reads a filed order as an order's state | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | a filed order refused whoever reads (the behaviour before the row) | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the operator's filed read asks its login's permission | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | an agent's read held to its party's read scope (`T-021-05`'s rule, for `check_read`) | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded`; `agent_outside_its_partys_scope_is_refused`; `agent_without_an_accountable_party_is_refused`; `each_scope_permits_its_own_call_alone` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

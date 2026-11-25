@@ -148,6 +148,9 @@ impl Policy for Rules {
 struct Says {
     says: Vec<(Need, Reply<Said>)>,
     asked: Vec<Need>,
+    /// The agents, by login, whose party set them no scope for the call named (`T-021-16`): the register of agents'
+    /// scopes says no for each, and yes for every other agent.
+    unscoped: Vec<(Id, crate::parties::Scope)>,
 }
 
 /// What the register says of a login being the operator's (`T-021-14`): only the fixtures' operator's login is, so a
@@ -182,12 +185,27 @@ impl Says {
         Says {
             says,
             asked: Vec::new(),
+            unscoped: Vec::new(),
         }
+    }
+
+    /// The same, the register of agents' scopes saying no for the agent `acts` and the call `scope`.
+    fn unscoping(mut self, acts: &str, scope: crate::parties::Scope) -> Self {
+        self.unscoped.push((id(acts), scope));
+        self
     }
 }
 
 impl Sources for Says {
     fn supply(&mut self, need: &Need) -> Reply<Said> {
+        if let Source::AgentScope { scope, .. } = &need.from
+            && self
+                .unscoped
+                .iter()
+                .any(|(acts, s)| acts == &need.input && s == scope)
+        {
+            return Reply::Given(Said::No);
+        }
         if matches!(
             need.from,
             Source::ActsFor { .. } | Source::AgentScope { .. }
@@ -1314,4 +1332,123 @@ fn actor_not_listed_as_an_operator_login_is_refused_an_orders_state() {
             "{login}"
         );
     }
+}
+
+/// A filed order's status, read by `reader`, its filed request naming `requester` as its requester (`T-020-45`'s
+/// shape): an order whose acceptance the log doesn't hold yet, so its parties aren't the log's to say.
+fn filed(request: &str, reader: Actor, order: &str, requester: &str) -> ReadCheck {
+    read(
+        request,
+        reader,
+        json!({"kind": "filed_order", "order": order, "requester": requester}),
+        None,
+    )
+}
+
+/// An agent of `party`, as the contract's fixture names one: in its party's customer role.
+fn agent_of(party: &str, acts: &str) -> Actor {
+    Actor {
+        kind: ActorKind::Agent,
+        ..actor(party, acts, Role::Customer)
+    }
+}
+
+/// An agent its party set no scope for reading is refused its party's filed order's status, whatever the deployment's
+/// policy would say, and the refusal is recorded as the read it answers; the deployment's policy is never asked. The
+/// contract's own fixture is that read. An agent the party did scope for reading is refused all the same where the
+/// filed request isn't its party's, and so is its party's person, and a provider; each refusal is recorded.
+// verifies: REQ-AUZ-8, REQ-AUD-12
+#[test]
+fn agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded() {
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(Vec::new()).unscoping("agent-7", crate::parties::Scope::CheckRead),
+    );
+    let fixture: ReadCheck = valid!("read-check-by-an-agent-of-a-filed-orders-status");
+    assert_eq!(read_recorded(&mut engine, &fixture), refused());
+    let own = filed(
+        "req-600",
+        agent_of("acme-treasury", "agent-7"),
+        "ord-19",
+        "acme-treasury",
+    );
+    assert_eq!(read_recorded(&mut engine, &own), refused());
+    assert_eq!(
+        engine.policy.1.ruled, 0,
+        "the deployment's policy is never asked"
+    );
+
+    for (n, reader) in [
+        agent_of("acme-treasury", "agent-8"),
+        actor("acme-treasury", "acme-treasury", Role::Customer),
+        actor("bridge-pay", "bridge-pay", Role::Provider),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let anothers = filed(&format!("req-61{n}"), reader.clone(), "ord-20", "cust-1");
+        assert_eq!(
+            read_recorded(&mut engine, &anothers),
+            refused(),
+            "{reader:?}"
+        );
+    }
+    let by_provider = filed(
+        "req-620",
+        actor("bridge-pay", "bridge-pay", Role::Provider),
+        "ord-21",
+        "bridge-pay",
+    );
+    assert_eq!(read_recorded(&mut engine, &by_provider), refused());
+    assert_eq!(engine.policy.1.ruled, 0, "nor for any of these");
+    assert!(
+        engine.sources.asked.is_empty(),
+        "{:?}",
+        engine.sources.asked
+    );
+}
+
+/// An agent its party scoped for reading reads its party's filed order's status, as its party's person does, the
+/// deployment's policy still deciding; the log admits each read allowed, and the order's record is never asked, since
+/// the log holds no acceptance of it. The operator's login the register lists for an order's state reads it as it
+/// reads an order's state; a deployment that refuses refuses the agent too.
+// verifies: REQ-AUZ-7
+#[test]
+fn agent_with_read_scope_reads_its_partys_filed_order() {
+    let mut engine = Engine::with_policy(
+        Kept::world(),
+        Rules::permitting(),
+        Says::of(vec![(reads_state("op-login-2"), Reply::Given(Said::Yes))]),
+    );
+    let fixture: ReadCheck = valid!("read-check-by-an-agent-of-a-filed-orders-status");
+    assert_eq!(
+        read_recorded(&mut engine, &fixture),
+        ReadOutcome::Allowed {}
+    );
+    let by_person = filed(
+        "req-630",
+        actor("acme-treasury", "acme-treasury", Role::Customer),
+        "ord-19",
+        "acme-treasury",
+    );
+    assert_eq!(
+        read_recorded(&mut engine, &by_person),
+        ReadOutcome::Allowed {}
+    );
+    let by_operator = filed(
+        "req-631",
+        actor("operator", "op-login-2", Role::Operator),
+        "ord-19",
+        "acme-treasury",
+    );
+    assert_eq!(
+        read_recorded(&mut engine, &by_operator),
+        ReadOutcome::Allowed {}
+    );
+    assert_eq!(engine.sources.asked, [reads_state("op-login-2")]);
+    assert_eq!(engine.policy.1.ruled, 3, "the deployment decided each");
+
+    let mut refusing = Engine::with_policy(Kept::world(), Rules::refusing(), Says::of(Vec::new()));
+    assert_eq!(read_recorded(&mut refusing, &fixture), refused());
 }
