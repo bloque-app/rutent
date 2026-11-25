@@ -7923,3 +7923,68 @@ assembly (`F-024` files: `conformance/src/sim/mod.rs`, `conformance/src/role/sta
   `hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked` (the signer),
   `reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing`. Reworked onto the providers' answers, names
   kept: `charge_check.rs`'s four terms tests and `holds.rs`'s two.
+- **Histories the log refused, sorted.** None: every scenario's log is the assembly's real one, which admits each entry
+  as it is appended (the hold request and its answer about the order and the hold's transaction, the hold's own entry
+  about its transaction alone, the terms' entries about nothing). No Core bug.
+- **Defaults** (reversible, each failing closed):
+  - Core asks a hold only of the origin reserve, only where every part starts at it and its latest declaration says it
+    answers hold requests; `for` is the session the yes was asked in (it tells the reserve nothing it wasn't told,
+    unlike the order's id); the validity asked is `HOLD_SECONDS` (300 s), capped at the earliest figure expiry, and
+    none is asked where that is already past.
+  - Any failure of the hold step (a refusal, an answer that fails `check_hold_answer`, a log or store that can't take
+    it, a hold `Holds::take` refuses) leaves the quote shown unheld, with no error: a held quote binds no provider.
+  - An acceptance naming no hold redeems the one Core took of the quote shown, and a refused redemption (past its
+    validity, say) refuses the acceptance, as a named hold does (`IntakeError::Hold`); the order stays quoted.
+  - Terms are taken from Core's own answers only, kept by the round and not refused by its snapshot, made by the
+    provider asked, for the tuple asked; terms Core doesn't keep are left out (the price or earlier terms bind), and only
+    a log that can't take them now is an error, retried.
+  - The simulated providers state terms only where a scenario queues it on a dry run (`Behaviour.terms`), and only the
+    reserve `sim-reserve-holding` holds quotes: every other scenario's log is as it was.
+  - A returned value is the linked order's, for what the reversed move took in (Core writes every operation
+    `exact_in`), and rests at the node until the part's resolution, or the new route's first move settling or being
+    reversed back itself.
+- **Gaps, with owners.**
+  1. **The reversal of a linked order's first move can't complete in Core today**: `Reversals::confirm` asks the
+     origin reserve, and a route handed on has none (`origin_of` answers `NoOriginReserve`), so no `reversal_completed`
+     of it is recorded and the landing above is reached only by the state machine's rules (the unit test feeds them).
+     Who confirms the value back at a held node (its holding account, the wallet that handed it on) is a decision.
+     Owner: the lead, with `T-020-12`'s successor in `reversal/`.
+  2. A reopened Core keeps nothing of a return a recalculation since retired (`returned` is in memory): it restores
+     nothing of it, as a landing never confirmed is never landed blind. Owner: `T-020-46`'s successor.
+  3. Terms a recalculation's dry runs hand back are not taken: `recalc::Parts` holds no store read or log read for
+     `TermsDesk`; the recalculated route's segments are held to terms stated before or to the price. Owner: `T-020-10`'s
+     successor in `recalc/`.
+  4. The rounds' own tuple check of handed-back terms (`terms_handed_back`) and intake's `check_hold_answer` are second
+     layers behind the signer: no simulated provider breaks them, so no test turns red when they are switched off
+     alone (the table says so). Owner: a later round, with a stand-in that misbehaves past the signer (`F-024`).
+  5. A recalculated route never releases what an earlier, retired segment landed at its node (`settled_at_node` skips a
+     retired segment): pre-existing, met here and handled for a returned value alone. Owner: `T-020-33`'s successor.
+  6. The exchange's terms: the stand-in states terms for a reserve's and a ramp's tuple, not an exchange's, whose
+     slippage regime it doesn't state. Owner: `F-024`.
+- **Rule-off table** (each switched off alone from `4c88f7b9`'s tree, its tests run through the lock, the file restored
+  with `git checkout`; script `ruleoff.py` in the row's scratch folder; none hung).
+
+  | Rule switched off | Red |
+  |---|---|
+  | signer: terms only in answer to a dry run | `terms_nested_in_a_dry_run_answer_are_signed_only_for_the_tuple_asked` |
+  | signer: terms of the dry run's own two ends | the same |
+  | signer: a hold valid no later than asked | `hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked` |
+  | signer: a hold of the record asked | the same |
+  | signer: neither in answer to a status question (`about` unset) | none: a status question is never a dry run nor a hold request, so the kind check refuses first; a second layer |
+  | intake takes the terms its dry runs handed back | `terms_a_module_stated_before_its_segment_started_bind_its_charge` |
+  | the rounds hand back the terms of Core's own answers | the same |
+  | a hold is asked only where the reserve declares it | `reserve_declaring_no_hold_requests_is_asked_for_none` |
+  | the acceptance redeems the hold Core took | `hold_a_reserve_gave_in_its_answer_is_redeemed_on_acceptance`, `the_acceptance_an_assembled_core_records_names_the_redeemed_holds_receipt`, `a_hold_is_redeemed_by_one_order_only_also_after_a_restart` |
+  | the holding stand-in declares that it answers hold requests | those three and `reserve_declaring_no_hold_requests_is_asked_for_none` |
+  | a reversal back into a held node is owed a landing (`Landing::reverse`) | `reversal_out_of_a_held_node_lands_the_value_there_again` |
+  | a retired return moves on once the new route's first move settles | the same |
+  | a reopened Core reads a current return from the order it follows | the same |
+  | a returned value only for a linked order (`returned_value` alone) | none: `returned_to_node` holds the same line |
+  | the same, both reads | `reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing` |
+  | the rounds' tuple check of handed-back terms; intake's `check_hold_answer` | not switched off: gap 4 |
+- **Local checks** (through the lock, at `4c88f7b9` with this note, `contracts/src/lib.rs` touched, the plain wallet built
+  privately): `cargo fmt --all -- --check`; workspace clippy `-D warnings`; `cargo test -p` `rutent-contracts`,
+  `rutent-prov`, `rutent-core-authz --lib`, `rutent-core-orch`, `rutent-conformance`, `rutent-prov --test role_suite`,
+  `sim_providers` and `invariants` with seeds 11 to 15, and the whole of `rutent-scenarios` (59 binaries, 482 tests);
+  the doc check; plan-check and tag-check `--strict` (0 findings, 2402 tests tagged). Contract guard against
+  `origin/develop` (`fb883e01`): "1977 changed path(s) … no violations".
