@@ -529,6 +529,9 @@ pub struct Reversals {
     statuses: BTreeMap<(String, String), StatusState>,
     /// The segments whose unknown outcome Core asked the status of once already ([`Reversals::ask_unknown_status`]).
     unknown_asked: std::collections::BTreeSet<(String, String)>,
+    /// The segments whose result statement kept is the answer to a status question of Core's: the provider's own result
+    /// of the segment, kept once, so a later answer of its own is never a second result statement for it (`T-020-47`).
+    status_kept: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Reversals {
@@ -976,13 +979,25 @@ impl Reversals {
             held_to_its_question(&bytes, &statement.statement, &state.transaction, &provider)
         });
         let kept = match answer {
+            // A result already kept for the segment, however it came, is the one result: a status answer is never a
+            // second (`T-020-47`).
+            Some(_) if self.later.get(&at_key).is_some_and(|k| !k.is_empty()) => {
+                let first = self.later.get_mut(&at_key).and_then(|k| k.first_mut());
+                match first {
+                    Some((_, step)) => Some(step.append(parts.log)?),
+                    None => None,
+                }
+            }
             Some(bytes) => match self.later(
                 parts,
                 at,
                 &bytes,
                 &journal::provider_maker(parts.catalogue, parts.operator, &provider),
             ) {
-                Ok(receipt) => Some(receipt),
+                Ok(receipt) => {
+                    self.status_kept.insert(at_key.clone());
+                    Some(receipt)
+                }
                 Err(ReversalError::Unrecordable) => {
                     if let Some(state) = self.statuses.get_mut(&at_key) {
                         state.answer = None;
@@ -1710,7 +1725,14 @@ impl Reversals {
         if !parts.segments.answered(at.order, at.segment) {
             return Err(ReversalError::NotAnswered);
         }
-        let kept = self.later.entry(key(at.order, at.segment)).or_default();
+        let at_key = key(at.order, at.segment);
+        let status_kept = self.status_kept.contains(&at_key);
+        let kept = self.later.entry(at_key).or_default();
+        // A segment's result is kept once: what a status question of Core's brought is the provider's result of it,
+        // and a later answer of its own is not a second result statement (`T-020-47`).
+        if status_kept && let Some((_, step)) = kept.first_mut() {
+            return Ok(step.append(parts.log)?);
+        }
         if !kept.iter().any(|(b, _)| b == bytes) {
             let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
             let names = serde_json::from_slice::<Statement<ResultBody>>(bytes)

@@ -7820,3 +7820,22 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 |---|---|
 | routes ran are noted when the log is replayed | `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` |
 | the parts of a price are taken in order | `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` |
+
+### T-020-47, CI of the batch (m3-next `79a28d25`, run 45651818575)
+
+- **The role suite's `OutcomeUnknownDistinct`.** My ramp stand-in's unknown-then-failed hook took `unknown_next` in a
+  short-circuited condition, so with the hook unset the flag was cleared and the unknown answered `Succeeded`. It tests both
+  flags before taking either now; the role check is untouched. Switching it back turns `stand_in_with_internal_steps_passes` and
+  `stand_in_that_breaks_its_role_is_flagged` red.
+- **Two result statements for one segment** (`invariants`, seeds 1 and 105): Core's status answer was kept as the segment's late
+  result and the platform's late answer of its own was kept beside it. A segment's result is kept once: what Core's status
+  question brought is the provider's own result of it, and a later answer is that result held (`Reversals::later` answers the
+  entry it has), and a status answer is not kept where one is held. Test
+  `status_answer_is_never_a_second_result_statement_for_its_segment`; `late_answer_the_platform_receives_moves_nothing_twice`
+  now expects no new statement for the late answer. A status answer and a late answer of different bytes are one result, the
+  first kept.
+
+| Rule switched off | Red |
+|---|---|
+| a status-kept result is kept once | `status_answer_is_never_a_second_result_statement_for_its_segment` |
+| the stand-in's unknown keeps its flags | `stand_in_with_internal_steps_passes`, `stand_in_that_breaks_its_role_is_flagged` |
