@@ -7483,6 +7483,31 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   `measures_called`, `reliance`, `recalc`, `report_pairs`; CI's seeded step (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`,
   `assembly` and `invariants`); the doc check; plan-check and tag-check `--strict` (0 findings, 2346 tests tagged);
   the contract guard against `origin/develop` (1952 paths, no violations). All pass.
+- **Round 5** (#309's CHANGES at `45d13fbe`, comment 7159760767):
+  - *Should-fix A: `Segments::resting_totals` bypassed the predicate.* It feeds what a hand-on's restore restores
+    after a module restart (`Wallets::withdraw`, `restored_whole`), and counted retired segments, reversed ones and
+    parts a resolution or a hand-on ended: the High's class through a third path. It now counts only the values
+    `settled_at_node` reads as still resting. Tests: the reviewer's probe in
+    `reversed_segments_landing_is_not_restored_after_core_reopens` (`tests/landing.rs`: after the reversal,
+    `resting_totals` holds nothing for the order at the ledger, on the Core that ran on and on the reopened one), and
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` (`tests/hand_on.rs`, a new name for
+    `PLAN.md` [`INV-1`, `INV-8`]: a split order, both parts' withdrawals settled at the ledger, the first part handed
+    on; `resting_totals` counts the second part's value alone, before and after a reopening, so the second part's
+    hand-on after a module restart restores only it). The support kit's `Core` runs a named part (`part`) for it.
+  - *Low B: the rebuilt reliance entries.* `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it`
+    (`tests/reliance.rs`, a new name for `PLAN.md` [`REQ-CPL-12`, `INV-8`]): two providers relying on one judgement,
+    the log turning away the withdrawal's effect so its reliance is written and nothing sent, Core reopened and the
+    part run again: one entry per provider.
+  - The held check in `Intake::accept` stays: a real second guard, which `T-020-51` reaches.
+  - *Rule-offs* (script `ruleoff6.py`): `resting_totals` counting every settled value turns
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` and
+    `reversed_segments_landing_is_not_restored_after_core_reopens` red; the reliance entries written not rebuilt turns
+    `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it` red (once the run after the reopening
+    is later, so an entry built afresh is another entry).
+  - *Local checks* (through the lock, `contracts/src/lib.rs` touched first, the private plain-wallet build): as round
+    4's, all pass: fmt; workspace clippy `-D warnings`; core-orch, `core-authz --lib`, contracts, prov; the 25
+    scenario binaries; CI's seeded `assembly` and `invariants` (seeds 11 to 15); the doc check; plan-check and
+    tag-check `--strict` (0 findings, 2348 tests tagged); the contract guard against `origin/develop` (no violations).
 - **Gaps, with owners.**
   1. The arrivals' state after a reopening (filings, waits): `T-020-51`. The notices' state is `T-023-03`'s and
      `T-023-04`'s (merged: the notices' summary is read on reopening, so `wait_ended` is sent once).
