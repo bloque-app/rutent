@@ -7831,3 +7831,16 @@ and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is 
 - **Defaults** (reversible, each failing closed): (1) a reserve files only where it is the order's origin reserve, as the
   assembly's order records say it; (2) the operator's permission is one for every arrival, not one per reserve; (3)
   policy not knowing is a retry, never a refiling.
+- **Round 2's rule-off** (`scratchpad/t-020-52/ruleoff2.py`, each rule alone, the file restored from its own text and touched,
+  `contracts/src/lib.rs` touched first; core-orch's `intake_reads` and `arrival`, the assembly's `assembly_arrivals`,
+  core-authz's lib, and the contracts' `core-internal`):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an unread register is refused as `missing_input` | `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input`; `automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived` (the filing's unread case) |
+  | `refile` holds to policy's answer (refusal and not known ignored, the entry cites the answer's receipt) | `arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is_appended`; `the_operators_login_files_a_differing_arrival_anew_on_the_real_log` |
+  | any reserve refiles (no origin need) | `arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused` |
+  | the operator's login need not be the operator's (`of_operator_holds` for `operator_holds`) | the same |
+  | the filer need not be the caller | the same (the operator's login naming another filer) |
+  | the relation's decision need not be permitted | `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`; `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the relation's decision need not name this arrival, order and filer (any one of the three) | the same two |

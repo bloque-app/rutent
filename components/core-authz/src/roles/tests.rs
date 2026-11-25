@@ -3791,7 +3791,12 @@ fn arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused() {
         .into_iter()
         .map(|(p, _)| p)
         .collect();
-    every_other.extend([Permission::ActForUser, Permission::CarryOnward]);
+    // The operator's own login holds the permission, so only the filer it names can refuse it.
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::RefileArrival,
+    ]);
     let unlisted = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
     let another_party = actor(
         "other-desk",
