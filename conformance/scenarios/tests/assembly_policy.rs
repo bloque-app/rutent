@@ -856,3 +856,342 @@ fn policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deplo
     assert_eq!(sources.order_record(&order), Reply::Given(parties));
     assert_eq!(sources.supply(&acts), Reply::Missing, "the register's own");
 }
+
+/// An order run through the assembled Core, the origin reserve its acceptance names, and the advertisement that
+/// reserve's install sent, as JSON.
+fn run_with_origins_advertisement(
+    given: Given,
+) -> (Core, rutent_contracts::router_api::Id, serde_json::Value) {
+    let (core, _) = Scenario::new("one order", "AC-28", given)
+        .when(Step::Order {
+            request: "req-1".to_owned(),
+            amount: AMOUNT.to_owned(),
+        })
+        .core(1, &mut Reference);
+    let origin = core
+        .verified_whats()
+        .into_iter()
+        .find_map(|w| match w {
+            What::Acceptance { origin_reserve, .. } => Some(origin_reserve),
+            _ => None,
+        })
+        .expect("the order's acceptance");
+    let ad = core
+        .installed
+        .iter()
+        .find(|i| i.advertisement.statement().statement.provider == origin.as_str())
+        .map(|i| serde_json::from_slice(i.advertisement.bytes()).expect("JSON"))
+        .expect("the origin reserve installed");
+    (core, origin, ad)
+}
+
+/// Core's answers to the origin reserve's two declarations.
+fn declared(
+    core: &Core,
+    reserve: &rutent_contracts::router_api::Id,
+) -> Vec<rutent_core_authz::engine::Reply<rutent_core_authz::engine::Said>> {
+    use rutent_core_authz::engine::{Need, Source, Sources};
+    use rutent_core_authz::roles::{AUTOMATIC_DEPOSIT, NO_USER_WITHDRAWAL};
+    let mut sources = core.sources();
+    [NO_USER_WITHDRAWAL, AUTOMATIC_DEPOSIT]
+        .into_iter()
+        .map(|d| {
+            sources.supply(&Need {
+                input: id(d),
+                from: Source::Declarations(reserve.clone()),
+            })
+        })
+        .collect()
+}
+
+/// The operator's listed login authorising the order's move for its user, under `ActForUser`, as a request names it.
+fn operator_authorises(core: &Core, request: &str) -> Answer {
+    let operator = kit::operator_login();
+    core.registers().list(&operator);
+    core.registers()
+        .permit(&operator, rutent_core_authz::roles::Permission::ActForUser);
+    let mut a = authorisation(core);
+    a.authorisation = id(request);
+    a.given_by = operator;
+    core.policy().authorise(&a).unwrap().outcome
+}
+
+/// The signing key behind `provider`'s advertising key, as its install resolves the stand-in's placeholder.
+fn advertising_signer(core: &Core, provider: &str) -> ed25519_dalek::SigningKey {
+    let installed = core
+        .installed
+        .iter()
+        .find(|i| i.spec.provider == provider)
+        .expect("installed");
+    let placeholder = installed
+        .spec
+        .make(&rutent_scenarios::assembly::context())
+        .advertisement()
+        .into_statement()
+        .statement
+        .keys
+        .into_iter()
+        .find(|k| k.purpose == rutent_contracts::provider_role::KeyPurpose::Advertising)
+        .expect("an advertising key")
+        .public_key;
+    rutent_conformance::signing::real(placeholder.as_str())
+}
+
+/// `ad` with both of its reserve declarations set to let the operator act for the user and start on a deposit.
+fn flipped(mut ad: serde_json::Value) -> serde_json::Value {
+    let declaration = &mut ad["statement"]["offers"]["reserve"]["declaration"];
+    declaration["can_require_user_initiated_withdrawal"] = serde_json::json!(false);
+    declaration["starts_routes_on_automatic_deposits"] = serde_json::json!(true);
+    ad
+}
+
+/// A forged copy of the origin reserve's advertisement (the review of `8f7ddefd`, probe 1): its declarations flipped,
+/// made later, its signature garbage, naming the reserve's granted advertising key. The log takes the stated entry and
+/// its key register refuses the advertisement, so Core's sources read nothing of it: the reserve's declarations, and
+/// the operator's authorisation for the user that rests on them, are as before.
+// verifies: REQ-AUZ-9, REQ-CAT-6
+#[test]
+fn forged_advertisement_under_a_granted_key_changes_no_declaration() {
+    let (mut core, origin, ad) = run_with_origins_advertisement(Given::one_reserve(Staged::AtOnce));
+    let before = declared(&core, &origin);
+    let refused = operator_authorises(&core, "auth-before");
+    assert!(matches!(refused, Answer::Refuse { .. }), "{refused:?}");
+
+    let mut forged = flipped(ad);
+    forged["made_at"] = serde_json::json!("2030-01-01T00:00:00Z");
+    forged["signature"]["value"] = serde_json::json!("A".repeat(86));
+    core.append_advertisement(&serde_json::to_vec(&forged).unwrap())
+        .expect("the log takes the stated entry");
+
+    assert_eq!(
+        declared(&core, &origin),
+        before,
+        "a forged advertisement declares nothing"
+    );
+    assert_eq!(operator_authorises(&core, "auth-after"), refused);
+}
+
+/// Another granted reserve's advertisement naming the origin reserve as its provider (the review of `8f7ddefd`, probe
+/// 2), with the declarations flipped: once carrying the other reserve's own signature as it stands, once signed anew,
+/// validly, with the other reserve's own advertising key. The key register accepts neither as the origin reserve's,
+/// so Core's sources read nothing of either.
+// verifies: REQ-AUZ-9, REQ-CAT-6
+#[test]
+fn another_providers_advertisement_naming_the_reserve_changes_no_declaration() {
+    use rutent_conformance::signing::{public_key, sign_value};
+    let mut given = Given::one_reserve(Staged::AtOnce);
+    given.providers.push(rutent_conformance::sim::Spec::of(
+        rutent_conformance::sim::Role::Reserve,
+        "sim-reserve-b",
+    ));
+    let (mut core, origin, ad) = run_with_origins_advertisement(given);
+    let before = declared(&core, &origin);
+    let refused = operator_authorises(&core, "auth-before");
+    let other: serde_json::Value = core
+        .installed
+        .iter()
+        .find(|i| i.advertisement.statement().statement.provider != origin.as_str())
+        .map(|i| serde_json::from_slice(i.advertisement.bytes()).expect("JSON"))
+        .expect("another reserve installed");
+    let other_maker = other["maker"].as_str().unwrap().to_owned();
+
+    let mut copied = flipped(ad);
+    copied["maker"] = other["maker"].clone();
+    copied["signature"] = other["signature"].clone();
+    copied["statement"]["publisher"] = other["statement"]["publisher"].clone();
+    core.append_advertisement(&serde_json::to_vec(&copied).unwrap())
+        .expect("the log takes the stated entry");
+    assert_eq!(declared(&core, &origin), before, "its signature, copied");
+
+    let key = advertising_signer(&core, &other_maker);
+    assert_eq!(
+        other["signature"]["key"].as_str(),
+        Some(public_key(&key).as_str()),
+        "the other reserve's advertising key"
+    );
+    let mut signed = copied;
+    signed["made_at"] = serde_json::json!(core.clock.timestamp());
+    sign_value(&mut signed, &key);
+    core.append_advertisement(&serde_json::to_vec(&signed).unwrap())
+        .expect("the log takes the stated entry");
+    assert_eq!(
+        declared(&core, &origin),
+        before,
+        "signed anew by the other reserve"
+    );
+    assert_eq!(operator_authorises(&core, "auth-after"), refused);
+}
+
+/// The origin reserve advertises anew, validly, its declarations flipped, and the key register accepts it: Core's
+/// sources read the new declarations. Its older advertisement, replayed after it, is refused by the register as not
+/// newer than the one it accepted, so Core's sources still read the newer one.
+// verifies: REQ-AUZ-9, REQ-CAT-6
+#[test]
+fn old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing() {
+    use rutent_conformance::signing::{public_key, sign_value};
+    use rutent_core_authz::engine::{Reply, Said};
+    let (mut core, origin, ad) = run_with_origins_advertisement(Given::one_reserve(Staged::AtOnce));
+    let original = serde_json::to_vec(&ad).unwrap();
+    let key = advertising_signer(&core, origin.as_str());
+    assert_eq!(
+        ad["signature"]["key"].as_str(),
+        Some(public_key(&key).as_str()),
+        "the reserve's advertising key"
+    );
+    let before = declared(&core, &origin);
+    assert_eq!(before, vec![Reply::Given(Said::No), Reply::Given(Said::No)]);
+
+    let mut newer = flipped(ad);
+    newer["made_at"] = serde_json::json!(core.clock.timestamp());
+    sign_value(&mut newer, &key);
+    core.append_advertisement(&serde_json::to_vec(&newer).unwrap())
+        .expect("the log takes the stated entry");
+    let accepted = declared(&core, &origin);
+    assert_eq!(
+        accepted,
+        vec![Reply::Given(Said::Yes), Reply::Given(Said::Yes)],
+        "the newer advertisement, accepted, declares"
+    );
+
+    core.append_advertisement(&original)
+        .expect("the log takes the stated entry");
+    assert_eq!(
+        declared(&core, &origin),
+        accepted,
+        "the replayed older one changes nothing"
+    );
+}
+
+/// Core's `SegmentOrder` against the log, segment by segment (`T-020-55`, the review of `8f7ddefd`: no scenario asked
+/// it): over an order run through the assembled Core, each segment of each `route_chosen` the log holds is its order's
+/// and no other's, and a segment no plan lists is nothing.
+// verifies: REQ-AUZ-7
+#[test]
+fn segment_order_answer_is_the_logs_plan_for_every_segment() {
+    use rutent_contracts::state_machine::Observed;
+    use rutent_core_authz::engine::{Need, Reply, Said, Source, Sources};
+    let (core, _) = Scenario::new(
+        "one order, run",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    })
+    .when(Step::Run)
+    .core(1, &mut Reference);
+    let planned: Vec<(String, String)> = core
+        .verified_whats()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::Input { input } => match &input.observed {
+                Observed::RouteChosen { parts, .. } => Some(
+                    parts
+                        .iter()
+                        .flat_map(|p| &p.segments)
+                        .map(|s| {
+                            (
+                                s.segment_id.as_str().to_owned(),
+                                input.subject.order.as_str().to_owned(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(!planned.is_empty(), "the log holds a plan");
+    let mut sources = core.sources();
+    let ask = |sources: &mut rutent_scenarios::assembly::policy::CoreSources,
+               segment: &str,
+               order: &str| {
+        sources.supply(&Need {
+            input: id(order),
+            from: Source::SegmentOrder(id(segment)),
+        })
+    };
+    for (segment, order) in &planned {
+        assert_eq!(
+            ask(&mut sources, segment, order),
+            Reply::Given(Said::Yes),
+            "{segment}"
+        );
+        assert_eq!(
+            ask(&mut sources, segment, "another-order"),
+            Reply::Given(Said::No),
+            "{segment}"
+        );
+    }
+    assert_eq!(
+        ask(&mut sources, "no-such-segment", &planned[0].1),
+        Reply::Missing
+    );
+}
+
+/// Core's `Statement` against the log, statement by statement (`T-020-55`, the review of `8f7ddefd`: no scenario asked
+/// it): each commitment a stated entry names is its first such entry's maker's, as the log attributed it, and no other
+/// party's; a commitment the log names nowhere is nothing.
+// verifies: REQ-AUD-5
+#[test]
+fn statement_answer_is_the_logs_maker_for_every_statement() {
+    use rutent_core_authz::engine::{Need, Reply, Said, Source, Sources};
+    let (core, _) = Scenario::new(
+        "one order, run",
+        "AC-28",
+        Given::one_reserve(Staged::AtOnce),
+    )
+    .when(Step::Order {
+        request: "req-1".to_owned(),
+        amount: AMOUNT.to_owned(),
+    })
+    .when(Step::Run)
+    .core(1, &mut Reference);
+    let mut first: Vec<(
+        rutent_contracts::module_interface::Digest,
+        rutent_contracts::router_api::Id,
+    )> = Vec::new();
+    for (_, e) in core.log().entries() {
+        if let Entry::Stated(s) = e
+            && !first.iter().any(|(c, _)| c == &s.commitment)
+        {
+            first.push((s.commitment.clone(), s.attribution.maker().party.clone()));
+        }
+    }
+    assert!(first.len() > 1, "the log holds statements");
+    let mut sources = core.sources();
+    for (commitment, party) in &first {
+        let ask = |sources: &mut rutent_scenarios::assembly::policy::CoreSources, who: &str| {
+            sources.supply(&Need {
+                input: id(who),
+                from: Source::Statement(commitment.clone()),
+            })
+        };
+        assert_eq!(
+            ask(&mut sources, party.as_str()),
+            Reply::Given(Said::Yes),
+            "{commitment:?}"
+        );
+        assert_eq!(
+            ask(&mut sources, "no-such-party"),
+            Reply::Given(Said::No),
+            "{commitment:?}"
+        );
+    }
+    let unknown: rutent_contracts::module_interface::Digest =
+        serde_json::from_value(serde_json::json!({
+            "algorithm": "sha-256",
+            "value": "0".repeat(64),
+        }))
+        .unwrap();
+    assert_eq!(
+        sources.supply(&Need {
+            input: id("anyone"),
+            from: Source::Statement(unknown),
+        }),
+        Reply::Missing
+    );
+}

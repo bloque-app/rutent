@@ -12,7 +12,7 @@
 //! | `SegmentProvider` | Core | the effect that moved value on the segment, as the log holds it |
 //! | `Statement` | Core | the stated entry naming the commitment: its maker's party, as the log attributed it |
 //! | `Showing` | Core | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, verified and received no later than the acceptance is decided |
-//! | `Declarations` | Core | the reserve's latest advertisement the log trusts, its bytes as the evidence store keeps them: its reserve declaration |
+//! | `Declarations` | Core | the reserve's advertisement the log's key register accepted last ([`AcceptedAdvertisements`]), its stated entry in the log: its reserve declaration |
 //! | `Kept`, `KeptAbout` | Core | the log's stated entries, each naming a statement Core kept by its commitment |
 //! | `ActsFor`, `AgentScope`, `Permissions`, `Account`, `Holder`, `Reaches`, `MeetsBelowOperator`, `OfOperator`, `Verifier`, `Provider`, `Consent`, `HoldingAccount` | the deployment ([`DeploymentRegisters`]) | its registers of actors, agents' scopes, permissions, accounts and their delegates, holding accounts and consents, and its verifiers and providers' answers (`F-030`) |
 //!
@@ -34,22 +34,19 @@
 //!   record is handed over first ([`OpenedOrders::opened`]) and dropped where it never opens
 //!   ([`OpenedOrders::withdrawn`]), as core-orch's `FiledOrders` port says. Any other order's record is the log's:
 //!   `order_opened`, as intake opened it, or its acceptance, for an order intake never opened (a linked order).
-//! - **A reserve's declarations.** Only an advertisement the log trusts is read: one it attributes, verified, or one
-//!   signed with a key its maker's grant in force before it names (the log's first trust, before it has recorded the
-//!   maker's publisher), whose kept bytes name that maker, that key and the reserve. The latest such with a reserve
-//!   offer is the one in force, as the catalogue joined them in turn.
+//! - **A reserve's declarations.** Only the advertisement the log's key register accepted last for the reserve is
+//!   read, as core-audit's register holds it, by every rule it holds an advertisement to: never a stated advertisement
+//!   it refused (a forged one, one another provider made naming the reserve, an older one replayed), whatever key it
+//!   names. Where the register accepted none, or the one it accepted offers no reserve, the reserve declared nothing,
+//!   and a decision resting on its declarations is refused as missing its input (the review of `8f7ddefd`).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use rutent_contracts::core_internal::{
-    Attribution, Entry, Parties, Receipt, What, granted_advertising_keys,
-};
+use rutent_contracts::core_internal::{Attribution, Entry, Parties, Receipt, What};
 use rutent_contracts::module_interface::Digest;
-use rutent_contracts::provider_role::{
-    ADVERTISEMENT_SHAPE, Advertisement, PublicKey, RESULT_SHAPE, ReserveDeclaration, Statement,
-};
+use rutent_contracts::provider_role::{ADVERTISEMENT_SHAPE, RESULT_SHAPE, ReserveDeclaration};
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_contracts::state_machine::Observed;
 
@@ -67,14 +64,26 @@ pub trait LogEntries {
     fn read<T>(&mut self, read: impl FnOnce(&[(Receipt, Entry)]) -> T) -> Result<T, ReadFailure>;
 }
 
-/// Core's evidence store, read: the bytes kept under a commitment, borne out against it, exactly as received.
-pub trait KeptBytes {
-    /// The bytes kept under `commitment`, or `None` where none are, or they don't bear the commitment out.
+/// An advertisement the log's key register accepted: the commitment of the stated entry that brought it, and the
+/// reserve declaration it makes, where it offers a reserve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedAdvertisement {
+    /// The commitment the log's stated entry names it by.
+    pub commitment: Digest,
+    /// Its reserve's declaration, where it offers a reserve.
+    pub declaration: Option<ReserveDeclaration>,
+}
+
+/// Core's log's key register, read (`T-020-55`, the review of `8f7ddefd`): the advertisement of a provider the register
+/// accepted last, by every rule it holds an advertisement to (core-audit's `AuditLog::accepted_advertisement`). A stated
+/// advertisement the register refused is never one.
+pub trait AcceptedAdvertisements {
+    /// The advertisement of `provider` the register accepted last; `None` where it accepted none.
     ///
     /// # Errors
     ///
-    /// Where the store can't be read now.
-    fn bytes(&mut self, commitment: &Digest) -> Result<Option<Vec<u8>>, ReadFailure>;
+    /// Where the register can't be read now.
+    fn accepted(&mut self, provider: &Id) -> Result<Option<AcceptedAdvertisement>, ReadFailure>;
 }
 
 /// The deployment's registers: what only the deployment can answer (`F-030` keeps them in production). Core asks it
@@ -172,12 +181,12 @@ impl OpenedOrders {
     }
 }
 
-/// Policy's sources as Core answers them: its own state from its log (`L`) and its evidence store (`E`), and the
+/// Policy's sources as Core answers them: its own state from its log (`L`) and its log's key register (`A`), and the
 /// deployment's registers (`R`) for what is the deployment's alone.
 #[derive(Debug, Clone)]
-pub struct CoreSources<L, E, R> {
+pub struct CoreSources<L, A, R> {
     log: L,
-    store: E,
+    accepted: A,
     registers: R,
     opened: OpenedOrders,
 }
@@ -186,12 +195,12 @@ fn said(yes: bool) -> Reply<Said> {
     Reply::Given(if yes { Said::Yes } else { Said::No })
 }
 
-impl<L, E, R> CoreSources<L, E, R> {
-    /// Core's sources over its log, its evidence store and the deployment's registers.
-    pub fn new(log: L, store: E, registers: R) -> Self {
+impl<L, A, R> CoreSources<L, A, R> {
+    /// Core's sources over its log, its log's key register and the deployment's registers.
+    pub fn new(log: L, accepted: A, registers: R) -> Self {
         CoreSources {
             log,
-            store,
+            accepted,
             registers,
             opened: OpenedOrders::default(),
         }
@@ -342,33 +351,15 @@ fn shown_in(
     })
 }
 
-/// The commitments of the advertisements `entries` hold that the log trusts, each with the login that made it and the
-/// key it names, in log order: one the log attributed, verified, or one signed with a key the maker's grant in force
-/// before it names, the log's first trust in a provider's advertisements (`granted_advertising_keys`), as an
-/// advertisement is before the log has recorded its maker's publisher.
-fn advertisements(entries: &[(Receipt, Entry)]) -> Vec<(Digest, Id, PublicKey)> {
-    entries
-        .iter()
-        .enumerate()
-        .filter_map(|(at, (_, e))| match e {
-            Entry::Stated(s) if s.what.statement.as_str() == ADVERTISEMENT_SHAPE => {
-                let maker = &s.attribution.maker().acts;
-                let trusted = matches!(s.attribution, Attribution::Verified { .. })
-                    || granted_advertising_keys(&entries[..at], maker).contains(&s.signed_with.key);
-                trusted.then(|| {
-                    (
-                        s.commitment.clone(),
-                        maker.clone(),
-                        s.signed_with.key.clone(),
-                    )
-                })
-            }
-            _ => None,
-        })
-        .collect()
+/// Whether `entries` hold a stated advertisement under `commitment`.
+fn advertised_under(entries: &[(Receipt, Entry)], commitment: &Digest) -> bool {
+    entries.iter().any(|(_, e)| {
+        matches!(e, Entry::Stated(s)
+            if &s.commitment == commitment && s.what.statement.as_str() == ADVERTISEMENT_SHAPE)
+    })
 }
 
-impl<L: LogEntries, E: KeptBytes, R> CoreSources<L, E, R> {
+impl<L: LogEntries, A: AcceptedAdvertisements, R> CoreSources<L, A, R> {
     /// The record of `order`: the one handed over, else the log's.
     fn record(&mut self, order: &Id) -> Result<Option<Opened>, ReadFailure> {
         if let Some(opened) = self.opened.of(order)? {
@@ -388,30 +379,19 @@ impl<L: LogEntries, E: KeptBytes, R> CoreSources<L, E, R> {
         Ok(parties.map(|p| &p.requester == party || &p.beneficiary == party || &p.payer == party))
     }
 
-    /// The declaration in force of `reserve`: its latest advertisement the log holds verified, as the store keeps it,
-    /// that offers a reserve.
+    /// The declaration in force of `reserve`: the one its advertisement the log's key register accepted last makes,
+    /// where the log holds that advertisement's stated entry. Nothing where the register accepted none, or the one it
+    /// accepted offers no reserve: no other advertisement, and no stated entry the register refused, is read.
     fn declaration(&mut self, reserve: &Id) -> Result<Option<ReserveDeclaration>, ReadFailure> {
-        let ads = self.log.read(advertisements)?;
-        let mut declared = None;
-        for (commitment, maker, key) in ads {
-            let Some(bytes) = self.store.bytes(&commitment)? else {
-                continue;
-            };
-            let Ok(statement) = serde_json::from_slice::<Statement<Advertisement>>(&bytes) else {
-                continue;
-            };
-            // The bytes are the statement the entry names: its maker, the key it is signed with, and the reserve.
-            if statement.maker != maker.as_str()
-                || statement.signature.key != key
-                || statement.statement.provider != reserve.as_str()
-            {
-                continue;
-            }
-            if let Some(offer) = statement.statement.offers.reserve {
-                declared = Some(offer.declaration);
-            }
-        }
-        Ok(declared)
+        // A log that can't be read leaves the answer not known, as every other of Core's answers.
+        self.log.read(|_| ())?;
+        let Some(accepted) = self.accepted.accepted(reserve)? else {
+            return Ok(None);
+        };
+        let logged = self
+            .log
+            .read(|entries| advertised_under(entries, &accepted.commitment))?;
+        Ok(accepted.declaration.filter(|_| logged))
     }
 
     /// What Core says to `need`, a source of Core's own.
@@ -476,7 +456,9 @@ impl<L: LogEntries, E: KeptBytes, R> CoreSources<L, E, R> {
     }
 }
 
-impl<L: LogEntries, E: KeptBytes, R: DeploymentRegisters> Sources for CoreSources<L, E, R> {
+impl<L: LogEntries, A: AcceptedAdvertisements, R: DeploymentRegisters> Sources
+    for CoreSources<L, A, R>
+{
     fn supply(&mut self, need: &Need) -> Reply<Said> {
         if is_the_deployments(&need.from) {
             return self.registers.registered(&Registered { need });

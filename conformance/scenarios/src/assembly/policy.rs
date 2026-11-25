@@ -8,7 +8,7 @@
 //!
 //! | Source | Answered by | Record |
 //! |---|---|---|
-//! | `Requester`, `OrderOrigin`, `OrderParties`, `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`, `Declarations`, `Kept`, `KeptAbout` | Core (`CoreSources`) | Core's log ([`LogRead`]) and evidence store ([`StoreRead`]), and the records a filing hands over before the log holds its order (`OpenedOrders`) |
+//! | `Requester`, `OrderOrigin`, `OrderParties`, `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`, `Declarations`, `Kept`, `KeptAbout` | Core (`CoreSources`) | Core's log and its key register ([`LogRead`]), and the records a filing hands over before the log holds its order (`OpenedOrders`) |
 //! | `ActsFor`, `Permissions` | the deployment ([`Deployed`]) | its registers ([`Registers`]), which `F-030` keeps in production; `ActsFor` binds each login's party, kind and role (`T-021-14`) |
 //! | `AgentScope`, `Reaches`, `MeetsBelowOperator`, `OfOperator` | the deployment | the same registers: agents' scopes, and the chains of `ActsFor` links |
 //! | `Account`, `Holder` | the deployment | the account's reserve's register of accounts, the deployment's in the assembly ([`Registers::accounts`]); no delegation is registered |
@@ -296,30 +296,31 @@ impl rutent_core_authz::core_sources::LogEntries for LogRead {
     }
 }
 
-/// Core's evidence store, as Core's own sources read it (`T-020-55`): the log's read of it, each statement's bytes
-/// only where they bear out the commitment they are kept under.
-#[derive(Clone)]
-pub struct StoreRead(pub(crate) Rc<RefCell<rutent_core_audit::receipts::store::LogsRead>>);
-
-impl rutent_core_authz::core_sources::KeptBytes for StoreRead {
-    fn bytes(
+/// Core's log's key register, as Core's own sources read it (`T-020-55`, the review of `8f7ddefd`): the advertisement
+/// it accepted last for a provider, not known where the log is held mutably elsewhere at the moment.
+impl rutent_core_authz::core_sources::AcceptedAdvertisements for LogRead {
+    fn accepted(
         &mut self,
-        commitment: &rutent_contracts::module_interface::Digest,
-    ) -> Result<Option<Vec<u8>>, rutent_core_authz::funds::ReadFailure> {
-        use rutent_contracts::core_internal::calls::KeptStatements;
-        let mut store = self
+        provider: &Id,
+    ) -> Result<
+        Option<rutent_core_authz::core_sources::AcceptedAdvertisement>,
+        rutent_core_authz::funds::ReadFailure,
+    > {
+        let log = self
             .0
-            .try_borrow_mut()
+            .try_borrow()
             .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
-        let kept = store
-            .kept(commitment)
-            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
-        Ok(kept.and_then(|k| rutent_core_audit::receipts::store::bearing_out(&k)))
+        Ok(log.accepted_advertisement(provider.as_str()).map(|a| {
+            rutent_core_authz::core_sources::AcceptedAdvertisement {
+                commitment: a.commitment,
+                declaration: a.declaration,
+            }
+        }))
     }
 }
 
 /// Core's own sources, as the assembly puts them together (`T-020-55`).
-pub type CoreSources = rutent_core_authz::core_sources::CoreSources<LogRead, StoreRead, Deployed>;
+pub type CoreSources = rutent_core_authz::core_sources::CoreSources<LogRead, LogRead, Deployed>;
 
 /// The deployment's own policy: it needs nothing beyond the fixed rules, and permits what they let through, unless
 /// a scenario sets it to refuse.

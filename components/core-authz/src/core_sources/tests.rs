@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::parties::Scope;
+use crate::roles::NO_USER_WITHDRAWAL;
 use crate::roles::Permission;
 use rutent_contracts::core_internal::{ActorKind, Role, ShowingNamed};
 
@@ -27,16 +28,42 @@ impl LogEntries for Log {
     }
 }
 
-/// A store that keeps nothing, or can't be read.
+/// A key register that accepted nothing, or one that accepted `bank-co`'s advertisement under `commitment`, or one that
+/// can't be read.
 #[derive(Clone)]
-struct Store(bool);
+enum Store {
+    Accepted(Option<Digest>),
+    Unreadable,
+}
 
-impl KeptBytes for Store {
-    fn bytes(&mut self, _: &Digest) -> Result<Option<Vec<u8>>, ReadFailure> {
-        if self.0 {
-            Ok(None)
-        } else {
-            Err(ReadFailure::Unavailable)
+/// The test's readable register that accepted nothing.
+#[allow(non_snake_case)]
+fn Store(readable: bool) -> Store {
+    if readable {
+        Store::Accepted(None)
+    } else {
+        Store::Unreadable
+    }
+}
+
+impl AcceptedAdvertisements for Store {
+    fn accepted(&mut self, provider: &Id) -> Result<Option<AcceptedAdvertisement>, ReadFailure> {
+        match self {
+            Store::Unreadable => Err(ReadFailure::Unavailable),
+            Store::Accepted(None) => Ok(None),
+            Store::Accepted(Some(commitment)) => {
+                Ok(
+                    (provider.as_str() == "bank-co").then(|| AcceptedAdvertisement {
+                        commitment: commitment.clone(),
+                        declaration: Some(ReserveDeclaration {
+                            can_require_user_initiated_withdrawal: false,
+                            starts_routes_on_automatic_deposits: true,
+                            maker: "bank-co".to_owned(),
+                            declared_in_version: "1.0.0".to_owned(),
+                        }),
+                    }),
+                )
+            }
         }
     }
 }
@@ -168,12 +195,25 @@ fn an_unreadable_log_or_store_gives_not_known() {
     }
     assert_eq!(blind.order_record(&id("ord-1")), Reply::Unreachable);
 
-    // The log holds an advertisement the store can't be read for.
-    let mut unstored = CoreSources::new(Log(Some(Vec::new())), Store(false), YesToAll::default());
+    // A key register that can't be read leaves the declarations not known.
+    let mut unregistered =
+        CoreSources::new(Log(Some(Vec::new())), Store(false), YesToAll::default());
     assert_eq!(
-        unstored.supply(&need(Source::Declarations(id("bank-co")))),
-        Reply::Missing,
-        "an empty log names no advertisement to read"
+        unregistered.supply(&need(Source::Declarations(id("bank-co")))),
+        Reply::Unreachable
+    );
+    // An advertisement the register accepted, whose stated entry the log doesn't hold, declares nothing.
+    let mut unlogged = CoreSources::new(
+        Log(Some(Vec::new())),
+        Store::Accepted(Some(digest('f'))),
+        YesToAll::default(),
+    );
+    assert_eq!(
+        unlogged.supply(&Need {
+            input: id(NO_USER_WITHDRAWAL),
+            from: Source::Declarations(id("bank-co")),
+        }),
+        Reply::Missing
     );
 
     let sources = CoreSources::new(Log(Some(Vec::new())), Store(true), YesToAll::default());

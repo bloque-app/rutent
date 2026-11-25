@@ -14,9 +14,8 @@ rutent-router = { path = "../router" }
 rutent-stm = { path = "../stm" }
 rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
-# Core's own answer to a reserve's declarations reads the advertisement the evidence store keeps (`T-020-55`).
-serde_json = "1.0.154"
 
 [dev-dependencies]
 proptest = "1.12.0"
+serde_json = "1.0.154"
 syn = { version = "2.0.119", features = ["full", "visit"] }

@@ -799,7 +799,7 @@ impl Core {
         };
         let sources = policy::CoreSources::new(
             policy::LogRead(Rc::clone(&log)),
-            policy::StoreRead(Rc::new(RefCell::new(store.for_the_log()))),
+            policy::LogRead(Rc::clone(&log)),
             deployed.clone(),
         );
 
@@ -1529,6 +1529,40 @@ impl Core {
         let at = self.time_of_stated(&receipt);
         kit::join(&mut self.catalogue, installed, at);
         Ok(())
+    }
+
+    /// A test hook (`T-020-55`, the review of `8f7ddefd`): `bytes` appended as an advertisement's stated entry, kept and
+    /// claimed by the maker it names, signed (it says) with the key it names, made when it says, as [`Core::advertise`]
+    /// appends one, but with nothing joined into Core's catalogue. The log takes the entry whatever the bytes hold; its
+    /// key register accepts the advertisement, or not, by its own rules.
+    ///
+    /// # Errors
+    ///
+    /// If the bytes name no maker, key or time, or the log takes no entry.
+    pub fn append_advertisement(&mut self, bytes: &[u8]) -> Result<Receipt, AssemblyError> {
+        let listing =
+            |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
+        let value: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|e| AssemblyError::Listing(format!("the advertisement's bytes: {e}")))?;
+        let kept = rutent_contracts::core_internal::calls::Evidence::keep(&mut self.keeper, bytes)
+            .map_err(|e| listing("the advertisement's bytes", e))?;
+        let entry: GeneralEntry = serde_json::from_value(json!({
+            "kind": "stated",
+            "attribution": {"signature": "unverified", "claimed_by": {
+                "party": value["statement"]["publisher"], "acts": value["maker"], "role": "provider",
+                "kind": "component"
+            }},
+            "what": {"statement": ADVERTISEMENT_SHAPE},
+            "when": {"at": value["made_at"], "source": "party_stated"},
+            "received_at": self.clock.timestamp(),
+            "outcome": {"status": "stated"},
+            "signed_with": {"scheme": "ed25519", "key": value["signature"]["key"]},
+            "commitment": kept.commitment,
+        }))
+        .map_err(|e| AssemblyError::Listing(format!("the advertisement's entry: {e}")))?;
+        self.general
+            .append(&entry)
+            .map_err(|e| listing("the advertisement", e))
     }
 
     /// Appends a verified entry of Core's own, at its clock, on orchestration's handle.
