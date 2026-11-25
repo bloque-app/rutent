@@ -1931,3 +1931,52 @@ Seen red before their code: the names check's fixtures (against a stub that repo
 findings, above) and the lint's real-repository test (four sub-workspaces uncovered). Not seen red before their code:
 the `AC` test (its code was written beside it; the rule-off row is its red) and the arrival test's book reads (the rule-off
 row is its red).
+
+## T-024-23: what the simulated providers never exercised (finding 13 of `M3`'s milestone review, and its Low on delay)
+
+**Added** (`conformance/`, nothing in `components/` or `contracts/`).
+- `Behaviour::fault` (`Fault::Customer` or `Fault::Operator`), `Behaviour::failing_by` and `Behaviour::short_by`. A failed result carries
+  the fault the behaviour names; every other result carries none. The stand-ins still set `fault: None`; the module's answer
+  is patched, as `Delivery` patches an amount.
+- Reversals fault-injected: a refusal (`Act::Refuse`, kind `reversal`) needed nothing new; `Act::Unknown` is now taken by the exchange's and the
+  ramp's undo (it undoes, and says unknown; before, the hook was never consumed and the answer was the role's); `Delivery::Short`
+  on a reversal states less value back than the segment took in, and on a reserve's confirmation makes the credit that
+  arrived short, so the reserve says no such credit arrived.
+- Shapes `sim-duo-exchange` (an exchange of its own publisher at the public ledger `sim-duo-in-ledger`, COP to USD) and
+  `sim-duo-out-usd` (a USD reserve on that ledger): a route whose failing segment's provider is not the origin reserve's
+  publisher, so `AC-4`'s success branch runs. A reserve's credit is at its private node, or at its ledger where that is public.
+- The assembly: `show_fault`, `accept_fault` (the customer's through policy's decision, read from the log; the operator's by
+  its command), `dispute_fault`, `reversal_carrier`, `kept_result` (the provider's signed result as Core kept it) and
+  `receive_late`; `Fleet::late_answers`.
+
+**Defaults taken** (reversible, fail closed).
+- The scenarios take `AC-4` or `AC-5` as their harness label (`Scenario::new` wants an `AC-*`); the tests keep the tags of
+  the row's brackets.
+- The failing segment of the fault tests is the ramp, not the exchange: the exchange declares no safe retry, and the platform
+  refuses a repeat of an ended segment's operation, so the signed failed result is read from what Core kept (`kept_result`), not asked again.
+- A late answer: the platform ends a call at its deadline and kills the process, so nothing can arrive after it through the
+  platform. The simulated provider's answer past its deadline is its repeat of what it did, which the fleet fetches for
+  the transactions of an order (`Fleet::late_answers`, once each) and `Core::receive_late` hands to `late_delivery`. The test
+  names no segment and no bytes. `provider_again` stays for the invariants run. Delay stays a jump of Core's clock where no answer is involved.
+
+**Review of PR #304.** Low 1 (the late answer is triggered by the test, `receive_late`) goes to `T-020-48`, whose scheduled step takes late answers. The late test now hands Core the same answer a second time directly (`late_delivery`, past the fleet's once) and asserts Core records and moves nothing; each scenario ends by replaying the log through `admit_entry`.
+
+**Real Core gap found, reported, not fixed.** A reversal that is refused, left unknown or stated short never makes the order
+stuck: `Stuck::watch` times only a segment whose outcome is not final (`Segments::carried_since`), and a failed segment's is
+final, so a part with a reversal owed stays `FirstSegmentSettled` after seven days of Core's clock (`INV-3`'s third branch,
+`REQ-ORD-3`; F-020's notes say such a reversal "stays owed and held, for the stuck orders"). The test of
+`refused unknown and short reversals ...` therefore asserts what holds (reversal still owed, nothing recalculated, nothing
+moved twice, the reason Core gives for each), not that the order is stuck. Owner: `F-020` (`T-020-11`'s timing of an owed reversal).
+
+**Rule-off table** (each switched off once; the test that went red).
+
+| Rule off | Red |
+|---|---|
+| a failed result carries no fault (`show_fault` in `sim/mod.rs`) | `failed_segments_provider_carries_...`, `dispute_over_a_fault_makes_the_order_stuck` |
+| the ramp's undo ignores `Act::Unknown` | `refused_unknown_and_short_reversals_...` |
+| a reversal's `Delivery::Short` ignored | `refused_unknown_and_short_reversals_...` |
+| a short credit at the reserve ignored (the credit is the full amount) | `value_undone_at_its_providers_cost_is_shown_back_by_another_party` |
+| the reserve's credit node falls back to nothing, not its public ledger | `value_undone_at_its_providers_cost_is_shown_back_by_another_party` |
+| the fleet takes no late answer (`Fleet::late_answers`) | `late_answer_the_platform_receives_moves_nothing_twice` |
+
+The exchange's own `Unknown` undo (same edit as the ramp's) is not reached by a scenario: the tests fail the ramp.
