@@ -96,6 +96,10 @@ pub struct Wallets<'a, W: World, O: Operator> {
     /// withdrawal, where the account's module restarted (`T-020-46`): `None` where Core drew none, and then nothing
     /// is restored.
     pub restore: Option<&'a str>,
+    /// What the log holds for each order at each node, by node and order ([`crate::segments::Segments::resting_totals`]):
+    /// what a restore restores, the order's whole as the wallet and the host count it, never the part withdrawn alone.
+    pub resting:
+        &'a std::collections::BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
 }
 
 /// What the caller is shown each statement through.
@@ -171,12 +175,16 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
             let transaction = self.restore.ok_or(StartError::Wallet(
                 rutent_prov::holding::wallet::WalletError::NotKnown,
             ))?;
+            let whole = self
+                .resting
+                .get(&(node.clone(), order.to_owned()))
+                .map_or_else(|| amount.to_owned(), |total| total.as_str().to_owned());
             self.holdings.restore(
                 self.platform,
                 self.operator,
                 node,
                 order,
-                amount,
+                &whole,
                 transaction,
             )?;
         }

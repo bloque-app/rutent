@@ -137,6 +137,8 @@ pub(super) struct HeldWallets<'a, 'b> {
     /// A fresh transaction of Core's, drawn where a holding account's module restarted, for restoring what the log
     /// holds before the withdrawal (`T-020-46`).
     pub(super) restore: Option<Id>,
+    /// What the log holds for each order at each node (`Segments::resting_totals`).
+    pub(super) resting: BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
 }
 
 impl Withdrawals for HeldWallets<'_, '_> {
@@ -166,6 +168,7 @@ impl Withdrawals for HeldWallets<'_, '_> {
             platform: &mut *running.platform,
             operator: &operator,
             restore: self.restore.as_ref().map(Id::as_str),
+            resting: &self.resting,
         }
         .withdraw(route, order, amount, asked)
     }
@@ -218,6 +221,10 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
             order,
             amount.as_str(),
         ))
+    }
+
+    fn restarted(&self, node: &str) -> bool {
+        self.holdings.restarted(self.platform, node)
     }
 
     fn restore(

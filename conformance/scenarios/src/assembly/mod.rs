@@ -488,8 +488,6 @@ struct Carried {
     feed: Feed,
     fresh: Seeded,
     ties: bool,
-    /// The operator's key, with the decision records it signed (`T-020-46`): the log names each by digest.
-    signer: Signer,
     /// The host's holding accounts, beside the platform that runs their wallets: the host's attribution of each
     /// order and its own transactions' count go on with it (`T-020-46`).
     holdings: rutent_prov::holding::wallet::Holdings,
@@ -676,7 +674,6 @@ impl Core {
             feed: self.feed,
             fresh: self.fresh,
             ties: self.readings.ties(),
-            signer: self.signer,
             holdings: self.holdings,
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
@@ -695,44 +692,42 @@ impl Core {
             .as_mut()
             .map(|c| std::mem::take(&mut c.holdings))
             .unwrap_or_default();
-        let (fleet, installed, clock, carried_feed, carried_fresh, ties, carried_signer) =
-            match carried {
-                Some(c) => (
-                    c.fleet,
-                    c.installed,
-                    c.clock,
-                    Some(c.feed),
-                    Some(c.fresh),
-                    c.ties,
-                    Some(c.signer),
-                ),
-                None => {
-                    // The platform and the simulated providers, staging set explicitly.
-                    let mut fleet = Fleet::with_context(config.deadline, context.clone());
-                    let installed: Vec<Installed> = config
-                        .providers
-                        .iter()
-                        .map(|spec| fleet.install(spec.clone()))
-                        .collect();
-                    fleet.platform.set_staging(config.staging.policy());
+        let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
+            Some(c) => (
+                c.fleet,
+                c.installed,
+                c.clock,
+                Some(c.feed),
+                Some(c.fresh),
+                c.ties,
+            ),
+            None => {
+                // The platform and the simulated providers, staging set explicitly.
+                let mut fleet = Fleet::with_context(config.deadline, context.clone());
+                let installed: Vec<Installed> = config
+                    .providers
+                    .iter()
+                    .map(|spec| fleet.install(spec.clone()))
+                    .collect();
+                fleet.platform.set_staging(config.staging.policy());
 
-                    // First trust in a provider is its grant's, and an advertisement made before its grant rides on
-                    // none: Core's clock starts before the earliest advertisement was made, for the grants.
-                    let earliest = installed
-                        .iter()
-                        .filter_map(|one| {
-                            rutent_contracts::router_api::Timestamp::new(
-                                &one.advertisement.statement().made_at,
-                            )
-                        })
-                        .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
-                        .min()
-                        .unwrap_or(kit::START);
-                    let clock =
-                        SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
-                    (fleet, installed, clock, None, None, false, None)
-                }
-            };
+                // First trust in a provider is its grant's, and an advertisement made before its grant rides on
+                // none: Core's clock starts before the earliest advertisement was made, for the grants.
+                let earliest = installed
+                    .iter()
+                    .filter_map(|one| {
+                        rutent_contracts::router_api::Timestamp::new(
+                            &one.advertisement.statement().made_at,
+                        )
+                    })
+                    .map(|t| u64::try_from(t.unix_nanos() / 1_000_000_000).unwrap_or(0))
+                    .min()
+                    .unwrap_or(kit::START);
+                let clock =
+                    SharedClock::at(earliest.saturating_sub(GRANTED_BEFORE).min(kit::START));
+                (fleet, installed, clock, None, None, false)
+            }
+        };
 
         // The evidence store and the log: the store's read taken once, the log opened with it.
         let (store, log) = read_back(&disk, &clock).map_err(AssemblyError::Log)?;
@@ -863,10 +858,10 @@ impl Core {
             exposures: Exposures::new(),
             reported: rutent_core_orch::quote::Prices::new(),
             releases: Releases::new(),
-            signer: carried_signer.unwrap_or_else(|| Signer {
+            signer: Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
-            }),
+            },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds_for(&context, &config.providers),
             prices,
@@ -2033,6 +2028,7 @@ impl Core {
             .iter()
             .any(|(node, _)| self.holdings.restarted(&self.fleet.platform, node));
         let restore = restarted.then(|| self.fresh.id());
+        let resting = self.segments.resting_totals();
         let readings = self.readings.clone();
         readings.refresh(&self.fleet.platform.world);
         let running = RefCell::new(Running {
@@ -2061,6 +2057,7 @@ impl Core {
             running: &running,
             bounds: &self.bounds,
             restore,
+            resting,
         };
         let accepted = holding::Accepted(&self.linked);
         let log = holding::LogHandle(Rc::clone(&self.log));

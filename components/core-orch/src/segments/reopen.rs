@@ -46,6 +46,18 @@ pub trait Reopening {
     fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>>;
 }
 
+/// What a segment rebuilt in flight holds: the route's operation at the amount its signed operation moved, or, where
+/// its decision record can't be read back, the value its signed operation states (or the order's own amount) at its
+/// provider, so the ceilings still bind (`REQ-ORD-8`, `THR-74`): an unread segment is never held at nothing.
+enum Hold {
+    Route(Operation),
+    Stated {
+        provider: Id,
+        asset: rutent_contracts::provider_role::Denomination,
+        amount: Amount,
+    },
+}
+
 /// A segment handed over, as the log names it.
 struct Handed<'a> {
     order: &'a Id,
@@ -159,7 +171,7 @@ impl Segments {
         inputs: &[RecordedInput],
         reading: &mut dyn Reopening,
         handed: &Handed<'_>,
-    ) -> Option<Operation> {
+    ) -> Option<Hold> {
         let key_of = (
             handed.order.as_str().to_owned(),
             handed.segment.as_str().to_owned(),
@@ -171,10 +183,10 @@ impl Segments {
             self.read_flight(clock, catalogue, history, inputs, reading, handed)
         else {
             self.unread.insert(key_of, handed.effect.receipt.clone());
-            return None;
+            return stated_value(history, inputs, reading, handed);
         };
         self.flights.insert(key_of, rebuilt);
-        held
+        held.map(Hold::Route)
     }
 
     fn read_flight(
@@ -317,7 +329,7 @@ impl Segments {
         &self,
         exposures: &mut Exposures,
         inputs: &[RecordedInput],
-        holds: &BTreeMap<(String, String), Operation>,
+        holds: &BTreeMap<(String, String), Hold>,
     ) {
         let reversed = |order: &str, segment: &str| {
             inputs.iter().any(|i| {
@@ -358,10 +370,40 @@ impl Segments {
             if !held || resolved || reversed(order, segment) {
                 continue;
             }
-            let Some(held) = holds.get(&(order.clone(), segment.clone())) else {
+            let Some(Hold::Route(held)) = holds.get(&(order.clone(), segment.clone())) else {
                 continue;
             };
             let _ = exposures.hold(&order_id, &segment_id, held);
+        }
+        // A segment handed over whose operation can't be read back is held at the value it states, unless the log
+        // says its value moved on: failing closed, the ceiling still counts it.
+        for (order, segment) in self.unread.keys() {
+            let Some(Hold::Stated {
+                provider,
+                asset,
+                amount,
+            }) = holds.get(&(order.clone(), segment.clone()))
+            else {
+                continue;
+            };
+            let moved_on = inputs.iter().any(|i| {
+                i.subject.order.as_str() == order
+                    && i.subject
+                        .segment
+                        .as_ref()
+                        .is_some_and(|s| s.as_str() == segment)
+                    && matches!(
+                        i.observed,
+                        Observed::SegmentSettled { .. } | Observed::ReversalCompleted { .. }
+                    )
+            });
+            let (Some(order_id), Some(segment_id)) = (Id::new(order), Id::new(segment)) else {
+                continue;
+            };
+            if moved_on {
+                continue;
+            }
+            let _ = exposures.hold_resting(&order_id, &segment_id, provider, asset, amount);
         }
         for tracked in self.orders.values() {
             if tracked
@@ -381,6 +423,62 @@ impl Segments {
     pub(super) fn unread_effect(&self, at: &(String, String)) -> Option<&Receipt> {
         self.unread.get(at)
     }
+}
+
+/// The value a segment handed over states, for a segment whose decision record can't be read back: its provider and
+/// asset as the order's plan names them, and the amount its signed operation (the operator's question, kept behind its
+/// commitment) moves, or else the order's own amount as its `order_opened` asks it, where the segment moves the
+/// order's own asset. `None` where neither is readable.
+fn stated_value(
+    history: &[(Receipt, Entry)],
+    inputs: &[RecordedInput],
+    reading: &mut dyn Reopening,
+    handed: &Handed<'_>,
+) -> Option<Hold> {
+    let (_, _, plan) = plan_of(inputs, handed.order, handed.segment)?;
+    let provider = Id::new(plan.provider.as_str())?;
+    let asset = plan.from.asset.clone();
+    let questioned = history[..handed.at]
+        .iter()
+        .rev()
+        .find_map(|(_, entry)| match entry {
+            Entry::Stated(stated)
+                if stated.what.statement.as_str() == OPERATION_SHAPE
+                    && stated.about.as_ref().is_some_and(|a| {
+                        a.order.as_ref() == Some(handed.order)
+                            && a.segment.as_ref() == Some(handed.segment)
+                    }) =>
+            {
+                Some(stated.commitment.clone())
+            }
+            _ => None,
+        });
+    let moved = questioned
+        .and_then(|commitment| reading.kept(&commitment))
+        .and_then(|bytes| serde_json::from_slice::<Statement<ProviderOperation>>(&bytes).ok())
+        .and_then(|statement| match statement.statement {
+            ProviderOperation::Withdrawal(o) => Amount::new(o.amount),
+            ProviderOperation::Deposit(o) => Amount::new(o.amount),
+            ProviderOperation::Transfer(o) => Amount::new(o.amount),
+            ProviderOperation::Conversion(o) => Amount::new(o.amount),
+            _ => None,
+        });
+    let amount = moved.or_else(|| {
+        history.iter().find_map(|(_, entry)| match entry {
+            Entry::Verified(VerifiedEntry {
+                what: What::OrderOpened { order, route, .. },
+                ..
+            }) if order == handed.order && route.from.asset == asset => {
+                Some(route.amount.amount().clone())
+            }
+            _ => None,
+        })
+    })?;
+    Some(Hold::Stated {
+        provider,
+        asset,
+        amount,
+    })
 }
 
 /// The decision record, the place in its part and the segment's plan, from the last input of `order` that planned

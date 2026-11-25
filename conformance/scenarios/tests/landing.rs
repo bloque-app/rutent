@@ -16,6 +16,10 @@ struct Fake {
     answers: Vec<Landed>,
     landed: Vec<(String, String)>,
     released: Vec<(String, String)>,
+    /// Whether the account's module restarted since it last confirmed a movement, as the platform reports it.
+    restarted: bool,
+    /// Every call, in order: what Core asked the account.
+    calls: Vec<String>,
 }
 
 impl Fake {
@@ -25,6 +29,8 @@ impl Fake {
             answers: answers.to_vec(),
             landed: Vec::new(),
             released: Vec::new(),
+            restarted: false,
+            calls: Vec::new(),
         }
     }
 
@@ -45,13 +51,27 @@ impl Landings for Fake {
     fn land(&mut self, _: &str, _: &str, order: &str, amount: &Amount) -> Landed {
         self.landed
             .push((order.to_owned(), amount.as_str().to_owned()));
+        self.calls.push(format!("land {order} {}", amount.as_str()));
         self.answer()
     }
 
     fn release(&mut self, _: &str, _: &str, order: &str, amount: &Amount) -> Landed {
         self.released
             .push((order.to_owned(), amount.as_str().to_owned()));
+        self.calls
+            .push(format!("release {order} {}", amount.as_str()));
         self.answer()
+    }
+
+    fn restarted(&self, node: &str) -> bool {
+        node == self.node && self.restarted
+    }
+
+    fn restore(&mut self, _: &str, _: &str, order: &str, amount: &Amount) -> Landed {
+        self.calls
+            .push(format!("restore {order} {}", amount.as_str()));
+        self.restarted = false;
+        Landed::Placed
     }
 }
 
@@ -122,4 +142,58 @@ fn a_landing_is_asked_again_only_where_nothing_took_effect() {
     assert_eq!(core.segments.land_settled(&mut fake), 0);
     assert_eq!(fake.landed.len(), 1, "never asked again");
     assert_eq!(core.segments.landings_unconfirmed(), 1);
+}
+
+/// The withdrawal settles at the ledger and its value lands in the account; then the account's module restarts, and
+/// the wallet's record of the order with it, while Core runs on. When the deposit out of the ledger settles, the
+/// account is asked to restore what the log holds for the order there before the release, so the release finds it:
+/// restore first, then release, each once (`REQ-ORD-43`, `INV-1`, `T-020-46`).
+// verifies: REQ-ORD-43, INV-1
+#[test]
+fn release_after_a_holding_accounts_module_restarts_restores_first() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::EffectOf(DEPOSIT), Fault::Unavailable));
+    }
+    let session = world.context().session;
+    let stopped = core.try_run_with(
+        &world.catalogue,
+        &mut world.fleet.platform,
+        &mut rutent_core_orch::segments::NoProxy,
+        &mut Recorded,
+        &session,
+    );
+    assert!(
+        stopped.is_err(),
+        "the deposit wasn't handed over: {stopped:?}"
+    );
+    let mut fake = Fake::at_the_ledger(&[]);
+    assert_eq!(
+        core.segments.land_settled(&mut fake),
+        1,
+        "the withdrawal's value landed"
+    );
+    fake.restarted = true;
+    let ran = core.run(&mut world);
+    let rutent_core_orch::segments::Ran::Segments(done) = &ran else {
+        panic!("the part ran: {ran:?}")
+    };
+    assert!(
+        done.iter()
+            .all(|s| matches!(s.outcome, SegmentOutcome::Settled { .. })),
+        "{done:?}"
+    );
+    core.segments.land_settled(&mut fake);
+    assert_eq!(
+        fake.calls,
+        [
+            format!("land {ORDER} {AMOUNT}"),
+            format!("restore {ORDER} {AMOUNT}"),
+            format!("release {ORDER} {AMOUNT}"),
+        ]
+    );
 }

@@ -36,6 +36,14 @@ pub trait Landings {
     /// [`Landed::Placed`] says it was released.
     fn release(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed;
 
+    /// Whether the module of `node`'s holding account restarted since it last confirmed a movement, as the platform
+    /// reports its process: the wallet's own record of what it holds for each order went with it (`REQ-ORD-43`,
+    /// `T-020-46`). False by default.
+    fn restarted(&self, node: &str) -> bool {
+        let _ = node;
+        false
+    }
+
     /// Restores in `node`'s holding account `amount` of `asset`, what the log holds for `order` there: what the
     /// wallet itself holds for the order is asked first, per order, and only what it lacks is landed again, under a
     /// transaction of Core's own, so nothing is attributed twice (`INV-1`, `T-020-46`). [`Landed::Placed`] says the
@@ -59,6 +67,58 @@ pub enum Landed {
 
 /// A segment, by order and segment.
 pub(super) type At = (String, String);
+
+/// A segment the log settled at a node a holding account holds: the segment, the node, the asset, what it gave out
+/// there, and whether a later segment moved it on.
+pub(super) type Found = (At, String, String, Amount, bool);
+
+/// The sum of `amounts`, or `None` past what an amount holds.
+pub(super) fn sum<'a>(amounts: impl IntoIterator<Item = &'a Amount>) -> Option<Amount> {
+    amounts
+        .into_iter()
+        .try_fold(Amount::zero(), |total, amount| total.checked_add(amount))
+}
+
+/// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the wallet and the host count per
+/// order, so the values of one order still resting at one node are restored together, as their sum, once, and each
+/// reads placed where the account then holds it, never landed blind; one that moved on is read as passed. Answers how
+/// many it found placed.
+pub(super) fn reconcile(
+    landing: &mut Landing,
+    landings: &mut dyn Landings,
+    found: Vec<Found>,
+) -> usize {
+    let mut groups: Vec<((String, String, String), Vec<At>, Vec<Amount>)> = Vec::new();
+    for (at, node, asset, amount, moved_on) in found {
+        if moved_on {
+            landing.found(at, Some(false));
+            continue;
+        }
+        let key = (node, asset, at.0.clone());
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, ats, amounts)) => {
+                ats.push(at);
+                amounts.push(amount);
+            }
+            None => groups.push((key, vec![at], vec![amount])),
+        }
+    }
+    let mut placed = 0;
+    for ((node, asset, order), ats, amounts) in groups {
+        let answered = match sum(&amounts) {
+            Some(total) => landings.restore(&node, &asset, &order, &total),
+            None => Landed::Unconfirmed,
+        };
+        let found = matches!(answered, Landed::Placed).then_some(true);
+        for at in ats {
+            if found.is_some() {
+                placed += 1;
+            }
+            landing.found(at, found);
+        }
+    }
+    placed
+}
 
 /// What became of each segment's landing.
 #[derive(Debug, Clone, Default)]
@@ -163,6 +223,55 @@ impl Landing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A holding account that answers every restore placed and keeps what it was asked.
+    #[derive(Default)]
+    struct Asked(Vec<(String, String)>);
+
+    impl Landings for Asked {
+        fn holds(&self, _: &str) -> bool {
+            true
+        }
+        fn land(&mut self, _: &str, _: &str, _: &str, _: &Amount) -> Landed {
+            Landed::Placed
+        }
+        fn release(&mut self, _: &str, _: &str, _: &str, _: &Amount) -> Landed {
+            Landed::Placed
+        }
+        fn restore(&mut self, _: &str, _: &str, order: &str, amount: &Amount) -> Landed {
+            self.0.push((order.to_owned(), amount.as_str().to_owned()));
+            Landed::Placed
+        }
+    }
+
+    /// Two values of one order resting at one node, the account's module restarted: the wallet and the host count per
+    /// order, so the account is asked to restore the order's whole, once, and both values read placed (`INV-1`,
+    /// `T-020-46`'s review, should-fix 1).
+    // verifies: INV-1, REQ-ORD-43
+    #[test]
+    fn two_values_of_one_order_at_one_node_are_restored_as_their_sum() {
+        let found = vec![
+            (
+                ("ord-1".to_owned(), "p1-s1".to_owned()),
+                "ledger".to_owned(),
+                "USDC".to_owned(),
+                Amount::new("300".to_owned()).unwrap(),
+                false,
+            ),
+            (
+                ("ord-1".to_owned(), "p2-s1".to_owned()),
+                "ledger".to_owned(),
+                "USDC".to_owned(),
+                Amount::new("200".to_owned()).unwrap(),
+                false,
+            ),
+        ];
+        let (mut landing, mut asked) = (Landing::default(), Asked::default());
+        assert_eq!(reconcile(&mut landing, &mut asked, found), 2);
+        assert_eq!(asked.0, [("ord-1".to_owned(), "500".to_owned())]);
+        assert!(landing.is_placed(&("ord-1".to_owned(), "p1-s1".to_owned())));
+        assert!(landing.is_placed(&("ord-1".to_owned(), "p2-s1".to_owned())));
+    }
 
     fn at() -> At {
         ("ord-1".to_owned(), "seg-1".to_owned())

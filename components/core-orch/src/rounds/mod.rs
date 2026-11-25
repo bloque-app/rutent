@@ -671,6 +671,22 @@ impl<R: Router> Rounds<R> {
         let made_at = run.now()?;
         let recorded = ask::sign_record(run.parts.operator_key, &record, maker, &made_at)?;
         let digest = ask::digest(&recorded).ok_or(RoutingError::Unsigned)?;
+        // The record as Core signed it, kept in the evidence store and appended as the operator's statement about
+        // nothing before the entry that names it by digest: a Core that reopens reads its routes back from the store
+        // it already keeps, never from memory (`T-020-46`, `NFR-6`).
+        journal::append_stated(
+            run.parts.log,
+            run.parts.evidence,
+            run.parts.clock,
+            &recorded,
+            run.routing.operator.clone(),
+            run.routing.operator,
+            None,
+        )
+        .map_err(|e| match e {
+            Unappended::Append(failure) => RoutingError::Log(failure),
+            Unappended::Unrecordable => RoutingError::Unsigned,
+        })?;
         let (shortlisted, verifiers) = match round {
             RoutingRound::Shortlist => (
                 Some(providers_of(&record)),

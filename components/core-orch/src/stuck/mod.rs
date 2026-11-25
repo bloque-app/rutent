@@ -805,6 +805,20 @@ pub struct Stuck {
     /// The segment moves whose confirmation policy permitted, whose outcome the segments haven't recorded yet: a
     /// retried confirmation goes on to record it and asks policy nothing more.
     segment_confirmed: BTreeMap<(String, String), Permitted>,
+    /// The parts a Core that reopened found resolved by a `done` move whose `stuck_resolved` the log doesn't hold
+    /// (`T-020-46`): finished by [`Stuck::finish_reopened`].
+    finishing: Vec<Finishing>,
+}
+
+/// A part all of whose value a `done` resolution moved, its `stuck_resolved` not in the log: the move's action, the
+/// statement its done rests on, and the part's evidence entry where the log took it already.
+#[derive(Debug, Clone)]
+struct Finishing {
+    order: Id,
+    part: Id,
+    action: Action,
+    done_on: Option<Receipt>,
+    evidence: Option<(Id, Receipt, Entry)>,
 }
 
 /// A confirmation policy permitted, bound to who it permitted: a retry skips policy only for exactly this one.

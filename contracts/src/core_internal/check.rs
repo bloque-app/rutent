@@ -286,6 +286,16 @@ impl HoldingReading {
     }
 }
 
+impl OrderInputs {
+    /// Checks that the inputs name at least one input, as the schema does: an order with none states none.
+    pub fn check(&self) -> Result<(), Violation> {
+        if self.inputs.is_empty() {
+            broke("an order's inputs name at least one input")?;
+        }
+        Ok(())
+    }
+}
+
 impl MeasureRecord {
     /// Checks that the record cites what it rests on.
     pub fn check(&self) -> Result<(), Violation> {
@@ -848,6 +858,7 @@ checked_serde!(
     PersonQuestion,
     ReportPair,
     HoldingReading,
+    OrderInputs,
     MeasureRecord,
     HandedOver,
     Raise,

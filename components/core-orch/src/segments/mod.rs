@@ -901,9 +901,43 @@ impl Segments {
                 moved_on,
             ));
         }
+        let owed: Vec<_> = at_nodes
+            .into_iter()
+            .map(|(at, node, asset, amount, moved_on)| {
+                let owes = self.landing.owes(&at, moved_on);
+                (at, node, asset, amount, owes)
+            })
+            .collect();
+        // Where the account's module restarted, the wallet's record went with it: before a release, what the log holds
+        // for the order at the node (what still rests there and what is about to leave) is restored first, per order,
+        // as the wallet and the host count it, under a transaction of Core's own (`REQ-ORD-43`, `INV-1`, `T-020-46`).
+        // A restore that can't be made now leaves the releases for the next call; one not confirmed asks none.
+        let mut restored: Vec<((String, String, String), Landed)> = Vec::new();
+        for (at, node, asset, _, owes) in &owed {
+            if *owes != landing::Owes::Release || !landings.restarted(node) {
+                continue;
+            }
+            let key = (node.clone(), asset.clone(), at.0.clone());
+            if restored.iter().any(|(k, _)| *k == key) {
+                continue;
+            }
+            let held: Vec<&Amount> = owed
+                .iter()
+                .filter(|(a, n, s, _, o)| {
+                    (n, s, &a.0) == (&key.0, &key.1, &key.2)
+                        && (*o == landing::Owes::Release || self.landing.is_placed(a))
+                })
+                .map(|(_, _, _, amount, _)| amount)
+                .collect();
+            let answered = match landing::sum(held) {
+                Some(total) => landings.restore(node, asset, &at.0, &total),
+                None => Landed::Unconfirmed,
+            };
+            restored.push((key, answered));
+        }
         let mut placed = 0;
-        for (at, node, asset, amount, moved_on) in at_nodes {
-            match self.landing.owes(&at, moved_on) {
+        for (at, node, asset, amount, owes) in owed {
+            match owes {
                 landing::Owes::Nothing => {}
                 landing::Owes::Land => {
                     let landed = landings.land(&node, &asset, &at.0, &amount);
@@ -912,12 +946,64 @@ impl Segments {
                     }
                 }
                 landing::Owes::Release => {
+                    let key = (node.clone(), asset.clone(), at.0.clone());
+                    match restored.iter().find(|(k, _)| *k == key).map(|(_, a)| *a) {
+                        Some(Landed::NotNow) => continue,
+                        Some(Landed::Unconfirmed) => {
+                            self.landing.released(at, Landed::Unconfirmed);
+                            continue;
+                        }
+                        Some(Landed::Placed) | None => {}
+                    }
                     let released = landings.release(&node, &asset, &at.0, &amount);
                     self.landing.released(at, released);
                 }
             }
         }
         placed
+    }
+
+    /// What the log holds for each order at each inner node it settled at, by node and order: the sum of every
+    /// segment's value that still rests there, no later segment having moved it on (`T-020-46`). What a holding
+    /// account there is to hold for the order, and what a restore of it asks for.
+    pub fn resting_totals(&self) -> BTreeMap<(String, String), Amount> {
+        let mut totals: BTreeMap<(String, String), Amount> = BTreeMap::new();
+        for ((order, segment), flight) in &self.flights {
+            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
+                continue;
+            };
+            let Some(tracked) = self.orders.get(order.as_str()) else {
+                continue;
+            };
+            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
+                part.segments
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == segment.as_str())
+                    .map(|place| (part, place))
+            }) else {
+                continue;
+            };
+            let rutent_contracts::provider_role::NodeRef::Inner(node) =
+                &part.segments[place].to.node
+            else {
+                continue;
+            };
+            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
+                self.flights
+                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+            });
+            if moved_on {
+                continue;
+            }
+            let total = totals
+                .entry((node.clone(), order.clone()))
+                .or_insert_with(Amount::zero);
+            if let Some(sum) = total.checked_add(amount_out) {
+                *total = sum;
+            }
+        }
+        totals
     }
 
     /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
@@ -963,21 +1049,7 @@ impl Segments {
                 moved_on,
             ));
         }
-        let mut placed = 0;
-        for (at, node, asset, amount, moved_on) in found {
-            if moved_on {
-                self.landing.found(at, Some(false));
-                continue;
-            }
-            match landings.restore(&node, &asset, &at.0, &amount) {
-                Landed::Placed => {
-                    self.landing.found(at, Some(true));
-                    placed += 1;
-                }
-                Landed::NotNow | Landed::Unconfirmed => self.landing.found(at, None),
-            }
-        }
-        placed
+        landing::reconcile(&mut self.landing, landings, found)
     }
 
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds

@@ -18,9 +18,9 @@
 //! - the landings the segments owed, asked of the holding accounts, whose host record goes on beside the platform
 //!   (`Segments::reconcile_landings`).
 //!
-//! The decision records are the operator key's: Core signs each with it, and the log names it by digest. The key and
-//! the records it signed go on across the reopening, as the platform and the clock do, and each is held to the log's
-//! digest before a route runs on it.
+//! The decision records are Core's: it signs each with the operator key, keeps it in the evidence store as the
+//! operator's stated entry and names it in the log by digest. A Core that reopens reads them back from the store and
+//! holds each to the log's digest before a route runs on it; nothing of them goes on in memory.
 
 use rutent_contracts::core_internal::calls::KeptStatements;
 use rutent_contracts::module_interface::Digest;
@@ -95,9 +95,80 @@ impl Core {
         }
     }
 
+    /// The decision records Core signed, read back from the evidence store (`T-020-46`): each the operator's stated
+    /// entry of router-api's decision-record shape, its kept bytes the record as signed, kept under the record's id
+    /// where the log's `decision_record` entry names those bytes by digest. A record the store no longer keeps, or
+    /// whose bytes aren't the ones the log names, is not read, and what rests on it fails closed.
+    fn records_in_the_store(&mut self, history: &[(Receipt, Entry)]) -> BTreeMap<String, Vec<u8>> {
+        let mut records = BTreeMap::new();
+        for (_, entry) in history {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str() != DECISION_RECORD_SHAPE {
+                continue;
+            }
+            let Some(bytes) = KeptStatements::kept(&mut self.kept, &stated.commitment)
+                .ok()
+                .flatten()
+                .and_then(|kept| rutent_core_audit::receipts::store::bearing_out(&kept))
+            else {
+                continue;
+            };
+            let Some(record) = record_in(&bytes) else {
+                continue;
+            };
+            let id = record.record_id().as_str().to_owned();
+            let mut one = BTreeMap::new();
+            one.insert(id.clone(), bytes.clone());
+            if held_record(&one, history, record.record_id()).is_some() {
+                records.insert(id, bytes);
+            }
+        }
+        records
+    }
+
+    /// The value in flight a Core that reopened would hold were none of its decision records readable (a control for
+    /// the ceilings' failing closed, `T-020-46`): each segment handed over held at the value its signed operation
+    /// states. Core's own state is not changed.
+    pub fn exposures_rebuilt_without_records(
+        &mut self,
+    ) -> Vec<(
+        Id,
+        rutent_contracts::provider_role::Denomination,
+        rutent_contracts::router_api::Amount,
+    )> {
+        struct Blind<'a> {
+            kept: &'a mut LogsRead,
+        }
+        impl Reopening for Blind<'_> {
+            fn record(&self, _: &Id) -> Option<DecisionRecord> {
+                None
+            }
+            fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+                let kept = KeptStatements::kept(self.kept, commitment).ok()??;
+                rutent_core_audit::receipts::store::bearing_out(&kept)
+            }
+        }
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let mut exposures = Exposures::new();
+        let _ = Segments::reopened(
+            &self.clock,
+            &self.catalogue,
+            &history,
+            &mut Blind {
+                kept: &mut self.kept,
+            },
+            &mut exposures,
+        );
+        exposures.totals()
+    }
+
     /// Rebuilds Core's own state from the log the disk holds (see the module's docs).
     pub(super) fn rebuild_from_log(&mut self) {
         let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        // The decision records Core signed, from the evidence store, never from memory.
+        self.signer.records = self.records_in_the_store(&history);
         self.issued = Issued::recorded(&history);
         self.intake = {
             let mut reading = Reading {
@@ -144,6 +215,20 @@ impl Core {
         // The landings the segments owed: asked of the holding accounts, never made blind (`INV-1`).
         self.reconcile_landings();
         self.stuck = Stuck::reopened(&self.segments, &self.clock, &history, &mut self.exposures);
+        // A resolution done whose part's `stuck_resolved` the log doesn't hold is finished, as a Core that ran on
+        // would have (`T-020-46`).
+        {
+            let mut parts = StuckParts {
+                clock: &self.clock,
+                log: &mut self.general,
+                fresh: &mut self.fresh,
+                issued: &self.issued,
+                segments: &mut self.segments,
+                exposures: &mut self.exposures,
+            };
+            let _ = self.stuck.finish_reopened(&mut parts, &kit::core());
+        }
+        let _ = self.feed();
         self.restart_orders(&history);
     }
 

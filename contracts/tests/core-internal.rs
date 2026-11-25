@@ -334,7 +334,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 121] = [
+const SCHEMA_RULES: [SchemaRule; 122] = [
+    (
+        "order-inputs-naming-no-input",
+        &[("/inputs", "minProperties")],
+        "an order's inputs name at least one input",
+    ),
     (
         "order-inputs-without-its-order",
         &[("", "required")],

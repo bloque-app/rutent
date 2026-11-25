@@ -183,6 +183,58 @@ impl Stuck {
                 {
                     add_moved(&mut declared.moved, &asset, &amount);
                 }
+                // A delivery done whose part's `stuck_resolved` the log doesn't hold: Core stopped between the two,
+                // and finishes it (`Stuck::finish_reopened`), as a Core that ran on would have.
+                let resolved_after = history.iter().any(|(_, e)| {
+                    matches!(e, Entry::Verified(VerifiedEntry { what: What::Input { input }, .. })
+                        if matches!(input.observed, Observed::StuckResolved { .. })
+                            && input.subject.order.as_str() == decide.order.as_str()
+                            && input.subject.part.as_ref().is_some_and(|p| p.as_str() == decide.part.as_str()))
+                });
+                if let Action::ResolveStuck {
+                    resolution: Resolution::Deliver { by, .. },
+                    transaction,
+                    ..
+                } = action
+                    && !resolved_after
+                    && self.declared.get(&part).is_some_and(|d| !d.resolved)
+                {
+                    let done_on = history.iter().find_map(|(r, e)| match e {
+                        Entry::Stated(s)
+                            if s.what.statement.as_str()
+                                == rutent_contracts::provider_role::RESULT_SHAPE
+                                && s.attribution.maker().acts == *by
+                                && s.about.as_ref().is_some_and(|a| {
+                                    a.transaction.as_ref() == Some(transaction)
+                                }) =>
+                        {
+                            Some(r.clone())
+                        }
+                        _ => None,
+                    });
+                    let evidence = history.iter().find_map(|(r, e)| match e {
+                        Entry::Verified(VerifiedEntry {
+                            what:
+                                What::PartEvidence {
+                                    evidence,
+                                    order,
+                                    part,
+                                    ..
+                                },
+                            ..
+                        }) if *order == decide.order && *part == decide.part => {
+                            Some((evidence.clone(), r.clone(), e.clone()))
+                        }
+                        _ => None,
+                    });
+                    self.finishing.push(Finishing {
+                        order: decide.order.clone(),
+                        part: decide.part.clone(),
+                        action: action.clone(),
+                        done_on,
+                        evidence,
+                    });
+                }
                 continue;
             }
             if failed {
@@ -245,5 +297,102 @@ impl Stuck {
                 },
             );
         }
+    }
+}
+
+impl Stuck {
+    /// Finishes each part a Core that reopened found resolved by a `done` delivery whose `stuck_resolved` the log
+    /// doesn't hold (`T-020-46`): its holds released, its decisions spent, and its `stuck_resolved` appended, citing
+    /// the part's evidence entry the log took already, or one built on the statement the done rests on, as the
+    /// resolution's own step would have. Answers how many it finished; one the log can't take now stays to finish.
+    ///
+    /// # Errors
+    ///
+    /// The first that couldn't be finished, the others still tried.
+    pub fn finish_reopened(
+        &mut self,
+        parts: &mut Parts<'_>,
+        core: &Actor,
+    ) -> Result<usize, ResolveError> {
+        let mut finished = 0;
+        let mut failure = None;
+        for one in std::mem::take(&mut self.finishing) {
+            self.release_part(parts.exposures, parts.segments, &one.order, &one.part);
+            let done = match &one.evidence {
+                None => self.resolve(
+                    parts,
+                    core,
+                    (&one.order, &one.part),
+                    &one.action,
+                    one.done_on.as_ref(),
+                ),
+                Some((evidence, receipt, entry)) => {
+                    self.resolve_on_logged(parts, core, &one, (evidence, receipt, entry))
+                }
+            };
+            match done {
+                Ok(()) => finished += 1,
+                Err(why) => {
+                    failure = failure.or(Some(why));
+                    self.finishing.push(one);
+                }
+            }
+        }
+        match failure {
+            Some(why) => Err(why),
+            None => Ok(finished),
+        }
+    }
+
+    /// [`Stuck::finish_reopened`] for a part whose evidence entry the log took already: its `stuck_resolved` cites it.
+    fn resolve_on_logged(
+        &mut self,
+        parts: &mut Parts<'_>,
+        core: &Actor,
+        one: &Finishing,
+        (evidence, receipt, entry): (&Id, &Receipt, &Entry),
+    ) -> Result<(), ResolveError> {
+        let at = key(&one.order, &one.part);
+        if !self.resolving.contains_key(&at) {
+            let Action::ResolveStuck {
+                resolution: Resolution::Deliver { to, .. },
+                ..
+            } = &one.action
+            else {
+                return Ok(());
+            };
+            let to = match self.ends.get(&at) {
+                Some(ends) if *to == ends.destination => ResolvedTo::Destination,
+                Some(ends) if ends.origin.as_ref() == Some(to) => ResolvedTo::Origin,
+                _ => return Err(ResolveError::ElsewhereThanItsEnds),
+            };
+            let observed = Observed::StuckResolved {
+                to,
+                evidence: stm_id(evidence.as_str()).map_err(|_| ResolveError::NoDecision)?,
+            };
+            let input = Self::part_input(parts, &one.order, &one.part, core, observed)
+                .map_err(|_| ResolveError::NotStuck)?;
+            let built = journal::built(
+                core,
+                What::Input {
+                    input: input.clone(),
+                },
+                &now(parts.clock)?,
+                Outcome::Observed {},
+            )?;
+            let logged = GeneralEntry::try_from(entry.clone()).map_err(AppendFailure::Refused)?;
+            self.resolving.insert(
+                at,
+                Resolving {
+                    evidence: Some(Step {
+                        entry: logged,
+                        receipt: Some(receipt.clone()),
+                    }),
+                    input: Step::new(built),
+                    recorded: input,
+                },
+            );
+        }
+        self.flush(parts)
     }
 }

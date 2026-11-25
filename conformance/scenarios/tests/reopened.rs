@@ -291,6 +291,25 @@ fn exposures_are_rebuilt_from_the_log_so_routes_respect_the_ceiling_after_a_rest
     }
 }
 
+/// A Core that reopens and can't read back the decision record a segment in flight ran on holds that segment at the
+/// value its signed operation states, at its provider and in its asset, never at nothing: the ceiling still binds
+/// (`REQ-ORD-8`, `THR-74`).
+// verifies: REQ-ORD-8, THR-74
+#[test]
+fn in_flight_segment_whose_decision_record_is_unreadable_is_held_at_its_stated_value() {
+    let (mut core, _) = scenario("a deposit in flight, its record unread")
+        .when(order(1))
+        .when(Step::Plant(Fault::WaitsOnPerson {
+            provider: RESERVE.to_owned(),
+            kind: "deposit".to_owned(),
+        }))
+        .when(Step::Run)
+        .core(1, &mut Reference);
+    let held = core.exposures().totals();
+    assert!(!held.is_empty(), "the deposit is held in flight");
+    assert_eq!(core.exposures_rebuilt_without_records(), held);
+}
+
 /// An operator login: a person of its own desk, which acts for the operator.
 fn staff(core: &Core, desk: &str, login: &str) -> Actor {
     let actor = Actor {
@@ -447,9 +466,9 @@ fn stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log() {
 }
 
 /// The resolution's move is done, and Core stops right after its `done` result reached the log, before the part's
-/// `stuck_resolved`: the part still reads stuck. Opened again, Core counts what the done move moved, so the part holds
-/// nothing more and a second decision to deliver its value is refused before policy is asked: the value moves once
-/// (`INV-8`, `INV-4`).
+/// `stuck_resolved`. Opened again, Core counts what the done move moved and finishes the part as a Core that ran on
+/// would have: its `stuck_resolved` appended once, at its destination, the part no longer stuck and holding nothing,
+/// and a second decision to deliver its value refused: the value moves once (`INV-8`, `INV-4`).
 // verifies: INV-8, INV-4
 #[test]
 fn done_move_is_counted_as_moved_after_a_restart() {
@@ -489,19 +508,31 @@ fn done_move_is_counted_as_moved_after_a_restart() {
     let mut core = given.reopen(core, 1, &mut Reference);
     let (alice, _) = desks(&core);
     assert_eq!(resolve_effects(&core), 1, "the move's effect is in the log");
-    assert!(resolved(&core).is_empty(), "its stuck_resolved is not");
-    assert!(core.is_stuck(&order, &part), "the part still reads stuck");
+    assert_eq!(
+        resolved(&core),
+        vec![ResolvedTo::Destination],
+        "the reopened Core appended its stuck_resolved, once"
+    );
+    assert!(!core.is_stuck(&order, &part), "the part is resolved");
+    assert!(core.exposures().stuck().is_empty(), "nothing held for it");
     let handled = core.operations_received(RESERVE);
     assert!(
-        matches!(
-            core.decide_stuck(&order, &alice, &resolution, &evidence),
-            Err(rutent_scenarios::assembly::StepError::Resolve(
-                rutent_core_orch::stuck::ResolveError::NotItsValue
-            ))
-        ),
-        "what moved is counted: the part holds nothing more to deliver"
+        core.decide_stuck(&order, &alice, &resolution, &evidence)
+            .is_err(),
+        "nothing more is decided for it"
     );
     assert_eq!(core.operations_received(RESERVE), handled);
+    let mut core = given.reopen(core, 1, &mut Reference);
+    assert_eq!(
+        resolved(&core),
+        vec![ResolvedTo::Destination],
+        "once, across a second reopening"
+    );
+    let (alice, _) = desks(&core);
+    assert!(
+        core.decide_stuck(&order, &alice, &resolution, &evidence)
+            .is_err()
+    );
 }
 
 /// Every transaction the log names, a round's question, an answer, a move's or a hand-over's, is one a Core opened

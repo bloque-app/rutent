@@ -3451,7 +3451,7 @@ pub const ORDER_INPUTS_SHAPE: &str = "urn:rutent:core-internal:order-inputs";
 /// (`REQ-AUD-6`). It names no transaction, and is appended about nothing: the order it is of is the body's, which
 /// only whoever holds the kept bytes reads. Schema: `urn:rutent:core-internal:order-inputs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct OrderInputs {
     /// The order.
     pub order: Id,
