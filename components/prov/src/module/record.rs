@@ -938,7 +938,21 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         drop(first);
-        FileRecord::open(&path).expect("free once the first is dropped");
+        // The lock is `flock`'s, shared by every copy of its descriptor. Other tests in this process spawn module
+        // processes, and a child forked between the first's open and its drop holds a copy until its `exec` closes it
+        // (`O_CLOEXEC`), so the lock is free a moment after the drop, not at it. Bounded, so a lock that stays held
+        // still fails the test.
+        let mut opened = FileRecord::open(&path);
+        for _ in 0..100 {
+            match &opened {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    opened = FileRecord::open(&path);
+                }
+                _ => break,
+            }
+        }
+        opened.expect("free once the first is dropped");
         let _ = fs::remove_file(&alias);
         let _ = fs::remove_dir_all(dir);
     }
