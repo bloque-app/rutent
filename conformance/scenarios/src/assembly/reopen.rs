@@ -233,10 +233,13 @@ impl Core {
                 continue;
             };
             if let Some(record) = self.arrivals.record(order) {
-                self.records
-                    .orders
-                    .borrow_mut()
-                    .insert(order.as_str().to_owned(), record);
+                // The filing's record, as arrivals rebuilt it from the log, handed to Core's sources again as the
+                // filing handed it over when the order opened (`T-020-55`).
+                self.sources.opened_orders().opened(
+                    &record.order,
+                    &record.parties,
+                    &record.origin_reserve,
+                );
             }
             if let Some(filing) = self.arrivals.filing_of(order) {
                 self.filings
@@ -245,12 +248,6 @@ impl Core {
         }
         let orders: Vec<Id> = self.intake.orders().filter_map(Id::new).collect();
         for order in &orders {
-            if let Some(record) = self.intake.record(order) {
-                self.records
-                    .orders
-                    .borrow_mut()
-                    .insert(order.as_str().to_owned(), record);
-            }
             if let Some(request) = self.intake.request_of(order) {
                 self.requests
                     .insert(order.as_str().to_owned(), request.clone());
@@ -390,41 +387,22 @@ impl Core {
             history,
             &Id::new(decision_record.as_str())?,
         )?;
-        let (authorisation, request, parties, origin_reserve, session) =
-            logged.iter().find_map(|e| match e {
-                Entry::Verified(VerifiedEntry {
-                    what:
-                        What::Acceptance {
-                            order: o,
-                            authorisation,
-                            request,
-                            parties,
-                            origin_reserve,
-                            session,
-                            ..
-                        },
-                    ..
-                }) if o == order => Some((
-                    authorisation.clone(),
-                    request.clone(),
-                    parties.clone(),
-                    origin_reserve.clone(),
-                    session.clone(),
-                )),
-                _ => None,
-            })?;
+        let (authorisation, session) = logged.iter().find_map(|e| match e {
+            Entry::Verified(VerifiedEntry {
+                what:
+                    What::Acceptance {
+                        order: o,
+                        authorisation,
+                        session,
+                        ..
+                    },
+                ..
+            }) if o == order => Some((authorisation.clone(), session.clone())),
+            _ => None,
+        })?;
         let authorised = authorised(logged, order, &authorisation)?;
         let original = self.started.get(from.as_str())?.route.clone();
         let first = plan.first()?.segments.first()?;
-        self.records.orders.borrow_mut().insert(
-            order.as_str().to_owned(),
-            OrderRecord {
-                order: order.clone(),
-                request,
-                parties,
-                origin_reserve,
-            },
-        );
         let mut inputs = BTreeMap::new();
         inputs.insert(
             DESTINATION_INPUT.to_owned(),

@@ -1378,8 +1378,10 @@ bytes, and every one is asked before an erasure is decided.
   - `REQ-AUD-12`, a regulator's read of the trail: a read grant held to the operator (`T-021-14`), decided by policy's
     read check and recorded (`assembly_policy.rs`, `bulk_measures.rs`). Those tests hold the check, not the read:
     `read_trail` (`core-audit/src/measures/trail.rs:73`) has no caller in Core yet, so the trail itself, its entries and
-    their receipts and never a statement's contents, reaches the regulator through `T-020-55` (3)'s entry point. Naming
-    the regulator is `F-033`'s.
+    their receipts and never a statement's contents, reaches the regulator through `T-020-55` (3)'s entry point, built:
+    `core-audit`'s `measures::hand_trail` (the assembly's `Core::read_trail`), which asks policy's read check for the
+    caller and hands over `read_trail`'s trail on a recorded permit, `Withheld` to every other reader
+    (`assembly_policy.rs`' two `T-020-55` tests hold the read, not only the check). Naming the regulator is `F-033`'s.
  Default: fails closed (no caller, no read). Gap,
   owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that calls `fetch` under
   policy's read check (`REQ-AUZ-7`).
@@ -1389,8 +1391,10 @@ bytes, and every one is asked before an erasure is decided.
   `bin/audit-check.rs:147`), the one batch read an outside caller has. Default: not built into Core; owner `F-025`'s
   re-check if a batch restatement check is wanted for the operator's review.
 - **Not reads of the store.** Policy's `Source::Kept` / `Source::KeptAbout` (`core-authz/src/stuck/mod.rs:223-236`) ask
-  whether a commitment is kept, and the assembly answers from the log's stated entries (`assembly/policy.rs:433`),
-  never from the store; the assembly's own reads for pricing and holding accounts (`assembly/price.rs:116`,
+  whether a commitment is kept, and Core's own sources answer from the log's stated entries (`core-authz`'s
+  `core_sources`, `T-020-55`; the assembly answered them before), never from the store; `Source::Declarations` reads no
+  store: Core answers it from the advertisement the log's key register accepted (`AuditLog::accepted_advertisement`,
+  the review of `8f7ddefd`); the assembly's own reads for pricing and holding accounts (`assembly/price.rs:116`,
   `assembly/holding.rs:608`) use door 1 as the simulation's stand-in for `F-030`'s production assembly, which is to
   read the same way. A stuck decision's evidence no longer rests on that answer: orchestration holds each digest to a
   logged statement itself (`T-020-53`, `F-020`'s notes).

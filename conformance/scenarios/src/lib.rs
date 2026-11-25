@@ -19,7 +19,7 @@
 //!
 //! **Nothing outside this crate reaches the log but to read it.** The assembled Core hands out the log behind a
 //! shared borrow ([`assembly::Core::log`]), policy's sources with their records private
-//! ([`assembly::policy::Records`]), and policy's calls ([`assembly::policy::PolicySide`]), whose engine is the crate's.
+//! ([`assembly::policy::CoreSources`]), and policy's calls ([`assembly::policy::PolicySide`]), whose engine is the crate's.
 //! The disk under the log, the reading of it back into a log, and the engine holding policy's handle are the crate's
 //! alone, so a scenario test can append to the log only through policy's calls and Core's own steps:
 //!

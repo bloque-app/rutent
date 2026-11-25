@@ -6,9 +6,7 @@
 //! What it doesn't do: build a reserve's [`Report`] from what a simulated reserve's module reports. No simulated
 //! provider reports value arriving yet, so a scenario hands the report in (`T-024-04`, `AC-10`, `AC-11`, `AC-26`).
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::collections::BTreeSet;
 
 use rutent_contracts::core_internal::What;
 use rutent_contracts::provider_role::NodeRef;
@@ -23,18 +21,18 @@ use rutent_router::RouteFinder;
 use super::{Begun, Core, StepError, authorised, context};
 use crate::kit;
 
-/// Policy's order records, as a filing hands them over (`FiledOrders`).
-struct FiledOn(Rc<RefCell<BTreeMap<String, OrderRecord>>>);
+/// Core's sources' records of the orders a filing opens before the log holds them, as the filing hands them over
+/// (`FiledOrders`, `T-020-55`).
+struct FiledOn(rutent_core_authz::core_sources::OpenedOrders);
 
 impl FiledOrders for FiledOn {
     fn opened(&mut self, record: &OrderRecord) {
         self.0
-            .borrow_mut()
-            .insert(record.order.as_str().to_owned(), record.clone());
+            .opened(&record.order, &record.parties, &record.origin_reserve);
     }
 
     fn withdrawn(&mut self, order: &Id) {
-        self.0.borrow_mut().remove(order.as_str());
+        self.0.withdrawn(order);
     }
 }
 
@@ -149,7 +147,7 @@ impl Core {
 
     /// Files an order on an automatic deposit; once it starts, its segments follow it.
     pub fn file(&mut self, filing: Filing) -> Result<Filed, StepError> {
-        let mut filed_on = FiledOn(Rc::clone(&self.records.orders));
+        let mut filed_on = FiledOn(self.sources.opened_orders());
         let filed = self.with_arrivals(|arrivals, desk| {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });

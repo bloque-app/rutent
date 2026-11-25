@@ -517,6 +517,36 @@ impl<S: Store, K: KeptStatements> AuditLog<S, K> {
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
+
+    /// The advertisement of `provider` the log's key register accepted last, the one in force (`T-020-55`): only one
+    /// the register took in by its rules (shape, deployment and protocol version at its receipt, `validate_statement`,
+    /// so its maker is the provider it names, the grant in force, the skew, first trust or `validate_successor` from the
+    /// one before, newer than it, a strict signature, and the key history), never a stated entry it refused. `None`
+    /// where it accepted none.
+    pub fn accepted_advertisement(&self, provider: &str) -> Option<AcceptedAdvertisement> {
+        self.state
+            .register
+            .accepted(provider)
+            .map(|(commitment, statement)| AcceptedAdvertisement {
+                commitment: commitment.clone(),
+                declaration: statement
+                    .statement
+                    .offers
+                    .reserve
+                    .as_ref()
+                    .map(|r| r.declaration.clone()),
+            })
+    }
+}
+
+/// An advertisement the log's key register accepted ([`AuditLog::accepted_advertisement`]): the commitment of the stated
+/// entry that brought it, and the reserve declaration it makes, where it offers a reserve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedAdvertisement {
+    /// The commitment the stated entry names it by.
+    pub commitment: Digest,
+    /// Its reserve's declaration (`REQ-CAT-6`), where it offers a reserve.
+    pub declaration: Option<rutent_contracts::provider_role::ReserveDeclaration>,
 }
 
 impl<S: Store, K: KeptStatements> Log for AuditLog<S, K> {

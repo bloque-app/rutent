@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use super::Violation;
-use super::standing::{decided_part, resting_node, standing};
+use super::standing::{decided_part, holder_of_the_order, resting_node, standing};
 use super::types::*;
 use crate::provider_role::EvidenceGrade;
 use crate::router_api::Id;
@@ -1949,7 +1949,7 @@ pub static RELATIONS: [Relation; 117] = [
         name: "stuck-decide-held-at-is-a-held-node",
         spec: &["REQ-AUZ-4", "REQ-CAT-23"],
         quantifier: Quantifier::Exists,
-        refusal: "a decide step's held_at names an inner node a segment ends at on a route this log gave the order",
+        refusal: "a decide step's held_at names an inner node a segment starts or ends at on a route this log gave the order",
         fields: &[
             (
                 "at",
@@ -1989,8 +1989,12 @@ pub static RELATIONS: [Relation; 117] = [
                 Resolution::Deliver { by, .. } | Resolution::HandOn { by, .. } => by,
             };
             judge(
+                // A node a segment starts from counts as one it ends at: the value of a part no segment of has
+                // settled rests at its route's first node, which `resting_node` names (`T-020-55`).
                 route_segments(&i.observed).iter().any(|s| {
-                    matches!(&s.to.node, crate::provider_role::NodeRef::Inner(n) if n == node.as_str())
+                    [&s.from.node, &s.to.node].into_iter().any(|end| {
+                        matches!(end, crate::provider_role::NodeRef::Inner(n) if n == node.as_str())
+                    })
                 }),
                 &[
                     resting_node(request.order.as_str(), request.part.as_str(), h).as_deref()
@@ -5924,7 +5928,7 @@ fn linked_orders<'a>(order: &'a str, history: &'a History) -> Vec<&'a str> {
 
 /// The segments of a route `observed` gives its order: a chosen route's, a recalculated one's, or one whose destination
 /// changed; none for any other input.
-fn route_segments(observed: &Observed) -> Vec<&crate::state_machine::SegmentPlan> {
+pub(crate) fn route_segments(observed: &Observed) -> Vec<&crate::state_machine::SegmentPlan> {
     match observed {
         Observed::RouteChosen { parts, .. } => {
             parts.iter().flat_map(|p| p.segments.iter()).collect()
@@ -5933,39 +5937,6 @@ fn route_segments(observed: &Observed) -> Vec<&crate::state_machine::SegmentPlan
         | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
         _ => Vec::new(),
     }
-}
-
-/// Whether `by` is a holder `order` involves by what this log holds, a decide step's or a resolution's mover aside
-/// (`T-021-16`): its origin reserve, a provider of a segment on a route this log gave it, the reserve of an arrival
-/// held against it, or a holding withdrawal's holder of it or of the order it was handed on from.
-fn holder_of_the_order(order: &Id, by: &Id, history: &History) -> bool {
-    history
-        .iter()
-        .filter_map(|(_, e)| verified(e))
-        .any(|v| match &v.what {
-            What::Acceptance {
-                order: o,
-                origin_reserve,
-                ..
-            } => o == order && origin_reserve == by,
-            What::Input { input } if input.subject.order.as_str() == order.as_str() => {
-                route_segments(&input.observed)
-                    .iter()
-                    .any(|s| s.provider.as_str() == by.as_str())
-            }
-            What::Arrival {
-                reserve,
-                order: Some(o),
-                ..
-            } => o == order && reserve == by,
-            What::HoldingWithdrawal {
-                order: o,
-                handed_on_from,
-                holder,
-                ..
-            } => (o == order || handed_on_from == order) && holder == by,
-            _ => false,
-        })
 }
 
 /// The `held_at` of the permitted decide step of `order` that `carries_out` names, where it records one.
