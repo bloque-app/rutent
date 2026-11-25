@@ -685,3 +685,47 @@ fn order_whose_inputs_statement_names_another_order_is_held_on_reopening() {
         assert!(intake.request_of(&order).is_none(), "{case}: not run");
     }
 }
+
+/// A Core stopped right after its provider's answer to the order's first segment reached the log, before anything of
+/// its grading did, opened again and run again: the reopened Core goes on from the answer the log holds, as the Core
+/// that ran on, and never carries the segment out again. The order completes as the one that ran on, each segment
+/// moved once by one `move_value` (`NFR-6`, `INV-8`, `T-020-46`).
+// verifies: NFR-6, INV-8
+#[test]
+fn segment_answered_before_core_reopens_goes_on_from_its_logged_answer() {
+    for seed in SEEDS {
+        let ran_on = scenario("the Core that ran on")
+            .when(order(1))
+            .when(Step::Run)
+            .play(seed, &mut Reference, reference());
+        let reopened = scenario("a Core reopened after a provider's answer")
+            .when(order(1))
+            .when(Step::Plant(Fault::CrashAfterRecord {
+                call: rutent_contracts::provider_role::RESULT_SHAPE,
+                nth: 0,
+            }))
+            .when(Step::Run)
+            .when(Step::Restart)
+            .when(Step::Rerun)
+            .play(seed, &mut Reference, reference());
+        assert!(reopened.crashed, "seed {seed}: the crash stopped Core");
+        assert!(
+            reopened.stopped.is_empty(),
+            "seed {seed}: {:?}",
+            reopened.stopped
+        );
+        assert_eq!(
+            reopened.state_names(),
+            ran_on.state_names(),
+            "seed {seed}: the order stands as the one that ran on"
+        );
+        assert_eq!(moves(&reopened), moves(&ran_on), "seed {seed}");
+        let moved = reopened.movements();
+        assert_eq!(
+            moved.len(),
+            ran_on.movements().len(),
+            "seed {seed}: {moved:?}"
+        );
+        assert!(moved.values().all(|n| *n == 1), "seed {seed}: {moved:?}");
+    }
+}

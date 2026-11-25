@@ -467,6 +467,41 @@ fn charge_raise_cut_short_before_core_reopens_is_raised_once() {
     assert_eq!(raise_entries(&core).len(), 2);
 }
 
+/// Terms a provider stated before Core stopped bind the segments that start after the reopening: the reopened Core
+/// reads them back from the evidence store, so an order run after it is held to them (7 within 100), and nothing is
+/// raised, as the Core that ran on would (`REQ-QTE-6`, `NFR-6`, `T-020-46`).
+// verifies: REQ-QTE-6, NFR-6
+#[test]
+fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    let first = ran(&mut core, &session, CHARGING, "req-first");
+    assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
+    core.clock.advance(60);
+    for bytes in terms_for(&core, &first, "100") {
+        assert!(core.state_terms(&bytes).expect("kept").new);
+    }
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    core.clock.advance(60);
+    let _ = session;
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let second = ran(&mut core, &session, CHARGING, "req-second");
+    assert_eq!(raise_entries(&core).len(), 2, "within the terms in force");
+    let segments = core.charged_segments(&second);
+    assert_eq!(segments.len(), 2);
+    for segment in &segments {
+        assert!(matches!(
+            core.charge_checked(&second, segment),
+            Some(Checked::Within)
+        ));
+    }
+}
+
 // verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {

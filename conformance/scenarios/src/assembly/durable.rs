@@ -23,7 +23,7 @@ pub enum Crash {
     /// Right after the log's store takes the `nth` record (from 0) whose `call` is `call`, before the log answers
     /// the append.
     AfterRecord {
-        /// The verified entry's `call`, such as `effect`.
+        /// The verified entry's `call`, such as `effect`, or a stated entry's statement shape.
         call: &'static str,
         /// Which one, counted from 0.
         nth: usize,
@@ -133,7 +133,10 @@ impl Disk {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(record) else {
             return;
         };
-        if value["what"]["call"].as_str() != Some(call) {
+        // A verified record by its `call`, a stated one by the shape of the statement it names (`T-020-46`).
+        if value["what"]["call"].as_str() != Some(call)
+            && value["what"]["statement"].as_str() != Some(call)
+        {
             return;
         }
         let mut seen = self.seen.borrow_mut();

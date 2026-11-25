@@ -175,10 +175,7 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
             let transaction = self.restore.ok_or(StartError::Wallet(
                 rutent_prov::holding::wallet::WalletError::NotKnown,
             ))?;
-            let whole = self
-                .resting
-                .get(&(node.clone(), order.to_owned()))
-                .map_or_else(|| amount.to_owned(), |total| total.as_str().to_owned());
+            let whole = restored_whole(self.resting, node, order, amount);
             self.holdings.restore(
                 self.platform,
                 self.operator,
@@ -195,6 +192,20 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
         self.holdings
             .start_handed_on(self.platform, &operator, route, order, amount)
     }
+}
+
+/// What a hand-on's restore restores at `node` for `order`: the order's whole value resting there as the log holds
+/// it (`resting`, by node and order), never the part withdrawn alone, so the wallet holds every value of the order
+/// the log holds at the node; `amount`, the part handed on, where the log holds nothing resting there (`T-020-46`).
+fn restored_whole(
+    resting: &std::collections::BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
+    node: &str,
+    order: &str,
+    amount: &str,
+) -> String {
+    resting
+        .get(&(node.to_owned(), order.to_owned()))
+        .map_or_else(|| amount.to_owned(), |total| total.as_str().to_owned())
 }
 
 /// The operator key as the wallet's [`Operator`]: each statement signed with it, in the bounds' deployment and
@@ -249,5 +260,29 @@ impl Operator for OperatorSigns<'_> {
             },
             statement: operation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restored_whole;
+    use rutent_contracts::router_api::Amount;
+    use std::collections::BTreeMap;
+
+    /// Two values of one order rest at one node, the part handed on is one of them: the restore before its withdrawal
+    /// is of both, the order's whole as the log holds it there, so the other part still finds its value (`T-020-46`).
+    #[test]
+    fn a_hand_ons_restore_is_the_orders_whole_at_its_node() {
+        let mut resting = BTreeMap::new();
+        resting.insert(
+            ("ledger".to_owned(), "ord-1".to_owned()),
+            Amount::new("500").expect("an amount"),
+        );
+        assert_eq!(restored_whole(&resting, "ledger", "ord-1", "200"), "500");
+        assert_eq!(
+            restored_whole(&resting, "ledger", "ord-2", "200"),
+            "200",
+            "nothing resting for the order: the part handed on"
+        );
     }
 }

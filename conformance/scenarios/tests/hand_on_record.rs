@@ -546,20 +546,26 @@ fn linked_start_and_its_spent_record_are_rebuilt_from_the_log_after_a_restart() 
         "the start the log took answers the same record"
     );
     let entries = core.log.borrow().entries.len();
+    // Another record the starting reserve made, of the whole value: it would prove the start were the start not Core's.
     let other = WithdrawalRecord {
-        amount: 1,
+        reference: format!("{RESERVE}-withdrawal-tx-another"),
         ..withdrawal_record()
     };
     assert!(
-        segments_support::handing::prove_citing(
-            &mut core,
-            &mut again,
-            &id("ord-2"),
-            &other,
-            &statement
-        )
-        .is_err(),
-        "another record of the started order is refused"
+        matches!(
+            segments_support::handing::prove_citing(
+                &mut core,
+                &mut again,
+                &id("ord-2"),
+                &other,
+                &statement
+            ),
+            Err(HandOnError::Unproven(
+                rutent_core_orch::hand_on::Unproven::AlreadyStarted
+            ))
+        ),
+        "another record of the started order is refused by Core's own rule"
     );
     assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+    assert_eq!(count(&core, is_holding_withdrawal), 1, "one start");
 }
