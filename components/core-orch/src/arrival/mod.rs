@@ -34,6 +34,16 @@
 //!    them or the operator filing for it (`REQ-ORD-13`), and records the deposit as the order's acceptance, apart from
 //!    a given one (`REQ-ORD-15`). Its steps are `filing.rs`'s.
 //!
+//! **A wait for the customer outlives the filer's session** (`T-020-51`): an order filed on a deposit whose route has no
+//! firm rate waits for its customer ([`Arrivals::accept`]) for a lifetime of its own, the operator's deposit-wait
+//! setting counted from the first quote shown ([`Arrivals::set_deposit_wait`]), and the customer accepts it in any
+//! session policy opened for it that is still open, not only the one the deposit was filed in. A wait past its
+//! lifetime ends with the log's `wait_ended` and the order's refusal, whether Core's schedule ends it
+//! ([`Arrivals::end_expired`]) or the next call that reads it does, and frees the deposit: the funds never left the
+//! holder's account at the reserve (`GUA-1`), and its reserve's next filing may file it again. Core proposes no
+//! re-offer itself. A Core that reopens rebuilds the arrivals, the deposits held and the waits from its log
+//! ([`Arrivals::reopened`]).
+//!
 //! **Each step is kept**, and every entry built once and appended as built, so the same call again, after the log
 //! couldn't take an entry or lost its answer, carries on from where it stopped, asking no one twice and recording
 //! nothing twice (`INV-8`).
@@ -41,12 +51,14 @@
 mod confirm;
 mod filing;
 mod journal;
+mod reopen;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    About, Actor, ArrivalMatch, Destination, Entry, OrderRefusalClass, Parties, Receipt, Role, What,
+    About, Actor, ArrivalMatch, Count, Destination, Entry, OrderRefusalClass, Parties, Receipt,
+    Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -80,6 +92,10 @@ pub trait FiledOrders {
     /// answer couldn't be recorded. Its record is dropped.
     fn withdrawn(&mut self, order: &Id);
 }
+
+/// How long an order filed on a deposit waits for its customer, until the operator sets it: one day, in seconds
+/// (`T-020-51`; the setting is `T-020-49`'s to reach through its decided path, until then a default).
+pub const DEFAULT_DEPOSIT_WAIT_SECONDS: u64 = 86_400;
 
 /// An order open at a reserve, waiting on value there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,6 +272,8 @@ pub enum ArrivalError {
     Routing(RoutingError),
     /// The order isn't at a step the call can take.
     NotNow,
+    /// The session a customer accepts in isn't one policy opened for it that is still open (`T-020-51`).
+    NoSession,
 }
 
 impl From<AppendFailure> for ArrivalError {
@@ -466,12 +484,35 @@ pub struct Arrivals {
     /// The deposits filed on no more: their reserve said the funds aren't there, or an acceptance was recorded on them.
     spent: BTreeSet<String>,
     used: BTreeSet<String>,
+    /// How long a wait for a customer lasts, in whole seconds, from the first quote shown; the operator's deposit-wait
+    /// setting, [`DEFAULT_DEPOSIT_WAIT_SECONDS`] until it is set (`T-020-51`).
+    deposit_wait: Option<Count>,
 }
 
 impl Arrivals {
     /// None recorded yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// These arrivals with `seconds` as the lifetime of a wait for a customer (the operator's deposit-wait setting).
+    pub fn with_deposit_wait(mut self, seconds: Count) -> Self {
+        self.deposit_wait = Some(seconds);
+        self
+    }
+
+    /// Sets the lifetime of a wait for a customer, in whole seconds from the first quote shown (the operator's
+    /// deposit-wait setting): it applies to every wait, those under way too.
+    pub fn set_deposit_wait(&mut self, seconds: Count) {
+        self.deposit_wait = Some(seconds);
+    }
+
+    /// The lifetime of a wait for a customer, in nanoseconds.
+    fn wait_nanos(&self) -> i128 {
+        let seconds = self
+            .deposit_wait
+            .map_or(DEFAULT_DEPOSIT_WAIT_SECONDS, Count::get);
+        i128::from(seconds) * 1_000_000_000
     }
 
     /// Notes an arrival entry the log took.
@@ -791,7 +832,13 @@ impl Arrivals {
         }
         let recorded = self.arrival_for(&filing.filer, &filing.arrival)?;
         let arrival = key(&filing.arrival);
+        let wait = self.wait_nanos();
         if let Some(run) = self.runs.get_mut(&arrival) {
+            // A wait rebuilt from the log (`T-020-51`) holds what the log holds of its filing: the filer that files it
+            // again fills the rest in.
+            if run.is_the_filing_reopened(&filing) {
+                run.adopt(&filing);
+            }
             if same_filing(&run.asked, &filing) {
                 if let Some(outcome) = run.outcome() {
                     return Ok(outcome);
@@ -810,7 +857,7 @@ impl Arrivals {
                 let _ = run.go_on::<R>(desk, self);
                 self.settle(arrival, run);
                 return Err(ArrivalError::Conflicting { order });
-            } else if run.should_end(desk)? {
+            } else if run.should_end(desk, wait)? {
                 // Its session over, its reserve past its time, or no login of its party left: the filing ends,
                 // recorded, and frees the deposit for this one.
                 let Some(mut run) = self.runs.remove(&arrival) else {
@@ -896,15 +943,64 @@ impl Arrivals {
             .awaiting(now.unix_nanos())
     }
 
+    /// When the wait of the filed order `order` ends, to the whole second, or `None` where it waits for no one: its
+    /// lifetime counted from the first quote shown (`T-020-51`).
+    pub fn wait_ends(&self, order: &Id) -> Option<rutent_contracts::router_api::Timestamp> {
+        let run = self.runs.values().find(|r| &r.order == order)?;
+        filing::timestamp_of(run.wait_end(self.wait_nanos())?)
+    }
+
+    /// The filing a wait was rebuilt from the log with, or filed with: what the assembly keeps to follow the order from
+    /// its start.
+    pub fn filing_of(&self, order: &Id) -> Option<&Filing> {
+        self.run_of(order).map(filing::Run::filing)
+    }
+
+    /// Ends every wait for a customer past its lifetime (`T-020-51`), each recorded as `wait_ended` and the order's
+    /// refusal, and frees its deposit: the funds never left the holder's account at the reserve (`GUA-1`). Core's
+    /// schedule calls it; a call that reads a wait ends it too. Answers the orders ended, and a wait whose end the log
+    /// couldn't take is ended again by the next call.
+    ///
+    /// # Errors
+    ///
+    /// If the log couldn't take an end, or the clock can't be read.
+    pub fn end_expired(&mut self, desk: &mut Desk<'_, '_>) -> Result<Vec<Id>, ArrivalError> {
+        let wait = self.wait_nanos();
+        let now = journal::now(desk.parts.clock)?.unix_nanos();
+        let due: Vec<String> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| r.wait_is_over(now, wait) || r.ending())
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut ended = Vec::new();
+        for arrival in due {
+            let Some(mut run) = self.runs.remove(&arrival) else {
+                continue;
+            };
+            let flushed = run.end_wait_recorded(desk);
+            if flushed.is_err() {
+                self.runs.insert(arrival, run);
+                flushed?;
+                continue;
+            }
+            ended.push(run.order.clone());
+            self.settle(arrival, run);
+        }
+        Ok(ended)
+    }
+
     /// The customer `by` accepts the route of the filed order `order` that waits for its customer, the quote of digest
     /// `quote` (`filing.rs`'s `customer_accepts`, `REQ-QTE-10`): the order starts on the acceptance, recorded as
-    /// `given_on_deposit`, or is told as it stands. Nothing but the order's own customer accepts it, and only the
-    /// quote shown.
+    /// `given_on_deposit` in `session`, or is told as it stands. Nothing but the order's own customer accepts it, and
+    /// only the quote shown, in a session policy opened for that customer that is still open: not the filing's, which
+    /// the wait outlives (`T-020-51`). A wait past its lifetime ends instead.
     pub fn accept<R: Router>(
         &mut self,
         desk: &mut Desk<'_, '_>,
         order: &Id,
         by: &Actor,
+        session: &Id,
         quote: &Digest,
     ) -> Result<Filed, ArrivalError> {
         let Some(arrival) = self
@@ -928,7 +1024,7 @@ impl Arrivals {
         let Some(mut run) = self.runs.remove(&arrival) else {
             return Err(ArrivalError::NotNow);
         };
-        let result = run.customer_accepts::<R>(desk, self, by, quote);
+        let result = run.customer_accepts::<R>(desk, self, by, session, quote);
         self.settle(arrival, run);
         result
     }

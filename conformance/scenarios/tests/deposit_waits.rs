@@ -17,9 +17,171 @@ use rutent_core_orch::arrival::{Arrived, Filed, FiledWait};
 use rutent_core_orch::notice::{About, Notice, NoticeKey, Notices, Receiver, Transport};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::component;
+use rutent_scenarios::assembly::machine::Reference;
+use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, id};
 
 const SLOW: &str = "sim-reserve-slow";
+
+/// The slow reserve that starts routes on automatic deposits, as Core is put together with it.
+fn slow_given() -> rutent_scenarios::harness::Given {
+    let mut given = given(&[]);
+    given.providers = vec![spec_of(SLOW).starting_routes_on_automatic_deposits()];
+    given
+}
+
+/// A deposit of the slow reserve filed by the reserve, waiting for its customer: Core, the session it was filed in, the
+/// order, and the digest of the quote shown.
+fn waiting(
+    accepts: &'static str,
+) -> (
+    rutent_scenarios::assembly::Core,
+    rutent_contracts::router_api::Id,
+    rutent_contracts::router_api::Id,
+    rutent_contracts::module_interface::Digest,
+    rutent_core_orch::arrival::Filing,
+) {
+    let bank = format!("{SLOW}-bank");
+    let (mut core, session) = core_of(accepts, slow_given());
+    let filer = component(SLOW, SLOW, Role::Provider);
+    core.registers().list(&filer);
+    let reported = report(&core, SLOW, &bank, unit("COP"), AMOUNT, "credit-slow");
+    let Arrived::NoOrder { arrival } = core.arrive(&reported).expect("the arrival is taken") else {
+        panic!("the arrival is held against no order");
+    };
+    let asked = within("req-deposit", &session, AMOUNT, SLOW, OTHER);
+    let one = filing("deposit-slow", filer, arrival, &session, asked);
+    let filed = core.file(one.clone()).expect("the filing is taken");
+    let Filed::Waiting {
+        order: Some(order),
+        wait: FiledWait::CustomerAcceptance,
+    } = filed
+    else {
+        panic!("the deposit waits for its customer: {filed:?}");
+    };
+    let digest = core.awaiting(&order).expect("its quote").digest;
+    (core, session, order, digest, one)
+}
+
+/// A wait for the customer survives Core stopping and opening again on its disk: rebuilt from the log, it still waits,
+/// the customer accepts it in a session of its own opened after the restart (the quote it was shown is asked again, the
+/// quote itself being in no log), and the order runs to its end on that acceptance, every entry admitted by the real log
+/// (`REQ-QTE-10`, `AC-13`).
+// verifies: REQ-QTE-10, AC-13
+#[test]
+fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
+    let (core, filed_in, order, digest, refiling) = waiting("AC-13");
+    let lasts = core.wait_ends(&order).expect("a wait has its end");
+    let mut core =
+        Scenario::new("execution", "AC-13", slow_given()).reopen(core, 1, &mut Reference);
+    assert_eq!(core.wait_ends(&order), Some(lasts), "the wait goes on");
+    assert!(
+        entries(&core)
+            .iter()
+            .all(|v| !matches!(v.what, What::Acceptance { .. }))
+    );
+
+    let later = core
+        .open_session(&kit::customer())
+        .expect("a session of its own, after the restart");
+    let _ = filed_in;
+    core.registers()
+        .list(&component(SLOW, SLOW, Role::Provider));
+    // The log holds no inputs of the filing (`REQ-AUD-6`): the customer's acceptance can't ask the route again, and the
+    // wait goes on until the reserve files the deposit again, stating the filing it was told.
+    let asked = core
+        .accept_filed(&kit::customer(), &later, &order, &digest)
+        .expect("the acceptance is told as it stands");
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(core.awaiting(&order).is_none(), "no quote to show yet");
+    let again = core.file(refiling).expect("the filing is taken again");
+    assert!(matches!(again, Filed::Waiting { .. }), "{again:?}");
+    let asked = core
+        .accept_filed(&kit::customer(), &later, &order, &digest)
+        .expect("the acceptance is taken");
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        },
+        "the route is shown anew"
+    );
+    let shown = core.awaiting(&order).expect("the quote shown anew");
+    assert_ne!(shown.digest, digest);
+    let started = core
+        .accept_filed(&kit::customer(), &later, &order, &shown.digest)
+        .expect("the acceptance is taken");
+    assert!(matches!(started, Filed::Started { .. }), "{started:?}");
+    let given_in = entries(&core).into_iter().find_map(|v| match v.what {
+        What::Acceptance {
+            order: o,
+            basis,
+            session,
+            ..
+        } if o == order => Some((basis, session)),
+        _ => None,
+    });
+    assert_eq!(
+        given_in,
+        Some((AcceptanceBasis::GivenOnDeposit, Some(later)))
+    );
+    let ran = core.run(&order).expect("the order ran");
+    let [rutent_core_orch::segments::Ran::Segments(segments)] = ran.as_slice() else {
+        panic!("one part ran its segments: {ran:?}");
+    };
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    assert!(
+        segments
+            .iter()
+            .all(|s| matches!(s.outcome, SegmentOutcome::Settled { .. })),
+        "{segments:?}"
+    );
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+}
+
+/// A wait past its lifetime is ended by Core's schedule, on the assembled Core: `wait_ended` and the order's refusal in
+/// the real log, the deposit free, nothing moved at the reserve (`GUA-1`).
+// verifies: GUA-1
+#[test]
+fn a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved() {
+    let (mut core, _, order, _, _) = waiting("AC-13");
+    let lasts = core.wait_ends(&order).expect("a wait has its end");
+    assert_eq!(core.end_expired_waits().expect("the schedule runs"), []);
+    core.clock
+        .set_nanos(u128::try_from(lasts.unix_nanos()).unwrap());
+    assert_eq!(
+        core.end_expired_waits().expect("the schedule runs"),
+        std::slice::from_ref(&order)
+    );
+    let ends: Vec<_> = entries(&core)
+        .into_iter()
+        .filter_map(|v| match v.what {
+            What::WaitEnded { order: o, why } => Some((o, why)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ends,
+        [(
+            order.clone(),
+            rutent_contracts::core_internal::WaitEnd::PastItsLifetime
+        )]
+    );
+    assert_eq!(core.wait_ends(&order), None);
+    assert!(core.world().journal(SLOW).is_empty(), "nothing moved");
+    assert!(
+        entries(&core)
+            .iter()
+            .all(|v| !matches!(v.what, What::Acceptance { .. }))
+    );
+}
 
 struct Key(SigningKey);
 
@@ -152,7 +314,7 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
 
     // The customer accepts the slow route: it starts, on the customer's own acceptance of it.
     let started = core
-        .accept_filed(&kit::customer(), &order, &digest)
+        .accept_filed(&kit::customer(), &session, &order, &digest)
         .expect("the acceptance is taken");
     assert!(matches!(started, Filed::Started { .. }), "{started:?}");
     let acceptance = entries(&core)

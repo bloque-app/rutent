@@ -19,6 +19,7 @@ use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, ArrivalMatch, Entry, OrderRefusalClass, Parties, Receipt,
     Role, StatedEntry, What,
 };
+use rutent_contracts::core_internal::{Count, WaitEnd};
 use rutent_contracts::provider_role::{Denomination, OuterNode, RESULT_SHAPE};
 use rutent_contracts::router_api::{Id, PositiveAmount};
 use rutent_contracts::state_machine::{Observed, SourceKind};
@@ -2174,6 +2175,14 @@ fn short_session(env: &mut Env, name: &str, ends: u64) -> Id {
     id(name)
 }
 
+/// [`short_session`], opened through policy too: the log holds its `open_session`, which an acceptance given in it rests
+/// on.
+fn opened_session(env: &mut Env, name: &str, ends: u64) -> Id {
+    let session = short_session(env, name, ends);
+    env.session_opened_as(&customer().party, name, ends);
+    session
+}
+
 /// Whether the log holds an `order_refusal` naming `order`.
 fn ended_in_the_log(env: &Env, order: &Id) -> bool {
     env.book
@@ -3048,7 +3057,8 @@ fn slow(env: &mut Env, seconds: u64) {
     }
 }
 
-/// The customer accepts the slow route of the filed order `order`, the quote of `digest`.
+/// The customer accepts the slow route of the filed order `order`, the quote of `digest`, in the session the deposit was
+/// filed in.
 fn accept_slow(
     env: &mut Env,
     providers: &mut Reserve,
@@ -3057,8 +3067,21 @@ fn accept_slow(
     by: &Actor,
     digest: &rutent_contracts::module_interface::Digest,
 ) -> Result<Filed, ArrivalError> {
+    accept_in(env, providers, arrivals, order, by, &id(SESSION), digest)
+}
+
+/// The customer accepts the slow route of the filed order `order`, the quote of `digest`, in `session`.
+fn accept_in(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+    order: &Id,
+    by: &Actor,
+    session: &Id,
+    digest: &rutent_contracts::module_interface::Digest,
+) -> Result<Filed, ArrivalError> {
     env.with_providers(providers, |_, desk| {
-        arrivals.accept::<RouteFinder>(desk, order, by, digest)
+        arrivals.accept::<RouteFinder>(desk, order, by, session, digest)
     })
 }
 
@@ -3343,18 +3366,19 @@ fn customers_acceptance_of_the_slow_route_starts_it() {
 
 /// While the filed order waits nothing is authorised to move: no effect, no start, no exposure, and the reserve was
 /// asked nothing that moves value. The funds stay in the holder's account at the reserve, whatever comes of the wait:
-/// its session ending ends the order and moves nothing either (`GUA-1`). The reserve's book is read at each step, by
-/// its balance and by the answers it gives Core's verifications of the amount and of one unit more.
+/// the filing's session ending doesn't end it, and its lifetime ending does, moving nothing either (`GUA-1`,
+/// `T-020-51`). The reserve's book is read at each step, by its balance and by the answers it gives Core's
+/// verifications of the amount and of one unit more.
 // verifies: GUA-1
 #[test]
 fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder() {
-    // The wait ends two ways once its session is over: the filing is filed again, or the customer accepts.
+    // The wait ends two ways once its lifetime is over: the filing is filed again, or the customer accepts.
     for customer_accepts in [false, true] {
         let mut env = crate::env();
         let mut providers = Reserve::new(&env);
         // The deposit credits the holder's account at the reserve; the book is the reserve's own.
         providers.book = Some(1000);
-        let mut arrivals = Arrivals::new();
+        let mut arrivals = Arrivals::new().with_deposit_wait(Count::new(1_800).unwrap());
         slow(&mut env, 4 * 86_400);
         let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
         let mut one = filing(reserve_filer(), &deposited);
@@ -3395,21 +3419,24 @@ fn nothing_moves_while_the_filed_order_waits_and_the_funds_stay_with_the_holder(
         assert_eq!(env.exposures.held().count(), 0, "nothing held in flight");
         book(&mut providers, "filed, waiting");
 
-        // Waiting, the filing is told it waits as long as its session is open.
-        env.clock.set(START + 300);
-        assert!(matches!(
-            file(&mut env, &mut providers, &mut arrivals, &one).unwrap(),
-            Filed::Waiting {
-                wait: FiledWait::CustomerAcceptance,
-                ..
-            }
-        ));
-        assert_eq!(moved(&env), 0);
-        book(&mut providers, "waiting still");
+        // Waiting, the filing is told it waits, and still does once the session it was filed in is over.
+        for when in [300, 700] {
+            env.clock.set(START + when);
+            assert!(matches!(
+                file(&mut env, &mut providers, &mut arrivals, &one).unwrap(),
+                Filed::Waiting {
+                    wait: FiledWait::CustomerAcceptance,
+                    ..
+                }
+            ));
+            assert!(!ended_in_the_log(&env, &order), "{when}");
+            assert_eq!(moved(&env), 0);
+            book(&mut providers, "waiting still");
+        }
 
-        // Its session over, the wait ends the order, recorded, and still nothing moved: a customer accepting then
+        // Its lifetime over, the wait ends the order, recorded, and still nothing moved: a customer accepting then
         // is told it ended, and no acceptance is recorded.
-        env.clock.set(START + 700);
+        env.clock.set(seconds(&arrivals.wait_ends(&order).unwrap()));
         let ended = if customer_accepts {
             accept_slow(
                 &mut env,
@@ -4406,5 +4433,487 @@ fn arrival_notice_restated_by_a_relay_is_recorded_naming_the_relay() {
     .unwrap();
     let own = relays_of(&env, RESERVE);
     assert!(own.len() >= 2 && own.iter().all(Option::is_none), "{own:?}");
+    assert_admitted(&env);
+}
+
+// REQ-QTE-10, GUA-1, REQ-ORD-15 (T-020-51: a deposit waiting for its customer outlives the filer's session) -------------
+
+/// The wait settings the T-020-51 tests use: a lifetime short enough to pass within the filing's session.
+const WAIT: u64 = 1_800;
+
+/// A slow deposit filed by the reserve in the short session `session-short`, its wait lasting [`WAIT`] seconds: the
+/// arrival, the filing, the order it waits as and its quote's digest.
+fn waiting_in_a_short_session(
+    env: &mut Env,
+    providers: &mut Reserve,
+    arrivals: &mut Arrivals,
+) -> (Filing, Id, rutent_contracts::module_interface::Digest) {
+    slow(env, 4 * 86_400);
+    let deposited = deposit(env, providers, arrivals, 1000, 0);
+    let mut one = filing(reserve_filer(), &deposited);
+    one.session = short_session(env, "session-short", START + 600);
+    let filed = file(env, providers, arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order),
+        wait: FiledWait::CustomerAcceptance,
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let (_, digest, _, _) = awaited(env, arrivals, &order).expect("its quote is shown");
+    (one, order, digest)
+}
+
+/// `at`, in whole seconds since the Unix epoch.
+fn seconds(at: &rutent_contracts::router_api::Timestamp) -> u64 {
+    u64::try_from(at.unix_nanos() / 1_000_000_000).unwrap()
+}
+
+/// When the first quote the log shows was shown, in whole seconds.
+fn first_shown_at(env: &Env) -> u64 {
+    env.book
+        .borrow()
+        .entries
+        .iter()
+        .find_map(|(_, e)| match e {
+            Entry::Verified(v) if matches!(v.what, What::Shown { .. }) => Some(seconds(&v.when.at)),
+            _ => None,
+        })
+        .expect("a quote was shown")
+}
+
+/// Arrivals whose waits last [`WAIT`] seconds.
+fn short_waits() -> Arrivals {
+    Arrivals::new().with_deposit_wait(Count::new(WAIT).unwrap())
+}
+
+/// The ends of waits the log holds, with why.
+fn wait_ends_in_the_log(env: &Env) -> Vec<(Id, WaitEnd)> {
+    env.book
+        .borrow()
+        .verified()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::WaitEnded { order, why } => Some((order.clone(), *why)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A customer whose filing session is over accepts the waiting deposit in a session of its own, opened later: the wait
+/// outlives the filer's session, the acceptance is recorded on `given_on_deposit` in the customer's session, and only a
+/// session open for the customer takes it (`REQ-QTE-10`, `AC-13`).
+// verifies: REQ-QTE-10, AC-13
+#[test]
+fn customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, order, digest) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+
+    // The filer's session is over: the wait is held, and its filer told so.
+    env.clock.set(START + 700);
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut arrivals, &one).unwrap(),
+        Filed::Waiting {
+            wait: FiledWait::CustomerAcceptance,
+            ..
+        }
+    ));
+    assert!(!ended_in_the_log(&env, &order));
+    // The customer's own session, opened later; and one that isn't the customer's, one that is over, one unknown.
+    let later = opened_session(&mut env, "session-later", START + 10_000);
+    env.sessions.held.insert(
+        "session-another".into(),
+        rutent_core_orch::intake::HeldSession {
+            holder: id("another-customer"),
+            expires_at: rutent_contracts::router_api::Timestamp::new(
+                Instant(START + 10_000).rfc3339().unwrap(),
+            )
+            .unwrap(),
+        },
+    );
+    let before = env.len();
+    for session in ["session-short", "session-another", "session-nobody-opened"] {
+        assert_eq!(
+            accept_in(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &order,
+                &customer(),
+                &id(session),
+                &digest
+            ),
+            Err(ArrivalError::NoSession),
+            "{session}"
+        );
+    }
+    assert_eq!(env.len(), before, "nothing recorded");
+    assert!(env.started().is_empty());
+
+    let accepted = accept_in(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &later,
+        &digest,
+    )
+    .unwrap();
+    assert!(matches!(accepted, Filed::Started { .. }), "{accepted:?}");
+    let acceptances = env.acceptances();
+    assert_eq!(acceptances.len(), 1);
+    let What::Acceptance {
+        basis,
+        session,
+        yeses,
+        ..
+    } = &acceptances[0].what
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (basis, session, yeses.len()),
+        (&AcceptanceBasis::GivenOnDeposit, &Some(later), 0)
+    );
+    assert_eq!(acceptances[0].who, customer());
+    assert_eq!(env.started(), [order.as_str()]);
+    assert!(wait_ends_in_the_log(&env).is_empty());
+    assert_admitted(&env);
+}
+
+/// A wait past its lifetime ends with the log's `wait_ended`, whichever call reads it first: Core's schedule
+/// (`Arrivals::end_expired`), the filer filing again, or the customer accepting. Nothing moves, the order takes no
+/// acceptance after it, and the deposit is free (`GUA-1`).
+// verifies: GUA-1
+#[test]
+fn wait_past_its_lifetime_ends_and_frees_its_deposit() {
+    for reader in ["schedule", "filing", "customer"] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = short_waits();
+        let (one, order, digest) =
+            waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+        let lasts = arrivals.wait_ends(&order).expect("a wait has its end");
+        assert_eq!(
+            seconds(&lasts),
+            first_shown_at(&env) + WAIT,
+            "counted from the quote shown"
+        );
+
+        // Before its lifetime, nothing ends.
+        env.clock.set(seconds(&lasts) - 1);
+        let ended = env
+            .with_providers(&mut providers, |_, desk| arrivals.end_expired(desk))
+            .unwrap();
+        assert!(ended.is_empty(), "{reader}: still waiting");
+        assert!(wait_ends_in_the_log(&env).is_empty());
+
+        env.clock.set(seconds(&lasts));
+        let (_, _, _, expired) = awaited(&env, &arrivals, &order).expect("its quote");
+        assert!(expired, "{reader}: the quote can't stand past the wait");
+        match reader {
+            "schedule" => {
+                let ended = env
+                    .with_providers(&mut providers, |_, desk| arrivals.end_expired(desk))
+                    .unwrap();
+                assert_eq!(ended, std::slice::from_ref(&order));
+            }
+            "filing" => {
+                let told = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+                assert!(
+                    matches!(told, Filed::CantProceed { order: Some(ref o), .. } if o == &order),
+                    "{told:?}"
+                );
+            }
+            _ => {
+                let told = accept_slow(
+                    &mut env,
+                    &mut providers,
+                    &mut arrivals,
+                    &order,
+                    &customer(),
+                    &digest,
+                )
+                .unwrap();
+                assert!(
+                    matches!(told, Filed::CantProceed { order: Some(ref o), .. } if o == &order),
+                    "{told:?}"
+                );
+            }
+        }
+        // Recorded once: the end of the wait, then the order's refusal, which is what tells the customer.
+        assert_eq!(
+            wait_ends_in_the_log(&env),
+            [(order.clone(), WaitEnd::PastItsLifetime)],
+            "{reader}"
+        );
+        assert!(ended_in_the_log(&env, &order), "{reader}");
+        assert!(env.acceptances().is_empty() && env.started().is_empty());
+        assert_eq!(arrivals.wait_ends(&order), None, "{reader}: no wait left");
+        // Told again, it records nothing more.
+        let before = env.len();
+        let again = env
+            .with_providers(&mut providers, |_, desk| arrivals.end_expired(desk))
+            .unwrap();
+        assert!(again.is_empty());
+        assert_eq!(
+            accept_slow(
+                &mut env,
+                &mut providers,
+                &mut arrivals,
+                &order,
+                &customer(),
+                &digest
+            )
+            .map(|f| matches!(f, Filed::CantProceed { .. })),
+            Ok(true),
+            "{reader}: the customer is told it ended"
+        );
+        assert_eq!(env.len(), before, "{reader}");
+        assert_admitted(&env);
+    }
+}
+
+/// The deposit a wait's end freed is filed again on the reserve's next filing, and routed once: a second order opens on
+/// it (the log admits it, `one-order-per-deposit`), starts on the deposit once, and the deposit is held against that
+/// order, not filed on a third time (`REQ-ORD-15`).
+// verifies: REQ-ORD-15
+#[test]
+fn freed_deposit_is_filed_again_and_routed_once() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, first, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+    // While it waits the deposit is held: another filing opens nothing.
+    let mut other = filing(reserve_filer(), &one.arrival);
+    other.request = id("deposit-2");
+    other.session = id(SESSION);
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut arrivals, &other),
+        Err(ArrivalError::Conflicting { .. })
+    ));
+    env.clock.set(seconds(&arrivals.wait_ends(&first).unwrap()));
+    env.with_providers(&mut providers, |_, desk| arrivals.end_expired(desk))
+        .unwrap();
+    assert_eq!(
+        wait_ends_in_the_log(&env),
+        [(first.clone(), WaitEnd::PastItsLifetime)]
+    );
+
+    // Its next filing, the route firm this time, takes the deposit.
+    slow(&mut env, 3_600);
+    other.session = short_session(&mut env, "session-next", START + 20_000);
+    let filed = file(&mut env, &mut providers, &mut arrivals, &other).unwrap();
+    let Filed::Started {
+        order: ref second, ..
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    assert_ne!(second, &first);
+    let acceptances = env.acceptances();
+    assert_eq!(acceptances.len(), 1, "routed once");
+    let What::Acceptance { order, basis, .. } = &acceptances[0].what else {
+        unreachable!()
+    };
+    assert_eq!((order, basis), (second, &AcceptanceBasis::AutomaticDeposit));
+    assert_eq!(env.started(), [second.as_str()]);
+    // The same filing again is told the same and records nothing; a third filing finds the deposit held.
+    let before = env.len();
+    assert_eq!(
+        file(&mut env, &mut providers, &mut arrivals, &other).unwrap(),
+        filed
+    );
+    let mut third = other.clone();
+    third.request = id("deposit-3");
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut arrivals, &third),
+        Err(ArrivalError::Conflicting { .. })
+    ));
+    assert_eq!(env.len(), before);
+    assert_admitted(&env);
+}
+
+/// A Core that reopens rebuilds the waits from its log: the order still waits, its lifetime counted from the quote the
+/// log shows, its deposit held; the customer's acceptance of the quote it was shown asks the route again (the quote
+/// itself isn't in the log), and the new quote is accepted; and a wait past its lifetime ends on the reopened Core as on
+/// the one that ran on (`REQ-QTE-10`).
+// verifies: REQ-QTE-10
+#[test]
+fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, order, digest) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+    let lasts = arrivals.wait_ends(&order).unwrap();
+
+    let history = env.history();
+    let mut reopened = env.with_providers(&mut providers, |_, desk| {
+        Arrivals::reopened(&history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
+    });
+    assert_eq!(
+        reopened.wait_ends(&order),
+        Some(lasts.clone()),
+        "the wait goes on"
+    );
+    // Its filer, filing the deposit again, is told the wait goes on, and records nothing: the log holds no request
+    // identifier for the filing, so the first filing of the deposit takes the wait. Another filing of it opens nothing.
+    env.clock.set(START + 700);
+    let before = env.len();
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut reopened, &one).unwrap(),
+        Filed::Waiting {
+            order: Some(ref o),
+            wait: FiledWait::CustomerAcceptance
+        } if o == &order
+    ));
+    assert_eq!(env.len(), before);
+    let mut other = filing(reserve_filer(), &one.arrival);
+    other.request = id("deposit-2");
+    assert!(matches!(
+        file(&mut env, &mut providers, &mut reopened, &other),
+        Err(ArrivalError::Conflicting { .. })
+    ));
+    // A quote the log never showed isn't the one shown.
+    let other_digest: rutent_contracts::module_interface::Digest =
+        serde_json::from_value(json!({ "algorithm": "sha-256", "value": "77".repeat(32) }))
+            .unwrap();
+    let later = opened_session(&mut env, "session-later", START + 10_000);
+    assert_eq!(
+        accept_in(
+            &mut env,
+            &mut providers,
+            &mut reopened,
+            &order,
+            &customer(),
+            &later,
+            &other_digest
+        ),
+        Err(ArrivalError::NotTheQuoteShown)
+    );
+    // The quote it was shown is asked again, the route shown anew; the customer accepts that one.
+    let asked = accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &digest,
+    )
+    .unwrap();
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(env.acceptances().is_empty());
+    let (_, second, until, _) = awaited(&env, &reopened, &order).expect("a quote shown anew");
+    assert_ne!(second, digest);
+    assert!(
+        until.is_some_and(|u| u.unix_nanos() <= lasts.unix_nanos()),
+        "the wait is no longer for the new quote"
+    );
+    let accepted = accept_in(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &order,
+        &customer(),
+        &later,
+        &second,
+    )
+    .unwrap();
+    assert!(matches!(accepted, Filed::Started { .. }), "{accepted:?}");
+    assert_admitted(&env);
+
+    // A reopened Core's wait ends at its lifetime too.
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    let (one, order, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+    let history = env.history();
+    let mut reopened = env.with_providers(&mut providers, |_, desk| {
+        Arrivals::reopened(&history, desk.kept).with_deposit_wait(Count::new(WAIT).unwrap())
+    });
+    env.clock.set(seconds(&reopened.wait_ends(&order).unwrap()));
+    let ended = env
+        .with_providers(&mut providers, |_, desk| reopened.end_expired(desk))
+        .unwrap();
+    assert_eq!(ended, std::slice::from_ref(&order));
+    assert_eq!(
+        wait_ends_in_the_log(&env),
+        [(order, WaitEnd::PastItsLifetime)]
+    );
+    assert_admitted(&env);
+
+    // Reopened again after the end, the deposit is still free: its next filing takes it.
+    let history = env.history();
+    let mut reopened = env.with_providers(&mut providers, |_, desk| {
+        Arrivals::reopened(&history, desk.kept)
+    });
+    slow(&mut env, 3_600);
+    let mut next = filing(reserve_filer(), &one.arrival);
+    next.request = id("deposit-2");
+    next.session = short_session(&mut env, "session-next", START + 20_000);
+    let filed = file(&mut env, &mut providers, &mut reopened, &next).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+    assert_admitted(&env);
+}
+
+/// A waiting quote past its validity is asked again on the customer's acceptance, as the figures it stood on were:
+/// nothing is accepted, the route is shown anew, and the wait goes on from the first quote shown, not from this one;
+/// a quote's validity never outlasts its wait (`REQ-QTE-15`).
+// verifies: REQ-QTE-15
+#[test]
+fn acceptance_on_a_waiting_quote_past_its_validity_asks_again() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let (_, order, first) = waiting_slow(&mut env, &mut providers, &mut arrivals);
+    let lasts = arrivals.wait_ends(&order).expect("its wait");
+    let (_, _, standing_until, _) = awaited(&env, &arrivals, &order).expect("its quote");
+    assert!(
+        standing_until.is_some_and(|u| u.unix_nanos() <= lasts.unix_nanos()),
+        "the quote doesn't outlast the wait"
+    );
+    env.clock.set(START + 3 * 3_600);
+    let asked = accept_slow(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &order,
+        &customer(),
+        &first,
+    )
+    .unwrap();
+    assert_eq!(
+        asked,
+        Filed::Waiting {
+            order: Some(order.clone()),
+            wait: FiledWait::CustomerAcceptance
+        }
+    );
+    assert!(env.acceptances().is_empty() && env.started().is_empty());
+    let (_, second, renewed, expired) = awaited(&env, &arrivals, &order).expect("a quote anew");
+    assert_ne!(second, first);
+    assert!(!expired);
+    assert!(
+        renewed
+            .as_ref()
+            .is_some_and(|u| u.unix_nanos() <= lasts.unix_nanos()),
+        "{renewed:?} past {lasts:?}"
+    );
+    assert_eq!(
+        arrivals.wait_ends(&order),
+        Some(lasts),
+        "the wait isn't renewed"
+    );
+    assert!(wait_ends_in_the_log(&env).is_empty());
     assert_admitted(&env);
 }

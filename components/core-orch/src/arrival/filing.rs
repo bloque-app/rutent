@@ -39,7 +39,12 @@
 //! customer's acceptance of the quote shown ([`super::Arrivals::accept`]), given in the filing's session, asks policy
 //! for the customer's own authorisation and records the `acceptance` on `basis: given_on_deposit`, its `who` the
 //! customer, then the start, stated by the customer; past the quote's validity it is asked again, and the customer
-//! accepts the one shown anew. The wait ends as any filing does when its session is over.
+//! accepts the one shown anew. The wait outlives the session the deposit was filed in (`T-020-51`): the customer accepts
+//! in any session policy opened for it that is still open, and the wait has a lifetime of its own, the operator's
+//! deposit-wait setting counted from the first quote shown, which no requote renews and no quote outlasts. Past it the
+//! wait ends, recorded as `wait_ended` and the order's refusal, and the deposit is free again: nothing moved, so the
+//! funds are where they were, and the reserve's next filing may file it. Core's schedule ends it
+//! ([`super::Arrivals::end_expired`]), or the next call that reads it does.
 //!
 //! An order that ends at routing is refused of its class, naming it. Once the deposit was held against its order
 //! (and `one-order-per-deposit` lets one deposit open only one order), or the reserve said no, it is `NotFileable`,
@@ -50,7 +55,7 @@
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Answer, ArrivalMatch, Authorisation, Awaiting, Count, DestinationOutcome,
-    Entry, OrderRefusalClass, Receipt, RefusalClass, Role, SlowSegment, What,
+    Entry, OrderRefusalClass, Receipt, RefusalClass, Role, SlowSegment, WaitEnd, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -67,7 +72,7 @@ use super::{ArrivalError, Arrivals, Filed, FiledOrders, FiledWait, Filing, Recor
 use crate::intake::{DESTINATION_INPUT, Desk, OrderRecord, Quote, Resolution};
 use crate::rounds::{self, History, NotOffered, Offer, Order, Presence, Routed, Routing};
 use crate::snapshot::check_part;
-use rutent_contracts::core_internal::Actor;
+use rutent_contracts::core_internal::{Actor, Parties};
 use rutent_prov::catalogue::{CheckRefusal, Eligibility};
 
 /// Where a permitted filing stands.
@@ -142,6 +147,16 @@ pub(super) struct Run {
     /// Whether the route's quote was shown as one to accept: once asked of the customer, every quote of it is, a
     /// requoted one too, firm or not.
     asks_the_customer: bool,
+    /// When the first quote it waits on was shown, in nanoseconds since the Unix epoch: its wait's lifetime counts from
+    /// here and no requote renews it (`T-020-51`).
+    waiting_since: Option<i128>,
+    /// The session the customer accepted in, once policy permitted its authorisation: the acceptance cites it.
+    customer_session: Option<Id>,
+    /// Rebuilt from the log by a Core that reopened (`T-020-51`): `asked` and `filing` hold what the log holds of the
+    /// filing, and the quote shown before is the digest the log last shows, the quote itself gone with the Core.
+    reopened: bool,
+    /// The digest of the quote the log last shows the order waiting on, for a wait rebuilt from it.
+    last_shown: Option<Digest>,
     pub(super) started: Option<RecordedInput>,
     /// Every login of the filer's party policy permitted on it, with the authorisation each gave: while one of them is
     /// listed, it holds, and each carries it on under its own authorisation without asking policy again.
@@ -423,6 +438,10 @@ impl Arrivals {
             outcome: None,
             customer: None,
             asks_the_customer: false,
+            waiting_since: None,
+            customer_session: None,
+            reopened: false,
+            last_shown: None,
             started: None,
             logins: vec![(well.filer.clone(), authorisation.clone())],
             unanswered: false,
@@ -433,6 +452,79 @@ impl Arrivals {
 }
 
 impl Run {
+    /// The wait of `order` for its customer, rebuilt from the log (`T-020-51`, `reopen.rs`): the deposit `arrival`
+    /// held against it, the authorisation policy permitted, when its first quote was shown (`since`, in nanoseconds
+    /// since the Unix epoch) and the digest of the one the log shows last. The filing is what the log holds of it; the
+    /// filer that files the deposit again states the rest ([`Run::adopt`]). `None` where the log's authorisation names
+    /// no outer node to deliver to.
+    pub(super) fn rebuilt(
+        arrival: Recorded,
+        order: &Id,
+        authorisation: Authorisation,
+        since: i128,
+        last: Digest,
+    ) -> Option<Self> {
+        let holder = arrival.holder.clone();
+        let account = authorisation.destination.account.as_str().to_owned();
+        let filing = Filing {
+            request: order.clone(),
+            filer: authorisation.given_by.clone(),
+            arrival: arrival.receipt.clone(),
+            parties: Parties {
+                requester: holder.clone(),
+                beneficiary: holder.clone(),
+                settlement_account_at: None,
+                payer: holder,
+            },
+            // The session isn't in the log: the customer's own, where it accepts, takes its place.
+            session: order.clone(),
+            destination: authorisation.destination.clone(),
+            route: rutent_contracts::router_api::Request {
+                request_id: order.clone(),
+                round: rutent_contracts::router_api::Round::Shortlist {},
+                from: Endpoint {
+                    node: NodeRef::Outer(arrival.node.clone()),
+                    asset: arrival.asset.clone(),
+                },
+                to: Endpoint {
+                    node: NodeRef::Outer(authorisation.destination.node.clone()),
+                    asset: authorisation.to_asset.clone(),
+                },
+                amount: arrival.amount.clone(),
+                objective: rutent_contracts::router_api::Objective::LowestTotalCost {},
+                floor: authorisation.floor.as_ref().map(|f| f.amount().clone()),
+                follows: None,
+            },
+            inputs: std::iter::once((DESTINATION_INPUT.to_owned(), account)).collect(),
+            needs: Vec::new(),
+        };
+        Some(Run {
+            asked: filing.clone(),
+            filing: filing.clone(),
+            arrival,
+            order: order.clone(),
+            logins: vec![(filing.filer.clone(), authorisation.clone())],
+            authorisation,
+            step: Step::Customer,
+            pending: Vec::new(),
+            confirming: None,
+            held: None,
+            history: History::new(),
+            offered: None,
+            accepting: None,
+            outcome: None,
+            customer: None,
+            asks_the_customer: true,
+            waiting_since: Some(since),
+            customer_session: None,
+            reopened: true,
+            last_shown: Some(last),
+            started: None,
+            unanswered: false,
+            spent: true,
+        })
+    }
+
     /// `filer`, a listed login of the permitted filer's party, carries it on: it is known as one of the party's logins,
     /// and, where the acceptance isn't built yet, the acceptance names it.
     pub(super) fn carried_on_by(
@@ -479,12 +571,21 @@ impl Run {
     /// Whether it should end before another filer is told it holds the deposit: under way, its session over, its
     /// reserve past its time to answer a question it left unanswered, or no login of its party left listed. The same
     /// conditions end it when its own filer carries it on.
-    pub(super) fn should_end(&self, desk: &mut Desk<'_, '_>) -> Result<bool, ArrivalError> {
+    pub(super) fn should_end(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        wait: i128,
+    ) -> Result<bool, ArrivalError> {
         // Ended already, or finishing: an acceptance that may be in the log is finished, never ended.
         if self.outcome.is_some() || self.accepting.is_some() {
             return Ok(false);
         }
         let now = journal::now(desk.parts.clock)?;
+        // A wait for the customer belongs to the customer, not to the filer: it holds until its lifetime is over, whether
+        // the session it was filed in is over or no login of the filer's party is left (`T-020-51`).
+        if self.step == Step::Customer {
+            return Ok(self.wait_is_over(now.unix_nanos(), wait));
+        }
         let session_over = !desk
             .sessions
             .held(&self.filing.session)
@@ -521,6 +622,7 @@ impl Run {
         desk: &mut Desk<'_, '_>,
         arrivals: &mut Arrivals,
         by: &Actor,
+        session: &Id,
         quote: &Digest,
     ) -> Result<Filed, ArrivalError> {
         if by.role != Role::Customer
@@ -542,19 +644,52 @@ impl Run {
         if self.step != Step::Customer {
             return Err(ArrivalError::NotNow);
         }
-        let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
-        if &offered.digest != quote {
-            return Err(ArrivalError::NotTheQuoteShown);
-        }
         let now = journal::now(desk.parts.clock)?;
-        // A permit holds no longer than the session the deposit was filed in, which the acceptance is given in.
-        if !self.session_open(desk)? {
-            self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+        let wait = arrivals.wait_nanos();
+        // A wait past its lifetime ends, whatever the customer was shown: it is told so.
+        if self.wait_is_over(now.unix_nanos(), wait) {
+            self.end_wait(desk)?;
             return self.go_on::<R>(desk, arrivals);
         }
-        // A quote past its validity binds nobody: it is asked again, and the customer accepts the one shown anew.
-        if offered.expires.is_some_and(|at| at <= now.unix_nanos()) {
-            self.route::<R>(desk)?;
+        let shown = match &self.offered {
+            Some(offered) => &offered.digest,
+            None => self.last_shown.as_ref().ok_or(ArrivalError::NotNow)?,
+        };
+        if shown != quote {
+            return Err(ArrivalError::NotTheQuoteShown);
+        }
+        // The acceptance is given in a session policy opened for the customer and still open: the wait outlives the one
+        // the deposit was filed in (`T-020-51`).
+        if !held_by(
+            desk,
+            session,
+            &self.filing.parties.requester,
+            now.unix_nanos(),
+        ) {
+            return Err(ArrivalError::NoSession);
+        }
+        // A quote past its validity binds nobody, nor does one a reopened Core no longer holds: it is asked again, and
+        // the customer accepts the one shown anew.
+        if self
+            .offered
+            .as_ref()
+            .is_none_or(|o| o.expires.is_some_and(|at| at <= now.unix_nanos()))
+        {
+            if self.offered.is_none() {
+                self.filing.session = session.clone();
+            }
+            // A wait rebuilt from the log holds only what the log holds of its filing, not the inputs its tuples may
+            // need (`REQ-AUD-6`): where that routes nowhere, the wait goes on and its filer restates the filing
+            // ([`Run::adopt`]), the order never ended for a route it couldn't ask for.
+            let saved = self.reopened.then(|| self.clone());
+            self.route::<R>(desk, wait)?;
+            if let (Some(saved), true) = (saved, self.outcome.is_some()) {
+                *self = saved;
+                return Ok(Filed::Waiting {
+                    order: Some(self.order.clone()),
+                    wait: FiledWait::CustomerAcceptance,
+                });
+            }
             return self.go_on::<R>(desk, arrivals);
         }
         let authorisation = Authorisation {
@@ -577,20 +712,74 @@ impl Run {
         }
         self.authorisation = authorisation;
         self.customer = Some(by.clone());
+        self.customer_session = Some(session.clone());
         self.step = Step::Accept;
         self.go_on::<R>(desk, arrivals)
     }
 
-    /// Whether the session the deposit was filed in is the holder's, and open by Core's clock.
-    fn session_open(&self, desk: &mut Desk<'_, '_>) -> Result<bool, ArrivalError> {
-        let now = journal::now(desk.parts.clock)?;
-        Ok(desk
-            .sessions
-            .held(&self.filing.session)
-            .is_some_and(|held| {
-                held.holder == self.filing.parties.requester
-                    && held.expires_at.unix_nanos() > now.unix_nanos()
-            }))
+    /// When its wait ends, in nanoseconds since the Unix epoch, where it waits for its customer: its lifetime counted
+    /// from the first quote shown (`T-020-51`).
+    pub(super) fn wait_end(&self, wait: i128) -> Option<i128> {
+        (self.step == Step::Customer && self.outcome.is_none())
+            .then_some(self.waiting_since? + wait)
+    }
+
+    /// Whether it waits for its customer past its lifetime at `now`.
+    pub(super) fn wait_is_over(&self, now: i128, wait: i128) -> bool {
+        self.wait_end(wait).is_some_and(|end| end <= now)
+    }
+
+    /// Whether its end is built and not all appended: it is carried on to the log by the next call that reads it.
+    pub(super) fn ending(&self) -> bool {
+        self.outcome.is_some() && !self.pending.is_empty()
+    }
+
+    /// Whether `filing` is the filing of this wait, rebuilt from the log: the filer's party files the same deposit.
+    pub(super) fn is_the_filing_reopened(&self, filing: &Filing) -> bool {
+        self.reopened
+            && self.outcome.is_none()
+            && self.filing.filer.party == filing.filer.party
+            && self.asked.arrival == filing.arrival
+            && self.filing.parties == filing.parties
+    }
+
+    /// Takes the filing the filer states again for the one rebuilt from the log, where it is well formed.
+    pub(super) fn adopt(&mut self, filing: &Filing) {
+        if let Some(well) = well_formed(filing.clone(), &self.arrival) {
+            self.asked = filing.clone();
+            self.filing = well;
+            self.reopened = false;
+        }
+    }
+
+    /// Ends its wait, recorded, and appends what it recorded: the order's end the log takes once and no more.
+    pub(super) fn end_wait_recorded(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+    ) -> Result<(), ArrivalError> {
+        if self.outcome.is_none() {
+            self.end_wait(desk)?;
+        }
+        flush(desk, &mut self.pending)?;
+        Ok(())
+    }
+
+    /// Ends the order's wait past its lifetime (`T-020-51`): `wait_ended`, then the order's refusal, which tells the
+    /// customer once (`T-023-04`). The deposit is free again: its order never took an acceptance, so `one-order-per-deposit`
+    /// lets the next filing take it, and nothing moved.
+    fn end_wait(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
+        let ended = journal::build(
+            desk.parts.clock,
+            desk.core,
+            What::WaitEnded {
+                order: self.order.clone(),
+                why: WaitEnd::PastItsLifetime,
+            },
+        )?;
+        self.pending.push(ended);
+        self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+        self.spent = false;
+        Ok(())
     }
 
     /// The quote the order waits on its customer to accept, as of `now`.
@@ -609,6 +798,10 @@ impl Run {
 
     /// Ends it, recorded, with no login of its party left to carry it on.
     pub(super) fn abandon(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
+        // A wait for the customer ends as a wait does, freeing its deposit.
+        if self.step == Step::Customer {
+            return self.end_wait_recorded(desk);
+        }
         self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
         flush(desk, &mut self.pending)?;
         Ok(())
@@ -629,6 +822,11 @@ impl Run {
         self.outcome.clone()
     }
 
+    /// The filing as Core runs it.
+    pub(super) fn filing(&self) -> &Filing {
+        &self.filing
+    }
+
     /// The order's record, as [`super::FiledOrders::opened`] was handed it.
     pub(super) fn record(&self) -> OrderRecord {
         OrderRecord {
@@ -647,16 +845,19 @@ impl Run {
     ) -> Result<Filed, ArrivalError> {
         loop {
             flush(desk, &mut self.pending)?;
+            let wait = arrivals.wait_nanos();
             let waits = match self.step {
                 Step::Hold => self.hold(desk, arrivals)?,
                 Step::Route => {
-                    self.route::<R>(desk)?;
+                    self.route::<R>(desk, wait)?;
                     None
                 }
-                // It waits as long as the session the customer would accept in is open: past it, the order ends, its
-                // funds where they were.
-                Step::Customer if !self.session_open(desk)? => {
-                    self.end(desk, OrderRefusalClass::NoRouteRightNow)?;
+                // It waits for its lifetime, whatever becomes of the session it was filed in: past it, the order
+                // ends, its funds where they were and its deposit free (`T-020-51`).
+                Step::Customer
+                    if self.wait_is_over(journal::now(desk.parts.clock)?.unix_nanos(), wait) =>
+                {
+                    self.end_wait(desk)?;
                     None
                 }
                 Step::Customer => Some(Filed::Waiting {
@@ -808,25 +1009,26 @@ impl Run {
             // A permit doesn't expire, so it holds no longer than the session the filing was made in: past it, the
             // order ends rather than be accepted.
             let now = journal::now(desk.parts.clock)?;
-            let open = desk
-                .sessions
-                .held(&self.filing.session)
-                .is_some_and(|held| {
-                    held.holder == self.filing.parties.requester
-                        && held.expires_at.unix_nanos() > now.unix_nanos()
-                });
-            if !open {
+            // The deposit's own acceptance holds in the session it was filed in; its customer's is given in the
+            // customer's own (`T-020-51`). Past it the order ends rather than be accepted.
+            let given_in = self
+                .customer_session
+                .clone()
+                .unwrap_or_else(|| self.filing.session.clone());
+            if !held_by(
+                desk,
+                &given_in,
+                &self.filing.parties.requester,
+                now.unix_nanos(),
+            ) {
                 return self.end(desk, OrderRefusalClass::NoRouteRightNow);
             }
             let offered = self.offered.clone().ok_or(ArrivalError::NotNow)?;
-            // The deposit's own acceptance, or its customer's of a route with no firm rate, given in the session the
-            // deposit was filed in, no reserve's yes with it (`given_on_deposit`).
+            // The deposit's own acceptance, or its customer's of a route with no firm rate, no reserve's yes with it
+            // (`given_on_deposit`).
             let by = self.customer.clone().unwrap_or(self.filing.filer.clone());
             let (basis, session) = match self.customer {
-                Some(_) => (
-                    AcceptanceBasis::GivenOnDeposit,
-                    Some(self.filing.session.clone()),
-                ),
+                Some(_) => (AcceptanceBasis::GivenOnDeposit, Some(given_in)),
                 None => (AcceptanceBasis::AutomaticDeposit, None),
             };
             let input = self.route_chosen(desk, &offered, &by)?;
@@ -881,7 +1083,11 @@ impl Run {
     }
 
     /// Routes the order with no user present, and records the quote shown, or why it can't proceed.
-    fn route<R: Router>(&mut self, desk: &mut Desk<'_, '_>) -> Result<(), ArrivalError> {
+    fn route<R: Router>(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        wait: i128,
+    ) -> Result<(), ArrivalError> {
         let order = Order {
             order: self.order.clone(),
             caller: self.filing.filer.clone(),
@@ -941,10 +1147,25 @@ impl Run {
         // too, firm or not.
         self.asks_the_customer |= !price.no_firm_rate.is_empty();
         // The whole second below it, so the quote shown and the one asked again past it agree on the instant.
-        let expires = chosen
+        let mut expires = chosen
             .record
             .earliest_expiry(&candidate)
             .map(|nanos| nanos.div_euclid(1_000_000_000) * 1_000_000_000);
+        // A quote the order waits on its customer to accept stands no longer than the wait: its lifetime counts from
+        // the first quote shown, and no requote renews it (`T-020-51`).
+        if self.asks_the_customer {
+            let since = match self.waiting_since {
+                Some(since) => since,
+                None => {
+                    let now = journal::now(desk.parts.clock)?.unix_nanos();
+                    let since = now.div_euclid(1_000_000_000) * 1_000_000_000;
+                    self.waiting_since = Some(since);
+                    since
+                }
+            };
+            let lasts = since + wait;
+            expires = Some(expires.map_or(lasts, |at| at.min(lasts)));
+        }
         let slow = price.no_firm_rate.clone();
         let shown_as = price.shown_as;
         let quote = Quote {
@@ -980,6 +1201,7 @@ impl Run {
         };
         self.pending
             .push(journal::build(desk.parts.clock, desk.core, shown)?);
+        self.last_shown = Some(digest.clone());
         self.offered = Some(Offered {
             quote,
             digest,
@@ -1055,8 +1277,15 @@ impl Run {
     }
 }
 
+/// Whether `session` is one policy opened for `holder` and still open at `now`, in nanoseconds since the Unix epoch.
+fn held_by(desk: &mut Desk<'_, '_>, session: &Id, holder: &Id, now: i128) -> bool {
+    desk.sessions
+        .held(session)
+        .is_some_and(|held| &held.holder == holder && held.expires_at.unix_nanos() > now)
+}
+
 /// `nanos` since the Unix epoch, as a timestamp of whole seconds.
-fn timestamp_of(nanos: i128) -> Option<rutent_contracts::router_api::Timestamp> {
+pub(super) fn timestamp_of(nanos: i128) -> Option<rutent_contracts::router_api::Timestamp> {
     let seconds = u64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
     rutent_contracts::router_api::Timestamp::new(
         rutent_prov::catalogue::Instant(seconds).rfc3339()?,

@@ -7397,3 +7397,82 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
      until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, which reopens the platform from its record.
   4. `stated_value` holds nothing where neither the question's bytes nor `order_opened`'s amount in that asset can be
      read: two losses at once, noted, not built for.
+
+## T-020-51: a deposit waiting for its customer outlives the filer's session, and its wait ends
+
+Branch `f-020/t-020-51-deposit-wait`, from `1bc91b21` (the batch holding `T-020-46`'s rebuild and `T-020-50`'s deposit
+destination). Finding 8 of the milestone review of 2026-11-24, issue #274; the owner's answer on the form,
+`deposit-wait-end`: no re-offer by Core. Edits `components/core-orch/src/arrival/` (`mod.rs`, `filing.rs`, the new
+`reopen.rs`), `core-internal` (a `DEC-20` path, folded into its unreleased 1.0.0: one setting), `core-authz`'s role tests
+(no rule code: `Permission::Setting` takes its kind by itself), and the `F-024` files the commit bodies name: the
+assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/tests/deposit_waits.rs`.
+
+- **The wait's lifetime.** The first quote an order waits on its customer to accept is shown at a time (the `shown`'s);
+  the wait lasts the operator's deposit-wait setting from it (`Run::waiting_since`), and no requote renews it. A quote
+  shown for the wait stands no longer than the wait (`Offered::expires` is the earlier of the figures' validity and the
+  wait's end, the whole second below), so the validity the customer is told (`awaiting.valid_until`) never outlasts it.
+  Past the lifetime the wait ends (`end_wait`): the log's `wait_ended` (`why: past_its_lifetime`) and then the order's
+  `order_refusal` (`no_route_right_now`), and the deposit is free (`spent` unset, so `Arrivals::settle` doesn't keep it
+  and the log's `one-order-per-deposit` admits the next order on it). The refusal is what tells the customer, once
+  (`T-023-04`: `Notices::notify` reads `order_refusal`, not `wait_ended`, and keys the notice by receiver and order, so a
+  restart sends it no more); the new entry adds no notice of its own.
+- **Who reads it.** `Arrivals::end_expired(desk)`, for Core's schedule (`T-020-48`: a tick calls it; the assembly's
+  `end_expired_waits` stands in until then), ends every wait past its lifetime, answering the orders ended, and retries
+  an end the log couldn't take; the next call that reads a wait ends it too: the filer filing the deposit again
+  (`should_end` at `Step::Customer` is the lifetime alone), the same filing carried on (`go_on`), and the customer's
+  acceptance (`customer_accepts` checks the lifetime before the digest). `Arrivals::wait_ends(order)` says when a wait
+  ends; `awaiting` says `expired` once its quote can no longer stand.
+- **The customer's session.** `Arrivals::accept(desk, order, by, session, quote)` takes the session the customer
+  accepts in, one policy opened for the order's requester that is still open by Core's clock (the session register,
+  `held_by`), else `ArrivalError::NoSession` and nothing recorded. The acceptance cites it
+  (`acceptance-is-asked-in-the-users-session` holds it to an `open_session` in the log). The filing's session is no more
+  the wait's: a wait whose filing session is over is held (`Run::should_end` at the customer step ignores the session and
+  the filer's logins), and `T-020-41`'s `nothing_moves_while_the_filed_order_waits_…` now expects that, ending the wait at
+  its lifetime instead.
+- **The setting.** `OperatorSetting::DepositWait { seconds }` (`deposit_wait`, `SettingKind::DepositWait`), added to
+  `core-internal`'s unreleased 1.0.0 (schema, README line, changelog entry, one valid and one invalid fixture, no version
+  moved), so policy holds it under `Permission::Setting(DepositWait)` with no change to core-authz's rules: its role
+  tests list the new fixture (and the counts moved by one). Core's decided path for setting it is `T-020-49`'s. Until
+  then `Arrivals` holds it (`with_deposit_wait`, `set_deposit_wait`) and defaults it to one day
+  (`DEFAULT_DEPOSIT_WAIT_SECONDS`): the snapshot's `PolicyBounds` (router-api) has no such field and no contract is
+  edited for it. `T-020-49` calls `set_deposit_wait` from its decided path and rebuilds it from the log.
+- **The rebuild** (`reopen.rs`, `Arrivals::reopened(history, kept)`): the arrivals (`Recorded`) and the notices taken
+  (`Noted`, so a notice reported again is the same arrival), read back from the evidence store as `arrive` reads one; the
+  deposits held (`spent`) by every order an `arrival` holds, unless the log shows its `wait_ended`; and the waits, each
+  order the log shows `shown` awaiting its customer with no acceptance, start, refusal or end, at the customer step, its
+  lifetime counted from its first `shown`, rebuilt by `Run::rebuilt`. The assembly's `rebuild_from_log` calls it, hands
+  policy's sources the order's record again and keeps the filing for the order's start.
+- **Defaults** (reversible, each failing closed):
+  1. The wait lasts one day, until the operator's setting says otherwise (`T-020-49`).
+  2. A wait is the customer's, not the filer's: it outlives the filing session and the filer's logins; only its lifetime
+     ends it (`SessionOver`, a `WaitEnd` the contract names, is never written: no wait ends with its session now).
+  3. The end writes `wait_ended` and then `order_refusal` (`no_route_right_now`); the refusal keeps the order's end and
+     its notice where they were. Only the lifetime's end is a `wait_ended` (and frees the deposit): a requote that finds
+     no route still ends the order as before, its deposit spent (`OrderRefused` is never written).
+  4. The quote shown on a rebuilt wait is gone (the log holds its digest alone): the customer's acceptance of the digest
+     the log last shows asks the route again, shown anew, as a quote past its validity does; any other digest is
+     `NotTheQuoteShown`. A rebuilt wait holds what the log holds of its filing (the deposit, the authorisation, the
+     destination, the to asset, the floor, the holder as every party); its request identifier, objective, other inputs,
+     judgements and session are not in the log (the inputs are kept out of it by `REQ-AUD-6`), so the route is asked
+     again with the destination alone, and **where that offers nothing the wait goes on** and the customer is told it
+     waits: the filer filing the deposit again restates the filing (`Run::adopt`: any filing of that deposit by the same
+     filer's party takes the wait, whatever its request identifier) and the next acceptance asks the route with it.
+  5. The session a rebuilt wait asks its route in is the customer's, the one it accepts in.
+- **Gaps, with owners.**
+  1. A filing's inputs, objective, request identifier and session aren't in the log, so a reopened wait can be accepted
+     only after its filer restates the filing, or where the destination alone is enough for the route. Closing it needs a
+     field on the `arrival` entry that holds the deposit (a salted commitment to a kept `order-inputs` statement, as
+     `order_opened.inputs` is, plus the request identifier): a `core-internal` shape this row wasn't given. Owner: the
+     lead, with `T-020-46`'s `order-inputs` shape.
+  2. The orders started or ended, and the filings refused, aren't rebuilt: a repeat of such a filing after a reopening is
+     told the deposit is held (`Conflicting`, or `NotFileable`) and not how it ended. Fail closed; `T-024-21`'s restarted
+     runs read it.
+  3. The setting's decided path and its rebuild from the log: `T-020-49`. Its schedule's call to `end_expired`: `T-020-48`.
+- **Named tests** (`components/core-orch/tests/arrival.rs`): `customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own`
+  [`REQ-QTE-10`, `AC-13`], `wait_past_its_lifetime_ends_and_frees_its_deposit` [`GUA-1`],
+  `freed_deposit_is_filed_again_and_routed_once` [`REQ-ORD-15`],
+  `filed_order_waiting_for_its_customer_still_waits_after_core_reopens` [`REQ-QTE-10`],
+  `acceptance_on_a_waiting_quote_past_its_validity_asks_again` [`REQ-QTE-15`]; `contracts/tests/core-internal.rs`:
+  `deposit_wait_setting_is_an_operator_setting_of_its_own` [`REQ-AUZ-6`]. Scenarios (`deposit_waits.rs`):
+  `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens`,
+  `a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved`.
