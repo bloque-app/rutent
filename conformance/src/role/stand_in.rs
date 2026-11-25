@@ -1545,6 +1545,10 @@ impl Exchange {
             Some(served) if served.is_undone_by(reversal) => {
                 self.conversions.retain(|t| t != &reversal.reverses);
                 self.served.remove(&reversal.reverses);
+                // Undone, but the exchange can't tell yet (`T-024-23`): the undo happened, and what it says is unknown.
+                if std::mem::take(&mut self.unknown_next) {
+                    return ReversalOutcome::Unknown(Unknown {});
+                }
                 ReversalOutcome::Succeeded(ReversalSettlement {
                     node: reversal.node.clone(),
                     asset: reversal.asset.clone(),
@@ -1995,6 +1999,10 @@ impl Ramp {
                     self.transfers.retain(|t| t != &reversal.reverses);
                 }
                 self.served.remove(&reversal.reverses);
+                // Undone, but the ramp can't tell yet (`T-024-23`).
+                if std::mem::take(&mut self.unknown_next) {
+                    return ReversalOutcome::Unknown(Unknown {});
+                }
                 ReversalOutcome::Succeeded(ReversalSettlement {
                     node: reversal.node.clone(),
                     asset: reversal.asset.clone(),

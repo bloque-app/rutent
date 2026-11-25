@@ -496,6 +496,23 @@ pub fn shape_of(provider: &str) -> Shape {
             public_node: true,
             ..Shape::default()
         },
+        // An exchange of a third publisher at the public ledger `sim-duo-in-ledger`, from COP to USD, and a reserve of a
+        // fourth, in USD, between that ledger and its own bank (`T-024-23`): a route that withdraws at `sim-duo-in`,
+        // converts at the exchange and deposits at the reserve has a failing segment whose provider is not its origin
+        // reserve's publisher, so the origin reserve's word that the value is back counts (`AC-4`).
+        "sim-duo-exchange" => Shape {
+            node: Some("sim-duo-in-ledger".to_owned()),
+            public_node: true,
+            asset: Some("COP".to_owned()),
+            to_asset: Some("USD".to_owned()),
+            ..Shape::default()
+        },
+        "sim-duo-out-usd" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-duo-in-ledger".to_owned()),
+            public_node: true,
+            ..Shape::default()
+        },
         // A reserve whose node no publisher declares and the operator doesn't list (`REQ-CAT-22`).
         "sim-ghost" => Shape {
             node: Some("sim-ghost-ledger".to_owned()),
@@ -661,6 +678,10 @@ pub struct Behaviour {
     /// recorded at what reached the ledger, net of the charge, instead of what entered; a deposit's or a transfer's at
     /// the `amount_out` it states, its charge within, instead of what arrives. The result it gives is unchanged.
     pub charge_misplaced: bool,
+    /// Whose fault it shows a failure was, on a result that fails (`T-024-23`, `REQ-ORD-11`): the customer's or the
+    /// operator's. The result it signs says so in its `fault`; without it a failed result shows none, as the provider
+    /// carrying the reversal does. It changes nothing in the books, and a result that doesn't fail carries none.
+    pub fault: Option<rutent_contracts::provider_role::Fault>,
 }
 
 impl Behaviour {
@@ -716,6 +737,24 @@ impl Behaviour {
     pub fn crediting_a_reversal() -> Self {
         Self {
             reversal_credited: true,
+            ..Self::default()
+        }
+    }
+
+    /// Failing the operation, showing that `fault` was whose (`T-024-23`).
+    pub fn failing_by(fault: rutent_contracts::provider_role::Fault) -> Self {
+        Self {
+            act: Act::Fail,
+            fault: Some(fault),
+            ..Self::default()
+        }
+    }
+
+    /// Undoing a segment, and stating the value back short by `bps` basis points (`T-024-23`): the provider's own
+    /// reversal says less than the segment took in, or, for a reserve asked to confirm, the credit that arrived is less.
+    pub fn short_by(bps: u16) -> Self {
+        Self {
+            delivery: Delivery::Short { bps },
             ..Self::default()
         }
     }
@@ -879,6 +918,7 @@ impl Simulated {
         if behaviour.reversal_credited
             && let Operation::ReversalConfirmation(c) = &operation.statement
         {
+            // The reserve's node the value is shown back at: its private one, or its ledger where that is a public node.
             let node = self
                 .provider
                 .advertisement()
@@ -887,9 +927,17 @@ impl Simulated {
                 .private_nodes
                 .first()
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| self.spec.ledger());
+            // A credit that arrived short (`T-024-23`) is less than the segment took in, so the reserve is asked about
+            // an amount that never arrived.
+            let arrived = match behaviour.delivery {
+                Delivery::Short { bps } => {
+                    short_of(&c.amount, bps).unwrap_or_else(|| c.amount.clone())
+                }
+                _ => c.amount.clone(),
+            };
             self.provider
-                .credit_reversal(&c.segment, &node, &c.asset, &c.amount);
+                .credit_reversal(&c.segment, &node, &c.asset, &arrived);
             credited = true;
         }
         // A hook is armed for a real movement alone: the stand-in disarms it only when a movement succeeds or
@@ -921,7 +969,12 @@ impl Simulated {
             Act::Unknown => body["outcome"]["status"] == "unknown",
             _ => body["outcome"]["status"] == "failed",
         };
-        deliver(&mut body, behaviour.delivery);
+        if matches!(operation.statement, Operation::Reversal(_)) {
+            deliver_reversal(&mut body, behaviour.delivery);
+        } else {
+            deliver(&mut body, behaviour.delivery);
+        }
+        show_fault(&mut body, behaviour.fault);
         // A repeat that changed nothing sends no movement again: a network that reorged the first would take it
         // as a new one in another block.
         let mut movements = if behaviour.unrecorded || !changed {
@@ -1054,6 +1107,42 @@ fn misplace_the_charge(operation: &Operation, result: &Value, movements: &mut [M
     };
     if let Some(wrong) = wrong {
         moved.amount = wrong.to_string();
+    }
+}
+
+/// `amount` less `bps` basis points of it, where it is a number.
+fn short_of(amount: &str, bps: u16) -> Option<String> {
+    let whole = amount.parse::<u128>().ok()?;
+    Some((whole - whole * u128::from(bps.min(10_000)) / 10_000).to_string())
+}
+
+/// Applies a delivery to a reversal's result: a settled one states the value back, and a short delivery states less of
+/// it than the segment took in (`T-024-23`). A reversal moves no pieces and gives out nothing, so nothing else changes.
+fn deliver_reversal(body: &mut Value, delivery: Delivery) {
+    let Delivery::Short { bps } = delivery else {
+        return;
+    };
+    let Some(outcome) = body.get_mut("outcome") else {
+        return;
+    };
+    if outcome["status"] != "succeeded" {
+        return;
+    }
+    if let Some(short) = outcome["amount"].as_str().and_then(|a| short_of(a, bps)) {
+        outcome["amount"] = Value::from(short);
+    }
+}
+
+/// Sets the fault a failed result shows (`T-024-23`): only a result that failed names one.
+fn show_fault(body: &mut Value, fault: Option<rutent_contracts::provider_role::Fault>) {
+    let Some(fault) = fault else {
+        return;
+    };
+    let Some(outcome) = body.get_mut("outcome") else {
+        return;
+    };
+    if outcome["status"] == "failed" {
+        outcome["fault"] = serde_json::to_value(fault).expect("a fault serialises");
     }
 }
 

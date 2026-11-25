@@ -180,16 +180,15 @@ struct Placed<'a> {
     index: u64,
 }
 
-/// The orders `entries` show accepted, refused or started: none is waited on for its customer.
+/// The orders `entries` show accepted or started: none is waited on for its customer, so none is told as waiting.
+/// An order they show refused is not here: its wait is told first, then its end (`T-023-04`), so no receiver is told
+/// a wait ended that it wasn't told of.
 fn settled_orders(entries: &[(Receipt, Entry)]) -> BTreeSet<&str> {
     entries
         .iter()
         .filter_map(|(_, entry)| match entry {
             Entry::Verified(v) => match &v.what {
                 What::Acceptance { order, .. } => Some(order.as_str()),
-                What::OrderRefusal {
-                    order: Some(order), ..
-                } => Some(order.as_str()),
                 What::Input { input } if matches!(input.observed, Observed::RouteChosen { .. }) => {
                     Some(input.subject.order.as_str())
                 }
@@ -361,6 +360,8 @@ impl Notices {
         // What the log's summaries show ended is known before anything is sent, so a restart sends none of it again.
         self.learn(recorded);
         let settled = settled_orders(unread);
+        // The orders this batch has shown refused so far: a `shown` of one that comes after is told of nothing.
+        let mut refused_so_far: BTreeSet<&str> = BTreeSet::new();
         let mut sent = 0;
         for (receipt, entry) in unread {
             if let Some(order) = about(entry)
@@ -399,10 +400,12 @@ impl Notices {
                     awaiting: Some(awaiting),
                     ..
                 } = &v.what
+                && !refused_so_far.contains(order.as_str())
             {
                 self.waiting_on
                     .insert(order.as_str().to_owned(), awaiting.requester.clone());
-                // An order the log shows accepted, refused or started since is waited on no more: told of nothing.
+                // An order the log shows accepted or started since is waited on no more: told of nothing. One it shows
+                // refused is told as waiting first, and its end follows from the refusal's own entry.
                 if !settled.contains(order.as_str()) {
                     let at = Placed {
                         at: &v.when.at,
@@ -410,6 +413,13 @@ impl Notices {
                     };
                     sent += self.waiting(order, shown, awaiting, at, notice_key, transport)?;
                 }
+            }
+            if let Entry::Verified(v) = entry
+                && let What::OrderRefusal {
+                    order: Some(order), ..
+                } = &v.what
+            {
+                refused_so_far.insert(order.as_str());
             }
             if let Entry::Verified(v) = entry
                 && let What::OrderRefusal {
