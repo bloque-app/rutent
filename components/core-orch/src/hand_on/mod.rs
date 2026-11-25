@@ -490,6 +490,9 @@ pub struct HandOn {
     /// The hand-ons a Core that reopened found pending in the log, by order and part (`T-020-46`): the first order's
     /// `handed_on` taken, the linked order's `route_chosen` not.
     logged: BTreeMap<(String, String), Logged>,
+    /// The hand-ons a Core that reopened found refused in the log, by order and part (`T-020-46`): the first order's
+    /// `handed_on` taken, its linked order's refusal recorded, its `hand_on_taken_back` not; a retry takes it back.
+    refused: BTreeMap<(String, String), (Id, Receipt)>,
 }
 
 /// A hand-on the log holds half of: the first order's `handed_on`, with its receipt, and the first order as it stood
@@ -520,9 +523,18 @@ impl HandOn {
     /// `hand_on_taken_back` after it is pending, its `handed_on` as the log holds it and the first order as it stood
     /// before it. A retry naming the same linked order appends the linked order's `route_chosen` alone, built from the
     /// retry's route as the first hand-on built it; one naming another is refused
-    /// ([`HandOnError::PendingForAnother`]). The rest of a hand-on is in the log already: its starts, which
-    /// [`HandOn::recover_starts`] proves again.
-    pub fn reopened(history: &[(Receipt, Entry)]) -> Self {
+    /// ([`HandOnError::PendingForAnother`]). A part whose linked order's refusal follows its `handed_on`, not yet taken
+    /// back, is taken back on a retry; a linked order the log opened keeps its start as Core recorded it (the first
+    /// order, the part's value at rest over `segments`, the reserve the resolution named or the route's first
+    /// provider, the route's first segment), for its proof; and each start the log took keeps its record, read back
+    /// through `reading`, and the holding account's record it spent. The changes and resumes pending are entries built
+    /// and not appended: none is in the log, so a retry builds them again. [`HandOn::recover_starts`] proves the
+    /// starts to the segments again.
+    pub fn reopened(
+        history: &[(Receipt, Entry)],
+        segments: &Segments,
+        reading: &mut dyn crate::segments::Reopening,
+    ) -> Self {
         let mut hand_on = HandOn::new();
         let inputs: Vec<(&Receipt, &RecordedInput)> = history
             .iter()
@@ -541,17 +553,6 @@ impl HandOn {
             let Some(part) = input.subject.part.as_ref() else {
                 continue;
             };
-            let later = &inputs[at + 1..];
-            let opened = later.iter().any(|(_, i)| {
-                i.subject.order.as_str() == linked_order.as_str()
-                    && matches!(i.observed, Observed::RouteChosen { .. })
-            });
-            let taken_back = later.iter().any(|(_, i)| {
-                matches!(&i.observed, Observed::HandOnTakenBack { linked_order: l } if l == linked_order)
-            });
-            if opened || taken_back {
-                continue;
-            }
             // The first order as it stood before its `handed_on`.
             let mut before: Option<stm::Order> = None;
             for (_, earlier) in &inputs[..at] {
@@ -563,23 +564,113 @@ impl HandOn {
                     Some(order) => Some(Stm::transition(&order, earlier)),
                 };
             }
-            let (Some(before), Ok(entry)) = (
-                before,
-                GeneralEntry::try_from(
-                    history
-                        .iter()
-                        .find(|(r, _)| r == *receipt)
-                        .map(|(_, e)| e.clone())
-                        .unwrap_or_else(|| unreachable!("the input's own entry")),
-                ),
+            let Some(before) = before else {
+                continue;
+            };
+            let at_key = (
+                input.subject.order.as_str().to_owned(),
+                part.as_str().to_owned(),
+            );
+            let later = &inputs[at + 1..];
+            let chosen = later.iter().find_map(|(_, i)| match &i.observed {
+                Observed::RouteChosen { parts, .. }
+                    if i.subject.order.as_str() == linked_order.as_str() =>
+                {
+                    parts.first().and_then(|p| p.segments.first()).cloned()
+                }
+                _ => None,
+            });
+            let taken_back = later.iter().any(|(_, i)| {
+                matches!(&i.observed, Observed::HandOnTakenBack { linked_order: l } if l == linked_order)
+            });
+            if taken_back {
+                continue;
+            }
+            // Opened: the linked order's start as Core recorded it when it handed the value on, for its proof.
+            if let Some(first) = chosen {
+                let (Some(from), Some(part_id)) = (
+                    Id::new(input.subject.order.as_str()),
+                    Id::new(part.as_str()),
+                ) else {
+                    continue;
+                };
+                let Some(stm_part) = before
+                    .parts
+                    .iter()
+                    .find(|p| p.part_id.as_str() == part_id.as_str())
+                else {
+                    continue;
+                };
+                let Ok((_, _, amount)) = at_rest(segments, &from, stm_part) else {
+                    continue;
+                };
+                let named = history[..history
+                    .iter()
+                    .position(|(r, _)| r == *receipt)
+                    .unwrap_or_default()]
+                    .iter()
+                    .rev()
+                    .find_map(|(_, e)| match e {
+                        Entry::Verified(v) => match &v.what {
+                            What::Effect {
+                                action:
+                                    Action::ResolveStuck {
+                                        order: resolved,
+                                        resolution:
+                                            Resolution::HandOn {
+                                                by,
+                                                linked_order: l,
+                                                ..
+                                            },
+                                        ..
+                                    },
+                                ..
+                            } if resolved.as_str() == from.as_str()
+                                && l.as_str() == linked_order.as_str() =>
+                            {
+                                Some(by.clone())
+                            }
+                            _ => None,
+                        },
+                        Entry::Stated(_) => None,
+                    });
+                let Some(reserve) = named.or_else(|| Id::new(first.provider.as_str())) else {
+                    continue;
+                };
+                hand_on.linked.insert(
+                    linked_order.as_str().to_owned(),
+                    Linked {
+                        from,
+                        amount: amount.amount().clone(),
+                        reserve,
+                        first,
+                    },
+                );
+                continue;
+            }
+            // Refused: the linked order's refusal is in the log, its hand-on not taken back yet. A retry takes it back.
+            let refusal = history.iter().find_map(|(r, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::OrderRefusal { order: Some(o), .. },
+                    ..
+                }) if o.as_str() == linked_order.as_str() => Some(r.clone()),
+                _ => None,
+            });
+            if let (Some(refusal), Some(linked)) = (refusal, Id::new(linked_order.as_str())) {
+                hand_on.refused.insert(at_key, (linked, refusal));
+                continue;
+            }
+            let Ok(entry) = GeneralEntry::try_from(
+                history
+                    .iter()
+                    .find(|(r, _)| r == *receipt)
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_else(|| unreachable!("the input's own entry")),
             ) else {
                 continue;
             };
             hand_on.logged.insert(
-                (
-                    input.subject.order.as_str().to_owned(),
-                    part.as_str().to_owned(),
-                ),
+                at_key,
                 Logged {
                     handed_on: (
                         Step {
@@ -592,7 +683,104 @@ impl HandOn {
                 },
             );
         }
+        hand_on.started_in_the_log(history, reading);
         hand_on
+    }
+
+    /// The starts the log took, from its `holding_withdrawal` entries, and the holding accounts' records they spent
+    /// (`T-020-46`): each record read back from the holder's answer the evidence store keeps, so a linked order keeps
+    /// its one start and a record its one linked order (`one-start-per-linked-order`, `one-start-per-holding-record`),
+    /// Core's own rule as well as the log's.
+    fn started_in_the_log(
+        &mut self,
+        history: &[(Receipt, Entry)],
+        reading: &mut dyn crate::segments::Reopening,
+    ) {
+        use rutent_contracts::provider_role::{ReserveMovementOutcome, ResultBody, Statement};
+        for (receipt, entry) in history {
+            let Entry::Verified(v) = entry else {
+                continue;
+            };
+            let What::HoldingWithdrawal {
+                order: linked,
+                handed_on_from,
+                holder,
+                node,
+                record,
+                publisher,
+            } = &v.what
+            else {
+                continue;
+            };
+            if v.who.role != Role::Core || self.started.contains_key(linked.as_str()) {
+                continue;
+            }
+            let Some(stated) = history.iter().find_map(|(r, e)| match e {
+                Entry::Stated(s) if r == record => Some(s),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(bytes) = reading.kept(&stated.commitment) else {
+                continue;
+            };
+            let Ok(answer) = serde_json::from_slice::<Statement<ResultBody>>(&bytes) else {
+                continue;
+            };
+            let ResultBody::Withdrawal(withdrawal) = answer.statement else {
+                continue;
+            };
+            let ReserveMovementOutcome::Succeeded(settled) = withdrawal.outcome else {
+                continue;
+            };
+            let Ok(reference) = rutent_prov::holding::wallet::proof_of_withdrawal(
+                holder.as_str(),
+                &withdrawal.transaction,
+                &settled.evidence,
+            ) else {
+                continue;
+            };
+            let Ok(amount) = settled.amount_out.parse::<u128>() else {
+                continue;
+            };
+            let asset = history.iter().find_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Input { input },
+                    ..
+                }) if input.subject.order.as_str() == linked.as_str() => match &input.observed {
+                    Observed::RouteChosen { parts, .. } => parts
+                        .first()
+                        .and_then(|p| p.segments.first())
+                        .map(|s| s.from.asset.id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let Some(asset) = asset else {
+                continue;
+            };
+            let kept = WithdrawalRecord {
+                by: holder.as_str().to_owned(),
+                node: node.as_str().to_owned(),
+                asset,
+                order: handed_on_from.as_str().to_owned(),
+                amount,
+                reference: reference.clone(),
+            };
+            self.spent.insert(
+                (holder.as_str().to_owned(), reference),
+                linked.as_str().to_owned(),
+            );
+            self.started.insert(
+                linked.as_str().to_owned(),
+                Started {
+                    record: kept,
+                    statement: record.clone(),
+                    publisher: publisher.clone(),
+                    receipt: receipt.clone(),
+                },
+            );
+        }
     }
 
     /// Records the customer's new destination for a waiting part (see the module's docs). A change built and not
@@ -835,6 +1023,28 @@ impl HandOn {
         handing: Handing<'_>,
     ) -> Result<HandedOn, HandOnError> {
         let at = key(handing.order, handing.part);
+        // A hand-on a reopened Core found refused in the log is taken back as the one that ran on takes it back.
+        if let Some((linked, refusal)) = self.refused.remove(&at) {
+            let input = Self::part_input(
+                parts,
+                handing.order,
+                handing.part,
+                handing.core,
+                SourceKind::Orchestrator,
+                Observed::HandOnTakenBack {
+                    linked_order: stm_id(linked.as_str())?,
+                },
+            )?;
+            let step = built(parts, handing.core, &input)?;
+            self.stranded.insert(
+                at.clone(),
+                Stranded {
+                    linked,
+                    refusal,
+                    taken_back: (step, input),
+                },
+            );
+        }
         if self.stranded.contains_key(&at) {
             return self.take_back(parts, &at);
         }

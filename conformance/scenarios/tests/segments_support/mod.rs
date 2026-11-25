@@ -232,6 +232,8 @@ pub enum On {
     Chosen,
     /// A part's `handed_on` (`T-020-13`).
     Handed,
+    /// A part's `hand_on_taken_back` (`T-020-46`).
+    TakenBack,
     /// A route handed on's `holding_withdrawal`, its start (`T-020-13`).
     Start,
     /// A provider's reliance on a judgement (`T-020-23`).
@@ -281,6 +283,8 @@ impl On {
             (On::Fee, Entry::Verified(v)) => matches!(v.what, What::Fee { .. }),
             (On::Handed, Entry::Verified(v)) => matches!(&v.what,
                 What::Input { input } if matches!(input.observed, Observed::HandedOn { .. })),
+            (On::TakenBack, Entry::Verified(v)) => matches!(&v.what,
+                What::Input { input } if matches!(input.observed, Observed::HandOnTakenBack { .. })),
             (On::Start, Entry::Verified(v)) => matches!(v.what, What::HoldingWithdrawal { .. }),
             (On::Reliance, Entry::Verified(v)) => matches!(v.what, What::Reliance { .. }),
             (On::Chosen, Entry::Verified(v)) => matches!(&v.what,
@@ -509,25 +513,38 @@ impl Store {
     }
 }
 
+/// What a restarted Core reads beside the kit's log: the kit's decision records and the bytes its store keeps.
+struct Reopened<'a> {
+    records: Vec<DecisionRecord>,
+    store: &'a Store,
+}
+
+impl rutent_core_orch::segments::Reopening for Reopened<'_> {
+    fn record(&self, id: &Id) -> Option<DecisionRecord> {
+        self.records.iter().find(|r| r.record_id() == id).cloned()
+    }
+    fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+        self.store.bytes_behind(commitment)
+    }
+}
+
+/// Core's record of its hand-ons lost to a restart and rebuilt from the kit's log (`HandOn::reopened`, `T-020-46`).
+pub fn reopen_hand_on(core: &Core) -> rutent_core_orch::hand_on::HandOn {
+    let history = handing::recorded_with_receipts(core);
+    let mut reading = Reopened {
+        records: vec![core.record.clone()],
+        store: &core.store,
+    };
+    rutent_core_orch::hand_on::HandOn::reopened(&history, &core.segments, &mut reading)
+}
+
 /// Core's segments and value in flight lost to a restart and rebuilt from the kit's log (`Segments::reopened`,
 /// `T-020-46`): the decision records are the kit's chosen record and `others`, the kept bytes the kit's store's.
 pub fn reopen_segments(core: &mut Core, catalogue: &Catalogue, others: &[DecisionRecord]) {
-    struct Reading<'a> {
-        records: Vec<DecisionRecord>,
-        store: &'a Store,
-    }
-    impl rutent_core_orch::segments::Reopening for Reading<'_> {
-        fn record(&self, id: &Id) -> Option<DecisionRecord> {
-            self.records.iter().find(|r| r.record_id() == id).cloned()
-        }
-        fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
-            self.store.bytes_behind(commitment)
-        }
-    }
     let history = handing::recorded_with_receipts(core);
     let mut records = vec![core.record.clone()];
     records.extend(others.iter().cloned());
-    let mut reading = Reading {
+    let mut reading = Reopened {
         records,
         store: &core.store,
     };

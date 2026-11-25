@@ -171,6 +171,55 @@ pub struct Unsettled {
 }
 
 impl Unsettled {
+    /// The erasures a Core that reopens finds unsettled in `history`, the log's own entries (`T-020-46`): each
+    /// `erase_statement` effect whose result is `done` and whose `erasure` entry the log doesn't hold, which
+    /// [`Unsettled::settle`] carries out the rest of, written by `core`. The store erases one erased already as `Ok`
+    /// (`INV-8`), so settling it again is safe.
+    pub fn reopened(
+        history: &[(Receipt, rutent_contracts::core_internal::Entry)],
+        core: &Actor,
+    ) -> Vec<Unsettled> {
+        use rutent_contracts::core_internal::Entry;
+        let verified = || {
+            history.iter().filter_map(|(receipt, entry)| match entry {
+                Entry::Verified(v) => Some((receipt, v)),
+                Entry::Stated(_) => None,
+            })
+        };
+        let mut unsettled = Vec::new();
+        for (effect, v) in verified() {
+            let What::Effect {
+                action: Action::EraseStatement { commitment, .. },
+                ..
+            } = &v.what
+            else {
+                continue;
+            };
+            let Some(result) = verified().find_map(|(r, w)| match &w.what {
+                What::Result { effect: of } if of == effect && w.outcome == (Outcome::Done {}) => {
+                    Some(r.clone())
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            let recorded = verified().any(
+                |(_, w)| matches!(&w.what, What::Erasure { evidence } if evidence == commitment),
+            );
+            if recorded {
+                continue;
+            }
+            unsettled.push(Unsettled {
+                commitment: commitment.clone(),
+                core: core.clone(),
+                effect: effect.clone(),
+                result,
+                why: AppendFailure::Unavailable,
+            });
+        }
+        unsettled
+    }
+
     /// The effect's `done` result.
     pub fn result(&self) -> &Receipt {
         &self.result

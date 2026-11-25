@@ -23,7 +23,8 @@
 //!   flight and a new order respects the ceilings (`REQ-ORD-8`, `THR-74`).
 //! - **The parts resolved**: every part whose `stuck_resolved` the log holds.
 //! - **The platform's records of operations that ended with no answer**, by transaction.
-//! - **The charges checked** (`Charges::recorded`).
+//! - **The charges checked** (`Charges::recorded`), each settled segment's charge as its kept result states it, and
+//!   the terms the providers stated, so a raise recorded before the reopening is not raised again.
 //!
 //! What a reopened Core doesn't hold, it fails closed on: a segment whose decision record, question or kept bytes it
 //! can't read back is never handed over again, and is held in flight where its operation can be read.
@@ -156,6 +157,19 @@ impl Segments {
             }
         }
         segments.recorded_charges(history);
+        // The terms the providers stated, read back from the evidence store, so a charge is held to the formula that
+        // bound it as a Core that ran on holds it (`REQ-QTE-6`).
+        for (receipt, entry) in history {
+            if let Entry::Stated(stated) = entry
+                && stated.what.statement.as_str() == rutent_contracts::provider_role::TERMS_SHAPE
+                && let Some(bytes) = reading.kept(&stated.commitment)
+                && let Ok(terms) = serde_json::from_slice::<
+                    Statement<rutent_contracts::provider_role::TupleTerms>,
+                >(&bytes)
+            {
+                let _ = segments.terms.state(stated, receipt, &terms);
+            }
+        }
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments
     }
@@ -284,6 +298,39 @@ impl Segments {
             (handed, &transaction),
             (&record, &operation, &statement),
         );
+        // The provider's answer, where the log holds it and nothing of the segment's grading yet (no evidence and no
+        // statement kept for it): the reopened Core goes on from it as a Core that ran on, judging, grading and settling,
+        // each step once; the operation is never carried out again. Its `bound` input and the answer's stated entry are
+        // the log's, so neither is appended again.
+        let answered = if outcome.is_none() {
+            resumed_answer(history, reading, handed, &transaction, &mut steps)
+        } else {
+            None
+        };
+        let charged = match &outcome {
+            Some(SegmentOutcome::Settled { .. }) => {
+                let started_at = match &history[handed.at].1 {
+                    Entry::Verified(v) => v.when.at.clone(),
+                    Entry::Stated(_) => return None,
+                };
+                settled_result(
+                    catalogue,
+                    history,
+                    reading,
+                    (handed, &transaction),
+                    (&record, &operation, &statement),
+                )
+                .and_then(|judged| {
+                    charged_of(
+                        handed,
+                        &started_at,
+                        (&record, &operation),
+                        (judged.1, judged.2, judged.3),
+                    )
+                })
+            }
+            _ => None,
+        };
         let held = held_at(&operation, &statement.statement);
         let flight = InFlight {
             place,
@@ -294,7 +341,7 @@ impl Segments {
             effect: Some(handed.effect.clone()),
             begun: true,
             carried: true,
-            answered: None,
+            answered,
             started: Some(clock.now()),
             unknown: Vec::new(),
             steps,
@@ -304,7 +351,7 @@ impl Segments {
             fees: None,
             ended: outcome.as_ref().is_some_and(is_final),
             outcome,
-            charged: None,
+            charged,
             reported: None,
             begin_refused: None,
             verdict: None,
@@ -423,6 +470,86 @@ impl Segments {
     pub(super) fn unread_effect(&self, at: &(String, String)) -> Option<&Receipt> {
         self.unread.get(at)
     }
+}
+
+/// The provider's answer to a segment handed over, where the log holds it and nothing more of the segment than its
+/// question, its effect, its `bound` input and that answer: its bytes, kept behind its stated entry's commitment, with the
+/// `bound` and `stated` steps the log took put in `steps`. `None` where the log holds anything more of the segment (a
+/// result, evidence, a statement kept for its grading), so nothing of it is appended twice: it stays in motion then.
+fn resumed_answer(
+    history: &[(Receipt, Entry)],
+    reading: &mut dyn Reopening,
+    handed: &Handed<'_>,
+    transaction: &Id,
+    steps: &mut BTreeMap<&'static str, Step>,
+) -> Option<Answered> {
+    let later = &history[handed.at + 1..];
+    let about_it = |a: &Option<About>| {
+        a.as_ref().is_some_and(|a| {
+            a.order.as_ref() == Some(handed.order) && a.segment.as_ref() == Some(handed.segment)
+        })
+    };
+    let mut answer = None;
+    let mut bound = None;
+    for (receipt, entry) in later {
+        match entry {
+            Entry::Stated(stated) if about_it(&stated.about) => {
+                let is_the_answer = stated.what.statement.as_str() == RESULT_SHAPE
+                    && stated.about.as_ref().and_then(|a| a.transaction.as_ref())
+                        == Some(transaction)
+                    && stated.attribution.maker().acts == *handed.provider;
+                if !is_the_answer || answer.is_some() {
+                    return None;
+                }
+                answer = Some((receipt.clone(), stated.clone()));
+            }
+            Entry::Verified(v) => match &v.what {
+                What::Input { input }
+                    if input.subject.order.as_str() == handed.order.as_str()
+                        && input
+                            .subject
+                            .segment
+                            .as_ref()
+                            .is_some_and(|s| s.as_str() == handed.segment.as_str()) =>
+                {
+                    if !matches!(input.observed, Observed::ProviderBound {}) {
+                        return None;
+                    }
+                    bound = Some((receipt.clone(), entry.clone()));
+                }
+                What::Result { effect } if effect == &handed.effect.receipt => return None,
+                What::Evidence { order, segment, .. }
+                    if order == handed.order && segment == handed.segment =>
+                {
+                    return None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    let (receipt, mut stated) = answer?;
+    let bytes = reading.kept(&stated.commitment)?;
+    stated.attribution = rutent_contracts::core_internal::Attribution::Unverified {
+        claimed_by: stated.attribution.maker().clone(),
+    };
+    steps.insert(
+        "stated",
+        Step {
+            entry: GeneralEntry::try_from(Entry::Stated(stated)).ok()?,
+            receipt: Some(receipt),
+        },
+    );
+    if let Some((receipt, entry)) = bound {
+        steps.insert(
+            "bound",
+            Step {
+                entry: GeneralEntry::try_from(entry).ok()?,
+                receipt: Some(receipt),
+            },
+        );
+    }
+    Some(Answered::Bytes(bytes))
 }
 
 /// The value a segment handed over states, for a segment whose decision record can't be read back: its provider and
@@ -628,12 +755,36 @@ fn settled_out(
     (handed, transaction): (&Handed<'_>, &Id),
     (record, operation, statement): (&DecisionRecord, &Operation, &Statement<ProviderOperation>),
 ) -> Option<Amount> {
+    settled_result(
+        catalogue,
+        history,
+        reading,
+        (handed, transaction),
+        (record, operation, statement),
+    )
+    .map(|judged| judged.0)
+}
+
+/// What a settled segment's result counted for: what it handed on, what it took in, its charge, and the receipt of
+/// its stated entry, judged again at the time that entry was received.
+fn settled_result(
+    catalogue: &Catalogue,
+    history: &[(Receipt, Entry)],
+    reading: &mut dyn Reopening,
+    (handed, transaction): (&Handed<'_>, &Id),
+    (record, operation, statement): (&DecisionRecord, &Operation, &Statement<ProviderOperation>),
+) -> Option<(
+    Amount,
+    String,
+    rutent_contracts::provider_role::Fee,
+    Receipt,
+)> {
     let cited = sign::cited(record, operation)?;
     let units = Units {
         origin_decimals: operation.from.asset.decimals,
         out_decimals: operation.to.asset.decimals,
     };
-    history[handed.at..].iter().find_map(|(_, entry)| {
+    history[handed.at..].iter().find_map(|(receipt, entry)| {
         let Entry::Stated(stated) = entry else {
             return None;
         };
@@ -659,8 +810,49 @@ fn settled_out(
             units,
             &bytes,
         ) {
-            Ok(Counted::Succeeded { handed_on, .. }) => Amount::new(handed_on),
+            Ok(Counted::Succeeded {
+                handed_on,
+                amount_in,
+                fee,
+                ..
+            }) => Some((Amount::new(handed_on)?, amount_in, fee, receipt.clone())),
             _ => None,
         }
+    })
+}
+
+/// The charge of a segment rebuilt settled, as the check needs it (`Segments::note_charge`'s): what its result took in
+/// and charged, when its `move_value` effect started it, and the formula its route was priced on, so a charge the log
+/// holds a raise of is answered `AlreadyRaised` and one it doesn't is checked as a Core that ran on checks it
+/// (`T-020-46`). `None` where its charge is in an asset its segment names at neither end.
+fn charged_of(
+    handed: &Handed<'_>,
+    started_at: &Timestamp,
+    (record, operation): (&DecisionRecord, &Operation),
+    (amount_in, fee, result): (String, rutent_contracts::provider_role::Fee, Receipt),
+) -> Option<Charged> {
+    let cited = sign::cited(record, operation)?;
+    let charged_in = if fee.asset == operation.from.asset.id {
+        None
+    } else if fee.asset == operation.to.asset.id {
+        Some(operation.to.asset.clone())
+    } else {
+        return None;
+    };
+    Some(Charged {
+        order: handed.order.clone(),
+        segment: handed.segment.clone(),
+        provider: operation.provider.clone(),
+        tuple: rutent_contracts::router_api::TupleKey {
+            provider: operation.provider.clone(),
+            from: operation.from.clone(),
+            to: operation.to.clone(),
+        },
+        started_at: started_at.clone(),
+        amount_in: Amount::new(amount_in)?,
+        charged: Amount::new(fee.amount)?,
+        charged_in,
+        advertised: cited.price?.clone(),
+        result,
     })
 }

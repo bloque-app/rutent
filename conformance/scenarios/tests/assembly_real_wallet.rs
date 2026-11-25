@@ -937,6 +937,67 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     );
 }
 
+/// A stuck order whose value rests in the wallet's account, its linked order accepted, when Core reopens: the
+/// reopened Core holds the account's attribution of the order as the log has it, and the linked order's accepted
+/// route rebuilt from the log (its acceptance and the record its route was chosen by), so the operator's hand-on goes
+/// ahead on it. Then the linked order, stopped right after policy registered its authorisation, is started again from
+/// the log by a second reopening and runs its first move (`NFR-6`, `REQ-ORD-43`).
+// verifies: NFR-6
+#[test]
+fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let held = stuck.core.holdings().attributions();
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        held,
+        "the account holds the order's value as the log has it"
+    );
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    handed_on_once(&mut stuck, &linked, &bob, &decided);
+    rutent_scenarios::harness::plant(
+        &mut stuck.core,
+        &rutent_scenarios::harness::Fault::CrashAfterRecord {
+            call: "authorise",
+            nth: 0,
+        },
+    );
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stuck
+            .core
+            .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+    }));
+    assert!(crashed.is_err(), "the crash stopped Core");
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    let ran = stuck
+        .core
+        .run(&linked.order)
+        .expect("the linked order runs on from the log");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+}
+
 /// What the real wallet answers a withdrawal is its own signed statement, which the platform passes on and the host
 /// keeps re-serialised as the holder's stated entry (`T-020-26`): the bytes kept still verify under the key the
 /// wallet's release publishes, are the wallet's by that key for the operator's party once the log accepted the

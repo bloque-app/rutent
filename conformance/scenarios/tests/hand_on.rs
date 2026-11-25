@@ -2080,7 +2080,7 @@ fn pending_hand_on_is_rebuilt_from_the_log() {
         "a fresh record of the hand-ons refuses it"
     );
     assert_eq!(entries(&core), before, "nothing recorded");
-    let mut rebuilt = HandOn::reopened(&recorded_with_receipts(&core));
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
     assert_eq!(
         hand_on_to(&mut core, &mut rebuilt, "ord-3", &plan, "acc-ord-3"),
         Err(HandOnError::PendingForAnother {
@@ -2243,6 +2243,53 @@ fn hand_on_whose_record_the_log_took_goes_on_whatever_opened_its_linked_order() 
         core.segments.order(&id("ord-2")).is_some(),
         "the linked order opened"
     );
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// The log refused the linked order's `route_chosen`, its refusal recorded, and Core stops before the hand-on's
+/// `hand_on_taken_back` reaches the log: the stranded part's record is gone with it. A fresh record of the hand-ons
+/// takes nothing back; the one rebuilt from the log takes the hand-on back on a retry, once, and the part waits for the
+/// customer again (`REQ-ORD-43`, `T-020-46`).
+// verifies: REQ-ORD-43
+#[test]
+fn stranded_hand_on_is_taken_back_after_a_restart() {
+    let (world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::Chosen, Fault::Refuse));
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::TakenBack, Fault::Unavailable));
+    }
+    assert!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2").is_err(),
+        "the taken back can't be appended now"
+    );
+    let is_taken_back = |w: &What| {
+        matches!(w, What::Input { input } if matches!(&input.observed,
+            Observed::HandOnTakenBack { linked_order } if linked_order.as_str() == "ord-2"))
+    };
+    assert_eq!(count(&core, is_taken_back), 0);
+    // A restart: Core's segments and hand-ons rebuilt from the log.
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    assert!(matches!(
+        hand_on_to(&mut core, &mut rebuilt, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::LinkedRefused { .. })
+    ));
+    assert_eq!(count(&core, is_taken_back), 1, "taken back, once");
+    assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }

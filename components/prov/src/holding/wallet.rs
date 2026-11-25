@@ -540,6 +540,23 @@ impl Holdings {
             .restore(platform, operator, order, amount, transaction)
     }
 
+    /// [`WalletHolding::held_by_wallet`] at `node`'s holding account: what its wallet itself holds for `order`, up to
+    /// `amount`, by its own per-order answers (`T-020-46`).
+    pub fn held_by_wallet<W: World>(
+        &mut self,
+        platform: &mut Platform<W>,
+        operator: &impl Operator,
+        node: &str,
+        order: &str,
+        amount: u128,
+        transaction: &str,
+    ) -> Result<u128, WalletError> {
+        self.accounts
+            .get_mut(node)
+            .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?
+            .held_by_wallet(platform, operator, order, amount, transaction)
+    }
+
     /// Whether `node`'s holding account's module restarted since it last confirmed a movement
     /// ([`WalletHolding::restarted`]).
     pub fn restarted<W: World>(&self, platform: &Platform<W>, node: &str) -> bool {

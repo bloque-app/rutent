@@ -846,6 +846,64 @@ fn price_before_execution_is_labelled_a_quote_and_the_executed_one_the_price() {
     assert_admitted(&env);
 }
 
+/// An order's executed price reported before Core reopens is held as reported by the reopened Core, which reads it
+/// back from the log: reported again, the log's own entry answers it and nothing more is appended; another price for
+/// the order is refused (`REQ-QTE-7`, `NFR-6`).
+// verifies: NFR-6, REQ-QTE-7
+#[test]
+fn executed_price_reported_before_core_reopens_is_not_reported_again() {
+    let record = reserve_route(
+        1_000,
+        &Leg::free("USDC"),
+        &Leg::free("USDC"),
+        fee("0", "0", "1"),
+        None,
+    );
+    let candidate = chosen(&record);
+    let mut env = Env::new();
+    let usdc = |n: &str| Fee {
+        asset: "USDC".into(),
+        amount: n.into(),
+        billed_separately: None,
+    };
+    let segment = |env: &mut Env, name: &str, out: &str| ExecutedSegment {
+        executed: Executed {
+            amount_in: amount("1000"),
+            fee: usdc("0"),
+            amount_out: amount(out),
+        },
+        result: stated_result(env, name, 0),
+    };
+    let both = [
+        segment(&mut env, "seg-w", "1000"),
+        segment(&mut env, "seg-d", "1000"),
+    ];
+    let order = id("order-priced");
+    let priced = Priced::new(&order, &record, candidate, &both).expect("priced");
+    let (_, first) = Prices::new()
+        .report(&mut env.log, &*env.clock, &core_actor(), &priced)
+        .expect("the price is reported");
+    // Core reopens: its prices are read back from the log.
+    let mut reopened = Prices::recorded(&env.history());
+    let (_, again) = reopened
+        .report(&mut env.log, &*env.clock, &core_actor(), &priced)
+        .expect("reported again");
+    assert_eq!(again, first, "the log's own entry answers it");
+    assert_eq!(shown_entries(&env).len(), 1, "reported once");
+    let another = Priced::new(
+        &order,
+        &record,
+        candidate,
+        &[both[0].clone(), segment(&mut env, "seg-d2", "999")],
+    )
+    .expect("priced");
+    assert_eq!(
+        reopened.report(&mut env.log, &*env.clock, &core_actor(), &another),
+        Err(PriceError::AnotherPrice)
+    );
+    assert_admitted(&env);
+}
+
 /// A price is made only from every segment's result that counted: with nothing executed there is no price, and one
 /// result cited for two segments is no execution of the second. `Priced` has no public field, so a quote can't be
 /// relabelled the price and reported.

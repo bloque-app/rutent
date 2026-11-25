@@ -59,6 +59,14 @@ impl Step {
         }
     }
 
+    /// A step the log took already, at `receipt`: never appended again (`T-020-46`).
+    pub(super) fn logged(entry: GeneralEntry, receipt: Receipt) -> Self {
+        Step {
+            entry,
+            receipt: Some(receipt),
+        }
+    }
+
     /// Appends the step as built unless the log took it already, keeping its receipt; tried again while the log
     /// can't take it now, never once it refuses it.
     pub(super) fn append(&mut self, log: &mut dyn Log) -> Result<Receipt, AppendFailure> {

@@ -513,3 +513,53 @@ fn proven_start_is_rebuilt_from_the_log_after_a_restart() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// A restart between the hand-on and the holding account's proof of the start: the linked order's start as Core
+/// recorded it is rebuilt from the log (the first order, the part's value at rest, the starting reserve, the route's
+/// first segment), so the proof goes ahead. A second restart after the proof: the start the log took is Core's again,
+/// so the same record is answered with its receipt and another is refused before anything is recorded, Core's own rule
+/// beside the log's (`REQ-ORD-43`, `REQ-ORD-40`, `T-020-46`).
+// verifies: REQ-ORD-43, REQ-ORD-40
+#[test]
+fn linked_start_and_its_spent_record_are_rebuilt_from_the_log_after_a_restart() {
+    let (_world, mut core, _, _) = handed_on();
+    let statement = segments_support::handing::holding_statement(&mut core, "ord-2");
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    let first = segments_support::handing::prove_citing(
+        &mut core,
+        &mut rebuilt,
+        &id("ord-2"),
+        &withdrawal_record(),
+        &statement,
+    )
+    .expect("proven on the start rebuilt from the log");
+    let mut again = segments_support::reopen_hand_on(&core);
+    assert_eq!(
+        segments_support::handing::prove_citing(
+            &mut core,
+            &mut again,
+            &id("ord-2"),
+            &withdrawal_record(),
+            &statement,
+        ),
+        Ok(first),
+        "the start the log took answers the same record"
+    );
+    let entries = core.log.borrow().entries.len();
+    let other = WithdrawalRecord {
+        amount: 1,
+        ..withdrawal_record()
+    };
+    assert!(
+        segments_support::handing::prove_citing(
+            &mut core,
+            &mut again,
+            &id("ord-2"),
+            &other,
+            &statement
+        )
+        .is_err(),
+        "another record of the started order is refused"
+    );
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+}

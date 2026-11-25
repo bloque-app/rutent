@@ -449,6 +449,60 @@ impl Core {
         Ok(handed)
     }
 
+    /// The route the linked order `linked` was accepted on, from the log (`T-020-46`): its acceptance (its id and its
+    /// part) and the decision record its route was chosen by, read from the records Core keeps, each segment under the
+    /// identifier [`Core::accept_linked`] derives. `None` where any of it isn't there.
+    pub(super) fn accepted_in_the_log(
+        &self,
+        history: &[(Receipt, Entry)],
+        linked: &Id,
+    ) -> Option<AcceptedRoute> {
+        let (acceptance, part) = history.iter().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Acceptance {
+                    acceptance,
+                    order: o,
+                    yeses,
+                    ..
+                } if o == linked => Some((acceptance.clone(), yeses.first()?.part.clone())),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let decision_record = history.iter().rev().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order: o,
+                    ..
+                } if o == linked => Some(decision_record.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let record = super::reopen::held_record(&self.signer.records, history, &decision_record)?;
+        let [only] = record.chosen()?.parts.as_slice() else {
+            return None;
+        };
+        let part_id = rutent_contracts::state_machine::Id::new(part.as_str())?;
+        let mut segments = Vec::new();
+        for (place, operation) in only.operations.iter().enumerate() {
+            segments.push(SegmentPlan {
+                segment_id: super::linked::segment_id(&part_id, place).ok()?,
+                provider: rutent_contracts::state_machine::Id::new(operation.provider.as_str())?,
+                kind: operation.kind,
+                from: operation.from.clone(),
+                to: operation.to.clone(),
+            });
+        }
+        Some(AcceptedRoute {
+            order: linked.clone(),
+            decision_record,
+            acceptance,
+            plan: vec![rutent_contracts::state_machine::PartPlan { part_id, segments }],
+        })
+    }
+
     /// The holding account's withdrawal for the hand-on `effect` carried out, as the log holds it, for a Core that
     /// reopened and holds no mover's record of it (`T-020-46`): the effect's `resolve_stuck` with its `done` result,
     /// handing the part's value on to its linked order; the linked order's accepted route, from its acceptance (its
@@ -487,53 +541,11 @@ impl Core {
         if !done {
             return None;
         }
-        let (acceptance, part) = history.iter().find_map(|(_, e)| match e {
-            Entry::Verified(v) => match &v.what {
-                What::Acceptance {
-                    acceptance,
-                    order: o,
-                    yeses,
-                    ..
-                } if *o == linked => Some((acceptance.clone(), yeses.first()?.part.clone())),
-                _ => None,
-            },
-            Entry::Stated(_) => None,
-        })?;
-        let decision_record = history.iter().rev().find_map(|(_, e)| match e {
-            Entry::Verified(v) => match &v.what {
-                What::DecisionRecord {
-                    decision_record,
-                    order: o,
-                    ..
-                } if *o == linked => Some(decision_record.clone()),
-                _ => None,
-            },
-            Entry::Stated(_) => None,
-        })?;
-        let record = super::reopen::held_record(&self.signer.records, &history, &decision_record)?;
-        let [only] = record.chosen()?.parts.as_slice() else {
-            return None;
-        };
-        let part_id = rutent_contracts::state_machine::Id::new(part.as_str())?;
-        let mut segments = Vec::new();
-        for (place, operation) in only.operations.iter().enumerate() {
-            segments.push(SegmentPlan {
-                segment_id: super::linked::segment_id(&part_id, place).ok()?,
-                provider: rutent_contracts::state_machine::Id::new(operation.provider.as_str())?,
-                kind: operation.kind,
-                from: operation.from.clone(),
-                to: operation.to.clone(),
-            });
-        }
+        let route = self.accepted_in_the_log(&history, &linked)?;
+        let segments = route.plan.first()?.segments.clone();
         let first = segments.first()?.clone();
         let rutent_contracts::provider_role::NodeRef::Inner(node) = &first.from.node else {
             return None;
-        };
-        let route = AcceptedRoute {
-            order: linked.clone(),
-            decision_record,
-            acceptance,
-            plan: vec![rutent_contracts::state_machine::PartPlan { part_id, segments }],
         };
         let (statement, commitment) = history.iter().find_map(|(r, e)| match e {
             Entry::Stated(s)

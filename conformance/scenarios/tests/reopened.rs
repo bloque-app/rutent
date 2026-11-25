@@ -566,3 +566,122 @@ fn transactions_the_log_names_are_held_as_used_after_a_restart() {
         );
     }
 }
+
+/// An erasure decided and done when Core stops, its `erasure` entry not yet in the log: the reopened Core finds it in
+/// the log (`Unsettled::reopened`) and settles it, the store erasing (one erased already is `Ok`) and the `erasure`
+/// entry appended once, so nothing is left for the store to report as carried out with no record (`REQ-AUD-13`,
+/// `INV-8`).
+// verifies: REQ-AUD-13, INV-8
+#[test]
+fn erasure_done_before_core_reopens_is_settled_once() {
+    let given = scenario("an erasure cut short")
+        .when(order(1))
+        .when(Step::Run);
+    let (mut core, _) = given.core(1, &mut Reference);
+    let commitment = core
+        .log()
+        .entries()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entry::Stated(s) => Some(s.commitment.clone()),
+            Entry::Verified(_) => None,
+        })
+        .find(|c| core.bound().erasable(c).is_ok())
+        .expect("a statement nothing rests on");
+    let erasures = |core: &Core| {
+        core.verified_whats()
+            .iter()
+            .filter(|w| matches!(w, What::Erasure { evidence } if *evidence == commitment))
+            .count()
+    };
+    rutent_scenarios::harness::plant(
+        &mut core,
+        &Fault::CrashAfterRecord {
+            call: "result",
+            nth: 0,
+        },
+    );
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        core.erase_statement(&commitment, "retention")
+    }));
+    assert!(
+        crashed.is_err(),
+        "the crash stopped Core after the done result"
+    );
+    assert_eq!(erasures(&core), 0, "its erasure entry is not in the log");
+    let core = given.reopen(core, 1, &mut Reference);
+    assert_eq!(erasures(&core), 1, "settled, once");
+    assert!(
+        core.rebound_store()
+            .expect("the store binds again")
+            .unsettled_erasures()
+            .is_empty(),
+        "the store reports nothing left unsettled"
+    );
+    let core = given.reopen(core, 1, &mut Reference);
+    assert_eq!(erasures(&core), 1, "and once only");
+}
+
+/// What a reopened intake reads its orders' inputs from, in place of the evidence store: a statement for any
+/// commitment, or none.
+struct Inputs(Option<Vec<u8>>);
+
+impl rutent_core_orch::segments::Reopening for Inputs {
+    fn record(
+        &self,
+        _: &rutent_contracts::router_api::Id,
+    ) -> Option<rutent_contracts::router_api::DecisionRecord> {
+        None
+    }
+    fn kept(&mut self, _: &rutent_contracts::module_interface::Digest) -> Option<Vec<u8>> {
+        self.0.clone()
+    }
+}
+
+/// A reopened intake that can't read an order's inputs back holds the order rather than run it with inputs missing:
+/// the statement gone, unreadable, or naming another order. The order's own statement is read and the order isn't
+/// held (`REQ-AUD-6`, `NFR-6`; the review's low 6).
+// verifies: NFR-6, REQ-AUD-6
+#[test]
+fn order_whose_inputs_statement_names_another_order_is_held_on_reopening() {
+    let history = RefCell::new(Vec::new());
+    let orders = RefCell::new(Vec::new());
+    let run = scenario("an order opened").when(order(1)).play_probed(
+        1,
+        &mut Reference,
+        reference(),
+        &mut |_| {},
+        &mut |core| {
+            *history.borrow_mut() = core.log().entries().to_vec();
+        },
+    );
+    orders.borrow_mut().extend(run.orders.iter().cloned());
+    let order = orders.borrow()[0].clone();
+    let own = run
+        .statements
+        .iter()
+        .find(|v| v["shape"] == rutent_contracts::core_internal::ORDER_INPUTS_SHAPE)
+        .cloned()
+        .expect("the order's inputs statement is kept");
+    let mut another = own.clone();
+    another["statement"]["order"] = "ord-another".into();
+    let history = history.into_inner();
+    let read = |bytes: Option<Vec<u8>>| {
+        rutent_core_orch::intake::Intake::reopened(&history, &mut Inputs(bytes))
+    };
+    let intake = read(Some(serde_json::to_vec(&own).unwrap()));
+    assert!(!intake.held(&order), "its own statement is read");
+    assert!(intake.request_of(&order).is_some());
+    for (case, bytes) in [
+        (
+            "another order's",
+            Some(serde_json::to_vec(&another).unwrap()),
+        ),
+        ("gone", None),
+        ("unreadable", Some(b"not json".to_vec())),
+    ] {
+        let intake = read(bytes);
+        assert!(intake.held(&order), "{case}: held");
+        assert!(intake.request_of(&order).is_none(), "{case}: not run");
+    }
+}

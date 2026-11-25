@@ -415,6 +415,9 @@ fn key(party: &Id, request: &Id) -> Key {
 pub struct Intake {
     requests: BTreeMap<Key, Kept>,
     orders: BTreeMap<String, Key>,
+    /// The orders a Core that reopened couldn't read the inputs of (`T-020-46`): the statement `order_opened` names is
+    /// gone, unreadable, of another shape or of another order. They are held: never run again with inputs missing.
+    held: std::collections::BTreeSet<String>,
 }
 
 impl Intake {
@@ -469,18 +472,24 @@ impl Intake {
             else {
                 continue;
             };
-            let stated = inputs
-                .as_ref()
-                .and_then(|commitment| reading.kept(commitment))
-                .and_then(|bytes| {
-                    serde_json::from_slice::<
+            let read = inputs.as_ref().map(|commitment| {
+                reading
+                    .kept(commitment)
+                    .and_then(|bytes| {
+                        serde_json::from_slice::<
                             rutent_contracts::provider_role::Statement<OrderInputs>,
                         >(&bytes)
                         .ok()
-                })
-                .filter(|s| s.shape == ORDER_INPUTS_SHAPE && &s.statement.order == order)
-                .map(|s| s.statement.inputs)
-                .unwrap_or_default();
+                    })
+                    .filter(|s| s.shape == ORDER_INPUTS_SHAPE && &s.statement.order == order)
+                    .map(|s| s.statement.inputs)
+            });
+            // Failing closed: an order whose inputs statement can't be read back is held, never run again with its
+            // inputs missing.
+            if matches!(read, Some(None)) {
+                intake.held.insert(order.as_str().to_owned());
+            }
+            let stated = read.flatten().unwrap_or_default();
             let asked = OrderRequest {
                 request: request.clone(),
                 caller: (**caller).clone(),
@@ -575,8 +584,17 @@ impl Intake {
     }
 
     /// The request `order` runs under, as intake runs it: its destination's account set as the deposit's input.
+    /// `None` for an order a reopened Core holds because it couldn't read its inputs back (`T-020-46`).
     pub fn request_of(&self, order: &Id) -> Option<&OrderRequest> {
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
         Some(&self.requests.get(self.orders.get(order.as_str())?)?.request)
+    }
+
+    /// Whether a reopened Core holds `order` because it couldn't read its inputs back (`T-020-46`).
+    pub fn held(&self, order: &Id) -> bool {
+        self.held.contains(order.as_str())
     }
 
     /// The record of `order`, for the assembly to answer policy's sources from.

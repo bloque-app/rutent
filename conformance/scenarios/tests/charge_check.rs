@@ -388,6 +388,85 @@ fn each_segments_charge_is_checked_once_also_after_a_restart() {
     ));
 }
 
+/// A charge raised and recorded before Core reopens is read back from the log by the reopened Core (each settled
+/// segment's charge as its kept result states it, and the raises the log holds): run again, its order raises nothing
+/// more, the operator warned once and the log holding each raise once (`NFR-6`, `REQ-QTE-5`).
+// verifies: NFR-6
+#[test]
+fn charge_raise_recorded_before_core_reopens_is_not_raised_again() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (core, session) = alone(CHARGING, "AC-14");
+    let mut core = core;
+    let order = ran(&mut core, &session, CHARGING, "req-charged");
+    assert_eq!(raise_entries(&core).len(), 2);
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    let segment = core.charged_segments(&order)[0].clone();
+    assert!(
+        matches!(
+            core.charge_checked(&order, &segment),
+            Some(Checked::AlreadyRaised)
+        ),
+        "the reopened Core holds the charge raised"
+    );
+    core.run(&order).expect("runs again");
+    assert_eq!(
+        raise_entries(&core).len(),
+        2,
+        "the log holds each raise once"
+    );
+}
+
+/// A charge above its formula whose raise the log can't take when Core stops: the reopened Core reads each settled
+/// segment's charge back from its kept result, so on the next run the raise is made, once (`NFR-6`, `REQ-QTE-5`).
+// verifies: NFR-6, REQ-QTE-5
+#[test]
+fn charge_raise_cut_short_before_core_reopens_is_raised_once() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    // Turned away on every try the settling and the run's own re-check make: nothing of it is recorded.
+    core.refuse_log_appends("raise", 2 * rutent_core_orch::segments::APPEND_TRIES);
+    let (order, told) = quoted(
+        &mut core,
+        request_at(
+            CHARGING,
+            "req-charged",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    assert!(core.run(&order).is_err(), "the log couldn't take the raise");
+    assert_eq!(raise_entries(&core).len(), 0, "no raise reached the log");
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    core.run(&order).expect("the part goes on");
+    assert_eq!(
+        raise_entries(&core).len(),
+        2,
+        "the settled segment's raise made after the reopening, once, and the second segment's"
+    );
+    core.run(&order).expect("runs again");
+    assert_eq!(raise_entries(&core).len(), 2);
+}
+
 // verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {
