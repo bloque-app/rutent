@@ -47,7 +47,9 @@
 //! like any other (`Source::Permissions`), whether the actor holds the one permission the change is. A register that
 //! says no refuses, one that says nothing gives a missing input and so a refusal, one out of reach not known
 //! (`REQ-AUZ-5`). Each decision's entry records its actor and the change, and each role it acts in apart, even where
-//! one party holds several (`REQ-AUD-8`).
+//! one party holds several (`REQ-AUD-8`). The login must also be the deployment operator's by the register
+//! (`Source::OfOperator`, `T-021-15`): a login of another party that the register lists in the operator's role holds no
+//! catalogue change and sets no setting.
 //!
 //! # Erasing a statement
 //!
@@ -106,7 +108,9 @@
 //! The rule on an authorisation holds on every `authorise`, which `T-021-04` decides through the engine's
 //! consultation, as every call is.
 
-use rutent_contracts::core_internal::{Action, Actor, CatalogueChange, RefusalClass, Role};
+use rutent_contracts::core_internal::{
+    Action, Actor, CatalogueChange, RefusalClass, Role, SettingKind,
+};
 use rutent_contracts::router_api::Id;
 
 use crate::engine::{Asked, Input, Need, Reply, Ruling, Said, Source};
@@ -129,6 +133,11 @@ pub enum Permission {
     PostRoute,
     /// Making one kind of catalogue change, and no other (`REQ-AUZ-6`).
     Change(CatalogueChange),
+    /// Setting one of the operator's settings, and no other: the fee formula, a tuple's slippage limit or evidence
+    /// floor, a public node's settings, a provider's or a publisher's ceiling, a job's cadence or a protocol
+    /// version's cutover date, each a permission of its own (`REQ-AUZ-6`, `T-021-15`). `Change(SetSetting)` is no
+    /// permission anyone holds: it names no setting.
+    Setting(SettingKind),
     /// One of Core's own actors moving value on the user's authorisation, carrying it onward (`REQ-AUZ-9`).
     CarryOnward,
     /// An operator's login acting for a user: moving value or giving an authorisation, at a reserve that declared
@@ -201,15 +210,21 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                 Action::PostRoute { .. } => {
                     operator_holds(caller, Permission::PostRoute).map(Needs::from)
                 }
-                // An operator's setting (`T-020-45`) has no rule until `T-021-15` gives each its permission: the
-                // fixed rule refuses it whoever asks, before the deployment's policy, as `roll_back` was until
-                // `T-021-12`.
+                // An operator's setting (`T-020-45`, `T-021-15`): an operator's login, the deployment operator's by the
+                // register (`Source::OfOperator`, as a read's grant asks it), that the register lists for the one
+                // permission the setting is, one for each kind, so the fee formula's holder sets no slippage limit,
+                // and no other role, Core's own actors included. The decision's entry records the request whole, so it
+                // names the setting and its value, and who set it. A request that names no setting has nothing to
+                // hold a permission to and gets no rule (it fails its check before it is consulted).
                 Action::ChangeCatalogue {
                     change: CatalogueChange::SetSetting,
+                    setting,
                     ..
-                } => None,
+                } => setting.as_ref().and_then(|setting| {
+                    of_operator_holds(caller, Permission::Setting(setting.kind()))
+                }),
                 Action::ChangeCatalogue { change, .. } => {
-                    operator_holds(caller, Permission::Change(*change)).map(Needs::from)
+                    of_operator_holds(caller, Permission::Change(*change))
                 }
                 Action::MoveValue {
                     order,
