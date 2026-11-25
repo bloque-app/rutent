@@ -5224,3 +5224,36 @@ fn filing_restated_after_a_reopen_changes_nothing_the_statement_fixed() {
     }
     assert_admitted(&env);
 }
+
+/// A reopened wait reads the filing's judgements (`needs`) back from the operator's kept statement, as it reads the
+/// inputs and objective: a need on a tuple that isn't on the route, so routing asks no person question, comes back
+/// whole (`REQ-AUD-6`, `REQ-QTE-10`).
+// verifies: REQ-AUD-6, REQ-QTE-10
+#[test]
+fn reopened_wait_reads_the_filings_needs_back_from_the_statement() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = short_waits();
+    slow(&mut env, 4 * 86_400);
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    let mut one = filing(reserve_filer(), &deposited);
+    one.session = short_session(&mut env, "session-short", START + 600);
+    one.needs = vec![rutent_core_orch::rounds::Need {
+        tuple: snapshot_support::deposit_tuple("provider-off-the-route"),
+        person: id("person-ref-8"),
+        verifier: id("kyc-check"),
+        subject: "subject-8".into(),
+        class: "kyc".into(),
+    }];
+    let filed = file(&mut env, &mut providers, &mut arrivals, &one).unwrap();
+    let Filed::Waiting {
+        order: Some(order), ..
+    } = filed
+    else {
+        panic!("{filed:?}");
+    };
+    let history = env.history();
+    let reopened = reopened_over(&mut env, &mut providers, &history);
+    let read = reopened.filing_of(&order).expect("the wait's filing");
+    assert_eq!(read.needs, one.needs);
+}
