@@ -1000,7 +1000,12 @@ fn authorisation_given_before_a_restart_is_held_after_it() {
     assert_eq!(
         decided(
             &mut after,
-            &move_under(1, &order, &first.authorisation, end_of(&operators, "2500000"))
+            &move_under(
+                1,
+                &order,
+                &first.authorisation,
+                end_of(&operators, "2500000")
+            )
         ),
         REFUSED_OUTSIDE
     );

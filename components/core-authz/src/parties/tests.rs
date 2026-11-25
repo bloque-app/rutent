@@ -1344,8 +1344,15 @@ fn charge_recorded_before_a_restart_is_not_charged_again() {
 
     let mut reopened = engine(registers(), bounds(4, 1));
     reopened.log.entries = ran_on.log.entries.clone();
-    assert_eq!(reopened.charge(&counted).unwrap().outcome, within(0), "counted once");
-    assert_eq!(reopened.charged().used(&id("acme-treasury"), Limit::Work), 4);
+    assert_eq!(
+        reopened.charge(&counted).unwrap().outcome,
+        within(0),
+        "counted once"
+    );
+    assert_eq!(
+        reopened.charged().used(&id("acme-treasury"), Limit::Work),
+        4
+    );
     let mut reissued = counted.clone();
     reissued.count = Count::new(1).unwrap();
     assert_eq!(

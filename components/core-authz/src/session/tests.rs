@@ -1320,7 +1320,8 @@ fn actor_not_listed_as_an_operator_login_is_refused_an_orders_state() {
 impl crate::funds::Recorded for Kept {
     fn permitted(
         &mut self,
-    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure> {
+    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure>
+    {
         Ok(crate::funds::permitted_in(self.0.iter().map(|(_, e)| e)))
     }
 
@@ -1328,8 +1329,16 @@ impl crate::funds::Recorded for Kept {
         Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
     }
 
-    fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, crate::funds::ReadFailure> {
-        Ok(crate::funds::part_in(self.0.iter().map(|(_, e)| e), order, segment))
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        Ok(crate::funds::part_in(
+            self.0.iter().map(|(_, e)| e),
+            order,
+            segment,
+        ))
     }
 
     fn registered(&mut self) -> Result<Registered, crate::funds::ReadFailure> {
@@ -1349,7 +1358,8 @@ impl PolicyLog for Unreadable {
 impl crate::funds::Recorded for Unreadable {
     fn permitted(
         &mut self,
-    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure> {
+    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure>
+    {
         self.0.permitted()
     }
 
@@ -1357,7 +1367,11 @@ impl crate::funds::Recorded for Unreadable {
         self.0.charged()
     }
 
-    fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, crate::funds::ReadFailure> {
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, crate::funds::ReadFailure> {
         self.0.part_of(order, segment)
     }
 }
@@ -1370,7 +1384,12 @@ fn ran_on_and_reopened() -> (
     Engine<Kept, Rules, Says>,
     PermissionChange,
 ) {
-    let says = || Says::of(vec![(holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes))]);
+    let says = || {
+        Says::of(vec![(
+            holds("cust-1", "acct-ref-4"),
+            Reply::Given(Said::Yes),
+        )])
+    };
     let mut ran_on = Engine::with_policy(Kept::world(), Rules::permitting(), says());
     ran_on.set_clock(nine());
     // Put together over the world's log, which holds a session opened before it (`sess-1`), as every engine is.
@@ -1379,16 +1398,24 @@ fn ran_on_and_reopened() -> (
     assert!(ran_on.grant_permission(&grant).unwrap().permit().is_some());
     let mut revocation = grant.clone();
     revocation.request = id("req-r1");
-    assert!(ran_on.revoke_permission(&revocation).unwrap().permit().is_some());
+    assert!(
+        ran_on
+            .revoke_permission(&revocation)
+            .unwrap()
+            .permit()
+            .is_some()
+    );
     let mut again = grant.clone();
     again.request = id("req-g-again");
     again.permission = id("perm-reg-2");
     assert!(ran_on.grant_permission(&again).unwrap().permit().is_some());
     let opened = ran_on.open_session(&own_session("req-s1")).unwrap();
-    assert!(matches!(opened.outcome, SessionOutcome::Opened { .. }), "{opened:?}");
+    assert!(
+        matches!(opened.outcome, SessionOutcome::Opened { .. }),
+        "{opened:?}"
+    );
 
-    let mut reopened =
-        Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says());
+    let mut reopened = Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says());
     reopened.set_clock(nine());
     reopened.reopen();
     (ran_on, reopened, again)
@@ -1431,8 +1458,18 @@ fn grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that
         );
         let mut revoke_again = again.clone();
         revoke_again.request = id("req-r2");
-        assert!(engine.revoke_permission(&revoke_again).unwrap().permit().is_some());
-        assert_eq!(reads(engine, "req-503", "perm-reg-2"), refused(), "revoked in turn");
+        assert!(
+            engine
+                .revoke_permission(&revoke_again)
+                .unwrap()
+                .permit()
+                .is_some()
+        );
+        assert_eq!(
+            reads(engine, "req-503", "perm-reg-2"),
+            refused(),
+            "revoked in turn"
+        );
     }
     assert_eq!(ran_on.register().grants, reopened.register().grants);
     assert_eq!(ran_on.register().revoked, reopened.register().revoked);
@@ -1454,7 +1491,10 @@ fn session_opened_before_a_restart_is_held_after_it() {
             "an id issued opens no other session: {answer:?}"
         );
         let answer = engine.open_session(&own_session("req-s1")).unwrap();
-        assert!(matches!(answer.outcome, SessionOutcome::Opened { .. }), "{answer:?}");
+        assert!(
+            matches!(answer.outcome, SessionOutcome::Opened { .. }),
+            "{answer:?}"
+        );
     }
 }
 
@@ -1480,7 +1520,12 @@ fn register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer() {
         class: RefusalClass::MissingInput,
     };
     let regulator = actor("fin-regulator", "examiner-3", Role::Regulator);
-    let by = read("req-511", regulator, json!({"kind": "trail"}), Some("perm-reg-2"));
+    let by = read(
+        "req-511",
+        regulator,
+        json!({"kind": "trail"}),
+        Some("perm-reg-2"),
+    );
     assert_eq!(blind.check_read(&by).unwrap().outcome, missing);
     let mut fresh = again.clone();
     fresh.request = id("req-g-fresh");
@@ -1496,7 +1541,10 @@ fn register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer() {
         "the grant it names can't be found"
     );
     let answer = blind.open_session(&own_session("req-s2")).unwrap();
-    assert!(matches!(answer.outcome, SessionOutcome::Refused { .. }), "{answer:?}");
+    assert!(
+        matches!(answer.outcome, SessionOutcome::Refused { .. }),
+        "{answer:?}"
+    );
     // A customer's read of its own order rests on no permission, so on nothing the register holds.
     let own = read(
         "req-512",
@@ -1504,5 +1552,8 @@ fn register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer() {
         json!({"kind": "order", "order": "ord-1"}),
         None,
     );
-    assert_eq!(blind.check_read(&own).unwrap().outcome, ReadOutcome::Allowed {});
+    assert_eq!(
+        blind.check_read(&own).unwrap().outcome,
+        ReadOutcome::Allowed {}
+    );
 }

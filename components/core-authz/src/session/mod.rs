@@ -196,15 +196,13 @@ pub fn registered_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Regist
                     registered.sessions.push(session);
                 }
             }
-            What::GrantPermission { change, .. } => {
-                if !registered.grants.contains(change) {
-                    registered.grants.push(change.clone());
-                }
+            What::GrantPermission { change, .. } if !registered.grants.contains(change) => {
+                registered.grants.push(change.clone());
             }
-            What::RevokePermission { change, .. } => {
-                if !registered.revoked.iter().any(|r| same_grant(r, change)) {
-                    registered.revoked.push(change.clone());
-                }
+            What::RevokePermission { change, .. }
+                if !registered.revoked.iter().any(|r| same_grant(r, change)) =>
+            {
+                registered.revoked.push(change.clone());
             }
             _ => {}
         }

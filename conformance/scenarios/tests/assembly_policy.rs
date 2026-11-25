@@ -548,7 +548,13 @@ fn read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_
         let grant = trail_change(&core, "req-grant", "perm-reg-1", &regulator, &operator);
         assert!(policy.grant_permission(&grant).unwrap().permit().is_some());
         let revoke = trail_change(&core, "req-revoke", "perm-reg-1", &regulator, &operator);
-        assert!(policy.revoke_permission(&revoke).unwrap().permit().is_some());
+        assert!(
+            policy
+                .revoke_permission(&revoke)
+                .unwrap()
+                .permit()
+                .is_some()
+        );
         let again = trail_change(&core, "req-again", "perm-reg-2", &regulator, &operator);
         assert!(policy.grant_permission(&again).unwrap().permit().is_some());
     }
