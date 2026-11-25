@@ -882,6 +882,11 @@ impl Core {
         }
     }
 
+    /// Whether `segment` of `order` is a move whose outcome Core holds unknown.
+    pub fn is_unknown(&self, order: &Id, segment: &Id) -> bool {
+        self.segments.unknown_move(order, segment).is_some()
+    }
+
     /// The transactions of the reversals Core carried out for `order`, in the order it did (`REQ-ORD-41`).
     pub fn reversal_transactions(&self, order: &Id) -> Vec<Id> {
         self.segments.reversal_transactions(order).to_vec()

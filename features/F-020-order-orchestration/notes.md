@@ -7723,8 +7723,9 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
   - `T-016-05`'s comments in `stuck` and `reversal` read the handed-on route as having no withdrawal segment.
 - **Defaults** (reversible, fail closed). An owed reversal is timed from its segment's start, with the tuple's figure, as an
   unfinished move is. A status answer that fails `check_status_answer` keeps nothing. Core asks an unknown segment's status
-  once; asking again at the provider's cadence is `T-020-48`'s. A price whose route isn't the record's chosen one (a
-  recalculated route) is not reported: `Core::price_unreported` says why.
+  once; asking again at the provider's cadence is `T-020-48`'s. A price of an order that ran two routes covers the first route's settled
+  segments and the second's (`executed_across`); one that ran more than two, or of more than one part, is not reported
+  (`Core::price_unreported` says why), a gap the lead owns.
 - **Gaps, with owners.**
   1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
      to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
@@ -7738,10 +7739,10 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
      or the part's settled starting segment; a settled segment out of a node is never reversed, so a landing is never
      released and then due again. The one path left is a hand-on's linked order whose first move out of the held node fails
      and is reversed; that needs a decision on who is landed for. Left as it is; owner: the lead.
-  3. A reopened Core doesn't rebuild `reversal_txs`, so a record listing a reversal is skipped again until the next
-     reversal; owner `T-020-48`.
+  3. Closed in review round 1: a reopened Core rebuilds the reversal transactions (from the operator's reversal questions the
+     log holds) and the unknown segments already asked (from `ask_status` effects with their result).
   4. Unknown then failed is driven for a ramp's transfer only; a reserve's or exchange's unknown still resolves as before.
-  5. "Ends failed on the provider's answer": Core keeps the answer and moves nothing; the mover's report of the failure
+  5. **`T-020-48`'s:** "ends failed on the provider's answer": Core keeps the answer and moves nothing; the mover's report of the failure
      (`Stuck::report_segment_outcome`) takes a `Late` from `Segments::late_statement`, which no assembly step calls yet.
      Owner: `T-020-48`.
 - **Rule-off table** (each switched off alone, its test run through the lock, file restored with `git checkout`; script
@@ -7754,3 +7755,26 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
   | part 3: an unknown segment is asked once | `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
   | part 3: the answer is held to its question (`check_status_answer`) | `status_answer_to_another_question_keeps_nothing` (a unit test added for it: no scenario had a mismatching answer) |
   | part 4: the order's reversal transactions are its own in a node's record | `private_node_record_listing_a_reversal_is_read` |
+
+### T-020-47, review round 1 (PR #312, `48d6b5db`)
+
+- Parts 2 and 4a moved to `T-020-56`. Gap 5 above is `T-020-48`'s.
+- **Part 5 times only a segment a reversal can apply to** (not a deposit, whose reversal never applies and whose failed
+  value waits for its customer, `REQ-ORD-43`). Test `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window`.
+  An owed reversal is timed from its segment's start, so a late failure (most of the window spent unknown) is declared
+  stuck almost at once; a failure time would need new state and a rebuild.
+- **Part 1 across a recalculation:** `executed_across` / `Priced::across` compose the price of the segments settled on each
+  route, each leg held to its own route's record, under the last route's bounds; the assembly keeps the records of the
+  routes an order ran. Test `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once`. No contract
+  shape was needed.
+- **Reopening:** `Segments::reopened` rebuilds the reversal transactions; `Reversals::follow` rebuilds the unknown segments
+  asked (any finished `ask_status` of the segment counts). Tests `reversals_core_carried_out_are_known_again_after_core_reopens`,
+  `unknown_segment_already_asked_is_not_asked_again_after_core_reopens`. A reopened Core holds no answer for a segment it
+  rebuilt unknown, so it asks nothing more of it anyway; the rebuilt set keeps that from turning into an error.
+
+| Rule switched off | Red |
+|---|---|
+| a failed deposit is never timed | `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window` |
+| the price covers the first route too | `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once` |
+| unknown segments asked are rebuilt | `unknown_segment_already_asked_is_not_asked_again_after_core_reopens` |
+| reversal transactions are rebuilt | `reversals_core_carried_out_are_known_again_after_core_reopens` |

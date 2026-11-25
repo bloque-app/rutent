@@ -560,9 +560,17 @@ fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
     assert_eq!(status_asks(&core), 1);
     let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
     let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
+    assert!(
+        core.is_unknown(&order, &ramp),
+        "the reopened Core still holds the move unknown"
+    );
     core.ask_unknown_statuses(&order).expect("the reopened Core takes it up");
+    assert!(
+        core.status_asked(&order, &ramp).is_none(),
+        "no question was put again, nor refused: {:?}",
+        core.status_asked(&order, &ramp)
+    );
     assert_eq!(status_asks(&core), 1, "asked once, not again by the Core that reopened");
-    let _ = ramp;
     admitted(&core);
 }
 
