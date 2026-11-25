@@ -190,7 +190,8 @@ pub fn report_logged_price(
     segments: &Segments,
     records: &dyn Fn(&Id) -> Option<DecisionRecord>,
 ) -> Result<Option<Reported>, Unreported> {
-    let (Some((first, later)), Some(followed)) = (segments.routes_ran(order), segments.order(order))
+    let (Some((first, later)), Some(followed)) =
+        (segments.routes_ran(order), segments.order(order))
     else {
         return Ok(None);
     };
@@ -206,7 +207,12 @@ pub fn report_logged_price(
             .and_then(|c| c.parts.get(part))
             .map_or(0, |p| p.operations.len())
     };
-    let part_of = |id: &Id| followed.parts.iter().position(|p| p.part_id.as_str() == id.as_str());
+    let part_of = |id: &Id| {
+        followed
+            .parts
+            .iter()
+            .position(|p| p.part_id.as_str() == id.as_str())
+    };
     // What settled in a part before its first recalculation ran on the first route; what settled between two of its
     // recalculations, on the route the first of them chose.
     let share = |at: Option<usize>, record: &DecisionRecord, part: usize| {

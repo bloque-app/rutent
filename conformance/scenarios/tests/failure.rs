@@ -541,16 +541,23 @@ fn executed_price_is_reported_correctly_after_core_reopens_mid_recalculation() {
     };
     core.run_recalculated(&order, &second).expect("it runs");
     assert!(core.price_reported(&order).is_none(), "not complete yet");
+    assert_eq!(core.routes_ran(&order), 2);
     let mut core = scenario.reopen(core, 1, &mut Reference);
+    assert_eq!(core.routes_ran(&order), 2, "rebuilt from the log");
     let Recalculation::Recalculated(third) = core.recalculate(&order).expect("tried") else {
         panic!("a third route");
     };
     core.run_recalculated(&order, &third).expect("it runs");
+    assert_eq!(core.routes_ran(&order), 3);
     assert_eq!(state(&mut core, &order), OrderState::Complete);
     assert!(core.price_unreported(&order).is_none());
     assert!(core.price_reported(&order).is_some(), "reported");
     let price = core.price_of(&order).expect("its figures");
-    assert_eq!(price.segments.len(), 2, "the withdrawal and the deposit that settled");
+    assert_eq!(
+        price.segments.len(),
+        2,
+        "the withdrawal and the deposit that settled"
+    );
 }
 
 /// The seconds each operation takes in the p99 scenario, and what twice it is.

@@ -7723,7 +7723,7 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
   - `T-016-05`'s comments in `stuck` and `reversal` read the handed-on route as having no withdrawal segment.
 - **Defaults** (reversible, fail closed). An owed reversal is timed from its segment's start, with the tuple's figure, as an
   unfinished move is. A status answer that fails `check_status_answer` keeps nothing. Core asks an unknown segment's status
-  once; asking again at the provider's cadence is `T-020-48`'s. A price covers every route and part an order ran (`executed_across`, review round 2); `Core::price_unreported` says why one isn't reported, which only the fail-closed cases below do.
+  once; asking again at the provider's cadence is `T-020-48`'s. A price covers every route and part an order ran (`executed_across`, review round 2); `Core::price_unreported` says why one isn't reported, and only the fail-closed cases of review round 2 do not report one.
 - **Gaps, with owners.**
   1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
      to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
@@ -7798,3 +7798,25 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 |---|---|
 | the price is composed part by part (one order part only) | `price_of_an_order_of_two_parts_covers_each_parts_segments` |
 | a route's settled share is less what earlier routes account for | `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` |
+
+### T-020-47, review round 3 (PR #312, `bd69d262`)
+
+- **`price_unreported` always says why.** A completed order whose record chose no route is `Unreported::NoRoute`, and one whose
+  segment's figures aren't kept is `NotKept(segment)`; a route's record Core can't read back is `RecordNotHeld(id)`. Only
+  an order not yet complete reports nothing and no reason.
+- **The routes an order ran are Core's state, rebuilt from the log.** `Segments` notes the record each `route_chosen`,
+  `route_recalculated` and `destination_changed` input names, with how many of the part's segments had settled by then
+  (`Segments::routes_ran`), on every path that follows an order: live (`follow`, `observe`) and replayed
+  (`follow_recorded`, which a reopened Core runs). `closing::report_logged_price` prices from it, reading each record
+  through a lookup the assembly gives; the assembly keeps no copy. The record lookup itself is still the assembly's
+  (`Core::record_of`, over the signer's records and the log's digest): moving Core's own log reads out of the assembly
+  is `T-020-55`'s.
+- Tests: `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` (the order on its second route when
+  Core reopens, completed on a third after; the routes held are counted before and after the reopen: a route that
+  settled nothing prices the same, so the count is what shows the rebuild), and
+  `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` (core-orch).
+
+| Rule switched off | Red |
+|---|---|
+| routes ran are noted when the log is replayed | `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` |
+| the parts of a price are taken in order | `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` |

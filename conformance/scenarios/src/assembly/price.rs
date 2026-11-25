@@ -73,6 +73,13 @@ impl Core {
         self.closed.built.get(order.as_str()).map(|r| &r.price)
     }
 
+    /// How many routes Core holds `order` ran: the one that was chosen and each recalculated since, as the log has them.
+    pub fn routes_ran(&self, order: &Id) -> usize {
+        self.segments
+            .routes_ran(order)
+            .map_or(0, |(_, later)| 1 + later.len())
+    }
+
     /// Why `order`, complete, has no price reported, if that is so.
     pub fn price_unreported(&self, order: &Id) -> Option<&Unreported> {
         self.closed.unreported.get(order.as_str())

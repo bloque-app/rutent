@@ -1649,10 +1649,9 @@ impl Segments {
                 let (Some(part), Some(before)) = (&input.subject.part, before) else {
                     return;
                 };
-                let (Some(part), Some(record)) = (
-                    Id::new(part.as_str()),
-                    Id::new(decision_record.as_str()),
-                ) else {
+                let (Some(part), Some(record)) =
+                    (Id::new(part.as_str()), Id::new(decision_record.as_str()))
+                else {
                     return;
                 };
                 let settled_before = before
