@@ -66,6 +66,50 @@ impl Reliances {
         Self::default()
     }
 
+    /// The register rebuilt from `history`, the log's own entries, as a Core that reopens reads it (`T-020-46`): each
+    /// `reliance` entry Core wrote is held as written, its receipt the log's, so it is never appended again, and each
+    /// input it names rests on its judgement again, so a segment after the reopening that carries one writes its own
+    /// reliance (`REQ-CPL-12`). A declaration no segment relied on yet left no entry: it is the caller's word, which
+    /// the caller gives again.
+    pub fn recorded(history: &[(Receipt, rutent_contracts::core_internal::Entry)]) -> Self {
+        let mut reliances = Self::new();
+        for (receipt, entry) in history {
+            let rutent_contracts::core_internal::Entry::Verified(v) = entry else {
+                continue;
+            };
+            let What::Reliance {
+                order,
+                judgement,
+                judge,
+                relied_on_by,
+                inputs,
+            } = &v.what
+            else {
+                continue;
+            };
+            let held = Judgement {
+                receipt: judgement.clone(),
+                judge: judge.clone(),
+            };
+            for input in inputs {
+                let _ = reliances.rests_on(order, input.as_str(), held.clone());
+            }
+            let key = format!(
+                "{}\u{0}{}\u{0}{}",
+                order.as_str(),
+                relied_on_by.as_str(),
+                serde_json::to_string(judgement).unwrap_or_default()
+            );
+            if let Ok(general) = GeneralEntry::try_from(entry.clone()) {
+                reliances.entries.entry(key).or_insert(Written {
+                    entry: general,
+                    receipt: Some(receipt.clone()),
+                });
+            }
+        }
+        reliances
+    }
+
     /// Declares that the order's input `input` rests on `judgement`. Declared again for the same judgement it is a
     /// retry and changes nothing; for another judgement it is refused, not replaced: which judgement a value rests on
     /// is not for a later caller to change under a provider that may have relied on the first (`REQ-CPL-12`).
@@ -132,6 +176,14 @@ impl Reliances {
             let held = match self.entries.entry(key) {
                 Entry::Occupied(held) => held.into_mut(),
                 Entry::Vacant(slot) => {
+                    // Every input of the order declared on this judgement, by name: what a Core that reopens
+                    // rebuilds the declarations from (`T-020-46`).
+                    let inputs: Vec<Id> = self
+                        .rests
+                        .iter()
+                        .filter(|((o, _), held)| o == order.as_str() && *held == judgement)
+                        .filter_map(|((_, input), _)| Id::new(input.as_str()))
+                        .collect();
                     let entry = verified(
                         core,
                         What::Reliance {
@@ -139,6 +191,7 @@ impl Reliances {
                             judgement: judgement.receipt.clone(),
                             judge: judgement.judge.clone(),
                             relied_on_by: provider.clone(),
+                            inputs,
                         },
                         at,
                         Outcome::Observed {},

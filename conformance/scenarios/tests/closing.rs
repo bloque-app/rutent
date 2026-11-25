@@ -848,3 +848,44 @@ fn listed_without_holdings(world: &World) -> Catalogue {
     }
     catalogue
 }
+
+/// The guard's refusal of a part, recorded before Core stopped: a Core reopened on the log answers it again with
+/// the entry the log took while the guard refuses for the route the refusal was about, so it is recorded once
+/// whatever the restarts (`INV-8`, `T-020-46`).
+// verifies: INV-8
+#[test]
+fn guard_refusal_recorded_before_core_reopens_is_not_recorded_again() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::over(&mut world);
+    let mut closing = Closing::new();
+    let mut catalogue = world.catalogue.clone();
+    let ad = world.installed[0]
+        .advertisement
+        .statement()
+        .statement
+        .clone();
+    let deposit = tuples_of(&ad)
+        .into_iter()
+        .find(|k| matches!(k.origin, rutent_prov::catalogue::Endpoint::Inner(_)))
+        .expect("the deposit's tuple");
+    catalogue.set_evidence_floor(deposit, EvidenceGrade::PublicRecord);
+    let first = run(&mut core, &mut world, &catalogue, &mut closing);
+    let Ran::Refused { receipt, .. } = &first else {
+        panic!("refused: {first:?}");
+    };
+    let receipt = receipt.clone();
+    segments_support::reopen_segments(&mut core, &catalogue, &[]);
+    core.clock.advance(60);
+    let again = run(&mut core, &mut world, &catalogue, &mut closing);
+    assert!(
+        matches!(&again, Ran::Refused { receipt: r, .. } if *r == receipt),
+        "the refusal the log took: {again:?}"
+    );
+    assert_eq!(
+        core.log
+            .borrow()
+            .count(|w| matches!(w, What::OrderRefusal { .. })),
+        1,
+        "recorded once"
+    );
+}

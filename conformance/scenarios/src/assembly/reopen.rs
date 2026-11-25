@@ -133,6 +133,37 @@ impl Core {
         records
     }
 
+    /// Intake rebuilt from the log as a Core that reopened would rebuild it were the statement kept behind
+    /// `commitment` unreadable (a test hook, `T-020-46`): the evidence store answers nothing for it, so an order whose
+    /// inputs it holds is held, failing closed. The rest of Core's state is not changed.
+    pub fn intake_reopened_without(&mut self, commitment: &Digest) {
+        struct Without<'a> {
+            reading: Reading<'a>,
+            unreadable: &'a Digest,
+        }
+        impl Reopening for Without<'_> {
+            fn record(&self, id: &Id) -> Option<DecisionRecord> {
+                self.reading.record(id)
+            }
+            fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+                if commitment == self.unreadable {
+                    return None;
+                }
+                self.reading.kept(commitment)
+            }
+        }
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let mut reading = Without {
+            reading: Reading {
+                signed: &self.signer.records,
+                entries: &history,
+                kept: &mut self.kept,
+            },
+            unreadable: commitment,
+        };
+        self.intake = Intake::reopened(&history, &mut reading);
+    }
+
     /// The value in flight a Core that reopened would hold were none of its decision records readable (a control for
     /// the ceilings' failing closed, `T-020-46`): each segment handed over held at the value its signed operation
     /// states. Core's own state is not changed.

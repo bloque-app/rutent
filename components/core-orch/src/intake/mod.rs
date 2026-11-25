@@ -687,9 +687,15 @@ impl Intake {
         caller: &Actor,
         order: &Id,
     ) -> Result<Told, IntakeError> {
+        // An order a reopened Core holds, its inputs statement unreadable, is never quoted again with its inputs
+        // missing (failing closed, `T-020-46`).
+        let held = self.held.contains(order.as_str());
         let kept = self.kept_for(desk.actors, caller, order)?;
         if let Status::Accepted { .. } = kept.status {
             return Ok(kept.told());
+        }
+        if held {
+            return Err(IntakeError::NotNow);
         }
         if !kept.opening.is_empty() || kept.ended || kept.accepting.is_some() {
             // Not yet open, ended, or an acceptance under way on the quote shown, carried on by accepting again.
@@ -847,9 +853,15 @@ impl Intake {
         owner: Option<&Id>,
         hold: Option<&Id>,
     ) -> Result<Told, IntakeError> {
+        // An order a reopened Core holds, its inputs statement unreadable, is never accepted: what it would run on
+        // can't be read back (failing closed, `T-020-46`).
+        let held = self.held.contains(order.as_str());
         let kept = self.kept_for(desk.actors, by, order)?;
         if matches!(kept.status, Status::Accepted { .. }) || kept.ended {
             return Ok(kept.told());
+        }
+        if held {
+            return Err(IntakeError::NotNow);
         }
         if let Some(accepting) = kept.accepting.as_mut() {
             // Carried on from where it stopped, by the actor that accepted; the destination isn't resolved again,

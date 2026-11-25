@@ -1719,3 +1719,28 @@ fn pending_wait_no_longer_taken_lets_the_run_go_on() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// A part that waits at its floor, Core reopened: the wait the log took is the reopened Core's, so running the part
+/// again records no second wait and hands nothing more over (`REQ-ORD-27`, `INV-8`, `T-020-46`).
+// verifies: REQ-ORD-27, INV-8
+#[test]
+fn floor_wait_recorded_before_core_reopens_is_not_recorded_again() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::under(&mut world, Some(PositiveAmount::new("995000").unwrap()));
+    world.fleet.world().script_for(
+        RESERVE,
+        "withdrawal",
+        Behaviour::delivering(Delivery::Short { bps: 100 }),
+    );
+    let ran = core.run(&mut world);
+    assert_eq!(segments(&ran).len(), 1, "the deposit is not handed over");
+    let wait = recorded_wait(&core);
+    let before = handled(&world);
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    core.clock.advance(60);
+    let again = core.run(&mut world);
+    assert_eq!(segments(&again).len(), 1);
+    assert_eq!(handled(&world), before, "nothing more is handed over");
+    assert_eq!(floor_waits(&core).len(), 1, "one wait");
+    assert_eq!(recorded_wait(&core), wait, "the wait the log took");
+}

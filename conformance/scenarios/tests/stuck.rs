@@ -4732,3 +4732,86 @@ fn worlds_of_the_same_ends_live_together_and_others_follow_once_dropped() {
     assert_eq!((origin_reserve(), last_reserve()), (RESERVE, RESERVE));
     drop(third);
 }
+
+/// A resolution's outcome reported by its mover before Core stopped, not yet confirmed: the reopened Core holds the
+/// report as the log has it, so another actor confirms it after the reopening, the final result is recorded once, and
+/// the mover's second report is refused as before, the log never asked for one (`AC-6`, `REQ-AUZ-4`, `T-020-46`).
+// verifies: REQ-AUZ-4, INV-8
+#[test]
+fn outcome_reported_before_core_reopens_is_confirmed_after_it() {
+    let (_world, mut core, mut stuck) = stuck_by_no_route();
+    let mut policy = PermitsEveryStep::new(&core.log);
+    let mut moves = Moves(Vec::new(), [Resolved::Unknown].into(), None);
+    let (alice, bob) = (staff("desk-a", "alice"), staff("desk-b", "bob"));
+    let first = decide(
+        &mut core,
+        &mut stuck,
+        &mut policy,
+        &alice,
+        &back_to_origin(AMOUNT),
+        evidence,
+    )
+    .unwrap();
+    let Ok(Moved::CarriedOut { effect, .. }) =
+        moves_once(&mut core, &mut stuck, &mut policy, &mut moves, &first, &bob)
+    else {
+        panic!("unknown, recorded unanswered");
+    };
+    let (result, other) = results_after_the_resolution(&mut core);
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Done,
+            &result
+        ),
+        Ok(Moved::AwaitsConfirmation { report: 1 })
+    );
+    // A restart: Core's stuck record rebuilt from the log.
+    let history = segments_support::handing::recorded_with_receipts(&core);
+    let mut stuck = Stuck::reopened(&core.segments, &*core.clock, &history, &mut core.exposures);
+    assert_eq!(
+        known_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &bob,
+            Resolved::Failed,
+            &result
+        ),
+        Err(ResolveError::AlreadyReported),
+        "the report the log holds stands"
+    );
+    assert!(matches!(
+        confirm_outcome(
+            &mut core,
+            &mut stuck,
+            &mut policy,
+            ORDER,
+            &first,
+            &alice,
+            (Resolved::Done, 1, &result),
+            &other
+        ),
+        Ok(Moved::CarriedOut {
+            resolved: Resolved::Done,
+            result: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        results_of(&core, &effect),
+        vec![Outcome::Unanswered {}, Outcome::Done {}]
+    );
+    assert_eq!(
+        outcome_decisions(&core),
+        (1, 1),
+        "one report, one confirmation"
+    );
+}

@@ -437,6 +437,7 @@ raise. A record not listed here needs a bump of this contract.
 | `T-021-06` | policy's confirmation of a move's outcome refused where the confirmer's and the reporter's `ActsFor` chains reach a common accountable party, which the log can't see | `confirm_outcome` (its answer) |
 | `T-021-07` | questions about people, the set asked; a reserve's proof; presence; a payer's reference | `ask_about_person`; stated entries; `acceptance.parties.payer` |
 | `T-021-07` | whose judgement was relied on, and by whom | `reliance` |
+| `T-020-46` | which of the order's inputs rest on the judgement relied on, so a Core that reopens rebuilds them | `reliance` (`inputs`) |
 | `T-022-01` | every action, refusal and unanswered request | the entries above; `result` with `unanswered` |
 | `T-022-01` | a stated entry's `made_at` held to no further ahead of the log's append clock than a tolerance, so a maker can't date its evidence past the move it reports | stated entries (`when.at`) |
 | `T-022-02` | statements apart from what rutent verified; an operator command naming its operator | stated entries; `command` with the operator in `who` |

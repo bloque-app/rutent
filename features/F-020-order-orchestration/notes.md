@@ -7386,6 +7386,127 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`, `assembly` and `invariants`); the doc check; plan-check and tag-check
   `--strict` (0 findings, 2335 tests tagged); the contract guard against `origin/develop` (1951 paths, no
   violations). All pass.
+- **Round 4** (issue #269 reopened; the milestone reviewer's High on T-020-46 at `1bc91b21`, its notes in the review
+  chat of 2026-11-25; branch `f-020/t-020-46-r4`, cut from `1bc91b21`; the lead's decisions):
+  - *High: a completed hand-on was landed again after a reopening (`INV-1`, `INV-8`).* `Segments::land_settled` and
+    `Segments::reconcile_landings` now read a settled segment's value through one predicate,
+    `Segments::settled_at_node`: a segment the state machine retired is skipped; one whose next segment settled, or
+    that was reversed (`ReversalComplete`), moved on; one whose part a resolution or a hand-on ended
+    (`ended_by_resolution`) took its value with it, so nothing is landed, released or restored for it. A reopened
+    Core marks resolved each part a done `resolve_stuck` moved, as the Core that ran on marked it once the move was
+    done, before its `stuck_resolved` or `handed_on`. The reviewer's two probes were written first and seen red (the
+    wallet attributing the handed-on order's 1,000,000 again):
+    `handed_on_value_is_not_landed_again_after_core_reopens` and
+    `value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_the_hand_on`
+    (`tests/assembly_real_wallet.rs`, the attributions empty and the wallet holding nothing for the order). The
+    reversed case: `reversed_segments_landing_is_not_restored_after_core_reopens` (`tests/landing.rs`, the kit's
+    ledger account, the withdrawal proven undone: the Core that ran on releases the landing, the reopened one
+    restores nothing). Through the assembly the reversal of the landed first segment isn't applicable in the
+    chain route the wallet's node is in (the part isn't open with only pending segments after it), so the kit carries
+    it.
+  - *Medium: what `Segments` and the stuck record lost, each rebuilt or said why.*
+    - `reliances`: rebuilt (`Reliances::recorded`). Contract: core-internal 1.0.0's `reliance` entry gains
+      optional `inputs`, the order's inputs by name declared on the judgement relied on (folded into the unreleased
+      1.0.0 on the lead's authorisation, a `DEC-20` path; valid fixture
+      `verified-entry-of-reliance-naming-the-inputs-resting-on-it`, README row, CHANGELOG line). Core writes it; a
+      reopened Core rebuilds which input rests on which judgement and the entries written, so a later segment writes
+      its reliance and none is written twice. A declaration no segment relied on yet left no entry: it is the
+      caller's word, given again. Test: `which_input_rests_on_which_judgement_is_rebuilt_from_the_log_after_a_restart`
+      (`tests/reliance.rs`).
+    - `refused` (a guard refusal): rebuilt by order and the refused route's decision record (`refused_in_log`); the
+      `order_refusal` names no reason, so while the guard refuses that route the logged entry is the answer. Test:
+      `guard_refusal_recorded_before_core_reopens_is_not_recorded_again` (`tests/closing.rs`).
+    - `floor_waits`: rebuilt from the log's `waiting_at_floor` inputs. Test:
+      `floor_wait_recorded_before_core_reopens_is_not_recorded_again` (`tests/recalc.rs`).
+    - Stuck's `segment_reports`, `segment_history`, `segment_confirmed`, and a stuck move's own reports: rebuilt
+      from the log's `report_outcome`, `decline_outcome` and `confirm_outcome` decisions (`Stuck::rebuild_reports`):
+      each report's version, the declined ones, the one that stands, a permitted confirmation not yet recorded. Not
+      safe to lose: the log takes one standing report per effect (`one-report-per-effect`), so a reopened Core
+      without it could neither take a second report nor confirm the first, and the move would stay unknown. Test:
+      `outcome_reported_before_core_reopens_is_confirmed_after_it` (`tests/stuck.rs`).
+    - `pairing`: a pair built and not written, or one owed, rests on reports that went with the stopped process. A
+      reopened Core parks each such pair unbuilt with why (`NoSentReport`), surfaced as any pair that can't be built
+      is (`REQ-ORD-9`, `ADR-0009`), never skipped silently; pairs the log took are neither surfaced nor written again.
+      Test: `pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens` (`tests/report_pairs.rs`).
+    - `Mover.kept`: not rebuilt, safe. A move in motion when Core stopped is never carried out again (the effect is
+      acted on, `Kept::Lost`): its outcome is unknown and is settled by its mover's report and another actor's
+      confirmation (`AC-6`), whose state is now rebuilt; `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log`
+      and `outcome_reported_before_core_reopens_is_confirmed_after_it` cover the path.
+  - *Low: what `Scenario::reopen` carries.* The restore's transaction and its `balance_verification` questions were
+    drawn from Core's fresh ids and named in no log entry. They are now derived
+    (`Holdings::restore_transaction`): from the node, the order and the process the wallet's module runs in now, so a
+    restore after the module restarted goes under a transaction no earlier process took, whichever Core process asks,
+    and a retry in the same process is a repeat; the questions derive from it. Test:
+    `restore_transaction_is_new_for_each_process_of_the_wallets_module` (`components/prov/tests/holding_wallet.rs`).
+    What a reopen still carries, and why: the fleet (the platform and the providers, processes apart from Core's,
+    which a Core restart doesn't stop); the clock (time goes on); the installed modules and the feed (the platform's);
+    the host's `holdings` (the platform's host register of each account and its attribution, beside the platform;
+    `T-024-21` reopens the platform and its host from their record); and `fresh`, Core's seeded id source, so a
+    scenario replays: a real restart draws from new entropy, every id Core draws is either in the log (and
+    `Issued::recorded` keeps a round's transactions off) or now derived, so none depends on it being carried. A
+    platform reopened from its record must keep its process ids new (`T-024-21`), on which the derivation rests.
+  - *Low: a held order.* Intake holds an order whose inputs statement can't be read back in `quote` and `accept` as
+    well as `request_of` (`IntakeError::NotNow`). Test:
+    `order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_core_reopens`
+    (`tests/assembly_intake.rs`, the assembly's `intake_reopened_without` hook: a disk that lost a verified statement
+    isn't opened at all, since the log refuses it, so the hook reads the statement as unreadable).
+  - *Holdings sites touched* (for the merge with `T-021-16`): prov `holding/wallet.rs` (`restore_transaction`, new);
+    core-orch `stuck/handing.rs` (`Wallets` loses `restore`, derives the transaction); the assembly's `holding.rs`
+    (`HeldWallets` loses `restore`, `Landing` loses `fresh` and derives the transaction, `withdraw_for_a_hand_on`)
+    and `mod.rs` (`move_stuck` draws no restore id).
+- **Round 4's new test names for `PLAN.md`:** the ten above, with their tags in their `// verifies:` lines.
+- **Round 4's rule-off table** (script `ruleoff5.py` in the row's scratch folder):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the shared predicate reads every value as resting (`settled_at_node`) | both hand-on probes, `reversed_segments_landing_is_not_restored_after_core_reopens`, `value_that_passes_through_the_wallets_node_is_not_held_for_the_order`, `value_that_passed_through_a_held_node_is_never_landed`, `release_after_a_holding_accounts_module_restarts_restores_first` |
+  | a reversed segment's value read as resting | `reversed_segments_landing_is_not_restored_after_core_reopens` |
+  | a part a resolution ended read as holding its value | both hand-on probes |
+  | a done stuck move's part not marked resolved on reopening | `value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_the_hand_on` |
+  | a held order quoted | `order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_core_reopens` |
+  | a held order accepted | none: a reopened Core shows no quote until the order is quoted again, which the quote's check refuses, so the acceptance is refused before the check; kept as the second line |
+  | a restore transaction drawn alike for every process | `restore_transaction_is_new_for_each_process_of_the_wallets_module` |
+  | a reliance entry names no input | `which_input_rests_on_which_judgement_is_rebuilt_from_the_log_after_a_restart` |
+  | no reliance register rebuilt | the same |
+  | no guard refusal rebuilt | `guard_refusal_recorded_before_core_reopens_is_not_recorded_again` |
+  | no floor wait rebuilt | `floor_wait_recorded_before_core_reopens_is_not_recorded_again` |
+  | no reports rebuilt | `outcome_reported_before_core_reopens_is_confirmed_after_it` |
+  | no dropped pairs surfaced | `pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens` |
+
+- **Round 4's local checks** (through the lock, `contracts/src/lib.rs` touched first, the row's private plain-wallet
+  build): fmt; workspace clippy `-D warnings`; `cargo test -p` `rutent-core-orch`, `rutent-core-authz --lib` (after
+  a `matches!` in `reports_of` for the entry-points scan), `rutent-contracts`, `rutent-prov`; `rutent-scenarios`'
+  `reopened`, `hand_on`, `hand_on_record`, `segments`, `landing`, `private_nodes`, `charge_check`,
+  `assembly_real_wallet`, `assembly`, `assembly_stuck`, `assembly_hand_on`, `assembly_intake`, `assembly_wiring`,
+  `holds`, `stuck_hand_on`, `stuck`, `closing`, `invariants`, `audit_scenarios`, `stuck_mover`, `person_records`,
+  `measures_called`, `reliance`, `recalc`, `report_pairs`; CI's seeded step (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`,
+  `assembly` and `invariants`); the doc check; plan-check and tag-check `--strict` (0 findings, 2346 tests tagged);
+  the contract guard against `origin/develop` (1952 paths, no violations). All pass.
+- **Round 5** (#309's CHANGES at `45d13fbe`, comment 7159760767):
+  - *Should-fix A: `Segments::resting_totals` bypassed the predicate.* It feeds what a hand-on's restore restores
+    after a module restart (`Wallets::withdraw`, `restored_whole`), and counted retired segments, reversed ones and
+    parts a resolution or a hand-on ended: the High's class through a third path. It now counts only the values
+    `settled_at_node` reads as still resting. Tests: the reviewer's probe in
+    `reversed_segments_landing_is_not_restored_after_core_reopens` (`tests/landing.rs`: after the reversal,
+    `resting_totals` holds nothing for the order at the ledger, on the Core that ran on and on the reopened one), and
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` (`tests/hand_on.rs`, a new name for
+    `PLAN.md` [`INV-1`, `INV-8`]: a split order, both parts' withdrawals settled at the ledger, the first part handed
+    on; `resting_totals` counts the second part's value alone, before and after a reopening, so the second part's
+    hand-on after a module restart restores only it). The support kit's `Core` runs a named part (`part`) for it.
+  - *Low B: the rebuilt reliance entries.* `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it`
+    (`tests/reliance.rs`, a new name for `PLAN.md` [`REQ-CPL-12`, `INV-8`]): two providers relying on one judgement,
+    the log turning away the withdrawal's effect so its reliance is written and nothing sent, Core reopened and the
+    part run again: one entry per provider.
+  - The held check in `Intake::accept` stays: a real second guard, which `T-020-51` reaches.
+  - *Rule-offs* (script `ruleoff6.py`): `resting_totals` counting every settled value turns
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` and
+    `reversed_segments_landing_is_not_restored_after_core_reopens` red; the reliance entries written not rebuilt turns
+    `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it` red (once the run after the reopening
+    is later, so an entry built afresh is another entry).
+  - *Local checks* (through the lock, `contracts/src/lib.rs` touched first, the private plain-wallet build): as round
+    4's, all pass: fmt; workspace clippy `-D warnings`; core-orch, `core-authz --lib`, contracts, prov; the 25
+    scenario binaries; CI's seeded `assembly` and `invariants` (seeds 11 to 15); the doc check; plan-check and
+    tag-check `--strict` (0 findings, 2348 tests tagged); the contract guard against `origin/develop` (no violations).
 - **Gaps, with owners.**
   1. The arrivals' state after a reopening (filings, waits): `T-020-51`. The notices' state is `T-023-03`'s and
      `T-023-04`'s (merged: the notices' summary is read on reopening, so `wait_ended` is sent once).

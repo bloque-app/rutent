@@ -667,6 +667,18 @@ fn wallet_holds_at_least(
     asking: &str,
     amount: &str,
 ) -> bool {
+    wallet_holds_in(core, wallet, order, asking, amount, "USDC")
+}
+
+/// Whether the wallet itself answers that it holds at least `amount` of `asset` for `order`.
+fn wallet_holds_in(
+    core: &mut Core,
+    wallet: &InstalledWallet,
+    order: &str,
+    asking: &str,
+    amount: &str,
+    asset: &str,
+) -> bool {
     let (_, answer) = core
         .ask_wallet(
             &wallet.provider,
@@ -675,7 +687,7 @@ fn wallet_holds_at_least(
                 provider: wallet.provider.clone(),
                 session: "s-1".to_owned(),
                 account: order.to_owned(),
-                asset: "USDC".to_owned(),
+                asset: asset.to_owned(),
                 amount: amount.to_owned(),
             }),
         )
@@ -1120,4 +1132,107 @@ fn hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node() 
         attributed, part,
         "the host attributes the other value at the node"
     );
+}
+
+/// What the host attributes to each order at `node`.
+fn attributed_at(core: &mut Core, node: &str) -> Vec<(String, u128)> {
+    core.holdings()
+        .attributions()
+        .into_iter()
+        .filter(|(n, _)| n == node)
+        .flat_map(|(_, held)| held)
+        .map(|h| (h.order, h.amount))
+        .collect()
+}
+
+/// A stuck order's value handed on, then Core reopened: the reopened Core reads the value as gone from the node with
+/// the hand-on, so the host attributes nothing to the order there and the wallet holds nothing for it; nothing is
+/// landed again (`INV-1`, `INV-8`, `T-020-46`).
+// verifies: INV-1, INV-8
+#[test]
+fn handed_on_value_is_not_landed_again_after_core_reopens() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    handed_on_once(&mut stuck, &linked, &bob, &decided);
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    assert_eq!(
+        attributed_at(&mut stuck.core, NODE),
+        Vec::new(),
+        "nothing attributed again"
+    );
+    assert!(
+        !wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-after", "1"),
+        "the wallet holds nothing for the handed-on order"
+    );
+}
+
+/// Core reopened between a hand-on's withdrawal and the hand-on itself: the reopened Core reads the value as gone
+/// with the done withdrawal, lands nothing again, and the hand-on then goes ahead, the account still holding nothing
+/// for the order (`INV-1`, `INV-8`, `T-020-46`).
+// verifies: INV-1, INV-8
+#[test]
+fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_the_hand_on() {
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    let order = stuck.order.as_str().to_owned();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let decided = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    let moved = stuck
+        .core
+        .move_stuck(&stuck.order, &decided, &bob)
+        .expect("moved");
+    let Moved::CarriedOut {
+        effect,
+        resolved: Resolved::Done,
+        ..
+    } = moved
+    else {
+        panic!("the move is done: {moved:?}")
+    };
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    assert_eq!(
+        attributed_at(&mut stuck.core, NODE),
+        Vec::new(),
+        "nothing attributed again"
+    );
+    assert!(
+        !wallet_holds_at_least(&mut stuck.core, &wallet, &order, "ask-after", "1"),
+        "the wallet holds nothing for the order"
+    );
+    stuck
+        .core
+        .hand_on(&stuck.order, &effect, &bob)
+        .expect("handed on");
+    assert_eq!(attributed_at(&mut stuck.core, NODE), Vec::new());
 }

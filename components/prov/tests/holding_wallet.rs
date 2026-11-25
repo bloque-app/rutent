@@ -1045,3 +1045,47 @@ fn wallets_balance_answer_attributes_every_order_it_holds() {
         );
     }
 }
+
+/// The transaction a restore goes under is derived, never drawn (`T-020-46`): the same for an order at a node while the
+/// wallet's module runs in one process, so a retry is a repeat, and another once the module restarted, so a restore
+/// after a restart never goes under one an earlier process took, whatever Core process asks. Nothing of it is in the
+/// log, and a Core that reopened draws no fresh identifier for it.
+// verifies: INV-1, REQ-ORD-43
+#[test]
+fn restore_transaction_is_new_for_each_process_of_the_wallets_module() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    let first = holdings
+        .restore_transaction(&s.platform, "polygon", "o-1")
+        .expect("the module runs");
+    assert_eq!(
+        holdings.restore_transaction(&s.platform, "polygon", "o-1"),
+        Some(first.clone()),
+        "the same in the same process"
+    );
+    assert_ne!(
+        holdings.restore_transaction(&s.platform, "polygon", "o-2"),
+        Some(first.clone()),
+        "another order's is its own"
+    );
+    assert!(s.platform.restart(POLYGON_WALLET));
+    let after = holdings
+        .restore_transaction(&s.platform, "polygon", "o-1")
+        .expect("the module runs again");
+    assert_ne!(after, first, "a new process, a new transaction");
+    assert!(
+        holdings
+            .restore_transaction(&s.platform, "no-such-node", "o-1")
+            .is_none()
+    );
+}
