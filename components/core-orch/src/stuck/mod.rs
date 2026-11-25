@@ -2890,15 +2890,21 @@ fn digests_from_a_party(
         return Err(ResolveError::NoEvidence);
     }
     for digest in evidence {
-        let statement = history
-            .iter()
-            .find_map(|(_, entry)| match entry {
-                Entry::Stated(statement) if statement.commitment == *digest => Some(statement),
-                _ => None,
-            })
-            .ok_or(ResolveError::NoEvidence)?;
-        if !party::verified_party(statement, order, history) {
-            return Err(ResolveError::OutsideTheOrder);
+        // Every stated entry with the digest is held, not the first: one statement entered twice with another
+        // attribution must refuse whichever the log holds first.
+        let mut named = false;
+        for (_, entry) in history {
+            if let Entry::Stated(statement) = entry
+                && statement.commitment == *digest
+            {
+                named = true;
+                if !party::verified_party(statement, order, history) {
+                    return Err(ResolveError::OutsideTheOrder);
+                }
+            }
+        }
+        if !named {
+            return Err(ResolveError::NoEvidence);
         }
     }
     Ok(())

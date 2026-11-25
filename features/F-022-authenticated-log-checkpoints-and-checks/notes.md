@@ -1353,13 +1353,24 @@ in Core is named out of `v0` below, with its reason. Line numbers are of `T-020-
 |---|---|---|
 | `BoundStore::fetch` (`core-audit/src/receipts/store.rs:905`) | none | named out of `v0`, below |
 
-- **Named out of `v0`: `Evidence::fetch` has no caller in Core.** No Core flow reads a kept statement for a party or a
-  checker. A party gets its evidence as the receipt `Issuer::issue` signs on request (`T-022-03`, `REQ-AUD-5`), which
-  reads the log and no store, and the outside checker works from the log and its own copy of the evidence directory
-  (`audit-check --evidence`, `KeptOnDisk`). The store's `fetch` is the door a party-facing read interface would call,
-  and `v0` builds none; so a statement's bytes leave Core by no path a party can drive. Default: fails closed (no
-  caller, no read). Gap, owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that
-  calls `fetch` and holds it to policy's read check (`REQ-AUZ-7`); the store side is built and tested.
+**Door 3: the erasure reads, `Statements` (`core-orch/src/erasure.rs`), over `BoundStore::erasable*` and `is_erased`**
+(`core-audit/src/receipts/store.rs:709-836`). They read the store's index and the log's history, not a statement's
+bytes, and every one is asked before an erasure is decided.
+
+| Read | Caller in Core |
+|---|---|
+| `Statements::erasable` (`erasure.rs:68`; the assembly's `Bound`, `assembly/erasure.rs:21`, to `BoundStore::erasable`) | `erase_statement` (`erasure.rs:293`) through `check(.., false)` (`:314`), before policy is asked; and again after the decision, `:347`, where no override was asked |
+| `Statements::erasable_overriding` (`erasure.rs:104`; `assembly/erasure.rs:25`, to `BoundStore::erasable_overriding`) | `erase_statement` through `check(.., true)` (`:314`) before policy is asked, reached from `erase_statement_overriding` (`:395`), the entry for an override |
+| `Statements::erasable_overriding_since` (`erasure.rs:79`, called at `:347`; `assembly/erasure.rs:29`, to `BoundStore::erasable_overriding_since`) | `erase_statement`, after the permitting decision, with the decision's receipt: citations made before it are lifted, none after |
+| `BoundStore::is_erased` (`store.rs:836`) | none in Core: the store's own `erasable_from` (`:736`) and `fetch` call it |
+
+- **Left uncalled in `v0`, by choice: `Evidence::fetch` has no caller in Core.** It is the party and checker door the
+  contract names (`contracts/core-internal/README.md:35` and `:261`: a kept statement leaves the store only through
+  it), built and tested. No Core flow calls it: a party gets its evidence as the receipt `Issuer::issue` signs on
+  request (`T-022-03`, `REQ-AUD-5`), which reads the log and no store, and the outside checker works from its own copy
+  of the evidence directory (`audit-check --evidence`, `KeptOnDisk`). Default: fails closed (no caller, no read). Gap,
+  owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that calls `fetch` under
+  policy's read check (`REQ-AUZ-7`).
 - **Named out of `v0`: `statements::restatements` (`core-audit/src/statements/mod.rs:226`) has no caller in Core.**
   It is the batch form of the check the store already makes at each `keep` (`Kept::restates`, which the append path
   uses), over a whole history. Only tests call it; `audit-check` runs `unproven` (`statements/mod.rs:275`,

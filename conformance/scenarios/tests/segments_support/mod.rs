@@ -1210,8 +1210,8 @@ pub fn results_after_the_move(
 
 /// A stuck decision's evidence: the digest of a statement by the order's own provider ([`origin_reserve()`], a party
 /// to it), about the current order, made at Core's clock now, signed with its statements key and appended to the log
-/// now after the operator's question it answers, so the log verifies its maker (`T-020-53`: a digest the log holds no statement for is refused). Each call
-/// states anew, under a transaction of its own.
+/// now after the operator's question it answers, so the log verifies its maker (`T-020-53`: a digest the log holds
+/// no statement for is refused). Each call states anew, under a transaction of its own.
 pub fn own_evidence(core: &mut Core) -> Vec<Digest> {
     let transaction = format!("tx-evidence-{}", core.log.borrow().entries.len());
     let order = id(&core.named.order);

@@ -7435,6 +7435,7 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
   |---|---|
   | A digest naming no logged statement passes (`ok_or(NoEvidence)` dropped for a skip) | `decision_evidence_that_names_no_logged_statement_fails_closed`; `stuck_decision_whose_digest_names_no_logged_statement_is_refused` |
   | The verified-party check dropped | `decision_evidence_digests_are_held_to_a_verified_party_whatever_their_kind`; `stuck_decision_needs_one_digest_naming_a_verified_statement_by_a_party_to_the_order` |
+  | Only the first entry naming a digest held to the party check (`break`) | `a_statement_entered_twice_with_another_attribution_is_refused_in_either_order` (`stuck/party.rs`, [`REQ-AUZ-4`]): the result no longer depends on log order |
   | The empty-evidence refusal dropped | `decision_evidence_that_names_no_logged_statement_fails_closed` only: the scenario stays green, since `StuckDecide::check` refuses the empty evidence first in `decide` (`NoEvidence`); the guard holds the function itself |
 
 - **Finding 4: the evidence store's reads, in `F-022`'s notes.** Every read Core makes of the evidence store is listed

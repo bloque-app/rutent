@@ -461,6 +461,52 @@ mod tests {
         assert_eq!(probe(route, &claimed), Err(ResolveError::OutsideTheOrder));
     }
 
+    /// One statement entered twice, with another attribution each time, is refused in either order of the history
+    /// (`T-020-53`): every entry naming the digest is held to a verified party, not the first.
+    // verifies: REQ-AUZ-4
+    #[test]
+    fn a_statement_entered_twice_with_another_attribution_is_refused_in_either_order() {
+        use crate::stuck::{ResolveError, digests_from_a_party};
+        let case = read(&format!(
+            "{ROW}--a-confirmation-on-another-provider-of-its-route"
+        ));
+        let history = history_of(&case);
+        let entry: Entry = serde_json::from_value(case["entry"].clone()).expect("an entry");
+        let (order, receipts) = cited(&entry).expect("evidence");
+        let at = history
+            .iter()
+            .position(|(r, _)| *r == receipts[0])
+            .expect("the cited statement");
+        let mut value = serde_json::to_value(&history[at].1).expect("JSON");
+        let who = value["attribution"]["who"].clone();
+        value["attribution"] = serde_json::json!({"signature": "unverified", "claimed_by": who});
+        let claimed: Entry = serde_json::from_value(value).expect("an entry");
+        let Entry::Stated(s) = &history[at].1 else {
+            panic!("a statement");
+        };
+        let digest = s.commitment.clone();
+        let (receipt, verified) = history[at].clone();
+        assert_eq!(
+            digests_from_a_party(std::slice::from_ref(&digest), &order, &history),
+            Ok(())
+        );
+        for claimed_first in [false, true] {
+            let mut twice = history.clone();
+            let extra = (receipt.clone(), claimed.clone());
+            if claimed_first {
+                twice[at] = extra;
+                twice.push((receipt.clone(), verified.clone()));
+            } else {
+                twice.push(extra);
+            }
+            assert_eq!(
+                digests_from_a_party(std::slice::from_ref(&digest), &order, &twice),
+                Err(ResolveError::OutsideTheOrder),
+                "claimed first: {claimed_first}"
+            );
+        }
+    }
+
     /// A decision's evidence fails closed (`T-020-53`): no digest at all, and a digest the history holds no
     /// statement under (alone or beside a party's), name no maker and are refused.
     // verifies: REQ-AUZ-5
