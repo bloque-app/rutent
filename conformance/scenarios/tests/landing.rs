@@ -197,3 +197,76 @@ fn release_after_a_holding_accounts_module_restarts_restores_first() {
         ]
     );
 }
+
+/// The withdrawal's value landed at the ledger, then the withdrawal proven undone (its `reversal_completed`, the deposit
+/// refused): the Core that ran on releases the landing, and a Core reopened on the same log restores nothing of it,
+/// the value having come back to where it came from (`INV-1`, `INV-8`, `T-020-46`).
+// verifies: INV-1, INV-8
+#[test]
+fn reversed_segments_landing_is_not_restored_after_core_reopens() {
+    use rutent_contracts::core_internal::{
+        Entry, Outcome, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    };
+    use rutent_contracts::state_machine::{
+        self as stm, Observed, RecordedInput, Source, SourceKind, Standing, Subject,
+    };
+    let (world, mut core) = resting_at_the_ledger();
+    let mut fake = Fake::at_the_ledger(&[]);
+    assert_eq!(core.segments.land_settled(&mut fake), 1, "landed");
+    let at = rutent_core_orch::snapshot::Clock::now(&*core.clock)
+        .timestamp()
+        .expect("a time");
+    let input = RecordedInput {
+        record_id: stm::RecordId::new("rec-reversed").unwrap(),
+        recorded_at: stm::Timestamp::new(at.as_str()).unwrap(),
+        time_source: stm::Id::new("core_clock").unwrap(),
+        source: Source {
+            kind: SourceKind::Orchestrator,
+            id: stm::Id::new("core-orch").unwrap(),
+        },
+        standing: Standing::Stated,
+        subject: Subject {
+            order: stm::Id::new(ORDER).unwrap(),
+            part: Some(stm::Id::new(PART).unwrap()),
+            segment: Some(stm::Id::new(WITHDRAWAL).unwrap()),
+        },
+        observed: Observed::ReversalCompleted {
+            evidence: stm::Id::new("ev-undone").unwrap(),
+        },
+    };
+    append_entry(
+        &core,
+        &Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: segments_support::core(),
+            what: What::Input {
+                input: input.clone(),
+            },
+            when: When {
+                at,
+                source: TimeSource::CoreClock,
+            },
+            outcome: Outcome::Observed {},
+        }),
+        rutent_contracts::core_internal::Through::General,
+    );
+    assert!(
+        core.segments.observe(&*core.clock, &input),
+        "the reversal applies"
+    );
+    core.segments.land_settled(&mut fake);
+    assert_eq!(
+        fake.released,
+        [(ORDER.to_owned(), AMOUNT.to_owned())],
+        "the Core that ran on releases it"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let mut reopened = Fake::at_the_ledger(&[]);
+    reopened.restarted = true;
+    core.segments.reconcile_landings(&mut reopened);
+    assert!(
+        reopened.calls.is_empty(),
+        "nothing of the reversed value is landed or restored: {:?}",
+        reopened.calls
+    );
+}

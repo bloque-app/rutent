@@ -708,6 +708,18 @@ pub struct Segments {
     unread: BTreeMap<(String, String), Receipt>,
 }
 
+/// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtNode {
+    /// It rests there.
+    Rests,
+    /// It moved on with the segment out of the node, or came back with this one's reversal: a landing of it is
+    /// released.
+    MovedOn,
+    /// Its part's resolution or hand-on took it: the move that did accounts for it at the node.
+    LeftByResolution,
+}
+
 /// A segment's final outcome: one after which nothing more is recorded on it here.
 fn is_final(outcome: &SegmentOutcome) -> bool {
     matches!(
@@ -862,43 +874,20 @@ impl Segments {
             let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
                 continue;
             };
-            let (Some(tracked), Some(order_id), Some(segment_id)) = (
-                self.orders.get(order.as_str()),
-                Id::new(order.as_str()),
-                Id::new(segment.as_str()),
-            ) else {
+            let Some((node, asset, at)) = self.settled_at_node(order, segment) else {
                 continue;
             };
-            if self.retired(&order_id, &segment_id) {
+            // A part a resolution or a hand-on ended took its value with it: the move that did accounts for it at
+            // the node, so nothing is landed or released for it here.
+            if !landings.holds(&node) || at == AtNode::LeftByResolution {
                 continue;
             }
-            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
-                part.segments
-                    .iter()
-                    .position(|s| s.segment_id.as_str() == segment.as_str())
-                    .map(|place| (part, place))
-            }) else {
-                continue;
-            };
-            let to = &part.segments[place].to;
-            let rutent_contracts::provider_role::NodeRef::Inner(node) = &to.node else {
-                continue;
-            };
-            if !landings.holds(node) {
-                continue;
-            }
-            // The value moved on once the segment out of the node settled.
-            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
-                self.flights
-                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
-                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
-            });
             at_nodes.push((
                 (order.clone(), segment.clone()),
-                node.clone(),
-                to.asset.id.clone(),
+                node,
+                asset,
                 amount_out.clone(),
-                moved_on,
+                at == AtNode::MovedOn,
             ));
         }
         let owed: Vec<_> = at_nodes
@@ -1013,38 +1002,67 @@ impl Segments {
             let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
                 continue;
             };
-            let Some(tracked) = self.orders.get(order.as_str()) else {
+            let Some((node, asset, at)) = self.settled_at_node(order, segment) else {
                 continue;
             };
-            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
-                part.segments
-                    .iter()
-                    .position(|s| s.segment_id.as_str() == segment.as_str())
-                    .map(|place| (part, place))
-            }) else {
-                continue;
-            };
-            let to = &part.segments[place].to;
-            let rutent_contracts::provider_role::NodeRef::Inner(node) = &to.node else {
-                continue;
-            };
-            if !landings.holds(node) || amount_out.is_zero() {
+            if !landings.holds(&node) || amount_out.is_zero() {
                 continue;
             }
-            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
-                self.flights
-                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
-                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
-            });
+            // Gone from the node, whether a later segment, a reversal or a resolution took it: read as passed, never
+            // restored, so a reopened Core attributes nothing a Core that ran on wouldn't (`INV-1`, `INV-8`).
             found.push((
                 (order.clone(), segment.clone()),
-                node.clone(),
-                to.asset.id.clone(),
+                node,
+                asset,
                 amount_out.clone(),
-                moved_on,
+                at != AtNode::Rests,
             ));
         }
         landing::reconcile(&mut self.landing, landings, found)
+    }
+
+    /// Where `segment` of `order`, settled, left its value, and where that value stands (`T-020-46`): the one reading
+    /// [`Segments::land_settled`] and [`Segments::reconcile_landings`] share, so a Core that reopens lands and restores
+    /// only what a Core that ran on would hold there. The node and the asset it settled in, at an inner node; `None`
+    /// where it settled at none, or the state machine retired it (a recalculation, a resume or a destination change
+    /// replaced it).
+    fn settled_at_node(&self, order: &str, segment: &str) -> Option<(String, String, AtNode)> {
+        let (order_id, segment_id) = (Id::new(order)?, Id::new(segment)?);
+        if self.retired(&order_id, &segment_id) {
+            return None;
+        }
+        let tracked = self.orders.get(order)?;
+        let (part, place) = tracked.order.parts.iter().find_map(|part| {
+            part.segments
+                .iter()
+                .position(|s| s.segment_id.as_str() == segment)
+                .map(|place| (part, place))
+        })?;
+        let at = &part.segments[place];
+        let rutent_contracts::provider_role::NodeRef::Inner(node) = &at.to.node else {
+            return None;
+        };
+        // The value moved on once the segment out of the node settled, or came back once this one was reversed.
+        let moved_on = at.state == stm::SegmentState::ReversalComplete
+            || part.segments.get(place + 1).is_some_and(|next| {
+                self.flights
+                    .get(&(order.to_owned(), next.segment_id.as_str().to_owned()))
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+            });
+        let left =
+            Id::new(part.part_id.as_str()).is_some_and(|p| self.ended_by_resolution(&order_id, &p));
+        let stands = if moved_on {
+            AtNode::MovedOn
+        } else if left {
+            AtNode::LeftByResolution
+        } else {
+            AtNode::Rests
+        };
+        Some((
+            node.as_str().to_owned(),
+            at.to.asset.id.as_str().to_owned(),
+            stands,
+        ))
     }
 
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds

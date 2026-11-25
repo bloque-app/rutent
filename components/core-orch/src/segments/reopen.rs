@@ -110,6 +110,42 @@ impl Segments {
                 segments.mark_resolved(&order, &part);
             }
         }
+        // A stuck move done moved its part's whole value (a delivery or a hand-on's withdrawal is of the whole, by
+        // construction): its part holds nothing more, as the Core that ran on marked it once the move was done, before
+        // its `stuck_resolved` or its `handed_on` (`T-020-46`, `INV-1`).
+        for (receipt, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what:
+                    What::Effect {
+                        action:
+                            Action::ResolveStuck {
+                                order, carries_out, ..
+                            },
+                        ..
+                    },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            let done = history.iter().any(|(_, e)| {
+                matches!(e, Entry::Verified(v)
+                    if matches!(&v.what, What::Result { effect } if effect == receipt)
+                        && v.outcome == Outcome::Done {})
+            });
+            let part = history.iter().find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::StuckDecide { request, .. } if request.request == carries_out.request => {
+                        Some(request.part.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            });
+            if let (true, Some(part)) = (done, part) {
+                segments.mark_resolved(order, &part);
+            }
+        }
         let mut holds = BTreeMap::new();
         for (receipt, entry) in history {
             let Entry::Verified(verified) = entry else {
