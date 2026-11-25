@@ -240,9 +240,11 @@ impl PermitsEveryStep {
 impl StuckOrders for PermitsEveryStep {
     fn decide_stuck(&mut self, request: &StuckDecide) -> Result<Decision, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
+        // The kit asks no register of holding accounts, so it records none (`T-021-16`).
         let what = What::StuckDecide {
             request: request.clone(),
             decision: request.request.clone(),
+            held_at: None,
         };
         self.permit(&request.request, &request.decider, what, &request.at)
     }

@@ -1328,3 +1328,59 @@ admitted effect until a `failed` result undoes it.
   verifier's class grant, so the test's doc no longer claims classes are compared.
 - **L3.** `PLAN.md`'s `T-022-10` Work text says a citation after the decision refuses the erasure (`T-022-11`); the
   register's doc is wrapped.
+
+## T-020-53 (finding 4 of `M3`'s milestone review): every read Core makes of the evidence store, with its caller in Core
+
+The store has two read doors, and a statement's bytes leave it by no other (`keep` is the write). A read with no caller
+in Core is named out of `v0` below, with its reason. Line numbers are of `T-020-53`'s base (`1bc91b21`).
+
+**Door 1: `KeptStatements::kept`, Core's own read, with no policy read** (nothing leaves Core's audit part).
+
+| Read | Caller in Core | What it reads the bytes for |
+|---|---|---|
+| `AuditLog::attribute_stated` (`core-audit/src/log/mod.rs:287`; the shared `attribute`, `contracts/.../attribution.rs:570`) | every stated entry's append, through `Log::append` | the signature and maker the entry's attribution rests on (`REQ-AUD-2`) |
+| `AuditLog` opening (`log/mod.rs:364`) | `AuditLog::open`, from the log's records | each recorded advertisement's bytes, to rebuild the catalogue's keys |
+| `is_what_is_kept` (`core-orch/src/quote/held.rs:489`) | `Holds::hold` | the kept bytes of a signed hold bear out their commitment |
+| `Terms::take` (`quote/terms.rs:198`) | taking a provider's stated terms | the kept bytes are the terms the entry names |
+| `kept_as_read`, `kept_notice_agrees` (`arrival/mod.rs:389`, `:402`) | the arrival step on a credit and on its deposit (`T-020-50`) | the notice the log attributes is the one Core's figures are read from |
+| `HandOn::started_in_the_log` (`hand_on/mod.rs:729`), under `recover_starts` | a Core opening again, per linked order | the start record's bytes, so a hand-on's start is proven from the log |
+| `Intake::reopened` (`intake/mod.rs:477`) | a Core opening again, per order opened | an order's tuples' inputs, from `order_opened`'s commitment |
+| `Reopening::kept` (`segments/reopen.rs:165` in `reopened`, `:236` in `read_flight`, `:711` in `resumed_answer`, `:763` and `:978` in `stated_value` and `settled_result`; implemented by the assembly's `reopen.rs`) | `Segments::reopened`, a Core opening again (`T-020-46`) | the terms providers stated, each handed-over segment's signed operation, a result's bytes, the stuck move's question and a settled segment's result |
+
+**Door 2: `Evidence::fetch`, a read by a party or a checker, asked of policy first.**
+
+| Read | Caller in Core | |
+|---|---|---|
+| `BoundStore::fetch` (`core-audit/src/receipts/store.rs:905`) | none | named out of `v0`, below |
+
+**Door 3: the erasure reads, `Statements` (`core-orch/src/erasure.rs`), over `BoundStore::erasable*` and `is_erased`**
+(`core-audit/src/receipts/store.rs:709-836`). They read the store's index and the log's history, not a statement's
+bytes, and every one is asked before an erasure is decided.
+
+| Read | Caller in Core |
+|---|---|
+| `Statements::erasable` (`erasure.rs:68`; the assembly's `Bound`, `assembly/erasure.rs:21`, to `BoundStore::erasable`) | `erase_statement` (`erasure.rs:293`) through `check(.., false)` (`:314`), before policy is asked; and again after the decision, `:347`, where no override was asked |
+| `Statements::erasable_overriding` (`erasure.rs:104`; `assembly/erasure.rs:25`, to `BoundStore::erasable_overriding`) | `erase_statement` through `check(.., true)` (`:314`) before policy is asked, reached from `erase_statement_overriding` (`:395`), the entry for an override |
+| `Statements::erasable_overriding_since` (`erasure.rs:79`, called at `:347`; `assembly/erasure.rs:29`, to `BoundStore::erasable_overriding_since`) | `erase_statement`, after the permitting decision, with the decision's receipt: citations made before it are lifted, none after |
+| `BoundStore::is_erased` (`store.rs:836`) | none in Core: the store's own `reconcile` (`:643`) and `erasable_overriding_since` (`:736`) call it |
+| `BoundStore::missing` (`store.rs:682`), `refused_erasures` (`:689`), `unsettled_erasures` (`:701`) | none in Core, out of `v0`: the store's reports of its own reconciliation, read only by tests (core-audit's `receipts.rs`; the scenarios' `assembly_wiring.rs:555` and `audit_scenarios.rs:481` assert `missing()` is empty). An erasure the store refused or left unsettled is Core's to finish through `Unsettled::settle` (`T-020-46` rebuilds it), not through these reads; a deployment that shows them to its operator owns that call (`F-030`) |
+
+- **Left uncalled in `v0`, by choice: `Evidence::fetch` has no caller in Core.** It is the party and checker door the
+  contract names (`contracts/core-internal/README.md:35` and `:261`: a kept statement leaves the store only through
+  it), built and tested. No Core flow calls it: a party gets its evidence as the receipt `Issuer::issue` signs on
+  request (`T-022-03`, `REQ-AUD-5`), which reads the log and no store, and the outside checker works from its own copy
+  of the evidence directory (`audit-check --evidence`, `KeptOnDisk`). Default: fails closed (no caller, no read). Gap,
+  owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that calls `fetch` under
+  policy's read check (`REQ-AUZ-7`).
+- **Named out of `v0`: `statements::restatements` (`core-audit/src/statements/mod.rs:226`) has no caller in Core.**
+  It is the batch form of the check the store already makes at each `keep` (`Kept::restates`, which the append path
+  uses), over a whole history. Only tests call it; `audit-check` runs `unproven` (`statements/mod.rs:275`,
+  `bin/audit-check.rs:147`), the one batch read an outside caller has. Default: not built into Core; owner `F-025`'s
+  re-check if a batch restatement check is wanted for the operator's review.
+- **Not reads of the store.** Policy's `Source::Kept` / `Source::KeptAbout` (`core-authz/src/stuck/mod.rs:223-236`) ask
+  whether a commitment is kept, and the assembly answers from the log's stated entries (`assembly/policy.rs:433`),
+  never from the store; the assembly's own reads for pricing and holding accounts (`assembly/price.rs:116`,
+  `assembly/holding.rs:608`) use door 1 as the simulation's stand-in for `F-030`'s production assembly, which is to
+  read the same way. A stuck decision's evidence no longer rests on that answer: orchestration holds each digest to a
+  logged statement itself (`T-020-53`, `F-020`'s notes).
+

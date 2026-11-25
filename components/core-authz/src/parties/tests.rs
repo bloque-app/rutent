@@ -258,6 +258,8 @@ impl Sources for Registers {
             // Every caller here takes a stuck order's steps and grants a read as the operator's; the grant fixture's
             // regulator, `examiner-3`, is no part of the operator's (`T-021-14`).
             Source::OfOperator => yes(need.input.as_str() != "examiner-3"),
+            // No node here has a holding account: the register says nothing of one (`T-021-16`).
+            Source::HoldingAccount { .. } => Reply::Missing,
             _ => Reply::Given(Said::Yes),
         }
     }

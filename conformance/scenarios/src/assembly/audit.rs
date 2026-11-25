@@ -52,6 +52,7 @@ impl Core {
         let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
         let read = self
             .holdings
+            .borrow_mut()
             .readings(&mut self.fleet.platform, &operator)
             .into_iter()
             .find(|(n, _)| n == node)
@@ -59,6 +60,7 @@ impl Core {
             .1?;
         let provider = self
             .holdings
+            .borrow()
             .account(node)
             .map(|account| account.provider().to_owned())
             .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?;

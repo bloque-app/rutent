@@ -19,6 +19,20 @@ use crate::state_machine::{
     Observed, OperationKind, Order, OrderState, Outcome, Part, RecordedInput, SegmentState,
 };
 
+/// The inner node where the value of `part` of `order` rests by `history` (`T-021-16`): the state machine's
+/// [`value_at`](crate::state_machine::value_at) of the part as the log's taken inputs leave it, the start of its first
+/// segment that hasn't settled. `None` where its value is in flight, still outside the book, delivered, or rests at an
+/// outer node, and where the history holds no taken input of the part. A stuck decide step's `held_at` names this node
+/// (`stuck-decide-held-at-is-a-held-node`), policy asks the register of holding accounts for it alone, and
+/// orchestration reads it the same way.
+pub fn resting_node(order: &str, part: &str, history: &History) -> Option<String> {
+    let standing = standing(order, part, history)?;
+    match &crate::state_machine::value_at(&standing.part)?.node {
+        crate::provider_role::NodeRef::Inner(node) => Some(node.clone()),
+        crate::provider_role::NodeRef::Outer(_) => None,
+    }
+}
+
 /// Where a part stands after a history.
 pub(crate) struct Standing {
     /// The part, as the state machine holds it.
@@ -211,10 +225,11 @@ pub(crate) fn decided_part<'a>(
     history: &'a History,
 ) -> Option<&'a str> {
     history.iter().find_map(|(_, e)| match &verified(e)?.what {
-        What::StuckDecide { request, decision }
-            if request.order.as_str() == order
-                && request.request == carries.request
-                && *decision == carries.decision =>
+        What::StuckDecide {
+            request, decision, ..
+        } if request.order.as_str() == order
+            && request.request == carries.request
+            && *decision == carries.decision =>
         {
             Some(request.part.as_str())
         }

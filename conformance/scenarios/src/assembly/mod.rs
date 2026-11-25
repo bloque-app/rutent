@@ -522,7 +522,7 @@ pub struct Core {
     mover: Mover,
     /// The operator's holding accounts, the routes the linked orders were accepted on and what Core handed on
     /// (`T-020-26`).
-    holdings: rutent_prov::holding::wallet::Holdings,
+    holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
     linked: BTreeMap<String, rutent_core_orch::stuck::AcceptedRoute>,
     hand_on: rutent_core_orch::hand_on::HandOn,
     /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
@@ -674,7 +674,8 @@ impl Core {
             feed: self.feed,
             fresh: self.fresh,
             ties: self.readings.ties(),
-            holdings: self.holdings,
+            // Policy's sources share the holdings (`T-021-16`), so they are taken out of the share, not moved.
+            holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
     }
@@ -688,7 +689,7 @@ impl Core {
         let context = context();
         let reopened = carried.is_some();
         let mut carried = carried;
-        let holdings = carried
+        let carried_holdings = carried
             .as_mut()
             .map(|c| std::mem::take(&mut c.holdings))
             .unwrap_or_default();
@@ -776,12 +777,18 @@ impl Core {
                 kit::customer().party.as_str().to_owned(),
             );
         }
+        // The operator's holding accounts, shared with policy's sources, which ask whose wallet holds a node's account
+        // (`T-021-16`).
+        // On a reopen they are the ones carried across it (`T-020-46`).
+        let holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>> =
+            Rc::new(RefCell::new(carried_holdings));
         let records = Records {
             log: Rc::clone(&log),
             orders: Rc::default(),
             declarations: Rc::default(),
             registers,
             verifier: Rc::default(),
+            holdings: Rc::clone(&holdings),
         };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.
@@ -2022,11 +2029,13 @@ impl Core {
         let mut policy = self.policy.clone();
         // A transaction of Core's own for restoring what the log holds in a holding account whose module restarted,
         // drawn only where one did (`T-020-46`).
-        let restarted = self
-            .holdings
-            .attributions()
-            .iter()
-            .any(|(node, _)| self.holdings.restarted(&self.fleet.platform, node));
+        let restarted = {
+            let holdings = self.holdings.borrow();
+            holdings
+                .attributions()
+                .iter()
+                .any(|(node, _)| holdings.restarted(&self.fleet.platform, node))
+        };
         let restore = restarted.then(|| self.fresh.id());
         let resting = self.segments.resting_totals();
         let readings = self.readings.clone();
@@ -2053,7 +2062,7 @@ impl Core {
         // calls go to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
         let mut modules = holding::Shared(&running);
         let mut wallets = holding::HeldWallets {
-            holdings: &mut self.holdings,
+            holdings: &self.holdings,
             running: &running,
             bounds: &self.bounds,
             restore,
