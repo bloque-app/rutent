@@ -139,7 +139,7 @@ impl Resolutions for Moves {
                 None,
                 transaction.as_str(),
                 &[by.as_str()],
-                true,
+                (true, None),
             );
             for entry in question.into_iter() {
                 parts.log.append(&GeneralEntry::try_from(entry).unwrap())?;

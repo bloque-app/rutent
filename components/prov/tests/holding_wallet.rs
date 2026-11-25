@@ -976,3 +976,72 @@ fn release_the_wallet_holds_no_record_of_is_not_known_never_refused() {
     assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 60));
     assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-2", 1));
 }
+
+/// The wallet's own answer for each order it holds attributes that order's value: asked per order
+/// (`balance_verification`, a search over the amount), it says it holds what the host attributes to the order, no more,
+/// and the account's balance is the sum of those. After its module restarts, it attributes nothing to either order,
+/// which is what a reopened Core reads before it lands anything again (`INV-1`, `REQ-CAT-23`, `T-020-46`).
+// verifies: INV-1, REQ-CAT-23
+#[test]
+fn wallets_balance_answer_attributes_every_order_it_holds() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    let held = [("o-1", 100u128), ("o-2", 50u128)];
+    for (order, amount) in held {
+        holdings
+            .land(
+                &mut s.platform,
+                &TestOperator,
+                "polygon",
+                "USDC",
+                order,
+                &amount.to_string(),
+            )
+            .expect("lands");
+    }
+    for (order, amount) in held {
+        assert_eq!(
+            holdings
+                .held_by_wallet(
+                    &mut s.platform,
+                    &TestOperator,
+                    "polygon",
+                    order,
+                    1_000,
+                    &format!("ask-{order}"),
+                )
+                .expect("the wallet answers"),
+            amount,
+            "{order}: the wallet attributes the order's value"
+        );
+    }
+    let reading = read(&mut s, &mut holdings, "polygon");
+    assert_eq!(reading.balance, held.iter().map(|(_, a)| a).sum::<u128>());
+    assert!(s.platform.restart(POLYGON_WALLET));
+    for (order, _) in held {
+        assert_eq!(
+            holdings
+                .held_by_wallet(
+                    &mut s.platform,
+                    &TestOperator,
+                    "polygon",
+                    order,
+                    1_000,
+                    &format!("again-{order}"),
+                )
+                .expect("the wallet answers"),
+            0,
+            "{order}: its record went with the module"
+        );
+    }
+}

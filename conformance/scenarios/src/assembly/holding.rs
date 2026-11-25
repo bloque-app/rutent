@@ -134,6 +134,11 @@ pub(super) struct HeldWallets<'a, 'b> {
     pub(super) holdings: &'a mut Holdings,
     pub(super) running: &'a RefCell<Running<'b>>,
     pub(super) bounds: &'a PolicyBounds,
+    /// A fresh transaction of Core's, drawn where a holding account's module restarted, for restoring what the log
+    /// holds before the withdrawal (`T-020-46`).
+    pub(super) restore: Option<Id>,
+    /// What the log holds for each order at each node (`Segments::resting_totals`).
+    pub(super) resting: BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
 }
 
 impl Withdrawals for HeldWallets<'_, '_> {
@@ -162,6 +167,8 @@ impl Withdrawals for HeldWallets<'_, '_> {
             holdings: &mut *self.holdings,
             platform: &mut *running.platform,
             operator: &operator,
+            restore: self.restore.as_ref().map(Id::as_str),
+            resting: &self.resting,
         }
         .withdraw(route, order, amount, asked)
     }
@@ -173,6 +180,8 @@ struct Landing<'a, W: World, O: Operator> {
     holdings: &'a mut Holdings,
     platform: &'a mut Platform<W>,
     operator: &'a O,
+    /// Core's fresh identifiers: a restore goes under a transaction of Core's own (`T-020-46`).
+    fresh: &'a mut dyn Fresh,
 }
 
 impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
@@ -212,6 +221,39 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
             order,
             amount.as_str(),
         ))
+    }
+
+    fn restarted(&self, node: &str) -> bool {
+        self.holdings.restarted(self.platform, node)
+    }
+
+    fn restore(
+        &mut self,
+        node: &str,
+        asset: &str,
+        order: &str,
+        amount: &rutent_contracts::router_api::Amount,
+    ) -> Landed {
+        if self
+            .holdings
+            .account(node)
+            .is_none_or(|account| account.asset() != asset)
+        {
+            return Landed::Unconfirmed;
+        }
+        let transaction = self.fresh.id();
+        answered(
+            self.holdings
+                .restore(
+                    self.platform,
+                    self.operator,
+                    node,
+                    order,
+                    amount.as_str(),
+                    transaction.as_str(),
+                )
+                .map(|_| ()),
+        )
     }
 }
 
@@ -316,6 +358,52 @@ impl Core {
         &mut self.holdings
     }
 
+    /// A hand-on's withdrawal of `amount` of `order`'s value for `route`, through Core's own [`Wallets`], as the mover
+    /// asks it, where the log holds `resting` of the order at the route's first node and the account's module may have
+    /// restarted: a test hook (`T-020-46`) for an order of two values at one node, which the kit's routes don't make.
+    /// Where the module restarted, a transaction of Core's own is drawn for the restore, as `move_stuck` draws it.
+    ///
+    /// # Errors
+    ///
+    /// The withdrawal's refusal.
+    pub fn withdraw_for_a_hand_on(
+        &mut self,
+        route: &[SegmentPlan],
+        order: &str,
+        amount: &str,
+        resting: &str,
+    ) -> Result<HandedOnStart, StartError> {
+        let node = match route.first().map(|s| &s.from.node) {
+            Some(rutent_contracts::provider_role::NodeRef::Inner(node)) => node.as_str().to_owned(),
+            _ => return Err(StartError::NoRecord),
+        };
+        let restarted = self.holdings.restarted(&self.fleet.platform, &node);
+        let restore = restarted.then(|| self.fresh.id());
+        let mut held = BTreeMap::new();
+        if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
+            held.insert((node, order.to_owned()), total);
+        }
+        let readings = self.readings.clone();
+        readings.refresh(&self.fleet.platform.world);
+        let running = RefCell::new(super::Running {
+            platform: &mut self.fleet.platform,
+            clock: &self.clock,
+            faults: &mut self.faults,
+            feed: &mut self.feed,
+            log: &self.log,
+            swap_to: self.swap_to.as_deref_mut(),
+            readings: &readings,
+        });
+        let mut wallets = HeldWallets {
+            holdings: &mut self.holdings,
+            running: &running,
+            bounds: &self.bounds,
+            restore,
+            resting: held,
+        };
+        wallets.withdraw(route, order, amount, &mut |_| true)
+    }
+
     /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
     /// holding account is asked anything (`T-020-17`). The acceptance and the decision record it names are the log's.
     pub fn accepted_linked(&mut self, route: AcceptedRoute) {
@@ -340,12 +428,8 @@ impl Core {
         let part = self
             .first_part(order)
             .ok_or(StepError::NotNow("the order has a part"))?;
-        let (linked, route, start, statement) = {
-            let withdrawn = self
-                .mover
-                .withdrawn(effect)
-                .ok_or(HandingError::NotWithdrawn)?;
-            (
+        let withdrawn = match self.mover.withdrawn(effect) {
+            Some(withdrawn) => Some((
                 withdrawn.linked.clone(),
                 withdrawn.route.clone(),
                 withdrawn.start.clone(),
@@ -353,8 +437,11 @@ impl Core {
                     .statement
                     .cloned()
                     .ok_or(HandingError::NotWithdrawn)?,
-            )
+            )),
+            // A Core that reopened holds no mover's record of the withdrawal: the log's is read (`T-020-46`).
+            None => self.withdrawn_in_the_log(effect),
         };
+        let (linked, route, start, statement) = withdrawn.ok_or(HandingError::NotWithdrawn)?;
         let recorded: Vec<(Receipt, Entry)> = self
             .log
             .borrow()
@@ -406,6 +493,153 @@ impl Core {
         };
         self.feed()?;
         Ok(handed)
+    }
+
+    /// The route the linked order `linked` was accepted on, from the log (`T-020-46`): its acceptance (its id and its
+    /// part) and the decision record its route was chosen by, read from the records Core keeps, each segment under the
+    /// identifier [`Core::accept_linked`] derives. `None` where any of it isn't there.
+    pub(super) fn accepted_in_the_log(
+        &self,
+        history: &[(Receipt, Entry)],
+        linked: &Id,
+    ) -> Option<AcceptedRoute> {
+        let (acceptance, part) = history.iter().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::Acceptance {
+                    acceptance,
+                    order: o,
+                    yeses,
+                    ..
+                } if o == linked => Some((acceptance.clone(), yeses.first()?.part.clone())),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let decision_record = history.iter().rev().find_map(|(_, e)| match e {
+            Entry::Verified(v) => match &v.what {
+                What::DecisionRecord {
+                    decision_record,
+                    order: o,
+                    ..
+                } if o == linked => Some(decision_record.clone()),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })?;
+        let record = super::reopen::held_record(&self.signer.records, history, &decision_record)?;
+        let [only] = record.chosen()?.parts.as_slice() else {
+            return None;
+        };
+        let part_id = rutent_contracts::state_machine::Id::new(part.as_str())?;
+        let mut segments = Vec::new();
+        for (place, operation) in only.operations.iter().enumerate() {
+            segments.push(SegmentPlan {
+                segment_id: super::linked::segment_id(&part_id, place).ok()?,
+                provider: rutent_contracts::state_machine::Id::new(operation.provider.as_str())?,
+                kind: operation.kind,
+                from: operation.from.clone(),
+                to: operation.to.clone(),
+            });
+        }
+        Some(AcceptedRoute {
+            order: linked.clone(),
+            decision_record,
+            acceptance,
+            plan: vec![rutent_contracts::state_machine::PartPlan { part_id, segments }],
+        })
+    }
+
+    /// The holding account's withdrawal for the hand-on `effect` carried out, as the log holds it, for a Core that
+    /// reopened and holds no mover's record of it (`T-020-46`): the effect's `resolve_stuck` with its `done` result,
+    /// handing the part's value on to its linked order; the linked order's accepted route, from its acceptance (its
+    /// part) and the decision record its route was chosen by, each segment under the identifier
+    /// [`Core::accept_linked`] derives; and the holding account's own answer, verified, about the linked order, its
+    /// record read from the bytes the evidence store keeps (`proof_of_withdrawal`). `None` where any of it isn't there.
+    fn withdrawn_in_the_log(
+        &mut self,
+        effect: &Receipt,
+    ) -> Option<(Id, AcceptedRoute, HandedOnStart, Receipt)> {
+        use rutent_contracts::core_internal::{Attribution, Resolution};
+        use rutent_contracts::provider_role::{RESULT_SHAPE, ReserveMovementOutcome, ResultBody};
+        let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
+        let (order, holder, linked) = history.iter().find_map(|(r, e)| match e {
+            Entry::Verified(v) if r == effect => match &v.what {
+                What::Effect {
+                    action:
+                        rutent_contracts::core_internal::Action::ResolveStuck {
+                            order,
+                            resolution:
+                                Resolution::HandOn {
+                                    by, linked_order, ..
+                                },
+                            ..
+                        },
+                    ..
+                } => Some((order.clone(), by.clone(), linked_order.clone())),
+                _ => None,
+            },
+            _ => None,
+        })?;
+        let done = history.iter().any(|(_, e)| {
+            matches!(e, Entry::Verified(v) if matches!(&v.what, What::Result { effect: of } if of == effect)
+                && matches!(v.outcome, rutent_contracts::core_internal::Outcome::Done {}))
+        });
+        if !done {
+            return None;
+        }
+        let route = self.accepted_in_the_log(&history, &linked)?;
+        let segments = route.plan.first()?.segments.clone();
+        let first = segments.first()?.clone();
+        let rutent_contracts::provider_role::NodeRef::Inner(node) = &first.from.node else {
+            return None;
+        };
+        let (statement, commitment) = history.iter().find_map(|(r, e)| match e {
+            Entry::Stated(s)
+                if s.what.statement.as_str() == RESULT_SHAPE
+                    && matches!(&s.attribution, Attribution::Verified { who } if who.acts == holder)
+                    && s.about
+                        .as_ref()
+                        .is_some_and(|a| a.order.as_ref() == Some(&linked)) =>
+            {
+                Some((r.clone(), s.commitment.clone()))
+            }
+            _ => None,
+        })?;
+        let kept = rutent_contracts::core_internal::calls::KeptStatements::kept(
+            &mut self.kept,
+            &commitment,
+        )
+        .ok()??;
+        let answer = rutent_core_audit::receipts::store::bearing_out(&kept)?;
+        let result: Statement<ResultBody> = serde_json::from_slice(&answer).ok()?;
+        let ResultBody::Withdrawal(withdrawal) = result.statement else {
+            return None;
+        };
+        let ReserveMovementOutcome::Succeeded(settled) = withdrawal.outcome else {
+            return None;
+        };
+        let reference = rutent_prov::holding::wallet::proof_of_withdrawal(
+            holder.as_str(),
+            &withdrawal.transaction,
+            &settled.evidence,
+        )
+        .ok()?;
+        let start = HandedOnStart {
+            reserve: holder.as_str().to_owned(),
+            node: node.clone(),
+            first_segment: first.segment_id.clone(),
+            record: rutent_prov::holding::wallet::WithdrawalRecord {
+                by: holder.as_str().to_owned(),
+                node: node.clone(),
+                asset: first.from.asset.id.clone(),
+                order: order.as_str().to_owned(),
+                amount: settled.amount_out.parse().ok()?,
+                reference,
+            },
+            transaction: withdrawal.transaction,
+            answer,
+        };
+        Some((linked, route, start, statement))
     }
 
     /// Installs the operator's plain wallet as the holding account of the public node `node`, holding `asset`
@@ -493,6 +727,26 @@ impl Core {
         Ok(effect)
     }
 
+    /// What a reopened Core finds of the landings its segments owed (`Segments::reconcile_landings`, `T-020-46`): each
+    /// value the log settled at a node a holding account holds, still resting there, restored in the account where
+    /// the wallet lacks it, never landed blind. Answers how many it found placed.
+    pub(super) fn reconcile_landings(&mut self) -> usize {
+        let at = self.clock.instant();
+        self.fleet.platform.world.set_clock(at);
+        let Some(made_at) = self.clock.now().timestamp() else {
+            return 0;
+        };
+        let mut key = RealKey::assembly();
+        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let mut landing = Landing {
+            holdings: &mut self.holdings,
+            platform: &mut self.fleet.platform,
+            operator: &operator,
+            fresh: &mut self.fresh,
+        };
+        self.segments.reconcile_landings(&mut landing)
+    }
+
     /// Lands in the holding accounts the value of each segment that settled at a public node they hold, as Core does
     /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. The assembly calls
     /// it after each run of a part, so where the value rests is Core's own record, and a scenario calls it again to
@@ -509,6 +763,7 @@ impl Core {
             holdings: &mut self.holdings,
             platform: &mut self.fleet.platform,
             operator: &operator,
+            fresh: &mut self.fresh,
         };
         self.segments.land_settled(&mut landing)
     }

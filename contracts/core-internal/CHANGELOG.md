@@ -24,6 +24,10 @@
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).
+  - `order_opened.inputs` (`T-020-46`): the salted commitment of the operator's statement of an order's inputs, a new
+    shape `order-inputs` (`OrderInputs`), kept in the evidence store, so a Core that reopens reads them back and the
+    log holds no account (`REQ-AUD-6`, `NFR-6`); row `opened-orders-inputs-are-a-kept-statement`, its stated entry
+    verified, of that shape, the deployment operator's own and about nothing.
   - The review's Lows: the README's citation table names every admission fixture that exists and none that doesn't; a
     fixture for the rule that a verifier's `class` is named only by a grant or its revocation
     (`decision-request-to-set-slippage-naming-a-verifiers-class`); each Rust-only invalid fixture is read with its rule
@@ -33,8 +37,8 @@
     README no longer says, is here.
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. With `T-020-44`'s round, merged beside it: twenty-eight schemas, 179 valid fixtures and 180 invalid,
-  744 admission cases and 58 attribution cases; 114 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
+  row and field. With `T-020-44`'s and `T-020-50`'s rounds, merged beside it: twenty-nine schemas, 181 valid fixtures and 182
+  invalid, 757 admission cases and 58 attribution cases; 115 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

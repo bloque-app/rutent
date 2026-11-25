@@ -57,6 +57,7 @@ pub mod measures;
 pub mod policy;
 pub mod price;
 pub mod releases;
+mod reopen;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -487,6 +488,9 @@ struct Carried {
     feed: Feed,
     fresh: Seeded,
     ties: bool,
+    /// The host's holding accounts, beside the platform that runs their wallets: the host's attribution of each
+    /// order and its own transactions' count go on with it (`T-020-46`).
+    holdings: rutent_prov::holding::wallet::Holdings,
 }
 
 /// Core, put together.
@@ -648,10 +652,12 @@ impl Core {
     }
 
     /// Core opened again on its disk after it stopped (`T-020-09`): what is outside Core goes on as it stands (the
-    /// platform with the providers and their networks, the state machine's host, the clock), and Core's own parts are
-    /// put together again over what the disk holds: the log and the evidence store read back, and, from the log,
-    /// what the grading took (`Closing::recorded`). The rest of Core's own record (intake's, the segments', `Issued`)
-    /// is in memory and starts empty (`F-030`); the providers are granted again on the reopened log.
+    /// platform with the providers and their networks, the state machine's host, the clock, and the operator's key with
+    /// the decision records it signed), and Core's own parts are put together again over what the disk holds: the log
+    /// and the evidence store read back, and, from the log, what the grading took (`Closing::recorded`), the held
+    /// quotes, and Core's own state, rebuilt (`T-020-46`, the `reopen` module): the transactions asked under, intake's orders,
+    /// the segments and the value in flight, the stuck orders, and what each started order runs on. The providers are
+    /// granted again on the reopened log.
     ///
     /// # Errors
     ///
@@ -668,6 +674,7 @@ impl Core {
             feed: self.feed,
             fresh: self.fresh,
             ties: self.readings.ties(),
+            holdings: self.holdings,
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
     }
@@ -680,6 +687,11 @@ impl Core {
     ) -> Result<Self, AssemblyError> {
         let context = context();
         let reopened = carried.is_some();
+        let mut carried = carried;
+        let holdings = carried
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.holdings))
+            .unwrap_or_default();
         let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
             Some(c) => (
                 c.fleet,
@@ -828,7 +840,7 @@ impl Core {
             segments: Segments::new(),
             stuck: Stuck::new(),
             mover: Mover::new(),
-            holdings: rutent_prov::holding::wallet::Holdings::default(),
+            holdings,
             linked: BTreeMap::new(),
             hand_on: rutent_core_orch::hand_on::HandOn::new(),
             notices: rutent_core_orch::notice::Notices::new(
@@ -871,11 +883,12 @@ impl Core {
         core.closing = rutent_core_orch::closing::Closing::recorded(core.log.borrow().entries());
         core.holds = rutent_core_orch::quote::Holds::recorded(core.log.borrow().entries());
         if reopened {
-            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds.
+            // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds, the host's
+            // holding accounts listed again first.
+            core.relist_holdings();
             core.relist()?;
-            // The routes handed on whose start the holding account's record proved: proven again from the log, so
-            // their segments are handed over without the holding account being asked again (`T-020-26`).
-            core.recover_starts();
+            // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
+            core.rebuild_from_log();
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1033,6 +1046,13 @@ impl Core {
             .map(|r| r.segments)
     }
 
+    /// Restarts the module of `provider` on the platform, and no other, as its process ending and starting again does:
+    /// a module's state in its instance, a plain wallet's record among it, is gone (`REQ-ORD-43`, `T-020-46`). False
+    /// where it runs no process.
+    pub fn restart_module(&mut self, provider: &str) -> bool {
+        self.fleet.platform.restart(provider)
+    }
+
     /// The platform with the simulated providers, to read.
     pub fn fleet(&self) -> &Fleet {
         &self.fleet
@@ -1060,6 +1080,16 @@ impl Core {
     /// decided keeps the formula its record ran under.
     pub fn set_operator_fee(&mut self, fee: rutent_contracts::router_api::FeeFormula) {
         self.bounds.operator_fee = fee;
+    }
+
+    /// Sets the most in flight at a provider in one asset (`REQ-ORD-8`): the bounds of every route decided from now on
+    /// carry it, in place of any the provider had in that asset. A deployment setting of the policy, as the operator's
+    /// fee is: a Core opened again starts from the kit's bounds, with none (`T-020-46`).
+    pub fn set_provider_ceiling(&mut self, ceiling: rutent_contracts::router_api::ProviderCeiling) {
+        self.bounds
+            .provider_ceilings
+            .retain(|c| !(c.provider == ceiling.provider && c.asset == ceiling.asset));
+        self.bounds.provider_ceilings.push(ceiling);
     }
 
     /// The holder's delegate asks `reserve` whether the account's balance covers `amount`, in `session`: a balance
@@ -1353,6 +1383,16 @@ impl Core {
             // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
             // replayed (`grant_verifier`).
             if *change == CatalogueChange::Grant && tuple.is_none() && class.is_some() {
+                continue;
+            }
+            // A holding account's release the operator accepted: its wallet is one of the host's accounts, which go on
+            // beside the platform and are listed again first (`Core::relist_holdings`, `T-020-46`).
+            if *change == CatalogueChange::AcceptModule
+                && self
+                    .catalogue
+                    .publishers()
+                    .published_by_operator(provider.as_str())
+            {
                 continue;
             }
             let (CatalogueChange::Grant, Some(tuple_id)) = (change, tuple) else {
@@ -1980,6 +2020,15 @@ impl Core {
         let core = kit::core();
         let operator = kit::operator();
         let mut policy = self.policy.clone();
+        // A transaction of Core's own for restoring what the log holds in a holding account whose module restarted,
+        // drawn only where one did (`T-020-46`).
+        let restarted = self
+            .holdings
+            .attributions()
+            .iter()
+            .any(|(node, _)| self.holdings.restarted(&self.fleet.platform, node));
+        let restore = restarted.then(|| self.fresh.id());
+        let resting = self.segments.resting_totals();
         let readings = self.readings.clone();
         readings.refresh(&self.fleet.platform.world);
         let running = RefCell::new(Running {
@@ -2007,6 +2056,8 @@ impl Core {
             holdings: &mut self.holdings,
             running: &running,
             bounds: &self.bounds,
+            restore,
+            resting,
         };
         let accepted = holding::Accepted(&self.linked);
         let log = holding::LogHandle(Rc::clone(&self.log));

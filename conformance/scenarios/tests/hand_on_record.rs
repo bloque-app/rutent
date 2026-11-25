@@ -513,3 +513,130 @@ fn proven_start_is_rebuilt_from_the_log_after_a_restart() {
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
 }
+
+/// A restart between the hand-on and the holding account's proof of the start: the linked order's start as Core
+/// recorded it is rebuilt from the log (the first order, the part's value at rest, the starting reserve, the route's
+/// first segment), so the proof goes ahead. A second restart after the proof: the start the log took is Core's again,
+/// read back from the holding account's answer the evidence store keeps, so the first thing asked of it, another
+/// record of the started order, is refused before anything is recorded, and the same record is answered with its
+/// receipt: Core's own rule beside the log's (`REQ-ORD-43`, `REQ-ORD-40`, `T-020-46`).
+// verifies: REQ-ORD-43, REQ-ORD-40
+#[test]
+fn linked_start_and_its_spent_record_are_rebuilt_from_the_log_after_a_restart() {
+    let (_world, mut core, _, _) = handed_on();
+    let statement =
+        segments_support::handing::holding_withdrawal_statement(&mut core, "ord-2", AMOUNT);
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    let first = segments_support::handing::prove_citing(
+        &mut core,
+        &mut rebuilt,
+        &id("ord-2"),
+        &withdrawal_record(),
+        &statement,
+    )
+    .expect("proven on the start rebuilt from the log");
+    let mut again = segments_support::reopen_hand_on(&core);
+    let entries = core.log.borrow().entries.len();
+    let other = WithdrawalRecord {
+        reference: format!("{RESERVE}-withdrawal-tx-another"),
+        ..withdrawal_record()
+    };
+    let answered = segments_support::handing::prove_citing(
+        &mut core,
+        &mut again,
+        &id("ord-2"),
+        &other,
+        &statement,
+    );
+    assert!(
+        matches!(
+            answered,
+            Err(HandOnError::Unproven(
+                rutent_core_orch::hand_on::Unproven::AlreadyStarted
+            ))
+        ),
+        "another record of the started order is refused by Core's own rule: {answered:?}"
+    );
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+    assert_eq!(
+        segments_support::handing::prove_citing(
+            &mut core,
+            &mut again,
+            &id("ord-2"),
+            &withdrawal_record(),
+            &statement,
+        ),
+        Ok(first),
+        "the start the log took answers the same record"
+    );
+    assert_eq!(count(&core, is_holding_withdrawal), 1, "one start");
+}
+
+/// A start the log took whose holding record a reopened Core can't read back (the cited statement is no withdrawal
+/// answer): failing closed, no record proves the started order again, the one it took included, and nothing more is
+/// recorded (`REQ-ORD-43`, `T-020-46`).
+// verifies: REQ-ORD-43
+#[test]
+fn linked_start_whose_record_cannot_be_read_back_is_proven_by_no_record_after_a_restart() {
+    let (_world, mut core, _, _) = handed_on();
+    let statement = segments_support::handing::holding_statement(&mut core, "ord-2");
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    segments_support::handing::prove_citing(
+        &mut core,
+        &mut rebuilt,
+        &id("ord-2"),
+        &withdrawal_record(),
+        &statement,
+    )
+    .expect("proven on the start rebuilt from the log");
+    let entries = core.log.borrow().entries.len();
+    for record in [
+        WithdrawalRecord {
+            reference: format!("{RESERVE}-withdrawal-tx-another"),
+            ..withdrawal_record()
+        },
+        withdrawal_record(),
+    ] {
+        let mut again = segments_support::reopen_hand_on(&core);
+        let answered = segments_support::handing::prove_citing(
+            &mut core,
+            &mut again,
+            &id("ord-2"),
+            &record,
+            &statement,
+        );
+        assert!(
+            matches!(
+                answered,
+                Err(HandOnError::Unproven(
+                    rutent_core_orch::hand_on::Unproven::AlreadyStarted
+                ))
+            ),
+            "{answered:?}"
+        );
+    }
+    assert_eq!(core.log.borrow().entries.len(), entries, "nothing recorded");
+}
+
+/// What the first order held at the reserve whose final deposit failed, after its part was handed on: nothing, on
+/// the Core that ran on and on the same log reopened, the hand-on having retired the deposit (`REQ-ORD-8`,
+/// `T-020-46`).
+// verifies: REQ-ORD-8
+#[test]
+fn segment_a_hand_on_retired_is_not_held_again_after_a_restart() {
+    let (world, mut core, _, record) = handed_on();
+    let held = |core: &Core| {
+        core.exposures
+            .held()
+            .filter(|h| h.order.as_str() == ORDER)
+            .map(|h| (h.provider.as_str().to_owned(), h.amount.as_str().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the Core that ran on holds nothing for it"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[record]);
+    assert_eq!(held(&core), Vec::new(), "nor the reopened one");
+}

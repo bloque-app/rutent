@@ -112,7 +112,7 @@ impl WalletHolding {
     ) -> Result<(WithdrawalRecord, String, Vec<u8>), StartError> {
         let node = self.node().to_owned();
         let (next, settled, transaction, signed) =
-            self.movement(platform, operator, false, &node, asset, order, amount)?;
+            self.movement(platform, operator, false, &node, asset, order, amount, None)?;
         // An answer that can't be kept whole is no record: the withdrawal's outcome is then the host's to find out.
         let answer = serde_json::to_vec(&signed).map_err(|_| StartError::NoRecord)?;
         let reference = proof_of_withdrawal(&self.provider, &transaction, &settled.evidence)?;
@@ -129,6 +129,7 @@ impl WalletHolding {
             reference,
         };
         self.ledger = next;
+        self.process = platform.process(&self.provider);
         Ok((record, transaction, answer))
     }
 }

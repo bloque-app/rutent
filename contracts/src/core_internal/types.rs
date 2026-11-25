@@ -2926,7 +2926,8 @@ pub enum What {
     /// request it was opened under, who asked, its parties, its origin reserve, the session the reserve's yes is asked
     /// in, its destination and the route asked for. The log holds nothing else of an order before its acceptance, so a
     /// Core that reopens reads its open orders from here. The tuples' inputs are not here: they may carry accounts, so
-    /// they stay out of the log (`REQ-AUD-6`).
+    /// the log holds only the salted commitment of the operator's statement of them, kept in the evidence store
+    /// (`inputs`, `REQ-AUD-6`, `T-020-46`).
     OrderOpened {
         /// The order.
         order: Id,
@@ -2944,6 +2945,16 @@ pub enum What {
         destination: alloc::boxed::Box<Destination>,
         /// The route asked for: from, to, amount, objective and any floor.
         route: alloc::boxed::Box<crate::router_api::Request>,
+        /// The salted commitment of the operator's statement of the order's inputs ([`OrderInputs`], shape
+        /// [`ORDER_INPUTS_SHAPE`]), kept in the evidence store and appended as a stated entry before this one
+        /// (`opened-orders-inputs-are-a-kept-statement`): a Core that reopens reads the inputs back from the store, and
+        /// the log holds no account (`REQ-AUD-6`, `T-020-46`). Absent where the order carries no input.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        inputs: Option<Digest>,
     },
 }
 
@@ -3430,6 +3441,23 @@ impl<'de> Deserialize<'de> for Entry {
 
 /// A checkpoint's `shape`.
 pub const CHECKPOINT_SHAPE: &str = "urn:rutent:core-internal:checkpoint";
+
+/// The shape of the operator's statement of an order's inputs.
+pub const ORDER_INPUTS_SHAPE: &str = "urn:rutent:core-internal:order-inputs";
+
+/// The inputs an order carries for the tuples that require them, as the operator states them when intake opens the
+/// order (`T-020-46`): the body of a statement of shape [`ORDER_INPUTS_SHAPE`], kept in the evidence store behind a
+/// salted commitment that `order_opened` names, so a Core that reopens reads them back and the log holds no account
+/// (`REQ-AUD-6`). It names no transaction, and is appended about nothing: the order it is of is the body's, which
+/// only whoever holds the kept bytes reads. Schema: `urn:rutent:core-internal:order-inputs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct OrderInputs {
+    /// The order.
+    pub order: Id,
+    /// Each input, by name: never empty, since an order with no input states none.
+    pub inputs: alloc::collections::BTreeMap<String, String>,
+}
 
 /// A checkpoint opening's `shape`.
 pub const CHECKPOINT_OPENING_SHAPE: &str = "urn:rutent:core-internal:checkpoint-opening";

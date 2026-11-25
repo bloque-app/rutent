@@ -745,6 +745,38 @@ impl Prices {
         Self::default()
     }
 
+    /// The prices reported, rebuilt from `history`, the log's own entries, as a Core that reopens reads them
+    /// (`T-020-46`, `REQ-QTE-7`).
+    /// Each order's `shown` entry of its price is held as reported, its receipt the log's, so the order is reported
+    /// once whatever Core reopens in between, and another price for it is refused.
+    pub fn recorded(history: &[(Receipt, rutent_contracts::core_internal::Entry)]) -> Self {
+        let mut prices = Self::new();
+        for (receipt, entry) in history {
+            let rutent_contracts::core_internal::Entry::Verified(verified) = entry else {
+                continue;
+            };
+            let What::Shown {
+                order,
+                shown,
+                shown_as: ShownAs::Price,
+                ..
+            } = &verified.what
+            else {
+                continue;
+            };
+            let Ok(general) =
+                rutent_contracts::core_internal::calls::GeneralEntry::try_from(entry.clone())
+            else {
+                continue;
+            };
+            prices
+                .reported
+                .entry(order.as_str().to_owned())
+                .or_insert_with(|| (shown.clone(), Step::logged(general, receipt.clone())));
+        }
+        prices
+    }
+
     /// Reports `priced` as its order's price: a `shown` entry, by `core` at Core's clock, naming its digest and
     /// `price` (`REQ-QTE-7`). Reported again, the entry first built is appended, or its receipt answered.
     pub fn report(

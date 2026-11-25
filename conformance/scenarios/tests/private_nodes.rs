@@ -927,3 +927,85 @@ fn node_neither_public_nor_declared_private_is_on_no_scenarios_route() {
     );
     let _ = (RAMP, EXCHANGE, OUT_PRIVATE);
 }
+
+/// How many of the publishers' records of a node's segments the log holds, each a stated entry about the order.
+fn node_records(core: &Core, order: &Id) -> usize {
+    core.log()
+        .entries()
+        .iter()
+        .filter(|(_, e)| {
+            matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                if s.what.statement.as_str() == rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE
+                    && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order))
+        })
+        .count()
+}
+
+/// A segment's provider answered, and the publisher's record of the private node's segments its grading asks to keep
+/// is queued, when the log can't take the record and Core stops. Opened again, Core goes on from the answer the log
+/// holds, never asking the provider again: the record is written once, the order completes, the log holds the records
+/// a Core that ran on holds, and each provider was asked what it asked them, nothing twice (`NFR-6`, `INV-8`).
+// verifies: NFR-6, INV-8
+#[test]
+fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
+    let names = [IN, EXCHANGE, RAMP, OUT];
+    let (ran_on, ran_order, _) = run_across(&names, OUT, "sim-join-out-bank", |_| {});
+    let written = node_records(&ran_on, &ran_order);
+    assert!(written > 0, "the replay keeps a publisher's record");
+
+    let (mut core, session) = core_with("AC-35", &names);
+    let order = accepted(
+        &mut core,
+        across("req-join", &session, OUT, "sim-join-out-bank"),
+    );
+    core.refuse_log_appends(rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE, 3);
+    assert!(
+        core.run(&order).is_err(),
+        "the run stops on the record the log can't take"
+    );
+    assert_eq!(
+        node_records(&core, &order),
+        0,
+        "the record is queued, not written"
+    );
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    core.run(&order).expect("the reopened Core goes on");
+    assert_eq!(
+        node_records(&core, &order),
+        written,
+        "written once, as the Core that ran on"
+    );
+    for provider in names {
+        assert_eq!(
+            core.operations_received(provider),
+            ran_on.operations_received(provider),
+            "{provider} is asked what the Core that ran on asked it, nothing twice"
+        );
+    }
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.run(&order).expect("runs again");
+    assert_eq!(node_records(&core, &order), written);
+}
+
+/// An order into a private rail closes on the public movement into it, which Core holds as taken. Opened again, Core
+/// reads the close back from the log: the order still reads complete, and a second order paid by the same movement (a
+/// reserve tying one payment to two orders) doesn't close on it (`NFR-6`, `REQ-ORD-38`).
+// verifies: NFR-6
+#[test]
+fn private_rail_closed_before_core_reopens_stays_closed() {
+    let names = [IN, EXCHANGE, RAMP, OUT_PRIVATE];
+    let (core, order, _) = into_rail(OUT_PRIVATE, RAIL);
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.tie_payments_by_destination();
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let second = accepted(&mut core, across("req-join-2", &session, OUT_PRIVATE, RAIL));
+    let _ = core.run(&second);
+    assert_ne!(
+        state(&mut core, &second),
+        OrderState::Complete,
+        "the movement into the rail closed the first order alone"
+    );
+}

@@ -2044,6 +2044,60 @@ fn a_pending_hand_on_retried_for_another_linked_order_is_refused() {
         .expect("the log admits every entry");
 }
 
+/// A hand-on whose first order's `handed_on` the log took, the linked order's `route_chosen` not, when Core stops: the
+/// hand-on pending in memory is gone. A fresh `HandOn` refuses the retry (the part reads handed on, and waits no more);
+/// the one rebuilt from the log holds the hand-on pending for its linked order, refuses a retry naming another, and
+/// completes the one naming its own, appending the `route_chosen` alone, the `handed_on` once (`REQ-ORD-43`).
+// verifies: REQ-ORD-43
+#[test]
+fn pending_hand_on_is_rebuilt_from_the_log() {
+    let (world, mut core) = waiting_for_the_customer();
+    for n in [2, 3] {
+        seed_linked(
+            &mut core,
+            &Named::another(n),
+            &customer(),
+            &linked_record(&format!("ord-{n}")),
+        );
+    }
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::Chosen, Fault::Unavailable));
+    }
+    assert!(matches!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::Append(_))
+    ));
+    assert_eq!(count(&core, is_handed_on), 1, "the handed_on is in the log");
+    // A restart: Core's segments rebuilt from the log; the hand-on pending in memory is gone.
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let before = entries(&core);
+    assert!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2").is_err(),
+        "a fresh record of the hand-ons refuses it"
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    assert_eq!(
+        hand_on_to(&mut core, &mut rebuilt, "ord-3", &plan, "acc-ord-3"),
+        Err(HandOnError::PendingForAnother {
+            pending: id("ord-2")
+        })
+    );
+    assert_eq!(entries(&core), before, "nothing recorded");
+    let done = hand_on_to(&mut core, &mut rebuilt, "ord-2", &plan, "acc-ord-2")
+        .expect("the hand-on rebuilt from the log, retried for its own linked order");
+    assert_eq!(done.route_chosen.subject.order.as_str(), "ord-2");
+    assert_eq!(count(&core, is_handed_on), 1, "the handed_on once");
+    assert!(core.segments.order(&id("ord-2")).is_some());
+    assert_eq!(part_of(&core, ORDER).state, OrderState::HandedOn);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
 /// A hand-on pending for `ord-2`, its `handed_on` not yet in the log, retried naming an `ord-3` another part has
 /// taken: the retry is refused as the pending one's (`PendingForAnother`), before the free-order check, so the
 /// `ord-2` hand-on isn't dropped and then completes when retried for its own order.
@@ -2191,4 +2245,123 @@ fn hand_on_whose_record_the_log_took_goes_on_whatever_opened_its_linked_order() 
     );
     core.admitted(&world.catalogue)
         .expect("the log admits every entry");
+}
+
+/// The log refused the linked order's `route_chosen`, its refusal recorded, and Core stops before the hand-on's
+/// `hand_on_taken_back` reaches the log: the stranded part's record is gone with it. A fresh record of the hand-ons
+/// takes nothing back; the one rebuilt from the log takes the hand-on back on a retry, once, and the part waits for the
+/// customer again (`REQ-ORD-43`, `T-020-46`).
+// verifies: REQ-ORD-43
+#[test]
+fn stranded_hand_on_is_taken_back_after_a_restart() {
+    let (world, mut core) = waiting_for_the_customer();
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    core.log
+        .borrow_mut()
+        .faults
+        .push_back((On::Chosen, Fault::Refuse));
+    for _ in 0..3 {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::TakenBack, Fault::Unavailable));
+    }
+    assert!(
+        hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2").is_err(),
+        "the taken back can't be appended now"
+    );
+    let is_taken_back = |w: &What| {
+        matches!(w, What::Input { input } if matches!(&input.observed,
+            Observed::HandOnTakenBack { linked_order } if linked_order.as_str() == "ord-2"))
+    };
+    assert_eq!(count(&core, is_taken_back), 0);
+    // A restart: Core's segments and hand-ons rebuilt from the log.
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let mut rebuilt = segments_support::reopen_hand_on(&core);
+    assert!(matches!(
+        hand_on_to(&mut core, &mut rebuilt, "ord-2", &plan, "acc-ord-2"),
+        Err(HandOnError::LinkedRefused { .. })
+    ));
+    assert_eq!(count(&core, is_taken_back), 1, "taken back, once");
+    assert_eq!(part_of(&core, ORDER).state, OrderState::WaitingForCustomer);
+    core.admitted(&world.catalogue)
+        .expect("the log admits every entry");
+}
+
+/// What a part held at the reserve whose final deposit failed, after the customer's new destination retired that
+/// deposit: nothing, on the Core that ran on and on the same log reopened. The reopened Core holds no segment the
+/// part's change retired, so new orders at that reserve aren't refused for value no longer in flight (`REQ-ORD-8`,
+/// `T-020-46`).
+// verifies: REQ-ORD-8
+#[test]
+fn segment_a_destination_change_retired_is_not_held_again_after_a_restart() {
+    let (mut world, mut core) = waiting_for_the_customer();
+    let new = new_destination(customer());
+    let (mut stuck, mut reader) = (Stuck::new(), log_entries(&core));
+    let decision = hand_on::authorise(
+        &core.segments,
+        &mut stuck,
+        &mut core.policy,
+        &new,
+        &mut reader,
+    )
+    .expect("asked");
+    assert!(decision.permit().is_some(), "{decision:?}");
+    let record_id = id("dr-new-destination-ord-1");
+    let record = record_to_the_other_reserve(&mut world, &core, &record_id);
+    segments_support::handing::seed_record(&core, ORDER, &record_id);
+    segments_support::handing::seed_acceptance(
+        &core,
+        ORDER,
+        "acc-ord-1-new-destination",
+        &new.authorisation,
+    );
+    let (order, part, actor, customer) =
+        (id(ORDER), id(PART), segments_support::core(), customer());
+    let (recorded, acceptance) = (recorded(&core), id("acc-ord-1-new-destination"));
+    hand_parts(&mut core, &mut stuck, |parts| {
+        HandOn::new().change_destination(
+            parts,
+            hand_on::Change {
+                order: &order,
+                part: &part,
+                record: &record,
+                acceptance: &acceptance,
+                recorded: &recorded,
+                customer: &customer,
+                core: &actor,
+            },
+        )
+    })
+    .expect("changed");
+    let held = |core: &Core| {
+        core.exposures
+            .held()
+            .map(|h| (h.provider.as_str().to_owned(), h.amount.as_str().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the Core that ran on holds nothing"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[record]);
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "the reopened Core holds nothing the change retired"
+    );
+    // Nor where it can't read back the retired segment's operation: the log says it was retired.
+    segments_support::reopen_segments_reading(&mut core, &world.catalogue, Vec::new());
+    assert_eq!(
+        held(&core),
+        Vec::new(),
+        "an unread segment the change retired"
+    );
 }

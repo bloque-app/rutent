@@ -388,6 +388,239 @@ fn each_segments_charge_is_checked_once_also_after_a_restart() {
     ));
 }
 
+/// A charge raised and recorded before Core reopens is read back from the log by the reopened Core (each settled
+/// segment's charge as its kept result states it, and the raises the log holds): run again, its order raises nothing
+/// more, the operator warned once and the log holding each raise once (`NFR-6`, `REQ-QTE-5`).
+// verifies: NFR-6
+#[test]
+fn charge_raise_recorded_before_core_reopens_is_not_raised_again() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (core, session) = alone(CHARGING, "AC-14");
+    let mut core = core;
+    let order = ran(&mut core, &session, CHARGING, "req-charged");
+    assert_eq!(raise_entries(&core).len(), 2);
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    let segment = core.charged_segments(&order)[0].clone();
+    assert!(
+        matches!(
+            core.charge_checked(&order, &segment),
+            Some(Checked::AlreadyRaised)
+        ),
+        "the reopened Core holds the charge raised"
+    );
+    core.run(&order).expect("runs again");
+    assert_eq!(
+        raise_entries(&core).len(),
+        2,
+        "the log holds each raise once"
+    );
+}
+
+/// A charge above its formula whose raise the log can't take when Core stops: the reopened Core reads each settled
+/// segment's charge back from its kept result, so on the next run the raise is made, once (`NFR-6`, `REQ-QTE-5`).
+// verifies: NFR-6, REQ-QTE-5
+#[test]
+fn charge_raise_cut_short_before_core_reopens_is_raised_once() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    // Turned away on every try the settling and the run's own re-check make: nothing of it is recorded.
+    core.refuse_log_appends("raise", 2 * rutent_core_orch::segments::APPEND_TRIES);
+    let (order, told) = quoted(
+        &mut core,
+        request_at(
+            CHARGING,
+            "req-charged",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    assert!(core.run(&order).is_err(), "the log couldn't take the raise");
+    assert_eq!(raise_entries(&core).len(), 0, "no raise reached the log");
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    core.run(&order).expect("the part goes on");
+    assert_eq!(
+        raise_entries(&core).len(),
+        2,
+        "the settled segment's raise made after the reopening, once, and the second segment's"
+    );
+    core.run(&order).expect("runs again");
+    assert_eq!(raise_entries(&core).len(), 2);
+}
+
+/// Terms a provider stated before Core stopped bind the segments that start after the reopening: the reopened Core
+/// reads them back from the evidence store, so an order run after it is held to them (7 within 100), and nothing is
+/// raised, as the Core that ran on would (`REQ-QTE-6`, `NFR-6`, `T-020-46`).
+// verifies: REQ-QTE-6, NFR-6
+#[test]
+fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, CHARGING)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(CHARGING, "AC-14");
+    let first = ran(&mut core, &session, CHARGING, "req-first");
+    assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
+    core.clock.advance(60);
+    for bytes in terms_for(&core, &first, "100") {
+        assert!(core.state_terms(&bytes).expect("kept").new);
+    }
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    core.clock.advance(60);
+    let _ = session;
+    let session = core.open_session(&kit::customer()).expect("a session");
+    let second = ran(&mut core, &session, CHARGING, "req-second");
+    assert_eq!(raise_entries(&core).len(), 2, "within the terms in force");
+    let segments = core.charged_segments(&second);
+    assert_eq!(segments.len(), 2);
+    for segment in &segments {
+        assert!(matches!(
+            core.charge_checked(&second, segment),
+            Some(Checked::Within)
+        ));
+    }
+}
+
+/// An order's executed price reported through the assembly before Core stopped: the reopened Core holds it as
+/// reported from the log's `shown` entry (`Prices::recorded`), so the report asked again after the reopening is
+/// answered with the entry the log took, and the log holds one price for the order (`REQ-QTE-7`, `NFR-6`, `T-020-46`).
+// verifies: REQ-QTE-7, NFR-6
+#[test]
+fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_reported_again() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, kit::RESERVE)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let (order, told) = quoted(
+        &mut core,
+        request_at(
+            kit::RESERVE,
+            "req-priced",
+            AMOUNT,
+            &session,
+            "lowest_total_cost",
+        ),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    let ran = core.run(&order).expect("the order runs");
+    let (_, receipt, _) = core.report_price(&order, &ran).expect("reported");
+    let prices = |core: &Core| {
+        core.verified_whats()
+            .iter()
+            .filter(|w| {
+                matches!(w, What::Shown { order: o, shown_as: rutent_contracts::core_internal::ShownAs::Price, .. }
+                    if *o == order)
+            })
+            .count()
+    };
+    assert_eq!(prices(&core), 1);
+    let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
+    // Later: a price built afresh would be another entry, at another time.
+    core.clock.advance(60);
+    let again = core.report_price(&order, &ran);
+    assert!(
+        matches!(&again, Ok((_, r, _)) if *r == receipt),
+        "the price the log took answers again: {again:?}"
+    );
+    assert_eq!(prices(&core), 1, "one price for the order");
+}
+
+/// The measure records a run's segment endings gave, as the log holds them: by provider, role, segment and measure.
+fn measures_in_the_log(core: &Core) -> Vec<String> {
+    let mut kept: Vec<String> = core
+        .verified_whats()
+        .iter()
+        .filter_map(|w| match w {
+            What::Measure { record } => Some(format!(
+                "{} {:?} {:?} {:?} citing {}",
+                record.provider.as_str(),
+                record.role,
+                record.segment.as_ref().map(Id::as_str),
+                record.measure,
+                record.cites.len()
+            )),
+            _ => None,
+        })
+        .collect();
+    kept.sort();
+    kept
+}
+
+/// The measure records Core keeps for its writer are rebuilt from the log when it reopens (`REQ-AUD-7`, `NFR-6`,
+/// `T-020-46`): an order run and Core reopened before the writer was called writes, after the reopening, every record
+/// the Core that ran on writes, once; an order whose records were written before the reopening writes none again.
+// verifies: REQ-AUD-7, NFR-6
+#[test]
+fn measure_records_a_restart_dropped_are_written_once_after_core_reopens() {
+    let given = || Given {
+        providers: vec![Spec::of(Role::Reserve, kit::RESERVE)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let reopen = |core: Core| {
+        Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference)
+    };
+
+    let (mut ran_on, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut ran_on, &session, kit::RESERVE, "req-measured");
+    let written = ran_on.write_measures();
+    assert!(written > 0, "the run's endings give records");
+    let expected = measures_in_the_log(&ran_on);
+
+    // Reopened before the writer was called: the records are written after it, each once.
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
+    let mut core = reopen(core);
+    assert_eq!(
+        core.write_measures(),
+        written,
+        "every record the restart dropped"
+    );
+    assert_eq!(core.write_measures(), 0, "and none twice");
+    assert_eq!(measures_in_the_log(&core), expected);
+
+    // Written before the reopening: none again after it.
+    let (mut core, session) = alone(kit::RESERVE, "AC-14");
+    let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
+    assert_eq!(core.write_measures(), written);
+    let mut core = reopen(core);
+    assert_eq!(core.write_measures(), 0, "nothing measured twice");
+    assert_eq!(measures_in_the_log(&core), expected);
+}
+
 // verifies: REQ-QTE-5
 #[test]
 fn the_assembly_no_longer_checks_charges_itself() {

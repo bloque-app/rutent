@@ -92,6 +92,14 @@ pub struct Wallets<'a, W: World, O: Operator> {
     pub platform: &'a mut Platform<W>,
     /// The operator, whose key signs the withdrawal.
     pub operator: &'a O,
+    /// A transaction of Core's own, fresh, for restoring in the account what the log holds for the order before the
+    /// withdrawal, where the account's module restarted (`T-020-46`): `None` where Core drew none, and then nothing
+    /// is restored.
+    pub restore: Option<&'a str>,
+    /// What the log holds for each order at each node, by node and order ([`crate::segments::Segments::resting_totals`]):
+    /// what a restore restores, the order's whole as the wallet and the host count it, never the part withdrawn alone.
+    pub resting:
+        &'a std::collections::BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
 }
 
 /// What the caller is shown each statement through.
@@ -150,6 +158,33 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
         amount: &str,
         asked: &mut Show<'_>,
     ) -> Result<HandedOnStart, StartError> {
+        // The account's module restarted, and the wallet's record of the order with it: what the log holds for the
+        // order, the value handed on, is restored in the account first, under Core's own transaction, so the
+        // withdrawal finds it (`REQ-ORD-43`, `INV-1`, `T-020-46`). The restore isn't the withdrawal's question, so it
+        // is not shown to the caller; a restore that fails starts nothing.
+        if let Some(SegmentPlan {
+            from:
+                rutent_contracts::state_machine::Endpoint {
+                    node: rutent_contracts::provider_role::NodeRef::Inner(node),
+                    ..
+                },
+            ..
+        }) = route.first()
+            && self.holdings.restarted(self.platform, node)
+        {
+            let transaction = self.restore.ok_or(StartError::Wallet(
+                rutent_prov::holding::wallet::WalletError::NotKnown,
+            ))?;
+            let whole = restored_whole(self.resting, node, order, amount);
+            self.holdings.restore(
+                self.platform,
+                self.operator,
+                node,
+                order,
+                &whole,
+                transaction,
+            )?;
+        }
         let operator = Asking {
             inner: self.operator,
             asked: RefCell::new(asked),
@@ -157,6 +192,20 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
         self.holdings
             .start_handed_on(self.platform, &operator, route, order, amount)
     }
+}
+
+/// What a hand-on's restore restores at `node` for `order`: the order's whole value resting there as the log holds
+/// it (`resting`, by node and order), never the part withdrawn alone, so the wallet holds every value of the order
+/// the log holds at the node; `amount`, the part handed on, where the log holds nothing resting there (`T-020-46`).
+fn restored_whole(
+    resting: &std::collections::BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
+    node: &str,
+    order: &str,
+    amount: &str,
+) -> String {
+    resting
+        .get(&(node.to_owned(), order.to_owned()))
+        .map_or_else(|| amount.to_owned(), |total| total.as_str().to_owned())
 }
 
 /// The operator key as the wallet's [`Operator`]: each statement signed with it, in the bounds' deployment and
@@ -211,5 +260,30 @@ impl Operator for OperatorSigns<'_> {
             },
             statement: operation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restored_whole;
+    use rutent_contracts::router_api::Amount;
+    use std::collections::BTreeMap;
+
+    /// Two values of one order rest at one node, the part handed on is one of them: the restore before its withdrawal
+    /// is of both, the order's whole as the log holds it there, so the other part still finds its value (`T-020-46`).
+    // verifies: INV-1
+    #[test]
+    fn a_hand_ons_restore_is_the_orders_whole_at_its_node() {
+        let mut resting = BTreeMap::new();
+        resting.insert(
+            ("ledger".to_owned(), "ord-1".to_owned()),
+            Amount::new("500").expect("an amount"),
+        );
+        assert_eq!(restored_whole(&resting, "ledger", "ord-1", "200"), "500");
+        assert_eq!(
+            restored_whole(&resting, "ledger", "ord-2", "200"),
+            "200",
+            "nothing resting for the order: the part handed on"
+        );
     }
 }

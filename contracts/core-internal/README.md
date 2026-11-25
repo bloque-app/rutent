@@ -193,6 +193,7 @@ row implements its own in its own module, where its fail-closed stub sits until 
 | `erasure-waits-while-anything-rests-on-the-statement` | `erasure`, and the `erase_statement` `decide` and `effect`: its commitment, unless its permitting decision's action sets `overrides_citations` (the decision's own, an effect's by its permit, a record's through the erase effect of its commitment held done; `T-020-39`) | none other: no earlier entry citing the statement, by its stated entry's receipt or its commitment (the erasure's own path and reads aside) | — | `REQ-AUD-13` | admitted: `world--*`; `--a-decision-overriding-the-citations`, `--an-effect-on-a-decision-overriding-the-citations`, `--an-erasure-on-a-decision-overriding-the-citations` (each while cited); refused: `--conflict`, `--decided-while-cited`, `--effect` (a citation between the decision and the effect); refused also: `--an-effect-overriding-on-a-decision-that-does-not` |
 | `nothing-cites-an-erased-statement` | any verified entry but the erasure's own path and reads: anything it records | none other: no `erasure`, `done`, of a statement it cites, by its stated entry's receipt or its commitment, no `done` result of an `erase_statement` effect for it, the moment the store erases, and no `erase_statement` effect for it whose result hasn't failed, where erasure begins | — | `REQ-AUD-13` | admitted: `--another-statement`, `--a-failed-erasure`; refused: `--conflict`, `--done-before-its-record`, `--between-effect-and-result` |
 | `erasure-names-a-kept-statement` | `erasure`: its `evidence` | a stated entry holding that commitment | — | `REQ-AUD-13` | admitted: `world--*`; refused: `--missing` |
+| `opened-orders-inputs-are-a-kept-statement` | `order_opened` with `inputs`: its commitment | a stated entry holding that commitment | verified, inputs (core-internal's `urn:rutent:core-internal:order-inputs`, not a question or another shape), maker (the deployment operator's own statement), about (appended about nothing: the statement names no transaction, so attribution verifies it only about nothing); that its body names this order and the inputs it was opened with is for whoever holds the kept bytes, Core on reopening (`T-020-46`) and a checker through `Evidence::fetch` | `REQ-AUD-6`, `NFR-6` | admitted: `--the-operators-statement`; refused: `--missing`, `--verified`, `--inputs`, `--maker`, `--about` |
 | `acceptance-is-of-the-quote-shown` | `acceptance` (`given`, or `given_on_deposit`, `T-020-39`): its `quote` | a `shown` with that digest | order, shown_as (a quote, never a price) | `REQ-ORD-34`, `REQ-QTE-7` | admitted: `world--*`; refused: `--missing`, `--order`, `--shown_as`, `--given-on-a-deposit-of-a-quote-not-shown` |
 | `automatic-deposit-takes-a-firm-quote` | `acceptance` (`automatic_deposit`): its `quote` | none other: no `shown` of its order with that digest shown `quote_without_firm_rate` or awaiting its customer (`F-025`'s L7, `T-020-45`): a slow route starts only on its customer's acceptance | — | `REQ-QTE-10`, `REQ-ORD-15` | admitted: `world--*`, `--a-firm-quote`; refused: `--conflict` (shown without a firm rate), `--conflict-a-firm-quote-awaiting-its-customer` |
 | `waiting-quote-is-for-its-arrivals-holder` | `shown` with `awaiting` | an `arrival` naming its order | holder (the arrival's `holder` is `awaiting.requester`; an arrival naming no holder binds none) (R-AWAITING, `T-020-45`) | `REQ-AUZ-7`, `REQ-QTE-10` | admitted: `--the-arrivals-holder`; refused: `--missing`, `--holder`, `--holder-the-arrival-names-none` |
@@ -330,6 +331,7 @@ The Rust types carry the mapping as `Answer::outcome`, `SessionOutcome::outcome`
 | Permission change | `urn:rutent:core-internal:permission-change` | `PermissionChange` |
 | Checkpoint | `urn:rutent:core-internal:checkpoint` | `Checkpoint`, `CheckpointShape`, `Tick`, `CheckpointSignature`, `SignatureValue` |
 | Checkpoint opening | `urn:rutent:core-internal:checkpoint-opening` | `CheckpointOpening`, `CheckpointOpeningShape` |
+| An order's inputs | `urn:rutent:core-internal:order-inputs` | `OrderInputs`, `ORDER_INPUTS_SHAPE` |
 
 Every request carries its own id, which its answer names, and an `at`: Core's clock, the one it passes as `at`
 (`F-012`'s notes). Discriminated unions name their branch in one field (`kind`, `answer`, `call`, `status` or
@@ -515,8 +517,10 @@ accepted, so a fixture breaking two rules can't pass on its first refusal (`T-02
   destination, where named, to the destination and to asset of the permitted authorisation the acceptance names, set
   for that requester. That Core's entry states what the kept notice states is Core's receipt-side check
   (`core-orch`'s `arrival/filing.rs`), a residual the log can't close.
-- **An order as intake opened it** (`order_opened`), for the rebuild on reopening (`T-020-46`): the request, caller,
-  parties, origin reserve, session, destination and route asked for; never the tuples' inputs (`REQ-AUD-6`).
+- **An order as intake opened it** (`order_opened`), for the rebuild on reopening (`T-020-46`), its `inputs` the salted
+  commitment of the operator's statement of the order's inputs (`order-inputs`), kept in the evidence store, so the log
+  holds no account: the request, caller, parties, origin reserve, session, destination and route asked for; the
+  tuples' inputs only through that commitment (`REQ-AUD-6`).
 - **A revocation** counts from its admitted `revoke_grant` effect until a `failed` result undoes it
   (`revoked_before_receipt`, `F-025`'s L5); a grant still takes force only from its `done` result.
 

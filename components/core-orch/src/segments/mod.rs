@@ -89,6 +89,7 @@ mod landing;
 mod measured;
 mod pairs;
 mod ports;
+mod reopen;
 pub mod roll_back;
 mod sign;
 
@@ -141,6 +142,7 @@ pub use ports::{
     Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
     ToKeep, Uses,
 };
+pub use reopen::Reopening;
 pub use sign::Unwritten;
 pub(crate) use sign::sign as sign_operation;
 
@@ -636,6 +638,9 @@ struct InFlight {
     relies: Vec<Judgement>,
     /// What its operation priced, to measure against what it came to (`T-020-31`).
     priced: measured::Priced,
+    /// Rebuilt from the log by a Core that reopened (`T-020-46`): carried out, its answer, if any, gone with the Core
+    /// that stopped, so it is never carried out again, and with no final outcome it stays in flight.
+    reopened: bool,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
     /// The entry that carries those answers: the order's `decision_record` entry.
@@ -664,8 +669,8 @@ struct Tracked {
 
 /// Core's record of the segments it handed over, kept across orders by the assembly: the effects acted on, the
 /// transactions assigned, the drains not yet appended, each segment from its permit to its final outcome, and the
-/// orders followed. The production assembly keeps it durably (`F-030`): a fresh one knows nothing of the effects acted
-/// on before it, so after a restart only the kept record stops a second `move_value` on a segment.
+/// orders followed. A Core that reopens rebuilds it from the log ([`Segments::reopened`], `T-020-46`): the effects
+/// acted on are every effect the log holds, so no second `move_value` follows a restart.
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     acted: BTreeSet<String>,
@@ -698,6 +703,9 @@ pub struct Segments {
     pairing: pairs::Pairing,
     /// The value landed in holding accounts, by segment (`T-020-33`).
     landing: landing::Landing,
+    /// The segments a reopened Core holds as handed over whose operation it couldn't read back, with their effects'
+    /// receipts: never handed over again, and in motion (`T-020-46`, `INV-8`).
+    unread: BTreeMap<(String, String), Receipt>,
 }
 
 /// A segment's final outcome: one after which nothing more is recorded on it here.
@@ -893,9 +901,43 @@ impl Segments {
                 moved_on,
             ));
         }
+        let owed: Vec<_> = at_nodes
+            .into_iter()
+            .map(|(at, node, asset, amount, moved_on)| {
+                let owes = self.landing.owes(&at, moved_on);
+                (at, node, asset, amount, owes)
+            })
+            .collect();
+        // Where the account's module restarted, the wallet's record went with it: before a release, what the log holds
+        // for the order at the node (what still rests there and what is about to leave) is restored first, per order,
+        // as the wallet and the host count it, under a transaction of Core's own (`REQ-ORD-43`, `INV-1`, `T-020-46`).
+        // A restore that can't be made now leaves the releases for the next call; one not confirmed asks none.
+        let mut restored: Vec<((String, String, String), Landed)> = Vec::new();
+        for (at, node, asset, _, owes) in &owed {
+            if *owes != landing::Owes::Release || !landings.restarted(node) {
+                continue;
+            }
+            let key = (node.clone(), asset.clone(), at.0.clone());
+            if restored.iter().any(|(k, _)| *k == key) {
+                continue;
+            }
+            let held: Vec<&Amount> = owed
+                .iter()
+                .filter(|(a, n, s, _, o)| {
+                    (n, s, &a.0) == (&key.0, &key.1, &key.2)
+                        && (*o == landing::Owes::Release || self.landing.is_placed(a))
+                })
+                .map(|(_, _, _, amount, _)| amount)
+                .collect();
+            let answered = match landing::sum(held) {
+                Some(total) => landings.restore(node, asset, &at.0, &total),
+                None => Landed::Unconfirmed,
+            };
+            restored.push((key, answered));
+        }
         let mut placed = 0;
-        for (at, node, asset, amount, moved_on) in at_nodes {
-            match self.landing.owes(&at, moved_on) {
+        for (at, node, asset, amount, owes) in owed {
+            match owes {
                 landing::Owes::Nothing => {}
                 landing::Owes::Land => {
                     let landed = landings.land(&node, &asset, &at.0, &amount);
@@ -904,12 +946,105 @@ impl Segments {
                     }
                 }
                 landing::Owes::Release => {
+                    let key = (node.clone(), asset.clone(), at.0.clone());
+                    match restored.iter().find(|(k, _)| *k == key).map(|(_, a)| *a) {
+                        Some(Landed::NotNow) => continue,
+                        Some(Landed::Unconfirmed) => {
+                            self.landing.released(at, Landed::Unconfirmed);
+                            continue;
+                        }
+                        Some(Landed::Placed) | None => {}
+                    }
                     let released = landings.release(&node, &asset, &at.0, &amount);
                     self.landing.released(at, released);
                 }
             }
         }
         placed
+    }
+
+    /// What the log holds for each order at each inner node it settled at, by node and order: the sum of every
+    /// segment's value that still rests there, no later segment having moved it on (`T-020-46`). What a holding
+    /// account there is to hold for the order, and what a restore of it asks for.
+    pub fn resting_totals(&self) -> BTreeMap<(String, String), Amount> {
+        let mut resting: Vec<((String, String), &Amount)> = Vec::new();
+        for ((order, segment), flight) in &self.flights {
+            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
+                continue;
+            };
+            let Some(tracked) = self.orders.get(order.as_str()) else {
+                continue;
+            };
+            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
+                part.segments
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == segment.as_str())
+                    .map(|place| (part, place))
+            }) else {
+                continue;
+            };
+            let rutent_contracts::provider_role::NodeRef::Inner(node) =
+                &part.segments[place].to.node
+            else {
+                continue;
+            };
+            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
+                self.flights
+                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+            });
+            if moved_on {
+                continue;
+            }
+            resting.push(((node.clone(), order.clone()), amount_out));
+        }
+        landing::totals(resting)
+    }
+
+    /// What a Core that reopened finds of the landings its segments owed (`T-020-46`): the landing record is in no
+    /// entry, so for each segment the log settled at a node a holding account holds, whose value still rests there,
+    /// the account is asked what it holds for the order and only what it lacks is landed again
+    /// ([`Landings::restore`]): never landed blind, so a reopened Core attributes nothing twice (`INV-1`). One whose
+    /// value moved on is read as passed: its release, if one was owed, is not asked again. Answers how many it found
+    /// placed.
+    pub fn reconcile_landings(&mut self, landings: &mut dyn Landings) -> usize {
+        let mut found = Vec::new();
+        for ((order, segment), flight) in &self.flights {
+            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
+                continue;
+            };
+            let Some(tracked) = self.orders.get(order.as_str()) else {
+                continue;
+            };
+            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
+                part.segments
+                    .iter()
+                    .position(|s| s.segment_id.as_str() == segment.as_str())
+                    .map(|place| (part, place))
+            }) else {
+                continue;
+            };
+            let to = &part.segments[place].to;
+            let rutent_contracts::provider_role::NodeRef::Inner(node) = &to.node else {
+                continue;
+            };
+            if !landings.holds(node) || amount_out.is_zero() {
+                continue;
+            }
+            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
+                self.flights
+                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+            });
+            found.push((
+                (order.clone(), segment.clone()),
+                node.clone(),
+                to.asset.id.clone(),
+                amount_out.clone(),
+                moved_on,
+            ));
+        }
+        landing::reconcile(&mut self.landing, landings, found)
     }
 
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds
@@ -950,8 +1085,8 @@ impl Segments {
     }
 
     /// Follows the order `inputs` open, rebuilt from the log: its `route_chosen` and every input recorded about it
-    /// since, in order, as a restart finds them (`F-030`, `T-020-11`). The effects acted on and the segments in
-    /// flight are not rebuilt; only the order's state is. False if they open no order.
+    /// since, in order, as a restart finds them (`T-020-11`). Only the order's state: [`Segments::reopened`] rebuilds
+    /// the effects acted on and the segments in flight too (`T-020-46`). False if they open no order.
     pub fn follow_recorded(&mut self, clock: &dyn Clock, inputs: &[RecordedInput]) -> bool {
         let Some((first, rest)) = inputs.split_first() else {
             return false;
@@ -1203,6 +1338,9 @@ impl Segments {
     /// in the log and its value about to move, whatever the state machine says of it yet (`INV-4`, `T-020-10`).
     pub fn handed_over(&self, order: &Id, segment: &Id) -> bool {
         self.in_flight(order, segment).is_some()
+            || self
+                .unread
+                .contains_key(&(order.as_str().to_owned(), segment.as_str().to_owned()))
     }
 
     /// The order Core follows, as the inputs recorded so far left it: where each part's value sits
@@ -1878,6 +2016,10 @@ impl Segments {
             }
             return self.advance(parts, live, &at, operation, true);
         }
+        // A segment a reopened Core holds as handed over, its operation not read back, is never handed over again.
+        if let Some(effect) = self.unread_effect(&at) {
+            return Err(SegmentsError::AlreadyActed(effect.clone()));
+        }
         let cited = sign::cited(live.record, operation).ok_or(SegmentsError::Plan(
             "the record's snapshot names no tuple for the operation",
         ))?;
@@ -2010,6 +2152,7 @@ impl Segments {
                 priced: measured::Priced::of(operation),
                 heard: measured::hear(live.record, operation),
                 record_entry: live.record_entry.cloned(),
+                reopened: false,
             },
         );
         self.advance(parts, live, &at, operation, true)
@@ -2026,10 +2169,21 @@ impl Segments {
         operation: &rutent_contracts::router_api::Operation,
         hold: bool,
     ) -> Result<Accounted, SegmentsError> {
+        // A segment a reopened Core rebuilt from the log was carried out, and its answer, if it came, went with the
+        // Core that stopped: it is never carried out again, and its outcome is settled as an unknown one is
+        // (`T-020-46`, `INV-8`).
+        let flight = self.flight(at)?;
+        if flight.reopened && flight.answered.is_none() {
+            let effect = flight
+                .effect
+                .as_ref()
+                .map(|e| e.receipt.clone())
+                .ok_or(SegmentsError::Plan("a rebuilt segment has its effect"))?;
+            return Err(SegmentsError::AlreadyActed(effect));
+        }
         // The provider's reliance on each judgement its inputs rest on is recorded before anything of the segment is:
         // before its hold, its question, its effect and the operation. The log refusing one stops the segment here,
         // with nothing sent (`REQ-CPL-12`, `INV-7`).
-        let flight = self.flight(at)?;
         if !flight.relies.is_empty() {
             let (provider, relies) = (flight.provider.clone(), flight.relies.clone());
             let when = now(parts.clock)?;
