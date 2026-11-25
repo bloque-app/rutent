@@ -85,6 +85,13 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "prov/src/module/platform.rs",
         "change_catalogue: roll_back",
     ),
+    // Puts a provider's releases back in force after a restart whose record couldn't vouch for them (`T-013-11`): a
+    // lifecycle action of its own, which no `CatalogueChange` names yet (`T-021-15`, `T-020-49`).
+    (
+        "confirm",
+        "prov/src/module/platform.rs",
+        "change_catalogue: confirm_releases",
+    ),
     (
         "grant",
         "prov/src/catalogue/mod.rs",
@@ -101,6 +108,15 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
 /// action policy decides: none is one of `REQ-AUZ-6`'s permissions or a value-moving operation. A method added there
 /// fails [`carry_out_is_pinned`] until it is listed here or in [`CARRY_OUT`].
 pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
+    // A read: asks a provider's module where a transaction it was handed stands, and moves nothing (`REQ-ORD-1`,
+    // `INV-4`, `T-013-11`). Asking status is itself decided (`ask_status`), but it is listed here and not in
+    // [`CARRY_OUT`], which would give the scan four false findings. The guard is the `effect` parameter of core-orch's
+    // `Modules::status`: only a permitted `ask_status` effect lets Core ask.
+    (
+        "status",
+        "prov/src/module/platform.rs",
+        "a read that moves nothing",
+    ),
     (
         "set_bounds",
         "prov/src/module/platform.rs",

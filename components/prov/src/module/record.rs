@@ -16,6 +16,7 @@
 //!
 //! This is the platform's admission lifecycle's state, a `DEC-20` path.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,7 +26,10 @@ use rutent_contracts::provider_role::{Operation, ResultBody, Statement};
 use serde::{Deserialize, Serialize};
 
 use crate::catalogue::Instant;
-use crate::module::lifecycle::{Decision, DecisionKind, Mark, Move, MoveReason, SegmentRecord};
+use crate::module::lifecycle::{
+    Counts, Decision, DecisionKind, Mark, Move, MoveReason, ReleaseState, SegmentRecord, Staged,
+    Staging,
+};
 use rutent_contracts::module_interface::Identifier;
 
 /// Where the platform keeps its carried-out record: a sequence of lines, each one entry, which the platform writes
@@ -349,6 +353,10 @@ pub(crate) enum Entry {
         provider: String,
         version: String,
         carried: Option<Box<CarriedEntry>>,
+        /// Whether it counted towards a staging as an answer (`true`) or as a refusal (`false`), where a release was
+        /// staged to count it: replayed on opening, so the staging's counts survive a restart (`T-013-11`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answered: Option<bool>,
     },
     /// The operation written as [`Entry::Carrying`] never reached the module: nothing of it ran.
     Withdrawn { transaction: String, scope: String },
@@ -362,6 +370,21 @@ pub(crate) enum Entry {
     },
     /// A segment in flight, as it began or after it moved: the last one written for a transaction holds.
     Segment(SegmentEntry),
+    /// A segment as it began, and the provider's releases as that left them where it changed the staging's counts
+    /// (`T-013-11`).
+    Began {
+        segment: SegmentEntry,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<Box<ReleasesEntry>>,
+    },
+    /// A provider's releases as they stood after a change, written before it took effect: which were accepted and
+    /// by whom, the version in force, the staged one and its counts (`T-013-11`). The last one written for a
+    /// provider holds.
+    Releases(Box<ReleasesEntry>),
+    /// The platform was dropped with its record whole: every decision it took is in the record. A record whose last
+    /// entry isn't this one ended some other way, and what the platform held in memory beyond it, a restrictive
+    /// decision it couldn't write, isn't known (`T-013-11`).
+    Closed,
     /// The transaction ended: its segment ended, or its record was freed after its provider's evidence window. It
     /// never begins or carries out anything again.
     Ended { transaction: String },
@@ -372,7 +395,138 @@ pub(crate) enum Entry {
         marks: Vec<MarkEntry>,
         segments: Vec<SegmentEntry>,
         decisions: Vec<DecisionEntry>,
+        /// The releases the decision changed (promoting, rolling back, revoking the version in force).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        releases: Vec<ReleasesEntry>,
     },
+}
+
+/// One accepted release: its version, who accepted it (none for an automatic acceptance) and when, by the caller's
+/// clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AcceptedEntry {
+    pub(crate) version: String,
+    /// The digest of the assertion that was accepted: only a release with this assertion is accepted again after a
+    /// restart, never another under the same version (`REQ-MDL-1`, `REQ-MDL-3`).
+    #[serde(default)]
+    pub(crate) assertion_digest: String,
+    pub(crate) by: Option<String>,
+    pub(crate) at: u64,
+}
+
+/// What a version did while it was staged, or the one in force beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CountsEntry {
+    pub(crate) segments: u64,
+    pub(crate) answered: u64,
+    pub(crate) refused: u64,
+}
+
+/// A staged release: when, under what policy, and what was counted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StagedEntry {
+    pub(crate) version: String,
+    pub(crate) since: u64,
+    pub(crate) share: u8,
+    pub(crate) window: u64,
+    pub(crate) minimum: u64,
+    pub(crate) began: u64,
+    pub(crate) taken: u64,
+    pub(crate) staged_counts: CountsEntry,
+    pub(crate) in_force_counts: CountsEntry,
+}
+
+/// A provider's releases (`T-013-11`): the accepted ones in the order they were accepted, which is the order a
+/// restart admits them again in, the version in force, those put in force in order, and the staged release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReleasesEntry {
+    pub(crate) provider: String,
+    pub(crate) accepted: Vec<AcceptedEntry>,
+    pub(crate) in_force: Option<String>,
+    pub(crate) history: Vec<String>,
+    pub(crate) staged: Option<StagedEntry>,
+}
+
+impl From<Counts> for CountsEntry {
+    fn from(counts: Counts) -> Self {
+        Self {
+            segments: counts.segments,
+            answered: counts.answered,
+            refused: counts.refused,
+        }
+    }
+}
+
+impl From<CountsEntry> for Counts {
+    fn from(counts: CountsEntry) -> Self {
+        Self {
+            segments: counts.segments,
+            answered: counts.answered,
+            refused: counts.refused,
+        }
+    }
+}
+
+impl ReleasesEntry {
+    /// `provider`'s `state`, its accepted releases being `accepted`, in the order they were accepted.
+    pub(crate) fn of(provider: &str, state: &ReleaseState, accepted: &[AcceptedEntry]) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            accepted: accepted.to_vec(),
+            in_force: state.in_force.clone(),
+            history: state.history.clone(),
+            staged: state.staged.as_ref().map(|staged| StagedEntry {
+                version: staged.version.clone(),
+                since: staged.since.0,
+                share: staged.policy.share(),
+                window: staged.policy.window(),
+                minimum: staged.policy.minimum(),
+                began: staged.began,
+                taken: staged.taken,
+                staged_counts: staged.staged_counts.into(),
+                in_force_counts: staged.in_force_counts.into(),
+            }),
+        }
+    }
+
+    /// The releases the entry holds, as the lifecycle holds them.
+    pub(crate) fn state(&self) -> io::Result<ReleaseState> {
+        let staged =
+            self.staged
+                .as_ref()
+                .map(|staged| -> io::Result<Staged> {
+                    Ok(Staged {
+                        version: staged.version.clone(),
+                        since: Instant(staged.since),
+                        policy: Staging::new(staged.share, staged.window, staged.minimum)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "a staged release's share is outside 1 to 100",
+                                )
+                            })?,
+                        began: staged.began,
+                        taken: staged.taken,
+                        staged_counts: staged.staged_counts.into(),
+                        in_force_counts: staged.in_force_counts.into(),
+                    })
+                })
+                .transpose()?;
+        Ok(ReleaseState {
+            accepted: self
+                .accepted
+                .iter()
+                .map(|a| a.version.clone())
+                .collect::<BTreeSet<_>>(),
+            in_force: self.in_force.clone(),
+            history: self.history.clone(),
+            staged,
+        })
+    }
 }
 
 /// The operator's mark on a provider's version.
@@ -435,6 +589,7 @@ pub(crate) enum DecisionKindEntry {
     MarkedStale,
     DeclaredExploited,
     Reinstated,
+    Confirmed,
 }
 
 impl From<&Decision> for DecisionEntry {
@@ -450,6 +605,7 @@ impl From<&Decision> for DecisionEntry {
                 DecisionKind::MarkedStale => DecisionKindEntry::MarkedStale,
                 DecisionKind::DeclaredExploited => DecisionKindEntry::DeclaredExploited,
                 DecisionKind::Reinstated => DecisionKindEntry::Reinstated,
+                DecisionKind::Confirmed => DecisionKindEntry::Confirmed,
             },
             by: decision.by.as_str().to_owned(),
             at: decision.at.0,
@@ -472,6 +628,7 @@ impl TryFrom<DecisionEntry> for Decision {
                 DecisionKindEntry::MarkedStale => DecisionKind::MarkedStale,
                 DecisionKindEntry::DeclaredExploited => DecisionKind::DeclaredExploited,
                 DecisionKindEntry::Reinstated => DecisionKind::Reinstated,
+                DecisionKindEntry::Confirmed => DecisionKind::Confirmed,
             },
             by: Identifier::new(decision.by).ok_or_else(|| {
                 io::Error::new(
@@ -496,6 +653,10 @@ pub(crate) struct CarriedEntry {
     /// When, in seconds of the world's clock, the record may be freed: its provider's evidence window after it was
     /// carried out, for one no segment held. `None` is never: a segment's record is freed when it ends.
     pub(crate) free_at: Option<u64>,
+    /// The version of the provider that carried it out, so a question about it later runs on that one, which knows it
+    /// (`T-013-11`). `None` where the record was written without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<String>,
 }
 
 /// A segment in flight.

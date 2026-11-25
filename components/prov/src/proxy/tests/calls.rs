@@ -321,6 +321,84 @@ fn holding_balance_is_refused_as_a_declared_call_and_as_a_kind_a_route_names() {
     assert_eq!(named_only.refusal, Some(CallRefusalReason::UndeclaredKind));
 }
 
+// verifies: REQ-MDL-21, REQ-ORD-1
+#[test]
+fn status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_names() {
+    let named = |kinds: Vec<OperationKind>| {
+        let mut routes = RouteCalls::default();
+        routes.name(
+            &id("tx-1"),
+            NamedCall {
+                route: reference(1),
+                caller: id("alpha"),
+                callee: id("beta"),
+                kinds,
+            },
+        );
+        routes
+    };
+    let asked = |kind| CallAsked {
+        caller: "alpha",
+        transaction: "tx-1",
+        callee: "beta",
+        kind,
+        claimed: Some(kind),
+        in_flight: true,
+    };
+    let declares = |kinds: Vec<OperationKind>| {
+        declaring(
+            "alpha",
+            vec![CallDeclaration {
+                callee: id("beta"),
+                kinds,
+            }],
+        )
+    };
+
+    // The control: a call of an ordinary kind that is declared and named is allowed.
+    let control = judge_call(
+        &declares(vec![OperationKind::Withdrawal]),
+        &named(vec![OperationKind::Withdrawal]),
+        &asked(OperationKind::Withdrawal),
+    );
+    assert_eq!(control.refusal, None);
+
+    // Core's own questions, a status question about a transaction and a hold request, are never a module's call:
+    // declared and named, declared only, or named only, each is refused as an undeclared kind.
+    for kind in [OperationKind::StatusQuery, OperationKind::Hold] {
+        let both = judge_call(
+            &declares(vec![OperationKind::Withdrawal, kind]),
+            &named(vec![kind]),
+            &asked(kind),
+        );
+        assert_eq!(
+            both.refusal,
+            Some(CallRefusalReason::UndeclaredKind),
+            "{kind:?}"
+        );
+        let declared_only = judge_call(
+            &declares(vec![kind]),
+            &named(vec![OperationKind::Withdrawal]),
+            &asked(kind),
+        );
+        assert_eq!(
+            declared_only.refusal,
+            Some(CallRefusalReason::UndeclaredKind),
+            "{kind:?}"
+        );
+        let named_only = judge_call(
+            &declares(vec![OperationKind::Withdrawal]),
+            &named(vec![kind]),
+            &asked(kind),
+        );
+        assert_eq!(
+            named_only.refusal,
+            Some(CallRefusalReason::UndeclaredKind),
+            "{kind:?}"
+        );
+    }
+}
+
 // verifies: REQ-MDL-21
 #[test]
 fn a_call_judged_against_another_providers_release_is_refused() {
