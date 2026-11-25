@@ -4623,6 +4623,28 @@ fn automatic_deposit_acceptance_of_a_quote_shown_without_a_firm_rate_is_refused_
     assert!(AcceptanceBasis::AutomaticDeposit.on_a_deposit());
 }
 
+/// `T-020-50` (gaps 10 and 11 of `T-020-45`): an automatic deposit's acceptance rests on an arrival that names the
+/// holder as the acceptance's requester and, where it names a destination, the one its authorisation is for, set for
+/// that requester. The log reads no notice body, so these tie Core's own arrival entry to the order's parties and
+/// authorisation; Core's receipt-side check of that entry against the kept notice is `core-orch`'s.
+// verifies: REQ-ORD-13, REQ-AUZ-9
+#[test]
+fn arrival_naming_a_destination_holds_the_orders_authorisation_to_it() {
+    let row = "automatic-deposit-rests-on-its-arrival";
+    for name in ["naming-its-destination", "naming-its-holder"] {
+        assert_case(&format!("{row}--{name}"));
+    }
+    for name in [
+        "destination",
+        "destination-in-another-asset",
+        "destination-with-no-authorisation",
+        "set_for",
+        "requester",
+    ] {
+        assert_case_refused(&format!("{row}--{name}"));
+    }
+}
+
 /// R-AWAITING: a quote awaiting its customer waits for the holder its order's arrival names, so a wrong requester
 /// can't send another party the order's waiting notice.
 // verifies: REQ-AUZ-7

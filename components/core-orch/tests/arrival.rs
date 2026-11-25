@@ -1936,6 +1936,72 @@ fn an_automatic_deposit_routed_to_anyone_but_its_holder_is_refused() {
     assert!(env.policy.asked.is_empty());
 }
 
+/// The entry Core builds for a deposit states what the reserve's kept notice states (`T-020-50`, gap 10 of `T-020-45`):
+/// a filing on a deposit whose notice the store no longer keeps is refused before an order opens, and goes through once
+/// the notice is kept, since the log can't read a notice's body to hold the entry to it.
+// verifies: REQ-ORD-13, REQ-AUD-2
+#[test]
+fn filing_on_a_deposit_whose_kept_notice_is_erased_or_replaced_is_refused_before_an_order_opens() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let deposited = deposit(&mut env, &mut providers, &mut arrivals, 1000, 0);
+    env.kept.forgets = true;
+    let filed = file(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &filing(reserve_filer(), &deposited),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                order: None,
+                class: OrderRefusalClass::MalformedRequest
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.started().is_empty());
+    assert!(env.policy.asked.is_empty(), "no order opened");
+    env.kept.forgets = false;
+    // A notice replaced in the store: the store answers another statement (another holder) under the commitment of the
+    // one kept, and it agrees with nothing either.
+    let kept_notice = env
+        .store
+        .borrow()
+        .kept
+        .iter()
+        .find(|b| String::from_utf8_lossy(b).contains("arrival-notice"))
+        .cloned()
+        .expect("the notice is kept");
+    let mut other: serde_json::Value = serde_json::from_slice(&kept_notice).unwrap();
+    other["statement"]["holder"] = "someone-else".into();
+    env.kept.replaces = Some(serde_json::to_vec(&other).unwrap());
+    let mut replaced = filing(reserve_filer(), &deposited);
+    replaced.request = id("deposit-replaced");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &replaced).unwrap();
+    assert!(
+        matches!(
+            filed,
+            Filed::CantProceed {
+                order: None,
+                class: OrderRefusalClass::MalformedRequest
+            }
+        ),
+        "{filed:?}"
+    );
+    assert!(env.started().is_empty());
+    assert!(env.policy.asked.is_empty(), "no order opened");
+    env.kept.replaces = None;
+    let mut again = filing(reserve_filer(), &deposited);
+    again.request = id("deposit-2");
+    let filed = file(&mut env, &mut providers, &mut arrivals, &again).unwrap();
+    assert!(matches!(filed, Filed::Started { .. }), "{filed:?}");
+}
+
 /// A question that couldn't be kept opens no check: retried, it opens one, and one only (finding 7).
 // verifies: REQ-CAT-4, INV-8
 #[test]

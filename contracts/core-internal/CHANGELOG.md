@@ -17,6 +17,10 @@
     (`OperatorSetting`, `SettingKind`), a setting about a provider naming that provider as the change's `provider`
     (the review of `1bb5f4cb`; `decision-request-to-set-a-providers-ceiling-naming-another-provider`); the five
     lifecycle actions were already changes of their own (`LIFECYCLE_ACTIONS`, `is_a_lifecycle_action`).
+  - `T-020-50` (finding 5): `arrival.destination` (optional, provider-role's `DepositDestination`), the destination the
+    reserve's notice names an automatic deposit to go to with who set it for whom, and three fields of
+    `automatic-deposit-rests-on-its-arrival`: the arrival's holder is the acceptance's requester, a destination it names
+    is the one (and to asset) of the authorisation the acceptance names, and it was set for that requester.
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).

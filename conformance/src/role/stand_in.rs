@@ -13,10 +13,10 @@ use rutent_contracts::provider_role::{
     ArrivalNotice, ArrivalOutcome, ArrivalQuestion, ArrivedCredits, Availability, BalanceAnswer,
     BalanceOutcome, BalanceRefusal, BalanceRefused, BalanceVerificationResult, Band,
     BoundedAvailability, BoundedSlippage, Confirmed, ConversionOutcome, ConversionQuote,
-    ConversionResult, ConversionSettlement, Declarations, Denomination, EndUnits, Evidence,
-    EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee, HoldOutcome,
-    HoldResult, HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE, Judged,
-    Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
+    ConversionResult, ConversionSettlement, Declarations, Denomination, DepositDestination,
+    EndUnits, Evidence, EvidenceGrade, EvidencePiece, ExchangeOffer, ExchangeTuple, Failure, Fee,
+    HoldOutcome, HoldResult, HoldingBalanceOutcome, HoldingBalanceResult, Inputs, JUDGEMENT_SHAPE,
+    Judged, Judgement, JudgementAnswer, JudgementOutcome, JudgementResult, KeyPurpose, LiftsAt,
     MovementSettlement, NoDetail, NodeRef, Offers, Operation, OuterNode, PublicKey, RESULT_SHAPE,
     REVERSAL_CONFIRMATION_SHAPE, RampOffer, RampTuple, Refusal, Refused, Reporting,
     ReserveDeclaration, ReserveDryRunAnswer, ReserveMovementOutcome, ReserveMovementResult,
@@ -473,6 +473,14 @@ pub fn refusal_to(operation: &Operation, class: RefusalClass) -> ResultBody {
 
 // Reserve ------------------------------------------------------------------------------------------------
 
+/// The parameters a customer configured for its automatic deposits, as the reserve records them (`REQ-AUZ-9`).
+#[derive(Debug, Clone)]
+struct DepositInstruction {
+    account: String,
+    set_by: String,
+    set_for: String,
+}
+
 /// A reserve over a book, between a bank network and its ledger, in COP.
 #[derive(Debug, Clone)]
 pub struct Reserve {
@@ -491,6 +499,10 @@ pub struct Reserve {
     bank_credits: BTreeMap<String, BankCredit>,
     /// How many notices the reserve has signed of each credit, by reference.
     noticed: BTreeMap<String, u32>,
+    /// The customer's standing instruction for its automatic deposits, as the integrator or the operator set it at the
+    /// reserve: where they go, who set it for whom (`T-020-50`, `REQ-AUZ-9`). Its notices of that holder's credits name
+    /// it; a credit of anyone else's names none.
+    deposit_instruction: Option<DepositInstruction>,
     unknown_next: bool,
     /// The next real movement fails, with evidence, having moved nothing (`force_failure`).
     fail_next: bool,
@@ -521,6 +533,19 @@ impl Reserve {
     #[must_use]
     pub fn opening_with(mut self, opening: u128) -> Self {
         self.balances.insert(self.account.clone(), opening);
+        self
+    }
+
+    /// This reserve with the customer's standing instruction for automatic deposits (`T-020-50`): the parameters
+    /// `set_by` set for `set_for`, sending each of `set_for`'s credits to `account` at this reserve's bank. Its arrival
+    /// notices of those credits name that destination; it names none for another holder's credit.
+    #[must_use]
+    pub fn with_deposit_instruction(mut self, account: &str, set_by: &str, set_for: &str) -> Self {
+        self.deposit_instruction = Some(DepositInstruction {
+            account: account.to_owned(),
+            set_by: set_by.to_owned(),
+            set_for: set_for.to_owned(),
+        });
         self
     }
 
@@ -632,6 +657,7 @@ impl Reserve {
             pending: BTreeMap::new(),
             bank_credits: BTreeMap::new(),
             noticed: BTreeMap::new(),
+            deposit_instruction: None,
             unknown_next: false,
             fail_next: false,
             shape: Shape::default(),
@@ -784,6 +810,18 @@ impl Reserve {
         } else {
             credit.reference
         };
+        let destination = self
+            .deposit_instruction
+            .as_ref()
+            .filter(|i| i.set_for == credit.holder)
+            .map(|i| DepositDestination {
+                reserve: self.name.clone(),
+                node: credit.node.clone(),
+                account: i.account.clone(),
+                asset: credit.asset.clone(),
+                set_by: i.set_by.clone(),
+                set_for: i.set_for.clone(),
+            });
         Some(self.signer.sign(
             ARRIVAL_NOTICE_SHAPE,
             ArrivalNotice {
@@ -793,7 +831,7 @@ impl Reserve {
                 amount,
                 account: credit.account,
                 holder: credit.holder,
-                destination: None,
+                destination,
             },
         ))
     }

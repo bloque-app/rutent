@@ -486,6 +486,7 @@ impl Env {
                 store: store_for_kept,
                 forgets: false,
                 alters: false,
+                replaces: None,
                 asked: 0,
             },
         };
@@ -726,6 +727,14 @@ fn kept_under(store: &Store, wanted: &Digest) -> Option<KeptStatement> {
     kept_as(store, wanted, false)
 }
 
+/// The salt of the statement kept under `wanted`.
+fn kept_salt(store: &Store, wanted: &Digest) -> [u8; 32] {
+    let place = (0..store.kept.len())
+        .find(|i| &commitment(*i, &store.kept[*i]) == wanted)
+        .unwrap_or(0);
+    salt_of(place)
+}
+
 /// [`kept_under`], with one byte more than was kept where `altered`.
 fn kept_as(store: &Store, wanted: &Digest, altered: bool) -> Option<KeptStatement> {
     let place = (0..store.kept.len()).find(|i| &commitment(*i, &store.kept[*i]) == wanted)?;
@@ -750,6 +759,8 @@ pub struct SharedKept {
     pub forgets: bool,
     /// Answers other bytes than it kept, under the same commitment and salt.
     pub alters: bool,
+    /// Answers these bytes, another statement, under the commitment of the one that was kept.
+    pub replaces: Option<Vec<u8>>,
     /// How many times it was asked.
     pub asked: usize,
 }
@@ -760,7 +771,15 @@ impl KeptStatements for SharedKept {
         if self.forgets {
             return Ok(None);
         }
-        let kept = kept_as(&self.store.borrow(), wanted, self.alters);
+        let mut kept = kept_as(&self.store.borrow(), wanted, self.alters);
+        if let (Some(bytes), Some(kept)) = (&self.replaces, kept.as_mut()) {
+            *kept = serde_json::from_value(json!({
+                "commitment": wanted,
+                "salt": base64url(&[kept_salt(&self.store.borrow(), wanted)].concat()),
+                "bytes": base64url(bytes),
+            }))
+            .unwrap();
+        }
         Ok(kept)
     }
 }
