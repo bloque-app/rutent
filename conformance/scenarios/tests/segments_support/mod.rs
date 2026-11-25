@@ -1877,6 +1877,8 @@ pub struct Core {
     pub operator: Actor,
     /// The order the runs are of.
     pub named: Named,
+    /// The part the runs are of: [`PART`], or [`SECOND_PART`] of a split order (`T-020-46`).
+    pub part: String,
     /// The floor its authorisation names (`T-020-10`).
     pub floor: Option<PositiveAmount>,
 }
@@ -1960,6 +1962,7 @@ impl Core {
             key: TestKey(context.deployment.operator_key.clone()),
             operator,
             named: Named::first(),
+            part: PART.to_owned(),
             floor,
         }
     }
@@ -2006,7 +2009,7 @@ impl Core {
     ) -> Result<Ran, SegmentsError> {
         let (order, part, auth, origin, end) = (
             id(&self.named.order),
-            id(PART),
+            id(&self.part),
             id(&self.named.authorisation()),
             id(origin_reserve()),
             route_end(),
@@ -2084,7 +2087,7 @@ impl Core {
     ) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
         let (order, part, auth, origin, end) = (
             id(&self.named.order),
-            id(PART),
+            id(&self.part),
             id(&self.named.authorisation()),
             id(origin_reserve()),
             route_end(),

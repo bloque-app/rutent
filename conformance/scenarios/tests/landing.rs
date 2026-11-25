@@ -199,8 +199,9 @@ fn release_after_a_holding_accounts_module_restarts_restores_first() {
 }
 
 /// The withdrawal's value landed at the ledger, then the withdrawal proven undone (its `reversal_completed`, the deposit
-/// refused): the Core that ran on releases the landing, and a Core reopened on the same log restores nothing of it,
-/// the value having come back to where it came from (`INV-1`, `INV-8`, `T-020-46`).
+/// refused): the Core that ran on releases the landing and counts nothing of it as resting at the ledger, and a Core
+/// reopened on the same log restores nothing of it nor counts it, the value having come back to where it came from
+/// (`INV-1`, `INV-8`, `T-020-46`).
 // verifies: INV-1, INV-8
 #[test]
 fn reversed_segments_landing_is_not_restored_after_core_reopens() {
@@ -254,6 +255,11 @@ fn reversed_segments_landing_is_not_restored_after_core_reopens() {
         core.segments.observe(&*core.clock, &input),
         "the reversal applies"
     );
+    let ledger = (format!("{RESERVE}-ledger"), ORDER.to_owned());
+    assert!(
+        !core.segments.resting_totals().contains_key(&ledger),
+        "the Core that ran on counts no reversed value as resting"
+    );
     core.segments.land_settled(&mut fake);
     assert_eq!(
         fake.released,
@@ -261,6 +267,10 @@ fn reversed_segments_landing_is_not_restored_after_core_reopens() {
         "the Core that ran on releases it"
     );
     segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    assert!(
+        !core.segments.resting_totals().contains_key(&ledger),
+        "nor the reopened one: a hand-on's restore restores none of it"
+    );
     let mut reopened = Fake::at_the_ledger(&[]);
     reopened.restarted = true;
     core.segments.reconcile_landings(&mut reopened);

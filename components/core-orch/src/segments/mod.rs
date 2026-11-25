@@ -965,31 +965,12 @@ impl Segments {
             let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
                 continue;
             };
-            let Some(tracked) = self.orders.get(order.as_str()) else {
+            // Through the predicate the landings read: only a value still resting there counts, never a retired
+            // segment's, a reversed one's, or a part's a resolution or a hand-on took away (`INV-1`, `INV-8`).
+            let Some((node, _, AtNode::Rests)) = self.settled_at_node(order, segment) else {
                 continue;
             };
-            let Some((part, place)) = tracked.order.parts.iter().find_map(|part| {
-                part.segments
-                    .iter()
-                    .position(|s| s.segment_id.as_str() == segment.as_str())
-                    .map(|place| (part, place))
-            }) else {
-                continue;
-            };
-            let rutent_contracts::provider_role::NodeRef::Inner(node) =
-                &part.segments[place].to.node
-            else {
-                continue;
-            };
-            let moved_on = part.segments.get(place + 1).is_some_and(|next| {
-                self.flights
-                    .get(&(order.clone(), next.segment_id.as_str().to_owned()))
-                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
-            });
-            if moved_on {
-                continue;
-            }
-            resting.push(((node.clone(), order.clone()), amount_out));
+            resting.push(((node, order.clone()), amount_out));
         }
         landing::totals(resting)
     }
