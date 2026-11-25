@@ -1934,7 +1934,9 @@ impl Ramp {
                 terms: None,
             });
         }
-        if std::mem::take(&mut self.unknown_next) && std::mem::take(&mut self.unknown_then_fails) {
+        if self.unknown_next && self.unknown_then_fails {
+            self.unknown_next = false;
+            self.unknown_then_fails = false;
             // The ramp can't tell yet, and when it can it says the transfer failed: nothing moved on, and its status
             // query tells later; it still owes its reversal, as any failed transfer.
             let failed = TransferOutcome::Failed(Failure {

@@ -7820,3 +7820,41 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 |---|---|
 | routes ran are noted when the log is replayed | `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` |
 | the parts of a price are taken in order | `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` |
+
+### T-020-47, CI of the batch (m3-next `79a28d25`, run 45651818575)
+
+- **The role suite's `OutcomeUnknownDistinct`.** My ramp stand-in's unknown-then-failed hook took `unknown_next` in a
+  short-circuited condition, so with the hook unset the flag was cleared and the unknown answered `Succeeded`. It tests both
+  flags before taking either now; the role check is untouched. Switching it back turns `stand_in_with_internal_steps_passes` and
+  `stand_in_that_breaks_its_role_is_flagged` red.
+- **Two result statements for one segment** (`invariants`, seeds 1 and 105): Core's status answer was kept as the segment's late
+  result and the platform's late answer of its own was kept beside it. A segment's result is kept once: what Core's status
+  question brought is the provider's own result of it, and a later answer is that result held (`Reversals::later` answers the
+  entry it has), and a status answer is not kept where one is held. Test
+  `status_answer_is_never_a_second_result_statement_for_its_segment`; `late_answer_the_platform_receives_moves_nothing_twice`
+  now expects no new statement for the late answer. See review round 5 below: the rule is by body.
+
+| Rule switched off | Red |
+|---|---|
+| a status-kept result is kept once | `status_answer_is_never_a_second_result_statement_for_its_segment` |
+| the stand-in's unknown keeps its flags | `stand_in_with_internal_steps_passes`, `stand_in_that_breaks_its_role_is_flagged` |
+
+### T-020-47, review round 5 (PR #312, `56e2b2f9`): by body, not first wins
+
+- A later statement of a segment's result is "the same result held" only where its `statement` body equals a kept one's
+  (`made_at` and signature aside): `Reversals::later` answers that entry. One whose body differs is kept as a further
+  statement about the segment, moving nothing (no input, no effect, no value), as `T-020-27` keeps a differing late statement:
+  the same stated entry, about the order, segment and transaction. So a provider that contradicts itself is on the log
+  (`REQ-AUD-2`, `REQ-AUD-5`), and a kept `unknown` shadows no later final delivery, which is kept beside it. The status
+  answer takes the same path. `invariants.rs:477` is untouched and passes with seeds 1, 105 and 11 to 15: the silent runs'
+  late answers have the status answer's body. Where a run gives a differing late statement the check will count two
+  results; telling that from a second result needs the entry's kind, which a stated result entry doesn't carry apart from its
+  body, so that is a change of the check to propose (not made here).
+- Tests: `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not`,
+  `kept_unknown_statement_does_not_shadow_a_later_final_delivery` (core-orch), `status_answer_and_a_later_statement_of_another_body_are_both_kept_and_move_nothing`
+  (assembly); `status_answer_is_never_a_second_result_statement_for_its_segment` stays (same body).
+
+| Rule switched off | Red |
+|---|---|
+| the same body is the result held (bytes compared instead) | `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not` |
+| a differing body is kept beside the first (first wins) | `kept_unknown_statement_does_not_shadow_a_later_final_delivery` |

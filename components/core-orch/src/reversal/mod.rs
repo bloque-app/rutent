@@ -1710,7 +1710,18 @@ impl Reversals {
         if !parts.segments.answered(at.order, at.segment) {
             return Err(ReversalError::NotAnswered);
         }
-        let kept = self.later.entry(key(at.order, at.segment)).or_default();
+        let at_key = key(at.order, at.segment);
+        let kept = self.later.entry(at_key).or_default();
+        // The same result held, not a second: a statement whose body is one already kept (it may be made at another time
+        // and signed again) is that entry. One whose body differs is kept beside it, a further statement that moves
+        // nothing, whatever it says, so a contradiction is on the log (`REQ-AUD-2`, `REQ-AUD-5`, `T-020-47`).
+        let body = body_of(bytes);
+        if body.is_some()
+            && !kept.iter().any(|(b, _)| b == bytes)
+            && let Some((_, step)) = kept.iter_mut().find(|(b, _)| body_of(b) == body)
+        {
+            return Ok(step.append(parts.log)?);
+        }
         if !kept.iter().any(|(b, _)| b == bytes) {
             let maker = journal::maker_named(bytes).ok_or(ReversalError::Unrecordable)?;
             let names = serde_json::from_slice::<Statement<ResultBody>>(bytes)
@@ -2241,6 +2252,14 @@ fn later_confirmer(
         .find(|s| s.segment_id != segment.segment_id && s.to == segment.from)
         .and_then(|s| Id::new(s.provider.as_str()))?;
     (delivered != *failed).then_some(delivered)
+}
+
+/// The body of a statement in its envelope, which is what it says: the envelope's time and signature aside.
+fn body_of(bytes: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()?
+        .get("statement")
+        .cloned()
 }
 
 /// What a provider's answer to Core's status question gives Core to keep: the provider's own result of the transaction

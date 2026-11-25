@@ -703,8 +703,9 @@ fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_
     use rutent_core_orch::stuck::HISTORY;
 
     let (mut core, order, deposit) = stuck_by_silence();
-    // The provider's answer comes late: it is kept as its maker's statement and moves nothing, once. What is
-    // recorded is the statement alone: no input, no effect, no change of state, no value moved.
+    // The provider's answer comes late: Core's own status question, asked when the segment was left unknown, brought the
+    // provider's result of it, kept once as its maker's statement, so the late answer is that result held and adds no
+    // second result statement (`T-020-47`). Nothing is recorded: no input, no effect, no change of state, no value moved.
     let late = core
         .provider_again(&order, &deposit)
         .expect("the provider answers again, as it did");
@@ -723,8 +724,8 @@ fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_
     assert_eq!(kept, twice, "the same entry the second time");
     assert_eq!(
         core.log().entries().len(),
-        log_before + 1,
-        "one statement, once"
+        log_before,
+        "the one statement, held"
     );
     assert_eq!(
         core.inputs().len(),

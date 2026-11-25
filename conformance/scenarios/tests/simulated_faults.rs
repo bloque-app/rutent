@@ -579,6 +579,96 @@ fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
     admitted(&core);
 }
 
+/// What Core keeps of a segment's result after its status question is that one answer: another statement of the segment's
+/// result handed to it later, made at another time, is the same result held, never a second result statement for the
+/// segment (`INV-4`, `T-020-47`).
+// verifies: INV-4
+#[test]
+fn status_answer_is_never_a_second_result_statement_for_its_segment() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let asked = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    let receipt = asked.answer.expect("the answer was kept");
+    let results = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.what.statement.as_str().ends_with("result")
+                        && s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(&ramp)
+                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(&order))
+            })
+            .count()
+    };
+    let before = results(&core);
+    // The provider's result as it would come again, made at another time.
+    let kept = core.kept_result(&order, &ramp).expect("kept");
+    let mut value: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    value["made_at"] = "2026-11-06T15:04:06Z".into();
+    let again = serde_json::to_vec(&value).expect("JSON");
+    assert_ne!(again, kept);
+    let second = core
+        .late_delivery(&order, &ramp, &again)
+        .expect("taken as what is held");
+    assert_eq!(second, receipt, "the one result, the one entry");
+    assert_eq!(results(&core), before, "no second result statement");
+    admitted(&core);
+}
+
+/// A later statement of another body than the result Core's status question brought is kept beside it, a further
+/// statement that moves nothing: the log holds what the provider said twice (`REQ-AUD-2`, `REQ-AUD-5`, `INV-4`,
+/// `T-020-47`).
+// verifies: INV-4, REQ-AUD-5
+#[test]
+fn status_answer_and_a_later_statement_of_another_body_are_both_kept_and_move_nothing() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let asked = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    let receipt = asked.answer.expect("the answer was kept");
+    let kept = core.kept_result(&order, &ramp).expect("kept");
+    let mut value: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    value["statement"]["outcome"] = serde_json::json!({ "status": "unknown" });
+    let other = serde_json::to_vec(&value).expect("JSON");
+    let (log_before, inputs_before, effects_before) = (
+        core.log().entries().len(),
+        core.inputs().len(),
+        effects(&core),
+    );
+    let second = core
+        .late_delivery(&order, &ramp, &other)
+        .expect("kept as a further statement");
+    assert_ne!(second, receipt, "not the result held");
+    assert_eq!(
+        core.log().entries().len(),
+        log_before + 1,
+        "one more statement"
+    );
+    assert_eq!(core.inputs().len(), inputs_before, "no input");
+    assert_eq!(effects(&core), effects_before, "no value moves");
+    assert!(matches!(
+        core.followed(&order).expect("followed").parts[0].segments[2].state,
+        SegmentState::OutcomeUnknown
+    ));
+    admitted(&core);
+}
+
 /// The transactions of the reversals Core carried out are held again by a Core that reopened: a private node's record
 /// that lists one is still the order's own (`REQ-ORD-41`, `T-020-47`).
 // verifies: REQ-ORD-41
@@ -727,7 +817,9 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         rutent_core_orch::stuck::Watch::Stuck(_)
     ));
     let held = core.stuck_values();
-    // The provider's answer comes late and the platform hands it on: kept once, as its maker's statement.
+    // The provider's answer comes late and the platform hands it on. Core's own status question, asked when the segment
+    // was left unknown, already brought the provider's result of it, kept once as its statement: the late answer is that
+    // result held, never a second result statement for the segment (`T-020-47`).
     let (log_before, inputs_before, effects_before) = (
         core.log().entries().len(),
         core.inputs().len(),
@@ -735,12 +827,16 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
     );
     let kept = core.receive_late(&order).expect("received");
     assert_eq!(kept.len(), 1, "one late answer");
-    assert_eq!(core.log().entries().len(), log_before + 1, "one statement");
+    assert_eq!(
+        core.log().entries().len(),
+        log_before,
+        "no second statement"
+    );
     assert!(
         core.receive_late(&order).expect("received").is_empty(),
         "the platform takes it once"
     );
-    assert_eq!(core.log().entries().len(), log_before + 1);
+    assert_eq!(core.log().entries().len(), log_before);
     // The same answer handed to Core directly, past the fleet's once: Core itself moves nothing and records nothing new.
     let segment = id(
         core.followed(&order).expect("followed").parts[0].segments[1]
@@ -752,7 +848,7 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         .expect("the provider's answer, as it gave it late");
     core.late_delivery(&order, &segment, &late)
         .expect("kept once more");
-    assert_eq!(core.log().entries().len(), log_before + 1, "nothing new");
+    assert_eq!(core.log().entries().len(), log_before, "nothing new");
     assert_eq!(core.inputs().len(), inputs_before, "no input");
     assert_eq!(effects(&core), effects_before, "no value moves");
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
