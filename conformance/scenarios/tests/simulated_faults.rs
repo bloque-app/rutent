@@ -110,6 +110,28 @@ fn showing(core: &mut Core, order: &Id, segment: &Id) -> Vec<u8> {
         .expect("Core kept the provider's result for the segment")
 }
 
+/// Replays the log's history through `admit_entry`, each entry against what came before it, by the handle it came by:
+/// policy's decisions through policy's, everything else through the general one.
+fn admitted(core: &Core) {
+    use rutent_contracts::core_internal::{DeploymentOperator, Through, admit_entry, calls};
+    let history: Vec<_> = core.log().entries().to_vec();
+    let operator = DeploymentOperator {
+        maker: kit::operator().acts,
+        party: kit::operator().party,
+    };
+    for (i, (_, entry)) in history.iter().enumerate() {
+        let through = match entry {
+            rutent_contracts::core_internal::Entry::Verified(v) if calls::is_decision(&v.what) => {
+                Through::Policy
+            }
+            _ => Through::General,
+        };
+        if let Err(violation) = admit_entry(&history[..i], entry, through, &operator) {
+            panic!("entry {i} isn't admitted: {violation:?}");
+        }
+    }
+}
+
 /// The carrier recorded in the log for `segment`, if the log holds one.
 fn recorded_carrier(core: &Core, segment: &Id) -> Option<Recorded> {
     entries(core).iter().find_map(|v| match &v.what {
@@ -183,6 +205,7 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
     );
     assert_eq!(core.reversal_carrier(order, ramp), Some(Carrier::Customer));
     assert_eq!(recorded_carrier(core, ramp), Some(Recorded::Customer));
+    admitted(core);
     assert!(
         matches!(
             core.show_fault(order, ramp, &shown),
@@ -215,6 +238,7 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
         Carrier::Operator
     );
     assert_eq!(recorded_carrier(core, ramp), Some(Recorded::Operator));
+    admitted(core);
 }
 
 // verifies: REQ-ORD-11
@@ -271,6 +295,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         let asked = core.ask_reversal(order, ramp).expect("asked");
         assert!(asked.completed.is_some(), "{:?}", asked.why);
         assert_eq!(state(core, order), OrderState::Stuck);
+        admitted(core);
     }
 }
 
@@ -337,6 +362,7 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
             assert!(again.completed.is_some(), "{name}: {again:?}");
         }
         assert_eq!(effects(core), moves, "{name}");
+        admitted(core);
     }
 }
 
@@ -442,6 +468,7 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
         Some(recalculated.route.destination.clone()),
         core.requested_destination(&order)
     );
+    admitted(&core);
 }
 
 // verifies: AC-5, INV-4
@@ -481,6 +508,18 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         "the platform takes it once"
     );
     assert_eq!(core.log().entries().len(), log_before + 1);
+    // The same answer handed to Core directly, past the fleet's once: Core itself moves nothing and records nothing new.
+    let segment = id(
+        core.followed(&order).expect("followed").parts[0].segments[1]
+            .segment_id
+            .as_str(),
+    );
+    let late = core
+        .provider_again(&order, &segment)
+        .expect("the provider's answer, as it gave it late");
+    core.late_delivery(&order, &segment, &late)
+        .expect("kept once more");
+    assert_eq!(core.log().entries().len(), log_before + 1, "nothing new");
     assert_eq!(core.inputs().len(), inputs_before, "no input");
     assert_eq!(effects(&core), effects_before, "no value moves");
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
@@ -490,4 +529,5 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         2,
         "the provider's books grew only by its own withdrawal and deposit"
     );
+    admitted(&core);
 }

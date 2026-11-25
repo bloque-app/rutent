@@ -1959,6 +1959,8 @@ row is its red).
   the transactions of an order (`Fleet::late_answers`, once each) and `Core::receive_late` hands to `late_delivery`. The test
   names no segment and no bytes. `provider_again` stays for the invariants run. Delay stays a jump of Core's clock where no answer is involved.
 
+**Review of PR #304.** Low 1 (the late answer is triggered by the test, `receive_late`) goes to `T-020-48`, whose scheduled step takes late answers. The late test now hands Core the same answer a second time directly (`late_delivery`, past the fleet's once) and asserts Core records and moves nothing; each scenario ends by replaying the log through `admit_entry`.
+
 **Real Core gap found, reported, not fixed.** A reversal that is refused, left unknown or stated short never makes the order
 stuck: `Stuck::watch` times only a segment whose outcome is not final (`Segments::carried_since`), and a failed segment's is
 final, so a part with a reversal owed stays `FirstSegmentSettled` after seven days of Core's clock (`INV-3`'s third branch,
