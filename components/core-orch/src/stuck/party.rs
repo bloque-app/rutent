@@ -16,6 +16,7 @@
 
 use rutent_contracts::core_internal::{
     Action, Attribution, Entry, Outcome, Receipt, Resolution, StatedEntry, VerifiedEntry, What,
+    holder_of_the_order,
 };
 use rutent_contracts::provider_role::{INNER_SEGMENTS_SHAPE, NodeRef};
 use rutent_contracts::router_api::Id;
@@ -119,53 +120,6 @@ fn linked_orders<'a>(order: &'a str, history: &'a Recorded) -> Vec<&'a str> {
         }
     }
     orders
-}
-
-/// The segments of a route `observed` gives its order: a chosen route's, a recalculated one's, or one whose destination
-/// changed; none for any other input.
-fn route_segments(observed: &Observed) -> Vec<&SegmentPlan> {
-    match observed {
-        Observed::RouteChosen { parts, .. } => {
-            parts.iter().flat_map(|p| p.segments.iter()).collect()
-        }
-        Observed::RouteRecalculated { segments, .. }
-        | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// Whether `by` is a holder `order` involves by what the history holds, a decide step's or a resolution's mover aside
-/// (the log's `holder_of_the_order`, `T-021-16`): its origin reserve, a provider of a segment on a route the order was
-/// given, the reserve of an arrival held against it, or a holding withdrawal's holder of it or of the order it was
-/// handed on from.
-fn holder_of_the_order(order: &Id, by: &Id, history: &Recorded) -> bool {
-    history
-        .iter()
-        .filter_map(|(_, e)| verified(e))
-        .any(|v| match &v.what {
-            What::Acceptance {
-                order: o,
-                origin_reserve,
-                ..
-            } => o == order && origin_reserve == by,
-            What::Input { input } if input.subject.order.as_str() == order.as_str() => {
-                route_segments(&input.observed)
-                    .iter()
-                    .any(|s| s.provider.as_str() == by.as_str())
-            }
-            What::Arrival {
-                reserve,
-                order: Some(o),
-                ..
-            } => o == order && reserve == by,
-            What::HoldingWithdrawal {
-                order: o,
-                handed_on_from,
-                holder,
-                ..
-            } => (o == order || handed_on_from == order) && holder == by,
-            _ => false,
-        })
 }
 
 /// The `held_at` of the permitted decide step of `order` that `carries_out` names, where it records one.

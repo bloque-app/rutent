@@ -1662,29 +1662,160 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
     let history = admitted_history(
         "outcome-confirmation-cites-verified-evidence--a-confirmation-on-the-holder-a-holding-withdrawal-names",
     );
-    assert!(involves_holder(&history, &id("ord-1"), &id("holding-bank")));
-    assert!(involves_holder(&history, &id("ord-8"), &id("holding-bank")));
-    assert!(!involves_holder(
-        &history,
-        &id("ord-77"),
-        &id("holding-bank")
+    assert!(holder_of_the_order(
+        &id("ord-1"),
+        &id("holding-bank"),
+        &history
     ));
-    assert!(!involves_holder(&history, &id("ord-1"), &id("outside-co")));
+    assert!(holder_of_the_order(
+        &id("ord-8"),
+        &id("holding-bank"),
+        &history
+    ));
+    assert!(!holder_of_the_order(
+        &id("ord-77"),
+        &id("holding-bank"),
+        &history
+    ));
+    assert!(!holder_of_the_order(
+        &id("ord-1"),
+        &id("outside-co"),
+        &history
+    ));
 
     // A route recalculated and one whose destination changed (`exchange-c`, `exchange-b`, on no other route of
     // `ord-1`).
     let history = admitted_history("arrival-names-its-earlier-arrival--deposit");
-    assert!(involves_holder(&history, &id("ord-1"), &id("exchange-c")));
-    assert!(involves_holder(&history, &id("ord-1"), &id("exchange-b")));
+    assert!(holder_of_the_order(
+        &id("ord-1"),
+        &id("exchange-c"),
+        &history
+    ));
+    assert!(holder_of_the_order(
+        &id("ord-1"),
+        &id("exchange-b"),
+        &history
+    ));
 
     // An order accepted with no route yet: its origin reserve alone, never another order's arrival reserve or route
     // provider. The contract's case permits the decide step `bank-co` moves (R-MOVER); policy refuses it.
     let history =
         admitted_history("only-a-declared-stuck-part-is-resolved--no-plan-with-its-acceptance");
-    assert!(involves_holder(&history, &id("ord-21"), &id("us-bank")));
-    assert!(!involves_holder(&history, &id("ord-21"), &id("bank-co")));
-    assert!(!involves_holder(&history, &id("ord-21"), &id("fx-desk")));
-    assert!(involves_holder(&history, &id("ord-1"), &id("bank-co")));
+    assert!(holder_of_the_order(&id("ord-21"), &id("us-bank"), &history));
+    assert!(!holder_of_the_order(
+        &id("ord-21"),
+        &id("bank-co"),
+        &history
+    ));
+    assert!(!holder_of_the_order(
+        &id("ord-21"),
+        &id("fx-desk"),
+        &history
+    ));
+    assert!(holder_of_the_order(&id("ord-1"), &id("bank-co"), &history));
+}
+
+/// The contract's `world--sdh`, with `ord-1` an order handed on from another (`ord-0`), so its route starts at inner
+/// nodes, with no withdrawal: `p1` and `p2` from `ledger-in`, and the stuck part `p3` from `ledger-start`, a single
+/// deposit, which no segment of the order's routes ends at, nothing of it settled. `p3`'s value rests at its route's
+/// first node, as a linked order's does at the holding account its route starts from (`REQ-ORD-43`).
+fn first_node_world(history: Vec<(Receipt, Entry)>) -> Vec<(Receipt, Entry)> {
+    let gone = ["p1-s1", "p2-s1", "p3-s1", "p3-s2"];
+    history
+        .into_iter()
+        .filter_map(|(receipt, entry)| {
+            let mut value = serde_json::to_value(&entry).unwrap();
+            let what = &value["what"];
+            let segment = |v: &Value| v.as_str().is_some_and(|s| gone.contains(&s));
+            // The withdrawals, and `p3`'s exchange, are not on the order's route any more.
+            if (what["call"] == "evidence" && segment(&what["segment"]))
+                || (what["call"] == "input" && segment(&what["input"]["subject"]["segment"]))
+            {
+                return None;
+            }
+            if what["call"] == "input"
+                && what["input"]["subject"]["order"] == "ord-1"
+                && what["input"]["observed"]["kind"] == "route_chosen"
+            {
+                let usdc = json!({"id": "USDC", "decimals": 6});
+                let observed = &mut value["what"]["input"]["observed"];
+                observed["handed_on_from"] = json!("ord-0");
+                for part in [0, 1] {
+                    let segments = observed["parts"][part]["segments"].as_array_mut().unwrap();
+                    segments.remove(0);
+                }
+                observed["parts"][2]["segments"] = json!([{
+                    "segment_id": "p3-s3",
+                    "provider": "reserve-wallet",
+                    "kind": "deposit",
+                    "from": {"node": "ledger-start", "asset": usdc},
+                    "to": {"node": {"network": "polygon"}, "asset": usdc},
+                }]);
+            }
+            Some((receipt, serde_json::from_value(value).unwrap()))
+        })
+        .collect()
+}
+
+/// A stuck part whose value rests at its route's first node, where nothing of it settled, is held there (`T-020-55`
+/// (2), the milestone reviewer's Low on `T-021-16`): policy asks the deployment's register of holding accounts for that
+/// node, `resting_node`'s, and the wallet holding its account moves the hand-on; the decision's entry records the node
+/// as `held_at`, and the log, which holds every entry to core-internal's admission, admits it
+/// (`stuck-decide-held-at-is-a-held-node`), though no segment of the order's routes ends at the node. A wallet of
+/// another node is still refused.
+// verifies: REQ-AUZ-4
+#[test]
+fn value_resting_at_the_routes_first_node_is_held_at_it_by_the_log() {
+    let register = || {
+        let mut register = Register::of_the_world();
+        register.kept.push((digest("31"), Some(id("ord-1"))));
+        register
+            .holding_accounts
+            .push(("ledger-start".to_owned(), id("start-wallet")));
+        register
+            .holding_accounts
+            .push(("ledger-in".to_owned(), id("plain-wallet")));
+        register
+    };
+    let hand_on = |by: &str, request_id: &str| {
+        let (mut policy, request) = engine("sdh", register());
+        policy.log.entries = first_node_world(std::mem::take(&mut policy.log.entries));
+        assert_eq!(
+            resting_node("ord-1", "p3", &policy.log.entries).as_deref(),
+            Some("ledger-start"),
+            "the value rests at the route's first node"
+        );
+        policy.log.admits = true;
+        let mut hand_on = decision_by(&request, &alice(), request_id);
+        let Resolution::HandOn { by: holder, .. } = &mut hand_on.resolution else {
+            panic!("the world's resolution is a hand-on");
+        };
+        *holder = id(by);
+        let before = policy.log.entries.len();
+        let decided = policy
+            .decide_stuck(&hand_on)
+            .expect("the log takes the entry");
+        assert_eq!(policy.log.entries.len(), before + 1, "{by}: recorded");
+        let Some((
+            _,
+            Entry::Verified(VerifiedEntry {
+                what: What::StuckDecide { held_at, .. },
+                ..
+            }),
+        )) = policy.log.entries.last()
+        else {
+            panic!("{by}: a decide step recorded");
+        };
+        (decided.outcome, held_at.clone())
+    };
+    assert_eq!(
+        hand_on("start-wallet", "req-start-wallet"),
+        (Answer::Permit {}, Some(id("ledger-start")))
+    );
+    assert_eq!(
+        hand_on("plain-wallet", "req-plain-wallet"),
+        (refuse(RefusalClass::NotPermitted), None)
+    );
 }
 
 /// The history of the contract's admission case `name`: the log as the case holds it before its entry.
