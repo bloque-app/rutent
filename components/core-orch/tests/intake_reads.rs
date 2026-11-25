@@ -55,8 +55,7 @@ fn filed(read: &Read, order: &rutent_contracts::router_api::Id, requester: &str)
 /// holds and the reader as authentication established it: a filed order's status until the acceptance is in the log,
 /// and the order's state from then on, the acceptance told or not (a wait on policy after the acceptance is logged is
 /// an order's state). Each check is recorded, allowed.
-// verifies: REQ-AUZ-8
-// verifies: REQ-AUD-12
+// verifies: REQ-AUZ-8, REQ-AUD-12
 #[test]
 fn intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_orders_state_after() {
     let mut env = Env::new();
@@ -169,8 +168,7 @@ fn intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_ord
 /// accepting or asking, and the refusal names no class and no state (`T-023-01`'s `CurrentError::Refused`, alone).
 /// What the call did stands: the order opened, the quote shown, the acceptance recorded. Each check is recorded,
 /// refused.
-// verifies: REQ-AUZ-8
-// verifies: REQ-AUD-12
+// verifies: REQ-AUZ-8, REQ-AUD-12
 #[test]
 fn a_reader_policy_refuses_is_told_no_status_by_any_call_and_the_check_is_recorded() {
     let mut env = Env::new();
@@ -289,8 +287,7 @@ impl Reopening for Shelf {
 /// An order accepted and started before a restart, whose inputs statement can't be read back after it, is held: the
 /// reopened intake answers no start for it (what the segments follow) and no record of it (what policy's sources
 /// answer from), so nothing runs it; the same order whose statement reads back keeps both (`T-020-46`, `NFR-6`).
-// verifies: NFR-6
-// verifies: REQ-AUD-6
+// verifies: NFR-6, REQ-AUD-6
 #[test]
 fn held_order_accepted_before_a_restart_never_starts_after_it() {
     let mut env = Env::new();

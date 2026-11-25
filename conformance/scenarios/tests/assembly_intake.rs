@@ -177,8 +177,7 @@ fn recorded_reads(core: &Core) -> Vec<(ReadCheck, bool)> {
 /// opens, and the agent learns neither its identifier nor its state, only that the read was refused. Policy's check
 /// is recorded, refused, naming the requester intake's own record holds (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s
 /// milestone review). The same party's person, whom the agent's scope doesn't bind, is told as ever.
-// verifies: REQ-AUZ-8
-// verifies: REQ-AUZ-7
+// verifies: REQ-AUZ-8, REQ-AUZ-7
 #[test]
 fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake() {
     let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
@@ -241,9 +240,7 @@ fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake()
 /// An agent its party scoped for reading is told its party's order status at each call and the check is recorded,
 /// allowed: a filed order's while the acceptance isn't in the log, the order's state once it is (`REQ-AUZ-8`,
 /// `REQ-ORD-5`, `REQ-AUD-12`).
-// verifies: REQ-AUZ-8
-// verifies: REQ-ORD-5
-// verifies: REQ-AUD-12
+// verifies: REQ-AUZ-8, REQ-ORD-5, REQ-AUD-12
 #[test]
 fn agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded() {
     let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
