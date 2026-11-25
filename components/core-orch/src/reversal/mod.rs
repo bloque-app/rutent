@@ -2426,7 +2426,51 @@ fn key(order: &Id, segment: &Id) -> (String, String) {
 mod tests {
     use rutent_contracts::state_machine::{Segment, SegmentPlan, SegmentState};
 
-    use super::starts_where_withdrawn;
+    use super::{held_to_its_question, starts_where_withdrawn};
+    use rutent_contracts::router_api::Id;
+    use serde_json::json;
+
+    fn envelope(statement: serde_json::Value) -> serde_json::Value {
+        let key = "A".repeat(43);
+        json!({
+            "deployment": { "name": "test", "operator_key": key },
+            "protocol_version": "2.0.1",
+            "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+            "maker": "ramp",
+            "made_at": "2026-11-10T09:00:00Z",
+            "signature": { "scheme": "ed25519", "key": key, "value": format!("{}A", "s".repeat(85)) },
+            "statement": statement,
+        })
+    }
+
+    /// A status answer to the question `q1` about `about`, carrying the provider's result of `carried`.
+    fn answer(about: &str, carried: &str) -> Vec<u8> {
+        let result = envelope(json!({
+            "kind": "transfer", "transaction": carried, "outcome": { "status": "unknown" },
+        }));
+        let body = envelope(json!({
+            "kind": "status_query", "transaction": "q1", "about": about,
+            "outcome": { "status": "answered", "result": result },
+        }));
+        serde_json::to_vec(&body).unwrap()
+    }
+
+    /// Core keeps a status answer's carried result only where it answers the question it asked: the transaction asked
+    /// about, carrying that transaction's own result; nothing otherwise (`T-020-47`, `REQ-ORD-1`).
+    #[test]
+    fn status_answer_to_another_question_keeps_nothing() {
+        let asked: rutent_contracts::provider_role::Operation = serde_json::from_value(json!({
+            "kind": "transfer", "transaction": "t1", "provider": "ramp", "origin": "a",
+            "destination": "b", "asset": "COP", "direction": "exact_in", "amount": "1",
+            "dry_run": false, "inputs": {},
+        }))
+        .unwrap();
+        let (asking, provider) = (Id::new("q1").unwrap(), Id::new("ramp").unwrap());
+        let held = |bytes: &[u8]| held_to_its_question(bytes, &asked, &asking, &provider);
+        assert!(held(&answer("t1", "t1")).is_some(), "the honest answer");
+        assert!(held(&answer("t9", "t9")).is_none(), "about another transaction");
+        assert!(held(&answer("t1", "t9")).is_none(), "carrying another's result");
+    }
 
     fn segment(
         kind: &str,
