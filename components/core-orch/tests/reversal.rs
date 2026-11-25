@@ -2848,7 +2848,7 @@ fn late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same
         )
     };
     let held = delivered("249250500");
-    let mut keep = |world: &mut World, bytes: &[u8]| {
+    let keep = |world: &mut World, bytes: &[u8]| {
         world
             .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
             .unwrap()
@@ -2894,7 +2894,7 @@ fn kept_unknown_statement_does_not_shadow_a_later_final_delivery() {
         json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
             "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
     );
-    let mut keep = |world: &mut World, bytes: &[u8]| {
+    let keep = |world: &mut World, bytes: &[u8]| {
         world
             .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
             .unwrap()
