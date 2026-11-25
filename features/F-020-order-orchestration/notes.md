@@ -7386,6 +7386,127 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`, `assembly` and `invariants`); the doc check; plan-check and tag-check
   `--strict` (0 findings, 2335 tests tagged); the contract guard against `origin/develop` (1951 paths, no
   violations). All pass.
+- **Round 4** (issue #269 reopened; the milestone reviewer's High on T-020-46 at `1bc91b21`, its notes in the review
+  chat of 2026-11-25; branch `f-020/t-020-46-r4`, cut from `1bc91b21`; the lead's decisions):
+  - *High: a completed hand-on was landed again after a reopening (`INV-1`, `INV-8`).* `Segments::land_settled` and
+    `Segments::reconcile_landings` now read a settled segment's value through one predicate,
+    `Segments::settled_at_node`: a segment the state machine retired is skipped; one whose next segment settled, or
+    that was reversed (`ReversalComplete`), moved on; one whose part a resolution or a hand-on ended
+    (`ended_by_resolution`) took its value with it, so nothing is landed, released or restored for it. A reopened
+    Core marks resolved each part a done `resolve_stuck` moved, as the Core that ran on marked it once the move was
+    done, before its `stuck_resolved` or `handed_on`. The reviewer's two probes were written first and seen red (the
+    wallet attributing the handed-on order's 1,000,000 again):
+    `handed_on_value_is_not_landed_again_after_core_reopens` and
+    `value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_the_hand_on`
+    (`tests/assembly_real_wallet.rs`, the attributions empty and the wallet holding nothing for the order). The
+    reversed case: `reversed_segments_landing_is_not_restored_after_core_reopens` (`tests/landing.rs`, the kit's
+    ledger account, the withdrawal proven undone: the Core that ran on releases the landing, the reopened one
+    restores nothing). Through the assembly the reversal of the landed first segment isn't applicable in the
+    chain route the wallet's node is in (the part isn't open with only pending segments after it), so the kit carries
+    it.
+  - *Medium: what `Segments` and the stuck record lost, each rebuilt or said why.*
+    - `reliances`: rebuilt (`Reliances::recorded`). Contract: core-internal 1.0.0's `reliance` entry gains
+      optional `inputs`, the order's inputs by name declared on the judgement relied on (folded into the unreleased
+      1.0.0 on the lead's authorisation, a `DEC-20` path; valid fixture
+      `verified-entry-of-reliance-naming-the-inputs-resting-on-it`, README row, CHANGELOG line). Core writes it; a
+      reopened Core rebuilds which input rests on which judgement and the entries written, so a later segment writes
+      its reliance and none is written twice. A declaration no segment relied on yet left no entry: it is the
+      caller's word, given again. Test: `which_input_rests_on_which_judgement_is_rebuilt_from_the_log_after_a_restart`
+      (`tests/reliance.rs`).
+    - `refused` (a guard refusal): rebuilt by order and the refused route's decision record (`refused_in_log`); the
+      `order_refusal` names no reason, so while the guard refuses that route the logged entry is the answer. Test:
+      `guard_refusal_recorded_before_core_reopens_is_not_recorded_again` (`tests/closing.rs`).
+    - `floor_waits`: rebuilt from the log's `waiting_at_floor` inputs. Test:
+      `floor_wait_recorded_before_core_reopens_is_not_recorded_again` (`tests/recalc.rs`).
+    - Stuck's `segment_reports`, `segment_history`, `segment_confirmed`, and a stuck move's own reports: rebuilt
+      from the log's `report_outcome`, `decline_outcome` and `confirm_outcome` decisions (`Stuck::rebuild_reports`):
+      each report's version, the declined ones, the one that stands, a permitted confirmation not yet recorded. Not
+      safe to lose: the log takes one standing report per effect (`one-report-per-effect`), so a reopened Core
+      without it could neither take a second report nor confirm the first, and the move would stay unknown. Test:
+      `outcome_reported_before_core_reopens_is_confirmed_after_it` (`tests/stuck.rs`).
+    - `pairing`: a pair built and not written, or one owed, rests on reports that went with the stopped process. A
+      reopened Core parks each such pair unbuilt with why (`NoSentReport`), surfaced as any pair that can't be built
+      is (`REQ-ORD-9`, `ADR-0009`), never skipped silently; pairs the log took are neither surfaced nor written again.
+      Test: `pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens` (`tests/report_pairs.rs`).
+    - `Mover.kept`: not rebuilt, safe. A move in motion when Core stopped is never carried out again (the effect is
+      acted on, `Kept::Lost`): its outcome is unknown and is settled by its mover's report and another actor's
+      confirmation (`AC-6`), whose state is now rebuilt; `stuck_parts_kept_decision_and_move_are_rebuilt_from_the_log`
+      and `outcome_reported_before_core_reopens_is_confirmed_after_it` cover the path.
+  - *Low: what `Scenario::reopen` carries.* The restore's transaction and its `balance_verification` questions were
+    drawn from Core's fresh ids and named in no log entry. They are now derived
+    (`Holdings::restore_transaction`): from the node, the order and the process the wallet's module runs in now, so a
+    restore after the module restarted goes under a transaction no earlier process took, whichever Core process asks,
+    and a retry in the same process is a repeat; the questions derive from it. Test:
+    `restore_transaction_is_new_for_each_process_of_the_wallets_module` (`components/prov/tests/holding_wallet.rs`).
+    What a reopen still carries, and why: the fleet (the platform and the providers, processes apart from Core's,
+    which a Core restart doesn't stop); the clock (time goes on); the installed modules and the feed (the platform's);
+    the host's `holdings` (the platform's host register of each account and its attribution, beside the platform;
+    `T-024-21` reopens the platform and its host from their record); and `fresh`, Core's seeded id source, so a
+    scenario replays: a real restart draws from new entropy, every id Core draws is either in the log (and
+    `Issued::recorded` keeps a round's transactions off) or now derived, so none depends on it being carried. A
+    platform reopened from its record must keep its process ids new (`T-024-21`), on which the derivation rests.
+  - *Low: a held order.* Intake holds an order whose inputs statement can't be read back in `quote` and `accept` as
+    well as `request_of` (`IntakeError::NotNow`). Test:
+    `order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_core_reopens`
+    (`tests/assembly_intake.rs`, the assembly's `intake_reopened_without` hook: a disk that lost a verified statement
+    isn't opened at all, since the log refuses it, so the hook reads the statement as unreadable).
+  - *Holdings sites touched* (for the merge with `T-021-16`): prov `holding/wallet.rs` (`restore_transaction`, new);
+    core-orch `stuck/handing.rs` (`Wallets` loses `restore`, derives the transaction); the assembly's `holding.rs`
+    (`HeldWallets` loses `restore`, `Landing` loses `fresh` and derives the transaction, `withdraw_for_a_hand_on`)
+    and `mod.rs` (`move_stuck` draws no restore id).
+- **Round 4's new test names for `PLAN.md`:** the ten above, with their tags in their `// verifies:` lines.
+- **Round 4's rule-off table** (script `ruleoff5.py` in the row's scratch folder):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the shared predicate reads every value as resting (`settled_at_node`) | both hand-on probes, `reversed_segments_landing_is_not_restored_after_core_reopens`, `value_that_passes_through_the_wallets_node_is_not_held_for_the_order`, `value_that_passed_through_a_held_node_is_never_landed`, `release_after_a_holding_accounts_module_restarts_restores_first` |
+  | a reversed segment's value read as resting | `reversed_segments_landing_is_not_restored_after_core_reopens` |
+  | a part a resolution ended read as holding its value | both hand-on probes |
+  | a done stuck move's part not marked resolved on reopening | `value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_the_hand_on` |
+  | a held order quoted | `order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_core_reopens` |
+  | a held order accepted | none: a reopened Core shows no quote until the order is quoted again, which the quote's check refuses, so the acceptance is refused before the check; kept as the second line |
+  | a restore transaction drawn alike for every process | `restore_transaction_is_new_for_each_process_of_the_wallets_module` |
+  | a reliance entry names no input | `which_input_rests_on_which_judgement_is_rebuilt_from_the_log_after_a_restart` |
+  | no reliance register rebuilt | the same |
+  | no guard refusal rebuilt | `guard_refusal_recorded_before_core_reopens_is_not_recorded_again` |
+  | no floor wait rebuilt | `floor_wait_recorded_before_core_reopens_is_not_recorded_again` |
+  | no reports rebuilt | `outcome_reported_before_core_reopens_is_confirmed_after_it` |
+  | no dropped pairs surfaced | `pairs_a_restart_dropped_are_surfaced_unbuilt_after_core_reopens` |
+
+- **Round 4's local checks** (through the lock, `contracts/src/lib.rs` touched first, the row's private plain-wallet
+  build): fmt; workspace clippy `-D warnings`; `cargo test -p` `rutent-core-orch`, `rutent-core-authz --lib` (after
+  a `matches!` in `reports_of` for the entry-points scan), `rutent-contracts`, `rutent-prov`; `rutent-scenarios`'
+  `reopened`, `hand_on`, `hand_on_record`, `segments`, `landing`, `private_nodes`, `charge_check`,
+  `assembly_real_wallet`, `assembly`, `assembly_stuck`, `assembly_hand_on`, `assembly_intake`, `assembly_wiring`,
+  `holds`, `stuck_hand_on`, `stuck`, `closing`, `invariants`, `audit_scenarios`, `stuck_mover`, `person_records`,
+  `measures_called`, `reliance`, `recalc`, `report_pairs`; CI's seeded step (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`,
+  `assembly` and `invariants`); the doc check; plan-check and tag-check `--strict` (0 findings, 2346 tests tagged);
+  the contract guard against `origin/develop` (1952 paths, no violations). All pass.
+- **Round 5** (#309's CHANGES at `45d13fbe`, comment 7159760767):
+  - *Should-fix A: `Segments::resting_totals` bypassed the predicate.* It feeds what a hand-on's restore restores
+    after a module restart (`Wallets::withdraw`, `restored_whole`), and counted retired segments, reversed ones and
+    parts a resolution or a hand-on ended: the High's class through a third path. It now counts only the values
+    `settled_at_node` reads as still resting. Tests: the reviewer's probe in
+    `reversed_segments_landing_is_not_restored_after_core_reopens` (`tests/landing.rs`: after the reversal,
+    `resting_totals` holds nothing for the order at the ledger, on the Core that ran on and on the reopened one), and
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` (`tests/hand_on.rs`, a new name for
+    `PLAN.md` [`INV-1`, `INV-8`]: a split order, both parts' withdrawals settled at the ledger, the first part handed
+    on; `resting_totals` counts the second part's value alone, before and after a reopening, so the second part's
+    hand-on after a module restart restores only it). The support kit's `Core` runs a named part (`part`) for it.
+  - *Low B: the rebuilt reliance entries.* `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it`
+    (`tests/reliance.rs`, a new name for `PLAN.md` [`REQ-CPL-12`, `INV-8`]): two providers relying on one judgement,
+    the log turning away the withdrawal's effect so its reliance is written and nothing sent, Core reopened and the
+    part run again: one entry per provider.
+  - The held check in `Intake::accept` stays: a real second guard, which `T-020-51` reaches.
+  - *Rule-offs* (script `ruleoff6.py`): `resting_totals` counting every settled value turns
+    `handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node` and
+    `reversed_segments_landing_is_not_restored_after_core_reopens` red; the reliance entries written not rebuilt turns
+    `reliance_written_before_core_reopens_is_one_entry_per_provider_after_it` red (once the run after the reopening
+    is later, so an entry built afresh is another entry).
+  - *Local checks* (through the lock, `contracts/src/lib.rs` touched first, the private plain-wallet build): as round
+    4's, all pass: fmt; workspace clippy `-D warnings`; core-orch, `core-authz --lib`, contracts, prov; the 25
+    scenario binaries; CI's seeded `assembly` and `invariants` (seeds 11 to 15); the doc check; plan-check and
+    tag-check `--strict` (0 findings, 2348 tests tagged); the contract guard against `origin/develop` (no violations).
 - **Gaps, with owners.**
   1. The arrivals' state after a reopening (filings, waits): `T-020-51`. The notices' state is `T-023-03`'s and
      `T-023-04`'s (merged: the notices' summary is read on reopening, so `wait_ended` is sent once).
@@ -7396,6 +7517,137 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
      until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, which reopens the platform from its record.
   4. `stated_value` holds nothing where neither the question's bytes nor `order_opened`'s amount in that asset can be
      read: two losses at once, noted, not built for.
+
+## T-020-51: a deposit waiting for its customer outlives the filer's session, and its wait ends
+
+Branch `f-020/t-020-51-deposit-wait`, from `1bc91b21` (the batch holding `T-020-46`'s rebuild and `T-020-50`'s deposit
+destination). Finding 8 of the milestone review of 2026-11-24, issue #274; the owner's answer on the form,
+`deposit-wait-end`: no re-offer by Core. Edits `components/core-orch/src/arrival/` (`mod.rs`, `filing.rs`, the new
+`reopen.rs`), `core-internal` (a `DEC-20` path, folded into its unreleased 1.0.0: one setting), `core-authz`'s role tests
+(no rule code: `Permission::Setting` takes its kind by itself), and the `F-024` files the commit bodies name: the
+assembly's `arrivals.rs` and `reopen.rs`, the scenario `conformance/scenarios/tests/deposit_waits.rs`.
+
+- **The wait's lifetime.** The first quote an order waits on its customer to accept is shown at a time (the `shown`'s);
+  the wait lasts the operator's deposit-wait setting from it (`Run::waiting_since`), and no requote renews it. A quote
+  shown for the wait stands no longer than the wait (`Offered::expires` is the earlier of the figures' validity and the
+  wait's end, the whole second below), so the validity the customer is told (`awaiting.valid_until`) never outlasts it.
+  Past the lifetime the wait ends (`end_wait`): the log's `wait_ended` (`why: past_its_lifetime`) and then the order's
+  `order_refusal` (`no_route_right_now`), and the deposit is free (`spent` unset, so `Arrivals::settle` doesn't keep it
+  and the log's `one-order-per-deposit` admits the next order on it). The refusal is what tells the customer, once
+  (`T-023-04`: `Notices::notify` reads `order_refusal`, not `wait_ended`, and keys the notice by receiver and order, so a
+  restart sends it no more); the new entry adds no notice of its own.
+- **Who reads it.** `Arrivals::end_expired(desk)`, for Core's schedule (`T-020-48`: a tick calls it; the assembly's
+  `end_expired_waits` stands in until then), ends every wait past its lifetime, answering the orders ended, and retries
+  an end the log couldn't take; the next call that reads a wait ends it too: the filer filing the deposit again
+  (`should_end` at `Step::Customer` is the lifetime alone), the same filing carried on (`go_on`), and the customer's
+  acceptance (`customer_accepts` checks the lifetime before the digest). `Arrivals::wait_ends(order)` says when a wait
+  ends; `awaiting` says `expired` once its quote can no longer stand.
+- **The customer's session.** `Arrivals::accept(desk, order, by, session, quote)` takes the session the customer
+  accepts in, one policy opened for the order's requester that is still open by Core's clock (the session register,
+  `held_by`), else `ArrivalError::NoSession` and nothing recorded. The acceptance cites it
+  (`acceptance-is-asked-in-the-users-session` holds it to an `open_session` in the log). The filing's session is no more
+  the wait's: a wait whose filing session is over is held (`Run::should_end` at the customer step ignores the session and
+  the filer's logins), and `T-020-41`'s `nothing_moves_while_the_filed_order_waits_…` now expects that, ending the wait at
+  its lifetime instead.
+- **The setting.** `OperatorSetting::DepositWait { seconds }` (`deposit_wait`, `SettingKind::DepositWait`), added to
+  `core-internal`'s unreleased 1.0.0 (schema, README line, changelog entry, one valid and one invalid fixture, no version
+  moved), so policy holds it under `Permission::Setting(DepositWait)` with no change to core-authz's rules: its role
+  tests list the new fixture (and the counts moved by one). Core's decided path for setting it is `T-020-49`'s. Until
+  then `Arrivals` holds it (`with_deposit_wait`, `set_deposit_wait`) and defaults it to one day
+  (`DEFAULT_DEPOSIT_WAIT_SECONDS`): the snapshot's `PolicyBounds` (router-api) has no such field and no contract is
+  edited for it. `T-020-49` calls `set_deposit_wait` from its decided path and rebuilds it from the log.
+- **The rebuild** (`reopen.rs`, `Arrivals::reopened(history, kept)`): the arrivals (`Recorded`) and the notices taken
+  (`Noted`, so a notice reported again is the same arrival), read back from the evidence store as `arrive` reads one; the
+  deposits held (`spent`) by every order an `arrival` holds, unless the log shows its `wait_ended`; and the waits, each
+  order the log shows `shown` awaiting its customer with no acceptance, start, refusal or end, at the customer step, its
+  lifetime counted from its first `shown`, rebuilt by `Run::rebuilt`. The assembly's `rebuild_from_log` calls it, hands
+  policy's sources the order's record again and keeps the filing for the order's start.
+- **Defaults** (reversible, each failing closed):
+  1. The wait lasts one day, until the operator's setting says otherwise (`T-020-49`).
+  2. A wait is the customer's, not the filer's: it outlives the filing session and the filer's logins; only its lifetime
+     ends it (`SessionOver`, a `WaitEnd` the contract names, is never written: no wait ends with its session now).
+  3. The end writes `wait_ended` and then `order_refusal` (`no_route_right_now`); the refusal keeps the order's end and
+     its notice where they were. Only the lifetime's end is a `wait_ended` (and frees the deposit): a requote that finds
+     no route still ends the order as before, its deposit spent (`OrderRefused` is never written).
+  4. The quote shown on a rebuilt wait is gone (the log holds its digest alone): the customer's acceptance of the digest
+     the log last shows asks the route again, shown anew, as a quote past its validity does; any other digest is
+     `NotTheQuoteShown`. The filing is read back from the log and the operator's kept statement of its inputs and
+     objective (the lead's ruling, below): its request identifier, inputs and objective come from there, so the route is
+     asked again with no restated filing. A wait whose statement can't be read, or isn't the filing's, is **held**:
+     told it waits, never accepted, never asked the route again, ended at its lifetime. Its session is the customer's,
+     the one it accepts in.
+  5. The session a rebuilt wait asks its route in is the customer's, the one it accepts in.
+- **Gap 1, closed** (the lead's ruling, 2026-11-25: fix now, pre-production). The `arrival` entry that holds a deposit
+  against a filed order gains `request` and `inputs`, the salted commitment of the operator's signed statement of the
+  filing's inputs and objective (`FilingInputs`, shape `filing-inputs`, a sibling of `order-inputs`: a filing's inputs
+  may be empty and it states an objective), kept in the evidence store and appended as a stated entry about nothing
+  before the arrival (no account in the log, `REQ-AUD-6`). Row `filed-orders-inputs-are-a-kept-statement`, in the style
+  of `opened-orders-inputs-are-a-kept-statement`: verified, of that shape, the deployment operator's own, about
+  nothing. `core-internal`, folded into the unreleased 1.0.0 (a `DEC-20` path): schema, README, changelog, fixtures
+  (valid `filing-inputs-of-a-filed-order` and an arrival naming them, invalid `filing-inputs-without-its-objective`, six
+  admission cases). `Arrivals::reopened` reads the statement back, held to its shape and to the order. The
+  statement also holds the filing's judgements (`needs`, `FilingNeed`), so the whole filing but the session is fixed by
+  the log, the statement and the authorisation. A filer restating the filing after a reopening (same request, party and
+  deposit) is told the wait as it stands and **changes nothing**: there is no `adopt` (review of `9e2214ee`, blocker 1:
+  the restated destination, payer account and objective had started the order). Tests:
+  `waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing` [`REQ-QTE-10`, `REQ-AUD-6`],
+  `reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held` [`REQ-QTE-10`, `REQ-AUD-6`] (the store keeps
+  nothing behind the commitment, the arrival names none, the statement is another order's), and the scenario, which no
+  longer files again after the reopening. Rule-offs, each alone from the commit of that change:
+
+  | Rule switched off | Red |
+  |---|---|
+  | the arrival names no statement | `waiting_deposit_is_accepted_after_core_reopens_with_no_new_filing` |
+  | the arrival names no request | the same |
+  | the statement's order isn't checked on reading | `reopened_waiting_deposit_whose_statement_cannot_be_read_stays_held` |
+  | a wait whose filing wasn't read back is accepted | the same |
+  | the statement isn't appended before its arrival | 35 arrival tests (the log refuses the arrival) |
+  | the log row cites nothing (`--missing`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the log row takes a statement about something (`--about`) | the same |
+  | a restated filing replaces the wait's filing (the old `adopt`) | `filing_restated_after_a_reopen_changes_nothing_the_statement_fixed` |
+
+- **Gaps, with owners.**
+  1. What a reopening doesn't rebuild, by case (the review of `9e2214ee` probed each): an order started or ended after
+     the deposit was held keeps the deposit held (`one-order-per-deposit`, rebuilt as `spent`) and a repeat of its filing
+     is told `NotFileable` or that the deposit is held, not how it ended; a filing refused before an order opened leaves
+     no arrival naming an order, so the deposit is free after a reopening and the same filing is evaluated afresh (it may
+     be refused again, a second `order_refusal`), and another filing may start; a deposit its reserve said no to is
+     filed on again after a reopening, the reserve is asked once more and its second order ends before the deposit is
+     `NotFileable`, which fails open by one question, harmless for funds. All three are `T-024-21`'s (restarted runs).
+  2. The setting's decided path and its rebuild from the log: `T-020-49`. Its schedule's call to `end_expired`: `T-020-48`.
+- **Named tests** (`components/core-orch/tests/arrival.rs`): `customer_accepts_a_waiting_deposit_in_a_later_session_of_its_own`
+  [`REQ-QTE-10`, `AC-13`], `wait_past_its_lifetime_ends_and_frees_its_deposit` [`GUA-1`],
+  `freed_deposit_is_filed_again_and_routed_once` [`REQ-ORD-15`],
+  `filed_order_waiting_for_its_customer_still_waits_after_core_reopens` [`REQ-QTE-10`],
+  `acceptance_on_a_waiting_quote_past_its_validity_asks_again` [`REQ-QTE-15`]; `contracts/tests/core-internal.rs`:
+  `deposit_wait_setting_is_an_operator_setting_of_its_own` [`REQ-AUZ-6`]. Scenarios (`deposit_waits.rs`):
+  `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens`,
+  `a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved`.
+- **Red first, honestly.** The named tests were written beside the code, not before it: the first run of the arrival
+  tests failed on assertions (a wait ended by the old session rule, the clock's two-second drift against the shown
+  quote's time, an acceptance the log refused for a session it never opened) and the code and tests were fixed from
+  there. Each rule's red is shown by its rule-off below.
+- **Rule-offs** (each rule switched off alone from the committed checkpoint `387f5bfd`, the file restored with
+  `git checkout`; script `ruleoff.py` in the row's scratch folder). "Arrival" is `core-orch`'s `arrival` test file,
+  "scenario" `deposit_waits.rs`; the tests are named by their first words: `customer_accepts…`,
+  `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…` (reopens), `acceptance_on_a_waiting_quote…`,
+  `nothing_moves…` (`T-020-41`'s, changed).
+
+  | Rule switched off | Red |
+  |---|---|
+  | the wait ends again with the session it was filed in (`go_on`) | `customer_accepts…`, `filed_order_waiting…`, `nothing_moves…` |
+  | the customer's session isn't checked (`NoSession`) | `customer_accepts…` |
+  | a wait never passes its lifetime | `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…`, `nothing_moves…` |
+  | the end writes no `wait_ended` | `wait_past_its_lifetime…`, `freed_deposit…` (the log refuses the second order), `filed_order_waiting…` |
+  | the end leaves the deposit spent | `freed_deposit…` |
+  | a quote may outlast its wait | `wait_past_its_lifetime…`, `filed_order_waiting…` |
+  | a requote renews the wait | `acceptance_on_a_waiting_quote…`, `filed_order_waiting…` |
+  | `end_expired` ends nothing | `wait_past_its_lifetime…`, `freed_deposit…`, `filed_order_waiting…` |
+  | the waits aren't rebuilt from the log | `filed_order_waiting…` (and the scenario's reopening) |
+  | a reopened wait takes any digest | `filed_order_waiting…` |
+  | a deposit freed by a wait's end is held again after reopening | `filed_order_waiting…` |
+  | a reopened wait that routes nowhere ends the order | the scenario `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens` |
+  | `SettingKind` of `DepositWait` read as another kind | `deposit_wait_setting_is_an_operator_setting_of_its_own`; core-authz's `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
 
 ## T-020-53: a stuck decision's evidence fails closed (and finding 4's evidence-store reads)
 

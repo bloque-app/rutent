@@ -346,3 +346,96 @@ fn one_judgement_relied_on_by_one_provider_is_written_once() {
         "its operation was sent already"
     );
 }
+
+/// The reliance entry names the order's inputs that rest on its judgement, and a Core that reopens rebuilds from it
+/// which input rests on which judgement (`T-020-46`): the declaration stands after the restart, so another judgement
+/// for the same input is refused, as before it, and the same one is a retry (`REQ-CPL-12`, `NFR-6`).
+// verifies: REQ-CPL-12, NFR-6
+#[test]
+fn which_input_rests_on_which_judgement_is_rebuilt_from_the_log_after_a_restart() {
+    let (mut world, mut core, judgement) = judged_by_the_other_reserve(true);
+    rests(&mut core, PAYER, &judgement);
+    let (ran, _, _) = run_watched(&mut world, &mut core);
+    ran.expect("the part runs");
+    let named: Vec<String> = core
+        .log
+        .borrow()
+        .verified()
+        .iter()
+        .find_map(|v| match &v.what {
+            What::Reliance { inputs, .. } => {
+                Some(inputs.iter().map(|i| i.as_str().to_owned()).collect())
+            }
+            _ => None,
+        })
+        .expect("a reliance");
+    assert_eq!(named, [PAYER], "the entry names the input resting on it");
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    let order = id(&core.named.order);
+    let another = Judgement {
+        receipt: relies(&core)[0].0.clone(),
+        judge: id(RESERVE),
+    };
+    assert_eq!(
+        core.segments.rests_on(&order, PAYER, another),
+        Err(Rests::Another),
+        "the judgement the input rests on stands after the restart"
+    );
+    assert_eq!(
+        core.segments.rests_on(&order, PAYER, judgement),
+        Ok(()),
+        "the same one again is a retry"
+    );
+    assert_eq!(relies(&core).len(), 1);
+}
+
+/// Two providers relying on one judgement, the withdrawal's at the route's origin and the deposit's at its last
+/// reserve, every input the order carries resting on it. The log turns away the withdrawal's effect on every try, so
+/// its reliance is written and nothing is sent; Core reopens, and the part runs again: the withdrawal is handed over
+/// afresh and the deposit after it. Each provider's reliance is one entry, the withdrawal's as the log took it before
+/// the restart, never written twice (`REQ-CPL-12`, `INV-8`, `T-020-46`).
+// verifies: REQ-CPL-12, INV-8
+#[test]
+fn reliance_written_before_core_reopens_is_one_entry_per_provider_after_it() {
+    let mut world = World::two_parties();
+    let mut core = Core::over(&mut world);
+    core.log.borrow_mut().guards_reliance = true;
+    let (_, theirs) = results_after_the_move(&mut core, None, "tx-judged");
+    let judgement = Judgement {
+        receipt: theirs,
+        judge: id(second_reserve()),
+    };
+    let inputs: Vec<String> = core.inputs.keys().cloned().collect();
+    for input in &inputs {
+        rests(&mut core, input, &judgement);
+    }
+    for _ in 0..rutent_core_orch::segments::APPEND_TRIES {
+        core.log
+            .borrow_mut()
+            .faults
+            .push_back((On::EffectOf(WITHDRAWAL), Fault::Unavailable));
+    }
+    let (stopped, carried, _) = run_watched(&mut world, &mut core);
+    assert!(stopped.is_err(), "{stopped:?}");
+    assert!(carried.is_empty(), "nothing was sent");
+    let before = relies(&core);
+    assert_eq!(
+        before
+            .iter()
+            .map(|(_, _, by)| by.as_str())
+            .collect::<Vec<_>>(),
+        [origin_reserve()],
+        "the withdrawal's reliance was written"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    // Later: an entry built afresh would be another entry, at another time.
+    core.clock.advance(60);
+    let (ran, carried, _) = run_watched(&mut world, &mut core);
+    assert_eq!(settled(&ran.expect("the part runs")), 2);
+    assert_eq!(carried.len(), 2, "both segments were handed over");
+    let mut by: Vec<String> = relies(&core).into_iter().map(|(_, _, by)| by).collect();
+    by.sort();
+    let mut expected = vec![origin_reserve().to_owned(), last_reserve().to_owned()];
+    expected.sort();
+    assert_eq!(by, expected, "one reliance per provider");
+}

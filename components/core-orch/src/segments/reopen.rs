@@ -110,6 +110,42 @@ impl Segments {
                 segments.mark_resolved(&order, &part);
             }
         }
+        // A stuck move done moved its part's whole value (a delivery or a hand-on's withdrawal is of the whole, by
+        // construction): its part holds nothing more, as the Core that ran on marked it once the move was done, before
+        // its `stuck_resolved` or its `handed_on` (`T-020-46`, `INV-1`).
+        for (receipt, entry) in history {
+            let Entry::Verified(VerifiedEntry {
+                what:
+                    What::Effect {
+                        action:
+                            Action::ResolveStuck {
+                                order, carries_out, ..
+                            },
+                        ..
+                    },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            let done = history.iter().any(|(_, e)| {
+                matches!(e, Entry::Verified(v)
+                    if matches!(&v.what, What::Result { effect } if effect == receipt)
+                        && v.outcome == Outcome::Done {})
+            });
+            let part = history.iter().find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::StuckDecide { request, .. } if request.request == carries_out.request => {
+                        Some(request.part.clone())
+                    }
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            });
+            if let (true, Some(part)) = (done, part) {
+                segments.mark_resolved(order, &part);
+            }
+        }
         let mut holds = BTreeMap::new();
         for (receipt, entry) in history {
             let Entry::Verified(verified) = entry else {
@@ -170,7 +206,49 @@ impl Segments {
                 let _ = segments.terms.state(stated, receipt, &terms);
             }
         }
+        // The guard's refusals the log took, by order and the route's decision record, and each part's waits at its
+        // floor: answered again as the log took them, never recorded twice (`INV-8`).
+        for (receipt, entry) in history {
+            let Entry::Verified(v) = entry else {
+                continue;
+            };
+            match &v.what {
+                What::OrderRefusal {
+                    request,
+                    order: Some(order),
+                    class: OrderRefusalClass::NoRouteRightNow,
+                } if v.who.role == rutent_contracts::core_internal::Role::Core => {
+                    segments
+                        .refused_in_log
+                        .entry((order.as_str().to_owned(), request.as_str().to_owned()))
+                        .or_insert_with(|| receipt.clone());
+                }
+                What::Input { input } if input.observed == (Observed::WaitingAtFloor {}) => {
+                    let (Some(part), Ok(general)) =
+                        (&input.subject.part, GeneralEntry::try_from(entry.clone()))
+                    else {
+                        continue;
+                    };
+                    segments
+                        .floor_waits
+                        .entry((
+                            input.subject.order.as_str().to_owned(),
+                            part.as_str().to_owned(),
+                        ))
+                        .or_default()
+                        .push(FloorWait {
+                            input: input.clone(),
+                            entry: general,
+                            receipt: Some(receipt.clone()),
+                        });
+                }
+                _ => {}
+            }
+        }
+        // Which input rests on which judgement, and the reliances written (`REQ-CPL-12`).
+        segments.reliances = Reliances::recorded(history);
         segments.measure_what_the_log_lacks(history);
+        segments.park_unpaired_on_reopening(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments
     }

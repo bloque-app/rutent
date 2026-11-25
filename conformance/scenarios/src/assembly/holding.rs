@@ -134,9 +134,6 @@ pub(super) struct HeldWallets<'a, 'b> {
     pub(super) holdings: &'a RefCell<Holdings>,
     pub(super) running: &'a RefCell<Running<'b>>,
     pub(super) bounds: &'a PolicyBounds,
-    /// A fresh transaction of Core's, drawn where a holding account's module restarted, for restoring what the log
-    /// holds before the withdrawal (`T-020-46`).
-    pub(super) restore: Option<Id>,
     /// What the log holds for each order at each node (`Segments::resting_totals`).
     pub(super) resting: BTreeMap<(String, String), rutent_contracts::router_api::Amount>,
 }
@@ -168,7 +165,6 @@ impl Withdrawals for HeldWallets<'_, '_> {
             holdings: &mut self.holdings.borrow_mut(),
             platform: &mut *running.platform,
             operator: &operator,
-            restore: self.restore.as_ref().map(Id::as_str),
             resting: &self.resting,
         }
         .withdraw(route, order, amount, asked)
@@ -181,8 +177,6 @@ struct Landing<'a, W: World, O: Operator> {
     holdings: &'a mut Holdings,
     platform: &'a mut Platform<W>,
     operator: &'a O,
-    /// Core's fresh identifiers: a restore goes under a transaction of Core's own (`T-020-46`).
-    fresh: &'a mut dyn Fresh,
 }
 
 impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
@@ -242,7 +236,13 @@ impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
         {
             return Landed::Unconfirmed;
         }
-        let transaction = self.fresh.id();
+        // Under a transaction derived from the node, the order and the module's process now (`T-020-46`).
+        let Some(transaction) = self
+            .holdings
+            .restore_transaction(self.platform, node, order)
+        else {
+            return Landed::Unconfirmed;
+        };
         answered(
             self.holdings
                 .restore(
@@ -362,7 +362,6 @@ impl Core {
     /// A hand-on's withdrawal of `amount` of `order`'s value for `route`, through Core's own [`Wallets`], as the mover
     /// asks it, where the log holds `resting` of the order at the route's first node and the account's module may have
     /// restarted: a test hook (`T-020-46`) for an order of two values at one node, which the kit's routes don't make.
-    /// Where the module restarted, a transaction of Core's own is drawn for the restore, as `move_stuck` draws it.
     ///
     /// # Errors
     ///
@@ -378,11 +377,6 @@ impl Core {
             Some(rutent_contracts::provider_role::NodeRef::Inner(node)) => node.as_str().to_owned(),
             _ => return Err(StartError::NoRecord),
         };
-        let restarted = self
-            .holdings
-            .borrow()
-            .restarted(&self.fleet.platform, &node);
-        let restore = restarted.then(|| self.fresh.id());
         let mut held = BTreeMap::new();
         if let Some(total) = rutent_contracts::router_api::Amount::new(resting) {
             held.insert((node, order.to_owned()), total);
@@ -402,7 +396,6 @@ impl Core {
             holdings: &mut self.holdings,
             running: &running,
             bounds: &self.bounds,
-            restore,
             resting: held,
         };
         wallets.withdraw(route, order, amount, &mut |_| true)
@@ -748,7 +741,6 @@ impl Core {
             holdings: &mut holdings,
             platform: &mut self.fleet.platform,
             operator: &operator,
-            fresh: &mut self.fresh,
         };
         self.segments.reconcile_landings(&mut landing)
     }
@@ -770,7 +762,6 @@ impl Core {
             holdings: &mut held,
             platform: &mut self.fleet.platform,
             operator: &operator,
-            fresh: &mut self.fresh,
         };
         self.segments.land_settled(&mut landing)
     }

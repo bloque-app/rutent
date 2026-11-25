@@ -154,13 +154,13 @@ impl Core {
             arrivals.file::<RouteFinder>(desk, &mut filed_on, filing.clone())
         });
         // A filed order that waits for its customer is started later, by `accept_filed`, from this filing.
+        // A filing stated again, as a reopened Core's wait is restated (`T-020-51`), replaces what the log held of it.
         if let Ok(Filed::Waiting {
             order: Some(order), ..
         }) = &filed
         {
             self.filings
-                .entry(order.as_str().to_owned())
-                .or_insert_with(|| filing.clone());
+                .insert(order.as_str().to_owned(), filing.clone());
         }
         if let Ok(Filed::Started { order, .. }) = &filed {
             self.filings
@@ -188,16 +188,18 @@ impl Core {
         })
     }
 
-    /// The customer `by` accepts the slow route of the filed order `order`, the quote of digest `quote`; once it
-    /// starts, its segments follow it.
+    /// The customer `by` accepts the slow route of the filed order `order`, the quote of digest `quote`, in `session`, a
+    /// session of its own that is open now (`T-020-51`); once it starts, its segments follow it.
     pub fn accept_filed(
         &mut self,
         by: &rutent_contracts::core_internal::Actor,
+        session: &Id,
         order: &Id,
         quote: &rutent_contracts::module_interface::Digest,
     ) -> Result<Filed, StepError> {
-        let filed = self
-            .with_arrivals(|arrivals, desk| arrivals.accept::<RouteFinder>(desk, order, by, quote));
+        let filed = self.with_arrivals(|arrivals, desk| {
+            arrivals.accept::<RouteFinder>(desk, order, by, session, quote)
+        });
         if let Ok(Filed::Started { order, .. }) = &filed
             && let Some(start) = self.arrivals.start(order).cloned()
             && !self.started.contains_key(order.as_str())
@@ -206,6 +208,19 @@ impl Core {
         }
         self.feed()?;
         Ok(filed?)
+    }
+
+    /// Ends every wait for a customer past its lifetime, as Core's schedule does (`T-020-51`, `T-020-48`): the orders
+    /// ended.
+    pub fn end_expired_waits(&mut self) -> Result<Vec<Id>, StepError> {
+        let ended = self.with_arrivals(|arrivals, desk| arrivals.end_expired(desk))?;
+        self.feed()?;
+        Ok(ended)
+    }
+
+    /// When the wait of the filed order `order` ends, where it waits for its customer (`T-020-51`).
+    pub fn wait_ends(&self, order: &Id) -> Option<rutent_contracts::router_api::Timestamp> {
+        self.arrivals.wait_ends(order)
     }
 
     /// Follows `order`, filed on an automatic deposit, from its start as arrivals answered it.

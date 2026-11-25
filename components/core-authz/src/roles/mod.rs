@@ -134,8 +134,8 @@ pub enum Permission {
     /// Making one kind of catalogue change, and no other (`REQ-AUZ-6`).
     Change(CatalogueChange),
     /// Setting one of the operator's settings, and no other: the fee formula, a tuple's slippage limit or evidence
-    /// floor, a public node's settings, a provider's or a publisher's ceiling, a job's cadence or a protocol
-    /// version's cutover date, each a permission of its own (`REQ-AUZ-6`, `T-021-15`). `Change(SetSetting)` is no
+    /// floor, a public node's settings, a provider's or a publisher's ceiling, a job's cadence, a protocol
+    /// version's cutover date or the lifetime of a deposit's wait for its customer, each a permission of its own (`REQ-AUZ-6`, `T-021-15`). `Change(SetSetting)` is no
     /// permission anyone holds: it names no setting.
     Setting(SettingKind),
     /// One of Core's own actors moving value on the user's authorisation, carrying it onward (`REQ-AUZ-9`).

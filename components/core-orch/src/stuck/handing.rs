@@ -92,10 +92,6 @@ pub struct Wallets<'a, W: World, O: Operator> {
     pub platform: &'a mut Platform<W>,
     /// The operator, whose key signs the withdrawal.
     pub operator: &'a O,
-    /// A transaction of Core's own, fresh, for restoring in the account what the log holds for the order before the
-    /// withdrawal, where the account's module restarted (`T-020-46`): `None` where Core drew none, and then nothing
-    /// is restored.
-    pub restore: Option<&'a str>,
     /// What the log holds for each order at each node, by node and order ([`crate::segments::Segments::resting_totals`]):
     /// what a restore restores, the order's whole as the wallet and the host count it, never the part withdrawn alone.
     pub resting:
@@ -172,9 +168,14 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
         }) = route.first()
             && self.holdings.restarted(self.platform, node)
         {
-            let transaction = self.restore.ok_or(StartError::Wallet(
-                rutent_prov::holding::wallet::WalletError::NotKnown,
-            ))?;
+            // Under a transaction derived from the node, the order and the module's process now
+            // ([`Holdings::restore_transaction`]): never one a restarted Core could draw again.
+            let transaction = self
+                .holdings
+                .restore_transaction(self.platform, node, order)
+                .ok_or(StartError::Wallet(
+                    rutent_prov::holding::wallet::WalletError::NotKnown,
+                ))?;
             let whole = restored_whole(self.resting, node, order, amount);
             self.holdings.restore(
                 self.platform,
@@ -182,7 +183,7 @@ impl<W: World, O: Operator> Withdrawals for Wallets<'_, W, O> {
                 node,
                 order,
                 &whole,
-                transaction,
+                &transaction,
             )?;
         }
         let operator = Asking {

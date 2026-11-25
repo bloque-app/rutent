@@ -260,6 +260,69 @@ impl Segments {
         &self.pairing.unbuilt
     }
 
+    /// The pairs a restart dropped, as a Core that reopens finds them (`T-020-46`): each segment the log settled after
+    /// a settled segment of another provider in its part's plan, whose pair the log holds no `report_pair` of. The
+    /// reports it rests on went with the stopped process, so it is parked as unbuilt, with why, surfaced and never
+    /// skipped silently (`REQ-ORD-9`, `ADR-0009`), and none is built again.
+    pub(super) fn park_unpaired_on_reopening(
+        &mut self,
+        history: &[(Receipt, rutent_contracts::core_internal::Entry)],
+    ) {
+        let paired: BTreeSet<(String, String)> = history
+            .iter()
+            .filter_map(|(_, e)| match e {
+                rutent_contracts::core_internal::Entry::Verified(v) => match &v.what {
+                    rutent_contracts::core_internal::What::ReportPair { pair } => Some((
+                        pair.order.as_str().to_owned(),
+                        pair.received.segment.as_str().to_owned(),
+                    )),
+                    _ => None,
+                },
+                rutent_contracts::core_internal::Entry::Stated(_) => None,
+            })
+            .collect();
+        let settled = |order: &str, segment: &str| {
+            self.flights
+                .get(&(order.to_owned(), segment.to_owned()))
+                .filter(|f| matches!(f.outcome, Some(super::SegmentOutcome::Settled { .. })))
+        };
+        let mut parked = Vec::new();
+        for (order, tracked) in &self.orders {
+            for part in &tracked.order.parts {
+                for pair in part.segments.windows(2) {
+                    let (sent, received) =
+                        (pair[0].segment_id.as_str(), pair[1].segment_id.as_str());
+                    let (Some(before), Some(after)) =
+                        (settled(order, sent), settled(order, received))
+                    else {
+                        continue;
+                    };
+                    let key = (order.clone(), received.to_owned());
+                    if before.provider == after.provider || paired.contains(&key) {
+                        continue;
+                    }
+                    if let (Some(order), Some(segment), Some(sent)) =
+                        (Id::new(order.as_str()), Id::new(received), Id::new(sent))
+                    {
+                        parked.push((
+                            key,
+                            UnbuiltPair {
+                                order,
+                                segment,
+                                why: Unbuilt::NoSentReport(sent),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        for (key, unbuilt) in parked {
+            if self.pairing.built.insert(key) {
+                self.pairing.unbuilt.push(unbuilt);
+            }
+        }
+    }
+
     /// Makes the segments forget the reports they keep for the pair of the segment after them, as a restart that
     /// lost their in-memory state would, from now on: for a scenario of the pair that can't be built.
     #[doc(hidden)]

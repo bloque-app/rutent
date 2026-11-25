@@ -464,6 +464,13 @@ pub enum OperatorSetting {
         /// The cutover date.
         cutover: Timestamp,
     },
+    /// How long an order filed on an automatic deposit waits for its customer to accept a quote shown without a firm
+    /// rate, counted from the first quote shown (`REQ-QTE-10`, `T-020-51`): past it the wait ends and its deposit is
+    /// free again.
+    DepositWait {
+        /// The lifetime of a wait, in whole seconds.
+        seconds: Count,
+    },
 }
 
 /// Which of the operator's settings an [`OperatorSetting`] is: policy holds each under a permission of its own
@@ -486,6 +493,8 @@ pub enum SettingKind {
     Cadence,
     /// A protocol version's cutover date.
     Cutover,
+    /// The lifetime of an order's wait for its customer on an automatic deposit.
+    DepositWait,
 }
 
 impl OperatorSetting {
@@ -500,6 +509,7 @@ impl OperatorSetting {
             OperatorSetting::PublisherCeiling { .. } => SettingKind::PublisherCeiling,
             OperatorSetting::Cadence { .. } => SettingKind::Cadence,
             OperatorSetting::Cutover { .. } => SettingKind::Cutover,
+            OperatorSetting::DepositWait { .. } => SettingKind::DepositWait,
         }
     }
 
@@ -2575,6 +2585,25 @@ pub enum What {
             skip_serializing_if = "Option::is_none"
         )]
         destination: Option<alloc::boxed::Box<DepositDestination>>,
+        /// The request identifier the filing that holds the deposit against its order was made under (`T-020-51`): so a
+        /// Core that reopens knows the filing a wait belongs to. Absent on a deposit's first arrival and on any not
+        /// held by a filing.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        request: Option<Id>,
+        /// The salted commitment of the operator's statement of the filing's inputs and objective
+        /// ([`FilingInputs`], shape [`FILING_INPUTS_SHAPE`]), kept in the evidence store and appended as a stated entry
+        /// before this one (`filed-orders-inputs-are-a-kept-statement`), so the log holds no account (`REQ-AUD-6`) and
+        /// a Core that reopens reads the filing back (`T-020-51`). Absent where the arrival isn't a filing's.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        inputs: Option<Digest>,
     },
     /// One round's recorded decision, by digest, chained to the order's history (`REQ-AUD-4`).
     DecisionRecord {
@@ -2752,6 +2781,11 @@ pub enum What {
         judge: Id,
         /// The provider that relied on it, which carries the loss of a false one.
         relied_on_by: Id,
+        /// The order's inputs, by name, that rest on the judgement, as Core was told (`T-020-46`): what a Core that
+        /// reopens rebuilds which input rests on which judgement from, so a segment after the reopening that carries
+        /// one still writes its reliance (`REQ-CPL-12`). Left out where it names none.
+        #[serde(default, skip_serializing_if = "alloc::vec::Vec::is_empty")]
+        inputs: alloc::vec::Vec<Id>,
     },
     /// An operator command that needs no decision, naming its operator in the entry's `who` (`REQ-AUD-1`). The
     /// commands are a closed list: an action policy decides, a catalogue change or a hand-on travels only through
@@ -3468,6 +3502,48 @@ pub struct OrderInputs {
     pub order: Id,
     /// Each input, by name: never empty, since an order with no input states none.
     pub inputs: alloc::collections::BTreeMap<String, String>,
+}
+
+/// The shape of the operator's statement of a filing's inputs and objective.
+pub const FILING_INPUTS_SHAPE: &str = "urn:rutent:core-internal:filing-inputs";
+
+/// The inputs and objective an order filed on an automatic deposit carries, as the operator states them when the
+/// filing holds the deposit against its order (`T-020-51`): the body of a statement of shape [`FILING_INPUTS_SHAPE`],
+/// kept in the evidence store behind a salted commitment that the `arrival` holding the deposit names, so a Core that
+/// reopens reads them back and the log holds no account (`REQ-AUD-6`). It names no transaction and is appended about
+/// nothing. Unlike an order's, its inputs may be empty: the objective is always stated. Schema:
+/// `urn:rutent:core-internal:filing-inputs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilingInputs {
+    /// The order.
+    pub order: Id,
+    /// Each input, by name; empty where the filing carries none.
+    pub inputs: alloc::collections::BTreeMap<String, String>,
+    /// What the router optimises the order's route for.
+    pub objective: crate::router_api::Objective,
+    /// The judgements the route's tuples need of a person, as the filing named them; absent where it names none. The
+    /// kept statement fixes them with the rest of the filing, so a Core that reopens asks the route as it was asked.
+    #[serde(default, skip_serializing_if = "alloc::vec::Vec::is_empty")]
+    pub needs: alloc::vec::Vec<FilingNeed>,
+}
+
+/// A judgement a tuple's provider needs before it may be on a filed order's route: of which verifier, about which
+/// person and class, under the relying provider's subject reference (`REQ-CPL-6`, `T-020-51`). Schema:
+/// `urn:rutent:core-internal:filing-inputs#/$defs/need`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilingNeed {
+    /// The relying provider's tuple.
+    pub tuple: crate::router_api::TupleKey,
+    /// The person, by reference.
+    pub person: Id,
+    /// The verifier the provider's rules name.
+    pub verifier: Id,
+    /// The person's subject reference, the relying provider's.
+    pub subject: String,
+    /// The class.
+    pub class: String,
 }
 
 /// A checkpoint opening's `shape`.

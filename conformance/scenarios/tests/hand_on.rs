@@ -2365,3 +2365,92 @@ fn segment_a_destination_change_retired_is_not_held_again_after_a_restart() {
         "an unread segment the change retired"
     );
 }
+
+/// A split order, both parts' withdrawals settled at the ledger and their deposits refused, then the first part handed
+/// on: what Core counts resting at the ledger for the order, which a later hand-on's restore after a module restart
+/// restores (`Wallets::withdraw`), is the second part's value alone, on the Core that ran on and on the same log
+/// reopened; the handed-on part's value left with its withdrawal (`INV-1`, `INV-8`, `T-020-46`).
+// verifies: INV-1, INV-8
+#[test]
+fn handed_on_part_is_not_counted_resting_beside_the_part_still_at_the_node() {
+    let mut world = World::of(&[RESERVE]);
+    let mut core = Core::split(&mut world);
+    for (part, withdrawal, deposit) in [
+        (PART, WITHDRAWAL, DEPOSIT),
+        (SECOND_PART, SECOND_WITHDRAWAL, SECOND_DEPOSIT),
+    ] {
+        world
+            .fleet
+            .world()
+            .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+        core.part = part.to_owned();
+        core.named.withdrawal = withdrawal.to_owned();
+        core.named.deposit = deposit.to_owned();
+        let ran = core.run(&mut world);
+        assert!(
+            matches!(segments(&ran)[0].outcome, SegmentOutcome::Settled { .. }),
+            "{ran:?}"
+        );
+    }
+    core.part = PART.to_owned();
+    core.named = Named::first();
+    let at = (format!("{RESERVE}-ledger"), ORDER.to_owned());
+    let amount = |core: &Core| {
+        core.segments
+            .resting_totals()
+            .get(&at)
+            .map(|a| a.as_str().to_owned())
+    };
+    let one: u128 = AMOUNT.parse().expect("an amount");
+    assert_eq!(
+        amount(&core).map(|a| a.parse::<u128>().expect("an amount")),
+        Some(2 * one),
+        "both parts' values rest at the ledger"
+    );
+    // The first part waits for the customer, and is handed on.
+    world
+        .fleet
+        .world()
+        .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    let mut rerouting = Rerouting::of(&core);
+    let outcome = rerouting.recalculate(&mut core, &mut world).unwrap();
+    assert!(
+        matches!(outcome, Recalculation::NoRoute { .. }),
+        "{outcome:?}"
+    );
+    let mut stuck = Stuck::new();
+    let (order, part, last) = (id(ORDER), id(PART), core.record.record_id().clone());
+    let actor = segments_support::core();
+    on_parts(&mut core, |parts| {
+        stuck.no_route(
+            parts,
+            NoRouteLeft {
+                order: &order,
+                part: &part,
+                outcome: &outcome,
+                last_record: &last,
+                core: &actor,
+            },
+        )
+    })
+    .expect("no route recorded");
+    seed_linked(
+        &mut core,
+        &Named::another(2),
+        &customer(),
+        &linked_record("ord-2"),
+    );
+    let plan = from_the_ledger(&core, "p1-s1-of-2");
+    hand_on_to(&mut core, &mut HandOn::new(), "ord-2", &plan, "acc-ord-2").expect("handed on");
+    assert_eq!(
+        amount(&core),
+        Some(AMOUNT.to_owned()),
+        "the second part's value alone"
+    );
+    segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    assert_eq!(
+        amount(&core),
+        Some(AMOUNT.to_owned()),
+        "as the reopened Core counts it"
+    );
+}
