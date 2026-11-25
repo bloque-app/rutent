@@ -266,7 +266,9 @@ pub enum StuckError {
     /// An identifier Core holds isn't one the state machine's input can carry.
     Id(&'static str),
     /// The authorisation isn't the order's as Core follows it: another destination, or another origin reserve, or
-    /// an order whose first segment isn't a withdrawal from an outer node.
+    /// an order whose first segment isn't a withdrawal from an outer node, where the order has an origin to name: a
+    /// route handed on has no withdrawal segment at all (the holding account's withdrawal isn't one of its segments,
+    /// `T-016-05`), and its authorisation names no origin.
     NotItsAuthorisation,
 }
 
@@ -713,7 +715,8 @@ struct Kept {
 struct Ends {
     destination: Destination,
     /// None where the authorisation names no origin account, or the part starts with no withdrawal from an outer
-    /// node: no delivery back to the origin is admitted then.
+    /// node, as a route handed on doesn't (no segment of it is a withdrawal): no delivery back to the origin is
+    /// admitted then.
     origin: Option<Destination>,
 }
 

@@ -665,6 +665,8 @@ impl Reversals {
                 .segments
                 .claim_transaction(parts.fresh, parts.issued)
                 .map_err(|_| ReversalError::Fresh)?;
+            // A private node's publisher books the reversal Core carries out there: its record may list it.
+            parts.segments.note_reversal_ran(at.order, &transaction);
             let operation = ProviderOperation::Reversal(ReversalOperation {
                 transaction: transaction.as_str().to_owned(),
                 provider: owing.provider.as_str().to_owned(),
@@ -2141,7 +2143,8 @@ fn find<'o>(
 }
 
 /// Whether `segment` starts where `withdrawal`, a part's first segment, took the value: at the inner node the origin
-/// reserve holds it at, in the same asset, so the origin reserve's word is about the segment's origin node.
+/// reserve holds it at, in the same asset, so the origin reserve's word is about the segment's origin node. Only a
+/// route that starts with a withdrawal has one: where a route is handed on, no segment of it is a withdrawal.
 fn starts_where_withdrawn(withdrawal: &stm::Segment, segment: &stm::Segment) -> bool {
     withdrawal.kind == OperationKind::Withdrawal && withdrawal.to == segment.from
 }
@@ -2177,7 +2180,9 @@ fn later_confirmer(
     (delivered != *failed).then_some(delivered)
 }
 
-/// A part's origin reserve: the provider of its withdrawal, its first segment.
+/// A part's origin reserve: the provider of its withdrawal, its first segment. A route handed on has no withdrawal
+/// segment: the holding account's withdrawal for the linked order isn't a segment of the route (`DEC-24`, `T-016-05`),
+/// its first segment starts at an inner node, and it has no origin reserve here, so none is answered for it.
 fn origin_of(part: &stm::Part) -> Result<Id, ReversalError> {
     part.segments
         .first()

@@ -406,6 +406,19 @@ impl Modules for Running<'_> {
         }
     }
 
+    fn status(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        asking: &Id,
+        about: &Statement<Operation>,
+    ) -> rutent_core_orch::segments::Answered {
+        self.platform.world.set_clock(self.clock.instant());
+        let answered = Modules::status(self.platform, effect, provider, asking, about);
+        self.readings.refresh(&self.platform.world);
+        answered
+    }
+
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
         Modules::take_events(self.platform)
     }

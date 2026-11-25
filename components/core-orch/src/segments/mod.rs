@@ -710,6 +710,9 @@ pub struct Segments {
     /// The segments a reopened Core holds as handed over whose operation it couldn't read back, with their effects'
     /// receipts: never handed over again, and in motion (`T-020-46`, `INV-8`).
     unread: BTreeMap<(String, String), Receipt>,
+    /// The transactions of the reversals Core carried out for each order: what a private node's publisher's record may
+    /// list besides the order's segments, and be read (`REQ-ORD-41`, `T-020-47`).
+    reversal_txs: BTreeMap<String, Vec<Id>>,
 }
 
 /// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
@@ -1048,6 +1051,22 @@ impl Segments {
             at.to.asset.id.as_str().to_owned(),
             stands,
         ))
+    }
+
+    /// Notes that Core carried out a reversal of `order` under `transaction`: the record a private node's publisher
+    /// keeps may list it, and a record that does is read, never skipped for it (`REQ-ORD-41`, `T-020-47`).
+    pub(crate) fn note_reversal_ran(&mut self, order: &Id, transaction: &Id) {
+        let ran = self.reversal_txs.entry(order.as_str().to_owned()).or_default();
+        if !ran.contains(transaction) {
+            ran.push(transaction.clone());
+        }
+    }
+
+    /// The transactions of the reversals Core carried out for `order`, in the order it did.
+    pub fn reversal_transactions(&self, order: &Id) -> &[Id] {
+        self.reversal_txs
+            .get(order.as_str())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds
@@ -1557,11 +1576,33 @@ impl Segments {
     /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
     /// its provider, with no result that counts, an outcome unknown, or the person to act (`T-020-11`, the stuck
     /// clock).
+    ///
+    /// A segment that failed and owes its reversal is timed as well, until the reversal completes: its outcome is
+    /// final, but its value isn't back where it came from, so a reversal refused, left unknown or stated short never
+    /// leaves the order resting at `FailedReversalOwed` for ever (`INV-3`'s last branch, `REQ-ORD-3`, `T-020-47`).
     pub fn carried_since(&self, order: &Id, segment: &Id) -> Option<Reading> {
         self.flights
             .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
-            .filter(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)))
+            .filter(|f| {
+                f.carried
+                    && (f.outcome.as_ref().is_none_or(|o| !is_final(o))
+                        || self.reversal_owed(order, segment))
+            })
             .and_then(|f| f.started)
+    }
+
+    /// Whether `segment` of `order` failed and owes its reversal, as the order Core follows has it.
+    fn reversal_owed(&self, order: &Id, segment: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order
+                .parts
+                .iter()
+                .flat_map(|p| &p.segments)
+                .any(|s| {
+                    s.segment_id.as_str() == segment.as_str()
+                        && s.state == stm::SegmentState::FailedReversalOwed
+                })
+        })
     }
 
     /// Every settled segment's actual settlement time as its `settlement` entry recorded it, with that entry's
@@ -2583,6 +2624,11 @@ impl Segments {
         let arrives = handed_on.clone();
         let amount_out = Amount::new(handed_on.clone())
             .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
+        let reversals = self
+            .reversal_txs
+            .get(live.order.as_str())
+            .cloned()
+            .unwrap_or_default();
         let flight = self.flight_mut(at)?;
         let (evidence, graded_at) = match &flight.evidence {
             Some(graded) => graded.clone(),
@@ -2613,6 +2659,7 @@ impl Segments {
             operator: live.operator,
             at: &graded_at,
             kept: &[],
+            reversals: &reversals,
         };
         // What the grading reads and cites is kept and appended first, each once: a receipt is the log's to give.
         let kept = if self.flight(at)?.graded.is_none() {

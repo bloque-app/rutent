@@ -302,8 +302,8 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
 // verifies: NFR-5, INV-4
 #[test]
 fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_moved_twice() {
-    // Core declares no order stuck for a reversal that never completes (`watch` times only a move whose outcome is
-    // not final): what holds is that the segment stays owed, no route starts from the value, and nothing moves again.
+    // A reversal that never completes leaves the segment owed, no route starts from the value, nothing moves again,
+    // and the order, timed from the failure, is declared stuck once its window passes (`T-020-47`).
     for (name, behaviour, why) in [
         ("refused", Behaviour::act(Act::Refuse), NotCounted::Refused),
         (
@@ -345,6 +345,11 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
         );
         core.clock.advance(7 * 86_400);
         let _ = core.watch(order);
+        assert_eq!(
+            state(core, order),
+            OrderState::Stuck,
+            "{name}: the owed reversal is over its window"
+        );
         let _ = core.run(order);
         // Nothing moved twice: no move of value beyond the route's three, the withdrawal and the conversion were
         // asked once each, and no reserve was asked to pay out.
@@ -362,6 +367,43 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
             assert!(again.completed.is_some(), "{name}: {again:?}");
         }
         assert_eq!(effects(core), moves, "{name}");
+        admitted(core);
+    }
+}
+
+/// A reversal the provider refuses, leaves unknown or states short stays owed, and the order it holds the value of is
+/// declared stuck once the failed segment's window passes, never before (`INV-3`'s last branch, `REQ-ORD-3`): such an
+/// order doesn't rest at `FailedReversalOwed` for ever.
+// verifies: INV-3, REQ-ORD-3
+#[test]
+fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck() {
+    use rutent_core_orch::stuck::Watch;
+    for (name, behaviour) in [
+        ("refused", Behaviour::act(Act::Refuse)),
+        ("unknown", Behaviour::act(Act::Unknown)),
+        ("short", Behaviour::short_by(100)),
+    ] {
+        let mut failed = ramp_failing("AC-4", Behaviour::act(Act::Fail));
+        let Failed {
+            core, order, ramp, ..
+        } = &mut failed;
+        core.owe_reversal(order, ramp).expect("owed");
+        core.world().script_for(QUICK, "reversal", behaviour);
+        let asked = core.ask_reversal(order, ramp).expect("asked");
+        assert!(asked.completed.is_none(), "{name}: {asked:?}");
+        // Inside its window nothing is declared.
+        let early = core.watch(order).expect("watched");
+        assert!(matches!(early, Watch::Running), "{name}: {early:?}");
+        assert_eq!(state(core, order), OrderState::FirstSegmentSettled, "{name}");
+        core.clock.advance(7 * 86_400);
+        let late = core.watch(order).expect("watched");
+        assert!(!matches!(late, Watch::Running), "{name}: {late:?}");
+        assert_eq!(state(core, order), OrderState::Stuck, "{name}");
+        assert_eq!(
+            segment_state(core, order, ramp),
+            SegmentState::FailedReversalOwed,
+            "{name}: still owed, and now to the stuck order's resolution"
+        );
         admitted(core);
     }
 }
