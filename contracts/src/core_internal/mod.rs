@@ -94,7 +94,7 @@ pub use relations::{
     RELATIONS, Relation, STATED_RELATIONS, StatedCiting, Through, VerifiedCiting, admit_entry,
     covers,
 };
-pub use standing::state_machine_takes;
+pub use standing::{resting_node, state_machine_takes};
 pub use types::*;
 
 /// The contract's version: the first `## ` heading of `contracts/core-internal/CHANGELOG.md`.

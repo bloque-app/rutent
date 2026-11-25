@@ -522,7 +522,7 @@ pub struct Core {
     mover: Mover,
     /// The operator's holding accounts, the routes the linked orders were accepted on and what Core handed on
     /// (`T-020-26`).
-    holdings: rutent_prov::holding::wallet::Holdings,
+    holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
     linked: BTreeMap<String, rutent_core_orch::stuck::AcceptedRoute>,
     hand_on: rutent_core_orch::hand_on::HandOn,
     /// The notices Core sends, whose operator channel a charge above its formula is raised through (`T-020-14`),
@@ -776,12 +776,16 @@ impl Core {
                 kit::customer().party.as_str().to_owned(),
             );
         }
+        // The operator's holding accounts, shared with policy's sources, which ask whose wallet holds a node's account
+        // (`T-021-16`).
+        let holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>> = Rc::default();
         let records = Records {
             log: Rc::clone(&log),
             orders: Rc::default(),
             declarations: Rc::default(),
             registers,
             verifier: Rc::default(),
+            holdings: Rc::clone(&holdings),
         };
 
         // Policy: the engine holds the log's policy handle, the only one, and reads Core's clock.
@@ -2053,7 +2057,7 @@ impl Core {
         // calls go to; the linked orders' accepted routes; and the log's own handle, read as it stands each time.
         let mut modules = holding::Shared(&running);
         let mut wallets = holding::HeldWallets {
-            holdings: &mut self.holdings,
+            holdings: &self.holdings,
             running: &running,
             bounds: &self.bounds,
             restore,

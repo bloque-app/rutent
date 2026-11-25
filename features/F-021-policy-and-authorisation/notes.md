@@ -1936,6 +1936,286 @@ five lifecycle actions is `T-020-49`'s. No contract shape changes.
   | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
   | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
 
+## T-021-16
+
+Branch `f-021/t-021-16-mover-and-filed-reads`, from `0af4fa21` (wave 40's batch: `T-021-15`'s permissions, `T-020-45`'s
+`Reads::FiledOrder {order, requester}`, `T-020-40`'s parties). Finding 6 of `M3`'s milestone review of 2026-11-24: two
+policy items, one commit each. Edits `components/core-authz/` only (`session/`, `stuck/` and their tests), a `DEC-20`
+path that waits for the owner's click at the release into `main`. No contract shape changes; `contracts/` is
+untouched. No `Source` is added, so no test kit or assembly needs a new answer.
+
+### T-021-16, a filed order's read
+
+- **The rule** (`session/mod.rs`, `read_needs`). `Reads::FiledOrder {order, requester}` was refused whoever read
+  (`T-020-45`'s placeholder). Now: a customer reads it only where its party is the filed request's requester the read
+  names, asking no record (the log holds no acceptance yet, so `Source::OrderParties` can't answer); an agent of that
+  party is held first to the scope its party set for reading (`Scope::CheckRead`, `T-021-05`'s rule, unchanged), so an
+  agent its party didn't scope for reading is refused; the operator's login reads one without a permission as it reads
+  an order's state (`Permission::ReadOrderState`, the contract's README); a regulator or a checker only by a grant whose
+  scope covers it (the existing arm; the contract's `covers` gives only an exact `filed_order` scope); a provider, a
+  verifier and Core's own parts never (the rule's last arm). Every read is recorded, allowed or refused, as before
+  (`check_read`), and the deployment's policy is asked only after the fixed rules let it through.
+- **Tests** (each named test first, against the old rule):
+  - `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` [`REQ-AUZ-8`, `REQ-AUD-12`]
+    (`session/tests.rs`): the contract's fixture (`agent-7` of `acme-treasury`) and a second read, its party setting no
+    read scope (`Says::unscoping`, added: the register of agents' scopes saying no for one agent and call), each refused
+    and recorded, the deployment never asked; a scoped agent, its party's person and a provider, reading a filed
+    request of another party's, and a provider reading one naming itself, each refused and recorded, no record asked.
+    It passed at once, the old rule refusing every filed read; the rule-offs below are its red.
+  - `agent_with_read_scope_reads_its_partys_filed_order` [`REQ-AUZ-7`]: the fixture allowed, its party's person
+    allowed, the operator's listed login allowed (the register asked for `ReadOrderState`, nothing else), the log
+    admitting each (`Kept`, through `admit_entry`); a refusing deployment refuses the agent. Red first: `Refused` for
+    `Allowed`.
+- **Defaults, reversible, each failing closed.**
+  1. ~~A filed order's requester is the read's own word.~~ Changed in round 4: policy asks the order's record
+     (`Source::Requester`); the read's word alone is never enough.
+  2. The operator reads a filed order's status as an order's state (the contract's README), on `ReadOrderState`.
+  3. A regulator or a checker reads a filed order only by a grant whose scope is exactly that filed read.
+- **For `T-020-52` (intake's side, not built here).** For every status intake tells of an order whose acceptance the
+  log doesn't hold yet, intake calls `Reads::check_read` with `ReadCheck { reader: <the caller as external
+  authentication established it, with its stated party, role and kind>, reads: Reads::FiledOrder { order, requester:
+  <the requester of intake's own record of the filed request, never the caller's word> }, permission: None, .. }` and
+  tells the status only on `ReadOutcome::Allowed`; on a refusal it tells no more than a refused reader is told
+  (`T-023-01`). Once the order's acceptance is in the log, it reads `Reads::OrderState { order }` instead, which policy
+  answers from the log's record (`Source::OrderParties`). A customer's own login and the operator's listed login read
+  through the same call. Policy records each check. Since round 4 policy also asks `Source::Requester(order)` of the
+  order's record, so the deployment's sources must answer it from intake's own record of the filed request, as the
+  assembly's `Records` does from `FiledOrders::opened`'s records (`orders`).
+- **Gaps, with owners.** Intake's calls above: `T-020-52`.
+- **Rule-off** (`cargo test -p rutent-core-authz --lib`, each switched off alone by `scratchpad/t-021-16/ruleoff.py`,
+  the file restored from its text before the mutation and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a customer's filed read held to the requester | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded` |
+  | the operator reads a filed order as an order's state | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | a filed order refused whoever reads (the behaviour before the row) | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the operator's filed read asks its login's permission | `agent_with_read_scope_reads_its_partys_filed_order` |
+  | an agent's read held to its party's read scope (`T-021-05`'s rule, for `check_read`) | `agent_without_read_scope_is_refused_a_filed_orders_status_and_the_check_is_recorded`; `agent_outside_its_partys_scope_is_refused`; `agent_without_an_accountable_party_is_refused`; `each_scope_permits_its_own_call_alone` |
+
+### T-021-16, R-MOVER: a decide step's mover is a holder the order involves
+
+- **The rule** (`stuck/mod.rs`, `involves_holder`, asked in `decide_check` after the customer check, on the log
+  policy's handle reads, after the consultation, never permitting). The provider a decision names as holding and moving
+  the value (`resolution.by`, a delivery's or a hand-on's) must be one the log already ties to the order: its origin
+  reserve (an acceptance of the order), a provider of a segment on a route it was given (a taken `route_chosen`,
+  `route_recalculated` or `destination_changed` input of the order), or the holder of a holding account its value
+  rested at (an arrival's reserve held against the order, a holding withdrawal's holder of the order or of the order it
+  was handed on from). Otherwise the decision is refused `not_permitted` and recorded so. Only entries the log holds as
+  `observed` count. The log's own reading (`party_to_the_order`) still takes a permitted decide step's mover as a party
+  whoever it is; policy is now stricter, so no decision it permits names a mover the order didn't already involve.
+- **Test.** `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` [`REQ-AUZ-4`] (`stuck/tests.rs`): on the
+  contract's `world--sd` through a log that admits every entry (`Log::admits`, added for this test; the module's other
+  tests keep the non-admitting log they had), `outside-co` is refused and recorded; `bank-co` (an arrival's reserve),
+  `us-bank` (the origin reserve) and `fx-desk` (a route provider) are permitted, each on a fresh world; a permitted
+  decide step naming `outside-co`, admitted into the log before the request, doesn't make it one; the `world--sdh`
+  hand-on by `fx-desk` is permitted and by `outside-co` refused; and `involves_holder` over three of the contract's
+  admission histories: a holding withdrawal's holder (`holding-bank`, for the order and for the one it was handed on
+  from, no other), a recalculated route's and a changed destination's providers, and an order accepted with no route
+  (its origin reserve only, not another order's arrival reserve or route provider: the contract's
+  `only-a-declared-stuck-part-is-resolved--no-plan-with-its-acceptance` admits `bank-co` moving it, which policy now
+  refuses). Red first, against a stub that took every provider: `Permit` for the refused `outside-co`.
+  `T-021-05`'s and `T-021-06`'s tests pass beside it: `cargo test -p rutent-core-authz --lib`, 148 passed.
+- **What the log refused, sorted.** All test artefacts, none a Core bug: a second permitted decide step, and a later
+  one, under the world's transaction `tx-d3` (`stuck-resolution-transaction-is-its-own`): the permitted cases now each
+  run on a fresh world, and the later decisions name transactions of their own. And policy, not the log, refused the
+  `world--sdh` hand-on as `missing_input`: the test's register kept no evidence under its digest (`31`x32), now kept
+  about `ord-1`.
+- **The conflict this rule opened: a hand-on through a node's holding account** (closed in round 2, below, by (a)). The owner's form
+  choice `hand-on-wallet-holder` (`T-020-33`) has a hand-on's `by` name the holding account of the public inner node
+  the value rests at: the operator's plain wallet, which runs no segment and is no origin reserve and no arrival's
+  reserve. The value lands there by `Holdings::land`, through the platform, and the log records nothing of it. Probed
+  in `rutent-scenarios`' `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet`, the only
+  entries naming `operator-wallet` before the decide step are the catalogue's `accept_module` decision and effect; the
+  wallet's own `holding_withdrawal` record comes only after the hand-on. So, by what the log holds, the wallet is no
+  holder the order involves, and the rule refuses that decision (`not_permitted`): that one scenario test goes red
+  (`assembly_real_wallet`, 6 of 7 pass). Every other stuck and hand-on scenario run passes (`assembly_stuck`,
+  `assembly_hand_on`, `assembly_policy`, `stuck`, `stuck_mover`, `stuck_hand_on`, `hand_on`, `hand_on_record`,
+  `reversing`). Exempting hand-ons isn't a fix: a delivery's `by` is already held to the part's route by Core
+  (`core-orch`'s `stuck::within`), so the hand-on is where R-MOVER's hole is. Default taken, reversible: fail closed,
+  the rule held for every decision, in a commit of its own that can be dropped by hash while the shape lands. The
+  shape wanted, either:
+  - (a, recommended, no contract change) a policy source over the deployment's register of node holding accounts,
+    `Source::HoldingAccount { node }`: whether the provider the input names holds the holding account at inner node
+    `node`, asked by `decide_check` for a decision whose `by` the log ties to nothing, `node` the inner node where the
+    stuck part's value rests (the `to` of its last settled segment on the plan the log holds). The assembly answers it
+    from `Holdings::account(node)`, which `Records` can't reach today (`Holdings` is `Core`'s own field, not shared),
+    so it is an `F-024` edit beside `core-authz`'s, and every test kit answering `Sources` needs the arm; production
+    answers it from `F-030`'s register;
+  - (b, contract) a verified record in core-internal of value landing in a node's holding account, `holding_landing
+    { order, segment, node, holder, record }` (`record` the holder's stated confirmation), written by Core when
+    `Landings::land` answers `Placed`; `involves_holder` and the log's `party_to_the_order` then read its `holder` as
+    the holder of a holding account the order's value rested at. Owner: the contract author.
+- **Defaults, reversible, each failing closed.**
+  1. The mover's holders are the order's own: a provider of a linked order's route counts only where a holding
+     withdrawal or a route of this order names it, not by the hand-on link alone.
+  2. A permitted decide step's mover and a `resolve_stuck` effect's mover never count, or the rule would rest on itself.
+  3. Only entries the log holds as `observed` count (acceptances, taken inputs, arrivals and holding withdrawals are).
+  4. The refusal is `not_permitted`, the class of every other "not the order's" refusal in this module.
+- **Gaps, with owners.**
+  1. ~~The hand-on conflict above.~~ Closed in round 2 by (a).
+  2. ~~The log's `party_to_the_order` still reads a permitted decide step's mover as a party whoever it is.~~ Closed in
+     round 3.
+  3. `core-orch`'s `stuck/party.rs` ports the log's reading; mirrored in round 3.
+  4. The stuck module's other tests run on a log that doesn't admit (`T-021-06`'s); only this row's test admits. Moving
+     them onto an admitting log is `T-021-06`'s owner's.
+- **Rule-off** (as above):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the mover a holder the order involves (any provider passes) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | the decision refused where the mover is no holder (the check answers clear) | the same |
+  | the origin reserve | the same |
+  | a provider on a route chosen | the same |
+  | a provider on a route recalculated or with its destination changed | the same |
+  | a route of the order itself, not another's | the same |
+  | an arrival's reserve | the same, and ten of `T-021-06`'s and `T-021-14`'s, whose world's `bank-co` is held only as an arrival's reserve: `every_policy_call_reaches_the_one_consultation_or_is_marked_unbuilt`, `each_permission_alone_allows_only_its_own_action`, `core_never_decides_or_moves`, `deciding_moving_and_confirming_are_separate_permissions`, `neither_the_customer_nor_the_holders_desk_resolves_its_order`, `one_actor_attempting_both_decide_and_move_is_refused`, `resolution_naming_no_evidence_is_refused`, `step_with_nothing_permitted_behind_it_is_refused`, `two_agents_of_one_party_count_as_one_actor`, `unread_log_or_unreached_register_moves_nothing` |
+  | an arrival held against the order itself | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | a holding withdrawal's holder | the same |
+  | a holding withdrawal of the order handed on to | the same |
+  | a holding withdrawal of the order handed on from | the same |
+  | a permitted decide step's mover never counts | the same, and `no_public_entry_point_of_core_reaches_an_effect_without_a_decision` (the mutation names `Outcome::Permitted`, which the scan watches) |
+  | only entries the log holds as `observed` | none: a second guard. Every kind the arms read is `observed` by the contract, and a permitted decide step matches no arm |
+
+### T-021-16, round 2 (the coordinator's decisions on the first report)
+
+Pre-production, so fixed in this row. Edits `components/core-authz/` (`engine/`'s `Source`, `stuck/`, the tests of
+`stuck/` and `parties/`) and, in `F-024`'s files, the assembly (`conformance/scenarios/src/assembly/`: `mod.rs`,
+`policy.rs`, `holding.rs`, `audit.rs`) and the segments kit (`tests/segments_support/mod.rs`). No contract shape changes.
+
+- **(a), built: the deployment's register of holding accounts.** `Source::HoldingAccount { node }`, the input the
+  mover: whether that provider holds the holding account of inner node `node`. `holder_check` asks it only where the
+  log ties `by` to nothing of the order (`involves_holder` false), and only for the order's held nodes
+  (`held_nodes`: each inner node a segment ends at on a route the order was given, a taken `route_chosen`,
+  `route_recalculated` or `destination_changed` input of the order, each once): never any other node. A yes for one
+  node clears the mover; a no or nothing asks the next node; none yes refuses `not_permitted`; a register out of reach,
+  with no yes, leaves the decision not known (`verifier_unreachable`, as the chain registers give it).
+- **The assembly answers it from Core's own `Holdings`.** `Core`'s `holdings` is now `Rc<RefCell<Holdings>>`, shared
+  with policy's `Records` (`Records::holdings`), so the answer is `Holdings::account(node)`: yes for the wallet holding
+  that node's account, no for another provider, nothing for a node with no account. Each use borrows for one call
+  (`HeldWallets::holder` and `withdraw`, `land_settled`, `land`, `start_handed_on`, the install, `audit`'s readings),
+  so no borrow is held while policy is consulted; `Core::holdings` hands out a `RefMut`, which its callers'
+  `.attributions()` read through.
+- **The test kits answer it.** The segments kit (`tests/segments_support/mod.rs`) and `parties/tests.rs` answer
+  nothing (no node there has a holding account); `stuck/tests.rs`' register keeps `holding_accounts` and answers yes
+  for the listed wallet, nothing otherwise, and can be set out of reach. The other kits already answer nothing for a
+  source they don't list.
+- **Tests.** `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` gains the wallet cases on `world--sdh`:
+  `plain-wallet`, holding `ledger-in`'s account, where segments of `ord-1`'s route end, moves the hand-on; `far-wallet`,
+  holding the account of `ledger-far`, which no route of the order reaches, is refused `not_permitted` and recorded;
+  `plain-wallet` with the register out of reach is not known; each through the admitting log.
+  `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` is green again: `assembly_real_wallet`
+  7 of 7.
+- **Defaults, reversible, each failing closed.** A node a segment only starts from is no held node; nor is one of a
+  linked order's route by the link alone. Per node, nothing and no are alike (the kits answer nothing for a node whose
+  account isn't the mover's).
+- **Gap 2 (the log's party reading): stopped then, a shape was missing; built in round 3, below.** The log can't tell a holding-account mover from the
+  log alone: before the decide step it holds nothing of the wallet but the catalogue's acceptance of its module, and the
+  wallet's `holding_withdrawal` comes only once the linked route starts, so not on an unknown outcome, where the
+  wallet's word is the evidence a confirmation cites (`about_the_linked_order`). Bounding `party_to_the_order`'s decide
+  arm (and its `resolve_stuck` effect arm, which names the same `by`) to the log's other holders would refuse that
+  wallet's word; keeping it only where policy's (a) answer is recorded needs the decision's entry to record it, and
+  core-internal's `What::StuckDecide { request, decision }` has no place for it. `relations.rs` alone can't hold it, so
+  per the instruction nothing was changed in `contracts/` or in `core-orch`'s port. The exact shape:
+  - `What::StuckDecide` gains `held_at: Option<String>` (Rust `types.rs`, `#[serde(default, deserialize_with = "some",
+    skip_serializing_if = "Option::is_none")]`; the entry schema's `stuck_decide` `what`, an optional inner-node id):
+    the inner node whose holding account policy's register says the decision's `by` holds (`Source::HoldingAccount`),
+    present exactly where nothing else the log holds ties `by` to the order. Policy writes it in `decide_stuck`'s
+    entry from `holder_check`'s yes.
+  - A relation, `stuck-decide-held-at-is-a-held-node` (field `held_at`): a permitted decide step naming `held_at` names
+    an inner node a segment ends at on a route this log gave the order, and its `by` is no holder the log otherwise
+    ties to the order (so the field is never a second, unchecked basis).
+  - `party_to_the_order`: a permitted decide step's mover, and a `resolve_stuck` effect's mover, count as a party only
+    where `by` is an origin reserve of the order's acceptance, a provider of a segment on one of its routes, an
+    arrival's reserve held against it, or a holding withdrawal's holder of it, or where the permitting decide step
+    records `held_at` (for the effect, the decide step its permitting move carries out).
+  - Fixtures: `outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-decide-steps-outside-mover` refused
+    (`party`), and `--a-confirmation-on-a-wallet-the-decide-step-held-at-a-node` admitted; the README's row and
+    CHANGELOG lines in core-internal's unreleased 1.0.0; `core-orch`'s `stuck/party.rs` mirrors the arm, which the
+    differential walk over the contract's folder then holds.
+  Owner: the coordinator, to authorise the `types.rs` and schema edit (this row can then build it), or the contract
+  author.
+- **Gap 4** stays as noted (the coordinator's ruling).
+- **Rule-off** (each switched off alone by `scratchpad/t-021-16/ruleoff2.py`, the file restored from its text before the
+  mutation and touched):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the register of holding accounts asked for the order's held nodes | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused`; `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` |
+  | a node's account saying nothing clears nothing (nothing taken as yes) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` (the far wallet) |
+  | a register out of reach leaves not known (refused instead) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+  | the assembly answers from Core's holding accounts (nothing for every node) | `stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` |
+
+### T-021-16, round 3 (the log's party reading, the coordinator's authorisation)
+
+The coordinator authorised the shape round 2 named. Edits `contracts/` (core-internal: `types.rs`, `relations.rs`,
+`standing.rs`, the verified-entry schema, the README, the CHANGELOG, six admission cases, `tests/core-internal.rs`),
+folded into core-internal's unreleased 1.0.0; `components/core-authz/` (`stuck/`); `components/core-orch/`
+(`stuck/party.rs`, the mirror; `hand_on/mod.rs`, one pattern); and the segments kit's `resolving.rs` (`F-024`). All
+`DEC-20` paths but the kit.
+
+- **The shape.** `What::StuckDecide` gains `held_at: Option<Id>` (optional on the wire, the schema's `inner_node`): the
+  inner node whose holding account the deployment's register says the decision's mover holds. Policy writes it from
+  `holder_check`'s yes, on a permit only (`decide_stuck`); a mover the log already ties records none. An `Id`, not the
+  `String` round 2 wrote: every node field of `What` (`HoldingWithdrawal.node`, the holding check's) is one, and the
+  schema refs the identifier, so Rust and the schema agree; the wire is the same.
+- **The row** `stuck-decide-held-at-is-a-held-node` (`REQ-AUZ-4`, `REQ-CAT-23`; relations now 115): a decide step naming
+  `held_at` needs a taken input of its order giving it a route with a segment ending at that node (`missing`
+  otherwise), and is refused on `by` where the log's other entries already tie the mover to the order
+  (`holder_of_the_order`), so the field is never a second basis.
+- **The narrowed party rule** (`party_to_the_order`): a permitted decide step's mover, and a `resolve_stuck` effect's,
+  is a party only where it is a holder the order involves by the log's other entries (`holder_of_the_order`: its origin
+  reserve, a provider of a segment on its routes, an arrival's reserve held against it, a holding withdrawal's holder
+  of it or of the order it was handed on from), or where the permitting decide step records `held_at` (for the effect,
+  the decide step its `carries_out` names, `held_at_of`). `core-orch`'s port mirrors both arms, and the walk over the
+  contract's folder (`orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case`) holds the two
+  readings together.
+- **Cases.** `stuck-decide-held-at-is-a-held-node--a-wallet-held-at-a-node-of-its-route` admitted (`world--sdh`'s
+  hand-on by `plain-wallet`, held at `ledger-in`); `--missing` (`ledger-far`) and `--by` (`fx-desk`, on the route)
+  refused. `outcome-confirmation-cites-verified-evidence--a-confirmation-on-a-mover-its-decide-step-held-at-a-node`
+  admitted (`decided-desk`, its decide step held at `ledger-in`). Two earlier admitted cases on an untied mover,
+  `--a-confirmation-on-the-mover-a-permitted-decide-names` (`decided-desk`) and
+  `--a-confirmation-on-the-mover-its-resolve-effect-names` (`moving-desk`), now break `party`, their only refusal, which
+  `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log` asserts; its in-memory case (`bank-co` with
+  the order's arrival taken out) is now refused on `party`, and admitted once its decide step records `held_at`.
+- **Producers.** core-authz's engine writes the field; the segments kit's `PermitsEveryStep` writes none (it asks no
+  register); core-orch and the assembly build no `StuckDecide` entry themselves, and every pattern over one now ends in
+  `..`. The workspace builds with every target.
+- **The shared target dir.** One run built `rutent-core-orch`'s tests against a stale `rutent-contracts` (no `held_at`)
+  until the contract's sources were touched; the rule-off script touches them after each restore.
+- **Rule-off** (each switched off alone by `scratchpad/t-021-16/ruleoff3.py`, restored and touched; `rutent-contracts`'
+  `core-internal` tests, `rutent-core-orch`'s `party` tests, or core-authz's lib tests):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | the row `stuck-decide-held-at-is-a-held-node` (cites nothing) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the log's party rule: a decide step's mover only where tied or `held_at` | the same; `stuck_resolution_evidence_made_outside_the_order_is_refused_by_the_log`; core-orch's `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case` |
+  | the log's party rule: a resolution's mover only where tied or `held_at` | the same three |
+  | the log's party rule: `held_at` makes the mover a party | the same three |
+  | the port's mirror of the decide-step arm | `orchestrations_reading_of_a_party_follows_the_logs_over_every_admission_case` |
+  | policy records `held_at` on its yes | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+
+### T-021-16, round 4 (the review of `f4a125c9`, PR #305)
+
+| # | Finding | Answer | Test |
+|---|---|---|---|
+| 1 | Should-fix: the filed read checked the read against itself (`requester == party`), so a customer naming itself read any filed order | The customer arm, and so an agent's, asks the order's record (`Source::Requester(order)`, the input the reader's party) beside the read's naming it: a no or nothing refuses `not_permitted` before the deployment is asked, a record out of reach leaves the fixed rules not known, which a read answers as refused | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused` (the reviewer's `mallory`, on no, nothing and out of reach; `cust-1`, whom the record names, reads it); `agent_with_read_scope_reads_its_partys_filed_order` now asks the record |
+| 2 | Low: `held_at` and its row took any inner node of any route | Narrowed to the stuck part's resting node: `resting_node(order, part, history)`, public in core-internal, the state machine's `value_at` of the part as the log's taken inputs leave it. The row gains field `at`; policy asks the register for that node alone | `stuck-decide-held-at-is-a-held-node--at` (a world whose `p2` runs through `ledger-mid` while `p3` rests at `ledger-in`; `mid-wallet` held at `ledger-mid` refused on `at`); the core-authz test's two-node cases (`mid-wallet` refused, `plain-wallet` permitted and recorded at `ledger-in`) |
+| 3 | Low: the assembly borrowed `Holdings` for `HoldingAccount` | `try_borrow`, a failed borrow answering out of reach | none: no flow holds the register mutably while policy is consulted |
+
+- **What changed besides.** core-orch's port needed no edit (it reads `held_at`'s presence, which the row now holds to the
+  resting node). The `--at` world is an admission case, not a `world--` log: its history is `world--sdh`'s with `p2`'s
+  three segments moved to `ledger-mid` (the withdrawal ends there, the exchange stays there, the deposit leaves from
+  there). A first attempt moved `p3-s2`, an exchange, off one node, which the state machine refuses ("an exchange
+  stays at one node"): a test artefact, fixed by moving `p2` instead.
+- **Rule-off** (`scratchpad/t-021-16/ruleoff4.py`, each alone, restored and touched, `contracts/src/lib.rs` with them):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | a filed read asks the order's record of its requester | `customer_naming_itself_the_requester_of_anothers_filed_order_is_refused`; `agent_with_read_scope_reads_its_partys_filed_order` |
+  | the row's `held_at` is the stuck part's resting node (field `at`) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | policy asks the register for the resting node alone (another node asked first) | `decide_step_naming_a_mover_the_order_does_not_involve_is_refused` |
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as
