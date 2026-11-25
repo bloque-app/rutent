@@ -496,13 +496,19 @@ impl Env {
 
     /// Policy's entry of the user's session, opened for `holder`.
     fn session_opened(&self, holder: &Id) {
+        self.session_opened_as(holder, SESSION, SESSION_ENDS);
+    }
+
+    /// Policy's entry of the session `name`, opened for `holder` until `ends`: the log an acceptance given in it rests
+    /// on (`acceptance-is-asked-in-the-users-session`).
+    pub fn session_opened_as(&self, holder: &Id, name: &str, ends: u64) {
         let at = now(&self.clock);
         let request = SessionRequest {
-            request: id("req-session-1"),
+            request: id(&format!("req-{name}")),
             account: id("acct-1"),
             holder: holder.clone(),
             requester: customer(),
-            until: Timestamp::new(Instant(SESSION_ENDS).rfc3339().unwrap()).unwrap(),
+            until: Timestamp::new(Instant(ends).rfc3339().unwrap()).unwrap(),
             at: at.clone(),
         };
         let entry = Entry::Verified(VerifiedEntry {
@@ -511,8 +517,8 @@ impl Env {
             what: What::OpenSession {
                 request,
                 opened: Some(Opened {
-                    session: id(SESSION),
-                    expires_at: Timestamp::new(Instant(SESSION_ENDS).rfc3339().unwrap()).unwrap(),
+                    session: id(name),
+                    expires_at: Timestamp::new(Instant(ends).rfc3339().unwrap()).unwrap(),
                 }),
             },
             when: When {

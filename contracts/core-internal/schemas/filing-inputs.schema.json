@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:filing-inputs",
+  "title": "A filing's inputs and objective",
+  "description": "The inputs and objective an order filed on an automatic deposit carries, as the operator states them when the filing holds the deposit against its order (T-020-51): the body of a statement kept in the evidence store behind the salted commitment the arrival holding the deposit names, so a Core that reopens reads the filing back and the log holds no account (REQ-AUD-6). It names no transaction and is appended about nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "order",
+    "inputs",
+    "objective"
+  ],
+  "properties": {
+    "order": {
+      "description": "The order.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "inputs": {
+      "description": "Each input, by name; empty where the filing carries none.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "objective": {
+      "description": "What the router optimises the order's route for.",
+      "$ref": "urn:rutent:router-api:request#/$defs/objective"
+    },
+    "needs": {
+      "description": "The judgements the route's tuples need of a person, as the filing named them; absent where it names none. The kept statement fixes them with the rest of the filing (T-020-51).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/need"
+      }
+    }
+  },
+  "$defs": {
+    "need": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tuple",
+        "person",
+        "verifier",
+        "subject",
+        "class"
+      ],
+      "properties": {
+        "tuple": {
+          "$ref": "urn:rutent:router-api:policy-bounds#/$defs/tuple_key"
+        },
+        "person": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "verifier": {
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "class": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

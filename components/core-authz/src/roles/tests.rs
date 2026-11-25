@@ -647,6 +647,10 @@ fn every_setting_asked(caller: &Actor) -> Vec<(SettingKind, DecisionRequest)> {
             SettingKind::Cutover,
             "decision-request-to-set-a-protocol-versions-cutover",
         ),
+        (
+            SettingKind::DepositWait,
+            "decision-request-to-set-the-deposit-wait",
+        ),
     ];
     fixtures
         .into_iter()
@@ -659,7 +663,8 @@ fn every_setting_asked(caller: &Actor) -> Vec<(SettingKind, DecisionRequest)> {
                 | SettingKind::ProviderCeiling
                 | SettingKind::PublisherCeiling
                 | SettingKind::Cadence
-                | SettingKind::Cutover => {}
+                | SettingKind::Cutover
+                | SettingKind::DepositWait => {}
             }
             let path = format!(
                 "{}/../../contracts/core-internal/fixtures/valid/{name}.json",
@@ -1284,9 +1289,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 33, "every permission of the register's");
+    assert_eq!(all.len(), 34, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 36, "every call a permission lets through");
+    assert_eq!(calls.len(), 37, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3594,7 +3599,7 @@ fn another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and
             "{permission:?}"
         );
     }
-    assert_eq!(asked, 11 + 8, "every catalogue change and every setting");
+    assert_eq!(asked, 11 + 9, "every catalogue change and every setting");
     assert_eq!(
         policy.policy.1.ruled, 0,
         "none reached the deployment's policy"

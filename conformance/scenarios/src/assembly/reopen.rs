@@ -216,6 +216,33 @@ impl Core {
             };
             Intake::reopened(&history, &mut reading)
         };
+        // The arrivals, the deposits held and the waits for a customer, rebuilt from the log as well (`T-020-51`): each
+        // order still waiting for its customer is told to policy's sources and to the assembly's filings again.
+        self.arrivals = rutent_core_orch::arrival::Arrivals::reopened(&history, &mut self.kept);
+        for (_, entry) in &history {
+            let Entry::Verified(VerifiedEntry {
+                what:
+                    What::Shown {
+                        order,
+                        awaiting: Some(_),
+                        ..
+                    },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            if let Some(record) = self.arrivals.record(order) {
+                self.records
+                    .orders
+                    .borrow_mut()
+                    .insert(order.as_str().to_owned(), record);
+            }
+            if let Some(filing) = self.arrivals.filing_of(order) {
+                self.filings
+                    .insert(order.as_str().to_owned(), filing.clone());
+            }
+        }
         let orders: Vec<Id> = self.intake.orders().filter_map(Id::new).collect();
         for order in &orders {
             if let Some(record) = self.intake.record(order) {

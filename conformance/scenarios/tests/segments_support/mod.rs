@@ -1523,6 +1523,8 @@ fn seed_arrival(
                     earlier: None,
                     holder: None,
                     destination: None,
+                    request: None,
+                    inputs: None,
                 },
                 Outcome::Observed {},
             ),

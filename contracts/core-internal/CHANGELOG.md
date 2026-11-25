@@ -21,6 +21,18 @@
     reserve's notice names an automatic deposit to go to with who set it for whom, and three fields of
     `automatic-deposit-rests-on-its-arrival`: the arrival's holder is the acceptance's requester, a destination it names
     is the one (and to asset) of the authorisation the acceptance names, and it was set for that requester.
+  - `T-020-51` (finding 8): `OperatorSetting::DepositWait {seconds}` (`deposit_wait`, `SettingKind::DepositWait`), a ninth
+    operator setting, the lifetime of an order's wait for its customer on an automatic deposit. One valid fixture
+    (`decision-request-to-set-the-deposit-wait`) and one invalid (`--of-no-seconds`).
+  - `T-020-51` (finding 8, gap 1): `arrival.request` and `arrival.inputs` (both optional), the request identifier of the
+    filing that holds a deposit against its order and the salted commitment of the operator's statement of the filing's
+    inputs and objective, a new shape `filing-inputs` (`FilingInputs`, `FILING_INPUTS_SHAPE`; a sibling of `order-inputs`,
+    whose inputs are never empty and which states no objective), kept in the evidence store so a Core that reopens reads
+    a waiting filing back and the log holds no account (`REQ-AUD-6`, `NFR-6`); row
+    `filed-orders-inputs-are-a-kept-statement`, its stated entry verified, of that shape, the deployment operator's own
+    and about nothing. Fixtures: valid `filing-inputs-of-a-filed-order`,
+    `verified-entry-of-an-arrival-holding-a-deposit-with-its-filings-inputs`; invalid `filing-inputs-without-its-objective`;
+    admission `--the-operators-statement` (admitted), `--missing`, `--verified`, `--inputs`, `--maker`, `--about`.
   - `Reads::FiledOrder {order, requester}`, a read of an order whose parties the log doesn't hold yet (`T-021-16`).
   - R-MOVER (`T-021-16`, `F-025`'s second pass): `stuck_decide.held_at` (optional), the inner node whose holding account
     the deployment's register says the decision's mover holds, which policy records where nothing else the log holds
@@ -50,8 +62,9 @@
     README no longer says, is here.
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (four rounds) and `T-021-16`'s rounds, merged beside it: twenty-nine schemas, 182 valid
-  fixtures and 182 invalid, 762 admission cases and 58 attribution cases; 116 relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
+  row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s and `T-020-51`'s rounds, merged beside it:
+  thirty schemas, 185 valid fixtures and 184 invalid, 768 admission cases and 58 attribution cases (counted from the files); 117
+  relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every
   action that moves value, posts a route, changes the catalogue or moves a stuck order's value, answering permit, refuse

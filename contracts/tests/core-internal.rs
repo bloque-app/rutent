@@ -40,7 +40,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The contract's shapes; each has `schemas/<shape>.schema.json` and the `$id` `urn:rutent:core-internal:<shape>`.
-const SHAPES: [&str; 29] = [
+const SHAPES: [&str; 30] = [
     "common",
     "receipt",
     "decision-request",
@@ -70,6 +70,7 @@ const SHAPES: [&str; 29] = [
     "checkpoint",
     "checkpoint-opening",
     "order-inputs",
+    "filing-inputs",
 ];
 
 /// The other contracts whose shapes these schemas refer to by `$id`, directly or through another's.
@@ -334,7 +335,17 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 122] = [
+const SCHEMA_RULES: [SchemaRule; 124] = [
+    (
+        "filing-inputs-without-its-objective",
+        &[("", "required")],
+        "missing field `objective`",
+    ),
+    (
+        "decision-request-to-set-the-deposit-wait-of-no-seconds",
+        &[("/action/setting", "required")],
+        "missing field `seconds`",
+    ),
     (
         "order-inputs-naming-no-input",
         &[("/inputs", "minProperties")],
@@ -1083,6 +1094,7 @@ fn through_rust(shape: &str, value: &Value) -> Result<Value, String> {
         "checkpoint" => round_trip::<Checkpoint>(value),
         "checkpoint-opening" => round_trip::<CheckpointOpening>(value),
         "order-inputs" => round_trip::<rutent_contracts::core_internal::OrderInputs>(value),
+        "filing-inputs" => round_trip::<rutent_contracts::core_internal::FilingInputs>(value),
         other => Err(format!("no Rust type for {other}")),
     }
 }
@@ -4808,6 +4820,7 @@ fn operator_setting_is_a_catalogue_change_of_its_own() {
         SettingKind::PublisherCeiling,
         SettingKind::Cadence,
         SettingKind::Cutover,
+        SettingKind::DepositWait,
     ];
     let key = |k: &SettingKind| format!("{k:?}");
     kinds.sort_by_key(key);
@@ -4829,6 +4842,41 @@ fn operator_setting_is_a_catalogue_change_of_its_own() {
     .unwrap();
     assert_eq!(cadence.kind(), SettingKind::Cadence);
     assert_eq!(cadence.provider(), None);
+}
+
+/// Finding 8 (`T-020-51`): how long a wait for a customer lasts is an operator's setting of its own, `deposit_wait`, set
+/// by a catalogue change like the others and held by policy under a permission of its own; a lifetime of no seconds is
+/// no setting.
+// verifies: REQ-AUZ-6
+#[test]
+fn deposit_wait_setting_is_an_operator_setting_of_its_own() {
+    let name = "decision-request-to-set-the-deposit-wait";
+    let request: DecisionRequest = serde_json::from_value(
+        fixtures("valid")
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is a valid fixture"))
+            .1,
+    )
+    .unwrap();
+    let Action::ChangeCatalogue {
+        change,
+        setting: Some(setting),
+        ..
+    } = &request.action
+    else {
+        panic!("it sets a setting");
+    };
+    assert_eq!(*change, CatalogueChange::SetSetting);
+    assert_eq!(setting.kind(), SettingKind::DepositWait);
+    assert!(matches!(&**setting, OperatorSetting::DepositWait { .. }));
+    assert_eq!(
+        setting.provider(),
+        None,
+        "a setting of the whole deployment"
+    );
+    assert_ne!(setting.kind(), SettingKind::Cadence);
+    assert_rejected("decision-request-to-set-the-deposit-wait-of-no-seconds");
 }
 
 /// Finding 4 and `M2`'s item 6: each of the platform's lifecycle actions (`accept`, `withdraw`, `revoke`,
