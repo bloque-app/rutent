@@ -7324,14 +7324,76 @@ name: the assembly's `reopened` (`conformance/scenarios/src/assembly/mod.rs`, `h
   and is never asked again; a linked start the log holds whose record can't be read back refuses every record, the one
   the log took included, the caller reading its receipt from the log; a change or resume retried after a reopening is refused `NotWaiting` where a Core that ran
   on would answer its receipt (nothing is appended twice either way).
+- **Fix round 3** (the reviewer's CHANGES at `935f7d2c`, PR #300 comment 7153083056; `m3`'s `7b9d41c5` merged
+  first; the lead's decisions on its open points):
+  - *A, `person_records.rs:201`.* `order_opened.parties` names the payer only as a party identifier (`Parties.payer`,
+    an `Id`), so no contract change: `records_after_a_third_party_payment_hold_a_reference_at_most` admits the
+    payer's reference in the acceptance and in `order_opened`, each in `parties.payer` alone, an identity as a
+    reference as `REQ-AUD-6` allows, and says so in its doc.
+  - *B, retired holds.* `hold_in_flight` holds no segment the state machine rebuilt from the log retired
+    (`retired_in_the_log`, the part's retired segments through `Segments::retired`): one a recalculation, a resume or
+    a destination change replaced; the unread segments held at their stated value skip them too. The reviewer's probe was written first and seen red
+    (`[("sim-reserve-a", "1000000")]` against `[]`): `segment_a_destination_change_retired_is_not_held_again_after_a_restart`
+    (`tests/hand_on.rs`, an unread variant inside it, the kit's `reopen_segments_reading`), with
+    `segment_a_hand_on_retired_is_not_held_again_after_a_restart` (`tests/hand_on_record.rs`) beside it.
+  - *C, the whole-order restore through its call site.* The assembly's `Core::withdraw_for_a_hand_on` (an `F-024`
+    file) runs a hand-on's withdrawal through `Wallets::withdraw` with the log's resting value of the order at the
+    node given: `hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node`
+    (`tests/assembly_real_wallet.rs`): two values of the order at the plain wallet's node, the module restarted,
+    one part withdrawn; the wallet still holds the other value and the host attributes it.
+  - *Gap 2, the measures' queue.* `Segments::reopened` rebuilds the writer's queue a restart drops
+    (`measure_what_the_log_lacks`): each rebuilt segment ending and each completed reversal gives its records again,
+    citing what the Core that ran on cites (the effect, the provider's answer as the log took it, a failed result;
+    the answers' records the log's `decision_record` entry, which rebuilt flights now name), timed at the log's
+    record of the ending, and every record the log already holds is dropped (`Measuring::drop_written`), so a writer
+    cut short keeps the rest. Tests: `measure_records_a_restart_dropped_are_written_once_after_core_reopens`
+    (`tests/charge_check.rs`, written first and seen red, 0 against 6) and
+    `reversal_completed_before_core_reopens_is_measured_once` (`tests/measures_called.rs`).
+  - *Low, a change or resume retried after a reopening.* Left as it is, named: answering the log's receipt would mean
+    rebuilding a `Changed`'s route end and the value's place from the state before the change; a Core that ran on
+    answers `NotWaiting` too once the log took its change, so the order carries on either way.
+  - *Low D.* `pending_hand_on_is_rebuilt_from_the_log_through_the_assembly` carries `REQ-ORD-43, INV-4` where PLAN
+    lists `REQ-ORD-43`; for the lead with the new names at merge.
+- **Fix round 3's new test names for `PLAN.md`:**
+  `segment_a_destination_change_retired_is_not_held_again_after_a_restart` [`REQ-ORD-8`],
+  `segment_a_hand_on_retired_is_not_held_again_after_a_restart` [`REQ-ORD-8`],
+  `hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node` [`INV-1`, `REQ-ORD-43`],
+  `measure_records_a_restart_dropped_are_written_once_after_core_reopens` [`REQ-AUD-7`, `NFR-6`],
+  `reversal_completed_before_core_reopens_is_measured_once` [`REQ-AUD-7`, `NFR-6`].
+- **Fix round 3's rule-off table** (script `ruleoff4.py` in the row's scratch folder):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a retired segment held again (`hold_in_flight`) | `segment_a_destination_change_retired_is_not_held_again_after_a_restart` |
+  | an unread retired segment held again | the same (its unread variant) |
+  | a hand-on's restore of the part alone at its call site (`stuck/handing.rs:178`) | `hand_on_after_a_module_restart_restores_the_orders_whole_value_at_the_node` |
+  | no measure records rebuilt | `measure_records_a_restart_dropped_are_written_once_after_core_reopens`, `reversal_completed_before_core_reopens_is_measured_once` |
+  | records the log holds kept again (`drop_written`) | both |
+  | no reversal record rebuilt | `reversal_completed_before_core_reopens_is_measured_once` |
+  | a rebuilt ending cites no answer | `measure_records_a_restart_dropped_are_written_once_after_core_reopens` |
+  | rebuilt answers cite no decision record entry | the same |
+
+  Two further branches first written into the retired check (a segment in no current plan, a part handed on)
+  turned no test red: `Segments::retired` covers the change, and the hand-on's retired deposit was held by nothing
+  already. They were taken out, and `segment_a_hand_on_retired_is_not_held_again_after_a_restart` stays as the
+  hand-on's guard.
+
+- **Fix round 3's local checks** (through the lock, `contracts/src/lib.rs` touched first, the row's private
+  plain-wallet build): fmt; workspace clippy `-D warnings`; `cargo test -p` `rutent-core-orch`, `rutent-core-authz
+  --lib`, `rutent-contracts`, `rutent-prov`; `rutent-scenarios`' `reopened`, `hand_on`, `hand_on_record`,
+  `segments`, `landing`, `private_nodes`, `charge_check`, `assembly_real_wallet`, `assembly`, `assembly_stuck`,
+  `assembly_hand_on`, `assembly_intake`, `assembly_wiring`, `holds`, `stuck_hand_on`, `stuck`, `closing`,
+  `invariants`, `audit_scenarios`, `stuck_mover`, `person_records`, `measures_called`; CI's seeded step
+  (`RUTENT_SCENARIO_SEEDS=11,12,13,14,15`, `assembly` and `invariants`); the doc check; plan-check and tag-check
+  `--strict` (0 findings, 2335 tests tagged); the contract guard against `origin/develop` (1951 paths, no
+  violations). All pass.
 - **Gaps, with owners.**
-  1. The notices' and arrivals' state after a reopening (filings, waits): `T-020-51`.
-  2. The measures and the pair bookkeeping (`write_measures`): `T-020-48`, which runs them on Core's schedule.
-  3. A move in motion when Core stopped answers unknown after the reopening (`Kept::Lost`); asking its status again at
-     the provider's cadence is `T-020-47`'s and `T-020-48`'s ("a status question again for each segment still
-     unknown").
-  4. `Platform::open` with a file record exists, but no assembly opens one; a restarted platform holds no release
-     until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, the real restart in the invariant runs.
-  5. The carry-over's stale comments in core-orch's stuck and reversal code: none found in `stuck/` and `reversal/`;
-     the durability comments of `Segments`, `Stuck`, `HandOn`, `follow_recorded` and the assembly's `reopened` say what
-     is rebuilt. For the reviewer to point at any left.
+  1. The arrivals' state after a reopening (filings, waits): `T-020-51`. The notices' state is `T-023-03`'s and
+     `T-023-04`'s (merged: the notices' summary is read on reopening, so `wait_ended` is sent once).
+  2. A segment left unknown is asked again at its provider's cadence: `T-020-47` (`Modules::status`) and `T-020-48`
+     (the cadence). A stuck move in motion when Core stopped (the mover's `Kept::Lost`) is settled by the existing
+     report and confirmation (`AC-6`), which fails closed and needs no new row.
+  3. `Platform::open` with a file record exists, but no assembly opens one; a restarted platform holds no release
+     until each is admitted again (`T-013-10`'s carry-over): `T-024-21`, which reopens the platform from its record.
+  4. `stated_value` holds nothing where neither the question's bytes nor `order_opened`'s amount in that asset can be
+     read: two losses at once, noted, not built for.
