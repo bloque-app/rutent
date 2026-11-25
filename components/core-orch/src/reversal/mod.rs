@@ -529,9 +529,6 @@ pub struct Reversals {
     statuses: BTreeMap<(String, String), StatusState>,
     /// The segments whose unknown outcome Core asked the status of once already ([`Reversals::ask_unknown_status`]).
     unknown_asked: std::collections::BTreeSet<(String, String)>,
-    /// The segments whose result statement kept is the answer to a status question of Core's: the provider's own result
-    /// of the segment, kept once, so a later answer of its own is never a second result statement for it (`T-020-47`).
-    status_kept: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Reversals {
@@ -979,25 +976,13 @@ impl Reversals {
             held_to_its_question(&bytes, &statement.statement, &state.transaction, &provider)
         });
         let kept = match answer {
-            // A result already kept for the segment, however it came, is the one result: a status answer is never a
-            // second (`T-020-47`).
-            Some(_) if self.later.get(&at_key).is_some_and(|k| !k.is_empty()) => {
-                let first = self.later.get_mut(&at_key).and_then(|k| k.first_mut());
-                match first {
-                    Some((_, step)) => Some(step.append(parts.log)?),
-                    None => None,
-                }
-            }
             Some(bytes) => match self.later(
                 parts,
                 at,
                 &bytes,
                 &journal::provider_maker(parts.catalogue, parts.operator, &provider),
             ) {
-                Ok(receipt) => {
-                    self.status_kept.insert(at_key.clone());
-                    Some(receipt)
-                }
+                Ok(receipt) => Some(receipt),
                 Err(ReversalError::Unrecordable) => {
                     if let Some(state) = self.statuses.get_mut(&at_key) {
                         state.answer = None;
@@ -1726,11 +1711,15 @@ impl Reversals {
             return Err(ReversalError::NotAnswered);
         }
         let at_key = key(at.order, at.segment);
-        let status_kept = self.status_kept.contains(&at_key);
         let kept = self.later.entry(at_key).or_default();
-        // A segment's result is kept once: what a status question of Core's brought is the provider's result of it,
-        // and a later answer of its own is not a second result statement (`T-020-47`).
-        if status_kept && let Some((_, step)) = kept.first_mut() {
+        // The same result held, not a second: a statement whose body is one already kept (it may be made at another time
+        // and signed again) is that entry. One whose body differs is kept beside it, a further statement that moves
+        // nothing, whatever it says, so a contradiction is on the log (`REQ-AUD-2`, `REQ-AUD-5`, `T-020-47`).
+        let body = body_of(bytes);
+        if body.is_some()
+            && !kept.iter().any(|(b, _)| b == bytes)
+            && let Some((_, step)) = kept.iter_mut().find(|(b, _)| body_of(b) == body)
+        {
             return Ok(step.append(parts.log)?);
         }
         if !kept.iter().any(|(b, _)| b == bytes) {
@@ -2263,6 +2252,14 @@ fn later_confirmer(
         .find(|s| s.segment_id != segment.segment_id && s.to == segment.from)
         .and_then(|s| Id::new(s.provider.as_str()))?;
     (delivered != *failed).then_some(delivered)
+}
+
+/// The body of a statement in its envelope, which is what it says: the envelope's time and signature aside.
+fn body_of(bytes: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()?
+        .get("statement")
+        .cloned()
 }
 
 /// What a provider's answer to Core's status question gives Core to keep: the provider's own result of the transaction

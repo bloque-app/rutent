@@ -624,6 +624,51 @@ fn status_answer_is_never_a_second_result_statement_for_its_segment() {
     admitted(&core);
 }
 
+/// A later statement of another body than the result Core's status question brought is kept beside it, a further
+/// statement that moves nothing: the log holds what the provider said twice (`REQ-AUD-2`, `REQ-AUD-5`, `INV-4`,
+/// `T-020-47`).
+// verifies: INV-4, REQ-AUD-5
+#[test]
+fn status_answer_and_a_later_statement_of_another_body_are_both_kept_and_move_nothing() {
+    let Failed {
+        mut core,
+        order,
+        ramp,
+        ..
+    } = ramp_left_unknown();
+    let asked = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put");
+    let receipt = asked.answer.expect("the answer was kept");
+    let kept = core.kept_result(&order, &ramp).expect("kept");
+    let mut value: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    value["statement"]["outcome"] = serde_json::json!({ "status": "unknown" });
+    let other = serde_json::to_vec(&value).expect("JSON");
+    let (log_before, inputs_before, effects_before) = (
+        core.log().entries().len(),
+        core.inputs().len(),
+        effects(&core),
+    );
+    let second = core
+        .late_delivery(&order, &ramp, &other)
+        .expect("kept as a further statement");
+    assert_ne!(second, receipt, "not the result held");
+    assert_eq!(
+        core.log().entries().len(),
+        log_before + 1,
+        "one more statement"
+    );
+    assert_eq!(core.inputs().len(), inputs_before, "no input");
+    assert_eq!(effects(&core), effects_before, "no value moves");
+    assert!(matches!(
+        core.followed(&order).expect("followed").parts[0].segments[2].state,
+        SegmentState::OutcomeUnknown
+    ));
+    admitted(&core);
+}
+
 /// The transactions of the reversals Core carried out are held again by a Core that reopened: a private node's record
 /// that lists one is still the order's own (`REQ-ORD-41`, `T-020-47`).
 // verifies: REQ-ORD-41

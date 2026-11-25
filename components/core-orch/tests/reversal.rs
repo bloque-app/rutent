@@ -2829,6 +2829,95 @@ fn late_delivery_is_recorded_and_moves_nothing() {
     assert_eq!(world.log.len(), appended);
 }
 
+/// A late statement whose body is one Core holds, made at another time and signed again, is that result held: no second
+/// statement. One whose body differs is kept beside it, a further statement that moves nothing, so a provider that
+/// contradicts itself is on the log (`REQ-AUD-2`, `REQ-AUD-5`, `INV-4`, `T-020-47`).
+// verifies: REQ-AUD-2, INV-4
+#[test]
+fn late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not() {
+    let mut world = exchange_failed();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let delivered = |amount_out: &str| {
+        result(
+            EXCHANGE,
+            "conversion",
+            tx.as_str(),
+            json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": amount_out, "rate": "2.5",
+                "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
+        )
+    };
+    let held = delivered("249250500");
+    let mut keep = |world: &mut World, bytes: &[u8]| {
+        world
+            .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
+            .unwrap()
+    };
+    let first = keep(&mut world, &held);
+    let mark = world.log.len();
+    // The same body, made at another time.
+    let mut again: serde_json::Value = serde_json::from_slice(&held).unwrap();
+    again["made_at"] = "2026-11-06T15:04:06Z".into();
+    let again = serde_json::to_vec(&again).unwrap();
+    assert_ne!(again, held);
+    assert_eq!(keep(&mut world, &again), first, "the result held");
+    assert_eq!(world.log.len(), mark, "no second statement");
+    // Another body: the provider says another thing, kept beside the first.
+    let other = delivered("249000000");
+    let second = keep(&mut world, &other);
+    assert_ne!(second, first);
+    assert_eq!(world.log.len(), mark + 1, "one further statement");
+    assert_eq!(keep(&mut world, &other), second, "kept once");
+    assert!(
+        world.whats_from(mark).is_empty(),
+        "nothing moved, nothing recorded but statements"
+    );
+    assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
+    assert!(world.held("p1-s2"));
+    assert_eq!(
+        world.admitted_from(mark - 1),
+        Ok(world.log.len() - mark + 1)
+    );
+}
+
+/// A statement that says the outcome is unknown, kept, shadows no final delivery after it: the final one is kept as the
+/// provider's result of the segment, beside the unknown one, and moves nothing twice (`REQ-AUD-5`, `INV-4`, `T-020-47`).
+// verifies: REQ-AUD-5, INV-4
+#[test]
+fn kept_unknown_statement_does_not_shadow_a_later_final_delivery() {
+    let mut world = exchange_failed();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let say = |outcome: serde_json::Value| result(EXCHANGE, "conversion", tx.as_str(), outcome);
+    let unknown = say(json!({ "status": "unknown" }));
+    let delivered = say(
+        json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+            "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
+    );
+    let mut keep = |world: &mut World, bytes: &[u8]| {
+        world
+            .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
+            .unwrap()
+    };
+    let before = world.log.len();
+    let kept_unknown = keep(&mut world, &unknown);
+    let kept_final = keep(&mut world, &delivered);
+    assert_ne!(
+        kept_final, kept_unknown,
+        "the final delivery is not the unknown statement"
+    );
+    assert_eq!(world.log.len(), before + 2, "both statements, once each");
+    // The final one again, made at another time, is the final result held, not the unknown one.
+    let mut again: serde_json::Value = serde_json::from_slice(&delivered).unwrap();
+    again["made_at"] = "2026-11-06T15:04:06Z".into();
+    let again = serde_json::to_vec(&again).unwrap();
+    assert_eq!(keep(&mut world, &again), kept_final);
+    assert_eq!(world.log.len(), before + 2);
+    assert!(world.whats_from(before).is_empty(), "nothing moved");
+    assert_eq!(world.state_of("p1-s2"), SegmentState::FailedReversalOwed);
+    assert_eq!(world.admitted_from(before), Ok(2));
+}
+
 /// The customer's acceptance is policy's permitted decision of its own `accept_fault` for this showing, and the
 /// carrier cites that decision: a refused decision, one of another caller's request, one answering another request,
 /// another action, another segment's and another showing's are each no acceptance, and change no carrier.
