@@ -628,6 +628,8 @@ impl authz::Sources for Register {
             }
             // The customer authorises each order the kit seeds through the engine (`T-021-04`).
             authz::Source::Requester(_) => yes(need.input == customer().party),
+            // The kit registers no holding account at any node: nothing is said of one (`T-021-16`).
+            authz::Source::HoldingAccount { .. } => Reply::Missing,
             _ => Reply::Missing,
         }
     }

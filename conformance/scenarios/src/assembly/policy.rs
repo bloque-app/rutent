@@ -187,6 +187,9 @@ pub struct Records {
     pub(crate) registers: Rc<RefCell<Registers>>,
     /// What the verifier stand-in does when policy asks it for a judgement (`T-024-07`).
     pub(crate) verifier: Rc<std::cell::Cell<Verifier>>,
+    /// The operator's holding accounts, Core's own (`T-020-33`): which wallet holds each public node's account, which
+    /// a stuck order's decision whose mover the log ties to nothing asks (`Source::HoldingAccount`, `T-021-16`).
+    pub(crate) holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
 }
 
 /// What the verifier stand-in does when policy asks it for a judgement: it is reached and says nothing (the default,
@@ -447,6 +450,12 @@ impl authz::Sources for Records {
                 Verifier::No => said(false),
             },
             Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
+            // The wallet holding the node's account, by Core's own register of them (`T-021-16`): yes for it, no for
+            // another provider, nothing for a node with no account.
+            Source::HoldingAccount { node } => match self.holdings.borrow().account(node) {
+                Some(account) => said(account.provider() == input.as_str()),
+                None => Reply::Missing,
+            },
         }
     }
 

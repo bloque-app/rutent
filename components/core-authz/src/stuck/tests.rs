@@ -171,6 +171,11 @@ struct Register {
     chains_unreachable: bool,
     /// The register of chains says no chain reaches anything, so only the rules that need no chain are left.
     reaches_nothing: bool,
+    /// The deployment's register of holding accounts: each inner node and the provider whose wallet holds its account
+    /// (`T-021-16`). A node not listed has none, which the register answers with nothing.
+    holding_accounts: Vec<(String, Id)>,
+    /// The register of holding accounts can't be reached.
+    holdings_unreachable: bool,
 }
 
 /// The deployment operator's party.
@@ -346,6 +351,20 @@ impl Sources for Register {
                     return Reply::Unreachable;
                 }
                 said(!self.reaches_nothing && self.chain(from).contains(to))
+            }
+            Source::HoldingAccount { node } => {
+                if self.holdings_unreachable {
+                    return Reply::Unreachable;
+                }
+                if self
+                    .holding_accounts
+                    .iter()
+                    .any(|(n, holder)| n == node && holder == &need.input)
+                {
+                    Reply::Given(Said::Yes)
+                } else {
+                    Reply::Missing
+                }
             }
             _ => Reply::Given(Said::Yes),
         }
@@ -1454,7 +1473,9 @@ fn held_by(request: &Value, by: &str, request_id: &str) -> StuckDecide {
 /// its value rested at (`bank-co`, the reserve of an arrival of the order). A mover the order doesn't involve is
 /// refused, its refusal recorded, though the deployment's policy would permit it; a permitted decide step naming that
 /// provider, earlier in the log, doesn't make it one the order involves. The log admits every entry. A hand-on's mover
-/// is held the same way, and a holding withdrawal's holder is one of the order it was handed on from.
+/// is held the same way, and a holding withdrawal's holder is one of the order it was handed on from. Where the log
+/// ties the mover to nothing, the wallet holding the account of a node the order's route ends a segment at moves it,
+/// by the deployment's register of holding accounts; a wallet holding a node the route doesn't reach is refused.
 // verifies: REQ-AUZ-4
 #[test]
 fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
@@ -1539,6 +1560,50 @@ fn decide_step_naming_a_mover_the_order_does_not_involve_is_refused() {
     assert_eq!(
         policy.decide_stuck(&hand_on).unwrap().outcome,
         refuse(RefusalClass::NotPermitted)
+    );
+
+    // A hand-on through a public node's wallet (`T-020-33`): the log ties the wallet to nothing of the order, so the
+    // register of holding accounts is asked, for the order's held nodes alone. The wallet holding the account of
+    // `ledger-in`, where segments of `ord-1`'s route end, moves it; a wallet holding the account of a node the order's
+    // route doesn't reach is refused, and so is the first wallet once the register can't be reached (not known).
+    let wallet_hand_on = |register: Register, by: &str, request_id: &str| {
+        let (mut policy, request) = engine("sdh", register);
+        policy.log.admits = true;
+        let mut hand_on = decision_by(&request, &alice(), request_id);
+        let Resolution::HandOn { by: holder, .. } = &mut hand_on.resolution else {
+            panic!("the world's resolution is a hand-on");
+        };
+        *holder = id(by);
+        let before = policy.log.entries.len();
+        let decided = policy.decide_stuck(&hand_on).unwrap();
+        assert_eq!(policy.log.entries.len(), before + 1, "{by}: recorded");
+        decided.outcome
+    };
+    let with_wallets = |unreachable: bool| {
+        let mut register = Register::of_the_world();
+        register.kept.push((digest("31"), Some(id("ord-1"))));
+        register
+            .holding_accounts
+            .push(("ledger-in".to_owned(), id("plain-wallet")));
+        register
+            .holding_accounts
+            .push(("ledger-far".to_owned(), id("far-wallet")));
+        register.holdings_unreachable = unreachable;
+        register
+    };
+    assert_eq!(
+        wallet_hand_on(with_wallets(false), "plain-wallet", "req-wallet"),
+        Answer::Permit {}
+    );
+    assert_eq!(
+        wallet_hand_on(with_wallets(false), "far-wallet", "req-far-wallet"),
+        refuse(RefusalClass::NotPermitted)
+    );
+    assert_eq!(
+        wallet_hand_on(with_wallets(true), "plain-wallet", "req-wallet-unreached"),
+        Answer::NotKnown {
+            cause: NotKnownCause::VerifierUnreachable
+        }
     );
 
     // The holder a holding withdrawal names, read over the contract's admitted history of one: a holder the order its

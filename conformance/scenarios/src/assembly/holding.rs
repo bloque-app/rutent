@@ -131,7 +131,7 @@ impl Modules for Shared<'_, '_> {
 /// The operator's holding accounts, asked through the platform's wallets: the operator's statement is signed with the
 /// operator's key and shown to the mover before the wallet is handed it (`Wallets`).
 pub(super) struct HeldWallets<'a, 'b> {
-    pub(super) holdings: &'a mut Holdings,
+    pub(super) holdings: &'a RefCell<Holdings>,
     pub(super) running: &'a RefCell<Running<'b>>,
     pub(super) bounds: &'a PolicyBounds,
 }
@@ -139,6 +139,7 @@ pub(super) struct HeldWallets<'a, 'b> {
 impl Withdrawals for HeldWallets<'_, '_> {
     fn holder(&self, node: &str) -> Option<String> {
         self.holdings
+            .borrow()
             .account(node)
             .map(|account| account.provider().to_owned())
     }
@@ -159,7 +160,7 @@ impl Withdrawals for HeldWallets<'_, '_> {
         let mut key = RealKey::assembly();
         let operator = OperatorSigns::new(&mut key, self.bounds, kit::operator().acts, made_at);
         Wallets {
-            holdings: &mut *self.holdings,
+            holdings: &mut self.holdings.borrow_mut(),
             platform: &mut *running.platform,
             operator: &operator,
         }
@@ -312,8 +313,8 @@ impl From<StepError> for HandingError {
 
 impl Core {
     /// The operator's holding accounts, which a stuck order's hand-on withdraws from.
-    pub fn holdings(&mut self) -> &mut Holdings {
-        &mut self.holdings
+    pub fn holdings(&mut self) -> std::cell::RefMut<'_, Holdings> {
+        self.holdings.borrow_mut()
     }
 
     /// Records the route a linked order was accepted on, which the mover holds a hand-on's route to before the
@@ -425,6 +426,7 @@ impl Core {
         let _ = self.catalogue.publish_operator_module(&wallet.provider);
         let _ = self.catalogue.add_public_node(node);
         self.holdings
+            .borrow_mut()
             .register(
                 &mut self.catalogue,
                 &self.fleet.platform,
@@ -505,8 +507,9 @@ impl Core {
         };
         let mut key = RealKey::assembly();
         let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
+        let mut held = self.holdings.borrow_mut();
         let mut landing = Landing {
-            holdings: &mut self.holdings,
+            holdings: &mut held,
             platform: &mut self.fleet.platform,
             operator: &operator,
         };
@@ -537,7 +540,7 @@ impl Core {
             .ok_or(WalletError::NotAnswered(PlatformRefusal::Unavailable))?;
         let mut key = RealKey::assembly();
         let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
-        self.holdings.land(
+        self.holdings.borrow_mut().land(
             &mut self.fleet.platform,
             &operator,
             node,
@@ -614,7 +617,7 @@ impl Core {
             inner: &signs,
             asked: RefCell::new(None),
         };
-        let start = self.holdings.start_handed_on(
+        let start = self.holdings.borrow_mut().start_handed_on(
             &mut self.fleet.platform,
             &operator,
             route,
