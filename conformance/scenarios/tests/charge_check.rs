@@ -488,8 +488,8 @@ fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
     }
     let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
     core.clock.advance(60);
-    let _ = session;
-    let session = core.open_session(&kit::customer()).expect("a session");
+    // The session opened before the restart is still open, and the reopened Core holds it, as the Core that ran on
+    // would (`T-021-17`): its id opens no other session.
     let second = ran(&mut core, &session, CHARGING, "req-second");
     assert_eq!(raise_entries(&core).len(), 2, "within the terms in force");
     let segments = core.charged_segments(&second);

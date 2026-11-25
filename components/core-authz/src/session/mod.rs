@@ -30,9 +30,11 @@
 //! rebuilds the register from those decisions ([`Engine::reopen`], [`registered_in`], read on policy's handle
 //! through [`crate::funds::Recorded::registered`]), so a revoked grant stays revoked, a grant given before the restart
 //! is in force after it, a revoked id is never granted again, and a session's id opens no other session. A log that
-//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation
-//! and session is refused as a missing input, never permitted (`REQ-AUZ-5`), and an acceptance of fault finds no
-//! session open; a read resting on no permission rests on nothing the register holds, and is decided as ever.
+//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation,
+//! session and acceptance of fault is refused as a missing input, never permitted (`REQ-AUZ-5`); a read resting on no
+//! permission rests on nothing the register holds, and is decided as ever. An engine starts so, unread, until it is
+//! first reopened over its log, so one put together and never reopened refuses rather than starting from an empty
+//! register; one reopened over an empty log holds an empty register, read.
 //!
 //! # Reads
 //!
@@ -132,9 +134,11 @@ pub struct Register {
     pub(crate) grants: Vec<PermissionChange>,
     /// The revocations permitted, each of the one grant it names: its permission, grantee and scope (`T-021-14`).
     pub(crate) revoked: Vec<PermissionChange>,
-    /// Whether the engine was reopened over a log it couldn't read its register from ([`Engine::reopen`]): then what
-    /// the register would answer is an input the engine doesn't have, and every call resting on it is refused
-    /// (`T-021-17`).
+    /// Whether the register is unread: the engine was never reopened over its log ([`Engine::reopen`]), or was reopened
+    /// over a log it couldn't read its register from. Then what the register would answer is an input the engine
+    /// doesn't have, and every call resting on it is refused as missing (`T-021-17`). An engine starts unread, so one
+    /// put together over a log and never reopened refuses, never permits; one reopened over an empty log holds an
+    /// empty register, read.
     pub(crate) unread: bool,
     /// Core's clock, which bounds each session from the moment it is asked for.
     pub(crate) clock: Box<dyn Clock>,
@@ -146,7 +150,7 @@ impl Default for Register {
             sessions: Vec::new(),
             grants: Vec::new(),
             revoked: Vec::new(),
-            unread: false,
+            unread: true,
             clock: Box::new(SystemClock),
         }
     }
@@ -294,6 +298,10 @@ impl Register {
         let Action::AcceptFault { session, .. } = &request.action else {
             return None;
         };
+        // An unread register can't say whether the session is open: an input the engine doesn't have.
+        if self.unread {
+            return Some(RefusalClass::MissingInput);
+        }
         let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
         let open = self.sessions.iter().any(|s| {
             &s.session == session
@@ -505,8 +513,9 @@ impl<L: Recorded, P, S> Engine<L, P, S> {
     /// permitted ([`Recorded::registered`], [`registered_in`]), so the engine judges each grant, revocation, read by
     /// a permission and session as the engine that ran on would. A log that can't be read leaves the register an
     /// input the engine doesn't have: every read by a permission, grant, revocation and session is refused as a
-    /// missing input, never permitted, until a later reopening reads it, and an acceptance of fault finds no session
-    /// open and is refused. Its clock stays as it is.
+    /// missing input, never permitted, until a later reopening reads it, an acceptance of fault included. An engine
+    /// starts unread, so it answers none of them until it is reopened over its log; over an empty log it reopens to
+    /// an empty register, read. Its clock stays as it is.
     pub fn reopen(&mut self) {
         let register = &mut self.register;
         match self.log.registered() {

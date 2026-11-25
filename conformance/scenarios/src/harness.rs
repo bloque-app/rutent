@@ -362,8 +362,8 @@ impl Scenario {
                     )
                 });
                 core.swap_to = swap_to;
-                // The reopened Core's policy opens its own sessions.
-                session = None;
+                // The session opened before the restart is held by the reopened Core's policy, its register rebuilt from
+                // the log, as the Core that ran on holds it (`T-021-17`): its id opens no other session.
                 down = false;
                 continue;
             }

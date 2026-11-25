@@ -122,6 +122,13 @@ impl crate::funds::Recorded for Kept {
             segment,
         ))
     }
+
+    fn registered(&mut self) -> Result<crate::session::Registered, crate::funds::ReadFailure> {
+        if self.unreadable {
+            return Err(crate::funds::ReadFailure::Unavailable);
+        }
+        Ok(crate::session::registered_in(&self.entries))
+    }
 }
 
 impl PolicyLog for Kept {
@@ -270,6 +277,8 @@ fn engine(registers: Registers, bounds: Uniform) -> Tested {
     let mut engine = Engine::with_policy(Kept::default(), Permits, registers);
     engine.set_clock(Stopped::at(&at(NOW)));
     engine.set_bounds(Box::new(bounds));
+    // Put together over its empty log, as every engine is (`T-021-17`): an empty register, read.
+    engine.reopen();
     engine
 }
 

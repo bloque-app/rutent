@@ -1000,7 +1000,9 @@ fn private_rail_closed_before_core_reopens_stays_closed() {
         .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
     assert_eq!(state(&mut core, &order), OrderState::Complete);
     core.tie_payments_by_destination();
-    let session = core.open_session(&kit::customer()).expect("a session");
+    // The session the first order ran in, opened before the restart and held after it (`T-021-17`): its id, the
+    // deployment's one, opens no other session.
+    let session = kit::id(&rutent_scenarios::assembly::context().session);
     let second = accepted(&mut core, across("req-join-2", &session, OUT_PRIVATE, RAIL));
     let _ = core.run(&second);
     assert_ne!(

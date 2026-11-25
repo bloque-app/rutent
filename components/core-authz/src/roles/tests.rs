@@ -87,6 +87,10 @@ impl crate::funds::Recorded for Kept {
             segment,
         ))
     }
+
+    fn registered(&mut self) -> Result<crate::session::Registered, crate::funds::ReadFailure> {
+        Ok(crate::session::registered_in(self.0.iter().map(|(_, e)| e)))
+    }
 }
 
 /// What the log holds, with the fixtures' orders' acceptances before it.
@@ -682,7 +686,10 @@ fn every_setting_asked(caller: &Actor) -> Vec<(SettingKind, DecisionRequest)> {
 /// over a log that held the fixtures' authorisation as permitted before the test began, so the fixtures' move acts
 /// inside it (`T-021-04`).
 fn engine(log: Kept, register: Register) -> Engine<Kept, Permits, Register> {
-    Engine::with_policy(log, Permits::default(), register)
+    let mut engine = Engine::with_policy(log, Permits::default(), register);
+    // Put together over its log, as every engine is (`T-021-17`).
+    engine.reopen();
+    engine
 }
 
 /// The refusal of a caller no rule lets ask for its action.
@@ -2669,6 +2676,9 @@ fn accepting(now: &str) -> Engine<Kept, Permits, Register> {
         .showing("ord-1", "p1-s2", the_showing(), SHOWING_RECEIVED);
     let mut policy = engine(Kept::world(), register);
     policy.set_clock(crate::session::Stopped::at(&Timestamp::new(now).unwrap()));
+    // Exactly the sessions this world names: the one the world's log opened (`sess-1`, until 09:15) is replaced by its
+    // own, until 09:10 (`T-021-17`).
+    policy.register.sessions.clear();
     for (session, holder) in [
         ("sess-1", "cust-1"),
         ("sess-2", "cust-2"),
@@ -3625,4 +3635,62 @@ fn setting_naming_the_wrong_provider_is_no_request() {
     ));
     assert_eq!(policy.policy.1.ruled, 0, "policy was never consulted");
     assert_eq!(policy.log.0.len(), before, "nothing recorded");
+}
+
+/// A log policy can append to and read its decisions from, but not its register of sessions: the default of
+/// [`crate::funds::Recorded::registered`] (`T-021-17`).
+struct Blind(Kept);
+
+impl PolicyLog for Blind {
+    fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+        self.0.append_decision(entry)
+    }
+}
+
+impl crate::funds::Recorded for Blind {
+    fn permitted(&mut self) -> Result<Vec<Authorisation>, crate::funds::ReadFailure> {
+        self.0.permitted()
+    }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
+        self.0.charged()
+    }
+
+    fn part_of(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+    ) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        self.0.part_of(order, segment)
+    }
+}
+
+impl crate::stuck::Receipted for Blind {
+    fn receipted(&mut self) -> Result<Vec<(Receipt, Entry)>, crate::funds::ReadFailure> {
+        self.0.receipted()
+    }
+}
+
+/// A customer's acceptance of fault on an engine whose register can't be read is refused as an input it doesn't have,
+/// not as another's (`T-021-17`, the review of `f6d5ec68`): the requester asks in its session, in the world where an
+/// engine whose register holds that session permits it, and the engine reopened over a log it can't read the register
+/// from can't say whether the session is open.
+// verifies: REQ-AUZ-5, NFR-6
+#[test]
+fn acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_missing_input() {
+    let register = Register::default()
+        .with_order("ord-1", "cust-1", "us-bank")
+        .showing("ord-1", "p1-s2", the_showing(), SHOWING_RECEIVED);
+    let mut policy = Engine::with_policy(Blind(Kept::world()), Permits::default(), register);
+    policy.set_clock(crate::session::Stopped::at(
+        &Timestamp::new("2026-11-10T09:00:00Z").unwrap(),
+    ));
+    policy.reopen();
+    let request = acceptance(&customer("cust-1"), "sess-1", "2026-11-10T09:00:00Z");
+    assert_eq!(
+        policy.decide(&request).unwrap().outcome,
+        Answer::Refuse {
+            class: RefusalClass::MissingInput
+        }
+    );
 }

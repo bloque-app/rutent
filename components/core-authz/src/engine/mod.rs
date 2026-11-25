@@ -831,6 +831,10 @@ mod tests {
                 segment,
             ))
         }
+
+        fn registered(&mut self) -> Result<crate::session::Registered, ReadFailure> {
+            Ok(crate::session::registered_in(&self.0))
+        }
     }
 
     impl crate::stuck::Receipted for Taking {
@@ -890,6 +894,10 @@ mod tests {
     impl Recorded for Guarded {
         fn permitted(&mut self) -> Result<Vec<Authorisation>, ReadFailure> {
             Ok(held_and(self.0.iter().map(|(_, e)| e)))
+        }
+
+        fn registered(&mut self) -> Result<crate::session::Registered, ReadFailure> {
+            Ok(crate::session::registered_in(self.0.iter().map(|(_, e)| e)))
         }
 
         fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, ReadFailure> {
@@ -1372,6 +1380,8 @@ mod tests {
     fn the_unbuilt_engine_permits_nothing_on_any_call_and_records_first() {
         let refused = |class| Outcome::Refused { class };
         let mut policy = Unbuilt::new(Taking::default());
+        // Put together over its log, as every engine is (`T-021-17`): an empty register, read.
+        policy.reopen();
 
         // Core's move waits on the register's word that its actor carries the authorisation onward (`T-021-03`),
         // which no source can give; the move is inside the authorisation the log holds (`T-021-04`).
@@ -2145,6 +2155,10 @@ mod tests {
         fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, ReadFailure> {
             self.log.part_of(order, segment)
         }
+
+        fn registered(&mut self) -> Result<crate::session::Registered, ReadFailure> {
+            self.log.registered()
+        }
     }
 
     impl crate::stuck::Receipted for Seen {
@@ -2713,6 +2727,8 @@ mod tests {
                         let service = Service::ruling(Reply::Given(ruling));
                         let mut engine =
                             Engine::with_policy(Seen::default(), service, Given::default());
+                        // Put together over its empty log (`T-021-17`): an empty register, read.
+                        engine.reopen();
                         assert_eq!(
                             call(&mut engine),
                             permitted,
