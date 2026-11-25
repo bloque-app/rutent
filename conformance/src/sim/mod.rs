@@ -682,6 +682,10 @@ pub struct Behaviour {
     /// operator's. The result it signs says so in its `fault`; without it a failed result shows none, as the provider
     /// carrying the reversal does. It changes nothing in the books, and a result that doesn't fail carries none.
     pub fault: Option<rutent_contracts::provider_role::Fault>,
+    /// With [`Act::Unknown`]: the operation, left unknown, is one that failed; the provider's answer to a status query
+    /// of it says so (`REQ-ORD-1`, `T-020-47`). Only a ramp's transfer can be driven so; another's outcome is its
+    /// own.
+    pub unknown_then_fails: bool,
 }
 
 impl Behaviour {
@@ -689,6 +693,15 @@ impl Behaviour {
     pub fn act(act: Act) -> Self {
         Self {
             act,
+            ..Self::default()
+        }
+    }
+
+    /// Outcome unknown, and failed: nothing moved on, and a status query of it later says so (`T-020-47`).
+    pub fn unknown_that_failed() -> Self {
+        Self {
+            act: Act::Unknown,
+            unknown_then_fails: true,
             ..Self::default()
         }
     }
@@ -859,6 +872,11 @@ impl Simulated {
         self.provider.force_outcome_unknown()
     }
 
+    /// Hands the provider the hooks the role suite drives: the next real operation ends with outcome unknown, and failed.
+    pub fn force_outcome_unknown_then_failure(&mut self) -> bool {
+        self.provider.force_outcome_unknown_then_failure()
+    }
+
     /// Hands the provider the hooks the role suite drives: the next real operation fails.
     pub fn force_failure(&mut self) -> bool {
         self.provider.force_failure()
@@ -913,6 +931,29 @@ impl Simulated {
                 movements: Vec::new(),
             };
         }
+        // A status question moves nothing: the provider answers with its own result of the transaction asked about, as
+        // its books hold it, or says it knows none (`REQ-ORD-1`, `T-013-11`'s query, `T-020-47`).
+        if let Operation::StatusQuery(q) = &operation.statement {
+            use serde_json::json;
+            let outcome = match self.provider.status(&q.about) {
+                Some(result) => json!({
+                    "status": "answered",
+                    "result": serde_json::to_value(result.statement()).expect("a result serialises"),
+                }),
+                None => json!({ "status": "not_known" }),
+            };
+            let body = json!({
+                "kind": "status_query",
+                "transaction": q.transaction,
+                "about": q.about,
+                "outcome": outcome,
+            });
+            return Answer {
+                body: serde_json::to_vec(&body).expect("a result serialises"),
+                entry: None,
+                movements: Vec::new(),
+            };
+        }
         let before = self.provider.state();
         let mut credited = false;
         if behaviour.reversal_credited
@@ -946,6 +987,9 @@ impl Simulated {
             && matches!(behaviour.act, Act::Unknown | Act::Fail);
         if armed {
             match behaviour.act {
+                Act::Unknown if behaviour.unknown_then_fails => {
+                    self.provider.force_outcome_unknown_then_failure();
+                }
                 Act::Unknown => {
                     self.provider.force_outcome_unknown();
                 }

@@ -81,6 +81,7 @@ use rutent_contracts::core_internal::{
     OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::Tracking;
 use rutent_contracts::provider_role::{
     ConversionOutcome, EvidenceGrade, OPERATION_SHAPE, Operation as ProviderOperation,
     RESULT_SHAPE, ReserveMovementOutcome, ResultBody, Reversal as ReversalOperation,
@@ -526,6 +527,8 @@ pub struct Reversals {
     later: BTreeMap<(String, String), Statements>,
     /// Core's late-status asks that haven't finished, by segment.
     statuses: BTreeMap<(String, String), StatusState>,
+    /// The segments whose unknown outcome Core asked the status of once already ([`Reversals::ask_unknown_status`]).
+    unknown_asked: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Reversals {
@@ -567,6 +570,25 @@ impl Reversals {
         let mut bound = BTreeMap::new();
         let mut requester = None;
         let mut faults = Vec::new();
+        // The unknown segments Core asked the status of, and finished asking: a restarted Core asks them no more
+        // (`T-020-47`).
+        for (_, entry) in history {
+            let Some(v) = verified(entry) else { continue };
+            if let What::Result { effect } = &v.what
+                && let Some((_, Entry::Verified(asked))) = history.iter().find(|(r, _)| r == effect)
+                && let What::Effect {
+                    action:
+                        Action::AskStatus {
+                            order: o, segment, ..
+                        },
+                    ..
+                } = &asked.what
+                && o == order
+            {
+                self.unknown_asked
+                    .insert((order.as_str().to_owned(), segment.as_str().to_owned()));
+            }
+        }
         for (receipt, entry) in history {
             let Some(v) = verified(entry) else { continue };
             match &v.what {
@@ -665,6 +687,8 @@ impl Reversals {
                 .segments
                 .claim_transaction(parts.fresh, parts.issued)
                 .map_err(|_| ReversalError::Fresh)?;
+            // A private node's publisher books the reversal Core carries out there: its record may list it.
+            parts.segments.note_reversal_ran(at.order, &transaction);
             let operation = ProviderOperation::Reversal(ReversalOperation {
                 transaction: transaction.as_str().to_owned(),
                 provider: owing.provider.as_str().to_owned(),
@@ -948,7 +972,9 @@ impl Reversals {
             }
             state.carried = true;
         }
-        let answer = state.answer.clone();
+        let answer = state.answer.clone().and_then(|bytes| {
+            held_to_its_question(&bytes, &statement.statement, &state.transaction, &provider)
+        });
         let kept = match answer {
             Some(bytes) => match self.later(
                 parts,
@@ -1000,6 +1026,45 @@ impl Reversals {
             transaction,
             answer: kept,
         })
+    }
+
+    /// Asks the provider of `at`, once, where its segment stands, where the segment was left unknown (the provider
+    /// answered it unknown, or the platform ended the operation with no answer) and the provider declares a status
+    /// query among its ways of tracking an operation (`REQ-ORD-1`, `T-020-47`). Nothing is asked of a segment whose
+    /// outcome is known, of a provider that declares none, or of one asked about already: asking again, at the
+    /// provider's cadence, is Core's schedule's ([`Reversals::ask_status`]). `None` where nothing was asked. What the
+    /// provider answers is kept as its statement and moves nothing (`INV-4`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Reversals::ask_status`].
+    pub fn ask_unknown_status(
+        &mut self,
+        parts: &mut Parts<'_>,
+        moving: &mut Moving<'_>,
+        at: At<'_>,
+    ) -> Result<Option<StatusAsked>, ReversalError> {
+        let at_key = key(at.order, at.segment);
+        if parts.segments.unknown_move(at.order, at.segment).is_none()
+            || (self.unknown_asked.contains(&at_key) && !self.statuses.contains_key(&at_key))
+        {
+            return Ok(None);
+        }
+        let followed = parts
+            .segments
+            .order(at.order)
+            .ok_or(ReversalError::Unknown)?;
+        let (_, segment) = find(followed, at)?;
+        let declares = parts
+            .catalogue
+            .declared_by(segment.provider.as_str())
+            .is_some_and(|declared| declared.tracking.contains(&Tracking::StatusQuery));
+        if !declares {
+            return Ok(None);
+        }
+        let asked = self.ask_status(parts, moving, at)?;
+        self.unknown_asked.insert(at_key);
+        Ok(Some(asked))
     }
 
     /// The reversal `segment` of `order` owes, once Core recorded it owed.
@@ -2141,7 +2206,8 @@ fn find<'o>(
 }
 
 /// Whether `segment` starts where `withdrawal`, a part's first segment, took the value: at the inner node the origin
-/// reserve holds it at, in the same asset, so the origin reserve's word is about the segment's origin node.
+/// reserve holds it at, in the same asset, so the origin reserve's word is about the segment's origin node. Only a
+/// route that starts with a withdrawal has one: where a route is handed on, no segment of it is a withdrawal.
 fn starts_where_withdrawn(withdrawal: &stm::Segment, segment: &stm::Segment) -> bool {
     withdrawal.kind == OperationKind::Withdrawal && withdrawal.to == segment.from
 }
@@ -2177,7 +2243,58 @@ fn later_confirmer(
     (delivered != *failed).then_some(delivered)
 }
 
-/// A part's origin reserve: the provider of its withdrawal, its first segment.
+/// What a provider's answer to Core's status question gives Core to keep: the provider's own result of the transaction
+/// asked about, and nothing where the answer is not the answer to that question. The platform checks the answer's
+/// shape, transaction and signer but not its `about` (`T-013-11`), so Core holds it to the question it asked
+/// (`check_status_answer`): an answer that fails it, says it knows nothing of the transaction or refuses, keeps
+/// nothing (fail closed). A result that is no status answer, as a module that answers with the result alone gives, is
+/// kept as it is.
+fn held_to_its_question(
+    bytes: &[u8],
+    asked_about: &ProviderOperation,
+    asking: &Id,
+    provider: &Id,
+) -> Option<Vec<u8>> {
+    use rutent_contracts::provider_role::{
+        Operation as Question, ResultBody, StatusOutcome, StatusQuery, check_status_answer,
+    };
+    let Ok(answer) = serde_json::from_slice::<Statement<ResultBody>>(bytes) else {
+        return Some(bytes.to_vec());
+    };
+    if !matches!(answer.statement, ResultBody::StatusQuery(_)) {
+        return Some(bytes.to_vec());
+    }
+    let about = serde_json::to_value(asked_about).ok()?["transaction"]
+        .as_str()?
+        .to_owned();
+    // The question as the platform made it from the operation asked about: the same deployment, version, maker and
+    // time, naming the question's own transaction, the provider and the transaction asked about.
+    let question = Statement {
+        deployment: answer.deployment.clone(),
+        protocol_version: answer.protocol_version.clone(),
+        shape: rutent_contracts::provider_role::OPERATION_SHAPE.to_owned(),
+        maker: answer.maker.clone(),
+        made_at: answer.made_at.clone(),
+        signature: answer.signature.clone(),
+        statement: Question::StatusQuery(StatusQuery {
+            transaction: asking.as_str().to_owned(),
+            provider: provider.as_str().to_owned(),
+            about,
+        }),
+    };
+    check_status_answer(&question, &answer).ok()?;
+    match answer.statement {
+        ResultBody::StatusQuery(answered) => match answered.outcome {
+            StatusOutcome::Answered(carried) => serde_json::to_vec(&*carried.result).ok(),
+            StatusOutcome::NotKnown(_) | StatusOutcome::Refused(_) => None,
+        },
+        _ => None,
+    }
+}
+
+/// A part's origin reserve: the provider of its withdrawal, its first segment. A route handed on has no withdrawal
+/// segment: the holding account's withdrawal for the linked order isn't a segment of the route (`DEC-24`, `T-016-05`),
+/// its first segment starts at an inner node, and it has no origin reserve here, so none is answered for it.
 fn origin_of(part: &stm::Part) -> Result<Id, ReversalError> {
     part.segments
         .first()
@@ -2325,7 +2442,58 @@ fn key(order: &Id, segment: &Id) -> (String, String) {
 mod tests {
     use rutent_contracts::state_machine::{Segment, SegmentPlan, SegmentState};
 
-    use super::starts_where_withdrawn;
+    use super::{held_to_its_question, starts_where_withdrawn};
+    use rutent_contracts::router_api::Id;
+    use serde_json::json;
+
+    fn envelope(statement: serde_json::Value) -> serde_json::Value {
+        let key = "A".repeat(43);
+        json!({
+            "deployment": { "name": "test", "operator_key": key },
+            "protocol_version": "2.0.1",
+            "shape": rutent_contracts::provider_role::RESULT_SHAPE,
+            "maker": "ramp",
+            "made_at": "2026-11-10T09:00:00Z",
+            "signature": { "scheme": "ed25519", "key": key, "value": format!("{}A", "s".repeat(85)) },
+            "statement": statement,
+        })
+    }
+
+    /// A status answer to the question `q1` about `about`, carrying the provider's result of `carried`.
+    fn answer(about: &str, carried: &str) -> Vec<u8> {
+        let result = envelope(json!({
+            "kind": "transfer", "transaction": carried, "outcome": { "status": "unknown" },
+        }));
+        let body = envelope(json!({
+            "kind": "status_query", "transaction": "q1", "about": about,
+            "outcome": { "status": "answered", "result": result },
+        }));
+        serde_json::to_vec(&body).unwrap()
+    }
+
+    /// Core keeps a status answer's carried result only where it answers the question it asked: the transaction asked
+    /// about, carrying that transaction's own result; nothing otherwise (`T-020-47`, `REQ-ORD-1`).
+    // verifies: REQ-ORD-1
+    #[test]
+    fn status_answer_to_another_question_keeps_nothing() {
+        let asked: rutent_contracts::provider_role::Operation = serde_json::from_value(json!({
+            "kind": "transfer", "transaction": "t1", "provider": "ramp", "origin": "a",
+            "destination": "b", "asset": "COP", "direction": "exact_in", "amount": "1",
+            "dry_run": false, "inputs": {},
+        }))
+        .unwrap();
+        let (asking, provider) = (Id::new("q1").unwrap(), Id::new("ramp").unwrap());
+        let held = |bytes: &[u8]| held_to_its_question(bytes, &asked, &asking, &provider);
+        assert!(held(&answer("t1", "t1")).is_some(), "the honest answer");
+        assert!(
+            held(&answer("t9", "t9")).is_none(),
+            "about another transaction"
+        );
+        assert!(
+            held(&answer("t1", "t9")).is_none(),
+            "carrying another's result"
+        );
+    }
 
     fn segment(
         kind: &str,

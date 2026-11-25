@@ -179,9 +179,10 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
     }
 
     // The final executed price is reported as the price, from what each segment did, and recorded once.
-    let (digest, _, price) = core
-        .report_price(&order, &ran)
-        .expect("the price is reported");
+    let (digest, _) = core
+        .price_reported(&order)
+        .expect("Core reported the price when the order completed");
+    let price = core.price_of(&order).expect("its figures").clone();
     // What it says is what the segments did: 1 000 000 left the origin; the ramp took 5 000 from what it moved and the
     // rest charged nothing, so 995 000 is what the reserve deposited, and arrives, with no operator fee to take.
     let figure =
@@ -220,8 +221,9 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
         "the price is recorded as the price: {:?}",
         shown(&core)
     );
-    // Reported again, it is the same price, and no second entry: an order has one.
-    assert_eq!(core.report_price(&order, &ran).expect("again").0, digest);
+    // Run again, the order reports nothing more: it has one price, and no second entry.
+    core.run(&order).expect("runs again");
+    assert_eq!(core.price_reported(&order).expect("still").0, digest);
     assert_eq!(
         shown(&core)
             .iter()
@@ -229,6 +231,54 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
             .count(),
         1
     );
+}
+
+/// The order's executed price is reported by Core's closing, once, when it completes: nothing of it before every segment
+/// settled, one entry labelled the price when it did, the same on any later run, and the figures are the segments' own
+/// (`REQ-QTE-7`, `T-020-47`). No scenario reports it.
+// verifies: REQ-QTE-7, AC-1
+#[test]
+fn completed_orders_executed_price_is_reported_once_by_core() {
+    let (mut core, session) = core_with("AC-1", &[IN, EXCHANGE, QUICK, OUT]);
+    let (order, told) = quoted(
+        &mut core,
+        across("req-price-once", &session, "lowest_total_cost"),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted")
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    let prices = |core: &Core| {
+        entries(core)
+            .iter()
+            .filter(|v| {
+                matches!(&v.what, What::Shown { order: o, shown_as: ShownAs::Price, .. } if *o == order)
+            })
+            .count()
+    };
+    assert!(
+        core.price_reported(&order).is_none(),
+        "nothing before it runs"
+    );
+    let ran = core.run(&order).expect("the order ran");
+    assert!(all_settled(accounted(&ran)));
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+    let (digest, receipt) = core.price_reported(&order).expect("Core reported it");
+    assert_eq!(prices(&core), 1);
+    let price = core.price_of(&order).expect("its figures");
+    assert_eq!(price.shown_as, ShownAs::Price);
+    assert_eq!(price.segments.len(), 4, "one figure per segment it ran");
+    assert!(core.price_unreported(&order).is_none());
+    core.run(&order).expect("runs again");
+    core.clock.advance(60);
+    core.run(&order).expect("and again");
+    assert_eq!(core.price_reported(&order), Some((digest, receipt)));
+    assert_eq!(prices(&core), 1, "once");
 }
 
 // verifies: AC-2

@@ -7696,3 +7696,127 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
 - **Finding 4: the evidence store's reads, in `F-022`'s notes.** Every read Core makes of the evidence store is listed
   there with its caller in Core; the one read with no caller (`Evidence::fetch`) is named out of `v0` with its reason.
 
+
+## T-020-47: Core's own callers in the run (parts 1, 3, 5 and the second half of 4)
+
+Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/` (`closing/`, `segments/`, `reversal/`,
+`stuck/` comments), the assembly and the simulated providers (`F-024` files: `conformance/scenarios/src/assembly/`,
+`sim/fleet.rs`, `conformance/src/sim/mod.rs`, `conformance/src/role/`), no `DEC-20` path.
+
+- **Done.**
+  - (5) `Segments::carried_since` also times a failed segment that owes its reversal (state `FailedReversalOwed`), so
+    `Stuck::watch` declares the order stuck once its window passes, whether the reversal was refused, left unknown or
+    stated short. `T-024-23`'s scenario asserts stuck now. Test `owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck`.
+  - (1) `closing::report_price` (new `closing/price.rs`) builds the price from `Segments::charged` and the new
+    `Segments::stated_out` (rebuilt by a reopened Core) and records it through `Prices::report` when every part is complete;
+    the assembly's `report_price` is gone, `Core::run` closes, scenarios read `price_reported` / `price_of`. Test
+    `completed_orders_executed_price_is_reported_once_by_core`.
+  - (3) `Reversals::ask_unknown_status`: once per unknown segment, at a provider whose advertisement declares
+    `status_query`, through `ask_status`; the answer is held to its question with `check_status_answer` and what is kept is
+    the nested result of the segment's own transaction (nothing on a mismatch, not-known or refusal). `impl Modules for
+    Platform` and the assembly's `Running` forward `status`; the port's doc is corrected. The simulated providers handle
+    `status_query` (answered from the stand-in's books); `Behaviour::unknown_that_failed` (ramp transfers only).
+    Tests `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer`, `status_answer_moves_nothing`.
+  - (4, second half) `Segments` keeps the transactions of the reversals Core ran per order and `ToGrade.reversals` carries
+    them, so `Closing::to_keep` no longer skips a private node's record that lists one. Test
+    `private_node_record_listing_a_reversal_is_read` (core-orch `tests/closing.rs`).
+  - `T-016-05`'s comments in `stuck` and `reversal` read the handed-on route as having no withdrawal segment.
+- **Defaults** (reversible, fail closed). An owed reversal is timed from its segment's start, with the tuple's figure, as an
+  unfinished move is. A status answer that fails `check_status_answer` keeps nothing. Core asks an unknown segment's status
+  once; asking again at the provider's cadence is `T-020-48`'s. A price covers every route and part an order ran (`executed_across`, review round 2); `Core::price_unreported` says why one isn't reported, and only the fail-closed cases of review round 2 do not report one.
+- **Gaps, with owners.**
+  1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
+     to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
+     state both, (c) Core to take them from the answers (`Segments::take_terms`, `Holds::take`) and the assembly's
+     `state_terms`/`state_hold` to go. For holds a **contract shape is missing**: nothing in the advertisement or the
+     declaration says a reserve answers hold requests (module-interface's `handles` is the module's, which Core doesn't
+     read), so Core can't tell when to ask without asking every reserve at every quote. Owner: the lead, a decision on that
+     signal, then this row's remainder.
+  2. **Moved to `T-020-56`: (4), first half, a reversal out of a held node landing the value again.** Its starting point: Under the state machine's rules
+     (`rules.rs::after_segment_input`) a `reversal_completed` applies only to a failed non-deposit segment, an unknown one,
+     or the part's settled starting segment; a settled segment out of a node is never reversed, so a landing is never
+     released and then due again. The one path left is a hand-on's linked order whose first move out of the held node fails
+     and is reversed; that needs a decision on who is landed for. Left as it is; owner: the lead.
+  3. Closed in review round 1: a reopened Core rebuilds the reversal transactions (from the operator's reversal questions the
+     log holds) and the unknown segments already asked (from `ask_status` effects with their result).
+  4. Unknown then failed is driven for a ramp's transfer only; a reserve's or exchange's unknown still resolves as before.
+  5. **`T-020-48`'s:** "ends failed on the provider's answer": Core keeps the answer and moves nothing; the mover's report of the failure
+     (`Stuck::report_segment_outcome`) takes a `Late` from `Segments::late_statement`, which no assembly step calls yet.
+     Owner: `T-020-48`.
+- **Rule-off table** (each switched off alone, its test run through the lock, file restored with `git checkout`; script
+  `ruleoff.py` in the row's scratch folder). Parts 2 and 4a moved to `T-020-56`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | part 5: a failed segment owing its reversal is timed (`carried_since`) | `owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck` |
+  | part 1: an order's price is reported once (`Prices::report` rebuilds) | `completed_orders_executed_price_is_reported_once_by_core` |
+  | part 3: an unknown segment is asked once | `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
+  | part 3: the answer is held to its question (`check_status_answer`) | `status_answer_to_another_question_keeps_nothing` (a unit test added for it: no scenario had a mismatching answer) |
+  | part 4: the order's reversal transactions are its own in a node's record | `private_node_record_listing_a_reversal_is_read` |
+
+### T-020-47, review round 1 (PR #312, `48d6b5db`)
+
+- Parts 2 and 4a moved to `T-020-56`. Gap 5 above is `T-020-48`'s.
+- **Part 5 times only a segment a reversal can apply to** (not a deposit, whose reversal never applies and whose failed
+  value waits for its customer, `REQ-ORD-43`). Test `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window`.
+  An owed reversal is timed from its segment's start, so a late failure (most of the window spent unknown) is declared
+  stuck almost at once; a failure time would need new state and a rebuild.
+- **Part 1 across a recalculation:** `executed_across` / `Priced::across` compose the price of the segments settled on each
+  route, each leg held to its own route's record, under the last route's bounds; the assembly keeps the records of the
+  routes an order ran. Test `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once`. No contract
+  shape was needed.
+- **Reopening:** `Segments::reopened` rebuilds the reversal transactions; `Reversals::follow` rebuilds the unknown segments
+  asked (any finished `ask_status` of the segment counts). Tests `reversals_core_carried_out_are_known_again_after_core_reopens`,
+  `unknown_segment_already_asked_is_not_asked_again_after_core_reopens`. A reopened Core holds no answer for a segment it
+  rebuilt unknown, so it asks nothing more of it anyway; the rebuilt set keeps that from turning into an error.
+
+| Rule switched off | Red |
+|---|---|
+| a failed deposit is never timed | `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window` |
+| the price covers the first route too | `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once` |
+| unknown segments asked are rebuilt | `unknown_segment_already_asked_is_not_asked_again_after_core_reopens` |
+| reversal transactions are rebuilt | `reversals_core_carried_out_are_known_again_after_core_reopens` |
+
+### T-020-47, review round 2: the price across any number of routes and parts
+
+- `executed_across` / `Priced::across` take `RouteRan { record, candidate, parts: [PartRan { order_part, candidate_part,
+  ran }] }` for each route the order ran, in order: each order part's segments are the first route's prefix, then each
+  recalculated route's, every one held to its own route's record (reporting, declared time, slippage commitment) under
+  the last route's bounds. `closing::report_price` takes the routes as `RouteRun`; the assembly keeps, for a recalculated
+  part, what settled on each route (the settled segments of the part when it was recalculated, less what earlier routes
+  account for), so a route that settled nothing contributes nothing. The assembly recalculates its first part only; a
+  recalculated route is of one part, and the model carries any part.
+- **Not reported (`price_unreported`), fail closed:** a record that chose no route (nothing is reported, no error); what
+  ran of the routes not adding up to the segments Core holds (`Unexplained`) or past a candidate part (`NotTheRecords`);
+  a segment whose figures Core doesn't hold (not complete yet: nothing is reported); and the composition's own refusals
+  (the operator's fee above what arrives, a sum past an amount, a leg with no terms, a result cited twice).
+- Tests: `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` (assembly: refused twice, recalculated
+  twice), `price_of_an_order_of_two_parts_covers_each_parts_segments` (core-orch: a two-part record). Not built: a
+  scenario of a recalculated part of a two-part order, which the kit can't route (its splits are of one candidate part).
+
+| Rule switched off | Red |
+|---|---|
+| the price is composed part by part (one order part only) | `price_of_an_order_of_two_parts_covers_each_parts_segments` |
+| a route's settled share is less what earlier routes account for | `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` |
+
+### T-020-47, review round 3 (PR #312, `bd69d262`)
+
+- **`price_unreported` always says why.** A completed order whose record chose no route is `Unreported::NoRoute`, and one whose
+  segment's figures aren't kept is `NotKept(segment)`; a route's record Core can't read back is `RecordNotHeld(id)`. Only
+  an order not yet complete reports nothing and no reason.
+- **The routes an order ran are Core's state, rebuilt from the log.** `Segments` notes the record each `route_chosen`,
+  `route_recalculated` and `destination_changed` input names, with how many of the part's segments had settled by then
+  (`Segments::routes_ran`), on every path that follows an order: live (`follow`, `observe`) and replayed
+  (`follow_recorded`, which a reopened Core runs). `closing::report_logged_price` prices from it, reading each record
+  through a lookup the assembly gives; the assembly keeps no copy. The record lookup itself is still the assembly's
+  (`Core::record_of`, over the signer's records and the log's digest): moving Core's own log reads out of the assembly
+  is `T-020-55`'s.
+- Tests: `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` (the order on its second route when
+  Core reopens, completed on a third after; the routes held are counted before and after the reopen: a route that
+  settled nothing prices the same, so the count is what shows the rebuild), and
+  `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` (core-orch).
+
+| Rule switched off | Red |
+|---|---|
+| routes ran are noted when the log is replayed | `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` |
+| the parts of a price are taken in order | `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` |

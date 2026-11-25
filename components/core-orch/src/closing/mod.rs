@@ -53,7 +53,10 @@
 
 use std::collections::BTreeMap;
 
+mod price;
 mod public_end;
+
+pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_logged_price, report_price};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
@@ -1115,7 +1118,7 @@ impl Evidenced<'_> {
     /// out onto a public node, the record of each node replayed. Each is the whole signed `inner-segments` record of
     /// the provider that ran the segment (the exit's own where it served the node, else the first), made of the
     /// operations of this order alone: a record that lists a segment of another order, or one this order didn't run
-    /// (a book that spans orders), the log would not verify about this order, so it is not appended, and what it
+    /// (a book that spans orders; a reversal Core carried out for the order is the order's own, `T-020-47`), the log would not verify about this order, so it is not appended, and what it
     /// would have bound stays unbound (fail closed). It is about its order and node only.
     fn to_keep(&self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
         let operations = settled.operations;
@@ -1129,6 +1132,7 @@ impl Evidenced<'_> {
             .filter(|((order, _), _)| order == settled.order.as_str())
             .map(|(_, seen)| &seen.transaction)
             .chain(std::iter::once(settled.transaction))
+            .chain(settled.reversals)
             .collect();
         let choose = |node: &str, transactions: &[Id], must: Option<&Id>| -> Option<ToKeep> {
             let read = self.books.recorded(node, transactions)?;

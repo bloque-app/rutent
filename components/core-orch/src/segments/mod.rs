@@ -619,6 +619,9 @@ struct InFlight {
     /// What its provider charged, as its result that counted states it, with what the check needs of it: kept once
     /// it settled (`T-020-14`).
     charged: Option<Charged>,
+    /// What its result that counted states of what it gave out at its destination, its charge within it where its
+    /// tuple reports gross: the figure the executed price is made of (`REQ-QTE-7`, `T-020-47`).
+    stated_out: Option<Amount>,
     /// What it reports having given out, for the segment after it (`T-020-35`).
     reported: Option<pairs::Sent>,
     /// The platform's refusal to begin it, kept before its result is appended.
@@ -710,6 +713,24 @@ pub struct Segments {
     /// The segments a reopened Core holds as handed over whose operation it couldn't read back, with their effects'
     /// receipts: never handed over again, and in motion (`T-020-46`, `INV-8`).
     unread: BTreeMap<(String, String), Receipt>,
+    /// The transactions of the reversals Core carried out for each order: what a private node's publisher's record may
+    /// list besides the order's segments, and be read (`REQ-ORD-41`, `T-020-47`).
+    reversal_txs: BTreeMap<String, Vec<Id>>,
+    /// The routes each order ran: the record that chose its first route and each route recalculated since, in the order
+    /// the log took them, rebuilt with the order's state by a Core that reopens (`T-020-47`).
+    routes_ran: BTreeMap<String, (Id, Vec<Recalculated>)>,
+}
+
+/// A route recalculated for a part of an order: the record that chose it, and how many of the part's segments had
+/// settled by then, which is what ran on the routes before it ([`Segments::routes_ran`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recalculated {
+    /// The part.
+    pub part: Id,
+    /// The router's decision record of the new route, by id.
+    pub record: Id,
+    /// How many of the part's segments had settled when it was recalculated.
+    pub settled_before: usize,
 }
 
 /// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
@@ -1050,6 +1071,25 @@ impl Segments {
         ))
     }
 
+    /// Notes that Core carried out a reversal of `order` under `transaction`: the record a private node's publisher
+    /// keeps may list it, and a record that does is read, never skipped for it (`REQ-ORD-41`, `T-020-47`).
+    pub(crate) fn note_reversal_ran(&mut self, order: &Id, transaction: &Id) {
+        let ran = self
+            .reversal_txs
+            .entry(order.as_str().to_owned())
+            .or_default();
+        if !ran.contains(transaction) {
+            ran.push(transaction.clone());
+        }
+    }
+
+    /// The transactions of the reversals Core carried out for `order`, in the order it did.
+    pub fn reversal_transactions(&self, order: &Id) -> &[Id] {
+        self.reversal_txs
+            .get(order.as_str())
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds
     /// at the node is released by the next [`Segments::land_settled`] (`REQ-AUD-15`, `T-020-33`).
     pub(crate) fn note_reversed(&mut self, order: &Id, segment: &Id) {
@@ -1097,9 +1137,14 @@ impl Segments {
         let Some(mut order) = Stm::open(first) else {
             return false;
         };
+        self.note_route(None, first);
         for input in rest {
             if input.subject.order.as_str() == order.order_id.as_str() {
-                order = Stm::transition(&order, input);
+                let next = Stm::transition(&order, input);
+                if next.last_input.outcome == (stm::Outcome::Applied {}) {
+                    self.note_route(Some(&order), input);
+                }
+                order = next;
             }
         }
         self.orders.insert(
@@ -1395,8 +1440,9 @@ impl Segments {
         let next = Stm::transition(&tracked.order, input);
         let applied = next.last_input.outcome == (stm::Outcome::Applied {});
         if applied {
-            tracked.order = next;
+            let before = std::mem::replace(&mut tracked.order, next);
             tracked.since = clock.now();
+            self.note_route(Some(&before), input);
             // A recalculated route replaces the one a wait built and not yet recorded was judged on: that wait goes
             // with it, and the new route's floor is judged afresh (`T-020-10b`).
             if let (Observed::RouteRecalculated { .. }, Some(part)) =
@@ -1557,11 +1603,100 @@ impl Segments {
     /// When `segment` of `order` was carried out, while its outcome isn't final: from then its value is held at
     /// its provider, with no result that counts, an outcome unknown, or the person to act (`T-020-11`, the stuck
     /// clock).
+    ///
+    /// A segment that failed and owes its reversal is timed as well, until the reversal completes: its outcome is
+    /// final, but its value isn't back where it came from, so a reversal refused, left unknown or stated short never
+    /// leaves the order resting at `FailedReversalOwed` for ever (`INV-3`'s last branch, `REQ-ORD-3`, `T-020-47`).
     pub fn carried_since(&self, order: &Id, segment: &Id) -> Option<Reading> {
         self.flights
             .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
-            .filter(|f| f.carried && f.outcome.as_ref().is_none_or(|o| !is_final(o)))
+            .filter(|f| {
+                f.carried
+                    && (f.outcome.as_ref().is_none_or(|o| !is_final(o))
+                        || self.reversal_owed(order, segment))
+            })
             .and_then(|f| f.started)
+    }
+
+    /// The routes `order` ran: the id of the record that chose its first route, and each route recalculated or
+    /// re-destined since with what had settled in its part by then, in the order the log took them.
+    pub fn routes_ran(&self, order: &Id) -> Option<(&Id, &[Recalculated])> {
+        self.routes_ran
+            .get(order.as_str())
+            .map(|(first, later)| (first, later.as_slice()))
+    }
+
+    /// Notes the route `input` chooses for its order or part, `before` being the order as it stood: what the routes
+    /// before it came to is what had settled in the part by now.
+    fn note_route(&mut self, before: Option<&stm::Order>, input: &RecordedInput) {
+        let order = input.subject.order.as_str().to_owned();
+        match &input.observed {
+            Observed::RouteChosen {
+                decision_record, ..
+            } => {
+                if let Some(record) = Id::new(decision_record.as_str()) {
+                    self.routes_ran
+                        .entry(order)
+                        .or_insert_with(|| (record, Vec::new()));
+                }
+            }
+            Observed::RouteRecalculated {
+                decision_record, ..
+            }
+            | Observed::DestinationChanged {
+                decision_record, ..
+            } => {
+                let (Some(part), Some(before)) = (&input.subject.part, before) else {
+                    return;
+                };
+                let (Some(part), Some(record)) =
+                    (Id::new(part.as_str()), Id::new(decision_record.as_str()))
+                else {
+                    return;
+                };
+                let settled_before = before
+                    .parts
+                    .iter()
+                    .find(|p| p.part_id.as_str() == part.as_str())
+                    .map_or(0, |p| {
+                        p.segments
+                            .iter()
+                            .filter(|s| s.state == stm::SegmentState::Settled)
+                            .count()
+                    });
+                if let Some((_, later)) = self.routes_ran.get_mut(&order) {
+                    later.push(Recalculated {
+                        part,
+                        record,
+                        settled_before,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `segment` of `order` failed and owes a reversal that can come, as the order Core follows has it: a
+    /// failed deposit's reversal never applies (its value rests where it was, for the customer to choose,
+    /// `REQ-ORD-43`), so it is never timed here.
+    fn reversal_owed(&self, order: &Id, segment: &Id) -> bool {
+        self.orders.get(order.as_str()).is_some_and(|t| {
+            t.order.parts.iter().flat_map(|p| &p.segments).any(|s| {
+                s.segment_id.as_str() == segment.as_str()
+                    && s.kind != rutent_contracts::router_api::OperationKind::Deposit
+                    && s.state == stm::SegmentState::FailedReversalOwed
+            })
+        })
+    }
+
+    /// What the result that counted for `segment` of `order` states of what it gave out at its destination, as its
+    /// provider stated it (its charge within it where its tuple reports gross), once it settled: what the executed
+    /// price takes of it (`REQ-QTE-7`, `T-020-47`).
+    pub fn stated_out(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        self.flights
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))?
+            .stated_out
+            .as_ref()
     }
 
     /// Every settled segment's actual settlement time as its `settlement` entry recorded it, with that entry's
@@ -1602,6 +1737,7 @@ impl Segments {
         let Some(order) = Stm::open(chosen) else {
             return false;
         };
+        self.note_route(None, chosen);
         self.orders.insert(
             order.order_id.as_str().to_owned(),
             Tracked {
@@ -2156,6 +2292,7 @@ impl Segments {
                 ended: false,
                 outcome: None,
                 charged: None,
+                stated_out: None,
                 reported: None,
                 begin_refused: None,
                 verdict: None,
@@ -2583,6 +2720,11 @@ impl Segments {
         let arrives = handed_on.clone();
         let amount_out = Amount::new(handed_on.clone())
             .ok_or(SegmentsError::Plan("a counted result states an amount"))?;
+        let reversals = self
+            .reversal_txs
+            .get(live.order.as_str())
+            .cloned()
+            .unwrap_or_default();
         let flight = self.flight_mut(at)?;
         let (evidence, graded_at) = match &flight.evidence {
             Some(graded) => graded.clone(),
@@ -2613,6 +2755,7 @@ impl Segments {
             operator: live.operator,
             at: &graded_at,
             kept: &[],
+            reversals: &reversals,
         };
         // What the grading reads and cites is kept and appended first, each once: a receipt is the log's to give.
         let kept = if self.flight(at)?.graded.is_none() {
@@ -2683,6 +2826,7 @@ impl Segments {
             on.stated,
             (stated_in.as_str(), stated_fee),
         )?;
+        self.flight_mut(at)?.stated_out = Amount::new(stated_out.clone());
         self.check_charge(parts, live, at)?;
         // What it reported, and the pair it makes with the segment before it (`REQ-ORD-9`): a detection, so what it
         // can't build is parked and the settlement goes on (`ADR-0009`).

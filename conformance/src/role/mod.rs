@@ -160,6 +160,12 @@ pub trait RoleHarness: RoleProvider {
         false
     }
 
+    /// Makes the provider's next real operation end with outcome unknown, and fail: nothing moved on, and a status
+    /// query of it later says so (`REQ-ORD-1`, `T-020-47`). Not every provider can be driven so.
+    fn force_outcome_unknown_then_failure(&mut self) -> bool {
+        false
+    }
+
     /// Makes the provider's next real operation fail, with evidence, having moved nothing on, so the suite can ask
     /// for its reversal (`AC-4`, `INV-3`).
     fn force_failure(&mut self) -> bool {

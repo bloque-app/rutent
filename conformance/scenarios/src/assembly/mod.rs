@@ -406,6 +406,19 @@ impl Modules for Running<'_> {
         }
     }
 
+    fn status(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &Id,
+        asking: &Id,
+        about: &Statement<Operation>,
+    ) -> rutent_core_orch::segments::Answered {
+        self.platform.world.set_clock(self.clock.instant());
+        let answered = Modules::status(self.platform, effect, provider, asking, about);
+        self.readings.refresh(&self.platform.world);
+        answered
+    }
+
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
         Modules::take_events(self.platform)
     }
@@ -542,8 +555,10 @@ pub struct Core {
     /// What goes wrong with an order and how it ends (`T-024-06`).
     pub(crate) life: lifecycle::Lifecycle,
     exposures: Exposures,
-    /// The prices reported, once per order (`T-024-04`).
+    /// The prices Core's closing reported, once per order (`T-020-47`).
     reported: rutent_core_orch::quote::Prices,
+    /// Each reported price as it was built, and why a completed order's wasn't, by order.
+    closed: price::Priced,
     releases: Releases,
     signer: Signer,
     fresh: Seeded,
@@ -870,6 +885,7 @@ impl Core {
             life: lifecycle::Lifecycle::new(),
             exposures: Exposures::new(),
             reported: rutent_core_orch::quote::Prices::new(),
+            closed: price::Priced::default(),
             releases: Releases::new(),
             signer: Signer {
                 key: RealKey::assembly(),
@@ -2195,6 +2211,12 @@ impl Core {
         let result = self.segments.run_part(&mut parts, live);
         // What settled at a public node a holding account holds is landed in it (`T-020-33`).
         self.land_settled();
+        // Core's closing: an order that completed reports its executed price, once (`REQ-QTE-7`, `T-020-47`).
+        self.close(live.order);
+        self.feed()?;
+        // A segment the run left unknown is asked where it stands, once, at a provider that declares a status query
+        // (`REQ-ORD-1`, `T-020-47`).
+        self.ask_unknown_status(live);
         self.feed()?;
         Ok(result?)
     }

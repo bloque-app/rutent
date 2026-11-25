@@ -69,8 +69,9 @@ pub trait Modules {
     /// under `asking`, the fresh transaction of Core's own question (`REQ-ORD-1`, `T-020-27`). The answer is the
     /// provider's own statement about `about`'s transaction, kept as such and moving nothing (`INV-4`). The
     /// default answers that the module handles no such query, so nothing comes back and a late status is never
-    /// taken from a platform that can't ask for one; the production platform's status query, which no call of
-    /// `Platform` reaches yet, is a gap named in `F-020`'s notes.
+    /// taken from a platform that can't ask for one; the production platform answers it ([`Platform::status`],
+    /// `T-013-11`), whose question Core holds the answer to with `check_status_answer`, since the platform checks the
+    /// answer's shape, transaction and signer and not its `about` (`T-020-47`).
     fn status(
         &mut self,
         effect: &Effect,
@@ -137,6 +138,26 @@ impl<W: World> Modules for Platform<W> {
                 Ok(bytes) => Answered::Bytes(bytes),
                 Err(_) => Answered::Refused(PlatformRefusal::OutcomeUnknown),
             },
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn status(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        asking: &Id,
+        about: &Statement<Operation>,
+    ) -> Answered {
+        let _permitted = effect;
+        let Some(asking) = Identifier::new(asking.as_str()) else {
+            return Answered::Refused(PlatformRefusal::NotHandled);
+        };
+        match Platform::status(self, provider.as_str(), &asking, about) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                Answered::Bytes,
+            ),
             Handled::Refused(refusal) => Answered::Refused(refusal),
         }
     }
@@ -239,6 +260,9 @@ pub struct ToGrade<'a> {
     /// The statements the grading asked to have kept ([`Grading::statements`]), appended before it grades, with the
     /// receipt of each.
     pub kept: &'a [Kept],
+    /// The transactions of the reversals Core carried out for the order: a private node's record that lists one is
+    /// the order's own (`REQ-ORD-41`).
+    pub reversals: &'a [Id],
 }
 
 /// A statement a grading read and cites: kept and appended, about its order and, where it names one, its node, before

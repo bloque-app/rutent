@@ -30,9 +30,9 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Amount, DecisionRecord, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
-    AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms,
-    PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, Signed, SlowSegment, Terms,
-    digest, executed, show,
+    AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms, PartRan,
+    PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, RouteRan, Signed, SlowSegment,
+    Terms, digest, executed, executed_across, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};
@@ -954,6 +954,151 @@ fn price_rests_on_each_segments_own_result() {
             part: 0,
             operation: 1
         })
+    );
+}
+
+/// The price of an order of two parts, one route whole, is the same price composed across routes and parts: each part's
+/// segments in their part, in order, each on its own result, with the same lines as the route's own price; and a price
+/// is refused where what ran of a part isn't the segments Core holds (`REQ-QTE-7`, `T-020-47`).
+// verifies: REQ-QTE-7
+#[test]
+fn price_of_an_order_of_two_parts_covers_each_parts_segments() {
+    let record = split_route(quote_support::RESERVE, fee("0", "1", "100"));
+    let candidate = chosen(&record);
+    let quote = show(&record, candidate, None).expect("the split is shown");
+    let mut env = Env::new();
+    let segments: Vec<ExecutedSegment> = quote
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| ExecutedSegment {
+            executed: Executed {
+                amount_in: s.amount_in.clone(),
+                fee: s.fee.clone(),
+                amount_out: s.amount_out.clone(),
+            },
+            result: stated_result(&mut env, &format!("seg-{i}"), u64::try_from(i).unwrap()),
+        })
+        .collect();
+    let whole = executed(&record, candidate, &segments).expect("the route's own price");
+    let share = |order_part, ran| PartRan {
+        order_part,
+        candidate_part: order_part,
+        ran,
+    };
+    let across = |parts: Vec<PartRan>| {
+        executed_across(
+            &[RouteRan {
+                record: &record,
+                candidate,
+                parts,
+            }],
+            &segments,
+        )
+    };
+    assert_eq!(
+        across(vec![share(0, 2), share(1, 2)]).expect("across both parts"),
+        whole,
+        "the same price, composed part by part"
+    );
+    // A part whose segments the route didn't run in full isn't an execution of it.
+    assert!(across(vec![share(0, 2), share(1, 1)]).is_err());
+    assert!(across(vec![share(0, 2)]).is_err(), "a part left out");
+}
+
+/// An order of two parts whose second part was recalculated: the first route ran its first part whole and none of its
+/// second, and the second route, of one part, ran the second part. The price is of the first route's two segments and
+/// the second route's two, in their parts, each held to its own route's record; a route's share in the wrong part, or past its
+/// segments, is no execution of it (`REQ-QTE-7`, `T-020-47`).
+// verifies: REQ-QTE-7
+#[test]
+fn price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route() {
+    let first = split_route(quote_support::RESERVE, fee("0", "1", "100"));
+    let second = reserve_route(
+        1_000,
+        &Leg::free("USDC"),
+        &Leg::free("USDC"),
+        fee("0", "0", "1"),
+        None,
+    );
+    let (c1, c2) = (chosen(&first), chosen(&second));
+    let (q1, q2) = (
+        show(&first, c1, None).expect("the first route is shown"),
+        show(&second, c2, None).expect("the second route is shown"),
+    );
+    let mut env = Env::new();
+    // Part 0 of the first route, then the second route's segments as part 1's.
+    let amounts: Vec<(Amount, Fee, Amount)> = q1
+        .segments
+        .iter()
+        .take(2)
+        .chain(q2.segments.iter())
+        .map(|s| (s.amount_in.clone(), s.fee.clone(), s.amount_out.clone()))
+        .collect();
+    let segments: Vec<ExecutedSegment> = amounts
+        .into_iter()
+        .enumerate()
+        .map(|(i, (amount_in, fee, amount_out))| ExecutedSegment {
+            executed: Executed {
+                amount_in,
+                fee,
+                amount_out,
+            },
+            result: stated_result(&mut env, &format!("two-{i}"), u64::try_from(i).unwrap()),
+        })
+        .collect();
+    let route = |record, candidate, parts| RouteRan {
+        record,
+        candidate,
+        parts,
+    };
+    let share = |order_part, candidate_part, ran| PartRan {
+        order_part,
+        candidate_part,
+        ran,
+    };
+    let price = executed_across(
+        &[
+            route(&first, c1, vec![share(0, 0, 2), share(1, 1, 0)]),
+            route(&second, c2, vec![share(1, 0, 2)]),
+        ],
+        &segments,
+    )
+    .expect("both routes' segments are priced");
+    let places: Vec<(u32, u32)> = price
+        .segments
+        .iter()
+        .map(|s| (s.part, s.operation))
+        .collect();
+    assert_eq!(places, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+    assert_eq!(
+        price.amount_in,
+        q1.segments[0]
+            .amount_in
+            .checked_add(&q2.segments[0].amount_in)
+            .expect("a sum"),
+        "what leaves the origin is each part's first segment's"
+    );
+    // The second route's share put in the first part, or more of it than it has, is no price.
+    assert!(
+        executed_across(
+            &[
+                route(&first, c1, vec![share(0, 0, 2), share(1, 1, 0)]),
+                route(&second, c2, vec![share(0, 0, 2)]),
+            ],
+            &segments,
+        )
+        .is_err()
+    );
+    assert!(
+        executed_across(
+            &[
+                route(&first, c1, vec![share(0, 0, 2), share(1, 1, 0)]),
+                route(&second, c2, vec![share(1, 0, 3)]),
+            ],
+            &segments,
+        )
+        .is_err()
     );
 }
 

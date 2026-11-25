@@ -1635,6 +1635,8 @@ pub struct Ramp {
     pending: BTreeMap<String, TransferOutcome>,
     internal_steps: Vec<String>,
     unknown_next: bool,
+    /// The next unknown outcome is one that failed: nothing moved on, and the ramp's status says so.
+    unknown_then_fails: bool,
     fail_next: bool,
     converts_internally: bool,
     faults: BTreeSet<Fault>,
@@ -1699,6 +1701,7 @@ impl Ramp {
             pending: BTreeMap::new(),
             internal_steps: Vec::new(),
             unknown_next: false,
+            unknown_then_fails: false,
             fail_next: false,
             converts_internally: false,
             faults: BTreeSet::new(),
@@ -1931,6 +1934,25 @@ impl Ramp {
                 terms: None,
             });
         }
+        if std::mem::take(&mut self.unknown_next) && std::mem::take(&mut self.unknown_then_fails) {
+            // The ramp can't tell yet, and when it can it says the transfer failed: nothing moved on, and its status
+            // query tells later; it still owes its reversal, as any failed transfer.
+            let failed = TransferOutcome::Failed(Failure {
+                evidence: evidence(self.grade(), &t.destination, &t.transaction),
+                fault: None,
+            });
+            self.served.insert(
+                t.transaction.clone(),
+                Served {
+                    node: t.origin.clone(),
+                    asset: t.asset.clone(),
+                    amount: t.amount.clone(),
+                    settled: false,
+                },
+            );
+            self.pending.insert(t.transaction.clone(), failed);
+            return TransferOutcome::Unknown(Unknown {});
+        }
         if std::mem::take(&mut self.fail_next) {
             // The transfer failed before anything moved on; the ramp still owes its reversal.
             self.served.insert(
@@ -2085,6 +2107,12 @@ impl RoleHarness for Ramp {
 
     fn force_outcome_unknown(&mut self) -> bool {
         self.unknown_next = true;
+        true
+    }
+
+    fn force_outcome_unknown_then_failure(&mut self) -> bool {
+        self.unknown_next = true;
+        self.unknown_then_fails = true;
         true
     }
 
