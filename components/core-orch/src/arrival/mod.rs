@@ -345,12 +345,14 @@ fn key(receipt: &Receipt) -> String {
 }
 
 /// Whether `filer` may file at all: the deployment's operator (its party the operator's), or a reserve, and in either
-/// case an actor the register of actors says acts for the party it states (`REQ-ORD-13`,
-/// `REQ-ORD-23`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
+/// case an actor the register of actors says acts for the party it states, as the kind and in the role it states, which
+/// policy's register binds (`REQ-ORD-13`, `REQ-ORD-23`, `T-020-52`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
 fn listed_filer(desk: &mut Desk<'_, '_>, filer: &Actor) -> bool {
     let role = (filer.role == Role::Operator && filer.party == desk.operator.party)
         || filer.role == Role::Provider;
-    role && desk.actors.acts_for(&filer.acts, &filer.party, filer.kind)
+    role && desk
+        .actors
+        .acts_for(&filer.acts, &filer.party, filer.kind, filer.role)
 }
 
 /// Whether a listed filer may file at `reserve`: the operator anywhere, a reserve only where it is the reserve.
@@ -1015,7 +1017,7 @@ impl Arrivals {
             // One that ended is told how, to its customer alone.
             return match self.ended.iter().find(|r| &r.order == order) {
                 Some(run)
-                    if desk.actors.acts_for(&by.acts, &by.party, by.kind)
+                    if desk.actors.acts_for(&by.acts, &by.party, by.kind, by.role)
                         && by.role == Role::Customer
                         && by.party == run.record().parties.requester =>
                 {

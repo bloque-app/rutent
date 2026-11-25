@@ -66,11 +66,11 @@ use std::time::Duration;
 
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::Spec;
-use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, Reads};
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Authorisation, CatalogueChange, DecisionRequest, Entry, Outcome,
-    Receipt, RefusalClass, Role, RouteEnd, SessionOutcome, SessionRequest, TimeSource,
-    VerifiedEntry, VerifiedKind, What, When,
+    Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
+    Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role, RouteEnd,
+    SessionOutcome, SessionRequest, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ReserveDeclaration,
@@ -85,7 +85,7 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_authz::session::LONGEST_SESSION_SECS;
 use rutent_core_orch::intake::{
     Actors, DESTINATION_INPUT, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord,
-    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, Told,
+    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{
@@ -436,12 +436,42 @@ impl Modules for Running<'_> {
     }
 }
 
-/// The register of actors, as intake reads it: the deployment's, the one policy reads.
+/// The register of actors, as intake reads it: the deployment's, the one policy reads, which binds the party, the kind
+/// and the role the actor states (`T-021-14`, `T-020-52`).
 struct Acting(Rc<RefCell<Registers>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
-        self.0.borrow().acts_as(acts, party, kind) == Some(true)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
+        self.0.borrow().acts_in(acts, party, kind, role) == Some(true)
+    }
+}
+
+/// Policy's read check, as intake asks it before it tells an order's status, and where intake hands over its own
+/// record of the filed request first, for policy's `Requester` source to answer from (`T-020-52`).
+struct Reading {
+    policy: PolicySide,
+    orders: Rc<RefCell<BTreeMap<String, OrderRecord>>>,
+}
+
+impl Reads for Reading {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        self.policy.check_read(check)
+    }
+
+    fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.grant_permission(change)
+    }
+
+    fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.revoke_permission(change)
+    }
+}
+
+impl StatusReads for Reading {
+    fn filed(&mut self, record: &OrderRecord) {
+        self.orders
+            .borrow_mut()
+            .insert(record.order.as_str().to_owned(), record.clone());
     }
 }
 
@@ -1585,12 +1615,17 @@ impl Core {
         let mut acting = Acting(Rc::clone(&self.records.registers));
         let mut held = Held(Rc::clone(self.policy.engine()));
         let mut authorisations = self.policy.clone();
+        let mut reads = Reading {
+            policy: self.policy.clone(),
+            orders: Rc::clone(&self.records.orders),
+        };
         let mut desk = Desk {
             parts: &mut parts,
             destinations: &mut owners,
             authorisations: &mut authorisations,
             actors: &mut acting,
             sessions: &mut held,
+            reads: &mut reads,
             bounds: &self.bounds,
             prices: &self.prices,
             core: &core,

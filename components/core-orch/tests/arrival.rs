@@ -895,6 +895,75 @@ fn differing_arrival_is_filed_anew_only_by_the_operator_or_its_reserve() {
     assert_admitted(&env);
 }
 
+/// A login listed for the operator's party, or for a reserve, in another role than the one it states, files nothing
+/// anew: the register of actors is asked for the role the filer states, as policy binds it (`T-021-14`), so a customer's
+/// login of the operator's party can't state itself the operator, nor a customer's login of a reserve state itself the
+/// reserve (`T-020-52`). The refusal is the same as a stranger's, and nothing is recorded.
+// verifies: REQ-AUZ-4
+#[test]
+fn arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let first = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&order)]),
+        &report(600, 0),
+    )
+    .unwrap()
+    {
+        Arrived::Held { arrival, .. } => arrival,
+        other => panic!("{other:?}"),
+    };
+    // Each of the two parties has a login the register lists in the customer's role alone; it states the role the
+    // party's own filer holds.
+    let operators_customer = Actor {
+        acts: id("operators-customer-login"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
+        ..operator()
+    };
+    let reserves_customer = Actor {
+        acts: id("reserves-customer-login"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
+        ..reserve_filer()
+    };
+    env.actors.borrow_mut().list(&operators_customer);
+    env.actors.borrow_mut().list(&reserves_customer);
+    let stating_operator = Actor {
+        role: Role::Operator,
+        ..operators_customer
+    };
+    let stating_provider = Actor {
+        role: Role::Provider,
+        ..reserves_customer
+    };
+    let len = env.len();
+    for liar in [stating_operator, stating_provider] {
+        assert_eq!(
+            refile(&mut env, &mut providers, &mut arrivals, &liar, &first),
+            Err(ArrivalError::NotTheFiler),
+            "{liar:?}"
+        );
+    }
+    assert_eq!(env.len(), len, "nothing is recorded for a refused filer");
+    assert!(
+        !env.book
+            .borrow()
+            .verified()
+            .iter()
+            .any(|w| matches!(w, What::Refiling { .. })),
+        "no refiling is written"
+    );
+    // The operator's own login and the reserve's, in the roles they are listed in, file.
+    assert!(refile(&mut env, &mut providers, &mut arrivals, &operator(), &first).is_ok());
+    assert_admitted(&env);
+}
+
 // REQ-ORD-13, REQ-ORD-15 -------------------------------------------------------------------------------------------
 
 /// An order filed on an automatic deposit, by the reserve that declared it or by the operator, is accepted on that
@@ -2312,11 +2381,7 @@ fn a_waiting_filing_is_carried_on_by_its_partys_logins_and_ends_with_none_left()
     else {
         panic!("waits");
     };
-    env.actors.borrow_mut().pairs.remove(&(
-        operator().acts.as_str().to_owned(),
-        operator().party.as_str().to_owned(),
-        format!("{:?}", operator().kind),
-    ));
+    env.actors.borrow_mut().unlist(&operator());
     providers.silent = false;
     let mut theirs = filing(reserve_filer(), &deposited);
     theirs.request = id("deposit-reserve");
@@ -2738,11 +2803,7 @@ fn a_filing_with_its_acceptance_written_is_finished_not_ended() {
         let order = env.started().pop().expect("the start is in the log");
         match case {
             "struck" => {
-                env.actors.borrow_mut().pairs.remove(&(
-                    operator().acts.as_str().to_owned(),
-                    operator().party.as_str().to_owned(),
-                    format!("{:?}", operator().kind),
-                ));
+                env.actors.borrow_mut().unlist(&operator());
             }
             _ => env.clock.set(START + 40),
         }

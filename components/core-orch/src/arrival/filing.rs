@@ -654,7 +654,7 @@ impl Run {
     pub(super) fn has_a_listed_login(&self, desk: &mut Desk<'_, '_>) -> bool {
         self.logins
             .iter()
-            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party, l.kind))
+            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party, l.kind, l.role))
     }
 
     /// The customer `by` accepts the route of the order waiting for it, the quote of digest `quote` (`REQ-QTE-10`):
@@ -672,7 +672,7 @@ impl Run {
     ) -> Result<Filed, ArrivalError> {
         if by.role != Role::Customer
             || by.party != self.filing.parties.requester
-            || !desk.actors.acts_for(&by.acts, &by.party, by.kind)
+            || !desk.actors.acts_for(&by.acts, &by.party, by.kind, by.role)
         {
             return Err(ArrivalError::NotTheFiler);
         }

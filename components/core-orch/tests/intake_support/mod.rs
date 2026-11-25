@@ -13,20 +13,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Authorisations, Evidence, Fetched, Kept, KeptStatements, Log, Signatures,
+    AppendFailure, Authorisations, Evidence, Fetched, Kept, KeptStatements, Log, Reads, Signatures,
     StatementKeys, is_decision,
 };
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Answer, Authorisation, Decision, Destination, Entry, KeptStatement, Opened,
-    Outcome, Parties, ReadCheck, Receipt, RefusalClass, Role, SessionRequest, SignedWith, Through,
-    TimeSource, VerifiedEntry, VerifiedKind, What, When, admit_entry, attribute,
+    Outcome, Parties, PermissionChange, ReadAnswer, ReadCheck, ReadOutcome, Reads as Read, Receipt,
+    RefusalClass, Role, SessionRequest, SignedWith, Through, TimeSource, VerifiedEntry,
+    VerifiedKind, What, When, admit_entry, attribute,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{Deployment, OuterNode, SafeInteger};
 use rutent_contracts::router_api::{Id, PolicyBounds, Request, Timestamp};
 use rutent_core_orch::intake::{
-    Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRequest, Resolution,
-    SessionRegister, Status, Told,
+    Actors, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord, OrderRequest,
+    Resolution, SessionRegister, Status, StatusReads, Told,
 };
 use rutent_core_orch::quote::Holds;
 use rutent_core_orch::rounds::{Fresh, Issued, Parts, Providers};
@@ -207,15 +208,16 @@ impl Authorisations for Policy {
         self.asked.push(authorisation.clone());
         // `ActsFor`, the first fixed rule: the giver acts for the party it states, or the answer is a refusal.
         let giver = &authorisation.given_by;
-        let answer = if self
-            .actors
-            .borrow()
-            .acts_for(&giver.acts, &giver.party, giver.kind)
-        {
-            self.answer
-        } else {
-            refusal(RefusalClass::NoAccountableParty)
-        };
+        let answer =
+            if self
+                .actors
+                .borrow()
+                .acts_for(&giver.acts, &giver.party, giver.kind, giver.role)
+            {
+                self.answer
+            } else {
+                refusal(RefusalClass::NoAccountableParty)
+            };
         let decision = id(&format!("dec-{}", authorisation.authorisation.as_str()));
         let entry = Entry::Verified(VerifiedEntry {
             kind: VerifiedKind::Verified,
@@ -258,18 +260,20 @@ impl Destinations for Register {
     }
 }
 
-/// The register of actors: who each actor, as authenticated, acts for, and as what kind of actor.
+/// The register of actors: who each actor, as authenticated, acts for, as what kind of actor and in what role
+/// (`T-020-52`).
 #[derive(Debug, Default)]
 pub struct ActorRegister {
-    pub pairs: BTreeSet<(String, String, String)>,
+    pub pairs: BTreeSet<(String, String, String, String)>,
 }
 
 impl ActorRegister {
-    pub fn acts_for(&self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
+    pub fn acts_for(&self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
         self.pairs.contains(&(
             acts.as_str().to_owned(),
             party.as_str().to_owned(),
             format!("{kind:?}"),
+            format!("{role:?}"),
         ))
     }
 
@@ -278,6 +282,16 @@ impl ActorRegister {
             actor.acts.as_str().to_owned(),
             actor.party.as_str().to_owned(),
             format!("{:?}", actor.kind),
+            format!("{:?}", actor.role),
+        ));
+    }
+
+    pub fn unlist(&mut self, actor: &Actor) {
+        self.pairs.remove(&(
+            actor.acts.as_str().to_owned(),
+            actor.party.as_str().to_owned(),
+            format!("{:?}", actor.kind),
+            format!("{:?}", actor.role),
         ));
     }
 }
@@ -286,8 +300,131 @@ impl ActorRegister {
 pub struct Acting(pub Rc<RefCell<ActorRegister>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
-        self.0.borrow().acts_for(acts, party, kind)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
+        self.0.borrow().acts_for(acts, party, kind, role)
+    }
+}
+
+/// Policy's read check, as far as intake reaches it (`T-020-52`): the fixed rules a read of an order's status rests
+/// on, and each check recorded on policy's path, allowed or refused, before it is answered. An agent reads only
+/// where its party scoped it for reading (`scoped`, by its login); a customer reads a filed order's status where its
+/// party is the requester the order's record names (the record intake handed over, never the read's word) and an
+/// order's state where the log's acceptance names its party; the operator's login reads either. Every check asked
+/// is kept in `asked`.
+pub struct ReadPolicy {
+    pub book: Rc<RefCell<Book>>,
+    pub clock: Rc<TestClock>,
+    pub actors: Rc<RefCell<ActorRegister>>,
+    /// The agents, by login, their party scoped for reading.
+    pub scoped: BTreeSet<String>,
+    /// The operator's logins that read an order's status.
+    pub operator_logins: BTreeSet<String>,
+    /// Intake's record of each filed order, as it handed it over.
+    pub filed: BTreeMap<String, OrderRecord>,
+    /// Each check asked, as asked, with whether it was allowed.
+    pub asked: Vec<(ReadCheck, bool)>,
+    /// Whether every reader is refused, whatever it asks (a policy that refuses all).
+    pub refuse_all: bool,
+    /// Whether the next check can't be made, once: nothing is recorded and nothing answered.
+    pub fail_next: bool,
+}
+
+impl ReadPolicy {
+    fn decide(&self, check: &ReadCheck) -> ReadOutcome {
+        let refused = |class| ReadOutcome::Refused { class };
+        let reader = &check.reader;
+        if self.refuse_all {
+            return refused(RefusalClass::NotPermitted);
+        }
+        // `ActsFor`: the reader acts for the party it states, as the kind and in the role it states.
+        if !self
+            .actors
+            .borrow()
+            .acts_for(&reader.acts, &reader.party, reader.kind, reader.role)
+        {
+            return refused(RefusalClass::NoAccountableParty);
+        }
+        // An agent reads only within the scope its party set for reading.
+        if reader.kind == ActorKind::Agent && !self.scoped.contains(reader.acts.as_str()) {
+            return refused(RefusalClass::NotPermitted);
+        }
+        match (reader.role, &check.reads) {
+            (Role::Customer, Read::FiledOrder { order, requester }) => {
+                // The order's record names its requester, which must be the reader's party and the read's.
+                match self.filed.get(order.as_str()) {
+                    Some(record)
+                        if requester == &reader.party
+                            && record.parties.requester == reader.party =>
+                    {
+                        ReadOutcome::Allowed {}
+                    }
+                    Some(_) => refused(RefusalClass::NotPermitted),
+                    None => refused(RefusalClass::MissingInput),
+                }
+            }
+            (Role::Customer, Read::OrderState { order }) => {
+                let book = self.book.borrow();
+                let named = book.verified().into_iter().any(|what| {
+                    matches!(what, What::Acceptance { order: o, parties, .. }
+                        if o == order && parties.requester == reader.party)
+                });
+                if named {
+                    ReadOutcome::Allowed {}
+                } else {
+                    refused(RefusalClass::NotPermitted)
+                }
+            }
+            (Role::Operator, Read::OrderState { .. } | Read::FiledOrder { .. })
+                if self.operator_logins.contains(reader.acts.as_str()) =>
+            {
+                ReadOutcome::Allowed {}
+            }
+            _ => refused(RefusalClass::NotPermitted),
+        }
+    }
+}
+
+impl Reads for ReadPolicy {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        if std::mem::take(&mut self.fail_next) {
+            return Err(AppendFailure::Unavailable);
+        }
+        let outcome = self.decide(check);
+        self.asked
+            .push((check.clone(), outcome == ReadOutcome::Allowed {}));
+        let entry = Entry::Verified(VerifiedEntry {
+            kind: VerifiedKind::Verified,
+            who: policy_actor(),
+            what: What::CheckRead {
+                check: check.clone(),
+            },
+            when: When {
+                at: now(&self.clock),
+                source: TimeSource::CoreClock,
+            },
+            outcome: outcome.outcome(),
+        });
+        let receipt = self.book.borrow_mut().push(Through::Policy, entry)?;
+        Ok(ReadAnswer {
+            request: check.request.clone(),
+            outcome,
+            receipt,
+        })
+    }
+
+    fn grant_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+
+    fn revoke_permission(&mut self, _: &PermissionChange) -> Result<Decision, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+}
+
+impl StatusReads for ReadPolicy {
+    fn filed(&mut self, record: &OrderRecord) {
+        self.filed
+            .insert(record.order.as_str().to_owned(), record.clone());
     }
 }
 
@@ -337,7 +474,7 @@ fn salt_of(place: usize) -> [u8; 32] {
 
 /// The commitment of the statement kept at `place`, as the evidence store makes it: SHA-256 of its salt followed by
 /// its bytes, so a stated entry's commitment is one a kept statement is held to.
-fn commitment(place: usize, bytes: &[u8]) -> Digest {
+pub fn commitment(place: usize, bytes: &[u8]) -> Digest {
     let value = rutent_prov::module::wire::sha256(&[salt_of(place).as_slice(), bytes].concat());
     serde_json::from_value(json!({ "algorithm": "sha-256", "value": value })).unwrap()
 }
@@ -406,6 +543,7 @@ pub struct Env {
     pub ids: Ids,
     pub issued: Issued,
     pub policy: Policy,
+    pub reads: ReadPolicy,
     pub register: Register,
     pub bounds: PolicyBounds,
     pub prices: Vec<Price>,
@@ -472,10 +610,21 @@ impl Env {
             issued: Issued::new(),
             policy: Policy {
                 book: book.clone(),
-                clock,
-                actors,
+                clock: clock.clone(),
+                actors: actors.clone(),
                 answer: Answer::Permit {},
                 asked: Vec::new(),
+            },
+            reads: ReadPolicy {
+                book: book.clone(),
+                clock,
+                actors,
+                scoped: BTreeSet::from([agent().acts.as_str().to_owned()]),
+                operator_logins: BTreeSet::new(),
+                filed: BTreeMap::new(),
+                asked: Vec::new(),
+                refuse_all: false,
+                fail_next: false,
             },
             register: Register::default(),
             bounds: no_ceilings(),
@@ -572,6 +721,7 @@ impl Env {
             authorisations: &mut self.policy,
             actors: &mut self.acting,
             sessions: &mut self.sessions,
+            reads: &mut self.reads,
             bounds: &self.bounds,
             prices: &self.prices,
             core: &core,
@@ -633,7 +783,10 @@ impl Env {
 
     /// What `caller` is told about its request `request`.
     pub fn told(&mut self, caller: &Actor, request: &str) -> Option<Told> {
-        self.intake.told(&mut self.acting, caller, &id(request))
+        let mut sim = self.sim();
+        self.with(&mut sim, |intake, desk| {
+            intake.told(desk, caller, &id(request))
+        })
     }
 
     /// What the customer is told about its request `request`.
@@ -710,6 +863,19 @@ impl Env {
     /// How many entries the log holds.
     pub fn len(&self) -> usize {
         self.book.borrow().entries.len()
+    }
+
+    /// How many entries the log holds but for policy's recorded reads: telling a status is checked and recorded
+    /// (`T-020-52`), which is no change to the order or the request.
+    pub fn len_but_reads(&self) -> usize {
+        self.book
+            .borrow()
+            .entries
+            .iter()
+            .filter(|(_, e)| {
+                !matches!(e, Entry::Verified(v) if matches!(v.what, What::CheckRead { .. }))
+            })
+            .count()
     }
 }
 

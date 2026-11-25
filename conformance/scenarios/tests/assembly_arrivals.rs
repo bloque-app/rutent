@@ -264,6 +264,25 @@ fn the_operators_login_files_a_differing_arrival_anew_on_the_real_log() {
         core.refile(&maker_as_party, &arrival),
         Err(StepError::Arrival(ArrivalError::NotTheFiler))
     ));
+    // A login of the operator's party that the register lists in the customer's role alone, stating the operator's, is
+    // refused as well: the register of actors binds the role the filer states, as policy's does (`T-020-52`).
+    let operators_customer = Actor {
+        party: operator.party.clone(),
+        acts: id("operators-customer-login"),
+        role: Role::Customer,
+        kind: ActorKind::Person,
+    };
+    core.registers().list(&operators_customer);
+    let stating_operator = Actor {
+        role: Role::Operator,
+        ..operators_customer
+    };
+    let before = core.log().entries().len();
+    assert!(matches!(
+        core.refile(&stating_operator, &arrival),
+        Err(StepError::Arrival(ArrivalError::NotTheFiler))
+    ));
+    assert_eq!(core.log().entries().len(), before, "nothing is recorded");
     let refiled = core
         .refile(&kit::operator_login(), &arrival)
         .expect("the operator's login files it anew");

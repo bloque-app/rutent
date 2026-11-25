@@ -94,7 +94,7 @@ proptest! {
             match step {
                 Step::Open { n, other } => {
                     let request = request_n(n, other);
-                    let before = env.len();
+                    let before = env.len_but_reads();
                     let answer = env.open(&mut sim, &request);
                     match (&first[n], answer) {
                         (None, Ok(told)) => first[n] = Some((order_of(&told), other)),
@@ -102,13 +102,13 @@ proptest! {
                             // The same request again: the same order, and nothing recorded.
                             prop_assert_eq!(*body, other);
                             prop_assert_eq!(&order_of(&told), order);
-                            prop_assert_eq!(env.len(), before);
+                            prop_assert_eq!(env.len_but_reads(), before);
                         }
                         (Some((order, body)), Err(IntakeError::Conflicting { order: named })) => {
                             // Another request under a used identifier opens nothing.
                             prop_assert_ne!(*body, other);
                             prop_assert_eq!(named.as_ref(), Some(order));
-                            prop_assert_eq!(env.len(), before);
+                            prop_assert_eq!(env.len_but_reads(), before);
                         }
                         (seen, answer) => prop_assert!(false, "{:?}: {:?}", seen, answer),
                     }
@@ -134,13 +134,13 @@ proptest! {
                             "algorithm": "sha-256", "value": "00".repeat(32)
                         })).unwrap()
                     })) else { continue };
-                    let before = env.len();
+                    let before = env.len_but_reads();
                     let answer = env.accept(&mut sim, &order, &by, &digest);
                     if accepted_before {
                         // Accepting again records nothing, and is told the same.
                         let again = matches!(answer, Ok(Told::Exists { status: Status::Accepted { .. }, .. }));
                         prop_assert!(again, "{:?}", answer);
-                        prop_assert_eq!(env.len(), before);
+                        prop_assert_eq!(env.len_but_reads(), before);
                     }
                 }
             }
@@ -1177,12 +1177,12 @@ fn agent_repeating_its_persons_request_gets_the_same_answer() {
     let first = env
         .open(&mut sim, &order_request("client-req-1", customer()))
         .unwrap();
-    let before = env.len();
+    let before = env.len_but_reads();
     let again = env
         .open(&mut sim, &order_request("client-req-1", agent()))
         .unwrap();
     assert_eq!(again, first);
-    assert_eq!(env.len(), before);
+    assert_eq!(env.len_but_reads(), before);
 
     // Another body under the identifier is still another request, whoever sends it.
     let mut other = order_request("client-req-1", agent());

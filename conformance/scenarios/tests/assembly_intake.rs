@@ -1,7 +1,10 @@
 //! Intake's ports in the assembly (`T-024-02`): the register of actors, policy's session register and the
 //! destination's register answer for the one actor, session and owner they hold, and for no other.
 
-use rutent_contracts::core_internal::{Actor, ActorKind, Role};
+use rutent_contracts::core_internal::{
+    Actor, ActorKind, Entry, Outcome, ReadCheck, Reads as Read, Role, What, Work,
+};
+use rutent_core_authz::parties::Scope;
 use rutent_core_orch::intake::{IntakeError, Status, Told};
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged, StepError};
@@ -122,4 +125,173 @@ fn order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_c
         "not accepted"
     );
     assert_eq!(core.verified_whats().len(), before, "nothing recorded");
+}
+
+/// The customer's agent: a login of its own the deployment's register lists, as an agent of the customer's party.
+fn the_customers_agent() -> Actor {
+    Actor {
+        party: kit::customer().party,
+        acts: id("agent-read-1"),
+        role: Role::Customer,
+        kind: ActorKind::Agent,
+    }
+}
+
+/// Lists `agent` and sets the calls its party lets it make: opening a session, authorising and the work an order
+/// charges, and reading an order's status only where `reads` says its party scoped it for that.
+fn list_and_scope(core: &Core, agent: &Actor, reads: bool) {
+    let mut registers = core.registers();
+    registers.list(agent);
+    let mut scopes = vec![
+        Scope::OpenSession,
+        Scope::Authorise,
+        Scope::Charge(Work::Request),
+        Scope::Charge(Work::FanOut),
+    ];
+    if reads {
+        scopes.push(Scope::CheckRead);
+    }
+    for scope in scopes {
+        registers.scope(agent, scope);
+    }
+}
+
+/// The reads policy recorded, in the log's order: what they read, who read, and whether it was permitted.
+fn recorded_reads(core: &Core) -> Vec<(ReadCheck, bool)> {
+    core.log()
+        .entries()
+        .iter()
+        .filter_map(|(_, entry)| match entry {
+            Entry::Verified(v) => match &v.what {
+                What::CheckRead { check } => {
+                    Some((check.clone(), v.outcome == (Outcome::Permitted {})))
+                }
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .collect()
+}
+
+/// An agent its party didn't scope for reading is told no order's status through intake, by any call: the order
+/// opens, and the agent learns neither its identifier nor its state, only that the read was refused. Policy's check
+/// is recorded, refused, naming the requester intake's own record holds (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s
+/// milestone review). The same party's person, whom the agent's scope doesn't bind, is told as ever.
+// verifies: REQ-AUZ-8
+// verifies: REQ-AUZ-7
+#[test]
+fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake() {
+    let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let agent = the_customers_agent();
+    list_and_scope(&core, &agent, false);
+    let session = core.open_session(&agent).expect("the agent's session");
+    let mut request = base_request("req-unscoped", AMOUNT, &session);
+    request.caller = agent.clone();
+    let told = core.request(request.clone());
+    assert!(
+        matches!(told, Err(StepError::Intake(IntakeError::ReadRefused))),
+        "{told:?}"
+    );
+    // The order opened, as the log holds; the agent isn't told which, nor how it stands.
+    let opened: Vec<_> = core
+        .verified_whats()
+        .into_iter()
+        .filter_map(|w| match w {
+            What::OrderOpened { order, caller, .. } if caller.acts == agent.acts => Some(order),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened.len(), 1, "the order opened");
+    let order = opened[0].clone();
+    assert!(
+        matches!(
+            core.quote(&agent, &order),
+            Err(StepError::Intake(IntakeError::ReadRefused))
+        ),
+        "quoting tells nothing either"
+    );
+    // Every read of the agent's was checked and recorded, refused, of the filed order and the requester intake's own
+    // record names, the reader as it stated itself.
+    let reads = recorded_reads(&core);
+    assert!(!reads.is_empty());
+    for (check, allowed) in &reads {
+        assert!(!allowed, "{check:?}");
+        assert_eq!(check.reader, agent);
+        assert_eq!(
+            check.reads,
+            Read::FiledOrder {
+                order: order.clone(),
+                requester: kit::customer().party
+            }
+        );
+    }
+    // Its party's person is told, the same order.
+    let told = core.request({
+        let mut again = request;
+        again.caller = kit::customer();
+        again
+    });
+    assert!(
+        matches!(&told, Ok(Told::Exists { order: o, .. }) if o == &order),
+        "{told:?}"
+    );
+}
+
+/// An agent its party scoped for reading is told its party's order status at each call and the check is recorded,
+/// allowed: a filed order's while the acceptance isn't in the log, the order's state once it is (`REQ-AUZ-8`,
+/// `REQ-ORD-5`, `REQ-AUD-12`).
+// verifies: REQ-AUZ-8
+// verifies: REQ-ORD-5
+// verifies: REQ-AUD-12
+#[test]
+fn agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded() {
+    let (mut core, _) = Scenario::new("Core alone", "AC-28", Given::one_reserve(Staged::AtOnce))
+        .core(1, &mut Reference);
+    let agent = the_customers_agent();
+    list_and_scope(&core, &agent, true);
+    let session = core.open_session(&agent).expect("the agent's session");
+    let mut request = base_request("req-scoped", AMOUNT, &session);
+    request.caller = agent.clone();
+    let told = core.request(request).expect("the agent is told");
+    let order = Core::order_of(&told).expect("an order");
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = core
+        .quote(&agent, &order)
+        .expect("the agent is told the quote")
+    else {
+        panic!("a quote is shown");
+    };
+    let accepted = core
+        .accept(&agent, &order, &digest)
+        .expect("the agent is told");
+    assert!(
+        matches!(
+            accepted,
+            Told::Exists {
+                status: Status::Accepted { .. },
+                ..
+            }
+        ),
+        "{accepted:?}"
+    );
+    let reads = recorded_reads(&core);
+    let ours: Vec<_> = reads.iter().filter(|(c, _)| c.reader == agent).collect();
+    assert_eq!(ours.len(), 3, "open, quote, accept: {ours:?}");
+    assert!(ours.iter().all(|(_, allowed)| *allowed), "{ours:?}");
+    let filed = Read::FiledOrder {
+        order: order.clone(),
+        requester: kit::customer().party,
+    };
+    assert_eq!(ours[0].0.reads, filed);
+    assert_eq!(ours[1].0.reads, filed);
+    assert_eq!(
+        ours[2].0.reads,
+        Read::OrderState {
+            order: order.clone()
+        },
+        "the acceptance is in the log: the order's state"
+    );
 }
