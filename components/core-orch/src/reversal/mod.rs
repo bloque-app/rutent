@@ -81,6 +81,7 @@ use rutent_contracts::core_internal::{
     OperatorCommand, Outcome, Permit, ReadCheck, ReadOutcome, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::Tracking;
 use rutent_contracts::provider_role::{
     ConversionOutcome, EvidenceGrade, OPERATION_SHAPE, Operation as ProviderOperation,
     RESULT_SHAPE, ReserveMovementOutcome, ResultBody, Reversal as ReversalOperation,
@@ -93,7 +94,6 @@ use rutent_contracts::state_machine::{
     SourceKind, Standing, StateMachine, Subject,
 };
 use rutent_prov::catalogue::{Catalogue, Observation, OwedError};
-use rutent_contracts::provider_role::Tracking;
 use rutent_stm::Stm;
 
 use crate::rounds::{Fresh, Issued, OperatorKey, Providers};
@@ -1026,10 +1026,7 @@ impl Reversals {
         at: At<'_>,
     ) -> Result<Option<StatusAsked>, ReversalError> {
         let at_key = key(at.order, at.segment);
-        if parts
-            .segments
-            .unknown_move(at.order, at.segment)
-            .is_none()
+        if parts.segments.unknown_move(at.order, at.segment).is_none()
             || (self.unknown_asked.contains(&at_key) && !self.statuses.contains_key(&at_key))
         {
             return Ok(None);
@@ -2457,6 +2454,7 @@ mod tests {
 
     /// Core keeps a status answer's carried result only where it answers the question it asked: the transaction asked
     /// about, carrying that transaction's own result; nothing otherwise (`T-020-47`, `REQ-ORD-1`).
+    // verifies: REQ-ORD-1
     #[test]
     fn status_answer_to_another_question_keeps_nothing() {
         let asked: rutent_contracts::provider_role::Operation = serde_json::from_value(json!({
@@ -2468,8 +2466,14 @@ mod tests {
         let (asking, provider) = (Id::new("q1").unwrap(), Id::new("ramp").unwrap());
         let held = |bytes: &[u8]| held_to_its_question(bytes, &asked, &asking, &provider);
         assert!(held(&answer("t1", "t1")).is_some(), "the honest answer");
-        assert!(held(&answer("t9", "t9")).is_none(), "about another transaction");
-        assert!(held(&answer("t1", "t9")).is_none(), "carrying another's result");
+        assert!(
+            held(&answer("t9", "t9")).is_none(),
+            "about another transaction"
+        );
+        assert!(
+            held(&answer("t1", "t9")).is_none(),
+            "carrying another's result"
+        );
     }
 
     fn segment(

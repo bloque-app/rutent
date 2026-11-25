@@ -1059,7 +1059,10 @@ impl Segments {
     /// Notes that Core carried out a reversal of `order` under `transaction`: the record a private node's publisher
     /// keeps may list it, and a record that does is read, never skipped for it (`REQ-ORD-41`, `T-020-47`).
     pub(crate) fn note_reversal_ran(&mut self, order: &Id, transaction: &Id) {
-        let ran = self.reversal_txs.entry(order.as_str().to_owned()).or_default();
+        let ran = self
+            .reversal_txs
+            .entry(order.as_str().to_owned())
+            .or_default();
         if !ran.contains(transaction) {
             ran.push(transaction.clone());
         }
@@ -1597,14 +1600,10 @@ impl Segments {
     /// Whether `segment` of `order` failed and owes its reversal, as the order Core follows has it.
     fn reversal_owed(&self, order: &Id, segment: &Id) -> bool {
         self.orders.get(order.as_str()).is_some_and(|t| {
-            t.order
-                .parts
-                .iter()
-                .flat_map(|p| &p.segments)
-                .any(|s| {
-                    s.segment_id.as_str() == segment.as_str()
-                        && s.state == stm::SegmentState::FailedReversalOwed
-                })
+            t.order.parts.iter().flat_map(|p| &p.segments).any(|s| {
+                s.segment_id.as_str() == segment.as_str()
+                    && s.state == stm::SegmentState::FailedReversalOwed
+            })
         })
     }
 

@@ -394,7 +394,11 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
         // Inside its window nothing is declared.
         let early = core.watch(order).expect("watched");
         assert!(matches!(early, Watch::Running), "{name}: {early:?}");
-        assert_eq!(state(core, order), OrderState::FirstSegmentSettled, "{name}");
+        assert_eq!(
+            state(core, order),
+            OrderState::FirstSegmentSettled,
+            "{name}"
+        );
         core.clock.advance(7 * 86_400);
         let late = core.watch(order).expect("watched");
         assert!(!matches!(late, Watch::Running), "{name}: {late:?}");
@@ -505,7 +509,11 @@ fn status_answer_moves_nothing() {
         .expect("Core asked")
         .expect("the question was put");
     assert!(asked.answer.is_some());
-    assert_eq!(effects(&core), 3, "the withdrawal, the conversion and the transfer, and no more");
+    assert_eq!(
+        effects(&core),
+        3,
+        "the withdrawal, the conversion and the transfer, and no more"
+    );
     assert_eq!(
         segment_state(&core, &order, &ramp),
         SegmentState::OutcomeUnknown

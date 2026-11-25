@@ -261,7 +261,10 @@ fn completed_orders_executed_price_is_reported_once_by_core() {
             })
             .count()
     };
-    assert!(core.price_reported(&order).is_none(), "nothing before it runs");
+    assert!(
+        core.price_reported(&order).is_none(),
+        "nothing before it runs"
+    );
     let ran = core.run(&order).expect("the order ran");
     assert!(all_settled(accounted(&ran)));
     assert_eq!(state(&mut core, &order), OrderState::Complete);

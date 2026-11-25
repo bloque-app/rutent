@@ -1,6 +1,6 @@
 //! The executed price an order reports once every segment has executed (`REQ-QTE-7`, `T-020-47`).
 //!
-//! Core's closing reports it, once, when the order completes: [`Core::close`] runs after every part Core runs and asks
+//! Core's closing reports it, once, when the order completes: `Core::close` runs after every part Core runs and asks
 //! `rutent_core_orch::closing::report_price`, which builds the price from what the segments kept of each result that
 //! counted. No scenario reports a price: it reads what Core reported ([`Core::price_reported`], [`Core::price_of`]).
 
@@ -35,11 +35,15 @@ impl Core {
         match report_price(desk, order, record, &self.segments) {
             Ok(Some(reported)) => {
                 self.closed.unreported.remove(order.as_str());
-                self.closed.built.insert(order.as_str().to_owned(), reported);
+                self.closed
+                    .built
+                    .insert(order.as_str().to_owned(), reported);
             }
             Ok(None) => {}
             Err(why) => {
-                self.closed.unreported.insert(order.as_str().to_owned(), why);
+                self.closed
+                    .unreported
+                    .insert(order.as_str().to_owned(), why);
             }
         }
     }

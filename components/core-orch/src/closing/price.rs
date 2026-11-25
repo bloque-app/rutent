@@ -107,8 +107,7 @@ pub fn report_price(
             });
         }
     }
-    let priced =
-        Priced::new(order, record, candidate, &executed).map_err(Unreported::NotShown)?;
+    let priced = Priced::new(order, record, candidate, &executed).map_err(Unreported::NotShown)?;
     let (digest, receipt) = desk
         .prices
         .report(desk.log, desk.clock, desk.core, &priced)

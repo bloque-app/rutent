@@ -39,7 +39,8 @@ pub struct Lifecycle {
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
     reversals: Reversals,
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
-    status_asks: BTreeMap<(String, String), Result<rutent_core_orch::reversal::StatusAsked, String>>,
+    status_asks:
+        BTreeMap<(String, String), Result<rutent_core_orch::reversal::StatusAsked, String>>,
 }
 
 impl Lifecycle {
@@ -821,11 +822,7 @@ impl Core {
     /// log can't take now is kept in [`Core::status_asks`] for a reader, and the run goes on.
     pub(super) fn ask_unknown_status(&mut self, live: &Live<'_>) {
         for segment in live.segments {
-            if self
-                .segments
-                .unknown_move(live.order, segment)
-                .is_none()
-            {
+            if self.segments.unknown_move(live.order, segment).is_none() {
                 continue;
             }
             let done = self.reversing(live.order, |reversals, parts, _, moving| {
@@ -854,7 +851,7 @@ impl Core {
     }
 
     /// What Core's status question of the unknown `segment` of `order` came to: the question it asked, or why none was
-    /// asked ([`Core::ask_unknown_status`]'s step).
+    /// asked (the step Core's run takes after each part).
     pub fn status_asked(
         &self,
         order: &Id,
