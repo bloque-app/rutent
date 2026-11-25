@@ -7723,9 +7723,7 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
   - `T-016-05`'s comments in `stuck` and `reversal` read the handed-on route as having no withdrawal segment.
 - **Defaults** (reversible, fail closed). An owed reversal is timed from its segment's start, with the tuple's figure, as an
   unfinished move is. A status answer that fails `check_status_answer` keeps nothing. Core asks an unknown segment's status
-  once; asking again at the provider's cadence is `T-020-48`'s. A price of an order that ran two routes covers the first route's settled
-  segments and the second's (`executed_across`); one that ran more than two, or of more than one part, is not reported
-  (`Core::price_unreported` says why), a gap the lead owns.
+  once; asking again at the provider's cadence is `T-020-48`'s. A price covers every route and part an order ran (`executed_across`, review round 2); `Core::price_unreported` says why one isn't reported, which only the fail-closed cases below do.
 - **Gaps, with owners.**
   1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
      to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
@@ -7778,3 +7776,25 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 | the price covers the first route too | `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once` |
 | unknown segments asked are rebuilt | `unknown_segment_already_asked_is_not_asked_again_after_core_reopens` |
 | reversal transactions are rebuilt | `reversals_core_carried_out_are_known_again_after_core_reopens` |
+
+### T-020-47, review round 2: the price across any number of routes and parts
+
+- `executed_across` / `Priced::across` take `RouteRan { record, candidate, parts: [PartRan { order_part, candidate_part,
+  ran }] }` for each route the order ran, in order: each order part's segments are the first route's prefix, then each
+  recalculated route's, every one held to its own route's record (reporting, declared time, slippage commitment) under
+  the last route's bounds. `closing::report_price` takes the routes as `RouteRun`; the assembly keeps, for a recalculated
+  part, what settled on each route (the settled segments of the part when it was recalculated, less what earlier routes
+  account for), so a route that settled nothing contributes nothing. The assembly recalculates its first part only; a
+  recalculated route is of one part, and the model carries any part.
+- **Not reported (`price_unreported`), fail closed:** a record that chose no route (nothing is reported, no error); what
+  ran of the routes not adding up to the segments Core holds (`Unexplained`) or past a candidate part (`NotTheRecords`);
+  a segment whose figures Core doesn't hold (not complete yet: nothing is reported); and the composition's own refusals
+  (the operator's fee above what arrives, a sum past an amount, a leg with no terms, a result cited twice).
+- Tests: `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` (assembly: refused twice, recalculated
+  twice), `price_of_an_order_of_two_parts_covers_each_parts_segments` (core-orch: a two-part record). Not built: a
+  scenario of a recalculated part of a two-part order, which the kit can't route (its splits are of one candidate part).
+
+| Rule switched off | Red |
+|---|---|
+| the price is composed part by part (one order part only) | `price_of_an_order_of_two_parts_covers_each_parts_segments` |
+| a route's settled share is less what earlier routes account for | `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` |

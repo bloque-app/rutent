@@ -503,10 +503,16 @@ fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
             .expect("the recalculated part runs");
     }
     assert_eq!(state(&mut core, &order), OrderState::Complete);
-    let (digest, receipt) = core.price_reported(&order).expect("Core reported the price");
+    let (digest, receipt) = core
+        .price_reported(&order)
+        .expect("Core reported the price");
     assert!(core.price_unreported(&order).is_none());
     let price = core.price_of(&order).expect("its figures");
-    assert_eq!(price.segments.len(), 2, "the withdrawal and the deposit that settled");
+    assert_eq!(
+        price.segments.len(),
+        2,
+        "the withdrawal and the deposit that settled"
+    );
     core.run(&order).expect("runs again");
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
 }

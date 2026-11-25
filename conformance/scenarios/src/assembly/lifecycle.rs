@@ -251,7 +251,9 @@ impl Core {
                 followed.parts.first().map_or(0, |part| {
                     part.segments
                         .iter()
-                        .filter(|s| s.state == rutent_contracts::state_machine::SegmentState::Settled)
+                        .filter(|s| {
+                            s.state == rutent_contracts::state_machine::SegmentState::Settled
+                        })
                         .count()
                 })
             });

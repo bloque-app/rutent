@@ -13,7 +13,9 @@ use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_contracts::state_machine::OrderState;
 use rutent_router::quote::Executed;
 
-use crate::quote::{ExecutedSegment, NotShown, PartRan, PriceError, Priced, Prices, RouteRan, Shown};
+use crate::quote::{
+    ExecutedSegment, NotShown, PartRan, PriceError, Priced, Prices, RouteRan, Shown,
+};
 use crate::segments::Segments;
 use crate::snapshot::Clock;
 

@@ -30,9 +30,9 @@ use rutent_contracts::provider_role::{
 use rutent_contracts::router_api::{Amount, DecisionRecord, FeeFormula, Id, Timestamp, TupleKey};
 use rutent_core_orch::intake::{Status, Told};
 use rutent_core_orch::quote::{
-    AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms,
-    PartRan, PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, RouteRan, Signed,
-    SlowSegment, Terms, digest, executed, executed_across, show,
+    AcceptedQuote, ExecutedSegment, HeldTo, HoldError, Holds, InForce, NotShown, NotTerms, PartRan,
+    PriceError, Priced, Prices, RecordedAs, Redeemed, Redemption, RouteRan, Signed, SlowSegment,
+    Terms, digest, executed, executed_across, show,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_router::quote::{Binding, Executed, HeldQuoteRefused};

@@ -13,8 +13,8 @@ use rutent_contracts::router_api::{
     OperationKind, Part,
 };
 use rutent_router::quote::{
-    Commitment, Executed, Firmness, PriceRefused, commitments, executed_price,
-    firmness, operator_fee, quoted_price,
+    Commitment, Executed, Firmness, PriceRefused, commitments, executed_price, firmness,
+    operator_fee, quoted_price,
 };
 use serde::{Deserialize, Serialize};
 
@@ -346,8 +346,7 @@ pub fn executed_across(
                 if candidate_part.operations.len() < share.ran {
                     return Err(NotShown::NotTheRecords);
                 }
-                for (j, evaluated) in candidate_part.operations.iter().take(share.ran).enumerate()
-                {
+                for (j, evaluated) in candidate_part.operations.iter().take(share.ran).enumerate() {
                     let (part, operation) = (index(order_part), index(offset + j));
                     let at = legs.len();
                     let segment = segments
