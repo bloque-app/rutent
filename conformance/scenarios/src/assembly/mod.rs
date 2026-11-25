@@ -679,7 +679,7 @@ impl Core {
             feed: self.feed,
             fresh: self.fresh,
             ties: self.readings.ties(),
-            // Policy's sources share the holdings (`T-021-16`), so they are taken out of the share, not moved.
+            // The host's holdings are shared within Core (`Rc`), so they are taken out of the share, not moved.
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
         };
