@@ -428,6 +428,8 @@ fn reliance_written_before_core_reopens_is_one_entry_per_provider_after_it() {
         "the withdrawal's reliance was written"
     );
     segments_support::reopen_segments(&mut core, &world.catalogue, &[]);
+    // Later: an entry built afresh would be another entry, at another time.
+    core.clock.advance(60);
     let (ran, carried, _) = run_watched(&mut world, &mut core);
     assert_eq!(settled(&ran.expect("the part runs")), 2);
     assert_eq!(carried.len(), 2, "both segments were handed over");
