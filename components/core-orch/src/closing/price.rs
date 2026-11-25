@@ -113,7 +113,9 @@ pub fn report_price(
         }
     }
     let priced = if let [only] = records {
-        let candidate = only.chosen().ok_or(Unreported::NotShown(NotShown::NotTheRecords))?;
+        let candidate = only
+            .chosen()
+            .ok_or(Unreported::NotShown(NotShown::NotTheRecords))?;
         Priced::new(order, only, candidate, &executed)
     } else if let [first, last] = records {
         let (Some(c1), Some(c2)) = (first.chosen(), last.chosen()) else {
@@ -125,7 +127,11 @@ pub fn report_price(
         let Some(ran_first) = executed.len().checked_sub(ops(c2)) else {
             return Err(Unreported::NotShown(NotShown::Unexplained));
         };
-        Priced::across(order, &[(first, c1, ran_first), (last, c2, ops(c2))], &executed)
+        Priced::across(
+            order,
+            &[(first, c1, ran_first), (last, c2, ops(c2))],
+            &executed,
+        )
     } else {
         Err(NotShown::Unexplained)
     }

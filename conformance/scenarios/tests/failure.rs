@@ -413,7 +413,10 @@ fn failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_
     core.world()
         .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
     let outcome = core.recalculate(&order).expect("tried");
-    assert!(matches!(outcome, Recalculation::NoRoute { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, Recalculation::NoRoute { .. }),
+        "{outcome:?}"
+    );
     let recorded = core.record_no_route(&order, &outcome).expect("recorded");
     assert_eq!(recorded.state, OrderState::WaitingForCustomer);
     assert_eq!(
@@ -450,10 +453,16 @@ fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once()
     core.run_recalculated(&order, &recalculated)
         .expect("the recalculated part runs");
     assert_eq!(state(&mut core, &order), OrderState::Complete);
-    let (digest, receipt) = core.price_reported(&order).expect("Core reported the price");
+    let (digest, receipt) = core
+        .price_reported(&order)
+        .expect("Core reported the price");
     assert!(core.price_unreported(&order).is_none());
     let price = core.price_of(&order).expect("its figures");
-    assert_eq!(price.segments.len(), 2, "the first route's withdrawal and the second's deposit");
+    assert_eq!(
+        price.segments.len(),
+        2,
+        "the first route's withdrawal and the second's deposit"
+    );
     let prices = |core: &Core| {
         entries(core)
             .iter()

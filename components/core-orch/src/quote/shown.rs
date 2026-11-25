@@ -302,7 +302,8 @@ pub fn executed_across(
     let Some((_, last, _)) = routes.last() else {
         return Err(NotShown::NotTheRecords);
     };
-    if routes.len() > 1 && (routes.iter().any(|(_, c, _)| c.parts.len() != 1) || last.parts.len() != 1)
+    if routes.len() > 1
+        && (routes.iter().any(|(_, c, _)| c.parts.len() != 1) || last.parts.len() != 1)
     {
         return Err(NotShown::NotTheRecords);
     }
@@ -333,7 +334,11 @@ pub fn executed_across(
         }
         offset += ran;
     }
-    if segments.len() != legs.len() || routes.last().is_some_and(|(_, c, ran)| indexed(c).count() != *ran) {
+    if segments.len() != legs.len()
+        || routes
+            .last()
+            .is_some_and(|(_, c, ran)| indexed(c).count() != *ran)
+    {
         return Err(NotShown::Unexplained);
     }
     let pairs: Vec<(&DecisionRecord, &Candidate)> =

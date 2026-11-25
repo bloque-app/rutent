@@ -564,13 +564,18 @@ fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
         core.is_unknown(&order, &ramp),
         "the reopened Core still holds the move unknown"
     );
-    core.ask_unknown_statuses(&order).expect("the reopened Core takes it up");
+    core.ask_unknown_statuses(&order)
+        .expect("the reopened Core takes it up");
     assert!(
         core.status_asked(&order, &ramp).is_none(),
         "no question was put again, nor refused: {:?}",
         core.status_asked(&order, &ramp)
     );
-    assert_eq!(status_asks(&core), 1, "asked once, not again by the Core that reopened");
+    assert_eq!(
+        status_asks(&core),
+        1,
+        "asked once, not again by the Core that reopened"
+    );
     admitted(&core);
 }
 
