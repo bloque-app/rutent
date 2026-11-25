@@ -259,7 +259,9 @@ the two together.
   (`Reads::grant_permission`, `Reads::revoke_permission`), so policy learns of each grant; an arrival filed anew is a
   `refiling`, by the operator or the reserve it arrived at. Only `decide` and `stuck_move` entries back an effect;
   `authorise` and `stuck_decide` permits back none. A kept statement leaves the store only through
-  `Evidence::fetch`, which runs its own read check.
+  `Evidence::fetch`, which runs its own read check, or as the evidence directory the deployment hands the outside
+  checker (`audit-check --evidence`). No Core flow calls `fetch` in `v0`; `F-022`'s notes name the path that meets each of
+  `REQ-AUD-5`, `REQ-AUD-10` and `REQ-AUD-12`.
 - **Not known moves nothing.** `not_known` is its own answer, never a refusal and never a permit (`REQ-AUZ-5`).
 - **A move's unknown outcome settles on two actors' word, and what the log can tell apart.** The mover reports it
   (`report_outcome`), and another actor confirms that report (`confirm_outcome`), each on its own statement, by its

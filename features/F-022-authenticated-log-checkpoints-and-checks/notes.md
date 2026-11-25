@@ -1369,7 +1369,15 @@ bytes, and every one is asked before an erasure is decided.
   contract names (`contracts/core-internal/README.md:35` and `:261`: a kept statement leaves the store only through
   it), built and tested. No Core flow calls it: a party gets its evidence as the receipt `Issuer::issue` signs on
   request (`T-022-03`, `REQ-AUD-5`), which reads the log and no store, and the outside checker works from its own copy
-  of the evidence directory (`audit-check --evidence`, `KeptOnDisk`). Default: fails closed (no caller, no read). Gap,
+  of the evidence directory (`audit-check --evidence`, `KeptOnDisk`). The path that meets each requirement the
+  contract's README names for `fetch`, in `v0`:
+  - `REQ-AUD-5`, a party's evidence: the receipt `Issuer::issue` signs on request, which the party keeps and checks
+    against a changed record (`core-audit/tests/receipts.rs`).
+  - `REQ-AUD-10`, the checker's check: the outside checker's run over the log and its copy of the evidence directory
+    (`audit-check --evidence`); appointing and naming the checker is `F-033`'s (`M4`), as the scope file says.
+  - `REQ-AUD-12`, a regulator's read of the trail: a read grant held to the operator (`T-021-14`), decided by policy's
+    read check and recorded (`assembly_policy.rs`, `bulk_measures.rs`); naming the regulator is `F-033`'s.
+ Default: fails closed (no caller, no read). Gap,
   owner the lead: if `v0` wants a party to read its kept bytes, a row builds the interface that calls `fetch` under
   policy's read check (`REQ-AUZ-7`).
 - **Named out of `v0`: `statements::restatements` (`core-audit/src/statements/mod.rs:226`) has no caller in Core.**

@@ -7421,12 +7421,15 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
 - **The kit's history.** `Core::recorded` reads every statement verified, as the real log's would; `TestLog::
   claim_only_from_now` leaves the statements appended after it as claimed only, which the second test below uses (the
   `attributed` range moves only the receipts).
+- **The only guard.** The log admits a `stuck_decide` whose digests name no logged statement, so orchestration's
+  `digests_from_a_party` is the one check that each names a logged, verified statement by a party to the order. A path
+  that decided a stuck part without core-orch would pass it.
 - **Tests.** `stuck decision whose digest names no logged statement is refused` [`REQ-AUZ-5`]
   (`stuck_decision_whose_digest_names_no_logged_statement_is_refused`, in `stuck.rs`): a placeholder alone, or beside or
   before a party's own statement, is refused with policy asked nothing and nothing recorded; the party's own is taken.
   `stuck decision needs one digest naming a verified statement by a party to the order` [`REQ-AUZ-4`]
   (`stuck_decision_needs_one_digest_naming_a_verified_statement_by_a_party_to_the_order`): no digest, an outside
-  provider's, a claimed-only statement, and a claimed-only beside a party's, each refused; one verified statement of a
+  provider's, a claimed-only statement (one whose key was not current at its making, `THR-3`), and a claimed-only beside a party's, each refused; one verified statement of a
   party is enough. A unit test, `decision_evidence_that_names_no_logged_statement_fails_closed` (`stuck/party.rs`,
   [`REQ-AUZ-5`]), holds the function itself, the empty slice included.
 - **Rule-offs.**
