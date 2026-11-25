@@ -23,6 +23,17 @@
 //! ([`Register::open_in`]). The catalogue holds only which account each speaks for and when it ends, and answers no
 //! balance check in one that has ended (`F-012`'s notes).
 //!
+//! # The register across a restart
+//!
+//! The log is the register's only durable record (`T-021-17`, `NFR-6`). Each session opened, grant and revocation
+//! reaches the register only once its permitted decision is in the log, and an engine opened again over the log
+//! rebuilds the register from those decisions ([`Engine::reopen`], [`registered_in`], read on policy's handle
+//! through [`crate::funds::Recorded::registered`]), so a revoked grant stays revoked, a grant given before the restart
+//! is in force after it, a revoked id is never granted again, and a session's id opens no other session. A log that
+//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation,
+//! session and acceptance of fault is refused as a missing input, never permitted (`REQ-AUZ-5`); a read resting on no
+//! permission rests on nothing the register holds, and is decided as ever.
+//!
 //! # Reads
 //!
 //! Each read is decided and recorded, allowed or refused (`REQ-AUZ-7`, `REQ-AUD-12`). The fixed rule holds a read to
@@ -62,8 +73,9 @@
 
 use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, Reads, Sessions};
 use rutent_contracts::core_internal::{
-    Action, Answer, Decision, DecisionRequest, Opened, PermissionChange, ReadAnswer, ReadCheck,
-    Reads as Read, RefusalClass, Role, SessionAnswer, SessionOutcome, SessionRequest, What, covers,
+    Action, Answer, Decision, DecisionRequest, Entry, Opened, Outcome, PermissionChange,
+    ReadAnswer, ReadCheck, Reads as Read, RefusalClass, Role, SessionAnswer, SessionOutcome,
+    SessionRequest, VerifiedEntry, What, covers,
 };
 use rutent_contracts::router_api::{Id, Timestamp};
 use rutent_prov::catalogue::{Catalogue, Instant};
@@ -72,6 +84,7 @@ use crate::engine::{
     Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources, read_outcome,
     session_outcome,
 };
+use crate::funds::Recorded;
 
 /// The one resource of the deployment read without a permission: who its checker is, which `REQ-AUD-10` names to
 /// customers and providers. Any other resource rests on a permission.
@@ -119,6 +132,10 @@ pub struct Register {
     pub(crate) grants: Vec<PermissionChange>,
     /// The revocations permitted, each of the one grant it names: its permission, grantee and scope (`T-021-14`).
     pub(crate) revoked: Vec<PermissionChange>,
+    /// Whether the engine was reopened over a log it couldn't read its register from ([`Engine::reopen`]): then what
+    /// the register would answer is an input the engine doesn't have, and every call resting on it is refused
+    /// (`T-021-17`).
+    pub(crate) unread: bool,
     /// Core's clock, which bounds each session from the moment it is asked for.
     pub(crate) clock: Box<dyn Clock>,
 }
@@ -129,9 +146,70 @@ impl Default for Register {
             sessions: Vec::new(),
             grants: Vec::new(),
             revoked: Vec::new(),
+            unread: false,
             clock: Box::new(SystemClock),
         }
     }
+}
+
+/// What a log holds of the engine's register (`T-021-17`): the sessions it opened, the read permissions it granted
+/// and the revocations it permitted, each from a verified decision entry of its own whose outcome is `permitted`, in
+/// log order, each once. What [`registered_in`] reads, and what [`Engine::reopen`] rebuilds the register from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Registered {
+    /// The sessions opened: each permitted `open_session` entry's request, with the session it opened.
+    pub sessions: Vec<OpenSession>,
+    /// The read permissions granted: each permitted `grant_permission` entry's grant.
+    pub grants: Vec<PermissionChange>,
+    /// The revocations permitted: each permitted `revoke_permission` entry's revocation.
+    pub revoked: Vec<PermissionChange>,
+}
+
+/// The register `entries` hold: each verified entry whose outcome is `permitted` of an `open_session` that opened a
+/// session, a `grant_permission` or a `revoke_permission`, in their order, each kept once as the engine that wrote it
+/// kept it (a grant once per request, a revocation once per grant it names). The one definition every
+/// [`crate::funds::Recorded`] reads the register by (`T-021-17`). A decision refused or not known left nothing in the
+/// register, and leaves nothing here.
+pub fn registered_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Registered {
+    let mut registered = Registered::default();
+    for entry in entries {
+        let Entry::Verified(VerifiedEntry {
+            what,
+            outcome: Outcome::Permitted {},
+            ..
+        }) = entry
+        else {
+            continue;
+        };
+        match what {
+            What::OpenSession {
+                request,
+                opened: Some(opened),
+            } => {
+                let session = OpenSession {
+                    session: opened.session.clone(),
+                    account: request.account.clone(),
+                    holder: request.holder.clone(),
+                    expires_at: opened.expires_at.clone(),
+                };
+                if !registered.sessions.contains(&session) {
+                    registered.sessions.push(session);
+                }
+            }
+            What::GrantPermission { change, .. } => {
+                if !registered.grants.contains(change) {
+                    registered.grants.push(change.clone());
+                }
+            }
+            What::RevokePermission { change, .. } => {
+                if !registered.revoked.iter().any(|r| same_grant(r, change)) {
+                    registered.revoked.push(change.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    registered
 }
 
 /// Core's own clock (`F-012`'s notes): the time a session's bound is measured from, never a time its request states.
@@ -218,6 +296,9 @@ impl Register {
         let Action::AcceptFault { session, .. } = &request.action else {
             return None;
         };
+        if self.unread {
+            return Some(RefusalClass::MissingInput);
+        }
         let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
         let open = self.sessions.iter().any(|s| {
             &s.session == session
@@ -258,6 +339,9 @@ impl Register {
     /// role, reads nothing by it, `T-021-14`).
     fn refuses(&self, check: &ReadCheck) -> Option<RefusalClass> {
         let permission = check.permission.as_ref()?;
+        if self.unread {
+            return Some(RefusalClass::MissingInput);
+        }
         let granted = self.grants.iter().any(|g| {
             &g.permission == permission
                 && g.grantee.party == check.reader.party
@@ -420,6 +504,36 @@ pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
     Reply::Given(Ruling::Permit)
 }
 
+impl<L: Recorded, P, S> Engine<L, P, S> {
+    /// Rebuilds the register from the log, in place of what it held, as an engine opened again over the log after a
+    /// restart must (`T-021-17`): the sessions it opened, the grants and the revocations are what the log holds as
+    /// permitted ([`Recorded::registered`], [`registered_in`]), so the engine judges each grant, revocation, read by
+    /// a permission and session as the engine that ran on would. A log that can't be read leaves the register an
+    /// input the engine doesn't have: every call resting on it is refused as a missing input, never permitted, until
+    /// a later reopening reads it. Its clock stays as it is.
+    pub fn reopen(&mut self) {
+        let register = &mut self.register;
+        match self.log.registered() {
+            Ok(Registered {
+                sessions,
+                grants,
+                revoked,
+            }) => {
+                register.sessions = sessions;
+                register.grants = grants;
+                register.revoked = revoked;
+                register.unread = false;
+            }
+            Err(_) => {
+                register.sessions.clear();
+                register.grants.clear();
+                register.revoked.clear();
+                register.unread = true;
+            }
+        }
+    }
+}
+
 impl<L, P, S> Engine<L, P, S> {
     /// What the engine opened, granted and revoked.
     pub fn register(&self) -> &Register {
@@ -437,7 +551,11 @@ impl<L, P, S> Engine<L, P, S> {
 impl<L: PolicyLog, P: Policy, S: Sources> Sessions for Engine<L, P, S> {
     fn open_session(&mut self, request: &SessionRequest) -> Result<SessionAnswer, AppendFailure> {
         request.check().map_err(AppendFailure::Refused)?;
-        let answer = if self.register.reissues(request) || !self.register.bounded(request) {
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.reissues(request) || !self.register.bounded(request) {
             Answer::Refuse {
                 class: RefusalClass::NotPermitted,
             }
@@ -516,7 +634,11 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
 
     fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
         change.check().map_err(AppendFailure::Refused)?;
-        let answer = if self.register.reuses(change) {
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.reuses(change) {
             Answer::Refuse {
                 class: RefusalClass::NotPermitted,
             }
@@ -536,7 +658,11 @@ impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
 
     fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
         change.check().map_err(AppendFailure::Refused)?;
-        let answer = if self.register.granted(change) {
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.granted(change) {
             self.consult(Asked::RevokePermission(change))
         } else {
             Answer::Refuse {

@@ -1315,3 +1315,188 @@ fn actor_not_listed_as_an_operator_login_is_refused_an_orders_state() {
         );
     }
 }
+
+/// Policy's read of the log these tests keep, as the assembly's handle reads its log (`T-021-17`).
+impl crate::funds::Recorded for Kept {
+    fn permitted(
+        &mut self,
+    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure> {
+        Ok(crate::funds::permitted_in(self.0.iter().map(|(_, e)| e)))
+    }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
+        Ok(crate::parties::charged_in(self.0.iter().map(|(_, e)| e)))
+    }
+
+    fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        Ok(crate::funds::part_in(self.0.iter().map(|(_, e)| e), order, segment))
+    }
+
+    fn registered(&mut self) -> Result<Registered, crate::funds::ReadFailure> {
+        Ok(registered_in(self.0.iter().map(|(_, e)| e)))
+    }
+}
+
+/// A log policy can append to and can't read back: the default of [`crate::funds::Recorded::registered`].
+struct Unreadable(Kept);
+
+impl PolicyLog for Unreadable {
+    fn append_decision(&mut self, entry: &DecisionEntry) -> Result<Receipt, AppendFailure> {
+        self.0.append_decision(entry)
+    }
+}
+
+impl crate::funds::Recorded for Unreadable {
+    fn permitted(
+        &mut self,
+    ) -> Result<Vec<rutent_contracts::core_internal::Authorisation>, crate::funds::ReadFailure> {
+        self.0.permitted()
+    }
+
+    fn charged(&mut self) -> Result<Vec<crate::parties::Counted>, crate::funds::ReadFailure> {
+        self.0.charged()
+    }
+
+    fn part_of(&mut self, order: &Id, segment: &Id) -> Result<Option<Id>, crate::funds::ReadFailure> {
+        self.0.part_of(order, segment)
+    }
+}
+
+/// The engine that ran on and the one reopened over a copy of its log, after the regulator's read of the trail was
+/// granted (`perm-reg-1`), revoked, and granted again under a fresh id (`perm-reg-2`), and the holder `cust-1` opened
+/// a session (`req-s1`): the restart between them (`T-021-17`).
+fn ran_on_and_reopened() -> (
+    Engine<Kept, Rules, Says>,
+    Engine<Kept, Rules, Says>,
+    PermissionChange,
+) {
+    let says = || Says::of(vec![(holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes))]);
+    let mut ran_on = Engine::with_policy(Kept::world(), Rules::permitting(), says());
+    ran_on.set_clock(nine());
+    // Put together over the world's log, which holds a session opened before it (`sess-1`), as every engine is.
+    ran_on.reopen();
+    let grant: PermissionChange = valid!("permission-change-granting-a-regulator-the-trail");
+    assert!(ran_on.grant_permission(&grant).unwrap().permit().is_some());
+    let mut revocation = grant.clone();
+    revocation.request = id("req-r1");
+    assert!(ran_on.revoke_permission(&revocation).unwrap().permit().is_some());
+    let mut again = grant.clone();
+    again.request = id("req-g-again");
+    again.permission = id("perm-reg-2");
+    assert!(ran_on.grant_permission(&again).unwrap().permit().is_some());
+    let opened = ran_on.open_session(&own_session("req-s1")).unwrap();
+    assert!(matches!(opened.outcome, SessionOutcome::Opened { .. }), "{opened:?}");
+
+    let mut reopened =
+        Engine::with_policy(Kept(ran_on.log.0.clone()), Rules::permitting(), says());
+    reopened.set_clock(nine());
+    reopened.reopen();
+    (ran_on, reopened, again)
+}
+
+/// A restart opens a fresh engine over the same log, and it judges each grant, revocation and read by a permission as
+/// the engine that ran on does, its register rebuilt from the decisions the log holds (`T-021-17`): the revoked
+/// grant reads nothing, the grant given again under a fresh id reads, the revoked id is never granted again, the grant
+/// in force asked again answers as it did, and once it is revoked it reads nothing either. Each probe is put to both
+/// engines, each over its own copy of the log.
+// verifies: REQ-AUZ-6, NFR-6
+#[test]
+fn grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on() {
+    let (mut ran_on, mut reopened, again) = ran_on_and_reopened();
+    let regulator = actor("fin-regulator", "examiner-3", Role::Regulator);
+    let trail = || json!({"kind": "trail"});
+    let reads = |engine: &mut Engine<Kept, Rules, Says>, request: &str, permission: &str| {
+        read_recorded(
+            engine,
+            &read(request, regulator.clone(), trail(), Some(permission)),
+        )
+    };
+    for engine in [&mut ran_on, &mut reopened] {
+        assert_eq!(reads(engine, "req-501", "perm-reg-1"), refused(), "revoked");
+        assert_eq!(
+            reads(engine, "req-502", "perm-reg-2"),
+            ReadOutcome::Allowed {},
+            "granted again under a fresh id"
+        );
+        let mut reused = again.clone();
+        reused.request = id("req-g-reused");
+        reused.permission = id("perm-reg-1");
+        assert!(
+            engine.grant_permission(&reused).unwrap().permit().is_none(),
+            "a revoked id is never granted again"
+        );
+        assert!(
+            engine.grant_permission(&again).unwrap().permit().is_some(),
+            "the grant in force asked again answers as it did"
+        );
+        let mut revoke_again = again.clone();
+        revoke_again.request = id("req-r2");
+        assert!(engine.revoke_permission(&revoke_again).unwrap().permit().is_some());
+        assert_eq!(reads(engine, "req-503", "perm-reg-2"), refused(), "revoked in turn");
+    }
+    assert_eq!(ran_on.register().grants, reopened.register().grants);
+    assert_eq!(ran_on.register().revoked, reopened.register().revoked);
+}
+
+/// A session opened before a restart is held after it (`T-021-17`): the reopened engine holds it as the one that ran on
+/// does, so its id opens no other session, and the same request again opens the same one.
+// verifies: REQ-CAT-3, NFR-6
+#[test]
+fn session_opened_before_a_restart_is_held_after_it() {
+    let (mut ran_on, mut reopened, _) = ran_on_and_reopened();
+    assert_eq!(ran_on.register().sessions(), reopened.register().sessions());
+    for engine in [&mut ran_on, &mut reopened] {
+        let mut other = own_session("req-s1");
+        other.until = at("2026-11-10T09:10:00Z");
+        let answer = engine.open_session(&other).unwrap();
+        assert!(
+            matches!(answer.outcome, SessionOutcome::Refused { .. }),
+            "an id issued opens no other session: {answer:?}"
+        );
+        let answer = engine.open_session(&own_session("req-s1")).unwrap();
+        assert!(matches!(answer.outcome, SessionOutcome::Opened { .. }), "{answer:?}");
+    }
+}
+
+/// An engine reopened over a log it can't read its register from fails closed (`T-021-17`): every read by a
+/// permission, every grant, every revocation and every session is refused as an input it doesn't have, never
+/// permitted; a read resting on no permission is decided as ever.
+// verifies: NFR-6, REQ-AUZ-5
+#[test]
+fn register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer() {
+    let (ran_on, _, again) = ran_on_and_reopened();
+    let says = Says::of(vec![
+        (holds("cust-1", "acct-ref-4"), Reply::Given(Said::Yes)),
+        (party_of("cust-1", "ord-1"), Reply::Given(Said::Yes)),
+    ]);
+    let mut blind = Engine::with_policy(
+        Unreadable(Kept(ran_on.log.0.clone())),
+        Rules::permitting(),
+        says,
+    );
+    blind.set_clock(nine());
+    blind.reopen();
+    let missing = ReadOutcome::Refused {
+        class: RefusalClass::MissingInput,
+    };
+    let regulator = actor("fin-regulator", "examiner-3", Role::Regulator);
+    let by = read("req-511", regulator, json!({"kind": "trail"}), Some("perm-reg-2"));
+    assert_eq!(blind.check_read(&by).unwrap().outcome, missing);
+    let mut fresh = again.clone();
+    fresh.request = id("req-g-fresh");
+    fresh.permission = id("perm-reg-3");
+    assert!(blind.grant_permission(&fresh).unwrap().permit().is_none());
+    let mut revocation = again.clone();
+    revocation.request = id("req-r3");
+    assert!(blind.revoke_permission(&revocation).unwrap().permit().is_none());
+    let answer = blind.open_session(&own_session("req-s2")).unwrap();
+    assert!(matches!(answer.outcome, SessionOutcome::Refused { .. }), "{answer:?}");
+    // A customer's read of its own order rests on no permission, so on nothing the register holds.
+    let own = read(
+        "req-512",
+        actor("cust-1", "cust-1", Role::Customer),
+        json!({"kind": "order", "order": "ord-1"}),
+        None,
+    );
+    assert_eq!(blind.check_read(&own).unwrap().outcome, ReadOutcome::Allowed {});
+}

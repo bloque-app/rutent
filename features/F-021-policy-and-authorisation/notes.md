@@ -1936,6 +1936,77 @@ five lifecycle actions is `T-020-49`'s. No contract shape changes.
   | a setting asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change`, `operator_setting_without_its_permission_is_refused` |
   | a catalogue change asked of any operator-role login (no `OfOperator`) | `another_partys_login_listed_in_the_operator_role_is_refused_every_setting_and_change` |
 
+## T-021-17
+
+Branch `f-021/t-021-17-policy-restart`, from `1bc91b21` (the batch holding `T-020-46`). Round 2 of `M3`'s milestone
+review of 2026-11-24, a medium under finding 3 (issue #303). Edits `components/core-authz/` (`session/`, `funds/`'s
+`Recorded` and the tests of `session/`, `funds/` and `parties/`), a `DEC-20` path that waits for the owner's click at
+the release into `main`, and the assembly's reopening with one of its tests (`conformance/scenarios/src/lib.rs`'s
+`PolicyHandle`, `conformance/scenarios/src/assembly/mod.rs`'s `assemble_with`, `tests/assembly_policy.rs`; `F-024`
+files). No contract shape changes: the log already holds every decision the register is rebuilt from.
+
+- **What the reopened engine lost, register by register.**
+  - `Register` (`session/`): the sessions opened, the read permissions granted and the revocations permitted were
+    pushed in memory after each permitted decision and read from nowhere else. A reopened engine held none: a revoked
+    grant's id could be granted again, a grant given before the restart read nothing, and a session's id could open
+    another session. **This was the gap.**
+  - `Authorised` (`funds/`) and `Charged` (`parties/`) were already the log's (`T-021-04`, `T-021-05`): before every
+    authorisation, move and charge the engine reads the log's permitted `authorise` and `charge` entries on its own
+    handle (`Recorded::permitted`, `Recorded::charged`) and rebuilds the register from them, so an engine opened
+    again holds what the log holds. Nothing in them needed a change; the row's two tests for them pin it, each seen
+    red by switching its read off (the table below). The milestone review's reading that these two were kept in
+    memory alone is not borne out by the code.
+- **What changed.**
+  - `session::Registered` and `session::registered_in`: the register a log holds, read from the verified entries
+    whose outcome is `permitted` of an `open_session` that opened a session (its request's account and holder, the
+    session and end it opened), a `grant_permission` and a `revoke_permission`, in log order, each kept once as the
+    engine that wrote it kept it. The one definition every `Recorded` reads by, as `permitted_in` and `charged_in`
+    are.
+  - `funds::Recorded::registered`: policy's handle reads it, one wire with the append. Its default fails
+    (`ReadFailure::Unavailable`): a handle that doesn't say can't be read so, and an engine reopened over it fails
+    closed. The assembly's `PolicyHandle` answers it from the log's entries.
+  - `Engine::reopen`: the register rebuilt from that read in place of what it held. A read that fails marks the
+    register unread (`Register::unread`), and then every call resting on it is refused `missing_input`, never
+    permitted: a read by a permission, a grant (whose id the engine can't check for reuse), a revocation, a session
+    (whose id it can't check for reissue) and a customer's acceptance of fault (whose session it can't find). A read
+    resting on no permission rests on nothing the register holds and is decided as ever.
+  - The assembly: `assemble_with` calls `reopen` on every policy engine it puts together (empty on a fresh disk, the
+    register the engine that ran on held on a reopened one) and hands the rebuilt sessions to the catalogue's register
+    again (`Register::open_in`), as each was handed when it opened.
+- **Tests.** The three named: `grant_revoked_and_granted_again_across_a_restart_is_judged_as_the_policy_that_ran_on`
+  [`REQ-AUZ-6`, `NFR-6`] (`session/tests.rs`: grant, revoke, grant again under a fresh id, then the restart; each probe
+  put to the engine that ran on and to the one reopened over a copy of its log, both judging alike: the revoked id
+  reads nothing and is never granted again, the fresh one reads, the grant in force asked again answers as it did,
+  and once revoked reads nothing; their registers equal), `authorisation_given_before_a_restart_is_held_after_it`
+  [`REQ-AUZ-1`, `NFR-6`] (`funds/tests.rs`) and `charge_recorded_before_a_restart_is_not_charged_again` [`NFR-6`]
+  (`parties/tests.rs`). New names for `PLAN.md`, each a rule of this row:
+  `session_opened_before_a_restart_is_held_after_it` [`REQ-CAT-3`, `NFR-6`] and
+  `register_that_cannot_be_read_on_reopening_refuses_what_it_would_answer` [`NFR-6`, `REQ-AUZ-5`] (`session/tests.rs`);
+  `read_grant_revoked_and_granted_again_before_core_reopens_is_held_through_the_assembly` [`REQ-AUZ-6`, `NFR-6`]
+  (`tests/assembly_policy.rs`, the wiring).
+- **Red first.** With the shapes in and `registered_in` and `reopen` stubbed, the three session tests failed on their
+  assertions: the reopened engine refused `perm-reg-2`'s read (`NotPermitted` for `Allowed`), held no session (`[]`
+  against the one opened), and refused the blind read `NotPermitted` for `MissingInput`. The funds and parties tests
+  passed at their first run, their rules being in place since `T-021-04` and `T-021-05`; they are held by the
+  rule-offs below.
+RULEOFF_PLACEHOLDER
+- **Defaults, reversible, each failing closed.**
+  1. The register is rebuilt once, when the engine is put together over the log (`reopen`), not read before every call
+     as `Authorised` and `Charged` are: each of its entries is written only by this engine's own permitted decision,
+     so between reopenings memory and log agree; two engines over one log at once would each hold only their own
+     grants, which v0's one policy engine per log never does.
+  2. A register that can't be read on reopening refuses every call resting on it as a missing input until a later
+     reopening reads it; nothing is retried in between.
+  3. `Recorded::registered`'s default fails, so a handle that doesn't override it fails closed rather than starting
+     empty.
+  4. Sessions are rebuilt whether or not they have ended: an ended one opens nothing and answers no acceptance, as in
+     the engine that ran on, and its id still opens no other session.
+- **Gaps, with owners.**
+  1. Two engines over one log at once (default 1): not v0's shape; were it, the register would be read before each
+     call as `Authorised` is. Owner: `F-021` if a deployment ever runs two.
+  2. The deployment's registers of actors and permissions (`Registers`) are configuration, set again on each Core put
+     together (`T-020-46`'s default), not policy's state: the deployment's, `F-030`.
+
 ## The owner's answers of 2026-11-18, in the plan (2026-11-23)
 
 - **`spec-ac17-not-known`: "Not known".** `SPEC.md` 0.4.2's `AC-17` reads "the decision is \"not known\"", as

@@ -1326,6 +1326,42 @@ fn counter_is_the_logs_across_a_restart() {
     assert_eq!(blind.charged().used(&id("acme-treasury"), Limit::Work), 0);
 }
 
+/// A charge recorded before a restart is not charged again (`T-021-17`): the engine opened again over the same log
+/// answers the same charge asked again, as a retry after the restart asks it, within the bound and counts it once, so
+/// the party's use is what the engine that ran on counted; another charge under its id is refused, and new work past
+/// the bound is over it.
+// verifies: NFR-6
+#[test]
+fn charge_recorded_before_a_restart_is_not_charged_again() {
+    let a = agent("acme-treasury", "agent-7");
+    let registers = || Registers::of_the_fixtures().with(&a, Some(every_scope()));
+    let within = |n| ChargeOutcome::Within { remaining: safe(n) };
+    let mut ran_on = engine(registers(), bounds(4, 1));
+    let counted = charge("req-1", &a, Work::Request, 3);
+    assert_eq!(ran_on.charge(&counted).unwrap().outcome, within(1));
+
+    let mut reopened = engine(registers(), bounds(4, 1));
+    reopened.log.entries = ran_on.log.entries.clone();
+    assert_eq!(reopened.charge(&counted).unwrap().outcome, within(1), "counted once");
+    assert_eq!(reopened.charged().used(&id("acme-treasury"), Limit::Work), 3);
+    let mut reissued = counted.clone();
+    reissued.count = Count::new(1).unwrap();
+    assert_eq!(
+        reopened.charge(&reissued).unwrap().outcome,
+        ChargeOutcome::Refused {
+            class: RefusalClass::NotPermitted
+        },
+        "another charge under its id"
+    );
+    assert_eq!(
+        reopened
+            .charge(&charge("req-2", &a, Work::Request, 2))
+            .unwrap()
+            .outcome,
+        ChargeOutcome::Over { bound: safe(4) }
+    );
+}
+
 /// A read of the log is held to the one before it: one that drops what the last read held, or lacks the engine's own
 /// last charge within its bound, is an input the decision doesn't have, and every charge on it is refused, so a stale,
 /// truncated or other log's read never starts a party's bound again. Once the read is whole again, the bound holds.
