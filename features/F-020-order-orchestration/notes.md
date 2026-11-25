@@ -8024,3 +8024,11 @@ assembly (`F-024` files: `conformance/src/sim/mod.rs`, `conformance/src/role/sta
 | a recalculation takes its rounds' terms | `terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments` |
 | the rounds' tuple check (`if !asked { continue; }`) | `terms_handed_back_are_only_those_of_the_tuple_asked_in_an_answer_kept` |
 | the hold asked until the figures' expiry (300 s again) | `hold_core_takes_lasts_as_long_as_its_quotes_figures` |
+
+Rule-offs from `e1f022b4`'s tree (script `ruleoff2.py` in the row's scratch folder; a baseline run of `holds` first, green).
+Local checks (through the lock, `contracts/src/lib.rs` touched, the plain wallet built privately): fmt, workspace clippy
+`-D warnings`; `cargo test -p` `rutent-prov` (435), `rutent-core-orch` (339), `rutent-core-authz --lib` (157),
+`rutent-conformance` (121), the role suite (2), `sim_providers` and `invariants` with seeds 11 to 15 (25), and the
+scenarios `holds`, `charge_check`, `landing`, `recalc`, `failure`, `reversing`, `hand_on`, `assembly_real_wallet`,
+`stuck_hand_on` (125); the doc check; plan-check and tag-check `--strict` (0 findings, 2406 tests tagged); the contract
+guard against `origin/develop` (`fb883e01`): "1977 changed path(s) … no violations".
