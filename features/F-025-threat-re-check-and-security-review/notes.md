@@ -988,7 +988,7 @@ the platform directly anyway. `F-020` may narrow it to the crate when its tests 
   contract leaves to other fields, so it is the stricter. A confirmation or decline on the reporter's own party is
   refused (`from_a_party`, `stuck/mod.rs:2842`). The history is the caller's word (`decide` and the seven others take
   it), which the assembly gives from the log; a forged one would only pass to the log, which refuses it.
-  `digests_from_a_party` fails open on a digest the history holds no statement for (owed item, below).
+  `digests_from_a_party` failed open on a digest the history holds no statement for; closed by `T-020-53`.
 - **The received-time hold in core-audit (`T-022-09`).** Sound with two residual windows. A stated entry whose maker
   has a revocation dated after its `received_at` must have that time within the skew of the log's clock
   (`keys.rs:401-409`); later it is unavailable, and a retry must carry the new time, which attributes it to no one.
@@ -1031,7 +1031,9 @@ the platform directly anyway. `F-020` may narrow it to the crate when its tests 
 
 - **`T-021-12`'s low, a refused caller tells "nothing staged" from "not permitted".** Confirmed, and wider: the version
   staged is in the refusal, and the attempt goes unrecorded. Low L6.
-- **`T-020-40`'s fail-open digest** (on the form as `stuck-decision-digest-scope`, default accept). Accept for v0. In the
+- **`T-020-40`'s fail-open digest** (on the form as `stuck-decision-digest-scope`, default accept). Closed by `T-020-53`, which
+  supersedes the item: orchestration refuses a digest naming no logged statement. The text below is the reading before it.
+  Accept for v0. In the
   assembled Core it is closed by policy: every digest of a stuck decision must be one the store keeps
   (`Source::Kept`, `Said::Yes`, else `missing_input`; `core-authz/src/stuck/mod.rs:223-230`), and the assembly answers
   `Kept` only for a commitment a stated entry of the log holds (`assembly/policy.rs:301-318`). So every digest names a
@@ -1066,7 +1068,7 @@ Only those the second pass changes or adds; every other residual of the first pa
 | R-MOVER | New | A stuck decide step's mover (`resolution.by`) is a party to the order once policy permits the step, and policy doesn't hold the mover to the order (`core-authz/src/stuck/mod.rs`: only that the decider isn't it or its chain). So the operator's decider can make an outside provider's word evidence for a later report or confirmation. Bounded: the decider is the operator's, holding `DecideStuck`; the confirmer is another actor, not the customer, and not of the reporter's party | `relations.rs:5596-5611`, `stuck/party.rs` | `F-021` (policy may hold `by` to a holder the order involves) | accepted (`R119`, operator) |
 | R-OVERRIDE | New | An operator's login holding both `EraseStatement` and `EraseOverridingCitations` erases the bytes of a statement a value-moving decision rested on; the commitment and the citing entries stay and the history checks, but the decision's basis can't be re-verified after. The log lifts every citation under an override; the store lifts those before the decision and reports one made after as `ERASED_YET_CITED`, which orchestration's look after the effect refuses first (a citation landing after that look is erased and reported, not prevented) | `relations.rs:3586`, `store.rs:574`, `:726`, `:797`; `roles/mod.rs:216` | `F-021` (the register's lists) | accepted (the owner's ruling `erasure-of-cited-evidence`, `REQ-AUD-13`) |
 | R-AWAITING | New | `shown.awaiting` is checked for its shape alone: the log binds neither its requester to the arrival's holder nor its slow places to the quote. Orchestration fills it from the filing it held to the arrival, and a wrong requester would send another party a waiting notice (order, quote digest, validity, slow places; no provider, amount or account) | `check.rs:599`, `filing.rs:924-930`, `notice/mod.rs:403` | `F-020`, a `core-internal` item | accepted (low) |
-| R-DIGEST | New (`T-020-40`'s item) | Orchestration lets a stuck decision's digest that names no logged statement pass; policy's `Kept` closes it where the assembly answers it from the log | `stuck/mod.rs:2866`, `core-authz/src/stuck/mod.rs:223-230`, `assembly/policy.rs:301-318` | `F-020`; `F-030` for the production assembly | form (`stuck-decision-digest-scope`, accept) |
+| R-DIGEST | New (`T-020-40`'s item); closed by `T-020-53` | Orchestration let a stuck decision's digest that names no logged statement pass (now `NoEvidence`); policy's `Kept` closes it where the assembly answers it from the log | `stuck/mod.rs:2866`, `core-authz/src/stuck/mod.rs:223-230`, `assembly/policy.rs:301-318` | `F-020`; `F-030` for the production assembly | closed (`T-020-53`; the form item `stuck-decision-digest-scope` is superseded) |
 | R-MIDDLE | New (`T-020-43`'s gap 4) | A route through a batching reserve's deposit mid-route isn't dropped; a second order on its shared movement waits | `F-020`'s notes, `T-020-43` | `F-020` | form (scope, below); fails closed |
 
 Restated, not new: R-NODE (a private node crossed with no replay or evidence binds no publisher, so its publisher's word
@@ -1080,7 +1082,7 @@ to the log's file would have to write); `cat5-timing-residual` is now accepted f
 | A revocation counts from its admitted effect, or the maker's statements wait while a `revoke_grant` of it has no result | `F-022`, with a `core-internal` item | L5 |
 | `promote` and `roll_back` ask policy before they read the staging, one answer for nothing to do and not permitted | `F-020` with `F-021` (`M3` at the lead's call) | L6 |
 | The log refuses an `automatic_deposit` acceptance of a quote shown without a firm rate | `F-020`, next `core-internal` round | L7 |
-| The production assembly answers `Source::Kept` from the log's stated entries, or orchestration's digest check fails closed | `F-030` | R-DIGEST |
+| ~~The production assembly answers `Source::Kept` from the log's stated entries, or orchestration's digest check fails closed~~ Closed: orchestration's check fails closed (`T-020-53`) | none | R-DIGEST |
 | The log stamps a statement's `received_at` at the append (where the owner wants the skew window closed) | `F-022` | R-BACKDATE (a) |
 | Policy holds a stuck decide step's mover to a holder the order involves | `F-021` | R-MOVER |
 | `shown.awaiting`'s requester held to the arrival's holder | `F-020`, a `core-internal` item | R-AWAITING |
@@ -1097,7 +1099,7 @@ to the log's file would have to write); `cat5-timing-residual` is now accepted f
   needs orchestration to lie, and orchestration writes the revocation's time within the same skew. Reserved: only the owner may
   accept this residual, so the item has no default (worded as "default accept" above until `M3`'s milestone review of
   2026-11-24 found the two readings).
-- **`stuck-decision-digest-scope`** (on the form already). The reviewer's verdict: accept for v0, as the default says,
+- **`stuck-decision-digest-scope`** (on the form already; superseded by `T-020-53`, which closed it). The reviewer's verdict: accept for v0, as the default says,
   on the condition that a production assembly answers `Source::Kept` from the log's stated entries (`F-030`).
 - **`batching-middle-deposit`** (group: deposits). Is a deposit at a batching reserve in the middle of a route in the
   scope of the ruling `shared-movement-reading`? Options: (a) out of scope for v0: it fails closed, the second order

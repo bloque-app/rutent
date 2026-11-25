@@ -810,7 +810,7 @@ fn operators_hand_on_follows_its_done_resolution() {
         },
         amount: rutent_contracts::router_api::PositiveAmount::new(AMOUNT).unwrap(),
     };
-    let evidence = vec![digest(&"ab".repeat(32))];
+    let evidence = own_evidence(&mut core);
     let history = core.recorded();
     let decision = on_parts(&mut core, |parts| {
         stuck.decide(

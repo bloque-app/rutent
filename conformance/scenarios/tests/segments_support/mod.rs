@@ -301,6 +301,9 @@ pub struct TestLog {
     /// The places whose stated entries have a receipt of the entry as the real log records it, attributed, and so not
     /// the digest of the entry as handed in (`T-020-16`). None by default: this log answers before it attributes.
     pub attributed: std::ops::Range<usize>,
+    /// From this place on, the history Core is handed ([`Core::recorded`]) reads each stated entry as it came: its
+    /// maker only claimed, no key behind it (`T-020-53`).
+    pub claimed_only_from: Option<usize>,
     pub entries: Vec<(Entry, Through)>,
     pub faults: VecDeque<(On, Fault)>,
     /// Holds a `reliance` to the log's own row, `reliance-names-its-judges-statement`, as far as this log can: it
@@ -398,6 +401,11 @@ impl TestLog {
     /// From now, the log leaves stated entries unattributed: their receipts are of the entry as handed in.
     pub fn stop_attributing(&mut self) {
         self.attributed.end = self.entries.len();
+    }
+
+    /// From now, the history Core is handed reads each stated entry appended as claimed only, its maker unverified.
+    pub fn claim_only_from_now(&mut self) {
+        self.claimed_only_from = Some(self.entries.len());
     }
 
     pub fn receipt_at(&self, index: usize) -> Receipt {
@@ -1200,6 +1208,22 @@ pub fn results_after_the_move(
         &[origin_reserve(), second_reserve()],
     );
     (receipts[0].clone(), receipts[1].clone())
+}
+
+/// A stuck decision's evidence: the digest of a statement by the order's own provider ([`origin_reserve()`], a party
+/// to it), about the current order, made at Core's clock now, signed with its statements key and appended to the log
+/// now after the operator's question it answers, so the log verifies its maker (`T-020-53`: a digest the log holds
+/// no statement for is refused). Each call states anew, under a transaction of its own.
+pub fn own_evidence(core: &mut Core) -> Vec<Digest> {
+    let transaction = format!("tx-evidence-{}", core.log.borrow().entries.len());
+    let order = id(&core.named.order);
+    // Under the operator's question about it, which a provider's result must follow.
+    let receipt = stated_results(core, &order, None, &transaction, &[origin_reserve()]).remove(0);
+    let at = usize::try_from(u64::from(receipt.index)).expect("a place");
+    match &core.log.borrow().entries[at].0 {
+        Entry::Stated(s) => vec![s.commitment.clone()],
+        other => panic!("a statement: {other:?}"),
+    }
 }
 
 /// `maker`'s result about the current order through `transaction`, naming no segment, made at Core's clock now and
@@ -2151,9 +2175,10 @@ impl Core {
             .enumerate()
             .map(|(at, (entry, _))| {
                 // The real log attributes each statement it records; this one answers before it does, so the
-                // history Core is handed reads each as verified, as the real log's would.
+                // history Core is handed reads each as verified, as the real log's would, except the statements the
+                // log was told to leave claimed only (`claim_only_from_now`).
                 let entry = match entry {
-                    Entry::Stated(s) => {
+                    Entry::Stated(s) if log.claimed_only_from.is_none_or(|from| at < from) => {
                         let mut s = s.clone();
                         s.attribution = rutent_contracts::core_internal::Attribution::Verified {
                             who: s.attribution.maker().clone(),

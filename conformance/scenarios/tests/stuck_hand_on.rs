@@ -346,7 +346,7 @@ fn try_decide_by(
     by: &str,
 ) -> Result<Decided, ResolveError> {
     let (order, part) = (id(ORDER), id(PART));
-    let evidence = vec![digest(&"ab".repeat(32))];
+    let evidence = own_evidence(core);
     let resolution = hand_on_resolution_by(by);
     let history = core.recorded();
     on_parts(core, |parts| {
@@ -887,7 +887,7 @@ fn hand_on_keeps_the_original_customer_as_requester_and_records_the_operator_act
         asset: cop_unit(),
         amount: PositiveAmount::new(AMOUNT).unwrap(),
     };
-    let evidence = vec![digest(&"ab".repeat(32))];
+    let evidence = own_evidence(&mut core);
     let history = core.recorded();
     let decision = on_parts(&mut core, |parts| {
         stuck.decide(
@@ -1910,7 +1910,7 @@ fn hand_on_failure_stated_by_the_holding_account_frees_the_part_only_on_another_
     // Held: the part is stuck and no new decision is taken while the outcome is unknown.
     assert!(stuck.is_stuck(&id(ORDER), &id(PART)));
     let (order, part, actor) = (id(ORDER), id(PART), segments_support::core());
-    let evidence = vec![digest(&"ab".repeat(32))];
+    let evidence = own_evidence(&mut core);
     let resolution = hand_on_resolution();
     let history = core.recorded();
     let again = on_parts(&mut core, |parts| {
