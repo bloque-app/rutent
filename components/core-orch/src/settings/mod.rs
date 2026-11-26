@@ -38,8 +38,8 @@ use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey as Catalogu
 use crate::arrival::Arrivals;
 use crate::rounds::Fresh;
 use crate::schedule::{Cadences, Job};
-use crate::segments::lifecycle::Journal;
 use crate::segments::journal;
+use crate::segments::lifecycle::Journal;
 use crate::snapshot::Clock;
 
 /// The longest a deposit's wait for its customer may be set to: thirty days (`T-020-51`'s deposit wait, bounded by

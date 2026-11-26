@@ -5279,9 +5279,7 @@ fn waiting_with_inputs(
 
 /// Reopens `arrivals` over `history`, as a Core that stopped and opened again reads its own log.
 fn reopened_over(env: &mut Env, providers: &mut Reserve, history: &[(Receipt, Entry)]) -> Arrivals {
-    env.with_providers(providers, |_, desk| {
-        Arrivals::reopened(history, desk.kept)
-    })
+    env.with_providers(providers, |_, desk| Arrivals::reopened(history, desk.kept))
 }
 
 /// The hold arrivals of `history`, with the digest each names its filing's statement by, set by `change`.

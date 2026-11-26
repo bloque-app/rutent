@@ -1817,10 +1817,11 @@ impl Core {
     /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
     /// evidence floor, and each public node listed or taken off, as `Settings` holds them (`T-020-49`).
     pub(crate) fn reapply_catalogue_settings(&mut self) {
-        self.settings.apply(&mut rutent_core_orch::settings::Targets {
-            catalogue: Some(&mut self.catalogue),
-            ..rutent_core_orch::settings::Targets::default()
-        });
+        self.settings
+            .apply(&mut rutent_core_orch::settings::Targets {
+                catalogue: Some(&mut self.catalogue),
+                ..rutent_core_orch::settings::Targets::default()
+            });
     }
 
     /// A test hook (`T-020-55`, the review of `8f7ddefd`): `bytes` appended as an advertisement's stated entry, kept and

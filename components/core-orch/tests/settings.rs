@@ -275,7 +275,6 @@ fn operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_fro
         ..Targets::default()
     });
     assert_eq!(fresh.of(Job::HoldingCheck), 60);
-
 }
 
 /// A setting whose result the log didn't take stands after a restart as it stood before it, and its result is completed
@@ -293,11 +292,21 @@ fn setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_resu
     };
     let mut live = Settings::new();
     assert!(matches!(
-        set(&mut live, &mut cut, &mut policy, &mut Targets::default(), &fee("5")),
+        set(
+            &mut live,
+            &mut cut,
+            &mut policy,
+            &mut Targets::default(),
+            &fee("5")
+        ),
         Err(SettingRefused::Append(_))
     ));
     assert_eq!(cut.entries.len(), 1, "the effect, and no result");
-    assert_eq!(live.bounds(&bounds()).operator_fee.flat.as_str(), "5", "in force live");
+    assert_eq!(
+        live.bounds(&bounds()).operator_fee.flat.as_str(),
+        "5",
+        "in force live"
+    );
 
     // Reopened: the same setting, and its result completed once.
     cut.refuse_from = None;
@@ -315,7 +324,14 @@ fn setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_resu
     // The other order: the result taken first, then the reopening; it reads the same.
     let mut whole = KeptLog::default();
     let mut set_whole = Settings::new();
-    set(&mut set_whole, &mut whole, &mut policy, &mut Targets::default(), &fee("5")).unwrap();
+    set(
+        &mut set_whole,
+        &mut whole,
+        &mut policy,
+        &mut Targets::default(),
+        &fee("5"),
+    )
+    .unwrap();
     let (reopened, completed) = Settings::reopen(&mut whole, &clock(), &core());
     assert_eq!((reopened, completed), (set_whole, Ok(0)));
 
@@ -353,7 +369,11 @@ fn deposit_wait_above_its_ceiling_is_refused() {
             ceiling: DEPOSIT_WAIT_CEILING_SECONDS
         })
     );
-    assert_eq!(policy.asked.len(), 1, "policy is asked first: the attempt is its decision");
+    assert_eq!(
+        policy.asked.len(),
+        1,
+        "policy is asked first: the attempt is its decision"
+    );
     assert!(log.entries.is_empty(), "no effect recorded");
     assert_eq!(settings.deposit_wait(), None);
     assert_eq!(DEFAULT_DEPOSIT_WAIT_SECONDS, 86_400);
@@ -374,9 +394,10 @@ fn deposit_wait_above_its_ceiling_is_refused() {
     );
     // A recorded effect above the ceiling is not rebuilt.
     let mut forged = log.entries.clone();
-    let Some((_, Entry::Verified(effect))) = forged.iter_mut().find(|(_, e)| {
-        matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. }))
-    }) else {
+    let Some((_, Entry::Verified(effect))) = forged
+        .iter_mut()
+        .find(|(_, e)| matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. })))
+    else {
         panic!("an effect")
     };
     let What::Effect {

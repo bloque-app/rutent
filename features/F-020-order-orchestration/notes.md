@@ -9272,3 +9272,12 @@ scenario tests.
 | scan rule 4 finds a public wrapper of a carrier | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
 | the wallet's install re-applies the operator's settings | `operators_catalogue_settings_stand_after_the_deployments_own_listing` |
 | a confirmation reads its history from the log (an empty one read) | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
+
+- **Local checks of round 1** (through the lock, `contracts/src/lib.rs` touched first, after `origin/m3` `eb66381e`):
+  `fmt --check` and workspace `clippy --all-targets -D warnings` clean; core-orch, contracts and core-audit 756 passed;
+  contracts with `rule-switches` 98; core-authz `--lib` 165; prov `module_record` and `catalogue` 43; scenarios (the lib
+  tests and fifteen binaries: `assembly_policy`, `execution_routes`, `module_scenarios`, `segments`,
+  `assembly_real_wallet`, `reopened`, `assembly_intake`, `sim_providers`, `private_nodes`, `simulated_faults`, `routing`,
+  `gross_charged`, `audit_scenarios`, `charge_check`, `holds`) 203; `invariants` on seeds 11 to 15, 10; `plan-check
+  --strict` 0 findings, `tag-check --strict` 2520 tests, 0 findings; the contract guard against `origin/develop`: no
+  violations. The doc check is CI's (core-orch's `rustdoc` passes 2 GB locally).

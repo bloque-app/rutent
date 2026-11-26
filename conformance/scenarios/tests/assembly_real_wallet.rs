@@ -1722,12 +1722,16 @@ fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
 fn operators_catalogue_settings_stand_after_the_deployments_own_listing() {
     use rutent_contracts::core_internal::OperatorSetting;
     let (mut core, _) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
-    assert!(core.catalogue().nodes().is_public(NODE), "the join listed it");
+    assert!(
+        core.catalogue().nodes().is_public(NODE),
+        "the join listed it"
+    );
     let unlisted: OperatorSetting = serde_json::from_value(serde_json::json!({
         "setting": "public_node", "node": { "network": NODE }, "listed": false,
     }))
     .expect("a setting");
-    core.set_setting(&unlisted).expect("the operator unlists it");
+    core.set_setting(&unlisted)
+        .expect("the operator unlists it");
     assert!(!core.catalogue().nodes().is_public(NODE));
     core.install_wallet(NODE, "USDC")
         .expect("the wallet is installed");

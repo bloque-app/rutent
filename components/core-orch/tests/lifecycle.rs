@@ -806,12 +806,17 @@ fn restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirm
         &mut Ids::default(),
         &ReleaseAsked {
             provider: &provider,
-            change: ReleaseChange::DeclareExploited { version: &exploited },
+            change: ReleaseChange::DeclareExploited {
+                version: &exploited,
+            },
             caller: &caller,
             core: &core,
         },
     );
-    assert!(matches!(declared, Err(ReleaseRefused::Append(_))), "{declared:?}");
+    assert!(
+        matches!(declared, Err(ReleaseRefused::Append(_))),
+        "{declared:?}"
+    );
     assert_eq!(log.0.len(), 1, "the effect, and no result");
     platform.crash();
     assert!(!platform.exploited.contains("2.2.0"));
@@ -834,7 +839,11 @@ fn restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirm
     assert_eq!(confirmed, Ok(Changed::Confirmed));
     assert_eq!(
         platform.calls,
-        ["declare_exploited 2.2.0", "declare_exploited 2.2.0", "confirm"]
+        [
+            "declare_exploited 2.2.0",
+            "declare_exploited 2.2.0",
+            "confirm"
+        ]
     );
     assert!(platform.exploited.contains("2.2.0"), "it still holds");
 }

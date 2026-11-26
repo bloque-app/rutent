@@ -1132,5 +1132,9 @@ fn unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_en
     let mut s = Signed::on(Box::new(inner), world);
     let _ = readmitted(&mut s, RESERVE, "1.0.0");
     assert!(s.platform.awaiting_confirmation(RESERVE).is_some(), "held");
-    assert_eq!(s.platform.active_version(RESERVE), None, "nothing exploited is back in force");
+    assert_eq!(
+        s.platform.active_version(RESERVE),
+        None,
+        "nothing exploited is back in force"
+    );
 }

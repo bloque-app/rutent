@@ -654,7 +654,8 @@ impl<W: World> Platform<W> {
         // One that ends with a whole close while some providers still waited holds those again, and only those: the
         // operator's confirmations of the others stand, since the platform wrote every decision it took after them
         // (`T-020-49`). A record with no entry holds nothing.
-        let held_again: Option<BTreeSet<String>> = match lines.last().map(|line| Entry::read(line)) {
+        let held_again: Option<BTreeSet<String>> = match lines.last().map(|line| Entry::read(line))
+        {
             None | Some(Ok(Entry::Closed)) => Some(BTreeSet::new()),
             Some(Ok(Entry::ClosedHolding { held })) => Some(held.into_iter().collect()),
             Some(_) => None,
