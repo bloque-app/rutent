@@ -29,9 +29,10 @@
 //! seed (every identifier Core draws follows from it), and `--step` waits for Enter between acts, for a live
 //! presentation. `conformance/demo/README.md` is the presenter's guide.
 
-mod audit;
-mod network;
-mod show;
+// Each binary uses part of what the two share.
+#[allow(dead_code)]
+#[path = "../demo-common/mod.rs"]
+mod common;
 
 use std::collections::BTreeMap;
 use std::io::BufRead as _;
@@ -40,10 +41,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use rutent_conformance::sim::{Act, Behaviour};
-use rutent_contracts::core_internal::{
-    Actor, ActorKind, Decided, Destination, Entry, Parties, Resolution, Role,
-};
-use rutent_contracts::provider_role::{Denomination, OuterNode};
+use rutent_contracts::core_internal::{Actor, Decided, Resolution};
+use rutent_contracts::provider_role::Denomination;
 use rutent_contracts::router_api::{Id, PositiveAmount, Request};
 use rutent_contracts::state_machine::OrderState;
 use rutent_core_audit::checkpoint::tick_of;
@@ -62,6 +61,11 @@ use rutent_scenarios::harness::{Given, Run, Scenario};
 use rutent_scenarios::kit::{self, id};
 use serde_json::{Value, json};
 
+use common::orders::{
+    ADDRESS, Asked, HELD_NODE, MAX_HOPS, candidates, inner, is_inner_segments, not_borne_out,
+    outer, verdict,
+};
+use common::{audit, network, orders, relaunch, show};
 use show::{Transcript, money, receipt};
 
 /// The reserve of pesos at the Colombian bank, in sim-andina's ledger.
@@ -75,16 +79,9 @@ const MEXICAN_PESOS: &str = "sim-azteca-mxn-desk";
 /// The reserves between each chain and its addresses.
 const POLYGON_WALLETS: &str = "sim-polygon-wallets";
 const BASE_WALLETS: &str = "sim-base-wallets";
-/// The public node the operator's wallet holds, where act 3's order is left stuck.
-const HELD_NODE: &str = "sim-polygon";
 /// What each order sends, in its asset's smallest unit: 50,000.00. The simulated exchanges and ramps serve no less
 /// than 10,000.00 (their tuples' band), and every step's fee must leave that much for the next.
 const AMOUNT: &str = "5000000";
-/// The most segments a route may have in the demo: enough to cross two publishers' ledgers and a chain.
-const MAX_HOPS: u8 = 6;
-
-/// The address the customer gives for the deposit on chain.
-const ADDRESS: &str = "0x5e11a9d0c0ffee";
 
 /// What the command line set.
 struct Options {
@@ -93,24 +90,9 @@ struct Options {
     step: bool,
 }
 
-/// The default output folder: `rutent-demo` in cargo's target directory, beside the profile this binary was built
-/// under, so a run leaves nothing in the checkout; `rutent-demo-out` in the current folder where that can't be found.
-fn default_out() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.ancestors()
-                .skip(1)
-                .find(|d| d.file_name().is_some_and(|n| n != "deps"))
-                .and_then(|profile| profile.parent())
-                .map(|target| target.join("rutent-demo"))
-        })
-        .unwrap_or_else(|| PathBuf::from("rutent-demo-out"))
-}
-
 fn options() -> Result<Options, String> {
     let mut options = Options {
-        out: default_out(),
+        out: relaunch::default_out("rutent-demo"),
         seed: 1,
         step: false,
     };
@@ -137,59 +119,8 @@ fn options() -> Result<Options, String> {
     Ok(options)
 }
 
-/// Runs this binary again from cargo's own copy of it under `deps/`, where it isn't already running from there.
-///
-/// The assembly finds the platform's executables and the simulated providers' build by the build directory a *test*
-/// executable sits in: the parent of the nearest `deps` or `build` directory above it
-/// (`rutent_scenarios::sim::disk`). Cargo writes this binary as `<target>/<profile>/deps/rutent_demo-<hash>` and
-/// links it to `<target>/<profile>/rutent-demo`, which has no such directory above it. Run from the copy under
-/// `deps/`, the assembly finds what it looks for, and nothing of `rutent-scenarios` changes.
-#[cfg(unix)]
-fn from_deps() {
-    use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::process::CommandExt as _;
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(dir) = exe.parent() else { return };
-    if dir.file_name().is_some_and(|n| n == "deps" || n == "out") {
-        return;
-    }
-    let Ok(this) = std::fs::metadata(&exe) else {
-        return;
-    };
-    let Ok(listed) = std::fs::read_dir(dir.join("deps")) else {
-        return;
-    };
-    let mut candidates: Vec<(bool, std::time::SystemTime, PathBuf)> = listed
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("rutent_demo-") && !n.contains('.'))
-        })
-        .filter_map(|p| {
-            let meta = std::fs::metadata(&p).ok()?;
-            let same = meta.dev() == this.dev() && meta.ino() == this.ino();
-            Some((same, meta.modified().ok()?, p))
-        })
-        .collect();
-    // The one cargo linked this binary from, else the newest.
-    candidates.sort();
-    if let Some((_, _, copy)) = candidates.pop() {
-        let error = std::process::Command::new(&copy)
-            .args(std::env::args_os().skip(1))
-            .exec();
-        eprintln!("couldn't run {}: {error}", copy.display());
-    }
-}
-
-#[cfg(not(unix))]
-fn from_deps() {}
-
 fn main() -> ExitCode {
-    from_deps();
+    relaunch::from_deps("rutent_demo");
     let options = match options() {
         Ok(options) => options,
         Err(why) => {
@@ -436,16 +367,17 @@ impl Demo {
         self.t.say("charges 3.00 USDC and takes 20 seconds. The customer asks for a quote under each objective.");
         self.register_address();
         let ask = |name: &str, objective: &str, session: &Id| {
-            request(
+            orders::request(&Asked {
                 name,
                 session,
-                POLYGON_WALLETS,
-                outer("sim-polygon-addresses", "USDC"),
-                outer("sim-base-addresses", "USDC"),
-                BASE_WALLETS,
-                ADDRESS,
+                origin: POLYGON_WALLETS,
+                from: outer("sim-polygon-addresses", "USDC"),
+                to: outer("sim-base-addresses", "USDC"),
+                at: BASE_WALLETS,
+                account: ADDRESS,
                 objective,
-            )
+                amount: AMOUNT,
+            })
         };
         let cheapest = ask("req-demo-2-cheapest", "lowest_total_cost", &self.session);
         let cheapest = self.quote(cheapest, "lowest total cost")?;
@@ -477,11 +409,7 @@ impl Demo {
 
     /// The customer's address on the chains, which the reserves' registers hold as theirs.
     fn register_address(&mut self) {
-        let customer = kit::customer();
-        self.core()
-            .registers()
-            .accounts
-            .insert(ADDRESS.to_owned(), customer.party.as_str().to_owned());
+        orders::register_address(self.core());
     }
 
     /// Opens `request`'s order, prints its quote and the route the router chose, and accepts it as the customer.
@@ -717,16 +645,17 @@ impl Demo {
         self.t.step(format!(
             "(scripted on the simulated world: {FAILING_EXCHANGE} fails its next conversion)"
         ));
-        let request = request(
-            "req-demo-1",
-            &self.session,
-            PESOS,
-            outer("sim-co-bank", "COP"),
-            outer("sim-us-bank", "USD"),
-            DOLLARS,
-            DESTINATION_ACCOUNT,
-            "lowest_total_cost",
-        );
+        let request = orders::request(&Asked {
+            name: "req-demo-1",
+            session: &self.session,
+            origin: PESOS,
+            from: outer("sim-co-bank", "COP"),
+            to: outer("sim-us-bank", "USD"),
+            at: DOLLARS,
+            account: DESTINATION_ACCOUNT,
+            objective: "lowest_total_cost",
+            amount: AMOUNT,
+        });
         let (order, record) = self.quote_and_accept(request)?;
         let ran = self.core().run(&order).map_err(failed("the order runs"))?;
         let segments = self.segments(
@@ -834,16 +763,17 @@ impl Demo {
             "The operator's plain wallet ({}, a real module) is installed as {HELD_NODE}'s holding account",
             wallet.provider
         ));
-        let asked = request(
-            "req-demo-3",
-            &self.session,
-            MEXICAN_PESOS,
-            outer("sim-mx-bank", "MXN"),
-            outer("sim-polygon-addresses", "USDC"),
-            POLYGON_WALLETS,
-            ADDRESS,
-            "lowest_total_cost",
-        );
+        let asked = orders::request(&Asked {
+            name: "req-demo-3",
+            session: &self.session,
+            origin: MEXICAN_PESOS,
+            from: outer("sim-mx-bank", "MXN"),
+            to: outer("sim-polygon-addresses", "USDC"),
+            at: POLYGON_WALLETS,
+            account: ADDRESS,
+            objective: "lowest_total_cost",
+            amount: AMOUNT,
+        });
         let (order, record) = self.quote_and_accept(asked)?;
         let hops = show::providers(&record).len();
         let part = self
@@ -917,7 +847,7 @@ impl Demo {
             },
             amount: PositiveAmount::new(resting.as_str()).ok_or("an amount")?,
         };
-        let evidence = self.evidence_about(&order)?;
+        let evidence = orders::evidence_about(self.core(), &order)?;
         let decision = self
             .core()
             .decide_stuck(&order, &alice, &resolution, &evidence)
@@ -1004,47 +934,7 @@ impl Demo {
 
     /// One of the operator's staff: a person on `desk`, acting for the operator, holding `permission` alone.
     fn staff(&mut self, desk: &str, login: &str, permission: Permission) -> Actor {
-        let person = Actor {
-            party: id(desk),
-            acts: id(login),
-            role: Role::Operator,
-            kind: ActorKind::Person,
-        };
-        let core = self.core();
-        let mut registers = core.registers();
-        registers.list(&Actor {
-            party: kit::operator().party,
-            acts: id(desk),
-            role: Role::Operator,
-            kind: ActorKind::Component,
-        });
-        registers.list(&person);
-        registers.permit(&person, permission);
-        person
-    }
-
-    /// The commitment of a provider's result the log holds about `order`: the evidence a decision names.
-    fn evidence_about(
-        &mut self,
-        order: &Id,
-    ) -> Step<Vec<rutent_contracts::module_interface::Digest>> {
-        let log = self.core().log();
-        let found = log
-            .entries()
-            .iter()
-            .find_map(|(_, e)| match e {
-                Entry::Stated(s)
-                    if s.what.statement.as_str()
-                        == rutent_contracts::provider_role::RESULT_SHAPE
-                        && s.about.as_ref().and_then(|a| a.order.as_ref()) == Some(order) =>
-                {
-                    Some(vec![s.commitment.clone()])
-                }
-                _ => None,
-            })
-            .ok_or_else(|| "no provider's statement about the order".to_owned());
-        drop(log);
-        found
+        orders::staff(self.core(), desk, login, permission)
     }
 
     // Epilogue ----------------------------------------------------------------------------------------------------
@@ -1152,7 +1042,7 @@ impl Demo {
         let tampered_path = self.out.join("tampered").join("history.jsonl");
         std::fs::create_dir_all(tampered_path.parent().expect("a folder"))
             .map_err(|e| e.to_string())?;
-        let changed = audit::tamper(&history, &tampered_path).map_err(|e| e.to_string())?;
+        let changed = audit::tamper(&history, &tampered_path, AMOUNT).map_err(|e| e.to_string())?;
         self.t.step(format!(
             "3. A copy with one figure changed in entry #{} ({} → {}0), as someone with the operator's full access could write it:",
             changed.map_or("?".to_owned(), |n| n.to_string()),
@@ -1186,107 +1076,5 @@ impl Demo {
             checked.code,
             verdict(checked.code)
         ));
-    }
-}
-
-/// `n` candidate routes, in words.
-fn candidates(n: usize) -> String {
-    if n == 1 {
-        "1 candidate route".to_owned()
-    } else {
-        format!("{n} candidate routes")
-    }
-}
-
-fn verdict(code: Option<i32>) -> &'static str {
-    match code {
-        Some(0) => "it holds",
-        Some(1) => "the checker found something: each finding is printed above",
-        _ => "the checker couldn't run",
-    }
-}
-
-/// The entries `audit-check` printed as not borne out by their evidence, by index.
-fn not_borne_out(output: &str) -> Vec<usize> {
-    output
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("NotBorneOut { index: "))
-        .filter_map(|rest| rest.trim_end_matches(" }").parse().ok())
-        .collect()
-}
-
-/// Whether `record` is a provider's inner-segments statement.
-fn is_inner_segments(record: Option<&Vec<u8>>) -> bool {
-    record
-        .and_then(|r| serde_json::from_slice::<Value>(r).ok())
-        .is_some_and(|v| {
-            v["what"]["statement"]
-                .as_str()
-                .is_some_and(|s| s.ends_with(":inner-segments"))
-        })
-}
-
-/// An asset in two decimals, as an endpoint's unit.
-fn unit(asset: &str) -> Value {
-    json!({ "id": asset, "decimals": 2 })
-}
-
-/// An outer node's endpoint in `asset`.
-fn outer(network: &str, asset: &str) -> Value {
-    json!({ "node": { "network": network }, "asset": unit(asset) })
-}
-
-/// An inner node's endpoint in `asset`.
-fn inner(node: &str, asset: &str) -> Value {
-    json!({ "node": node, "asset": unit(asset) })
-}
-
-/// The customer's order of `AMOUNT` from the endpoint `from` of the reserve `origin` to the endpoint `to` of the
-/// reserve `at`, delivered to `account`, ranked by `objective`: the customer is requester, beneficiary and payer.
-#[allow(clippy::too_many_arguments)]
-fn request(
-    name: &str,
-    session: &Id,
-    origin: &str,
-    from: Value,
-    to: Value,
-    at: &str,
-    account: &str,
-    objective: &str,
-) -> OrderRequest {
-    let customer = kit::customer();
-    let network = to["node"]["network"]
-        .as_str()
-        .map_or_else(|| format!("{at}-bank"), str::to_owned);
-    OrderRequest {
-        request: id(name),
-        caller: customer.clone(),
-        parties: Parties {
-            requester: customer.party.clone(),
-            beneficiary: customer.party.clone(),
-            settlement_account_at: None,
-            payer: customer.party.clone(),
-        },
-        origin_reserve: id(origin),
-        session: session.clone(),
-        destination: Destination {
-            reserve: id(at),
-            node: OuterNode { network },
-            account: id(account),
-        },
-        route: serde_json::from_value(json!({
-            "request_id": format!("{name}-route"),
-            "round": {"kind": "shortlist"},
-            "from": from,
-            "to": to,
-            "amount": AMOUNT,
-            "objective": {"kind": objective},
-        }))
-        .expect("a route request"),
-        inputs: BTreeMap::from([
-            ("payer.bank_account".to_owned(), ORIGIN_ACCOUNT.to_owned()),
-            ("beneficiary.bank_account".to_owned(), account.to_owned()),
-        ]),
-        needs: Vec::new(),
     }
 }

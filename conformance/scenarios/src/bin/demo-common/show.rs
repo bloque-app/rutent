@@ -61,7 +61,7 @@ impl Transcript {
             entries.len().saturating_sub(1)
         ));
         for (receipt, entry) in new {
-            let line = entry_line(receipt, entry);
+            let line = entry_view(receipt, entry).line();
             self.line(format!("      │ {line}"));
         }
         self.line("      └──────────────────────────────────────────────────────────────────────────────────");
@@ -188,12 +188,75 @@ pub fn providers(record: &DecisionRecord) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// One entry of the log on one line: its place, whether Core verified it or a party stated it, what it is, who, and
-/// the order and provider it names.
-fn entry_line(receipt: &Receipt, entry: &Entry) -> String {
+/// One entry of the log as the timeline shows it: its place, whether Core verified it or a party stated it, what it
+/// is, who, and the order and provider it names.
+#[derive(Debug, Clone)]
+pub struct EntryView {
+    /// Its place in the log.
+    pub index: u64,
+    /// `verified` (Core's own record of a call between its parts, or of what the platform did) or `stated` (a party's
+    /// signed statement, kept as signed).
+    pub kind: &'static str,
+    /// What it is: the call and its action for a verified entry, the statement's shape for a stated one.
+    pub label: String,
+    /// Who did or stated it.
+    pub who: String,
+    /// For a stated entry, how its signature stands: `signed, verified`, `its keys are learnt from it`, or
+    /// `UNVERIFIED`.
+    pub signature: Option<&'static str>,
+    /// For a stated entry, the commitment it is kept under, cut short.
+    pub kept_as: Option<String>,
+    /// The order it names, where it names one.
+    pub order: Option<String>,
+    /// The provider it names, where it names one.
+    pub provider: Option<String>,
+}
+
+impl EntryView {
+    /// The entry on one line, as the demo prints it.
+    pub fn line(&self) -> String {
+        let mut line = format!("#{:<4} ", self.index);
+        match self.kind {
+            "verified" => {
+                let _ = write!(line, "verified  {:<34} by {:<22}", self.label, self.who);
+            }
+            _ => {
+                let _ = write!(
+                    line,
+                    "stated    {:<34} by {:<22} ({}, kept as {})",
+                    self.label,
+                    self.who,
+                    self.signature.unwrap_or("?"),
+                    self.kept_as.as_deref().unwrap_or("?")
+                );
+            }
+        }
+        for (key, v) in [("order", &self.order), ("provider", &self.provider)] {
+            if let Some(v) = v {
+                let _ = write!(line, " {key}={v}");
+            }
+        }
+        line
+    }
+}
+
+/// One entry of the log, read for the timeline.
+pub fn entry_view(receipt: &Receipt, entry: &Entry) -> EntryView {
     let value = serde_json::to_value(entry).unwrap_or(Value::Null);
-    let index = serde_json::to_value(receipt).map_or(Value::Null, |r| r["index"].clone());
-    let mut line = format!("#{index:<4} ");
+    let index = serde_json::to_value(receipt)
+        .ok()
+        .and_then(|r| r["index"].as_u64())
+        .unwrap_or_default();
+    let mut view = EntryView {
+        index,
+        kind: "verified",
+        label: String::new(),
+        who: String::new(),
+        signature: None,
+        kept_as: None,
+        order: None,
+        provider: None,
+    };
     match entry {
         Entry::Verified(_) => {
             let what = &value["what"];
@@ -204,16 +267,16 @@ fn entry_line(receipt: &Receipt, entry: &Entry) -> String {
             } else if let Some(kind) = what["observed"]["kind"].as_str() {
                 let _ = write!(label, "/{kind}");
             }
-            let who = value["who"]["acts"].as_str().unwrap_or("?");
-            let _ = write!(line, "verified  {label:<34} by {who:<22}");
-            push_named(&mut line, what);
-            push_named(&mut line, &what["action"]);
+            view.label = label;
+            view.who = value["who"]["acts"].as_str().unwrap_or("?").to_owned();
+            named(&mut view, what);
+            named(&mut view, &what["action"]);
         }
         Entry::Stated(_) => {
             let statement = value["what"]["statement"].as_str().unwrap_or("?");
             let shape = statement.rsplit(':').next().unwrap_or(statement);
             let attribution = &value["attribution"];
-            let (who, verified) = match attribution["signature"].as_str() {
+            let (who, signature) = match attribution["signature"].as_str() {
                 Some("verified") => (
                     attribution["who"]["acts"].as_str().unwrap_or("?"),
                     "signed, verified",
@@ -229,22 +292,23 @@ fn entry_line(receipt: &Receipt, entry: &Entry) -> String {
                     "UNVERIFIED",
                 ),
             };
-            let _ = write!(
-                line,
-                "stated    {shape:<34} by {who:<22} ({verified}, kept as {})",
-                short(value["commitment"]["value"].as_str().unwrap_or("?"))
-            );
-            push_named(&mut line, &value["about"]);
+            view.kind = "stated";
+            view.label = shape.to_owned();
+            view.who = who.to_owned();
+            view.signature = Some(signature);
+            view.kept_as = Some(short(value["commitment"]["value"].as_str().unwrap_or("?")));
+            named(&mut view, &value["about"]);
         }
     }
-    line
+    view
 }
 
-/// Adds the order, segment and provider `what` names, where it names them.
-fn push_named(line: &mut String, what: &Value) {
-    for key in ["order", "provider"] {
-        if let Some(v) = what[key].as_str() {
-            let _ = write!(line, " {key}={v}");
-        }
+/// Takes the order and provider `what` names, where it names them and the entry names none yet.
+fn named(view: &mut EntryView, what: &Value) {
+    if let Some(v) = what["order"].as_str() {
+        view.order.get_or_insert_with(|| v.to_owned());
+    }
+    if let Some(v) = what["provider"].as_str() {
+        view.provider.get_or_insert_with(|| v.to_owned());
     }
 }
