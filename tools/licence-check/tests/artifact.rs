@@ -130,8 +130,19 @@ serde 1.0.219 MIT OR Apache-2.0 permitted licence-permissive-standing\n";
 /// One package of a `cargo metadata` fixture: name, version, declared licence.
 type P = (&'static str, &'static str, Option<&'static str>);
 
-/// A `cargo metadata` text: the packages, the workspace members (by name), and edges `(from, to, kind)`.
+/// A `cargo metadata` text for the VOS program's lock: see [`metadata_in`].
 fn metadata(pkgs: &[P], members: &[&str], edges: &[(&str, &str, Option<&str>)]) -> String {
+    metadata_in("components/stm/vos-program", pkgs, members, edges)
+}
+
+/// A `cargo metadata` text for the workspace in `lockdir`: the packages, the workspace members (by name), and edges
+/// `(from, to, kind)`. A package at version `0.0.0` is a path package in `lockdir/<name>`; any other is a registry one.
+fn metadata_in(
+    lockdir: &str,
+    pkgs: &[P],
+    members: &[&str],
+    edges: &[(&str, &str, Option<&str>)],
+) -> String {
     let id = |n: &str| {
         let p = pkgs.iter().find(|p| p.0 == n).expect("fixture package");
         format!("{} {}", p.0, p.1)
@@ -140,8 +151,13 @@ fn metadata(pkgs: &[P], members: &[&str], edges: &[(&str, &str, Option<&str>)]) 
         .iter()
         .map(|(n, v, l)| {
             let license = l.map_or("null".to_string(), |l| format!("\"{l}\""));
+            let source = if *v == "0.0.0" {
+                "null".to_string()
+            } else {
+                "\"registry+https://github.com/rust-lang/crates.io-index\"".to_string()
+            };
             format!(
-                "{{\"id\":\"{n} {v}\",\"name\":\"{n}\",\"version\":\"{v}\",\"license\":{license}}}"
+                "{{\"id\":\"{n} {v}\",\"name\":\"{n}\",\"version\":\"{v}\",\"license\":{license},\"source\":{source},\"manifest_path\":\"/repo/{lockdir}/{n}/Cargo.toml\"}}"
             )
         })
         .collect();
@@ -161,7 +177,7 @@ fn metadata(pkgs: &[P], members: &[&str], edges: &[(&str, &str, Option<&str>)]) 
         .collect();
     let members: Vec<String> = members.iter().map(|m| format!("\"{}\"", id(m))).collect();
     format!(
-        "{{\"packages\":[{}],\"workspace_members\":[{}],\"resolve\":{{\"nodes\":[{}],\"root\":null}}}}",
+        "{{\"packages\":[{}],\"workspace_root\":\"/repo/{lockdir}\",\"workspace_members\":[{}],\"resolve\":{{\"nodes\":[{}],\"root\":null}}}}",
         packages.join(","),
         members.join(","),
         nodes.join(",")
@@ -210,8 +226,9 @@ fn artifact_holding_a_core_crate_and_an_agpl_package_fails_the_licence_check() {
         "{got:?}"
     );
     // An exception names the artifact and the core crates it may hold: `rutent-stm` does not excuse `rutent-core-orch`.
-    let excused =
-        format!("{record}@exception stm-inside-agpl-program host rutent-stm,rutent-contracts\n");
+    let excused = format!(
+        "{record}@exception stm-inside-agpl-program {VOS_PROGRAM} host rutent-stm,rutent-contracts\n"
+    );
     let got = artifacts(VOS_PROGRAM, metadata(&PKGS, &["host"], &edges), &excused);
     assert_eq!(got.len(), 1, "{got:?}");
     // The named crates pass.
@@ -240,7 +257,7 @@ fn artifact_holding_a_core_crate_and_an_agpl_package_fails_the_licence_check() {
 #[test]
 fn rutent_stm_or_rutent_contracts_gaining_a_non_permissive_dependency_fails_the_licence_check() {
     let record = format!(
-        "{CORE}@artifact {VOS_PROGRAM} host AGPL-3.0-or-later\n@exception stm-inside-agpl-program host rutent-stm,rutent-contracts\n"
+        "{CORE}@artifact {VOS_PROGRAM} host AGPL-3.0-or-later\n@exception stm-inside-agpl-program {VOS_PROGRAM} host rutent-stm,rutent-contracts\n"
     );
     // The exception covers `host` embedding `rutent-stm`, but not `rutent-stm` depending on VOS itself.
     let edges = [
@@ -352,4 +369,196 @@ fn malformed_directives_and_metadata_are_errors() {
         .is_err()
     );
     let _ = check("version = 4\n", "", &[]);
+}
+
+// verifies: DEC-6
+#[test]
+fn a_root_workspace_crate_in_neither_core_list_fails_the_licence_check() {
+    let pkgs: [P; 3] = [
+        ("rutent-a", "0.0.0", Some("MIT")),
+        ("rutent-b", "0.0.0", Some("MIT")),
+        ("rutent-c", "0.0.0", Some("MIT")),
+    ];
+    let root = |record: &str| {
+        artifacts(
+            "Cargo.lock",
+            metadata_in("", &pkgs, &["rutent-a", "rutent-b", "rutent-c"], &[]),
+            record,
+        )
+        .into_iter()
+        .filter(|v| v.lockfile == "licences/RECORD")
+        .map(|v| (v.artifact, v.reason))
+        .collect::<Vec<_>>()
+    };
+    let listed = "@core rutent-a\n@noncore rutent-b a tool of the repository's own checks\n@noncore rutent-c a tool\n";
+    assert_eq!(root(listed), vec![]);
+    // A crate in neither list, as a new crate of the workspace would be.
+    let got = root("@core rutent-a\n@noncore rutent-b a tool\n");
+    assert_eq!(
+        got,
+        vec![("rutent-c".to_string(), ArtifactReason::CoreUnclassified)]
+    );
+    // A crate in both lists.
+    let got = root(&format!("{listed}@core rutent-c\n"));
+    assert_eq!(
+        got,
+        vec![("rutent-c".to_string(), ArtifactReason::CoreUnclassified)]
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_core_or_noncore_name_that_is_not_a_root_workspace_crate_fails_the_licence_check() {
+    let pkgs: [P; 1] = [("rutent-a", "0.0.0", Some("MIT"))];
+    for record in [
+        "@core rutent-a\n@core rutent-ghost\n",
+        "@core rutent-a\n@noncore rutent-ghost a tool\n",
+    ] {
+        let got: Vec<_> = artifacts(
+            "Cargo.lock",
+            metadata_in("", &pkgs, &["rutent-a"], &[]),
+            record,
+        )
+        .into_iter()
+        .filter(|v| v.lockfile == "licences/RECORD")
+        .map(|v| (v.artifact, v.reason))
+        .collect();
+        assert_eq!(
+            got,
+            vec![("rutent-ghost".to_string(), ArtifactReason::CoreNotMember)],
+            "{record}"
+        );
+    }
+}
+
+// verifies: DEC-6
+#[test]
+fn a_dependency_is_read_as_the_stricter_of_its_record_and_its_manifest() {
+    let edges = [
+        ("host", "rutent-stm", None),
+        ("host", "dep", None),
+        ("rutent-stm", "rutent-contracts", None),
+    ];
+    let base = "@core rutent-stm\n@core rutent-contracts\n@artifact components/stm/vos-program/Cargo.lock host MIT\n";
+    let run = |manifest: &'static str, recorded: &str| {
+        let pkgs: [P; 4] = [
+            ("host", "0.0.0", Some("MIT")),
+            ("rutent-stm", "0.0.0", Some("MIT")),
+            ("rutent-contracts", "0.0.0", Some("MIT")),
+            ("dep", "1.0.0", Some(manifest)),
+        ];
+        let record = format!("{base}dep 1.0.0 {recorded} permitted licence-permissive-standing\n");
+        artifacts(VOS_PROGRAM, metadata(&pkgs, &["host"], &edges), &record)
+            .iter()
+            .map(|v| v.reason)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run("MIT", "MIT"), vec![]);
+    // The manifest says AGPL, the record MIT: the stricter decides.
+    assert_eq!(
+        run("AGPL-3.0-or-later", "MIT"),
+        vec![ArtifactReason::CoreWithCopyleft; 2]
+    );
+    // The manifest says MIT, the record AGPL: the same.
+    assert_eq!(
+        run("MIT", "AGPL-3.0-or-later"),
+        vec![ArtifactReason::CoreWithCopyleft; 2]
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn an_exception_holds_in_the_lock_it_names_only() {
+    let edges = [
+        ("host", "rutent-stm", None),
+        ("host", "vos-sdk", None),
+        ("rutent-stm", "rutent-contracts", None),
+    ];
+    let record = format!(
+        "{CORE}@artifact {VOS_PROGRAM} host AGPL-3.0-or-later\n@artifact {VOS_CLIENT} host AGPL-3.0-or-later\n\
+         @exception stm-inside-agpl-program {VOS_PROGRAM} host rutent-stm,rutent-contracts\n"
+    );
+    let run = |lock: &str, dir: &str| {
+        check_artifacts(
+            &[ArtifactInput {
+                lockfile: lock.into(),
+                metadata: metadata_in(dir, &PKGS, &["host"], &edges),
+            }],
+            &record,
+        )
+        .expect("fixture parses")
+    };
+    assert_eq!(run(VOS_PROGRAM, "components/stm/vos-program"), vec![]);
+    // The same artifact name in the client's lock does not inherit it.
+    let got = run(VOS_CLIENT, "components/stm/vos-program/client");
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got.iter()
+            .all(|v| v.lockfile == VOS_CLIENT && v.reason == ArtifactReason::CoreWithCopyleft)
+    );
+}
+
+// verifies: DEC-6
+#[test]
+fn a_same_named_artifact_of_another_lock_does_not_speak_for_a_path_package() {
+    let pkgs: [P; 3] = [
+        ("host", "0.0.0", Some("MIT")),
+        ("helper", "0.0.0", Some("MIT")),
+        ("rutent-stm", "0.0.0", Some("MIT")),
+    ];
+    let edges = [("host", "helper", None), ("host", "rutent-stm", None)];
+    let record = |helper_lock: &str| {
+        format!(
+            "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n@artifact {helper_lock} helper AGPL-3.0-or-later\n"
+        )
+    };
+    let run = |helper_lock: &str| {
+        check_artifacts(
+            &[ArtifactInput {
+                lockfile: "tools/x/Cargo.lock".into(),
+                metadata: metadata_in("tools/x", &pkgs, &["host"], &edges),
+            }],
+            &record(helper_lock),
+        )
+        .expect("fixture parses")
+        .iter()
+        .map(|v| v.reason)
+        .collect::<Vec<_>>()
+    };
+    // `helper` is in `tools/x`, whose lock has no line for it; the other lock's line is not its own.
+    assert!(!run("experiments/y/Cargo.lock").contains(&ArtifactReason::CoreWithCopyleft));
+    // The line of the lock that owns it is read.
+    assert!(run("tools/x/Cargo.lock").contains(&ArtifactReason::CoreWithCopyleft));
+}
+
+// verifies: DEC-6
+#[test]
+fn the_locks_the_tool_reads_are_the_locks_git_lists() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "*Cargo.lock",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git ls-files failed");
+    let mut listed: Vec<String> = String::from_utf8(out.stdout)
+        .expect("utf-8 paths")
+        .lines()
+        .filter(|l| l.rsplit('/').next() == Some("Cargo.lock"))
+        .map(str::to_string)
+        .collect();
+    listed.sort();
+    let mut read = rutent_licence_check::find_all_locks(&root).expect("walk");
+    read.push("Cargo.lock".to_string());
+    read.sort();
+    assert_eq!(
+        read, listed,
+        "the tool must read exactly the locks of the repository"
+    );
 }

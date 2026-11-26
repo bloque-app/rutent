@@ -1,7 +1,7 @@
 //! Licence record check (REQ-MOD-5, T-001-04).
 //!
-//! The check reads every `Cargo.lock` in the repository (the root one, and each one under `experiments/` or `components/`,
-//! found by walking those trees and skipping `target` directories), the record `licences/RECORD` and the root manifest's
+//! The check reads every `Cargo.lock` in the repository (the root one, and each one anywhere below it, found by walking
+//! the whole tree and skipping `target` and `.git` directories), the record `licences/RECORD` and the root manifest's
 //! workspace members as text. It fails on a locked external package that the record does not list at its locked
 //! version, and on one whose recorded decision is still `pending`; each violation names the lockfile it came from.
 //! In the root lock a package is external unless it is a workspace member without a `source`, so a path
@@ -125,9 +125,10 @@ pub(crate) struct ArtifactLine {
     pub(crate) licence: String,
 }
 
-/// An `@exception` line: the core crates an artifact may hold beside a non-permissive package.
+/// An `@exception` line: the core crates an artifact of one lock may hold beside a non-permissive package.
 #[derive(Debug)]
 pub(crate) struct Exception {
+    pub(crate) lockfile: String,
     pub(crate) artifact: String,
     pub(crate) core_crates: Vec<String>,
 }
@@ -140,6 +141,8 @@ pub(crate) struct Record {
     pub(crate) artifacts: Vec<ArtifactLine>,
     /// The crates of rutent's own core (`@core` lines).
     pub(crate) cores: Vec<String>,
+    /// The root-workspace crates that are not core (`@noncore` lines).
+    pub(crate) noncores: Vec<String>,
     pub(crate) exceptions: Vec<Exception>,
 }
 
@@ -310,22 +313,16 @@ fn check_one(lock: &LockFile, record: &Record, found: &mut Vec<Violation>) -> Re
     Ok(())
 }
 
-/// The trees whose own `Cargo.lock`s the check reads beside the root one: the experiments, and the packages of
-/// `components/` that are workspaces of their own, such as the VOS program's (`T-010-05`).
-pub const LOCK_DIRS: [&str; 2] = ["experiments", "components"];
-
-/// The paths of every `Cargo.lock` under [`LOCK_DIRS`], relative to `root`, sorted. See [`find_locks`].
+/// The paths of every `Cargo.lock` below `root`, except the root's own, relative to `root`, sorted: the whole
+/// repository is walked, so a lock in a new place is never missed. See [`find_locks`].
 pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
-    let mut all = Vec::new();
-    for dir in LOCK_DIRS {
-        all.extend(find_locks(root, dir)?);
-    }
-    all.sort();
+    let mut all = find_locks(root, "")?;
+    all.retain(|p| p != "Cargo.lock");
     Ok(all)
 }
 
-/// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` is not
-/// entered. A symbolic link that is a `Cargo.lock` or a directory is an error, since the check would otherwise
+/// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` or `.git` is
+/// not entered. A symbolic link that is a `Cargo.lock` or a directory is an error, since the check would otherwise
 /// pass over it silently. A missing `dir` has none.
 pub fn find_locks(root: &Path, dir: &str) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
@@ -351,7 +348,7 @@ fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
         let entry = entry.map_err(read)?;
         let kind = entry.file_type().map_err(read)?;
         let path = entry.path();
-        let is_target = entry.file_name() == "target";
+        let is_target = entry.file_name() == "target" || entry.file_name() == ".git";
         if kind.is_symlink() {
             if is_target && path.is_dir() {
                 continue;
@@ -529,13 +526,16 @@ fn directive(fields: &[&str], line: usize, out: &mut Record) -> Result<(), Strin
         }
         ("@core", 2) => out.cores.push(fields[1].to_string()),
         ("@core", _) => return Err(bad("`@core` takes one crate name")),
-        ("@exception", 4) => out.exceptions.push(Exception {
-            artifact: fields[2].to_string(),
-            core_crates: list(fields[3]),
+        ("@noncore", n) if n >= 3 => out.noncores.push(fields[1].to_string()),
+        ("@noncore", _) => return Err(bad("`@noncore` takes a crate name and a reason")),
+        ("@exception", 5) => out.exceptions.push(Exception {
+            lockfile: fields[2].to_string(),
+            artifact: fields[3].to_string(),
+            core_crates: list(fields[4]),
         }),
         ("@exception", _) => {
             return Err(bad(
-                "`@exception` takes a reference, an artifact and comma-separated core crates",
+                "`@exception` takes a reference, a lockfile, an artifact and comma-separated core crates",
             ));
         }
         (other, _) => return Err(bad(&format!("unknown directive `{other}`"))),

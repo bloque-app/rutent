@@ -46,6 +46,11 @@ pub enum ArtifactReason {
     CoreNotPermissive,
     /// A package in its graph has no licence the record can tell.
     UnknownLicence,
+    /// A crate of the root workspace is in neither the `@core` nor the `@noncore` lines, or is in both. The
+    /// violation names `licences/RECORD` as its lockfile.
+    CoreUnclassified,
+    /// An `@core` or `@noncore` name is not a crate of the root workspace. The violation names `licences/RECORD`.
+    CoreNotMember,
 }
 
 /// One artifact that fails the check.
@@ -77,6 +82,12 @@ impl fmt::Display for ArtifactViolation {
             ArtifactReason::UnknownLicence => {
                 "has a package in its graph whose licence the record cannot tell"
             }
+            ArtifactReason::CoreUnclassified => {
+                "is a crate of the root workspace that the record lists as neither `@core` nor `@noncore`, or as both"
+            }
+            ArtifactReason::CoreNotMember => {
+                "is listed `@core` or `@noncore` but is not a crate of the root workspace"
+            }
         };
         write!(
             f,
@@ -90,6 +101,9 @@ struct Pkg {
     name: String,
     version: String,
     license: Option<String>,
+    /// For a path package (no `source`), the directory of its manifest relative to the repository root.
+    dir: Option<String>,
+    path: bool,
 }
 
 struct Meta {
@@ -115,16 +129,47 @@ fn items<'a>(v: &'a Json, key: &str) -> Result<&'a [Json], String> {
         .ok_or_else(|| format!("`{key}` is not an array"))
 }
 
-fn parse_meta(text_in: &str) -> Result<Meta, String> {
+/// The directory of a path package's manifest relative to the repository root, from the lock's workspace root
+/// (`lockdir` is the lock's own directory relative to the repository root, `""` for the root lock).
+fn package_dir(
+    workspace_root: Option<&str>,
+    lockdir: &str,
+    manifest: Option<&str>,
+) -> Option<String> {
+    let root = workspace_root?;
+    let repo = if lockdir.is_empty() {
+        root
+    } else {
+        root.strip_suffix(lockdir)?.trim_end_matches('/')
+    };
+    let rel = manifest?.strip_prefix(repo)?.trim_start_matches('/');
+    let dir = rel.strip_suffix("Cargo.toml")?.trim_end_matches('/');
+    Some(dir.to_string())
+}
+
+fn parse_meta(text_in: &str, lockfile: &str) -> Result<Meta, String> {
     let doc = json::parse(text_in)?;
+    let lockdir = lockfile
+        .strip_suffix("Cargo.lock")
+        .unwrap_or_default()
+        .trim_end_matches('/');
+    let workspace_root = doc.get("workspace_root").and_then(Json::as_str);
     let mut pkgs = BTreeMap::new();
     for p in items(&doc, "packages")? {
+        let path = p.get("source").is_none_or(|s| *s == Json::Null);
+        let manifest = p.get("manifest_path").and_then(Json::as_str);
         pkgs.insert(
             text(p, "id")?,
             Pkg {
                 name: text(p, "name")?,
                 version: text(p, "version")?,
                 license: p.get("license").and_then(Json::as_str).map(str::to_string),
+                dir: if path {
+                    package_dir(workspace_root, lockdir, manifest)
+                } else {
+                    None
+                },
+                path,
             },
         );
     }
@@ -189,29 +234,47 @@ impl Meta {
     }
 }
 
-/// The licence of a package in a graph, from the record: the lock's own `@artifact` line, a package line at the
-/// locked version, an `@artifact` line of another lock, then the manifest's declaration.
-fn licence_of(record: &Record, lockfile: &str, p: &Pkg) -> Option<String> {
-    record
-        .artifacts
-        .iter()
-        .find(|a| a.lockfile == lockfile && a.name == p.name)
-        .map(|a| a.licence.clone())
-        .or_else(|| {
-            record
-                .entries
-                .iter()
-                .find(|e| e.name == p.name && e.version == p.version)
-                .map(|e| e.licence.clone())
-        })
-        .or_else(|| {
-            record
-                .artifacts
-                .iter()
-                .find(|a| a.name == p.name)
-                .map(|a| a.licence.clone())
-        })
-        .or_else(|| p.license.clone())
+/// The licences a package is read with: for a path package, the `@artifact` line of the lock that owns it (the
+/// line of that name whose lock directory is the longest prefix of the package's directory, so a same-named
+/// artifact of another lock is never taken); for any package, the record's line at its locked version, and the
+/// manifest's declaration.
+fn licences_of(record: &Record, p: &Pkg) -> Vec<String> {
+    let mut out = Vec::new();
+    if p.path
+        && let Some(dir) = &p.dir
+    {
+        let owner = record
+            .artifacts
+            .iter()
+            .filter(|a| a.name == p.name)
+            .filter_map(|a| {
+                let lockdir = a.lockfile.strip_suffix("Cargo.lock")?.trim_end_matches('/');
+                let inside = lockdir.is_empty()
+                    || dir == lockdir
+                    || dir
+                        .strip_prefix(lockdir)
+                        .is_some_and(|r| r.starts_with('/'));
+                inside.then_some((lockdir.len(), a))
+            })
+            .max_by_key(|(n, _)| *n);
+        out.extend(owner.map(|(_, a)| a.licence.clone()));
+    }
+    out.extend(
+        record
+            .entries
+            .iter()
+            .find(|e| e.name == p.name && e.version == p.version)
+            .map(|e| e.licence.clone()),
+    );
+    out.extend(p.license.clone());
+    out
+}
+
+/// Whether a package is permissive: every licence it is read with must be, so the stricter of the record and the
+/// manifest decides. `None` when there is no licence to read.
+fn permissive_of(record: &Record, p: &Pkg) -> Option<bool> {
+    let all = licences_of(record, p);
+    (!all.is_empty()).then(|| all.iter().all(|l| is_permissive(l)))
 }
 
 /// Checks each artifact of each lock against the record.
@@ -223,8 +286,10 @@ pub fn check_artifacts(
 ) -> Result<Vec<ArtifactViolation>, String> {
     let record = parse_record(record)?;
     let mut found: Vec<ArtifactViolation> = Vec::new();
+    check_core_lists(inputs, &record, &mut found)?;
     for input in inputs {
-        let meta = parse_meta(&input.metadata).map_err(|e| format!("{}: {e}", input.lockfile))?;
+        let meta = parse_meta(&input.metadata, &input.lockfile)
+            .map_err(|e| format!("{}: {e}", input.lockfile))?;
         let mut push = |artifact: &str, reason, detail: String| {
             let v = ArtifactViolation {
                 lockfile: input.lockfile.clone(),
@@ -238,8 +303,14 @@ pub fn check_artifacts(
         };
         let describe = |id: &str| {
             let p = &meta.pkgs[id];
-            let l =
-                licence_of(&record, &input.lockfile, p).unwrap_or_else(|| "unknown".to_string());
+            let l = licences_of(&record, p);
+            let l = if l.is_empty() {
+                "unknown".to_string()
+            } else {
+                let mut l = l;
+                l.dedup();
+                l.join(" / ")
+            };
             format!("{} {} ({l})", p.name, p.version)
         };
         for id in &meta.members {
@@ -271,10 +342,10 @@ pub fn check_artifacts(
             let mut cores = Vec::new();
             for g in &graph {
                 let p = &meta.pkgs[g];
-                match licence_of(&record, &input.lockfile, p) {
+                match permissive_of(&record, p) {
                     None => push(&artifact.name, ArtifactReason::UnknownLicence, describe(g)),
-                    Some(l) if !is_permissive(&l) => copyleft.push(g.clone()),
-                    Some(_) => {}
+                    Some(false) => copyleft.push(g.clone()),
+                    Some(true) => {}
                 }
                 if record.cores.contains(&p.name) {
                     cores.push(&p.name);
@@ -282,10 +353,11 @@ pub fn check_artifacts(
             }
             if !copyleft.is_empty() {
                 for core in cores {
-                    let excepted = record
-                        .exceptions
-                        .iter()
-                        .any(|e| e.artifact == artifact.name && e.core_crates.contains(core));
+                    let excepted = record.exceptions.iter().any(|e| {
+                        e.lockfile == input.lockfile
+                            && e.artifact == artifact.name
+                            && e.core_crates.contains(core)
+                    });
                     if !excepted {
                         push(
                             &artifact.name,
@@ -309,13 +381,67 @@ pub fn check_artifacts(
             }
             for g in meta.graph(id).iter().filter(|g| *g != id) {
                 let q = &meta.pkgs[g];
-                match licence_of(&record, &input.lockfile, q) {
-                    Some(l) if is_permissive(&l) => {}
-                    Some(_) => push(&p.name, ArtifactReason::CoreNotPermissive, describe(g)),
+                match permissive_of(&record, q) {
+                    Some(true) => {}
+                    Some(false) => push(&p.name, ArtifactReason::CoreNotPermissive, describe(g)),
                     None => push(&p.name, ArtifactReason::UnknownLicence, describe(g)),
                 }
             }
         }
     }
     Ok(found)
+}
+
+/// Every crate of the root workspace is `@core` or `@noncore`, and not both; every such name is a crate of the root
+/// workspace. Skipped when no input is the root lock (`Cargo.lock`), which the tool always gives.
+fn check_core_lists(
+    inputs: &[ArtifactInput],
+    record: &Record,
+    found: &mut Vec<ArtifactViolation>,
+) -> Result<(), String> {
+    let Some(root) = inputs.iter().find(|i| i.lockfile == "Cargo.lock") else {
+        return Ok(());
+    };
+    let meta =
+        parse_meta(&root.metadata, &root.lockfile).map_err(|e| format!("Cargo.lock: {e}"))?;
+    let members: Vec<&str> = meta
+        .members
+        .iter()
+        .map(|m| meta.pkgs[m].name.as_str())
+        .collect();
+    let mut push = |name: &str, reason, detail: &str| {
+        found.push(ArtifactViolation {
+            lockfile: "licences/RECORD".to_string(),
+            artifact: name.to_string(),
+            reason,
+            detail: detail.to_string(),
+        });
+    };
+    for m in &members {
+        let (core, non) = (
+            record.cores.iter().any(|c| c == m),
+            record.noncores.iter().any(|c| c == m),
+        );
+        if core == non {
+            push(
+                m,
+                ArtifactReason::CoreUnclassified,
+                if core {
+                    "listed as both"
+                } else {
+                    "listed as neither"
+                },
+            );
+        }
+    }
+    for n in record.cores.iter().chain(&record.noncores) {
+        if !members.contains(&n.as_str()) {
+            push(
+                n,
+                ArtifactReason::CoreNotMember,
+                "no such crate in the root workspace",
+            );
+        }
+    }
+    Ok(())
 }

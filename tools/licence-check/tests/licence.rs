@@ -386,3 +386,39 @@ fn a_lock_under_components_is_read_like_one_under_experiments() {
         ]
     );
 }
+
+// verifies: DEC-6
+#[test]
+fn a_lock_anywhere_in_the_repository_is_found() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("licence-find-whole-tree");
+    let _ = fs::remove_dir_all(&base);
+    for dir in [
+        "tools/x",
+        "services/y/inner",
+        "services/y/target",
+        ".git/modules/z",
+        "components/a",
+    ] {
+        fs::create_dir_all(base.join(dir)).expect("fixture dir");
+    }
+    for lock in [
+        "Cargo.lock",
+        "tools/x/Cargo.lock",
+        "services/y/inner/Cargo.lock",
+        "services/y/target/Cargo.lock",
+        ".git/modules/z/Cargo.lock",
+        "components/a/Cargo.lock",
+    ] {
+        fs::write(base.join(lock), "version = 4\n").expect("fixture lock");
+    }
+    let found = find_all_locks(&base).expect("walk");
+    fs::remove_dir_all(&base).expect("clean up");
+    assert_eq!(
+        found,
+        vec![
+            "components/a/Cargo.lock",
+            "services/y/inner/Cargo.lock",
+            "tools/x/Cargo.lock"
+        ]
+    );
+}
