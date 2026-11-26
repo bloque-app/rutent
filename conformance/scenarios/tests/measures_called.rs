@@ -294,11 +294,8 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
         format!("{b:?}"),
         "the segment's outcome is as without it"
     );
-    assert!(with.tick().measures > 0);
-    assert_eq!(without.tick().measures, 0, "nothing could be written");
-    assert!(records(&without).is_empty());
-
-    // Everything else the run left is the same entry for entry: the measure changed nothing.
+    // Everything else the run left is the same entry for entry: the measure changed nothing. (Compared before the ticks:
+    // a tick's reads of a private node's record are decided at the time each Core's clock then reads, `T-020-58`.)
     // (Two Cores are two logs: the digests of their entries are left out, the entries' contents compared.)
     let others = |core: &Core| -> Vec<String> {
         core.verified_whats()
@@ -308,6 +305,10 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
             .collect()
     };
     assert_eq!(others(&with), others(&without));
+
+    assert!(with.tick().measures > 0);
+    assert_eq!(without.tick().measures, 0, "nothing could be written");
+    assert!(records(&without).is_empty());
 
     // The log able to take them again, the caller's next call writes what waited, each once.
     without.refuse_log_appends("measure", 0);
