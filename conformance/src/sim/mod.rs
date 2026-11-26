@@ -383,7 +383,8 @@ pub const GROSS_FEE: u128 = 5_000;
 /// - `sim-join-ramp`, from that node to the public node `sim-join-chain`, in USD, charging nothing and declaring
 ///   600 seconds; `sim-join-ramp-quick`, the same tuple at 5 000 a transfer and 30 seconds; `sim-join-ramp-steps`,
 ///   the first with internal steps (`REQ-CAT-21`);
-/// - `sim-join-out`, a reserve in USD between that public node and its own bank.
+/// - `sim-join-out`, a reserve in USD between that public node and its own bank;
+/// - `sim-join-cashier`, a reserve of the same publisher at the public node that declares no private node (`T-020-58`).
 ///
 /// The second is on-chain: no exchange, no local money (`AC-26`, `AC-27`), all in USDC at two decimals:
 ///
@@ -441,6 +442,14 @@ pub fn shape_of(provider: &str) -> Shape {
             node: Some("sim-join-chain".to_owned()),
             public_node: true,
             ..Shape::default()
+        },
+        // A provider of the same publisher that declares no private node: a reserve at the public node, in USD. Core asks
+        // for a private node's record of the providers that declare it only (`T-020-58`), never of this one.
+        "sim-join-cashier" => Shape {
+            asset: Some("USD".to_owned()),
+            node: Some("sim-join-chain".to_owned()),
+            public_node: true,
+            ..join("sim-join-chain")
         },
         // A route across two private nodes (`T-024-05`, `DEC-24`), in COP, two decimals, in four segments (the router
         // takes at most four): a withdrawal into A's node, a ramp from it onto the public node between the two, a ramp

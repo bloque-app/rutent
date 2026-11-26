@@ -161,6 +161,9 @@ pub enum Permission {
     /// An operator's login asking a segment's provider for its late status (`REQ-ORD-1`, `T-021-09`). Core's own
     /// actors ask it through [`Permission::CarryOnward`].
     AskStatus,
+    /// The operator reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): held by
+    /// the operator alone, never carried onward by Core's own actors, so no one else's call reads one.
+    ReadNodeRecord,
     /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
     /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
     /// the order's origin reserve, with no permission of the operator's.
@@ -293,6 +296,12 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                     | Role::Regulator
                     | Role::Checker => None,
                 },
+                // Reading a private node's record from its publisher's provider (`REQ-ORD-41`, `T-020-58`): the operator,
+                // as a permission of its own the register lists, and no one else; Core's own actors are not carried onward
+                // to it, and an unknown role fails closed. Which provider and node, the question's answer holds.
+                Action::ReadNodeRecord { .. } => {
+                    operator_holds(caller, Permission::ReadNodeRecord).map(Needs::from)
+                }
                 // Asking a failed segment's provider to reverse it (`REQ-ORD-3`, `REQ-ORD-11`): an operator's login the
                 // register lists for it, a permission of its own, or one of Core's own actors carrying the order on.
                 // Which provider is asked, and that its segment owes the reversal, the log holds

@@ -508,6 +508,126 @@ fn private_node_record_is_asked_of_its_publisher_and_read_by_closing() {
     );
 }
 
+/// A provider of the node's publisher that declares no private node is never asked for the node's record: Core asks the
+/// providers that declare the node alone (`REQ-ORD-41`, `T-020-58`).
+// verifies: REQ-ORD-41
+#[test]
+fn a_provider_of_the_publisher_that_declares_no_node_is_never_asked_for_its_record() {
+    const CLERK: &str = "sim-join-cashier";
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, CLERK]);
+    let (_, segments) = joined(&mut core, &session);
+    core.tick();
+    let asked = core.publishers_asked();
+    assert!(!asked.is_empty());
+    assert!(
+        asked.iter().all(|(provider, ..)| provider != CLERK),
+        "{CLERK} declares no node and was asked: {asked:?}"
+    );
+    for provider in [IN, EXCHANGE, QUICK] {
+        assert!(asked.iter().any(|(p, ..)| p == provider), "{provider}");
+    }
+    let books: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    assert!(core.books_for(NODE, &books).is_some());
+}
+
+/// The read is the operator's, decided by policy (`read_node_record`) and recorded as an effect before the question is
+/// put, for each provider of the node and under a fresh transaction each (`REQ-AUZ-1`, `REQ-ORD-41`, `T-020-58`).
+/// Where policy denies it, nothing is asked, no effect is recorded, and the node's books say nothing: the replay records
+/// that no record was had, and the order is not stopped by it.
+// verifies: REQ-AUZ-1, REQ-ORD-41
+#[test]
+fn private_node_record_is_not_read_where_policy_denies_it() {
+    use rutent_contracts::core_internal::Action;
+    let read_effects = |core: &Core| {
+        entries(core)
+            .into_iter()
+            .filter(|v| {
+                matches!(
+                    &v.what,
+                    What::Effect {
+                        action: Action::ReadNodeRecord { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    // The control: with the permission, each read is an effect, one for each question put.
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    let (_, segments) = joined(&mut core, &session);
+    assert!(read_effects(&core) > 0);
+    assert!(
+        core.publishers_asked().len() >= read_effects(&core),
+        "every effect is followed by a question"
+    );
+    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    assert!(core.books_for(NODE, &asked).is_some());
+
+    // Denied: the operator doesn't hold the permission.
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.registers()
+        .permissions
+        .retain(|(_, p)| *p != rutent_core_authz::roles::Permission::ReadNodeRecord);
+    let (order, segments) = joined(&mut core, &session);
+    assert!(core.publishers_asked().is_empty(), "nothing was asked");
+    assert_eq!(read_effects(&core), 0, "no read was taken as an effect");
+    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    assert_eq!(core.books_for(NODE, &asked), None);
+    let found = replays(&core, &order);
+    assert!(
+        found.len() == 1 && matches!(found[0].2, ReplayFound::NothingRecorded { .. }),
+        "{found:?}"
+    );
+}
+
+/// The production platform answers the question of a private node's record: `impl Modules for Platform` carries it
+/// through `Platform::handle` as the permitted effect lets, and never answers `NotHandled` (`REQ-ORD-41`, `T-020-58`).
+// verifies: REQ-ORD-41
+#[test]
+fn production_platform_answers_the_question_of_a_private_nodes_record() {
+    use rutent_contracts::core_internal::{Action, Effect, Entry};
+    use rutent_contracts::provider_role::{InnerSegmentsOutcome, ResultBody, Statement};
+    use rutent_core_orch::segments::Answered;
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    joined(&mut core, &session);
+    // An effect Core recorded on a permit of policy's, for a read of the node's record.
+    let effect = core
+        .log()
+        .entries()
+        .iter()
+        .find_map(|(receipt, entry)| match entry {
+            Entry::Verified(v) => match &v.what {
+                What::Effect {
+                    action: action @ Action::ReadNodeRecord { .. },
+                    decision,
+                } => Some(Effect {
+                    action: action.clone(),
+                    decision: decision.clone(),
+                    receipt: receipt.clone(),
+                }),
+                _ => None,
+            },
+            Entry::Stated(_) => None,
+        })
+        .expect("closing recorded a read");
+    let Action::ReadNodeRecord { provider, node, .. } = &effect.action else {
+        unreachable!()
+    };
+    let (provider, node) = (provider.as_str().to_owned(), node.as_str().to_owned());
+    let Answered::Bytes(bytes) =
+        core.ask_record_of_the_platform(&effect, &provider, &node, "tx-production-question")
+    else {
+        panic!("the production platform didn't answer");
+    };
+    let answer: Statement<ResultBody> = serde_json::from_slice(&bytes).expect("a result");
+    let ResultBody::InnerSegmentsQuery(result) = answer.statement else {
+        panic!("not an answer to the question of a record");
+    };
+    assert_eq!(result.transaction, "tx-production-question");
+    assert_eq!(result.node, node);
+    assert!(matches!(result.outcome, InnerSegmentsOutcome::Answered(_)));
+}
+
 /// A provider that answers the question with a record it can't stand behind is not taken as the node's record, however
 /// it errs: a record of another publisher's, of a node it doesn't declare, signed with a key it doesn't list, or altered
 /// after it was signed (`REQ-ORD-41`, `T-020-58`).

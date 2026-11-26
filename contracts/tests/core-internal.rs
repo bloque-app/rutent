@@ -336,7 +336,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 131] = [
+const SCHEMA_RULES: [SchemaRule; 132] = [
     (
         "filing-inputs-without-its-objective",
         &[("", "required")],
@@ -386,6 +386,11 @@ const SCHEMA_RULES: [SchemaRule; 131] = [
         "decision-request-to-ask-a-late-status-without-its-transaction",
         &[("/action", "required")],
         "missing field `transaction`",
+    ),
+    (
+        "decision-request-to-read-a-private-nodes-record-without-its-node",
+        &[("/action", "required")],
+        "missing field `node`",
     ),
     (
         "stated-entry-naming-a-node-for-a-result",
@@ -3305,6 +3310,13 @@ fn a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew() {
 #[test]
 fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
     assert_accepted_by_both("verified-entry-of-a-refusal-for-an-input-policy-could-not-read");
+}
+
+// verifies: REQ-ORD-41, REQ-AUZ-1
+#[test]
+fn request_to_read_a_private_nodes_record_names_its_node_and_provider() {
+    assert_accepted_by_both("decision-request-to-read-a-private-nodes-record");
+    assert_rejected("decision-request-to-read-a-private-nodes-record-without-its-node");
 }
 
 // verifies: REQ-ORD-1, INV-4

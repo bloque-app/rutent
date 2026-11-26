@@ -89,6 +89,7 @@ mod landing;
 mod measured;
 mod pairs;
 mod ports;
+mod records;
 mod reopen;
 #[cfg(test)]
 mod returned;
@@ -141,8 +142,8 @@ pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
 pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
-    Answered, AskDesk, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short,
-    ToGrade, ToKeep, Uses,
+    Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, RecordWanted,
+    Short, ToGrade, ToKeep, Uses,
 };
 pub use reopen::Reopening;
 pub use sign::Unwritten;
@@ -682,6 +683,10 @@ struct Tracked {
 #[derive(Debug, Clone, Default)]
 pub struct Segments {
     acted: BTreeSet<String>,
+    /// The records of private nodes already asked for while a segment was graded, by order, segment, node and provider:
+    /// a segment graded again while it waits asks nothing and appends nothing more (`T-020-58`). A Core that reopens
+    /// asks again, once.
+    records_read: BTreeSet<(String, String, String, String)>,
     /// The receipt of the platform's record that the operation of a transaction ended with no answer.
     unanswered: BTreeMap<String, Receipt>,
     transactions: BTreeSet<String>,
@@ -3419,19 +3424,9 @@ impl Segments {
         // Asked every time the segment is graded, until it settles: a statement the grading couldn't read at one try
         // (a book empty then) is asked for again at the next, and one kept already is kept once. Only steps are cached;
         // an empty answer caches nothing, so the grading is never left holding "asked" for what it didn't have.
-        // The providers whose records the grading reads are asked first, in the operator's name, so what it reads is what
-        // they state now (`REQ-ORD-41`, `T-020-58`).
-        parts.grading.ask(
-            settled,
-            &mut AskDesk {
-                modules: &mut *parts.modules,
-                key: &mut *parts.operator_key,
-                fresh: &mut *parts.fresh,
-                clock: parts.clock,
-                bounds: &live.record.bounds,
-                operator: live.operator,
-            },
-        );
+        // The records the grading reads are asked for first, each decided and taken as an effect (`REQ-ORD-41`,
+        // `T-020-58`), so what it reads is what the providers state now.
+        self.read_records(parts, live, settled);
         let asked = parts.grading.statements(settled);
         for one in asked {
             if self

@@ -1157,6 +1157,7 @@ mod tests {
             Action::PostRoute { .. }
                 | Action::ChangeCatalogue { .. }
                 | Action::EraseStatement { .. }
+                | Action::ReadNodeRecord { .. }
         ) {
             request.caller = actor("operator", "op-login-2", Role::Operator, ActorKind::Person);
         }
@@ -1264,6 +1265,9 @@ mod tests {
             provider: id("bridge-pay"),
             transaction: id("tx-status-1"),
         });
+        // And reading a private node's record from its publisher's provider (`T-020-58`).
+        let read: DecisionRequest = fixture!("decision-request-to-read-a-private-nodes-record");
+        actions.push(read.action);
         // And erasing a kept statement (`T-021-10`), the fixtures' commitment.
         let erased: DecisionRequest = fixture!("decision-request-to-erase-a-kept-statement");
         actions.push(erased.action);
@@ -1277,6 +1281,8 @@ mod tests {
                 Action::AskReversal { .. } => {}
                 // In policy's tables since `T-021-09`: asked as a reversal is.
                 Action::AskStatus { .. } => {}
+                // In policy's tables since `T-020-58`: the operator's permission alone.
+                Action::ReadNodeRecord { .. } => {}
                 // Decided and never an effect: orchestration records the refiling on its permit
                 // (`refiling-rests-on-policys-permit`); its own tests are `roles`'.
                 Action::RefileArrival { .. } => unreachable!("tested apart: it has no effect"),
@@ -1517,7 +1523,7 @@ mod tests {
     fn every_value_moving_action_is_refused_when_policy_denies() {
         let denies = || Service::ruling(Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)));
         let actions = every_decided_action();
-        assert_eq!(actions.len(), 25);
+        assert_eq!(actions.len(), 26);
         let requests: Vec<DecisionRequest> = actions.iter().cloned().map(request).collect();
         let mut policy = Engine::with_policy(
             Guarded::with_a_decision_record(),
@@ -1633,6 +1639,7 @@ mod tests {
                 Action::AskReversal { .. } | Action::AskStatus { .. } => {
                     matches!(caller.role, Role::Core | Role::Operator)
                 }
+                Action::ReadNodeRecord { .. } => caller.role == Role::Operator,
                 _ => caller.role == Role::Operator,
             };
             if reaches {
@@ -1649,7 +1656,7 @@ mod tests {
         }
         assert_eq!(
             callers.len(),
-            3 * 25 + 2 * 3 + 3 + 3,
+            3 * 26 + 2 * 3 + 3 + 3,
             "the operator on every action, the user and Core on a move, Core on a reversal or a status asked"
         );
         let seen: Vec<Actor> = policy

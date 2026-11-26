@@ -65,8 +65,9 @@ use rutent_contracts::core_internal::{
     ReplayMismatch, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
-    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef, Payouts,
-    ReserveMovementOutcome, ResultBody, Statement, TransferOutcome,
+    ConversionOutcome, Denomination, EvidenceGrade, EvidencePiece, InnerSegments, NodeRef,
+    Operation as ProviderOperation, Payouts, ReserveMovementOutcome, ResultBody, Statement,
+    TransferOutcome,
 };
 use rutent_contracts::router_api::{Amount, Id, Operation, OperationKind};
 use rutent_evidence::replay::{
@@ -77,9 +78,9 @@ use rutent_evidence::{
     Check, Claim, Expected, GradeExt, MovementId, NetworkRules, PublicNetwork, Status, Unmatched,
     grade_outcome, public_record_check, verify_movement,
 };
-use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey};
+use rutent_prov::catalogue::{Catalogue, Category, Endpoint, Instant, TupleKey};
 
-use crate::segments::{AskDesk, Graded, Grading, RaiseDesk, Short, ToGrade, ToKeep};
+use crate::segments::{Graded, Grading, RaiseDesk, RecordWanted, Short, ToGrade, ToKeep};
 use crate::snapshot::RouteRefusal;
 
 /// A segment's movement on a public network, as that network ties it to the segment's transaction.
@@ -484,8 +485,36 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
 }
 
 impl Grading for Evidenced<'_> {
-    fn ask(&mut self, settled: &ToGrade<'_>, desk: &mut AskDesk<'_>) {
-        self.ask_publishers(settled, desk);
+    /// Each provider of each private node this segment's closing reads, whose record the segments ask for through the
+    /// platform, decided as an effect each (`REQ-ORD-41`, `T-020-58`). The nodes are Core's: the ones the route it runs
+    /// passes. The deployment carries the question and chooses nothing.
+    fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
+        self.nodes_read(settled)
+            .into_iter()
+            .flat_map(|node| {
+                publishers::serving(self.catalogue, &node)
+                    .into_iter()
+                    .map(move |provider| RecordWanted {
+                        node: node.clone(),
+                        provider,
+                    })
+            })
+            .collect()
+    }
+
+    /// Takes what a provider answered as a record of its node, or as nothing, and hands the books the result.
+    fn record_read(
+        &mut self,
+        wanted: &RecordWanted,
+        answer: Option<(&Statement<ProviderOperation>, &[u8])>,
+    ) {
+        // Judged at the time Core asked, which its question carries: Core's own clock then.
+        let record = answer.and_then(|(question, bytes)| {
+            let asked_at = rutent_contracts::router_api::Timestamp::new(question.made_at.clone())?;
+            let at = Instant(u64::try_from(asked_at.unix_nanos() / 1_000_000_000).ok()?);
+            publishers::taken(self.catalogue, at, &question.statement, bytes).ok()
+        });
+        self.books.took(&wanted.provider, &wanted.node, record);
     }
 
     fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
@@ -1152,20 +1181,6 @@ impl Evidenced<'_> {
             }
         }
         nodes
-    }
-
-    /// Asks each provider of each private node this segment's closing reads for its record of the node, through the
-    /// platform, and hands the books what each answered taken as a record (`REQ-ORD-41`, `T-020-58`). The nodes are
-    /// Core's: the ones the route it runs passes. The deployment carries the question and chooses nothing.
-    fn ask_publishers(&mut self, settled: &ToGrade<'_>, desk: &mut AskDesk<'_>) {
-        for node in self.nodes_read(settled) {
-            for provider in publishers::serving(self.catalogue, &node) {
-                let record = desk.ask(&provider, &node).and_then(|(question, answer)| {
-                    publishers::taken(self.catalogue, desk.now(), &question.statement, &answer).ok()
-                });
-                self.books.took(&provider, &node, record);
-            }
-        }
     }
 
     /// The statements `settled`'s grading will cite, for the segments to append first (`T-020-32`): at a segment that

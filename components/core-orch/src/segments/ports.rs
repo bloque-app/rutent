@@ -15,7 +15,7 @@ use rutent_contracts::core_internal::{
 use rutent_contracts::module_interface::{Identifier, PlatformRefusal};
 use rutent_contracts::provider_role::{EvidenceGrade, Operation, Statement};
 use rutent_contracts::router_api::{
-    DecisionRecord, FeeFormula, Id, Operation as RouterOperation, PolicyBounds, Timestamp,
+    DecisionRecord, FeeFormula, Id, Operation as RouterOperation, Timestamp,
 };
 use rutent_prov::catalogue::Instant;
 use rutent_prov::module::lifecycle::{LifecycleRefusal, SegmentRecord};
@@ -25,7 +25,7 @@ use rutent_prov::proxy::{CredentialProxy, Resolver, RouteNotNamed, Use};
 
 use rutent_evidence::{Refusal as EvidenceRefusal, Unmatched};
 
-use crate::rounds::{Fresh, OperatorKey};
+use crate::rounds::Fresh;
 use crate::snapshot::Clock;
 
 /// What a provider's module gave back for one operation Core carried out.
@@ -84,12 +84,17 @@ pub trait Modules {
     }
 
     /// Hands the module of `provider` `question`, the operator's question of its record of a private node, in its
-    /// envelope signed with the operator key (`REQ-ORD-41`, `T-020-58`). The question moves nothing, so it takes no
-    /// effect; Core holds the answer to it with `closing::publishers::taken`. The default answers that the module
-    /// handles no such question, so no record comes back and the node's books say nothing: the deployment that carries
-    /// the question to its platform answers it.
-    fn ask_for_record(&mut self, provider: &Id, question: &Statement<Operation>) -> Answered {
-        let _ = (provider, question);
+    /// envelope signed with the operator key, as `effect` (the permitted `read_node_record`) lets (`REQ-ORD-41`,
+    /// `REQ-AUZ-1`, `T-020-58`). The question moves nothing; Core holds the answer to it with
+    /// `closing::publishers::taken`. The default answers that the module handles no such question, so no record comes
+    /// back and the node's books say nothing; the production platform answers it ([`Platform::handle`]).
+    fn ask_for_record(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _ = (effect, provider, question);
         Answered::Refused(PlatformRefusal::NotHandled)
     }
 
@@ -164,6 +169,22 @@ impl<W: World> Modules for Platform<W> {
             return Answered::Refused(PlatformRefusal::NotHandled);
         };
         match Platform::status(self, provider.as_str(), &asking, about) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(PlatformRefusal::OutcomeUnknown),
+                Answered::Bytes,
+            ),
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
+    }
+
+    fn ask_for_record(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> Answered {
+        let _permitted = effect;
+        match Platform::handle(self, provider.as_str(), question) {
             Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
                 Answered::Refused(PlatformRefusal::OutcomeUnknown),
                 Answered::Bytes,
@@ -333,11 +354,23 @@ pub enum Graded {
 /// answers the entries the segment's `segment_settled` rests on, or why it doesn't settle yet. It appends nothing
 /// itself: the segments append what it answers, each entry once, and grade a segment again only while it waits.
 pub trait Grading {
-    /// Asks the providers whose records the grading of `settled` reads, through `desk`, before it asks for the
-    /// statements it keeps and grades: each time the segment is graded, so what it reads is what the providers state
-    /// now (`REQ-ORD-41`, `T-020-58`). Nothing unless a grading says otherwise.
-    fn ask(&mut self, settled: &ToGrade<'_>, desk: &mut AskDesk<'_>) {
-        let _ = (settled, desk);
+    /// The private nodes' records the grading of `settled` reads, each of a provider of the node's publisher: what the
+    /// segments ask for, decided and taken as an effect each (`read_node_record`, `REQ-ORD-41`, `T-020-58`), each time
+    /// the segment is graded, so what the grading reads is what the providers state now. None unless a grading says
+    /// otherwise.
+    fn records_wanted(&mut self, settled: &ToGrade<'_>) -> Vec<RecordWanted> {
+        let _ = settled;
+        Vec::new()
+    }
+
+    /// What came back of a record `wanted`: the question as put and the answer as received, or `None` where nothing was
+    /// asked (policy refused) or nothing came back.
+    fn record_read(
+        &mut self,
+        wanted: &RecordWanted,
+        answer: Option<(&Statement<Operation>, &[u8])>,
+    ) {
+        let _ = (wanted, answer);
     }
 
     /// The statements the grading reads and will cite, for the segments to keep and append before they grade
@@ -380,51 +413,13 @@ pub trait Grading {
     }
 }
 
-/// What a grading reaches to ask a provider a question of Core's own, in the operator's name: the platform, the operator
-/// key, a source of fresh transactions and Core's clock, with the deployment and protocol version the route's record was
-/// made under.
-pub struct AskDesk<'a> {
-    /// The module platform.
-    pub modules: &'a mut dyn Modules,
-    /// The operator key, which signs each question.
-    pub key: &'a mut dyn OperatorKey,
-    /// Fresh identifiers: a question's own transaction.
-    pub fresh: &'a mut dyn Fresh,
-    /// Core's clock.
-    pub clock: &'a dyn Clock,
-    /// The bounds the route was chosen under: the deployment and protocol version a question is made in.
-    pub bounds: &'a PolicyBounds,
-    /// The operator, whose name makes each question.
-    pub operator: &'a Actor,
-}
-
-impl AskDesk<'_> {
-    /// Core's clock, as an instant of the catalogue's.
-    pub fn now(&self) -> Instant {
-        self.clock.now().floor()
-    }
-
-    /// Asks `provider`'s module for its record of private node `node`, under a transaction of Core's own, and answers
-    /// the question as signed and what came back, as received; `None` where it couldn't be asked or the platform
-    /// passed on no answer.
-    pub fn ask(&mut self, provider: &str, node: &str) -> Option<(Statement<Operation>, Vec<u8>)> {
-        let to = Id::new(provider)?;
-        let transaction = self.fresh.id();
-        let made_at = self.clock.now().timestamp()?;
-        let signed = crate::segments::sign_operation(
-            self.key,
-            self.bounds,
-            &self.operator.acts,
-            &made_at,
-            crate::closing::publishers::question(provider, node, transaction.as_str()),
-        )
-        .ok()?;
-        let question: Statement<Operation> = serde_json::from_slice(&signed).ok()?;
-        match self.modules.ask_for_record(&to, &question) {
-            Answered::Bytes(bytes) => Some((question, bytes)),
-            Answered::Refused(_) => None,
-        }
-    }
+/// A record of a private node the grading reads: asked of `provider`, one of its publisher's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordWanted {
+    /// The private node.
+    pub node: String,
+    /// The provider asked.
+    pub provider: String,
 }
 
 /// What a grading reaches to raise a difference: the log, Core's clock, a source of fresh identifiers, the

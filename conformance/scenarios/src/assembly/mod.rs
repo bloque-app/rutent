@@ -438,9 +438,11 @@ impl Modules for Running<'_> {
 
     fn ask_for_record(
         &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
         provider: &Id,
         question: &Statement<Operation>,
     ) -> rutent_core_orch::segments::Answered {
+        let _permitted = effect;
         use rutent_core_orch::segments::Answered;
         self.platform.world.set_clock(self.clock.instant());
         // The question moves nothing, and is no operation Core carries out: it is handed to the platform as any other
@@ -898,6 +900,9 @@ impl Core {
                 r.list(&actor);
             }
             r.permit(&kit::core(), Permission::CarryOnward);
+            // The operator reads a private node's record from its publisher's provider where policy decides it
+            // (`REQ-ORD-41`, `T-020-58`); no one else does, and Core's own actors don't carry it onward.
+            r.permit(&kit::operator(), Permission::ReadNodeRecord);
             for change in [
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,

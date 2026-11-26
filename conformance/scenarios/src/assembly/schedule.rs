@@ -192,6 +192,38 @@ impl Core {
     }
 }
 
+impl Core {
+    /// Puts the question of `provider`'s record of `node` to the production platform, as the permitted `effect` lets,
+    /// through [`rutent_core_orch::segments::Modules::ask_for_record`]: the path closing takes for a platform of its own
+    /// (`T-020-58`). For a test that shows the production platform answers it; Core's own asking is closing's.
+    pub fn ask_record_of_the_platform(
+        &mut self,
+        effect: &rutent_contracts::core_internal::Effect,
+        provider: &str,
+        node: &str,
+        transaction: &str,
+    ) -> rutent_core_orch::segments::Answered {
+        use rutent_core_orch::segments::Modules;
+        let refused = || {
+            rutent_core_orch::segments::Answered::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::Unavailable,
+            )
+        };
+        let (Some(to), Some(made_at)) = (Id::new(provider), self.clock.now().timestamp()) else {
+            return refused();
+        };
+        self.fleet.platform.world.set_clock(self.clock.instant());
+        let mut key = RealKey::assembly();
+        let bounds = self.bounds.clone();
+        let signs = OperatorSigns::new(&mut key, &bounds, kit::operator().acts, made_at);
+        let question = rutent_prov::holding::wallet::Operator::statement(
+            &signs,
+            rutent_core_orch::closing::publishers::question(provider, node, transaction),
+        );
+        Modules::ask_for_record(&mut self.fleet.platform, effect, &to, &question)
+    }
+}
+
 /// The deployment's ports over a [`Core`]: each reads, asks or lends, and decides nothing.
 struct Due<'a>(&'a mut Core);
 

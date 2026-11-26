@@ -859,6 +859,7 @@ fn every_permission_held() -> Vec<Permission> {
         Permission::ConfirmOutcome,
         Permission::AskReversal,
         Permission::AskStatus,
+        Permission::ReadNodeRecord,
         Permission::RefileArrival,
         Permission::DeclineOutcome,
         Permission::EraseStatement,
@@ -879,6 +880,7 @@ fn every_permission_held() -> Vec<Permission> {
             | Permission::ConfirmOutcome
             | Permission::AskReversal
             | Permission::AskStatus
+            | Permission::ReadNodeRecord
             | Permission::RefileArrival
             | Permission::DeclineOutcome
             | Permission::EraseStatement
@@ -1105,6 +1107,12 @@ fn every_call() -> Vec<Call> {
             false,
         ));
     }
+    calls.push(decide(
+        "read a private node's record by the operator".into(),
+        Permission::ReadNodeRecord,
+        record_read_asked(&operator()),
+        false,
+    ));
     for (owner, caller) in [
         (Permission::CarryOnward, core()),
         (Permission::ActForUser, operator()),
@@ -1312,9 +1320,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 35, "every permission of the register's");
+    assert_eq!(all.len(), 36, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 38, "every call a permission lets through");
+    assert_eq!(calls.len(), 39, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -2612,6 +2620,95 @@ fn late_status_asked_by_core_for_a_segment_is_permitted() {
             "{caller:?}"
         );
     }
+}
+
+/// The request that `caller` read the private node `acme-ledger`'s record from `acme-internal-rail`, for the fixtures'
+/// order's segment (`T-020-58`).
+fn record_read_asked(caller: &Actor) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-read-a-private-nodes-record");
+    request.request = id(&format!("req-read-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    request
+}
+
+/// The operator the register lists for it reads a private node's record; no one else does: not Core's own actors,
+/// carrying the order on, not the operator without the permission, and not the operator holding every other permission
+/// (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
+// verifies: REQ-AUZ-1, REQ-ORD-41
+#[test]
+fn a_private_nodes_record_is_read_by_the_operator_alone() {
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &[Permission::ReadNodeRecord]).and_holding(
+            &core(),
+            &[Permission::CarryOnward, Permission::ReadNodeRecord],
+        ),
+    );
+    let decision = policy.decide(&record_read_asked(&operator())).unwrap();
+    assert_eq!(decision.outcome, Answer::Permit {});
+    assert_eq!(policy.log().entry_of(&decision).who, operator());
+    // Core, though the register lists the permission for it, and carrying the order on.
+    assert_eq!(
+        policy.decide(&record_read_asked(&core())).unwrap().outcome,
+        NOT_PERMITTED
+    );
+    // The operator without the permission, holding every other.
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| *p != Permission::ReadNodeRecord)
+        .collect();
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::AskStatus,
+    ]);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::holding(&operator(), &every_other),
+    );
+    assert_eq!(
+        policy
+            .decide(&record_read_asked(&operator()))
+            .unwrap()
+            .outcome,
+        NOT_PERMITTED
+    );
+    // Nobody else: refused before the deployment's policy is asked.
+    let customer = actor("cust-1", "cust-1", Role::Customer, ActorKind::Person);
+    let provider = actor(
+        "bridge-pay",
+        "bridge-pay",
+        Role::Provider,
+        ActorKind::Component,
+    );
+    let mut register = Register::holding(&customer, &[Permission::ReadNodeRecord])
+        .and_holding(&provider, &[Permission::ReadNodeRecord]);
+    let others = [
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+    ];
+    for other in &others {
+        register = register.and_holding(other, &[Permission::ReadNodeRecord]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    for caller in [customer, provider].iter().chain(&others) {
+        assert_eq!(
+            policy.decide(&record_read_asked(caller)).unwrap().outcome,
+            NOT_PERMITTED,
+            "{caller:?}"
+        );
+    }
+    assert_eq!(
+        policy.policy.1.ruled, 0,
+        "none reached the deployment's policy"
+    );
 }
 
 /// Nobody else asks a late status: the customer, the provider itself, a verifier, a regulator and a checker are
