@@ -87,7 +87,12 @@ This amendment was first written on 2026-11-25 with the reader as a Wasm module 
   host is not designed, and only the host-call range `0x480..=0x4ff` is reserved for it. The older Codeberg VOS line
   has extensions, but they are `cdylib`s loaded into the daemon's own process, they link `vos` (so AGPL-3.0), and only
   durable `Local` roots reach them, never a Raft or CRDT space. `CMP-STM`'s three-replica space is Raft. So a reader
-  can't be a VOS host extension today.
+  can't be a VOS host extension today. Aledgent builds its own extension in place of the default one: its services,
+  `aledgent-settle` among them, run apart from the core and reach it through a link of their own. rutent follows the
+  same pattern. In the owner's words (in chat, 2026-11-26), it mimics host extensions with "a queue over the storage
+  that can be read client-side, and … a way for 'extensions' to signed writing ops to the core". For a reader, Core's
+  request is the queue item, and the reader's signed answer is the write. That answer reaches the state machine only
+  as the `evidence` entry Core records.
 - **The owner's answers.**
   - `reader-registration-path`: a hybrid. Readers are kept apart from the core instance and may live as tasks in one
     ECS process, so they reach the core host over a network link, with mTLS. Once a reader is available, the operator
@@ -229,8 +234,10 @@ machine decide.
     (`T-020-60`).
   `T-024-10` and `T-025-05` wait on all four.
 - **`M4`'s real readers** are `F-031`'s per-network tasks. Kreivo's reader follows `aledgent-settle`'s light client as
-  a design reference only, in a crate of its own outside the root lock, since `smoldot-light` is copyleft (`T-031-02`;
-  the owner's item `smoldot-licence`). TLS for the reader host and Core's client is `rustls` on `ring`, already
+  a design reference only, in a crate of its own outside the root lock and outside the core, since `smoldot-light` is
+  copyleft (`T-031-02`). The owner ruled on it in chat on 2026-11-26 (`smoldot-licence`): "as long as our core code
+  —as in business logic— keeps permissive, we don't mind that the deployment model on top (VOS included) is
+  copyleft." So the Kreivo reader may link `smoldot-light`, in its own crate, with `T-031-02`'s obligations. TLS for the reader host and Core's client is `rustls` on `ring`, already
   permitted. The EVM reader's two-of-a-pool rule has no precedent and is new work (`T-031-03`).
 - **Revisit** if upstream VOS designs an extension host that a Raft space can reach. This ADR would then weigh a
   reader as one.
