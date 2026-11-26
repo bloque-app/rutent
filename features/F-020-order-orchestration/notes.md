@@ -9023,12 +9023,10 @@ below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/
 Gaps 1 and 2 of the first build are closed in this row's second round (the coordinator's call: pre-production, a contract
 gap is fixed now), below.
 
-1. **`holding_balance` has the same assembly-only gap, not fixed here.** Core's reads of a holding account's balance, and
-   of a private node's record on the tick, go through `Ports::ask_as_operator`, which the assembly answers with
-   `Platform::handle`: no decided action, no effect, and no production path in core-orch. The tick's `PublishersRecords`
-   job therefore reads as `holding_balance` does. Owner: a row for both (`F-030`'s start-up or `T-020-52`'s policy round),
-   with an action of its own for the balance read; the closing path's read is decided and carried by the production
-   platform since this round.
+1. **`holding_balance` has the same assembly-only gap, not fixed here.** Core's reads of a holding account's balance go
+   through `Ports::ask_as_operator`, which the assembly answers with `Platform::handle`: no decided action, no effect, and
+   no production path in core-orch. Routed to `T-020-63`, the holding-check row. `ask_as_operator` serves no read of a
+   private node's record any more (round 3 below).
 2. `T-020-59` and `T-020-60` still add their kinds to the three call lists; no fold collision beyond those lines.
 3. `Tamper::Node` is refused by the answer's own node check before `check_inner_segments`, so the declared-node rule is
    reached by `Tamper::Publisher` only.
@@ -9166,3 +9164,22 @@ totals, these notes) kept both sides, the totals recounted from the files. `T-02
   | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
   | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
   | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |
+
+### Round 3: the tick's read goes the same decided path
+
+`Job::PublishersRecords` no longer asks through `Ports::ask_as_operator`. It names each private node an order Core
+started passes, from the started order's plan (the first of its segments that passes the node is the segment the action
+names), and for each provider of the node's publisher that declares it calls `Segments::read_node_record`
+(`segments/records.rs`, lent through `Ports::with_segments`): policy decides `read_node_record` as the operator, the effect
+is recorded before the question, the question goes through `Modules::ask_for_record`, the result is recorded, and
+`closing::publishers::taken` takes the answer. Closing's read is the same function. The tick reads on each run (its
+cadence is `T-020-48`'s), so each tick records a decision, an effect and a result for each provider and node; closing's
+once-per-segment rule is closing's alone (`records_read`). A denial asks nothing and the round publishes no record. The
+assembly's `ask_as_operator` no longer notes or alters a record question; the planted faults and the noting of questions
+are in `Running::ask_for_record`, which both paths reach. Test
+`ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (REQ-AUZ-1, REQ-ORD-41).
+
+| Rule switched off | Red |
+|---|---|
+| the read is permitted to anyone (the roles' rule) | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the closing test) |
+| the tick asks no node of a started plan | `ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing` (and the tick's others) |

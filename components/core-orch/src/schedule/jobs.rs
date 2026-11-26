@@ -906,60 +906,88 @@ impl Duties for Jobs<'_> {
         checked
     }
 
-    /// Each private node a started order's route passes, as Core's own records of the routes it runs name it, asked of
-    /// each provider of the node's publisher that declares it (`REQ-ORD-41`, `T-020-58`): a question under a fresh
-    /// transaction, handed to the platform through the deployment's port, and the answer taken as a record only as
-    /// `closing::publishers::taken` allows. The deployment carries each question and chooses neither node nor provider.
+    /// Each private node a started order's plan passes, as Core's own records of the orders it runs name it, asked of
+    /// each provider of the node's publisher that declares it (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`): each read is
+    /// decided by policy and recorded as an effect, as closing's is ([`Segments::read_node_record`]), and the answer
+    /// is taken as a record only as `closing::publishers::taken` allows. The deployment carries each question to the
+    /// platform and chooses neither node nor provider; where policy refuses a read nothing is asked.
     fn read_publishers(&mut self) -> Vec<Published> {
-        let mut nodes = BTreeSet::new();
-        for started in self.ports.started().values() {
-            let Some(chosen) = started.record.chosen() else {
-                continue;
-            };
-            for operation in chosen.parts.iter().flat_map(|p| p.operations.iter()) {
-                for end in [&operation.from.node, &operation.to.node] {
+        // (order, segment, node, bounds) for the first segment of each order's plan that passes each private node.
+        let mut places: Vec<(Id, Id, String, rutent_contracts::router_api::PolicyBounds)> =
+            Vec::new();
+        for (order, started) in self.ports.started() {
+            let Some(order) = id(order) else { continue };
+            for segment in started.plan.iter().flat_map(|part| part.segments.iter()) {
+                for end in [&segment.from.node, &segment.to.node] {
                     let name = match end {
                         rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str(),
                         rutent_contracts::provider_role::NodeRef::Outer(o) => o.network.as_str(),
                     };
-                    if self
+                    let private = self
                         .ports
                         .catalogue()
                         .publishers()
                         .publisher_of_node(name)
-                        .is_some()
+                        .is_some();
+                    let seen = places.iter().any(|(o, _, n, _)| *o == order && n == name);
+                    if private
+                        && !seen
+                        && let Some(segment_id) = id(segment.segment_id.as_str())
                     {
-                        nodes.insert(name.to_owned());
+                        places.push((
+                            order.clone(),
+                            segment_id,
+                            name.to_owned(),
+                            started.record.bounds.clone(),
+                        ));
                     }
                 }
             }
         }
-        let mut published = Vec::new();
-        for node in nodes {
+        let actors = self.ports.actors();
+        let mut wanted = Vec::new();
+        for (order, segment, node, bounds) in places {
             for provider in crate::closing::publishers::serving(self.ports.catalogue(), &node) {
-                let transaction = self.ports.fresh();
-                let asked =
-                    crate::closing::publishers::question(&provider, &node, transaction.as_str());
-                let Handled::Answered(answer) =
-                    self.ports.ask_as_operator(&provider, asked.clone())
-                else {
-                    continue;
-                };
-                let Ok(bytes) = serde_json::to_vec(&*answer) else {
-                    continue;
-                };
-                let at = self.ports.clock().now().floor();
-                if let Ok(record) =
-                    crate::closing::publishers::taken(self.ports.catalogue(), at, &asked, &bytes)
-                {
-                    published.push(Published {
-                        node: node.clone(),
-                        record,
-                    });
-                }
+                wanted.push((
+                    order.clone(),
+                    segment.clone(),
+                    node.clone(),
+                    provider,
+                    bounds.clone(),
+                ));
             }
         }
-        published
+        let mut answers = Vec::new();
+        self.ports.with_segments(&mut |segments, parts| {
+            for (order, segment, node, provider, bounds) in &wanted {
+                let read = crate::segments::RecordRead {
+                    order,
+                    segment,
+                    node,
+                    provider,
+                    bounds,
+                    operator: &actors.operator,
+                    core: &actors.core,
+                };
+                if let Some((question, bytes)) = segments.read_node_record(parts, &read) {
+                    answers.push((node.clone(), question, bytes));
+                }
+            }
+        });
+        let at = self.ports.clock().now().floor();
+        answers
+            .into_iter()
+            .filter_map(|(node, question, bytes)| {
+                crate::closing::publishers::taken(
+                    self.ports.catalogue(),
+                    at,
+                    &question.statement,
+                    &bytes,
+                )
+                .ok()
+                .map(|record| Published { node, record })
+            })
+            .collect()
     }
 
     fn unknown_segments(&self) -> Vec<Unknown> {

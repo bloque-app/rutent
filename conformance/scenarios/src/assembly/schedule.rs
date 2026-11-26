@@ -329,34 +329,15 @@ impl Ports for Due<'_> {
     }
 
     fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled {
-        let question = match &operation {
-            Operation::InnerSegmentsQuery(q) => Some((q.node.clone(), q.transaction.clone())),
-            _ => None,
-        };
-        let handled = self
-            .as_operator(|core, operator| {
-                if let Some((node, transaction)) = &question {
-                    core.readings.note_asked(module, node, transaction);
-                }
-                core.fleet.platform.handle(
-                    module,
-                    &rutent_prov::holding::wallet::Operator::statement(operator, operation),
-                )
-            })
-            .unwrap_or(Handled::Refused(
-                rutent_contracts::module_interface::PlatformRefusal::Unavailable,
-            ));
-        // The planted fault alters an answer to the question of a record on its way to Core.
-        match (handled, question) {
-            (Handled::Answered(result), Some(_)) => {
-                let bytes = serde_json::to_vec(&*result).ok();
-                let altered = bytes
-                    .map(|b| self.0.readings.tampered(module, b))
-                    .and_then(|b| serde_json::from_slice(&b).ok());
-                Handled::Answered(altered.map_or(result, Box::new))
-            }
-            (handled, _) => handled,
-        }
+        self.as_operator(|core, operator| {
+            core.fleet.platform.handle(
+                module,
+                &rutent_prov::holding::wallet::Operator::statement(operator, operation),
+            )
+        })
+        .unwrap_or(Handled::Refused(
+            rutent_contracts::module_interface::PlatformRefusal::Unavailable,
+        ))
     }
 
     fn run_checkpoints(&mut self) -> Result<usize, String> {

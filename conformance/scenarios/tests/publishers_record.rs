@@ -580,6 +580,62 @@ fn private_node_record_is_not_read_where_policy_denies_it() {
     );
 }
 
+/// The tick's question about a private node is decided and recorded, as closing's is: each question it puts is named by
+/// a `read_node_record` effect recorded before it, under the same transaction (`REQ-AUZ-1`, `REQ-ORD-41`, `T-020-58`);
+/// and where policy denies the read the tick asks nothing, takes no record and records no effect.
+// verifies: REQ-AUZ-1, REQ-ORD-41
+#[test]
+fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks_nothing() {
+    use rutent_contracts::core_internal::Action;
+    let read_transactions = |core: &Core| -> Vec<String> {
+        entries(core)
+            .into_iter()
+            .filter_map(|v| match v.what {
+                What::Effect {
+                    action: Action::ReadNodeRecord { transaction, .. },
+                    ..
+                } => Some(transaction.as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    joined(&mut core, &session);
+    let (effects_before, asked_before) = (
+        read_transactions(&core).len(),
+        core.publishers_asked().len(),
+    );
+    let round = core.tick();
+    let effects = read_transactions(&core);
+    let asked = core.publishers_asked();
+    assert!(asked.len() > asked_before, "the tick asked");
+    assert!(
+        effects.len() > effects_before,
+        "and each question was decided and recorded"
+    );
+    for (provider, node, transaction) in &asked[asked_before..] {
+        assert!(
+            effects.contains(transaction),
+            "the tick's question to {provider} about {node} has no effect recorded under {transaction}"
+        );
+    }
+    assert!(!round.published_in(NODE).is_empty());
+
+    // Denied: the tick asks nothing, whatever the closing did.
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    core.registers()
+        .permissions
+        .retain(|(_, p)| *p != rutent_core_authz::roles::Permission::ReadNodeRecord);
+    joined(&mut core, &session);
+    let round = core.tick();
+    assert!(core.publishers_asked().is_empty(), "nothing was asked");
+    assert!(read_transactions(&core).is_empty(), "no read was recorded");
+    assert!(
+        round.published_in(NODE).is_empty(),
+        "and no record was taken"
+    );
+}
+
 /// The production platform answers the question of a private node's record: `impl Modules for Platform` carries it
 /// through `Platform::handle` as the permitted effect lets, and never answers `NotHandled` (`REQ-ORD-41`, `T-020-58`).
 // verifies: REQ-ORD-41

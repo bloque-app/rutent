@@ -1,5 +1,8 @@
 //! Reading a private node's record while a segment is graded (`REQ-ORD-41`, `REQ-AUZ-1`, `T-020-58`).
 //!
+//! The tick's job reads them the same way ([`Segments::read_node_record`]), so no read of a private node's record is
+//! made undecided.
+//!
 //! The grading says which records it reads ([`Grading::records_wanted`]); for each, the segments do what they do for any
 //! action policy decides: draw a fresh transaction, have policy decide `read_node_record` (the operator's permission,
 //! `core-authz`'s roles), record the effect before anything is sent, act on it once, put the question to the platform as
@@ -12,9 +15,30 @@ use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::Id;
 
 use super::journal;
-use super::ports::{Answered, RecordWanted, ToGrade};
+use super::ports::{Answered, ToGrade};
 use super::{Parts, Segments, now, sign};
 use crate::closing::publishers;
+
+/// One read of a private node's record: whose it is for (an order's segment that passes the node, which the action
+/// names), the node and the provider asked, the bounds the question is made in, the operator who asks policy and Core,
+/// who records it.
+#[derive(Debug, Clone, Copy)]
+pub struct RecordRead<'a> {
+    /// The order.
+    pub order: &'a Id,
+    /// The segment that passes the node.
+    pub segment: &'a Id,
+    /// The private node.
+    pub node: &'a str,
+    /// The provider of the node's publisher that is asked.
+    pub provider: &'a str,
+    /// The bounds the question is made in: the deployment and protocol version of the order's route record.
+    pub bounds: &'a rutent_contracts::router_api::PolicyBounds,
+    /// The operator, who asks policy and in whose name the question is signed.
+    pub operator: &'a rutent_contracts::core_internal::Actor,
+    /// Core, who records the effect and its result.
+    pub core: &'a rutent_contracts::core_internal::Actor,
+}
 
 impl Segments {
     /// Asks for each record the grading of `settled` reads, and hands the grading what came back.
@@ -36,7 +60,16 @@ impl Segments {
             if !self.records_read.insert(asked) {
                 continue;
             }
-            let answer = self.read_record(parts, live, settled, &wanted);
+            let read = RecordRead {
+                order: live.order,
+                segment: settled.segment,
+                node: &wanted.node,
+                provider: &wanted.provider,
+                bounds: &live.record.bounds,
+                operator: live.operator,
+                core: live.core,
+            };
+            let answer = self.read_node_record(parts, &read);
             parts.grading.record_read(
                 &wanted,
                 answer.as_ref().map(|(q, bytes)| (q, bytes.as_slice())),
@@ -46,24 +79,22 @@ impl Segments {
 
     /// One record: decided, recorded as an effect, asked, and its result recorded. `None` where policy refused, a
     /// record couldn't be written, or nothing came back; nothing is asked before its effect is in the log (`INV-7`).
-    fn read_record(
+    pub fn read_node_record(
         &mut self,
         parts: &mut Parts<'_>,
-        live: &super::Live<'_>,
-        settled: &ToGrade<'_>,
-        wanted: &RecordWanted,
+        read: &RecordRead<'_>,
     ) -> Option<(Statement<Operation>, Vec<u8>)> {
         let transaction = self.claim_transaction(parts.fresh, parts.issued).ok()?;
         let action = Action::ReadNodeRecord {
-            order: live.order.clone(),
-            segment: settled.segment.clone(),
-            node: Id::new(&wanted.node)?,
-            provider: Id::new(&wanted.provider)?,
+            order: read.order.clone(),
+            segment: read.segment.clone(),
+            node: Id::new(read.node)?,
+            provider: Id::new(read.provider)?,
             transaction: transaction.clone(),
         };
         let request = DecisionRequest {
             request: parts.fresh.id(),
-            caller: live.operator.clone(),
+            caller: read.operator.clone(),
             action: action.clone(),
             at: now(parts.clock).ok()?,
         };
@@ -72,7 +103,7 @@ impl Segments {
         let receipt = journal::append(
             parts.log,
             journal::verified(
-                live.core,
+                read.core,
                 What::Effect {
                     action: action.clone(),
                     decision: permit.clone(),
@@ -90,10 +121,10 @@ impl Segments {
         let asked = self.act_on(&receipt).then(|| {
             let signed = sign::sign(
                 parts.operator_key,
-                &live.record.bounds,
-                &live.operator.acts,
+                read.bounds,
+                &read.operator.acts,
                 &now(parts.clock).ok()?,
-                publishers::question(&wanted.provider, &wanted.node, transaction.as_str()),
+                publishers::question(read.provider, read.node, transaction.as_str()),
             )
             .ok()?;
             serde_json::from_slice::<Statement<Operation>>(&signed).ok()
@@ -103,7 +134,7 @@ impl Segments {
             Some(question) => {
                 parts
                     .modules
-                    .ask_for_record(&effect, &Id::new(&wanted.provider)?, question)
+                    .ask_for_record(&effect, &Id::new(read.provider)?, question)
             }
             None => {
                 Answered::Refused(rutent_contracts::module_interface::PlatformRefusal::Unavailable)
@@ -116,7 +147,7 @@ impl Segments {
         let _ = journal::append(
             parts.log,
             journal::verified(
-                live.core,
+                read.core,
                 What::Result { effect: receipt },
                 &now(parts.clock).ok()?,
                 outcome,
