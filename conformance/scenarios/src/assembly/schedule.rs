@@ -2,8 +2,7 @@
 //! review of its first build).
 //!
 //! `core-orch`'s [`Schedule`](rutent_core_orch::schedule::Schedule) decides what is due and its
-//! [`Jobs`](rutent_core_orch::schedule::Jobs) what each job does; this module answers only their
-//! [`Ports`](rutent_core_orch::schedule::Ports), over what the assembly holds: the platform, the deployment's register
+//! [`Jobs`] what each job does; this module answers only their [`Ports`], over what the assembly holds: the platform, the deployment's register
 //! of holding accounts, the log, the evidence store, the notices channel, the clock and policy, and Core's own parts
 //! as the assembly keeps them, lent with the ports they are reached with. No method here decides anything: each reads,
 //! asks or lends. [`Core::tick`] is the one entry point, the one call the deployment keeps (on a timer), and the one
