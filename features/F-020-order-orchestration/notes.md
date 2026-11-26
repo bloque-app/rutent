@@ -8775,3 +8775,48 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
      effect; Core's decided `accept` (`ReleaseChange::Accept`) is built and tested in core-orch, not yet the scenarios'
      caller. Owner: `F-024` (the assembly), with `T-020-61`'s run.
   7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; `T-020-62` carries that check.
+- **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
+  core-orch `tests/settings.rs` (`operator setting takes effect only on a permitted decision and is rebuilt from the log`,
+  `deposit wait above its ceiling is refused`, `public node setting set by the operator takes effect on its node's
+  segments`), `tests/lifecycle.rs` (`refused caller is told the same whether or not anything is staged and its attempt is
+  recorded`, `operator confirms a provider's releases only on a permitted decision`, and
+  `a_restriction_the_platform_took_unrecorded_is_recorded_done`), `tests/arrival.rs` (`deposit wait set by the operator
+  bounds a wait and survives a restart`); prov `tests/module_record.rs` (`providers confirmed before a restart are not held
+  again after it`); core-authz `engine` (`roll back and its siblings are reached only through core orch's decided path`)
+  and `core_sources` (`statement answer names only a verified entry's maker`, and `order_parties_read_the_one_precedence`);
+  core-audit `tests/reopen.rs` (`revoked provider's advertisement declares nothing`); scenarios `execution_routes.rs`
+  (`slippage limit set by the operator bounds the router`, across a reopen), `module_scenarios.rs` (`operator declares a
+  version exploited through policy and its segments stop on it`, `publisher cannot mark its own version stale`),
+  `segments.rs` (`segment on a version marked stale through policy moves to the newest`); contracts
+  `confirming_a_providers_releases_is_a_catalogue_change_of_its_own`. `T-020-55`'s named test now asks all ten sources,
+  each for its value, and `statement_answer_is_the_logs_maker_for_every_statement` holds an only-claimed statement to no
+  maker. The core-authz counts move by the one change (`T-021-12`'s way): 26 decided actions, 90 callers, 36
+  permissions, 39 calls, 12 + 9 changes and settings.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; script `ruleoff.py` in the
+  row's scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | settings are rebuilt from the log's done effects | `operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log` |
+  | the operator's slippage limit in the router's bounds | `slippage_limit_set_by_the_operator_bounds_the_router` |
+  | the platform carries out a decided `declare_exploited` | `operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it` |
+  | a lifecycle action needs policy's permit (a refusal taken as a permit) | `publisher_cannot_mark_its_own_version_stale` |
+  | the platform carries out a decided `mark_stale` | `segment_on_a_version_marked_stale_through_policy_moves_to_the_newest` |
+  | policy is asked before the platform's releases are read | `refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded` |
+  | a confirmation names the held versions | `operator_confirms_a_providers_releases_only_on_a_permitted_decision` |
+  | a provider confirmed since the last opening is not held | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
+  | a listed public node reaches the catalogue | `public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments` |
+  | scan rule 4 (a public lifecycle carrier) | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+  | `Arrivals::reopened` reads the decided deposit wait | `deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart` |
+  | the deposit wait's ceiling | `deposit_wait_above_its_ceiling_is_refused` |
+  | a restriction taken unrecorded is `done` | `a_restriction_the_platform_took_unrecorded_is_recorded_done` |
+  | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
+  | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
+  | `OrderParties` reads the one precedence | `order_parties_read_the_one_precedence` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check`, workspace `clippy --all-targets
+  -D warnings` and the doc check clean; core-orch, contracts and core-audit 742 passed; contracts with `rule-switches`
+  (`core-internal`) 96; core-authz `--lib` 165; prov `module_record` 19; scenarios `assembly_policy` 17,
+  `execution_routes` 7, `module_scenarios` 6, `segments` 33, the setters' callers (`simulated_faults`, `routing`,
+  `private_nodes`, `gross_charged`, `reopened`, `sim_providers`, `audit_scenarios`, `assembly_real_wallet`, `charge_check`,
+  `holds`) and the lib tests all passed; `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings,
+  `tag-check --strict` 2476 tests, 0 findings; the contract guard against `origin/develop`: no violations.

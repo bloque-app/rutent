@@ -805,7 +805,7 @@ fn slippage_limit_set_by_the_operator_bounds_the_router() {
             .slippage_limits
             .iter()
             .find(|l| l.tuple.provider.as_str() == EXCHANGE)
-            .map(|l| serde_json::to_value(&l.max_bps).unwrap().as_u64().unwrap())
+            .map(|l| serde_json::to_value(l.max_bps).unwrap().as_u64().unwrap())
     };
     let (_, told) = quoted(
         &mut core,
