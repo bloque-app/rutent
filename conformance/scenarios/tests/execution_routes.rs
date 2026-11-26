@@ -112,7 +112,7 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
         ]
     );
     let Told::Exists {
-        status: Status::Quoted { quote, digest },
+        status: Status::Quoted { quote, digest, .. },
         ..
     } = told
     else {

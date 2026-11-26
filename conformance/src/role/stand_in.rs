@@ -375,6 +375,9 @@ pub struct Shape {
     /// A reserve that declares it answers the operator's hold requests (provider-role 4.0.0, `REQ-QTE-15`,
     /// `T-020-56`): its declaration says so, and its simulated provider holds the quote asked.
     pub holds: bool,
+    /// For a reserve that holds quotes: holds each for at most this many seconds from when it was asked, less than
+    /// the validity asked where that is later (`T-020-57`): a hold the signer signs, valid no later than asked.
+    pub holds_for: Option<u64>,
 }
 
 /// A real value-moving operation's transaction: the one a repeat would name.

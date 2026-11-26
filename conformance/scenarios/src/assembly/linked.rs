@@ -343,6 +343,22 @@ impl Core {
                 floor: None,
             },
         );
+        // The linked order's request, as Core holds it for a recalculation of its part (`T-020-57`): the customer's
+        // ask from the node, its parties as its acceptance names them, the holding account its origin reserve.
+        let parties = self.parties_of(&accepted.order)?;
+        self.requests
+            .entry(accepted.order.as_str().to_owned())
+            .or_insert_with(|| rutent_core_orch::intake::OrderRequest {
+                request: linked.route.request_id.clone(),
+                caller: linked.customer.clone(),
+                parties,
+                origin_reserve: linked.holder.clone(),
+                session: linked.session.clone(),
+                destination: original.route.destination.clone(),
+                route: linked.route.clone(),
+                inputs: linked.inputs.clone(),
+                needs: Vec::new(),
+            });
         self.run(&accepted.order)
     }
 

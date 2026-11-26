@@ -788,7 +788,9 @@ impl Arrivals {
     /// deployment's operator, or the reserve it arrived at, acting for the party it states. Only an arrival held
     /// against an order it differed from is filed anew; one that met no order is `REQ-ORD-14`'s. The refiling is
     /// recorded, its `who` the filer, and moves nothing: the order's first segment still settles only on its own
-    /// result. Filed anew again, it is the same refiling.
+    /// result. Filed anew again by the same filer, whole (its party, login, role and kind), it is the same refiling, also
+    /// after Core reopens (`T-020-62`); another filer's, the operator's and the reserve's each, is its own, decided by
+    /// policy and appended once.
     pub fn refile(
         &mut self,
         desk: &mut Desk<'_, '_>,

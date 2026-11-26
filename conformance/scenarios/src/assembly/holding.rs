@@ -683,20 +683,45 @@ impl Core {
     ///
     /// If policy doesn't permit the change, or the log takes no step of it.
     pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
+        self.change_release(
+            wallet,
+            CatalogueChange::AcceptModule,
+            Some(wallet.statement_key()),
+        )
+    }
+
+    /// Revokes `wallet`'s release in the log, as a decided catalogue change (`REQ-CAT-23`): from then the log attributes
+    /// none of its statements but for a transaction a segment of it ran on, and Core asks it nothing more
+    /// (`T-020-57`'s review, L1).
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit the change, or the log takes no step of it.
+    pub fn revoke_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
+        self.change_release(wallet, CatalogueChange::RevokeRelease, None)
+    }
+
+    /// `change` of `wallet`'s release, decided by the operator's login, its effect recorded and its result `done`.
+    fn change_release(
+        &mut self,
+        wallet: &InstalledWallet,
+        change: CatalogueChange,
+        statement_key: Option<rutent_contracts::provider_role::PublicKey>,
+    ) -> Result<Receipt, AssemblyError> {
         let listing =
             |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
-        self.deployed.registers.borrow_mut().permit(
-            &kit::operator_login(),
-            Permission::Change(CatalogueChange::AcceptModule),
-        );
+        self.deployed
+            .registers
+            .borrow_mut()
+            .permit(&kit::operator_login(), Permission::Change(change));
         let action = Action::ChangeCatalogue {
-            change: CatalogueChange::AcceptModule,
+            change,
             provider: kit::id(&wallet.provider),
             version: Some(kit::id(&wallet.version)),
             tuple: None,
             class: None,
             advertising_keys: Vec::new(),
-            statement_key: Some(wallet.statement_key()),
+            statement_key,
             setting: None,
         };
         let request = DecisionRequest {
@@ -784,6 +809,33 @@ impl Core {
             order,
             amount,
         )
+    }
+
+    /// The operator registers `provider`, a module it publishes, as the holding account of the public node `node` in the
+    /// catalogue, in place of the one registered there (`REQ-CAT-23`): what a deployment does when it replaces a node's
+    /// wallet. Core's own record of who started an order handed on there, the log's `holding_withdrawal`, is unchanged
+    /// (`T-020-57`'s review, L1).
+    ///
+    /// # Errors
+    ///
+    /// If the catalogue refuses the module or the node.
+    pub fn register_node_holding(
+        &mut self,
+        node: &str,
+        provider: &str,
+    ) -> Result<(), AssemblyError> {
+        let listing = |e| AssemblyError::Listing(format!("the node's holding account: {e:?}"));
+        let _ = self.catalogue.publish_operator_module(provider);
+        self.catalogue
+            .register_public_holding(node, provider)
+            .map_err(listing)
+    }
+
+    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
+    /// under `segment` ([`crate::sim::fleet::Fleet::credit_wallet`], `T-020-57`): the world's, never Core's. It stands
+    /// in for the network reader's confirmation, owned by `T-020-60`.
+    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
+        self.fleet.credit_wallet(provider, segment, asset, amount);
     }
 
     /// Asks the wallet of `provider` `operation`, in a statement the operator signs, and gives the statement and the

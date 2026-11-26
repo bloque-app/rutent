@@ -94,6 +94,31 @@ pub fn evidenced(part: &stm::Part) -> Result<(&Endpoint, &stm::Segment), NotReca
     Ok((at, settled))
 }
 
+/// Where `part` of `order` has its value evidenced ([`evidenced`]), and, for a route handed on, also back at the start
+/// of its first move once that move's reversal completed (`T-020-57`, core-internal's
+/// `recalculation-starts-from-evidenced-value`): a route handed on has no withdrawal and so no settled segment before
+/// its first move, and the `reversal_completed` the log took, on the holding account's word, is what evidences the
+/// value there. The segment answered is then the reversed move itself. A first move still owing its reversal, refused
+/// one, or of unknown outcome evidences nothing (fail closed), and neither does a route that isn't handed on.
+pub fn evidenced_in<'a>(
+    order: &'a stm::Order,
+    part: &'a stm::Part,
+) -> Result<(&'a Endpoint, &'a stm::Segment), NotRecalculable> {
+    let handed_on = order.handed_on_from.is_some();
+    if let (true, Some(first)) = (handed_on, part.segments.first())
+        && first.state == SegmentState::ReversalComplete
+        && first.kind != OperationKind::Withdrawal
+        && matches!(first.from.node, NodeRef::Inner(_))
+        && matches!(
+            part.state,
+            OrderState::NotPastFirstSegment | OrderState::FirstSegmentSettled
+        )
+    {
+        return Ok((&first.from, first));
+    }
+    evidenced(part)
+}
+
 /// Why Core refuses the route the router chose for a recalculation, before anything is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rejected {

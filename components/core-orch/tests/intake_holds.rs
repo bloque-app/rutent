@@ -724,3 +724,93 @@ fn a_hold_of_another_quote_or_none_kept_is_not_redeemed() {
     assert!(held_of_acceptances(&env).is_empty());
     assert_eq!(env.holds.redeemed_by(&hold.transaction), None);
 }
+
+/// What a Core that reopens reads beside its log, here: the decision records the operator signed, held to the digest
+/// the log names them by, and the statements the evidence store keeps.
+struct Reading<'a> {
+    env: &'a Env,
+}
+
+impl rutent_core_orch::segments::Reopening for Reading<'_> {
+    fn record(&self, id: &Id) -> Option<DecisionRecord> {
+        let book = self.env.book.borrow();
+        let named = book.verified().into_iter().find_map(|what| match what {
+            What::DecisionRecord {
+                decision_record, ..
+            } => (decision_record == id).then_some(()),
+            _ => None,
+        });
+        named?;
+        self.env.key.signed.iter().rev().find_map(|bytes| {
+            let value: Value = serde_json::from_slice(bytes).ok()?;
+            let record: DecisionRecord =
+                serde_json::from_value(value.get("statement")?.clone()).ok()?;
+            (record.record_id() == id).then_some(record)
+        })
+    }
+
+    fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>> {
+        if self.env.kept.forgets {
+            return None;
+        }
+        let store = self.env.kept.store.borrow();
+        let found = kept_as(&store, commitment, false)?;
+        store
+            .kept
+            .iter()
+            .find(|bytes| snapshot_support::base64url(bytes) == found.bytes.as_str())
+            .cloned()
+    }
+}
+
+/// Core keeps a reserve's hold of the quote it shows, and stops: its holds are gone, its log and evidence store are
+/// not. Reopened, Core keeps the hold again from what the log and the store hold (`Holds::reopened`), never a copy
+/// the deployment keeps, and the acceptance of the quote held redeems it, citing the hold's entry (`REQ-QTE-15`,
+/// `NFR-6`, `T-020-57`). A store that can't give the hold's bytes back keeps nothing again (failing closed).
+// verifies: REQ-QTE-15, NFR-6
+#[test]
+fn a_hold_kept_before_a_restart_is_redeemed_after_it() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = quoted(&mut env, &mut sim, "req-held");
+    let hold = held_quote(&mut env, &order, "hold-1", for_session(SESSION), true);
+
+    // Core stops before the acceptance: its holds are gone.
+    env.holds = Holds::new();
+    let history = env.history();
+    let forgetting = {
+        env.kept.forgets = true;
+        let rebuilt = Holds::reopened(&history, &mut Reading { env: &env });
+        env.kept.forgets = false;
+        rebuilt
+    };
+    assert!(
+        forgetting.held(&hold.transaction).is_none(),
+        "a hold whose bytes can't be read back is kept no more"
+    );
+    let reopened = Holds::reopened(&history, &mut Reading { env: &env });
+    let kept = reopened
+        .held(&hold.transaction)
+        .expect("Core keeps the hold again from its log");
+    assert_eq!(kept.hold, hold.receipt, "the hold's own entry");
+    assert_eq!(
+        kept.valid_until(),
+        &Timestamp::new(Instant(hold.until).rfc3339().unwrap()).unwrap()
+    );
+    env.holds = reopened;
+
+    env.with(&mut sim, |intake, desk| {
+        intake.accept_holding(
+            desk,
+            &order,
+            &customer(),
+            &digest,
+            None,
+            Some(&hold.transaction),
+        )
+    })
+    .expect("the hold kept before the restart is redeemed after it");
+    assert_eq!(held_of_acceptances(&env), vec![Some(hold.receipt.clone())]);
+    assert_eq!(env.holds.redeemed_by(&hold.transaction), Some(&order));
+    assert_admitted(&env);
+}

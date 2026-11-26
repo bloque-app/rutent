@@ -95,6 +95,21 @@ fn core() -> Actor {
     }
 }
 
+/// The register of actors: the deployment operator's login, as policy's register lists it, and no other.
+struct Listed(Vec<Actor>);
+
+impl rutent_core_orch::intake::Actors for Listed {
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
+        self.0
+            .iter()
+            .any(|a| &a.acts == acts && &a.party == party && a.kind == kind && a.role == role)
+    }
+}
+
+fn listed() -> Listed {
+    Listed(vec![operator()])
+}
+
 fn operator() -> Actor {
     Actor {
         party: id("operator"),
@@ -1376,7 +1391,14 @@ impl World {
         let history = self.history();
         assert!(self.reversals.follow(&id(ORDER), &history));
         let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
-        self.with(|r, p, _| r.accept_fault(p, at(&order, &part, &s2), Accepting::Customer { by }))
+        self.with(|r, p, _| {
+            r.accept_fault(
+                p,
+                &mut listed(),
+                at(&order, &part, &s2),
+                Accepting::Customer { by },
+            )
+        })
     }
 
     /// Asks the failed provider of `segment` to reverse it, policy deciding and the platform carrying it out.
@@ -2057,6 +2079,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
+            &mut listed(),
             at(&order, &part, &s2),
             Accepting::Operator { by: &operator() }
         )),
@@ -2107,14 +2130,34 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
+            &mut listed(),
             at(&order, &part, &s2),
             Accepting::Operator { by: &impostor }
         )),
         Err(ReversalError::NotTheParty)
     );
+    // A login the register doesn't list for the operator's party, stating its party and role, is no operator
+    // (`T-020-62`): it accepts nothing, and nothing is appended.
+    let unlisted = Actor {
+        acts: id("not-in-the-register"),
+        ..operator()
+    };
+    let len = world.log.len();
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
+            &mut listed(),
+            at(&order, &part, &s2),
+            Accepting::Operator { by: &unlisted }
+        )),
+        Err(ReversalError::NotTheParty),
+        "an operator login the register doesn't list cannot accept a fault"
+    );
+    assert_eq!(world.log.len(), len);
+    assert_eq!(
+        world.with(|r, p, _| r.accept_fault(
+            p,
+            &mut listed(),
             at(&order, &part, &s2),
             Accepting::Operator { by: &operator() }
         )),
@@ -2253,6 +2296,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
     assert_eq!(
         world.with(|r, p, _| r.accept_fault(
             p,
+            &mut listed(),
             at(&order, &part, &s2),
             Accepting::Operator { by: &operator() }
         )),
@@ -2746,6 +2790,7 @@ fn a_stranger_accepting_fault_learns_nothing_of_the_order() {
         world.with(|r, p, _| {
             r.accept_fault(
                 p,
+                &mut listed(),
                 at(order, part, segment),
                 Accepting::Operator { by: &stranger },
             )

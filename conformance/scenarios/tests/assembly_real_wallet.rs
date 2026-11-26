@@ -1354,3 +1354,361 @@ fn holding_account_answer_reads_the_deployments_register_not_holdings_carried_ac
         "{decision:?}"
     );
 }
+
+// A linked order's reversal back into the held node (`T-020-57`) ------------------------------------------------
+
+const RAMP_C: &str = "sim-chain-ramp-c";
+const OUT_C: &str = "sim-chain-out-c";
+
+/// An order across a reserve, two ramps and a reserve out, to the network `sim-chain-d`: its move out of the public
+/// node, the second ramp's, is refused its start, so its value rests in the wallet there, stuck for want of a route;
+/// the wallet's release accepted in the log.
+fn stuck_before_the_second_ramp() -> Stuck {
+    let (mut core, session) = core_with("AC-6", &[CHAIN_IN, RAMP_B, RAMP_C, OUT_C]);
+    core.registers().accounts.insert(
+        ADDRESS.to_owned(),
+        kit::customer().party.as_str().to_owned(),
+    );
+    let wallet = core
+        .install_wallet(NODE, "USDC")
+        .expect("the wallet is installed");
+    core.accept_release(&wallet)
+        .expect("the release is accepted");
+    let asked = request(
+        "req-stuck",
+        &session,
+        AMOUNT,
+        CHAIN_IN,
+        outer("sim-chain-a", "USDC"),
+        outer("sim-chain-d", "USDC"),
+        OUT_C,
+        ADDRESS,
+        "lowest_total_cost",
+    );
+    let order = accepted(&mut core, asked);
+    let part = core.first_part(&order).expect("a started order");
+    core.faults.refuse_begin = Some(2);
+    core.run(&order).expect("the order runs");
+    assert_eq!(core.tick().landed, 1, "the schedule lands the value");
+    core.leave_no_route(&order).expect("the part is stuck");
+    assert!(core.is_stuck(&order, &part));
+    Stuck {
+        core,
+        order,
+        part,
+        session,
+        wallet,
+    }
+}
+
+/// The customer's ask of the linked order: from the node, by the second ramp, to the address on `sim-chain-d`.
+fn linked_on_the_second_ramp(stuck: &Stuck) -> LinkedOrder {
+    let mut linked = linked_order(stuck);
+    linked.route = serde_json::from_value(json!({
+        "request_id": "req-linked",
+        "round": {"kind": "shortlist"},
+        "from": inner(NODE, "USDC"),
+        "to": outer("sim-chain-d", "USDC"),
+        "amount": AMOUNT,
+        "objective": {"kind": "lowest_total_cost"},
+    }))
+    .expect("a route request");
+    linked
+}
+
+/// The stuck order's value handed on to a linked order whose first move, the second ramp's transfer out of the node,
+/// fails owing its reversal: the linked order, its accepted route, and the failed move's segment.
+fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
+    let mut stuck = stuck_before_the_second_ramp();
+    let wallet = stuck.wallet.clone();
+    let asked = linked_on_the_second_ramp(&stuck);
+    let linked = stuck
+        .core
+        .accept_linked(&asked)
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    handed_on_once(&mut stuck, &linked, &bob, &carries_out);
+    stuck.core.world().script_for(
+        RAMP_C,
+        "transfer",
+        rutent_conformance::sim::Behaviour::act(rutent_conformance::sim::Act::Fail),
+    );
+    let ran = stuck
+        .core
+        .run_linked(&stuck.order, &asked, &linked)
+        .expect("the linked order's route runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Failed),
+        "{done:?}"
+    );
+    let segment = done[0].segment.clone();
+    (stuck, asked, linked, segment)
+}
+
+/// A hand-on's linked order's first move out of the public node fails, owing its reversal. A route handed on has no
+/// withdrawal: it starts from the node's holding account, which counts as its origin reserve, so Core asks the wallet
+/// whether the credit came back. Until the account's statement holds it, the wallet doesn't confirm it and nothing is
+/// landed; once the account took the credit back, in full, the wallet's own signed confirmation completes the reversal,
+/// the log takes its evidence as the wallet's, and the value is landed again in the wallet for the linked order, whose
+/// value it is now, as the wallet itself says (`REQ-ORD-43`, `INV-1`, `T-020-57`).
+// verifies: REQ-ORD-43, INV-1
+#[test]
+fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes() {
+    use rutent_core_orch::reversal::{Confirmation, NotCounted};
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    assert_eq!(owing.provider.as_str(), RAMP_C, "owed by the failed ramp");
+
+    // Nothing came back yet, then less than the move took in: neither is confirmed, and nothing is landed again.
+    for credit in [None, Some("999999")] {
+        if let Some(amount) = credit {
+            // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
+            stuck
+                .core
+                .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", amount);
+        }
+        let answer = stuck
+            .core
+            .confirm_reversal(&linked.order, &segment)
+            .expect("the wallet is asked");
+        assert!(
+            matches!(
+                answer,
+                Confirmation::NotCompleted {
+                    why: NotCounted::NotConfirmed,
+                    ..
+                }
+            ),
+            "{credit:?}: {answer:?}"
+        );
+        stuck.core.tick();
+        assert!(
+            !wallet_holds_at_least(
+                &mut stuck.core,
+                &wallet,
+                linked.order.as_str(),
+                "ask-short",
+                "1"
+            ),
+            "{credit:?}: nothing landed again"
+        );
+    }
+
+    // The account took the credit back, in full: the wallet confirms it, and the reversal completes on its word.
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the wallet is asked");
+    let Confirmation::Completed(done) = answer else {
+        panic!("completed: {answer:?}")
+    };
+    assert_eq!(done.whose.as_str(), wallet.provider, "on the wallet's word");
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Evidence { order, segment: s, whose, .. }
+                if *order == linked.order && *s == segment && whose.as_str() == wallet.provider)),
+        "the log takes the evidence as the wallet's"
+    );
+    stuck.core.tick();
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
+        "landed again in the wallet for the linked order, as the wallet says"
+    );
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, stuck.order.as_str(), "ask-first"),
+        "nothing for the order it was handed on from"
+    );
+    stuck.core.tick();
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(
+            NODE.to_owned(),
+            vec![rutent_prov::holding::HeldForOrder {
+                order: linked.order.as_str().to_owned(),
+                amount: AMOUNT.parse().unwrap(),
+            }]
+        )],
+        "attributed once, to the linked order"
+    );
+}
+
+/// The linked order's first move fails and its reversal completes on the wallet's word: the value is landed again in
+/// the wallet for the linked order. The part is recalculated from the node, which retires the reversed move, and Core
+/// stops before the new route runs. Reopened, Core rebuilds the returned value from the log's `reversal_completed` and
+/// the wallet's confirmation it rests on, so when the new route's first move takes the value out of the node, the
+/// wallet's landing of it is released, once, as a Core that ran on would release it: the wallet holds nothing more
+/// for the linked order (`NFR-6`, `INV-1`, `T-020-57`).
+// verifies: NFR-6, INV-1
+#[test]
+fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
+    use rutent_core_orch::recalc::Recalculation;
+    use rutent_core_orch::reversal::Confirmation;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    stuck.core.tick();
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
+        "landed again for the linked order"
+    );
+
+    // Recalculated from the node: the reversed move is retired, and the new route waits to run.
+    let recalculated = match stuck
+        .core
+        .recalculate(&linked.order)
+        .expect("the part is recalculated")
+    {
+        Recalculation::Recalculated(recalculated) => recalculated,
+        other => panic!("recalculated: {other:?}"),
+    };
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Input { input } if input.subject.order.as_str() == linked.order.as_str()
+                && matches!(&input.observed,
+                    rutent_contracts::state_machine::Observed::RouteRecalculated { segments, .. }
+                        if segments.iter().all(|s| s.segment_id.as_str() != segment.as_str())))),
+        "the log recalculated the part, the reversed move left out"
+    );
+
+    // Core stops and is opened again on its disk.
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(
+            &mut stuck.core,
+            &wallet,
+            linked.order.as_str(),
+            "ask-reopened"
+        ),
+        "the wallet still holds the returned value"
+    );
+
+    // The new route's first move takes the value out of the node: its landing is released, once.
+    stuck
+        .core
+        .run_recalculated(&linked.order, &recalculated)
+        .expect("the recalculated route runs");
+    stuck.core.tick();
+    stuck.core.tick();
+    assert!(
+        !wallet_holds_at_least(
+            &mut stuck.core,
+            &wallet,
+            linked.order.as_str(),
+            "ask-gone",
+            "1"
+        ),
+        "released once the value left the node"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "the account holds nothing for any order"
+    );
+}
+
+/// The operator registers another module as the node's holding account after the hand-on. Core still asks the holder
+/// the log names, the one whose `holding_withdrawal` started the linked order and the one party the log takes as the
+/// reserve there, so Core and the log never name different confirmers: the reversal completes on the first wallet's
+/// word, not the new module's (`REQ-ORD-43`, `REQ-ORD-3`, `T-020-57`'s review, L1).
+// verifies: REQ-ORD-43, REQ-ORD-3
+#[test]
+fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again() {
+    use rutent_core_orch::reversal::Confirmation;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .register_node_holding(NODE, "operator-wallet-2")
+        .expect("the node is registered to another module");
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the holder the log names is asked");
+    let Confirmation::Completed(done) = answer else {
+        panic!("completed: {answer:?}")
+    };
+    assert_eq!(
+        done.whose.as_str(),
+        wallet.provider,
+        "on the word of the holder that started the order"
+    );
+}
+
+/// The holder the log names is a module the operator publishes whose release the log revoked after the hand-on: none
+/// of its statements would be attributed, so Core doesn't ask it, says why, and the reversal stays owed (`REQ-ORD-3`,
+/// `T-020-57`'s review, L1).
+// verifies: REQ-ORD-3
+#[test]
+fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .revoke_release(&wallet)
+        .expect("the release is revoked");
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    let asked = stuck.core.operations_received(&wallet.provider);
+    let refused = stuck.core.confirm_reversal(&linked.order, &segment);
+    assert!(
+        matches!(
+            &refused,
+            Err(StepError::Reversal(rutent_core_orch::reversal::ReversalError::HolderNotInForce(h)))
+                if h.as_str() == wallet.provider
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        asked,
+        "the wallet is asked nothing"
+    );
+    assert_eq!(
+        stuck
+            .core
+            .owe_reversal(&linked.order, &segment)
+            .expect("still owed")
+            .transaction,
+        owing.transaction
+    );
+}

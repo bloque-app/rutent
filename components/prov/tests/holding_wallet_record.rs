@@ -140,3 +140,110 @@ fn a_refused_landing_leaves_no_record_that_a_repeat_could_answer() {
     assert!(succeeded(&land(&mut w, "land-1", "o-1", "5")));
     assert_eq!(balance(&w), "5");
 }
+
+/// Core's question whether a reversed segment's credit came back into the account, in the operator's envelope.
+fn reversal_asked(
+    segment: &str,
+    amount: &str,
+) -> rutent_contracts::provider_role::Statement<Operation> {
+    serde_json::from_value(json!({
+        "deployment": { "name": "rutent-test", "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA" },
+        "protocol_version": "4.0.0",
+        "shape": "urn:rutent:provider-role:operation",
+        "maker": "rutent-operator",
+        "made_at": "2026-11-25T00:00:00Z",
+        "signature": { "scheme": "ed25519", "key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+            "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg" },
+        "statement": {
+            "kind": "reversal_confirmation", "transaction": "ask-1", "provider": ME,
+            "segment": segment, "asset": "USDC", "amount": amount,
+        },
+    }))
+    .expect("a reversal confirmation question")
+}
+
+/// What the wallet answers about a reversed segment's credit, given the account's statement of it.
+fn confirms(w: &Wallet, segment: &str, amount: &str, credit: Option<(&str, &str)>) -> &'static str {
+    use rutent_contracts::provider_role::ReversalConfirmationOutcome;
+    let asked = reversal_asked(segment, amount);
+    let Operation::ReversalConfirmation(c) = &asked.statement else {
+        unreachable!()
+    };
+    let credit = credit.map(|(asset, amount)| wallet::Credit {
+        asset: asset.to_owned(),
+        amount: amount.to_owned(),
+    });
+    let ResultBody::ReversalConfirmation(r) = w.confirmation(&asked, c, credit.as_ref()) else {
+        panic!("not a confirmation's result");
+    };
+    assert_eq!(
+        r.transaction, "ask-1",
+        "it answers the question's own transaction"
+    );
+    match r.outcome {
+        ReversalConfirmationOutcome::Confirmed(confirmed) => {
+            let inner = &confirmed.confirmation;
+            assert_eq!(inner.maker, ME, "in the account's own name");
+            assert_eq!(
+                inner.deployment, asked.deployment,
+                "in the question's deployment"
+            );
+            assert_eq!(
+                (
+                    inner.statement.segment.as_str(),
+                    inner.statement.amount.as_str()
+                ),
+                (segment, amount),
+                "of the segment and amount asked"
+            );
+            "confirmed"
+        }
+        ReversalConfirmationOutcome::NotConfirmed(_) => "not confirmed",
+        ReversalConfirmationOutcome::Refused(_) => "refused",
+    }
+}
+
+/// The account confirms a reversed segment's credit only where its statement holds that segment's credit in full and
+/// in the asset asked (`T-020-57`, `REQ-ORD-3`): a short credit, another asset, no credit or a malformed amount
+/// confirms nothing; an account fixed to another asset refuses.
+// verifies: REQ-ORD-43, INV-1
+#[test]
+fn wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement() {
+    let mut w = Wallet::default();
+    assert_eq!(
+        confirms(&w, "tx-move", "1000", Some(("USDC", "1000"))),
+        "confirmed"
+    );
+    assert_eq!(
+        confirms(&w, "tx-move", "1000", Some(("USDC", "990"))),
+        "not confirmed",
+        "less came back"
+    );
+    assert_eq!(
+        confirms(&w, "tx-move", "1000", Some(("USDT", "1000"))),
+        "not confirmed",
+        "another asset"
+    );
+    assert_eq!(confirms(&w, "tx-move", "1000", None), "not confirmed");
+    assert_eq!(confirms(&w, "tx-move", "01000", None), "refused");
+    assert_eq!(confirms(&w, "tx-move", "0", None), "refused");
+    // Fixed to USDC by a landing, an account asked about another asset refuses.
+    assert!(matches!(
+        land(&mut w, "land-1", "ord-1", "5"),
+        ReserveMovementOutcome::Succeeded(_)
+    ));
+    let mut asked = reversal_asked("tx-move", "1000");
+    if let Operation::ReversalConfirmation(c) = &mut asked.statement {
+        c.asset = "USDT".to_owned();
+    }
+    let Operation::ReversalConfirmation(c) = &asked.statement else {
+        unreachable!()
+    };
+    let ResultBody::ReversalConfirmation(r) = w.confirmation(&asked, c, None) else {
+        panic!("not a confirmation's result");
+    };
+    assert!(matches!(
+        r.outcome,
+        rutent_contracts::provider_role::ReversalConfirmationOutcome::Refused(_)
+    ));
+}

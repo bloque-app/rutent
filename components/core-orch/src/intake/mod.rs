@@ -230,6 +230,11 @@ pub enum Status {
         quote: Box<Quote>,
         /// Its digest: what an acceptance names.
         digest: Digest,
+        /// Until when it is valid, where anything bounds it: the earliest expiry of the figures its route cites, and,
+        /// where a reserve holds it, no later than its hold (`REQ-QTE-15`, `T-020-57`): a held quote's acceptance
+        /// redeems its hold, so a quote is never shown as valid past the hold that would refuse it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_until: Option<rutent_contracts::router_api::Timestamp>,
     },
     /// It waits.
     Waiting {
@@ -509,8 +514,9 @@ impl Intake {
     /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
     /// intake: a filed order's, by the requester intake's own record names, until the acceptance is in the log, and
     /// the order's state after it (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s milestone review). Every check is
-    /// policy's to record, allowed or refused. A request refused with no order exists to read nothing and is told as
-    /// it is. A refusal, or a check that couldn't be made, tells nothing of the order.
+    /// policy's to record, allowed or refused. A request refused with no order has none to read: a person is told it as
+    /// it is, an agent is told [`IntakeError::ReadRefused`], as its repeat is (`T-020-62`). A refusal, or a check that
+    /// couldn't be made, tells nothing of the order.
     fn read(
         &self,
         desk: &mut Desk<'_, '_>,
@@ -518,7 +524,14 @@ impl Intake {
         told: Told,
     ) -> Result<Told, IntakeError> {
         let Told::Exists { order, .. } = &told else {
-            return Ok(told);
+            // A refused request's class is a status of the party's request, not the caller's own to know: an agent is
+            // told what its repeat is told (`Conflicting { order: None }`), `ReadRefused`, whatever its scope, as no
+            // order exists for policy to be asked about (`T-020-62`).
+            return if caller.kind == ActorKind::Agent {
+                Err(IntakeError::ReadRefused)
+            } else {
+                Ok(told)
+            };
         };
         self.read_order(desk, caller, order)?;
         Ok(told)
@@ -575,14 +588,25 @@ impl Intake {
 
     /// What a failed call tells `caller`: the error itself, unless it shows the state or the identifier of an order the
     /// caller may not read, in which case the same read check is asked first and a refused reader is told
-    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). An error of that kind with no order
-    /// behind it (a request refused before one existed) is no one's to read, so an agent, whose party's scope for
-    /// reading nothing can be asked of, is told [`IntakeError::ReadRefused`] too: fail closed.
+    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). Every error about an existing order
+    /// shows something of it, so each goes, for an agent, through the check but the few that show nothing: `NoSuchOrder` and
+    /// `NotTheRequester` (the register of actors answered them before any order was looked at), `ReadRefused` (already
+    /// the refused reader's answer) and `Fresh` (a draw of Core's, no order's). A `Hold`, `Unofferable`, `Routing`,
+    /// `Log` or `Refused` would tell an agent its party didn't scope to read that the order stands quoted, where it
+    /// stands or that it exists at all (`T-020-62`). An error with no order behind it (a request refused
+    /// before one existed, `order` is `None`) names no order: a repeat of it differing from the first is told an agent
+    /// [`IntakeError::ReadRefused`], and a failure of the log on opening is told as it is, for it shows no order.
+    ///
+    /// An unscoped agent probing its own party's order identifiers is told `ReadRefused` of an order that exists and
+    /// `NoSuchOrder` of one that doesn't ([`Intake::kept_for`]); that reaches only its own party's identifiers, which are
+    /// Core's fresh draws, so it is a probe of nothing an agent could guess (`T-020-62`). Its timing differs too: the call runs before it
+    /// answers `ReadRefused`, where a missing id answers at once; that falls under the timing residual the owner accepted
+    /// for v0 (`cat5-timing-residual`).
     fn told_error(
         &self,
         desk: &mut Desk<'_, '_>,
         caller: &Actor,
-        order: &Id,
+        order: Option<&Id>,
         error: IntakeError,
     ) -> IntakeError {
         let named = match &error {
@@ -594,10 +618,27 @@ impl Intake {
                     error
                 };
             }
+            IntakeError::NoSuchOrder
+            | IntakeError::NotTheRequester
+            | IntakeError::ReadRefused
+            | IntakeError::Fresh => return error,
+            // These three show an order's state, and are checked for every caller, as they always were (`T-020-52`).
             IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
-                Some(order)
+                match order {
+                    Some(order) => Some(order),
+                    None => return error,
+                }
             }
-            _ => return error,
+            // The rest are asked of an agent only, whose party's scope for reading can lack. A person's login is held by
+            // `kept_for` to the order's requester in the customer's role, which is all `REQ-AUZ-7` and `REQ-AUZ-8` let
+            // read, and policy's check allows exactly that party: a check would withhold nothing from it, and `accept_inner`
+            // answers a held order `NotNow` before any of these arise. (The success path asks anyway: the status is told.)
+            // `T-020-62`.
+            _ if caller.kind != ActorKind::Agent => return error,
+            _ => match order {
+                Some(order) => Some(order),
+                None => return error,
+            },
         };
         match named.map(|o| self.read_order(desk, caller, o)) {
             Some(Ok(())) | None => error,
@@ -827,8 +868,7 @@ impl Intake {
         let told = match self.open_inner(desk, request) {
             Ok(told) => told,
             Err(error) => {
-                let none = Id::new("none").expect("an identifier");
-                return Err(self.told_error(desk, &caller, &none, error));
+                return Err(self.told_error(desk, &caller, None, error));
             }
         };
         self.read(desk, &caller, told)
@@ -886,7 +926,7 @@ impl Intake {
     ) -> Result<Told, IntakeError> {
         let told = match self.quote_inner::<R>(desk, caller, order) {
             Ok(told) => told,
-            Err(error) => return Err(self.told_error(desk, caller, order, error)),
+            Err(error) => return Err(self.told_error(desk, caller, Some(order), error)),
         };
         self.read(desk, caller, told)
     }
@@ -1022,6 +1062,7 @@ impl Intake {
         kept.status = Status::Quoted {
             quote: Box::new(quote.clone()),
             digest: digest.clone(),
+            valid_until: None,
         };
         // The reserve the route starts at is asked to hold the quote shown, where it declares that it answers hold
         // requests; any failure leaves the quote shown unheld (`REQ-QTE-15`, `T-020-56`).
@@ -1033,6 +1074,16 @@ impl Intake {
             &candidate,
             &session,
         );
+        // The quote is valid no longer than its figures, nor than the hold its acceptance redeems (failing closed).
+        let validity = quote_validity(
+            chosen.record.earliest_expiry(&candidate),
+            held.as_ref()
+                .and_then(|h| desk.holds.held(h))
+                .map(|h| h.valid_until()),
+        );
+        if let Status::Quoted { valid_until, .. } = &mut kept.status {
+            *valid_until = validity;
+        }
         kept.offered = Some(Offered {
             quote,
             digest,
@@ -1083,7 +1134,7 @@ impl Intake {
     ) -> Result<Told, IntakeError> {
         let told = match self.accept_inner(desk, order, by, quote, owner, hold) {
             Ok(told) => told,
-            Err(error) => return Err(self.told_error(desk, by, order, error)),
+            Err(error) => return Err(self.told_error(desk, by, Some(order), error)),
         };
         self.read(desk, by, told)
     }
@@ -1684,6 +1735,27 @@ fn check_destination(
 }
 
 /// The digest of what was shown: SHA-256 of its RFC 8785 canonical JSON, the recorded decision's own rule.
+/// A quote's validity: the earlier of `expiry`, its figures' earliest expiry in nanoseconds (to the whole second below
+/// it), and `hold`, the validity of the hold its acceptance would redeem; `None` where neither bounds it.
+fn quote_validity(
+    expiry: Option<i128>,
+    hold: Option<&rutent_contracts::router_api::Timestamp>,
+) -> Option<rutent_contracts::router_api::Timestamp> {
+    let figures = expiry.and_then(|nanos| {
+        let seconds = u64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+        rutent_contracts::router_api::Timestamp::new(
+            rutent_prov::catalogue::Instant(seconds).rfc3339()?,
+        )
+    });
+    match (figures, hold) {
+        (Some(figures), Some(hold)) if hold.unix_nanos() < figures.unix_nanos() => {
+            Some(hold.clone())
+        }
+        (Some(figures), _) => Some(figures),
+        (None, hold) => hold.cloned(),
+    }
+}
+
 fn digest_of(quote: &Quote) -> Option<Digest> {
     let canonical = to_canonical(quote).ok()?;
     let value = rutent_prov::module::wire::sha256(&canonical);

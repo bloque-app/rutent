@@ -26,6 +26,12 @@
 //! - **The charges checked** (`Charges::recorded`), each settled segment's charge as its kept result states it, and
 //!   the terms the providers stated, so a raise recorded before the reopening is not raised again.
 //!
+//! - **The values reversals brought back to held nodes** (`T-020-57`, `INV-1`): each linked order's first move out
+//!   of a held node whose `reversal_completed` the log holds, what the confirmation its evidence rests on says came
+//!   back (read back from the evidence store), never more than the move took in, also once a recalculation retired the
+//!   move ([`Segments::rebuild_returns`]). One whose confirmation can't be read back is rebuilt as nothing confirmed:
+//!   nothing is landed or restored blind.
+//!
 //! What a reopened Core doesn't hold, it fails closed on: a segment whose decision record, question or kept bytes it
 //! can't read back is never handed over again, and is held in flight where its operation can be read.
 
@@ -217,6 +223,7 @@ impl Segments {
                 _ => {}
             }
         }
+        segments.rebuild_returns(history, &inputs, reading);
         segments.recorded_charges(history);
         // The terms the providers stated, read back from the evidence store, so a charge is held to the formula that
         // bound it as a Core that ran on holds it (`REQ-QTE-6`).
@@ -276,6 +283,70 @@ impl Segments {
         segments.park_unpaired_on_reopening(history);
         segments.hold_in_flight(exposures, &inputs, &holds);
         segments
+    }
+
+    /// The values reversals brought back to the held nodes linked orders' first moves left, rebuilt from the log
+    /// (`T-020-57`, `INV-1`, `NFR-6`): what [`Segments::note_reversed`] kept when the reversal completed, so a value a
+    /// recalculation retired the move of is still landed, restored and released as a Core that ran on would. For each
+    /// `reversal_completed` of a move the order's plan put first in its part, out of an inner node, of an order handed
+    /// on: the confirmation its evidence rests on, as the evidence store keeps it (a reserve's confirmed credit, or a
+    /// publisher's word that the value is back), capped at what the move took in.
+    fn rebuild_returns(
+        &mut self,
+        history: &[(Receipt, Entry)],
+        inputs: &[RecordedInput],
+        reading: &mut dyn Reopening,
+    ) {
+        for input in inputs {
+            let Observed::ReversalCompleted { evidence } = &input.observed else {
+                continue;
+            };
+            let (Some(order), Some(segment)) = (
+                Id::new(input.subject.order.as_str()),
+                input
+                    .subject
+                    .segment
+                    .as_ref()
+                    .and_then(|s| Id::new(s.as_str())),
+            ) else {
+                continue;
+            };
+            let handed_on = self
+                .orders
+                .get(order.as_str())
+                .is_some_and(|t| t.order.handed_on_from.is_some());
+            let Some((_, 0, plan)) = plan_of(inputs, &order, &segment) else {
+                continue;
+            };
+            let rutent_contracts::provider_role::NodeRef::Inner(node) = &plan.from.node else {
+                continue;
+            };
+            if !handed_on || plan.kind == stm::OperationKind::Withdrawal {
+                continue;
+            }
+            // What the confirmation says came back, capped at what the move took in; a confirmation or an operation
+            // that can't be read back is kept as nothing confirmed, so the order's reading doesn't stand in for it and
+            // nothing is landed or restored blind (failing closed).
+            let at = (order.as_str().to_owned(), segment.as_str().to_owned());
+            let back = confirmed_back(history, reading, evidence.as_str(), &plan.from.asset.id);
+            let taken_in = self
+                .flights
+                .get(&at)
+                .and_then(|f| moved_in(&f.statement.statement));
+            let amount = match (back, taken_in) {
+                (Some(back), Some(taken_in)) if back < taken_in => back,
+                (Some(_), Some(taken_in)) => taken_in,
+                _ => Amount::zero(),
+            };
+            self.returned.insert(
+                at,
+                (
+                    node.as_str().to_owned(),
+                    plan.from.asset.id.as_str().to_owned(),
+                    amount,
+                ),
+            );
+        }
     }
 
     /// Rebuilds the flight of one segment handed over, from what the log and the evidence store hold of it, and
@@ -891,6 +962,65 @@ fn stated_value(
         asset,
         amount,
     })
+}
+
+/// What came back, by the confirmation the evidence `evidence` rests on, in `asset`: the reserve's confirmed credit, or
+/// the publisher's word that the value is back, read back from the evidence store behind its stated entry's commitment.
+/// `None` where the log holds no such evidence or the store no such statement, or it is in another asset.
+fn confirmed_back(
+    history: &[(Receipt, Entry)],
+    reading: &mut dyn Reopening,
+    evidence: &str,
+    asset: &str,
+) -> Option<Amount> {
+    use rutent_contracts::provider_role::{
+        ResultBody as Body, ReversalConfirmationOutcome, ReversalOutcome,
+    };
+    let rests_on = history.iter().find_map(|(_, e)| match e {
+        Entry::Verified(VerifiedEntry {
+            what:
+                What::Evidence {
+                    evidence: e,
+                    rests_on,
+                    ..
+                },
+            ..
+        }) if e.as_str() == evidence => rests_on.first().cloned(),
+        _ => None,
+    })?;
+    let commitment = history.iter().find_map(|(r, e)| match e {
+        Entry::Stated(s) if *r == rests_on => Some(s.commitment.clone()),
+        _ => None,
+    })?;
+    let bytes = reading.kept(&commitment)?;
+    let result: Statement<Body> = serde_json::from_slice(&bytes).ok()?;
+    let (in_asset, amount) = match &result.statement {
+        Body::ReversalConfirmation(answer) => match &answer.outcome {
+            ReversalConfirmationOutcome::Confirmed(confirmed) => (
+                confirmed.confirmation.statement.asset.clone(),
+                confirmed.confirmation.statement.amount.clone(),
+            ),
+            _ => return None,
+        },
+        Body::Reversal(answer) => match &answer.outcome {
+            ReversalOutcome::Succeeded(back) => (back.asset.clone(), back.amount.clone()),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (in_asset == asset).then(|| Amount::new(amount)).flatten()
+}
+
+/// What an operation Core signed takes in: Core writes every operation `exact_in`.
+fn moved_in(operation: &ProviderOperation) -> Option<Amount> {
+    let amount = match operation {
+        ProviderOperation::Withdrawal(o) => &o.amount,
+        ProviderOperation::Deposit(o) => &o.amount,
+        ProviderOperation::Transfer(o) => &o.amount,
+        ProviderOperation::Conversion(o) => &o.amount,
+        _ => return None,
+    };
+    Amount::new(amount.clone())
 }
 
 /// The decision record, the place in its part and the segment's plan, from the last input of `order` that planned

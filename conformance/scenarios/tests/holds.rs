@@ -15,6 +15,8 @@ use rutent_core_orch::intake::{IntakeError, Status, Told};
 use rutent_core_orch::quote::HoldError;
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::assembly::StepError;
+use rutent_scenarios::assembly::machine::Reference;
+use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit;
 
 /// The simulated reserve whose declaration says it answers hold requests.
@@ -45,6 +47,23 @@ fn offered_at(core: &mut Core, reserve: &str, session: &Id, name: &str) -> (Id, 
         panic!("quoted: {told:?}");
     };
     (order, digest)
+}
+
+/// `core` stopped and opened again on its disk, as the deployment reopens it.
+fn reopened(core: Core) -> Core {
+    Scenario::new("routing", "AC-23", given(&[HOLDING])).reopen(core, 1, &mut Reference)
+}
+
+/// The digest of the quote `told` shows.
+fn digest_of(told: &Told) -> Digest {
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted: {told:?}");
+    };
+    digest.clone()
 }
 
 /// The operator's hold requests the log holds, each with the order it is about: Core appends each before it is sent.
@@ -102,12 +121,15 @@ fn a_hold_is_redeemed_by_one_order_only_also_after_a_restart() {
         .expect("the first order redeems its hold");
     assert_eq!(core.holds().redeemed_by(&hold), Some(&first));
 
-    // Core's holds are lost and rebuilt from the log, each hold kept again as the deployment keeps them.
-    core.holds_rebuilt_from_log();
+    // Core stops and is opened again on its disk: it keeps each hold again from its own log (`T-020-57`).
+    let mut core = reopened(core);
     assert_eq!(core.holds().redeemed_by(&hold), Some(&first));
     assert!(core.holds().held(&hold).is_some(), "the hold is kept again");
 
-    // The second order, accepted in the same session the hold is for, names the first order's hold.
+    // The second order, its quote shown again on a new routing after the reopening, accepted in the same session the
+    // hold is for, names the first order's hold.
+    let _ = second_digest;
+    let second_digest = digest_of(&core.quote(&kit::customer(), &second).expect("quoted again"));
     let recorded = acceptances(&core).len();
     let refused = core.accept_holding(&kit::customer(), &second, &second_digest, Some(&hold));
     assert!(
@@ -266,4 +288,76 @@ fn hold_core_takes_lasts_as_long_as_its_quotes_figures() {
     core.accept(&kit::customer(), &order, &digest)
         .expect("the quote's acceptance still redeems its hold");
     assert_eq!(acceptances(&core), vec![(order.clone(), Some(receipt))]);
+}
+
+/// The reserve that holds each quote for a minute at most, less than its figures stay valid.
+const BRIEF: &str = "sim-reserve-holding-briefly";
+
+/// A reserve holds the quote Core shows for less than the figures its route stands on stay valid: the quote is shown
+/// valid until its hold's validity, no later, since its acceptance redeems that hold; past it the acceptance is
+/// refused and the order stays quoted, as the quote said (`REQ-QTE-15`,
+/// `T-020-57`, the milestone reviewer's check of `T-020-56`).
+// verifies: REQ-QTE-15
+#[test]
+fn quote_held_for_less_than_its_figures_is_valid_no_longer_than_its_hold() {
+    let (mut core, session) = core_with("AC-23", &[BRIEF]);
+    let (order, told) = quoted(
+        &mut core,
+        request_at(BRIEF, "req-brief", AMOUNT, &session, "lowest_total_cost"),
+    );
+    let Told::Exists {
+        status:
+            Status::Quoted {
+                digest,
+                valid_until,
+                ..
+            },
+        ..
+    } = told
+    else {
+        panic!("quoted: {told:?}");
+    };
+    let [(hold, _)] = core.holds_taken().try_into().expect("one hold taken");
+    let held_until = core
+        .holds()
+        .held(&hold)
+        .expect("held")
+        .valid_until()
+        .clone();
+    let record = core
+        .verified_whats()
+        .into_iter()
+        .rev()
+        .find_map(|w| match w {
+            What::DecisionRecord {
+                decision_record,
+                order: o,
+                ..
+            } if o == order => Some(decision_record),
+            _ => None,
+        })
+        .expect("the choice round's record");
+    let record = record_named(&core, &record);
+    let figures = record
+        .earliest_expiry(record.chosen().expect("chosen"))
+        .expect("the stand-in's figures name their expiry");
+    assert!(
+        held_until.unix_nanos() < figures,
+        "the reserve held it for less than its figures stay valid"
+    );
+    assert_eq!(
+        valid_until.as_ref(),
+        Some(&held_until),
+        "the quote is shown valid until its hold, no later"
+    );
+
+    // Past the hold, within the figures: the acceptance is refused, and the order stays quoted.
+    core.clock
+        .advance(rutent_conformance::sim::BRIEF_HOLD_SECONDS + 1);
+    let refused = core.accept(&kit::customer(), &order, &digest);
+    assert!(
+        matches!(refused, Err(StepError::Intake(IntakeError::Hold(_)))),
+        "{refused:?}"
+    );
+    assert!(acceptances(&core).is_empty(), "nothing was recorded");
 }

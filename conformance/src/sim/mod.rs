@@ -584,6 +584,11 @@ pub fn shape_of(provider: &str) -> Shape {
             holds: true,
             ..Shape::default()
         },
+        "sim-reserve-holding-briefly" => Shape {
+            holds: true,
+            holds_for: Some(BRIEF_HOLD_SECONDS),
+            ..Shape::default()
+        },
         "sim-reserve-dear" => Shape {
             fee: 6_000_000,
             ..Shape::default()
@@ -1236,9 +1241,16 @@ impl Simulated {
         operation: &Statement<Operation>,
         request: &rutent_contracts::provider_role::HoldRequest,
     ) -> Option<Value> {
+        let shape = shape_of(&self.spec.provider);
         let answers = self.spec.role == Role::Reserve
-            && shape_of(&self.spec.provider).holds
+            && shape.holds
             && request.provider == self.spec.provider;
+        // A reserve holding briefly holds no later than its own limit from when it was asked (`T-020-57`).
+        let valid_until = shape
+            .holds_for
+            .and_then(|seconds| later_by(&operation.made_at, seconds))
+            .filter(|brief| seconds_of(brief) < seconds_of(&request.valid_until))
+            .unwrap_or_else(|| request.valid_until.clone());
         answers.then(|| {
             self.nested(
                 operation,
@@ -1248,7 +1260,7 @@ impl Simulated {
                     "record": request.record,
                     "candidate": request.candidate,
                     "for": request.held_for,
-                    "valid_until": request.valid_until,
+                    "valid_until": valid_until,
                 }),
             )
         })
@@ -1408,6 +1420,50 @@ fn misplace_the_charge(operation: &Operation, result: &Value, movements: &mut [M
     if let Some(wrong) = wrong {
         moved.amount = wrong.to_string();
     }
+}
+
+/// How long `sim-reserve-holding-briefly` holds a quote, at most, from when it was asked (`T-020-57`).
+pub const BRIEF_HOLD_SECONDS: u64 = 60;
+
+/// The seconds since 1970 of `time`, an RFC 3339 time in UTC (`…Z`), its fraction dropped; `None` for any other.
+fn seconds_of(time: &str) -> Option<i64> {
+    let (date, clock) = time.strip_suffix('Z')?.split_once('T')?;
+    let mut d = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let clock = clock.split('.').next()?;
+    let mut c = clock.splitn(3, ':').map(|p| p.parse::<i64>().ok());
+    let (h, min, sec) = (c.next()??, c.next()??, c.next()??);
+    // Days from the civil date (H. Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3_600 + min * 60 + sec)
+}
+
+/// `time`, an RFC 3339 time in UTC, `seconds` later, to the whole second, written `YYYY-MM-DDTHH:MM:SSZ`.
+fn later_by(time: &str, seconds: u64) -> Option<String> {
+    let total = seconds_of(time)?.checked_add(i64::try_from(seconds).ok()?)?;
+    let (days, rest) = (total.div_euclid(86_400), total.rem_euclid(86_400));
+    // The civil date of a day count (H. Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    ))
 }
 
 /// `amount` less `bps` basis points of it, where it is a number.
