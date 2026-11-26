@@ -1,6 +1,7 @@
 //! What the demo's two binaries share: `rutent-demo`, the narrated run in a terminal, and `rutent-demo-api`, the same
 //! network served over HTTP with a page that draws it. Each includes this folder as a module of its own
-//! (`#[path = "../demo-common/mod.rs"]`), so nothing here is part of `rutent-scenarios`'s library.
+//! (`#[path = …]`), so nothing here is part of `rutent-scenarios`'s library: `rutent-demo` is a binary of
+//! `rutent-scenarios`, and `rutent-demo-api` a workspace of its own in `conformance/scenarios/demo-api/`.
 //!
 //! - [`network`]: the simulated providers and the graph they make.
 //! - [`orders`]: the customer's requests, the operator's staff and the evidence a decision cites.

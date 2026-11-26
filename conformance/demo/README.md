@@ -27,7 +27,7 @@ The same network, served over HTTP with a page that draws it and replays the thr
 API, one call at a time:
 
 ```sh
-cargo run -p rutent-scenarios --bin rutent-demo-api
+cargo run --manifest-path conformance/scenarios/demo-api/Cargo.toml
 ```
 
 Then open <http://127.0.0.1:7040/>. Core is put together before the server answers (about a minute after the first
@@ -103,7 +103,8 @@ are made on: the public chains (`chain`), the publishers' ledgers (`ledger`) and
 chain's addresses (`rail`). A row names the run, its place in it, the piece and what was asked (withdrawal, deposit, transfer, conversion,
 reversal, a dry run of one, or a movement), the provider, the nodes, assets and amounts, the order and segment it
 served where the API knows them, the outcome (answered, failed, refused; recorded or refused for a movement), Core's
-clock and the request itself. `rutent-demo-api/schema.sql` is the schema; the server applies it at start.
+clock and the request itself. `conformance/scenarios/demo-api/src/schema.sql` is the schema; the server applies it
+at start.
 
 Everything reaches the database through the API, by one path (`Api::record`):
 
@@ -137,10 +138,20 @@ authentication: on `test` it belongs behind private-only access.
 
 The demo reuses the scenario assembly: Core's three crates put together with the policy engine, the log, the evidence
 store and the module platform. The workspace's boundary check (`DEC-2`, `tools/boundary-check`) lets no crate depend
-on `rutent-scenarios`, so the demo can't be a package of its own without changing that rule. It is two binary
-targets inside that package, `rutent-demo` and `rutent-demo-api` (`conformance/scenarios/src/bin/`), which share the
-network, the orders, the timeline and the outside check through `src/bin/demo-common/`, a folder each includes as a
-module of its own and not part of the library. Outside them, the demo adds three things to M3's code and changes
+on `rutent-scenarios`, so the demo can't be a package of its own in that workspace without changing that rule.
+`rutent-demo` is a binary target inside that package (`conformance/scenarios/src/bin/rutent-demo/`). It shares the
+network, the orders, the timeline and the outside check with the API through `src/bin/demo-common/`, a folder each
+binary includes as a module of its own and not part of the library.
+
+`rutent-demo-api` is a workspace of its own, `conformance/scenarios/demo-api/`, with its own `Cargo.lock`, which
+depends on `rutent-scenarios` by path. Its database client brings tokio, whose features would change the
+dependency edges of packages the contracts crate reaches in the root lock, and `tools/contract-guard` treats that as
+a change to every contract. Kept apart, the root lock doesn't change. The folder sits inside `rutent-scenarios`'s
+tree, which may import every crate of ours, so the boundary check reads it as the assembly's; nothing in the root
+workspace imports it. `tools/licence-check` reads every lock under `conformance/` too, and CI formats, lints,
+documents and tests the workspace in steps of its own.
+
+Outside them, the demo adds three things to M3's code and changes
 nothing there: the network's simulated providers, as new arms of `rutent_conformance::sim::shape_of`,
 `Core::set_max_hops`, a setter beside `set_operator_fee`, and `harness::kept_of`, which reads the statements the
 evidence store kept without ending Core, so the API can hand the checker its folder mid-run.

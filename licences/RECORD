@@ -19,10 +19,10 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
-# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/ or components/,
-# found by walking those trees (a `target` directory is skipped). One record serves them all. A package locked at
-# the same name and version in several locks has one line; the same name at different versions has one line per
-# version.
+# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/, components/
+# or conformance/, found by walking those trees (a `target` directory is skipped). One record serves them all. A
+# package locked at the same name and version in several locks has one line; the same name at different versions
+# has one line per version.
 #
 # Workspace members have no `source` in Cargo.lock, so they have no line here. In an experiment's lock, or a
 # component's own, every package without a `source` is a member.

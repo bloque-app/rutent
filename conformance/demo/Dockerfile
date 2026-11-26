@@ -17,7 +17,9 @@ COPY . .
 RUN rustup show active-toolchain || rustup toolchain install
 
 ENV CARGO_TARGET_DIR=/rutent/target
-RUN cargo build --locked -p rutent-scenarios --bin rutent-demo-api -p rutent-core-audit --bin audit-check
+# The demo API is a workspace of its own (conformance/scenarios/demo-api); audit-check is the root workspace's.
+RUN cargo build --locked --manifest-path conformance/scenarios/demo-api/Cargo.toml \
+    && cargo build --locked -p rutent-core-audit --bin audit-check
 
 # Builds the platform's executables and the simulated providers' modules, and puts Core together once, so a
 # container answers within about a minute of starting instead of building first. No database is needed for it.

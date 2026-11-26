@@ -160,14 +160,24 @@ pub fn binary() -> Result<PathBuf, String> {
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build = Command::new(cargo);
-    build.args([
-        "build",
-        "--quiet",
-        "-p",
-        "rutent-core-audit",
-        "--bin",
-        "audit-check",
-    ]);
+    // In the repository's own workspace and into this binary's build directory, whichever workspace this binary
+    // was built in: `rutent-demo-api` is a workspace of its own.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|d| d.join("rust-toolchain.toml").is_file())
+        .ok_or("the repository's root, above this package")?;
+    let target = dir.parent().ok_or("the build directory")?;
+    build
+        .args(["build", "--quiet", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .args([
+            "-p",
+            "rutent-core-audit",
+            "--bin",
+            "audit-check",
+            "--target-dir",
+        ])
+        .arg(target);
     if !cfg!(debug_assertions) {
         build.arg("--release");
     }

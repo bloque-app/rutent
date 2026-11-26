@@ -4,7 +4,8 @@
 //! the scenario assembly's, the same one `rutent-demo` and `M3`'s scenarios run.
 //!
 //! ```text
-//! cargo run -p rutent-scenarios --bin rutent-demo-api -- [--addr HOST:PORT] [--seed N] [--out DIR] [--lazy]
+//! cargo run --manifest-path conformance/scenarios/demo-api/Cargo.toml -- [--addr HOST:PORT] [--seed N] [--out DIR]
+//!     [--lazy] [--warm-up] [--database-url postgres://…] [--database-ca FILE]
 //! ```
 //!
 //! Then open the address it prints (`http://127.0.0.1:7040/` by default). `--lazy` puts Core together on the first
@@ -15,7 +16,7 @@
 
 // Each binary uses part of what the two share.
 #[allow(dead_code)]
-#[path = "../demo-common/mod.rs"]
+#[path = "../../src/bin/demo-common/mod.rs"]
 mod common;
 
 mod api;
