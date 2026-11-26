@@ -348,7 +348,7 @@ struct Moved {
 fn order_under_judgement(verifier: Verifier) -> Moved {
     let mut core = bare("a move waits on a verifier's judgement", "AC-17");
     core.deployment.judge_before_moving(true);
-    core.sources().verifier_is(verifier);
+    core.verifier_is(verifier);
     let customer = kit::customer();
     let session = core
         .open_session(&customer)

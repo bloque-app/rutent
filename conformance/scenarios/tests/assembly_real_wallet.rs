@@ -1285,3 +1285,72 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
         .expect("handed on");
     assert_eq!(attributed_at(&mut stuck.core, NODE), Vec::new());
 }
+
+/// Policy's `HoldingAccount` reads the deployment's register of holding accounts (`T-020-55` (1)): the operator
+/// installed the wallet as the node's holding account, and the register names it, before Core reopens and after,
+/// the register going on as the deployment keeps it. Once the register names another holder for the node, or none,
+/// the answer follows the register, though the host's holdings Core carried across the reopen still name the wallet;
+/// and the hand-on through the wallet, which policy would permit by the register, is refused once the register no
+/// longer names it.
+// verifies: REQ-AUZ-4, NFR-6
+#[test]
+fn holding_account_answer_reads_the_deployments_register_not_holdings_carried_across_a_reopen() {
+    use rutent_core_authz::engine::{Need, Reply, Said, Source, Sources};
+
+    let names = [CHAIN_IN, RAMP_B, OUT_B];
+    let scenario = || Scenario::new("execution", "AC-6", given(&names));
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.provider.clone();
+    let ask = |core: &Core, by: &str| {
+        core.sources().supply(&Need {
+            input: id(by),
+            from: Source::HoldingAccount {
+                node: NODE.to_owned(),
+            },
+        })
+    };
+    assert_eq!(ask(&stuck.core, &wallet), Reply::Given(Said::Yes));
+    assert_eq!(ask(&stuck.core, "another-wallet"), Reply::Given(Said::No));
+
+    stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
+    assert_eq!(
+        ask(&stuck.core, &wallet),
+        Reply::Given(Said::Yes),
+        "the register goes on across the reopen"
+    );
+    let held_by = |core: &mut Core| {
+        core.holdings()
+            .account(NODE)
+            .map(|a| a.provider().to_owned())
+    };
+    assert_eq!(held_by(&mut stuck.core), Some(wallet.clone()));
+
+    stuck
+        .core
+        .registers()
+        .holding_accounts
+        .insert(NODE.to_owned(), "another-wallet".to_owned());
+    assert_eq!(ask(&stuck.core, &wallet), Reply::Given(Said::No));
+    stuck.core.registers().holding_accounts.remove(NODE);
+    assert_eq!(ask(&stuck.core, &wallet), Reply::Missing);
+    assert_eq!(
+        held_by(&mut stuck.core),
+        Some(wallet.clone()),
+        "the host's holdings still name the wallet"
+    );
+
+    // The hand-on the register no longer backs is refused.
+    stuck
+        .core
+        .accept_release(&stuck.wallet.clone())
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (_, decision) = operator_decides(&mut stuck, &linked, &wallet);
+    assert!(
+        !matches!(&decision, Ok(d) if d.outcome == Answer::Permit {}),
+        "{decision:?}"
+    );
+}

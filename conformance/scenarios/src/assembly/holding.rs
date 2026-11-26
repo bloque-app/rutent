@@ -665,6 +665,13 @@ impl Core {
                 asset,
             )
             .map_err(|e| AssemblyError::Listing(format!("the wallet's registration: {e:?}")))?;
+        // The deployment's register of holding accounts names the wallet as the node's holder (`T-020-55`): policy reads
+        // it there, never from the host's holdings.
+        self.deployed
+            .registers
+            .borrow_mut()
+            .holding_accounts
+            .insert(node.to_owned(), wallet.provider.clone());
         Ok(wallet)
     }
 
@@ -678,7 +685,7 @@ impl Core {
     pub fn accept_release(&mut self, wallet: &InstalledWallet) -> Result<Receipt, AssemblyError> {
         let listing =
             |step: &str, e: AppendFailure| AssemblyError::Listing(format!("{step}: {e:?}"));
-        self.records.registers.borrow_mut().permit(
+        self.deployed.registers.borrow_mut().permit(
             &kit::operator_login(),
             Permission::Change(CatalogueChange::AcceptModule),
         );

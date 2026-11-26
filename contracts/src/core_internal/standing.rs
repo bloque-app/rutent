@@ -33,6 +33,54 @@ pub fn resting_node(order: &str, part: &str, history: &History) -> Option<String
     }
 }
 
+/// Whether `by` is a holder `order` involves by what `history` holds, a decide step's or a resolution's mover aside
+/// (`T-021-16`): its origin reserve, which an acceptance of the order names; a provider of a segment on a route the
+/// log gave it, chosen, recalculated or with its destination changed; the reserve of an arrival held against it; or a
+/// holding withdrawal's holder of it or of the order it was handed on from. Never by a decide step's or a
+/// `resolve_stuck` effect's mover, so a provider no other entry ties to the order never becomes one by being named a
+/// mover; nor by another order's route.
+///
+/// The one reading of it (`T-020-55`): the log's (`stuck-decide-held-at-is-a-held-node`, the narrowed party rule),
+/// policy's (R-MOVER, core-authz's `stuck`) and orchestration's port of the log's party reading (core-orch's
+/// `stuck::party`) each call this. Only entries the log holds as `observed` count, which every kind it reads is, by
+/// [`What::allows`](super::What::allows)' table: the guard changes nothing on a checked history, and keeps an entry of
+/// another outcome from tying anyone.
+pub fn holder_of_the_order(
+    order: &crate::router_api::Id,
+    by: &crate::router_api::Id,
+    history: &History,
+) -> bool {
+    history.iter().any(|(_, e)| {
+        let Some(v) = verified(e).filter(|v| v.outcome == EntryOutcome::Observed {}) else {
+            return false;
+        };
+        match &v.what {
+            What::Acceptance {
+                order: o,
+                origin_reserve,
+                ..
+            } => o == order && origin_reserve == by,
+            What::Input { input } if input.subject.order.as_str() == order.as_str() => {
+                super::relations::route_segments(&input.observed)
+                    .iter()
+                    .any(|s| s.provider.as_str() == by.as_str())
+            }
+            What::Arrival {
+                reserve,
+                order: Some(o),
+                ..
+            } => o == order && reserve == by,
+            What::HoldingWithdrawal {
+                order: o,
+                handed_on_from,
+                holder,
+                ..
+            } => (o == order || handed_on_from == order) && holder == by,
+            _ => false,
+        }
+    })
+}
+
 /// Where a part stands after a history.
 pub(crate) struct Standing {
     /// The part, as the state machine holds it.

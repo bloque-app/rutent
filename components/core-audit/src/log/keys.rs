@@ -167,6 +167,8 @@ impl Settings {
 /// An advertisement the log accepted.
 #[derive(Debug, Clone)]
 struct Accepted {
+    /// The commitment of the stated entry that brought it (`T-020-55`).
+    commitment: rutent_contracts::module_interface::Digest,
     statement: Statement<Advertisement>,
     made_at: i128,
     /// When the log received it.
@@ -427,11 +429,14 @@ impl Register {
                 }
             }
             Entry::Stated(StatedEntry {
-                what, received_at, ..
+                what,
+                received_at,
+                commitment,
+                ..
             }) if what.statement.as_str() == ADVERTISEMENT_SHAPE => {
                 if let Some(bytes) = kept {
                     // A refused advertisement changes nothing.
-                    let _ = self.join(settings, history, bytes, received_at);
+                    let _ = self.join(settings, history, bytes, received_at, commitment);
                 }
             }
             _ => {}
@@ -554,6 +559,7 @@ impl Register {
         history: &History,
         received: &[u8],
         received_at: &rutent_contracts::router_api::Timestamp,
+        commitment: &rutent_contracts::module_interface::Digest,
     ) -> Option<()> {
         let at = received_at.unix_nanos();
         let statement: Statement<Advertisement> = serde_json::from_slice(received).ok()?;
@@ -640,11 +646,27 @@ impl Register {
         }
         let provider = statement.statement.provider.clone();
         self.ads.entry(provider).or_default().push(Accepted {
+            commitment: commitment.clone(),
             statement,
             made_at,
             accepted_at: at,
         });
         Some(())
+    }
+
+    /// The advertisement of `provider` the register accepted last, with the commitment of the stated entry that brought
+    /// it: the one in force, by every rule [`Register::join`] holds an advertisement to (`T-020-55`).
+    pub(super) fn accepted(
+        &self,
+        provider: &str,
+    ) -> Option<(
+        &rutent_contracts::module_interface::Digest,
+        &Statement<Advertisement>,
+    )> {
+        self.ads
+            .get(provider)
+            .and_then(|h| h.last())
+            .map(|a| (&a.commitment, &a.statement))
     }
 
     /// The rules across history: a dropped statements key stays dropped, and a key's purpose holds everywhere.

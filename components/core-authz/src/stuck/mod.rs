@@ -99,14 +99,13 @@
 use rutent_contracts::core_internal::calls::{
     AppendFailure, OutcomeDeclines, PolicyLog, StuckOrders,
 };
-use rutent_contracts::core_internal::resting_node;
 use rutent_contracts::core_internal::{
     Action, Actor, Answer, Decision, Entry, MoveOutcome, NotKnownCause, Outcome,
     OutcomeConfirmation, OutcomeDecline, OutcomeReport, Receipt, RefusalClass, Resolution, Role,
     StuckDecide, StuckMove, VerifiedEntry, What,
 };
+use rutent_contracts::core_internal::{holder_of_the_order, resting_node};
 use rutent_contracts::router_api::Id;
-use rutent_contracts::state_machine::{Observed, SegmentPlan};
 
 use crate::engine::{Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources};
 use crate::funds::ReadFailure;
@@ -394,61 +393,6 @@ fn parties_of(entries: &[(Receipt, Entry)], order: &Id) -> Vec<Id> {
     parties
 }
 
-/// Whether `by`, the provider a stuck order's decision names as holding its value and moving it, is a holder `order`
-/// involves by what the log holds of it (`T-021-16`, R-MOVER): its origin reserve, which an acceptance of the order
-/// names; a provider of a segment on a route the order was given, chosen, recalculated or with its destination
-/// changed, by the inputs the log took; or the holder of a holding account the order's value rested at, the reserve
-/// of an arrival held against the order or a holding withdrawal's holder, of the order or of the order it was handed
-/// on from (`T-020-40`'s parties, the holders alone). Never by a decide step's or a `resolve_stuck` effect's mover,
-/// which the log reads as a party whoever it is, so a provider no other entry ties to the order never becomes one by
-/// being named a mover; nor by an input not taken, an entry the log doesn't hold as observed, or another order's
-/// route.
-fn involves_holder(entries: &[(Receipt, Entry)], order: &Id, by: &Id) -> bool {
-    entries.iter().any(|(_, entry)| {
-        let Entry::Verified(VerifiedEntry {
-            what,
-            outcome: Outcome::Observed {},
-            ..
-        }) = entry
-        else {
-            return false;
-        };
-        match what {
-            What::Acceptance {
-                order: o,
-                origin_reserve,
-                ..
-            } => o == order && origin_reserve == by,
-            // The state machine's ids are its own type: compared by their text, as `core-orch`'s port reads them.
-            What::Input { input } if input.subject.order.as_str() == order.as_str() => {
-                let on_route = |s: &SegmentPlan| s.provider.as_str() == by.as_str();
-                match &input.observed {
-                    Observed::RouteChosen { parts, .. } => {
-                        parts.iter().flat_map(|p| p.segments.iter()).any(on_route)
-                    }
-                    Observed::RouteRecalculated { segments, .. }
-                    | Observed::DestinationChanged { segments, .. } => {
-                        segments.iter().any(on_route)
-                    }
-                    _ => false,
-                }
-            }
-            What::Arrival {
-                reserve,
-                order: Some(o),
-                ..
-            } => o == order && reserve == by,
-            What::HoldingWithdrawal {
-                order: o,
-                handed_on_from,
-                holder,
-                ..
-            } => (o == order || handed_on_from == order) && holder == by,
-            _ => false,
-        }
-    })
-}
-
 impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     /// The register's word that `from` reaches `to`: a refusal for `class` where it does.
     fn reaches(&mut self, from: &Id, to: &Id, class: RefusalClass) -> Check {
@@ -535,7 +479,8 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
     }
 
     /// The decision's rules read from the log: its decider is, or reaches, no party of the order, and the provider it
-    /// names as holding the value and moving it is a holder the order involves ([`involves_holder`], `T-021-16`).
+    /// names as holding the value and moving it is a holder the order involves (core-internal's
+    /// [`holder_of_the_order`], `T-021-16`).
     /// Where the register of holding accounts placed that provider, the node it holds, for the decision's entry to
     /// record (`held_at`).
     fn decide_check(&mut self, request: &StuckDecide) -> (Check, Option<Id>) {
@@ -554,7 +499,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         )
     }
 
-    /// Whether `by` is a holder `order` involves: by the log ([`involves_holder`]), or, where the log ties it to
+    /// Whether `by` is a holder `order` involves: by the log ([`holder_of_the_order`]), or, where the log ties it to
     /// nothing, by the deployment's register of holding accounts (`Source::HoldingAccount`), asked only for the inner
     /// node the stuck `part`'s value rests at by the log (`resting_node`, `T-020-40`'s holder of a holding account its
     /// value rested at): a hand-on through a public node's wallet names that node's wallet (`T-020-33`). A yes clears
@@ -568,7 +513,7 @@ impl<L: PolicyLog + Receipted, P, S: Sources> Engine<L, P, S> {
         part: &Id,
         by: &Id,
     ) -> (Check, Option<Id>) {
-        if involves_holder(entries, order, by) {
+        if holder_of_the_order(order, by, entries) {
             return (Check::Clear, None);
         }
         let refused = (Check::Refuse(RefusalClass::NotPermitted), None);
