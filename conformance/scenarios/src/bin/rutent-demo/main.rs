@@ -22,7 +22,7 @@
 //! cargo run -p rutent-scenarios --bin rutent-demo -- [--out DIR] [--seed N] [--step]
 //! ```
 //!
-//! `--out` is the folder the log and the evidence are written to (`rutent-demo-out` by default), `--seed` the run's
+//! `--out` is the folder the log and the evidence are written to (`<target>/rutent-demo` by default), `--seed` the run's
 //! seed (every identifier Core draws follows from it), and `--step` waits for Enter between acts, for a live
 //! presentation. `conformance/demo/README.md` is the presenter's guide.
 
@@ -142,9 +142,24 @@ struct Options {
     step: bool,
 }
 
+/// The default output folder: `rutent-demo` in cargo's target directory, beside the profile this binary was built
+/// under, so a run leaves nothing in the checkout; `rutent-demo-out` in the current folder where that can't be found.
+fn default_out() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.ancestors()
+                .skip(1)
+                .find(|d| d.file_name().is_some_and(|n| n != "deps"))
+                .and_then(|profile| profile.parent())
+                .map(|target| target.join("rutent-demo"))
+        })
+        .unwrap_or_else(|| PathBuf::from("rutent-demo-out"))
+}
+
 fn options() -> Result<Options, String> {
     let mut options = Options {
-        out: PathBuf::from("rutent-demo-out"),
+        out: default_out(),
         seed: 1,
         step: false,
     };
@@ -443,13 +458,8 @@ impl Demo {
         let graph = network_dot();
         std::fs::create_dir_all(&self.out).map_err(|e| e.to_string())?;
         std::fs::write(self.out.join("network.dot"), graph).map_err(|e| e.to_string())?;
-        self.t.detail(format!(
-            "The network is a graph: nodes are places value rests, each provider an edge between two. {} has it in",
-            self.out.join("network.dot").display()
-        ));
-        self.t.detail(
-            "Graphviz form (`dot -Tsvg network.dot`); conformance/demo/network.svg is it drawn.",
-        );
+        self.t.detail("The network is a graph: each node a place value rests, each provider an edge between two.");
+        self.t.detail("It is written as network.dot (Graphviz) in the output folder; conformance/demo/network.svg draws it.");
         let session = self
             .core()
             .open_session(&kit::customer())
@@ -461,10 +471,8 @@ impl Demo {
             kit::customer().party.as_str(),
             session.as_str()
         ));
-        let tick0 = self.publish()?;
-        self.t.step(format!(
-            "The log publishes its first checkpoint ({tick0}), signed by the log's own key, not the operator's"
-        ));
+        self.publish()?;
+        self.t.step("The log publishes its first checkpoint, signed by the log's own key, not the operator's");
         self.t.say("Before any order, the log already holds each provider's grant and signed advertisement:");
         self.timeline();
         Ok(())
@@ -608,6 +616,7 @@ impl Demo {
         record: &rutent_contracts::router_api::DecisionRecord,
     ) -> Step<Vec<Accounted>> {
         let providers = show::providers(record);
+        let assets = show::assets_out(record);
         let mut all = Vec::new();
         self.t.step(heading);
         for r in ran {
@@ -618,16 +627,20 @@ impl Demo {
                         let outcome = match &s.outcome {
                             SegmentOutcome::Settled { amount_out, .. } => format!(
                                 "settled, gave out {}",
-                                serde_json::to_value(amount_out)
-                                    .ok()
-                                    .and_then(|v| v.as_str().map(str::to_owned))
-                                    .unwrap_or_default()
+                                money(
+                                    serde_json::to_value(amount_out)
+                                        .ok()
+                                        .and_then(|v| v.as_str().map(str::to_owned))
+                                        .unwrap_or_default()
+                                        .as_str(),
+                                    assets.get(n).map_or("?", String::as_str)
+                                )
                             ),
                             other => format!("{other:?}"),
                         };
                         let effect = s.effect.as_ref().map(receipt).unwrap_or_default();
                         self.t.detail(format!(
-                            "{:<16} {provider:<22} {outcome:<32} {effect}",
+                            "{:<22} {provider:<22} {outcome:<36} {effect}",
                             s.segment.as_str()
                         ));
                     }
@@ -729,11 +742,18 @@ impl Demo {
         let completed = asked
             .completed
             .ok_or_else(|| format!("the reversal didn't complete: {:?}", asked.why))?;
+        let whose = match &completed.word {
+            rutent_core_orch::reversal::Word::Reserves => "the origin reserve's word".to_owned(),
+            rutent_core_orch::reversal::Word::Publishers(publisher) => {
+                format!(
+                    "its publisher {}'s word, labelled as the publisher's",
+                    publisher.as_str()
+                )
+            }
+        };
         self.t.step(format!(
-            "Core asks {} to reverse; the value is shown back at the node it came from, on {:?}'s word (grade {:?})",
-            owing.provider.as_str(),
-            completed.word,
-            completed.grade
+            "Core asks {} to reverse; the value is shown back at the node it came from, on {whose}",
+            owing.provider.as_str()
         ));
         self.t.say("A provider's own word never undoes its own failure: inside a private node the word counted is");
         self.t
@@ -882,8 +902,11 @@ impl Demo {
         };
         let by_alice = self.core().move_stuck(&order, &decided, &alice);
         self.t.step(format!(
-            "alice tries to carry out her own decision: refused ({})",
+            "alice tries to carry out her own decision: refused, {}",
             match &by_alice {
+                Err(StepError::Resolve(rutent_core_orch::stuck::ResolveError::SameParty)) => {
+                    "since whoever decides can't also move it".to_owned()
+                }
                 Ok(moved) => format!("{moved:?}"),
                 Err(e) => format!("{e:?}"),
             }
@@ -1054,7 +1077,7 @@ impl Demo {
             .step("What each provider's own book holds, as the simulated world kept it:");
         for (provider, book) in &run.books {
             self.t
-                .detail(format!("{provider:<22} {} entries", book.len()));
+                .detail(format!("{provider:<22} {} book entries", book.len()));
         }
 
         let binary = audit::binary()?;

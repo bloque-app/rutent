@@ -15,7 +15,7 @@ seconds.
 | Option | What it does |
 |---|---|
 | `--step` | Waits for Enter between acts. Use it when presenting live |
-| `--out DIR` | Where the log and the evidence are written. The default is `rutent-demo-out/` in the current folder |
+| `--out DIR` | Where the log and the evidence are written. The default is `rutent-demo/` in cargo's target directory (`target/rutent-demo/`, or under `CARGO_TARGET_DIR`), so a run leaves nothing in the checkout. The demo prints the folder it wrote |
 | `--seed N` | The run's seed. Every identifier Core draws follows from it, so one seed always gives the same run. The default is 1 |
 
 The program exits 0 when the whole story ran as told, ending with the outside check passing on the real log and

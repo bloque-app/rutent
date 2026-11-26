@@ -155,6 +155,25 @@ pub fn route(record: &DecisionRecord) -> Vec<String> {
     lines
 }
 
+/// The asset each operation of a decision record's chosen route gives out, in order.
+pub fn assets_out(record: &DecisionRecord) -> Vec<String> {
+    record
+        .chosen()
+        .map(|c| {
+            c.parts
+                .iter()
+                .flat_map(|p| p.operations.iter())
+                .map(|o| {
+                    serde_json::to_value(o)
+                        .ok()
+                        .and_then(|v| v["to"]["asset"]["id"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "?".to_owned())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The providers a decision record's chosen route runs through, in order.
 pub fn providers(record: &DecisionRecord) -> Vec<String> {
     record
