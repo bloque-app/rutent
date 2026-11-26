@@ -859,6 +859,7 @@ fn every_permission_held() -> Vec<Permission> {
         Permission::ConfirmOutcome,
         Permission::AskReversal,
         Permission::AskStatus,
+        Permission::RefileArrival,
         Permission::DeclineOutcome,
         Permission::EraseStatement,
         Permission::EraseOverridingCitations,
@@ -878,6 +879,7 @@ fn every_permission_held() -> Vec<Permission> {
             | Permission::ConfirmOutcome
             | Permission::AskReversal
             | Permission::AskStatus
+            | Permission::RefileArrival
             | Permission::DeclineOutcome
             | Permission::EraseStatement
             | Permission::EraseOverridingCitations
@@ -1044,6 +1046,27 @@ fn every_call() -> Vec<Call> {
         erasure_asked(&operator()),
         true,
     ));
+    // Filing an arrival anew, decided and never an effect (`T-020-52`): no effect is tried on its permit or its refusal.
+    let refiling = refiling_asked(&operator(), "ord-17");
+    calls.push(Call {
+        name: "refile an arrival".into(),
+        owner: Permission::RefileArrival,
+        caller: refiling.caller.clone(),
+        run: Box::new(move |holders| {
+            let mut policy = engine(Kept::with_a_decision_record(), swept(holders));
+            let decision = policy.decide(&refiling).unwrap();
+            let entry = policy.log().entry_of(&decision).clone();
+            assert!(
+                matches!(&entry.what, What::Decide { request: r, .. } if r == &refiling),
+                "recorded with its action"
+            );
+            Ran {
+                answer: decision.outcome,
+                who: Some(entry.who),
+                ruled: policy.policy.1.ruled == 1,
+            }
+        }),
+    });
     let reversal = |caller: &Actor| {
         let mut request: DecisionRequest = valid!("decision-request-to-mark-a-release-stale");
         request.request = id(&format!("req-reverse-{}", caller.acts.as_str()));
@@ -1289,9 +1312,9 @@ fn every_call() -> Vec<Call> {
 #[test]
 fn each_permission_alone_allows_only_its_own_action() {
     let all = every_permission_held();
-    assert_eq!(all.len(), 34, "every permission of the register's");
+    assert_eq!(all.len(), 35, "every permission of the register's");
     let calls = every_call();
-    assert_eq!(calls.len(), 37, "every call a permission lets through");
+    assert_eq!(calls.len(), 38, "every call a permission lets through");
     for permission in &all {
         assert!(
             calls.iter().any(|c| &c.owner == permission),
@@ -3698,4 +3721,132 @@ fn acceptance_of_fault_on_a_register_that_cannot_be_read_is_refused_for_its_miss
             class: RefusalClass::MissingInput
         }
     );
+}
+
+/// An arrival's refiling, as `caller` asks it, naming `caller` as the filer and `order` as the order it differed from:
+/// the fixtures' request.
+fn refiling_asked(caller: &Actor, order: &str) -> DecisionRequest {
+    let mut request: DecisionRequest = valid!("decision-request-to-refile-an-arrival");
+    request.request = id(&format!("req-refile-{}", caller.acts.as_str()));
+    request.caller = caller.clone();
+    let Action::RefileArrival {
+        order: named,
+        filer,
+        ..
+    } = &mut request.action
+    else {
+        panic!("a refiling");
+    };
+    *named = id(order);
+    *filer = caller.clone();
+    request
+}
+
+/// An arrival is filed anew only by the deployment operator's login the register lists for the permission to refile,
+/// or by the reserve it came to, the order's origin acting for itself, each decided and recorded with its actor
+/// (`REQ-ORD-23`, `T-020-52`). The permit rests in the log as the refiling's own: policy decides it, as it decides
+/// any action, and the refiling entry cites it.
+// verifies: REQ-ORD-23, REQ-AUZ-1
+#[test]
+fn arrival_is_refiled_by_the_operators_listed_login_or_the_reserve_it_came_to() {
+    let reserve = actor("us-bank", "us-bank", Role::Provider, ActorKind::Component);
+    let mut policy = engine(
+        Kept::with_a_decision_record(),
+        Register::world()
+            .and_holding(&operator(), &[Permission::RefileArrival])
+            .of_the_operator(&operator()),
+    );
+    for caller in [operator(), reserve] {
+        let asked = refiling_asked(&caller, "ord-17");
+        let decision = policy.decide(&asked).unwrap();
+        assert_eq!(decision.outcome, Answer::Permit {}, "{caller:?}");
+        let entry = policy.log().entry_of(&decision).clone();
+        assert_eq!(entry.who, caller, "recorded with its actor");
+        let What::Decide { request, .. } = &entry.what else {
+            panic!("a decide entry");
+        };
+        assert_eq!(
+            request.action, asked.action,
+            "the decision names the refiling whole"
+        );
+        // A refiling takes no effect: it is a decision alone.
+        assert!(
+            policy
+                .log
+                .effect(&asked, decision.permit().unwrap())
+                .is_err(),
+            "{caller:?}"
+        );
+    }
+}
+
+/// A refiling by a login whose party may not file it is refused, recorded as refused and with no permit to cite: the
+/// operator's login the register doesn't list for the permission (every other held), a login stating the operator's
+/// role in another party that holds it, a reserve that isn't the order's origin, every other role, and a request
+/// naming a filer other than its caller (`T-020-52`).
+// verifies: REQ-ORD-23, REQ-AUZ-1
+#[test]
+fn arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused() {
+    let mut every_other: Vec<Permission> = every_permission(&operator())
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    // The operator's own login holds the permission, so only the filer it names can refuse it.
+    every_other.extend([
+        Permission::ActForUser,
+        Permission::CarryOnward,
+        Permission::RefileArrival,
+    ]);
+    let unlisted = actor("operator", "op-login-9", Role::Operator, ActorKind::Person);
+    let another_party = actor(
+        "other-desk",
+        "op-login-8",
+        Role::Operator,
+        ActorKind::Person,
+    );
+    let another_reserve = actor("fx-desk", "fx-desk", Role::Provider, ActorKind::Component);
+    let others = [
+        actor("cust-1", "cust-1", Role::Customer, ActorKind::Person),
+        actor("kyc-co", "kyc-co", Role::Verifier, ActorKind::Component),
+        actor(
+            "fin-regulator",
+            "examiner-3",
+            Role::Regulator,
+            ActorKind::Person,
+        ),
+        actor("audit-co", "checker-1", Role::Checker, ActorKind::Person),
+        core(),
+    ];
+    let mut register = Register::world()
+        .and_holding(&operator(), &every_other)
+        .of_the_operator(&operator())
+        // The other party's login holds the permission, but the register doesn't say it is the operator's.
+        .and_holding(&another_party, &[Permission::RefileArrival])
+        .and_holding(&another_reserve, &[Permission::RefileArrival]);
+    for other in &others {
+        register = register.and_holding(other, &[Permission::RefileArrival]);
+    }
+    let mut policy = engine(Kept::with_a_decision_record(), register);
+    let mut asked: Vec<DecisionRequest> = [&unlisted, &another_party, &another_reserve]
+        .into_iter()
+        .chain(others.iter())
+        .map(|caller| refiling_asked(caller, "ord-17"))
+        .collect();
+    // The operator's own login naming another actor as the filer.
+    let mut other_filer = refiling_asked(&operator(), "ord-17");
+    other_filer.request = id("req-refile-named-another");
+    if let Action::RefileArrival { filer, .. } = &mut other_filer.action {
+        *filer = unlisted.clone();
+    }
+    asked.push(other_filer);
+    for request in &asked {
+        let decision = policy.decide(request).unwrap();
+        assert_eq!(decision.outcome, NOT_PERMITTED, "{:?}", request.caller);
+        assert!(decision.permit().is_none());
+        assert_eq!(
+            policy.log().entry_of(&decision).who,
+            request.caller,
+            "recorded refused, with its actor"
+        );
+    }
 }

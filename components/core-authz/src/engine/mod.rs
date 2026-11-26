@@ -1277,6 +1277,9 @@ mod tests {
                 Action::AskReversal { .. } => {}
                 // In policy's tables since `T-021-09`: asked as a reversal is.
                 Action::AskStatus { .. } => {}
+                // Decided and never an effect: orchestration records the refiling on its permit
+                // (`refiling-rests-on-policys-permit`); its own tests are `roles`'.
+                Action::RefileArrival { .. } => unreachable!("tested apart: it has no effect"),
                 // Decided and never carried out, so no effect follows to test here: its own tests are `roles`' and
                 // `parties`' (`reversal-carrier-rests-on-its-acceptance`).
                 Action::AcceptFault { .. } => unreachable!("tested apart: it has no effect"),

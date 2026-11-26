@@ -42,6 +42,14 @@
 //!    entry is held to the entry's commitment, and cites the hold's receipt as the acceptance's `held`; a hold that
 //!    isn't redeemed refuses the acceptance with nothing recorded for it, and an acceptance naming none redeems none.
 //!
+//! **What the caller is told of an order's status is read first** (`REQ-AUZ-8`, `REQ-AUZ-7`; `T-020-52`). Each of
+//! the three calls, and [`Intake::told`], tells a status only once policy's read check ([`StatusReads`]) allows it:
+//! `Reads::FiledOrder` naming the requester intake's own record of the filed request holds, never the caller's word,
+//! until the order's acceptance is in the log, and `Reads::OrderState` from then on, the reader the caller as
+//! authentication established it. A caller policy refuses, an agent its party didn't scope for reading among them, is
+//! told [`IntakeError::ReadRefused`] and no more, as a refused reader is (`T-023-01`); what the call did stands. The
+//! register of actors binds the caller's role too ([`Actors::acts_for`]), as policy's does (`T-021-14`).
+//!
 //! **What the caller is told holds no provider's text** (`REQ-ORD-18`). [`Told`] carries identifiers, a class from
 //! a closed list and the quote Core built from the router's record; a provider's words stay in its stated entry.
 //!
@@ -56,11 +64,13 @@ pub use hold::HOLD_SECONDS;
 
 use std::collections::BTreeMap;
 
-use rutent_contracts::core_internal::calls::{AppendFailure, Authorisations, KeptStatements, Log};
+use rutent_contracts::core_internal::calls::{
+    AppendFailure, Authorisations, Decisions, KeptStatements, Log, Reads as ReadPort,
+};
 use rutent_contracts::core_internal::{
     AcceptanceBasis, Actor, ActorKind, Answer, Authorisation, Destination, DestinationOutcome,
-    Entry, ORDER_INPUTS_SHAPE, OrderInputs, OrderRefusalClass, PartYes, Parties, Receipt,
-    RefusalClass, Role, ShownAs, What,
+    Entry, ORDER_INPUTS_SHAPE, OrderInputs, OrderRefusalClass, PartYes, Parties, ReadCheck,
+    ReadOutcome, Reads as Read, Receipt, RefusalClass, Role, ShownAs, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{NodeRef, to_canonical};
@@ -101,12 +111,14 @@ pub trait Destinations {
 }
 
 /// The register of actors policy reads (`F-021`'s `ActsFor`): whether an actor, as external authentication
-/// established it, acts for the party it states, as the kind of actor it states. The assembly answers it from the
-/// same register policy does, which binds the kind too (`T-021-05`), so an agent's login stating itself a person is
-/// no one's here either.
+/// established it, acts for the party it states, as the kind of actor it states and in the role it states. The
+/// assembly answers it from the same register policy does, which binds the kind (`T-021-05`) and the role
+/// (`T-021-14`), so an agent's login stating itself a person is no one's here either, and a customer's login stating
+/// itself the operator, or a reserve's login stating the operator's role, acts in no role it isn't listed in
+/// (`T-020-52`).
 pub trait Actors {
-    /// Whether `acts` acts for `party` as `kind`; no answer is no.
-    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool;
+    /// Whether `acts` acts for `party` as `kind`, in `role`; no answer is no.
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool;
 }
 
 /// A session as policy's register holds it (`REQ-CAT-3`).
@@ -122,6 +134,21 @@ pub struct HeldSession {
 pub trait SessionRegister {
     /// The session `session`, if policy opened it.
     fn held(&mut self, session: &Id) -> Option<HeldSession>;
+
+    /// Whether policy's register is unread: it was never read from the log, or couldn't be, so `held` answers none
+    /// of what it would hold (`T-021-17`). A request in a session of it is refused for its missing input, not as one
+    /// whose session isn't held (`T-020-52`).
+    fn unread(&mut self) -> bool;
+}
+
+/// What intake reaches to ask policy whether a caller may be told an order's status (`REQ-AUZ-8`, `REQ-AUZ-7`;
+/// finding 6 of `M3`'s milestone review): policy's read check, and the one place intake hands over its own record of
+/// a filed request.
+pub trait StatusReads: ReadPort {
+    /// Intake's own record of the order a request just opened, handed over before policy is asked to read the order:
+    /// policy's `Requester` source answers from it, never from the read's word (`T-021-16`'s round 4). It is the
+    /// deployment's to keep, as it keeps a filed order's (`FiledOrders::opened`).
+    fn filed(&mut self, record: &OrderRecord);
 }
 
 /// An order request, as a person or an agent makes it (`REQ-OPS-5`).
@@ -272,6 +299,10 @@ pub enum IntakeError {
     NoSuchOrder,
     /// The caller isn't acting for the party it states, in the customer's role: it makes no request.
     NotTheRequester,
+    /// Policy refused the caller the order's status, or couldn't be asked and nothing was told: no more is said
+    /// than a refused reader is told (`T-023-01`'s `CurrentError::Refused`), neither the order's state nor a class.
+    /// What the call did stands as it was recorded.
+    ReadRefused,
     /// An acceptance under way is carried on only by the actor whose authorisation policy permitted.
     OtherActor,
     /// Policy refused the caller, of this class; the order stands as it was.
@@ -320,10 +351,15 @@ pub struct Desk<'a, 'p> {
     pub destinations: &'a mut dyn Destinations,
     /// Policy's authorisations.
     pub authorisations: &'a mut dyn Authorisations,
+    /// Policy's decisions: the actions it decides beyond an order's authorisation, an arrival's refiling among them
+    /// (`T-020-52`).
+    pub decisions: &'a mut dyn Decisions,
     /// The register of actors.
     pub actors: &'a mut dyn Actors,
     /// Policy's session register.
     pub sessions: &'a mut dyn SessionRegister,
+    /// Policy's read check, which every status intake tells is held to (`REQ-AUZ-8`, `T-020-52`).
+    pub reads: &'a mut dyn StatusReads,
     /// The bounds the router runs under.
     pub bounds: &'a PolicyBounds,
     /// The prices Core holds.
@@ -400,12 +436,25 @@ struct Kept {
     ended: bool,
     /// The `route_chosen` input the log took: the order's start, once it has one.
     started: Option<RecordedInput>,
+    /// The order's acceptance is in the log, though the order may have ended since: its parties are the log's to
+    /// say, so its status is read as `Reads::OrderState`, not as a filed order's (`T-020-52`).
+    logged: bool,
     /// Rebuilt from the log by a Core that reopened (`T-020-46`): `asked` holds what the log holds of the request,
     /// and a repeat is held to that.
     reopened: bool,
 }
 
 impl Kept {
+    /// Whether the log holds the order's acceptance: told accepted, or its entry appended, or ended after it was.
+    fn acceptance_logged(&self) -> bool {
+        self.logged
+            || matches!(self.status, Status::Accepted { .. })
+            || self
+                .accepting
+                .as_ref()
+                .is_some_and(|accepting| accepting.pending.len() <= 1)
+    }
+
     fn told(&self) -> Told {
         match (&self.order, &self.status) {
             (Some(order), status) => Told::Exists {
@@ -444,15 +493,121 @@ impl Intake {
     }
 
     /// What `caller` is told now about its request `request`: nothing unless the caller acts for the party it
-    /// states, in the customer's role, and that party used the identifier.
-    pub fn told(&self, actors: &mut dyn Actors, caller: &Actor, request: &Id) -> Option<Told> {
+    /// states, in the customer's role, that party used the identifier, and policy lets the caller read the order's
+    /// status (`REQ-AUZ-8`): a caller policy refuses, or can't be asked, is told nothing, as one that has no such
+    /// request is.
+    pub fn told(&self, desk: &mut Desk<'_, '_>, caller: &Actor, request: &Id) -> Option<Told> {
         if caller.role != Role::Customer
-            || !actors.acts_for(&caller.acts, &caller.party, caller.kind)
+            || !desk
+                .actors
+                .acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
         {
             return None;
         }
         let kept = self.requests.get(&key(&caller.party, request))?;
-        kept.opening.is_empty().then(|| kept.told())
+        if !kept.opening.is_empty() {
+            return None;
+        }
+        self.read(desk, caller, kept.told()).ok()
+    }
+
+    /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
+    /// intake: a filed order's, by the requester intake's own record names, until the acceptance is in the log, and
+    /// the order's state after it (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s milestone review). Every check is
+    /// policy's to record, allowed or refused. A request refused with no order exists to read nothing and is told as
+    /// it is. A refusal, or a check that couldn't be made, tells nothing of the order.
+    fn read(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        told: Told,
+    ) -> Result<Told, IntakeError> {
+        let Told::Exists { order, .. } = &told else {
+            return Ok(told);
+        };
+        self.read_order(desk, caller, order)?;
+        Ok(told)
+    }
+
+    /// Asks policy whether `caller` may read the status of `order`, as [`Intake::read`] does, recording the check.
+    /// [`IntakeError::ReadRefused`] where it may not, or where intake holds no order of that name; a check that
+    /// couldn't be made is the log's failure, nothing told. A held order (`T-020-46`) hands its record to nobody
+    /// (`T-020-52`).
+    fn read_order(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<(), IntakeError> {
+        let kept = self
+            .orders
+            .get(order.as_str())
+            .and_then(|key| self.requests.get(key))
+            .ok_or(IntakeError::ReadRefused)?;
+        let reads = if kept.acceptance_logged() {
+            Read::OrderState {
+                order: order.clone(),
+            }
+        } else {
+            // Intake's own record of the filed request goes to the deployment first: policy asks the order's record
+            // who its requester is, never the read's word. A held order's goes to nobody (`T-020-46`): the log's own
+            // `order_opened` is what policy reads it from.
+            if !self.held.contains(order.as_str()) {
+                desk.reads.filed(&OrderRecord {
+                    order: order.clone(),
+                    request: kept.request.request.clone(),
+                    parties: kept.request.parties.clone(),
+                    origin_reserve: kept.request.origin_reserve.clone(),
+                });
+            }
+            Read::FiledOrder {
+                order: order.clone(),
+                requester: kept.request.parties.requester.clone(),
+            }
+        };
+        let answer = desk.reads.check_read(&ReadCheck {
+            request: desk.parts.fresh.id(),
+            reader: caller.clone(),
+            reads,
+            permission: None,
+            at: record::now(desk.parts.clock)?,
+        })?;
+        match answer.outcome {
+            ReadOutcome::Allowed {} => Ok(()),
+            ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
+    }
+
+    /// What a failed call tells `caller`: the error itself, unless it shows the state or the identifier of an order the
+    /// caller may not read, in which case the same read check is asked first and a refused reader is told
+    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). An error of that kind with no order
+    /// behind it (a request refused before one existed) is no one's to read, so an agent, whose party's scope for
+    /// reading nothing can be asked of, is told [`IntakeError::ReadRefused`] too: fail closed.
+    fn told_error(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+        error: IntakeError,
+    ) -> IntakeError {
+        let named = match &error {
+            IntakeError::Conflicting { order: Some(named) } => Some(named),
+            IntakeError::Conflicting { order: None } => {
+                return if caller.kind == ActorKind::Agent {
+                    IntakeError::ReadRefused
+                } else {
+                    error
+                };
+            }
+            IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
+                Some(order)
+            }
+            _ => return error,
+        };
+        match named.map(|o| self.read_order(desk, caller, o)) {
+            Some(Ok(())) | None => error,
+            Some(Err(refused)) => refused,
+        }
     }
 
     /// Intake rebuilt from `history`, the log's own entries, as a Core that reopens reads it (`T-020-46`): each order
@@ -555,6 +710,7 @@ impl Intake {
                 } if o == order => Some(*class),
                 _ => None,
             });
+            let logged = acceptance.is_some();
             let status = match (&acceptance, &started, refused) {
                 (Some(acceptance), Some(_), _) => Status::Accepted {
                     acceptance: acceptance.clone(),
@@ -588,6 +744,7 @@ impl Intake {
                     accepting: None,
                     ended: false,
                     started,
+                    logged,
                     reopened: true,
                 },
             );
@@ -616,6 +773,11 @@ impl Intake {
 
     /// The record of `order`, for the assembly to answer policy's sources from.
     pub fn record(&self, order: &Id) -> Option<OrderRecord> {
+        // An order held because its inputs can't be read back answers nothing to policy's sources, failing closed
+        // (`T-020-46`, `T-020-52`).
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
         let kept = self.requests.get(self.orders.get(order.as_str())?)?;
         Some(OrderRecord {
             order: order.clone(),
@@ -629,6 +791,11 @@ impl Intake {
     /// (`Segments::follow`), and the only start of an order they act on. An order whose acceptance the log took but
     /// whose start it refused has none: it ended half-accepted, and nothing acts on it.
     pub fn start(&self, order: &Id) -> Option<&RecordedInput> {
+        // A held order never starts: one accepted before a restart whose inputs can't be read back after it is
+        // followed by nothing (`T-020-46`, `T-020-52`).
+        if self.held.contains(order.as_str()) {
+            return None;
+        }
         self.requests
             .get(self.orders.get(order.as_str())?)?
             .started
@@ -653,8 +820,26 @@ impl Intake {
         Ok(kept)
     }
 
-    /// Takes `request` (see the module's docs, step 1).
+    /// Takes `request` (see the module's docs, step 1). The caller is told the order's status only once policy lets it
+    /// read it ([`IntakeError::ReadRefused`] otherwise, the order opened all the same: the same request again is
+    /// asked again).
     pub fn open(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        request: OrderRequest,
+    ) -> Result<Told, IntakeError> {
+        let caller = request.caller.clone();
+        let told = match self.open_inner(desk, request) {
+            Ok(told) => told,
+            Err(error) => {
+                let none = Id::new("none").expect("an identifier");
+                return Err(self.told_error(desk, &caller, &none, error));
+            }
+        };
+        self.read(desk, &caller, told)
+    }
+
+    fn open_inner(
         &mut self,
         desk: &mut Desk<'_, '_>,
         request: OrderRequest,
@@ -663,7 +848,7 @@ impl Intake {
         if caller.role != Role::Customer
             || !desk
                 .actors
-                .acts_for(&caller.acts, &caller.party, caller.kind)
+                .acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
         {
             return Err(IntakeError::NotTheRequester);
         }
@@ -697,8 +882,21 @@ impl Intake {
     }
 
     /// Routes `order` with router `R` and shows its quote, or records why it can't proceed (step 2). Only the
-    /// order's requester quotes it.
+    /// order's requester quotes it, and is told the order's status once policy lets it read it.
     pub fn quote<R: Router>(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<Told, IntakeError> {
+        let told = match self.quote_inner::<R>(desk, caller, order) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, caller, order, error)),
+        };
+        self.read(desk, caller, told)
+    }
+
+    fn quote_inner<R: Router>(
         &mut self,
         desk: &mut Desk<'_, '_>,
         caller: &Actor,
@@ -887,7 +1085,26 @@ impl Intake {
     ///
     /// An acceptance carried on from where it stopped is already built and cites what it cited: `hold` is read
     /// only when the acceptance is built.
+    ///
+    /// What is told is the order's status once policy lets `by` read it, as the order's state where the acceptance
+    /// is in the log; a refused read leaves the acceptance as recorded ([`IntakeError::ReadRefused`]).
     pub fn accept_holding(
+        &mut self,
+        desk: &mut Desk<'_, '_>,
+        order: &Id,
+        by: &Actor,
+        quote: &Digest,
+        owner: Option<&Id>,
+        hold: Option<&Id>,
+    ) -> Result<Told, IntakeError> {
+        let told = match self.accept_inner(desk, order, by, quote, owner, hold) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, by, order, error)),
+        };
+        self.read(desk, by, told)
+    }
+
+    fn accept_inner(
         &mut self,
         desk: &mut Desk<'_, '_>,
         order: &Id,
@@ -1184,6 +1401,7 @@ fn ended(
 ) -> Result<Told, IntakeError> {
     let order = kept.order.clone().ok_or(IntakeError::NotNow)?;
     refuse(desk, &kept.request.request, Some(&order), class)?;
+    kept.logged = kept.acceptance_logged();
     kept.status = Status::CantProceed { class };
     kept.ended = true;
     kept.offered = None;
@@ -1217,6 +1435,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         accepting: None,
         ended: false,
         started: None,
+        logged: false,
         reopened: false,
     };
     let refused = |desk: &mut Desk<'_, '_>, kept: &mut Kept, class| {
@@ -1230,8 +1449,14 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         return Ok(kept);
     };
     // The reserve is asked about the holder's funds in this session: it must be the requester's, and open.
-    if !session_is_the_requesters(desk, &request)? {
-        refused(desk, &mut kept, OrderRefusalClass::RefusedByPolicy)?;
+    let now = record::now(desk.parts.clock)?;
+    if let Some(class) = session_refusal(
+        desk.sessions,
+        &request.session,
+        &request.parties.requester,
+        &now,
+    ) {
+        refused(desk, &mut kept, class)?;
         return Ok(kept);
     }
     let order = desk.parts.fresh.id();
@@ -1314,15 +1539,27 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
     Ok(kept)
 }
 
-/// Whether the request's session is one policy opened for its requester, still open by Core's clock.
-fn session_is_the_requesters(
-    desk: &mut Desk<'_, '_>,
-    request: &OrderRequest,
-) -> Result<bool, IntakeError> {
-    let now = record::now(desk.parts.clock)?;
-    Ok(desk.sessions.held(&request.session).is_some_and(|held| {
-        held.holder == request.parties.requester && held.expires_at.unix_nanos() > now.unix_nanos()
-    }))
+/// Why the request's session isn't one policy opened for its requester, still open by Core's clock: `None` where it
+/// is. The class is `refused_by_policy` for a session the register doesn't hold, holds for another party, or that has
+/// ended, and `missing_input` where the register is unread, as policy answers it (`T-021-17`, `T-020-52`).
+pub(crate) fn session_refusal(
+    sessions: &mut dyn SessionRegister,
+    session: &Id,
+    holder: &Id,
+    now: &Timestamp,
+) -> Option<OrderRefusalClass> {
+    // Asked first, so a register that is unread refuses whatever sessions its adapter still answers (fail closed).
+    if sessions.unread() {
+        return Some(OrderRefusalClass::MissingInput);
+    }
+    let held = sessions.held(session).is_some_and(|held| {
+        &held.holder == holder && held.expires_at.unix_nanos() > now.unix_nanos()
+    });
+    if held {
+        None
+    } else {
+        Some(OrderRefusalClass::RefusedByPolicy)
+    }
 }
 
 /// Whether `again` repeats `first`: the same request in every field but who acts for the party, which the key
@@ -1363,7 +1600,8 @@ fn same_logged_request(logged: &OrderRequest, again: &OrderRequest) -> bool {
 /// Whether `caller` speaks for the request's requester: an actor for its party, in the customer's role, a person or
 /// an agent alike (`REQ-OPS-5`), that the register of actors says acts for that party.
 fn speaks_for(actors: &mut dyn Actors, request: &OrderRequest, caller: &Actor) -> bool {
-    is_requester(request, caller) && actors.acts_for(&caller.acts, &caller.party, caller.kind)
+    is_requester(request, caller)
+        && actors.acts_for(&caller.acts, &caller.party, caller.kind, caller.role)
 }
 
 /// Whether `by` acts for the order's requester, in the customer's role, a person or an agent alike (`REQ-OPS-5`).

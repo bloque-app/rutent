@@ -153,6 +153,11 @@ fn effect_action(action: &Action) -> Result<(), Violation> {
     if matches!(action, Action::AcceptFault { .. }) {
         broke("a customer's acceptance of fault is a decision, and takes no effect")?;
     }
+    if matches!(action, Action::RefileArrival { .. }) {
+        broke(
+            "filing an arrival anew is a decision, and takes no effect: the refiling entry records it",
+        )?;
+    }
     action.check()
 }
 

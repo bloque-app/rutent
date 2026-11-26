@@ -219,6 +219,7 @@
             "change_catalogue",
             "ask_reversal",
             "ask_status",
+            "refile_arrival",
             "accept_fault",
             "erase_statement",
             "resolve_stuck"
@@ -299,6 +300,21 @@
           },
           "then": {
             "$ref": "#/$defs/action_ask_status"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "refile_arrival"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/action_refile_arrival"
           }
         },
         {
@@ -520,6 +536,34 @@
         "transaction": {
           "description": "The fresh transaction it is asked under: never the segment's own, nor one any other entry named before.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    },
+    "action_refile_arrival": {
+      "description": "Filing an arrival anew against the order it differed from (REQ-ORD-23), a decided action (T-020-52): the deployment's operator, or the reserve the arrival came to, files it, and policy decides that before the refiling entry is recorded, which cites the permit. It takes no effect.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "arrival",
+        "order",
+        "filer"
+      ],
+      "properties": {
+        "kind": {
+          "const": "refile_arrival"
+        },
+        "arrival": {
+          "description": "The receipt of the arrival's entry.",
+          "$ref": "urn:rutent:core-internal:receipt"
+        },
+        "order": {
+          "description": "The order it is filed against.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "filer": {
+          "description": "Who files it anew: the request's caller.",
+          "$ref": "#/$defs/actor"
         }
       }
     },

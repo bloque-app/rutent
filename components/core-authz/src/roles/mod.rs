@@ -161,6 +161,10 @@ pub enum Permission {
     /// An operator's login asking a segment's provider for its late status (`REQ-ORD-1`, `T-021-09`). Core's own
     /// actors ask it through [`Permission::CarryOnward`].
     AskStatus,
+    /// An operator's login filing an arrival anew against the order it differed from (`REQ-ORD-23`, `T-020-52`),
+    /// a permission of its own: the deployment operator's, by the register. A reserve files its own arrival by being
+    /// the order's origin reserve, with no permission of the operator's.
+    RefileArrival,
     /// An actor declining a mover's report of a move's outcome, on its own evidence: the confirming actor's other
     /// word, a permission apart from confirming (`REQ-AUZ-4`, ADR-0011, `T-021-09`). Asked by `T-021-09`'s rule.
     DeclineOutcome,
@@ -327,6 +331,25 @@ fn needs_of(asked: Asked<'_>) -> Option<Needs> {
                     | Role::Checker
                     | Role::Core => None,
                 },
+                // Filing an arrival anew against its order (`REQ-ORD-23`, `T-020-52`): the filer is the caller itself, a
+                // login of the deployment operator's the register lists for a permission of its own, or the reserve the
+                // arrival came to, acting for itself, which the order's record says is its origin. Nobody else, Core's
+                // own actors and the user included. That the arrival differed from this order is the log's
+                // (`refiling-files-an-arrival-anew`); the refiling cites this decision
+                // (`refiling-rests-on-policys-permit`). It is decided and never an effect.
+                Action::RefileArrival { order, filer, .. } if filer == caller => {
+                    match caller.role {
+                        Role::Operator => of_operator_holds(caller, Permission::RefileArrival),
+                        Role::Provider => Some(vec![origin(order, &caller.party)].into()),
+                        Role::Customer
+                        | Role::Verifier
+                        | Role::Regulator
+                        | Role::Checker
+                        | Role::Core => None,
+                    }
+                }
+                // A filer other than the caller is no one's act.
+                Action::RefileArrival { .. } => None,
                 Action::AskReversal { .. } => match caller.role {
                     Role::Operator => {
                         operator_holds(caller, Permission::AskReversal).map(Needs::from)

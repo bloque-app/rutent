@@ -264,6 +264,13 @@ impl Clock for Stopped {
 }
 
 impl Register {
+    /// Whether the register is unread: it answers none of what it would hold, and every call resting on it is
+    /// refused as missing (`T-021-17`). The deployment's session register tells its callers so, to refuse them as
+    /// such (`T-020-52`).
+    pub fn is_unread(&self) -> bool {
+        self.unread
+    }
+
     /// Every session opened, oldest first.
     pub fn sessions(&self) -> &[OpenSession] {
         &self.sessions

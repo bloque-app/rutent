@@ -335,7 +335,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 124] = [
+const SCHEMA_RULES: [SchemaRule; 126] = [
     (
         "filing-inputs-without-its-objective",
         &[("", "required")],
@@ -490,6 +490,16 @@ const SCHEMA_RULES: [SchemaRule; 124] = [
         "decision-request-to-ask-a-late-status-without-its-segment",
         &[("/action", "required")],
         "missing field `segment`",
+    ),
+    (
+        "decision-request-to-refile-an-arrival-without-its-filer",
+        &[("/action", "required")],
+        "missing field `filer`",
+    ),
+    (
+        "verified-entry-of-a-refiling-without-its-decision",
+        &[("/what", "required")],
+        "missing field `decision`",
     ),
     (
         "verified-entry-of-a-stuck-parts-evidence-without-its-part",
@@ -3232,6 +3242,25 @@ fn reversal_at_a_later_inner_node_rests_on_that_nodes_confirming_party() {
     assert_case_refused(
         "reversal-rests-on-its-evidence--the-origin-reserves-own-word-at-a-later-inner-node",
     );
+}
+
+// verifies: REQ-ORD-23, REQ-AUZ-1
+#[test]
+fn a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew() {
+    assert_accepted_by_both("decision-request-to-refile-an-arrival");
+    assert_rejected("decision-request-to-refile-an-arrival-without-its-filer");
+    assert_rejected("verified-entry-of-a-refiling-without-its-decision");
+    // The decision is asked by the filer, names its arrival, order and filer, and is permitted.
+    assert_case("refiling-rests-on-policys-permit--the-operators-permit");
+    for broken in ["missing", "action", "arrival", "yes", "filer"] {
+        assert_case_refused(&format!("refiling-rests-on-policys-permit--{broken}"));
+    }
+}
+
+// verifies: REQ-ORD-18, REQ-AUZ-5
+#[test]
+fn an_order_refused_for_an_input_policy_could_not_read_is_told_its_class() {
+    assert_accepted_by_both("verified-entry-of-a-refusal-for-an-input-policy-could-not-read");
 }
 
 // verifies: REQ-ORD-1, INV-4
