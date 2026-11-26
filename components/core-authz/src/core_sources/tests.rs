@@ -60,6 +60,7 @@ impl AcceptedAdvertisements for Store {
                             starts_routes_on_automatic_deposits: true,
                             maker: "bank-co".to_owned(),
                             declared_in_version: "1.0.0".to_owned(),
+                            answers_hold_requests: None,
                         }),
                     }),
                 )
