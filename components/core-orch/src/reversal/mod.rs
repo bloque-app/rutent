@@ -2362,7 +2362,11 @@ fn fault_shown(bytes: &[u8], transaction: &Id) -> Option<Fault> {
     failure.fault
 }
 
-/// The carrier a showing of `fault`, answered by `by`, names: `by` must act in that party's role.
+/// The carrier a showing of `fault`, answered by `by`, names: `by` must act in that party's role. A narrowing pre-gate
+/// on the stated role only. A customer's acceptance then rests on policy's permitted `accept_fault` decision, which Core
+/// finds in its own history; an operator's is its own `accept_fault` command, which Core records in its name and
+/// policy doesn't decide (`T-020-62`'s finding: the operator's command is the one gate here that policy doesn't
+/// follow).
 fn party_of(fault: Fault, by: &Actor) -> Result<Carrier, ReversalError> {
     match (fault, by.role) {
         (Fault::Customer, Role::Customer) => Ok(Carrier::Customer),

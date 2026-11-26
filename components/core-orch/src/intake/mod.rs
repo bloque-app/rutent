@@ -509,8 +509,9 @@ impl Intake {
     /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
     /// intake: a filed order's, by the requester intake's own record names, until the acceptance is in the log, and
     /// the order's state after it (`REQ-AUZ-8`, `REQ-AUZ-7`; finding 6 of `M3`'s milestone review). Every check is
-    /// policy's to record, allowed or refused. A request refused with no order exists to read nothing and is told as
-    /// it is. A refusal, or a check that couldn't be made, tells nothing of the order.
+    /// policy's to record, allowed or refused. A request refused with no order has none to read: a person is told it as
+    /// it is, an agent is told [`IntakeError::ReadRefused`], as its repeat is (`T-020-62`). A refusal, or a check that
+    /// couldn't be made, tells nothing of the order.
     fn read(
         &self,
         desk: &mut Desk<'_, '_>,
@@ -518,7 +519,14 @@ impl Intake {
         told: Told,
     ) -> Result<Told, IntakeError> {
         let Told::Exists { order, .. } = &told else {
-            return Ok(told);
+            // A refused request's class is a status of the party's request, not the caller's own to know: an agent is
+            // told what its repeat is told (`Conflicting { order: None }`), `ReadRefused`, whatever its scope, as no
+            // order exists for policy to be asked about (`T-020-62`).
+            return if caller.kind == ActorKind::Agent {
+                Err(IntakeError::ReadRefused)
+            } else {
+                Ok(told)
+            };
         };
         self.read_order(desk, caller, order)?;
         Ok(told)
@@ -575,14 +583,23 @@ impl Intake {
 
     /// What a failed call tells `caller`: the error itself, unless it shows the state or the identifier of an order the
     /// caller may not read, in which case the same read check is asked first and a refused reader is told
-    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). An error of that kind with no order
-    /// behind it (a request refused before one existed) is no one's to read, so an agent, whose party's scope for
-    /// reading nothing can be asked of, is told [`IntakeError::ReadRefused`] too: fail closed.
+    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). Every error about an existing order
+    /// shows something of it, so each goes, for an agent, through the check but the few that show nothing: `NoSuchOrder` and
+    /// `NotTheRequester` (the register of actors answered them before any order was looked at), `ReadRefused` (already
+    /// the refused reader's answer) and `Fresh` (a draw of Core's, no order's). A `Hold`, `Unofferable`, `Routing`,
+    /// `Log` or `Refused` would tell an agent its party didn't scope to read that the order stands quoted, where it
+    /// stands or that it exists at all (`T-020-62`). An error with no order behind it (a request refused
+    /// before one existed, `order` is `None`) names no order: a repeat of it differing from the first is told an agent
+    /// [`IntakeError::ReadRefused`], and a failure of the log on opening is told as it is, for it shows no order.
+    ///
+    /// An unscoped agent probing its own party's order identifiers is told `ReadRefused` of an order that exists and
+    /// `NoSuchOrder` of one that doesn't ([`Intake::kept_for`]); that reaches only its own party's identifiers, which are
+    /// Core's fresh draws, so it is a probe of nothing an agent could guess (`T-020-62`).
     fn told_error(
         &self,
         desk: &mut Desk<'_, '_>,
         caller: &Actor,
-        order: &Id,
+        order: Option<&Id>,
         error: IntakeError,
     ) -> IntakeError {
         let named = match &error {
@@ -594,10 +611,17 @@ impl Intake {
                     error
                 };
             }
-            IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
-                Some(order)
-            }
-            _ => return error,
+            IntakeError::NoSuchOrder
+            | IntakeError::NotTheRequester
+            | IntakeError::ReadRefused
+            | IntakeError::Fresh => return error,
+            // The other errors are asked of an agent, whose party's scope for reading can lack. A person's own login is
+            // the requester's, whom policy lets read (`REQ-AUZ-8`), and no check of it is recorded for them.
+            _ if caller.kind != ActorKind::Agent => return error,
+            _ => match order {
+                Some(order) => Some(order),
+                None => return error,
+            },
         };
         match named.map(|o| self.read_order(desk, caller, o)) {
             Some(Ok(())) | None => error,
@@ -827,8 +851,7 @@ impl Intake {
         let told = match self.open_inner(desk, request) {
             Ok(told) => told,
             Err(error) => {
-                let none = Id::new("none").expect("an identifier");
-                return Err(self.told_error(desk, &caller, &none, error));
+                return Err(self.told_error(desk, &caller, None, error));
             }
         };
         self.read(desk, &caller, told)
@@ -886,7 +909,7 @@ impl Intake {
     ) -> Result<Told, IntakeError> {
         let told = match self.quote_inner::<R>(desk, caller, order) {
             Ok(told) => told,
-            Err(error) => return Err(self.told_error(desk, caller, order, error)),
+            Err(error) => return Err(self.told_error(desk, caller, Some(order), error)),
         };
         self.read(desk, caller, told)
     }
@@ -1083,7 +1106,7 @@ impl Intake {
     ) -> Result<Told, IntakeError> {
         let told = match self.accept_inner(desk, order, by, quote, owner, hold) {
             Ok(told) => told,
-            Err(error) => return Err(self.told_error(desk, by, order, error)),
+            Err(error) => return Err(self.told_error(desk, by, Some(order), error)),
         };
         self.read(desk, by, told)
     }
