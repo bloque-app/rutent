@@ -8747,20 +8747,34 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
      and reapplied after the relisting on reopening.
   8. A cadence past 2^53 - 1 seconds is set at 2^53 - 1 (never, in practice): the setting holds a safe integer.
 - **Gaps, with owners.**
-  1. **A public node's `confirmations` reach Core and stop there.** `Settings::public_node` holds them, but no seam takes
+  1. **Routed to `T-020-60`: a public node's `confirmations` reach Core and stop there.** `Settings::public_node` holds them, but no seam takes
      them to the grading: `CMP-EVIDENCE`'s `Status` says pending or final by the network's own rules and carries no count,
      so Core can't hold a movement to more confirmations than its reader counts. Owner: the network reader as an operator's
      module (`DEC-28`; `T-020-59`/`T-020-60`), which can apply them, and `F-031` for each network's values. `listed` takes
      effect (the catalogue's public list, a holding account at the node).
-  2. **`listed: false` lists nothing off.** The catalogue has no way to take a node off its public list; a setting that
-     unlists is recorded and has no effect. Owner: `F-013`'s catalogue (`nodes.rs`), if unlisting is wanted.
-  3. **A confirmation is forgotten only by a later unclean run.** A provider confirmed after the platform's last opening is
-     not held at the next unclean one. Were a restriction on it taken unrecorded later in that same run, and the platform
-     ended before any write succeeded, the next opening wouldn't know it and wouldn't hold the provider. Core's log holds that
-     effect (`done`, `TakenUnrecorded`), so taking Core's restrictive effects again on reopening before confirming is the
-     close. Owner: `T-024-21` (restarts) with `F-013`.
-  4. **The cutover date is recorded, not read.** `Settings::cutover` holds it; voiding statements under an older version
-     from it is `T-020-54`'s.
+  2. **Closed in this row (the lead, after the first build): `listed: false` takes the node off.**
+     `Catalogue::remove_public_node` (`nodes.rs`'s `remove_public`) takes it off the public list, its holding account kept on
+     record for the value resting there; `Settings` applies it live and on reopening, after the join's default listing.
+     The scan pins the method as one that carries out nothing. Test `public node unlisted by the operator is no longer on
+     the catalogue's public list`, written first and seen red. It is the operator's setting until `T-020-59`'s listing
+     change (`DelistPublicNetwork`, not on `m3` at this merge) replaces it.
+  3. **Closed in this row (the lead, after the first build): a restriction the platform couldn't record holds after a
+     crash.** Before a confirmation takes effect (the only way a provider's releases come back into force after the
+     platform's unclean end), `Segments::change_release` takes again each restrictive lifecycle effect Core's log holds done
+     for the provider, in log order: `revoke`, `withdraw`, `declare_exploited`, `mark_stale` and `roll_back`, less a
+     revocation or declaration a later done `reinstate` undid (`retake_restriction`, `pub(crate)`). A roll back or a
+     withdrawal is taken again only where that version is staged, or waits, again. One the platform holds already
+     (`AlreadyMarked`, `NoSuchVersion`, `TakenUnrecorded`) needs nothing; any other refusal answers
+     `ReleaseRefused::Unrestored` and nothing is confirmed (fail closed). The re-taking writes no entry (the log holds each
+     effect done) and runs on the effect the log holds, by its decision's caller. The held versions are compared with the
+     permit's before the re-taking and may only narrow after it. `ReleaseAsked.history` carries Core's log to it; the
+     assembly hands its log's entries. Test `restriction the platform could not record before a crash still holds after
+     core reopens` (core-orch `tests/lifecycle.rs`, a platform whose record breaks and which crashes), written first and
+     seen red (the confirmation ran with the version no longer exploited). It runs on the confirmation, not on Core's own
+     reopening: a platform that didn't restart holds its in-memory restrictions, and one that did holds every provider
+     until confirmed, so the confirmation is where every path back into force passes.
+  4. **Routed to `T-020-54`: the cutover date is recorded, not read.** `Settings::cutover` holds it; voiding statements
+     under an older version from it is `T-020-54`'s.
   5. **`T-020-42`'s roll-back scenario changed with L6.** `a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing`
      counted no decision for a roll back naming a version not staged; with policy asked first there is one, so its recorded
      list is `["decide", "decide"]`, then `["decide", "decide", "decide", "effect"]`. The same for `T-020-08`'s
@@ -8769,12 +8783,15 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
      test moved into the crate (`roll_back.rs`), as the function is now. The row's "pass unchanged" and its (3) can't both
      hold for these lines; (3) is the reviewer's L6, so it wins, and the named tests of `T-021-12`
      (`roll back without its permission is refused`, `staging is rolled back only on a permitted decision's effect`,
-     `each permission alone allows only its own action`) pass unchanged. Owner: the lead, to confirm.
+     `each permission alone allows only its own action`) pass unchanged. **Accepted by the lead:** asking policy first
+     necessarily records one more decision for each attempt, and that recorded attempt is exactly what L6 asks for.
   6. **The scenario's release acceptance is still the platform's test reviewer.** `Core::accept_waiting_release`
      (`T-024-07`) accepts through the fleet, and `Core::accept_release` (the operator's wallet) writes its own decided
      effect; Core's decided `accept` (`ReleaseChange::Accept`) is built and tested in core-orch, not yet the scenarios'
-     caller. Owner: `F-024` (the assembly), with `T-020-61`'s run.
+     caller. Routed to `T-020-61`.
   7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; `T-020-62` carries that check.
+- **Merged** `origin/m3` at `f0c66ab4` (the plan follow-up: `T-020-63`, `Reversals.later` in `T-020-61`), PLAN only, no
+  conflict.
 - **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
   core-orch `tests/settings.rs` (`operator setting takes effect only on a permitted decision and is rebuilt from the log`,
   `deposit wait above its ceiling is refused`, `public node setting set by the operator takes effect on its node's
@@ -8813,6 +8830,50 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
   | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
   | `OrderParties` reads the one precedence | `order_parties_read_the_one_precedence` |
+  | `listed: false` takes the node off the catalogue's list | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | a confirmation takes Core's restrictions again first | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
+- **Merged** `origin/m3` at `f0c66ab4` (the plan follow-up: `T-020-63`, `Reversals.later` in `T-020-61`), PLAN only, no
+  conflict.
+- **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
+  core-orch `tests/settings.rs` (`operator setting takes effect only on a permitted decision and is rebuilt from the log`,
+  `deposit wait above its ceiling is refused`, `public node setting set by the operator takes effect on its node's
+  segments`), `tests/lifecycle.rs` (`refused caller is told the same whether or not anything is staged and its attempt is
+  recorded`, `operator confirms a provider's releases only on a permitted decision`, and
+  `a_restriction_the_platform_took_unrecorded_is_recorded_done`), `tests/arrival.rs` (`deposit wait set by the operator
+  bounds a wait and survives a restart`); prov `tests/module_record.rs` (`providers confirmed before a restart are not held
+  again after it`); core-authz `engine` (`roll back and its siblings are reached only through core orch's decided path`)
+  and `core_sources` (`statement answer names only a verified entry's maker`, and `order_parties_read_the_one_precedence`);
+  core-audit `tests/reopen.rs` (`revoked provider's advertisement declares nothing`); scenarios `execution_routes.rs`
+  (`slippage limit set by the operator bounds the router`, across a reopen), `module_scenarios.rs` (`operator declares a
+  version exploited through policy and its segments stop on it`, `publisher cannot mark its own version stale`),
+  `segments.rs` (`segment on a version marked stale through policy moves to the newest`); contracts
+  `confirming_a_providers_releases_is_a_catalogue_change_of_its_own`. `T-020-55`'s named test now asks all ten sources,
+  each for its value, and `statement_answer_is_the_logs_maker_for_every_statement` holds an only-claimed statement to no
+  maker. The core-authz counts move by the one change (`T-021-12`'s way): 26 decided actions, 90 callers, 36
+  permissions, 39 calls, 12 + 9 changes and settings.
+- **Rule-off table** (each alone, its test run through the lock, the file restored from git; script `ruleoff.py` in the
+  row's scratch folder; every red an assertion, no build failure).
+
+  | Rule switched off | Red |
+  |---|---|
+  | settings are rebuilt from the log's done effects | `operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log` |
+  | the operator's slippage limit in the router's bounds | `slippage_limit_set_by_the_operator_bounds_the_router` |
+  | the platform carries out a decided `declare_exploited` | `operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on_it` |
+  | a lifecycle action needs policy's permit (a refusal taken as a permit) | `publisher_cannot_mark_its_own_version_stale` |
+  | the platform carries out a decided `mark_stale` | `segment_on_a_version_marked_stale_through_policy_moves_to_the_newest` |
+  | policy is asked before the platform's releases are read | `refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded` |
+  | a confirmation names the held versions | `operator_confirms_a_providers_releases_only_on_a_permitted_decision` |
+  | a provider confirmed since the last opening is not held | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
+  | a listed public node reaches the catalogue | `public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments` |
+  | scan rule 4 (a public lifecycle carrier) | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+  | `Arrivals::reopened` reads the decided deposit wait | `deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart` |
+  | the deposit wait's ceiling | `deposit_wait_above_its_ceiling_is_refused` |
+  | a restriction taken unrecorded is `done` | `a_restriction_the_platform_took_unrecorded_is_recorded_done` |
+  | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
+  | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
+  | `OrderParties` reads the one precedence | `order_parties_read_the_one_precedence` |
+  | `listed: false` takes the node off the catalogue's list | `public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list` |
+  | a confirmation takes Core's restrictions again first | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |
 - **Local checks** (through the lock, `contracts/src/lib.rs` touched first): `fmt --check`, workspace `clippy --all-targets
   -D warnings` and the doc check clean; core-orch, contracts and core-audit 742 passed; contracts with `rule-switches`
   (`core-internal`) 96; core-authz `--lib` 165; prov `module_record` 19; scenarios `assembly_policy` 17,
@@ -8820,3 +8881,15 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   `private_nodes`, `gross_charged`, `reopened`, `sim_providers`, `audit_scenarios`, `assembly_real_wallet`, `charge_check`,
   `holds`) and the lib tests all passed; `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings,
   `tag-check --strict` 2476 tests, 0 findings; the contract guard against `origin/develop`: no violations.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, at the head after `origin/m3`'s merge):
+  `fmt --check` and workspace `clippy --all-targets -D warnings` clean; core-orch, contracts and core-audit 744 passed
+  (core-orch alone 367 after the last change); contracts with `rule-switches` 96; core-authz `--lib` 165; prov
+  `module_record` and `catalogue` 42; scenarios (the lib tests, `assembly_policy`, `execution_routes`, `module_scenarios`,
+  `segments`, `sim_providers`, `reopened`, `private_nodes`) 116, and before the gap round the setters' other callers
+  (`simulated_faults`, `routing`, `gross_charged`, `audit_scenarios`, `assembly_real_wallet`, `charge_check`, `holds`);
+  `invariants` on seeds 11 to 15, 10; `plan-check --strict` 0 findings, `tag-check --strict` 2478 tests, 0 findings; the
+  contract guard against `origin/develop`: no violations.
+- **The doc check is left to CI.** The workspace doc run grew `rustdoc` on `tools/records` to about 7 GB and the lead
+  stopped it. Run crate by crate under the pinned 1.98.0 with a 2 GB watch, `rustdoc` on core-orch reached 2.6 GB and the
+  watch stopped it, so no crate's doc was run to the end locally. The first build's workspace doc run (under `stable`, the
+  same 1.98.0) had passed with `-D warnings` before the gap round, whose changes add no doc link.

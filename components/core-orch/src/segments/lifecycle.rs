@@ -29,7 +29,8 @@ use std::collections::BTreeSet;
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};
 use rutent_contracts::core_internal::{
-    Action, Actor, Answer, CatalogueChange, DecisionRequest, Effect, Outcome, What,
+    Action, Actor, Answer, CatalogueChange, DecisionRequest, Effect, Entry, Outcome, Permit,
+    Receipt, VerifiedEntry, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::PublicKey;
@@ -133,6 +134,22 @@ pub trait Releases {
         by: &Id,
         at: Instant,
     ) -> Result<usize, LifecycleRefusal>;
+
+    /// The provider's staged version, if one is (`Lifecycle::staged`).
+    fn staged(&self, provider: &Id) -> Option<String>;
+
+    /// Ends the provider's staging, the version in force kept (`Platform::roll_back`): the version whose staging ended.
+    ///
+    /// # Errors
+    ///
+    /// As the platform refuses.
+    fn roll_back(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal>;
 
     /// Confirms the provider's releases as the platform's record holds them (`Platform::confirm`).
     ///
@@ -238,6 +255,24 @@ impl<W: World> Releases for Judged<'_, W> {
         let _permitted = effect;
         self.platform
             .mark_stale(provider.as_str(), version.as_str(), by.as_str(), at)
+    }
+
+    fn staged(&self, provider: &Id) -> Option<String> {
+        self.platform
+            .lifecycle()
+            .staged(provider.as_str())
+            .map(str::to_owned)
+    }
+
+    fn roll_back(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform.roll_back(provider.as_str(), by.as_str(), at)
     }
 
     fn confirm(
@@ -360,6 +395,9 @@ pub struct ReleaseAsked<'a> {
     pub caller: &'a Actor,
     /// Core, which writes the effect and its result.
     pub core: &'a Actor,
+    /// Core's log, as it holds every entry now: a confirmation re-takes the provider's restrictive lifecycle effects
+    /// it holds done before the provider's releases come back into force (`T-020-49`). Only a confirmation reads it.
+    pub history: &'a [(Receipt, Entry)],
 }
 
 /// What a lifecycle action came to on the platform.
@@ -403,6 +441,16 @@ pub enum ReleaseRefused {
     Append(AppendFailure),
     /// The platform refused: the effect's result is `failed`, and nothing changed.
     Lifecycle(LifecycleRefusal),
+    /// Permitted, but a restriction Core's log holds done for the provider couldn't be taken again on the platform
+    /// before its releases came back into force: nothing is confirmed and no effect recorded (it fails closed).
+    Unrestored {
+        /// The restriction: its change and the version it names.
+        change: CatalogueChange,
+        /// The version.
+        version: String,
+        /// Why the platform refused it.
+        refusal: LifecycleRefusal,
+    },
 }
 
 impl From<AppendFailure> for ReleaseRefused {
@@ -460,6 +508,148 @@ fn target(
     }
 }
 
+/// The lifecycle changes that only restrict what runs or what may come into force: each is taken again from Core's log
+/// before a provider's releases are confirmed back into force after the platform's unclean end (`T-020-49`).
+const RESTRICTIVE: [CatalogueChange; 5] = [
+    CatalogueChange::RevokeRelease,
+    CatalogueChange::WithdrawRelease,
+    CatalogueChange::DeclareExploited,
+    CatalogueChange::MarkStale,
+    CatalogueChange::RollBack,
+];
+
+/// Each restrictive lifecycle effect `history` holds done for `provider`, in log order, as the log holds it (its
+/// action, permit and receipt), with who its decision's request names as its caller (where the log holds that
+/// decision). A revocation or a declaration a later done `reinstate` of the same version undid is left out.
+fn restrictions(history: &[(Receipt, Entry)], provider: &Id) -> Vec<(Effect, Option<Id>)> {
+    let done = |receipt: &Receipt| {
+        history.iter().any(|(_, e)| {
+            matches!(e, Entry::Verified(VerifiedEntry {
+                what: What::Result { effect },
+                outcome: Outcome::Done {},
+                ..
+            }) if effect == receipt)
+        })
+    };
+    let caller_of = |decision: &Receipt| {
+        history.iter().find_map(|(r, e)| match e {
+            Entry::Verified(VerifiedEntry {
+                what: What::Decide { request, .. },
+                ..
+            }) if r == decision => Some(request.caller.acts.clone()),
+            _ => None,
+        })
+    };
+    let mut found: Vec<(Effect, Option<Id>)> = Vec::new();
+    for (receipt, entry) in history {
+        let Entry::Verified(VerifiedEntry {
+            what: What::Effect { action, decision },
+            ..
+        }) = entry
+        else {
+            continue;
+        };
+        let Action::ChangeCatalogue {
+            change,
+            provider: p,
+            version,
+            ..
+        } = action
+        else {
+            continue;
+        };
+        if p != provider || !done(receipt) {
+            continue;
+        }
+        if *change == CatalogueChange::Reinstate {
+            found.retain(|(e, _)| {
+                !matches!(&e.action, Action::ChangeCatalogue { change: c, version: v, .. }
+                    if v == version && matches!(c, CatalogueChange::RevokeRelease | CatalogueChange::DeclareExploited))
+            });
+            continue;
+        }
+        if RESTRICTIVE.contains(change) {
+            found.push((
+                logged_effect(action, decision, receipt),
+                caller_of(decision.receipt()),
+            ));
+        }
+    }
+    found
+}
+
+/// The effect the log holds at `receipt`: `action`, on the permit its entry names, which the log admitted only on that
+/// permit's decision. Nothing new is decided or recorded.
+fn logged_effect(action: &Action, decision: &Permit, receipt: &Receipt) -> Effect {
+    Effect {
+        action: action.clone(),
+        decision: decision.clone(),
+        receipt: receipt.clone(),
+    }
+}
+
+/// Takes the restriction `effect`, one Core's log holds done, again on the platform, by `by`, as a reopened platform
+/// that lost it must hold it before its provider's releases come back into force. One the platform holds already (the
+/// version marked, nothing of it known, its staging or its waiting release gone) needs nothing; any other refusal is the
+/// answer, and nothing is confirmed. Visible in this crate alone: the confirmation's decided path is its one caller.
+pub(crate) fn retake_restriction(
+    releases: &mut dyn Releases,
+    effect: &Effect,
+    by: &Id,
+    clock: &dyn Clock,
+) -> Result<(), ReleaseRefused> {
+    let Action::ChangeCatalogue {
+        change,
+        provider,
+        version: Some(version),
+        ..
+    } = &effect.action
+    else {
+        return Ok(());
+    };
+    let at = clock.now().floor();
+    let held = |refusal: LifecycleRefusal| match refusal {
+        LifecycleRefusal::AlreadyMarked
+        | LifecycleRefusal::NoSuchVersion
+        | LifecycleRefusal::TakenUnrecorded => Ok(()),
+        refusal => Err(ReleaseRefused::Unrestored {
+            change: *change,
+            version: version.as_str().to_owned(),
+            refusal,
+        }),
+    };
+    match change {
+        CatalogueChange::RevokeRelease => releases
+            .revoke(effect, provider, version, by, at)
+            .map(|_| ())
+            .or_else(held),
+        CatalogueChange::DeclareExploited => releases
+            .declare_exploited(effect, provider, version, by, at)
+            .map(|_| ())
+            .or_else(held),
+        CatalogueChange::MarkStale => releases
+            .mark_stale(effect, provider, version, by, at)
+            .map(|_| ())
+            .or_else(held),
+        // A staging, or a waiting release, ended is taken again only where that version is staged, or waits, again:
+        // a later staging or release of another version is no part of it.
+        CatalogueChange::RollBack => match releases.staged(provider) {
+            Some(staged) if staged == version.as_str() => releases
+                .roll_back(effect, provider, by, at)
+                .map(|_| ())
+                .or_else(held),
+            _ => Ok(()),
+        },
+        CatalogueChange::WithdrawRelease => match releases.waiting(provider) {
+            Some(waiting) if waiting.version == version.as_str() => releases
+                .withdraw(effect, provider, &waiting.digest, by, at)
+                .or_else(held),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
 /// Carries out the lifecycle action `effect` permits, by `by`, on what it names: only where its action is the change
 /// `asked` is and names the same release, held to what the platform holds right before it is asked. Anything else asks
 /// nothing of the platform. Visible in this crate alone: the decided path is its one caller.
@@ -473,8 +663,25 @@ pub(crate) fn carry_out_release_change(
     if effect.action != asked.change.action(asked.provider) {
         return Err(ReleaseRefused::NotWhatItNames { holds: Vec::new() });
     }
-    // Held again right before the platform is asked.
-    let digest = target(releases, asked.provider, &asked.change)?;
+    // Held again right before the platform is asked. A confirmation's held versions may have narrowed since it was
+    // permitted, by the restrictions taken again first, never widened.
+    let digest = match asked.change {
+        ReleaseChange::Confirm { versions } => {
+            let held = releases
+                .held(asked.provider)
+                .ok_or(ReleaseRefused::NothingToDo)?;
+            if !held
+                .iter()
+                .all(|h| versions.iter().any(|v| v.as_str() == h))
+            {
+                return Err(ReleaseRefused::NotWhatItNames {
+                    holds: held.into_iter().collect(),
+                });
+            }
+            None
+        }
+        _ => target(releases, asked.provider, &asked.change)?,
+    };
     let at = clock.now().floor();
     let provider = asked.provider;
     let taken = |refusal: LifecycleRefusal| match refusal {
@@ -541,6 +748,15 @@ impl Segments {
         };
         // Read only once permitted: what the platform holds is the permitted caller's to learn.
         target(releases, asked.provider, &asked.change)?;
+        // A confirmation brings a provider's releases back into force after the platform's unclean end, whose record may
+        // have lost a restriction it took but couldn't write: each restriction Core's log holds done for the provider is
+        // taken again first, so it holds after the crash (gap 3 of `T-020-49`'s first build).
+        if matches!(asked.change, ReleaseChange::Confirm { .. }) {
+            for (restriction, by) in restrictions(asked.history, asked.provider) {
+                let by = by.unwrap_or_else(|| request.caller.acts.clone());
+                retake_restriction(releases, &restriction, &by, clock)?;
+            }
+        }
         let receipt = journal::append(
             log,
             journal::verified(

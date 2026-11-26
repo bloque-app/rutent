@@ -177,6 +177,8 @@ impl Core {
         let mut decisions = self.policy.clone();
         let provider = crate::kit::id(provider);
         let core = crate::kit::core();
+        // Core's log as it stands, which a confirmation re-takes the provider's restrictions from (`T-020-49`).
+        let history = self.log().entries().to_vec();
         let mut releases = self.fleet.releases();
         self.segments.change_release(
             &mut self.general,
@@ -189,6 +191,7 @@ impl Core {
                 change,
                 caller,
                 core: &core,
+                history: &history,
             },
         )
     }

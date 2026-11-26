@@ -223,6 +223,18 @@ impl Releases for Platform {
         self.held = None;
         Ok(())
     }
+    fn staged(&self, provider: &Id) -> Option<String> {
+        RollsBack::staged(self, provider)
+    }
+    fn roll_back(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        RollsBack::roll_back(self, effect, provider, by, at)
+    }
 }
 
 impl RollsBack for Platform {
@@ -292,6 +304,7 @@ fn ask(action: &str, platform: &mut Platform, policy: &mut Answering, log: &mut 
         change,
         caller: &caller,
         core: &core,
+        history: &[],
     };
     let text = |r: Result<String, String>| match r {
         Ok(_) => "carried out".to_owned(),
@@ -459,6 +472,7 @@ fn operator_confirms_a_providers_releases_only_on_a_permitted_decision() {
                     change: ReleaseChange::Confirm { versions },
                     caller: &caller,
                     core: &core,
+                    history: &[],
                 },
             )
         };
@@ -569,8 +583,196 @@ fn a_restriction_the_platform_took_unrecorded_is_recorded_done() {
             change: ReleaseChange::DeclareExploited { version: &version },
             caller: &caller,
             core: &core,
+            history: &[],
         },
     );
     assert_eq!(changed, Ok(Changed::TakenUnrecorded));
     assert!(matches!(log.0.last(), Some(Entry::Verified(v)) if v.outcome == Outcome::Done {}));
+}
+
+/// A platform whose record can break, and which crashes: a version declared exploited while its record couldn't hold it
+/// is exploited in memory only, and gone after the crash, when the platform holds the provider's releases for the
+/// operator's word.
+struct Crashing {
+    broken: bool,
+    recorded: BTreeSet<String>,
+    exploited: BTreeSet<String>,
+    held: Option<BTreeSet<String>>,
+    calls: Vec<String>,
+}
+
+impl Crashing {
+    fn wanted() -> BTreeSet<String> {
+        BTreeSet::from(["2.1.0".to_owned(), "2.2.0".to_owned()])
+    }
+
+    fn crash(&mut self) {
+        self.exploited = self.recorded.clone();
+        self.held = Some(&Self::wanted() - &self.exploited);
+    }
+}
+
+impl Releases for Crashing {
+    fn waiting(&self, _: &Id) -> Option<Waiting> {
+        None
+    }
+    fn held(&self, _: &Id) -> Option<BTreeSet<String>> {
+        self.held.as_ref().map(|h| h - &self.exploited)
+    }
+    fn accept(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn withdraw(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Digest,
+        _: &Id,
+        _: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        unreachable!()
+    }
+    fn revoke(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn declare_exploited(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        version: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        self.calls.push(format!("declare_exploited {version}"));
+        if !self.exploited.insert(version.to_string()) {
+            return Err(LifecycleRefusal::AlreadyMarked);
+        }
+        if self.broken {
+            return Err(LifecycleRefusal::TakenUnrecorded);
+        }
+        self.recorded.insert(version.to_string());
+        Ok(None)
+    }
+    fn mark_stale(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        unreachable!()
+    }
+    fn confirm(&mut self, _: &Effect, _: &Id, _: &Id, _: Instant) -> Result<(), LifecycleRefusal> {
+        self.calls.push("confirm".to_owned());
+        self.held = None;
+        Ok(())
+    }
+    fn staged(&self, _: &Id) -> Option<String> {
+        None
+    }
+    fn roll_back(
+        &mut self,
+        _: &Effect,
+        _: &Id,
+        _: &Id,
+        _: Instant,
+    ) -> Result<String, LifecycleRefusal> {
+        unreachable!()
+    }
+}
+
+/// A restriction the platform could not record before a crash still holds after Core reopens (`T-020-49`, gap 3 of its
+/// first build): the operator's decided `declare_exploited` is taken in memory only (`TakenUnrecorded`) and its result
+/// is `done` in Core's log; the platform crashes and, its record not knowing it, holds the provider's releases at both
+/// versions. A reopened Core, asked to confirm them, takes the restriction again from its log before the confirmation
+/// takes effect, so the exploited version stays exploited and only the other comes back into force. The re-taking adds
+/// no entry: the log holds the effect done already.
+// verifies: REQ-MDL-20, NFR-6
+#[test]
+fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Crashing {
+        broken: true,
+        recorded: BTreeSet::new(),
+        exploited: BTreeSet::new(),
+        held: None,
+        calls: Vec::new(),
+    };
+    let (mut policy, mut log) = (Answering::with(Answer::Permit {}), KeptLog::default());
+    let exploited = id("2.2.0");
+    let taken = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::DeclareExploited {
+                version: &exploited,
+            },
+            caller: &caller,
+            core: &core,
+            history: &[],
+        },
+    );
+    assert_eq!(taken, Ok(Changed::TakenUnrecorded));
+    platform.crash();
+    assert!(!platform.exploited.contains("2.2.0"), "the crash lost it");
+    assert_eq!(platform.held(&provider), Some(Crashing::wanted()));
+
+    // Core reopens on its log: its segments are new, its history the log's entries.
+    let history: Vec<(Receipt, Entry)> = log
+        .0
+        .iter()
+        .enumerate()
+        .map(|(n, e)| (receipt(n), e.clone()))
+        .collect();
+    let before = log.0.len();
+    let held: Vec<Id> = Crashing::wanted().iter().map(|v| id(v)).collect();
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+            history: &history,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        [
+            "declare_exploited 2.2.0",
+            "declare_exploited 2.2.0",
+            "confirm"
+        ],
+        "taken again before the confirmation"
+    );
+    assert!(platform.exploited.contains("2.2.0"), "it still holds");
+    assert_eq!(
+        log.0.len(),
+        before + 2,
+        "the confirmation's effect and result, and nothing else"
+    );
 }

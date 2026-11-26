@@ -288,6 +288,11 @@ pub(super) const CARRIES_OUT_NOTHING: &[(&str, &str, &str)] = &[
         "the catalogue's nodes",
     ),
     (
+        "remove_public_node",
+        "prov/src/catalogue/mod.rs",
+        "the catalogue's nodes: the operator's decided setting unlisting one (`T-020-49`)",
+    ),
+    (
         "register_public_holding",
         "prov/src/catalogue/mod.rs",
         "a holding account's register",

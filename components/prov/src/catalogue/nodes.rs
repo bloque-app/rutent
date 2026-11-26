@@ -116,6 +116,12 @@ impl NodeBook {
         Ok(())
     }
 
+    /// Takes `node` off the operator's public list; whether it was on it. Its holding account stays on record, so value
+    /// that rests there is still accounted for (`INV-5`); no account can be registered there again until it is listed.
+    pub(super) fn remove_public(&mut self, node: &str) -> bool {
+        self.public.remove(node)
+    }
+
     /// Whether the operator lists the node as public.
     pub fn is_public(&self, node: &str) -> bool {
         self.public.contains(node)

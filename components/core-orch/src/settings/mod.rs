@@ -16,7 +16,7 @@
 //!
 //! **Who reads them.** The router's bounds are the deployment's own (its hop and part limits, its policy version, its
 //! exclusions) overlaid with the operator's fee, slippage limits and ceilings ([`Settings::bounds`]); the catalogue takes
-//! each evidence floor and each public node the operator lists ([`Settings::apply`]); the schedule takes each cadence
+//! each evidence floor and each public node the operator lists, or takes off its public list ([`Settings::apply`]); the schedule takes each cadence
 //! ([`Settings::apply`]); arrivals take the deposit wait, and [`crate::arrival::Arrivals::reopened`] rebuilds it from the
 //! log too. The values stay the deployment's to choose; the per-network evidence rules (finality, reorgs) are `F-031`'s
 //! under `DEC-13`, and a public node's `confirmations` reach Core here ([`Settings::public_node`]) for the network's
@@ -344,10 +344,8 @@ impl Settings {
             );
         }
         for (node, set) in &self.public_nodes {
-            if set.listed
-                && let Some(catalogue) = targets.catalogue.as_deref_mut()
-            {
-                let _ = catalogue.add_public_node(node);
+            if let Some(catalogue) = targets.catalogue.as_deref_mut() {
+                list(catalogue, node, set.listed);
             }
         }
         if let Some(cadences) = targets.cadences.as_deref_mut() {
@@ -436,11 +434,9 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
                 catalogue.set_evidence_floor(catalogue_tuple(tuple), *grade);
             }
         }
-        OperatorSetting::PublicNode {
-            node, listed: true, ..
-        } => {
+        OperatorSetting::PublicNode { node, listed, .. } => {
             if let Some(catalogue) = targets.catalogue.as_deref_mut() {
-                let _ = catalogue.add_public_node(&node.network);
+                list(catalogue, &node.network, *listed);
             }
         }
         OperatorSetting::Cadence {
@@ -467,12 +463,21 @@ fn apply_one(setting: &OperatorSetting, targets: &mut Targets<'_>) {
                 arrivals.set_deposit_wait(*seconds);
             }
         }
-        OperatorSetting::PublicNode { .. }
-        | OperatorSetting::OperatorFee { .. }
+        OperatorSetting::OperatorFee { .. }
         | OperatorSetting::SlippageLimit { .. }
         | OperatorSetting::ProviderCeiling { .. }
         | OperatorSetting::PublisherCeiling { .. }
         | OperatorSetting::Cutover { .. } => {}
+    }
+}
+
+/// Puts `node` on the catalogue's public list, or takes it off, as the operator's setting says. Until `T-020-59`'s
+/// listing change replaces it, unlisting is this setting's.
+fn list(catalogue: &mut Catalogue, node: &str, listed: bool) {
+    if listed {
+        let _ = catalogue.add_public_node(node);
+    } else {
+        catalogue.remove_public_node(node);
     }
 }
 

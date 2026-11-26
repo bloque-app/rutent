@@ -414,3 +414,69 @@ fn public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments() 
     });
     assert!(again.nodes().is_public(node), "rebuilt from the log");
 }
+
+/// A public node the operator unlists through its setting is no longer on the catalogue's public list (`REQ-AUZ-6`,
+/// `T-020-49`): listed by the deployment's default or an earlier setting, a decided `listed: false` takes it off, so no
+/// holding account can be registered there any more; a reopened Core, its catalogue listing the node again at the
+/// advertisement's join, takes it off again from the log. Until `T-020-59`'s listing change replaces it, it is the
+/// operator's setting.
+// verifies: REQ-AUZ-6
+#[test]
+fn public_node_unlisted_by_the_operator_is_no_longer_on_the_catalogues_public_list() {
+    use rutent_prov::catalogue::Catalogue;
+    let node = "ledger-z";
+    let listing = |listed: bool| -> OperatorSetting {
+        serde_json::from_value(json!({
+            "setting": "public_node",
+            "node": { "network": node },
+            "listed": listed,
+        }))
+        .unwrap()
+    };
+    let mut catalogue = Catalogue::new();
+    let _ = catalogue.add_public_node(node);
+    let (mut log, mut policy) = (KeptLog::default(), Answering::with(Answer::Permit {}));
+    let mut settings = Settings::new();
+    set(
+        &mut settings,
+        &mut log,
+        &mut policy,
+        &mut Targets {
+            catalogue: Some(&mut catalogue),
+            ..Targets::default()
+        },
+        &listing(false),
+    )
+    .expect("permitted");
+    assert!(!catalogue.nodes().is_public(node), "taken off the list");
+    let _ = catalogue.publish_operator_module("operator-wallet");
+    assert!(
+        catalogue
+            .register_public_holding(node, "operator-wallet")
+            .is_err()
+    );
+    assert!(!settings.public_node(node).expect("its settings").listed);
+
+    // Reopened: the deployment's join lists it again, the log's setting takes it off.
+    let mut again = Catalogue::new();
+    let _ = again.add_public_node(node);
+    Settings::reopened(&log.entries).apply(&mut Targets {
+        catalogue: Some(&mut again),
+        ..Targets::default()
+    });
+    assert!(!again.nodes().is_public(node), "rebuilt from the log");
+
+    // Listed again by a later setting, it is public again.
+    set(
+        &mut settings,
+        &mut log,
+        &mut policy,
+        &mut Targets {
+            catalogue: Some(&mut catalogue),
+            ..Targets::default()
+        },
+        &listing(true),
+    )
+    .expect("permitted");
+    assert!(catalogue.nodes().is_public(node));
+}

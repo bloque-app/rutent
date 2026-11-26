@@ -237,6 +237,7 @@ fn segment_on_a_version_marked_stale_through_policy_moves_to_the_newest() {
                     change: ReleaseChange::MarkStale { version: &stale },
                     caller,
                     core: &core_actor,
+                    history: &[],
                 },
             )
         };
