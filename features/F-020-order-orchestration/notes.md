@@ -8629,7 +8629,8 @@ one conflict was this file, both sections kept). `DEC-20` paths: `components/cor
   2. A provider's declared cadence has no contract shape (round 1's gap 2), still the operator's. Owner: the lead and
      `T-020-49`.
   3. The run's own status question after a part (`Core::ask_unknown_status`, `T-020-47`) and the run itself are still the
-     assembly's; this row moves the schedule's jobs. Owner: `T-020-47`'s line / `F-030`.
+     assembly's; this row moves the schedule's jobs. Owner: `T-020-61`, Core's order run in `core-orch` (the earlier
+     owner, "`T-020-47`'s line / `F-030`", is withdrawn).
   4. The schedule's `told` set of unbuilt pairs, and when each job last ran, are in memory: a reopened Core tells the
      unbuilt pairs again in its round (the log's raise is once), and runs every job on its first tick. Accepted in round 1.
 - **Local checks** (through the lock, `contracts/src/lib.rs` touched first, a private plain wallet): `fmt --check`, `clippy
@@ -8670,10 +8671,10 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
   whose record isn't held, or whose segments aren't the route's, is answered in the round (`Watched` with why), never
   timed on another route. Test `recalculated_route_is_watched_after_a_restart` (`tests/failure.rs`), written first and seen
   red (after the reopen the round watched nothing and the order stayed `FirstSegmentSettled`).
-- **Not taken here (the reviewer's call):** gap 3, Core's own order run (`follow`, `run`, `recalculate`, the linked runs and
+- **Not taken here (the reviewer's call):** gap 3, Core's own order run (`T-020-61`) (`follow`, `run`, `recalculate`, the linked runs and
   hand-ons, the stuck commands, the rebuild of `started` and the current route), becomes a row of its own, with
   `Ports::started` and `Ports::decision_record`, which stay for it, and the review's L6 (the decision record's digest check,
-  still the assembly's `record_of`). Owner: the lead's new row. The assembly's `life.routes` stays only for its own run.
+  still the assembly's `record_of`). Owner: `T-020-61`. The assembly's `life.routes` stays only for its own run.
 
 | Rule switched off | Red |
 |---|---|
