@@ -1,0 +1,15 @@
+{
+  "raise": "raise-unread-1",
+  "difference": {
+    "kind": "holding_not_read",
+    "account": "hold-7",
+    "node": "fx-desk-ledger",
+    "provider": "fx-desk",
+    "why": {
+      "kind": "not_answered"
+    },
+    "balance": "4000"
+  },
+  "cites": [],
+  "at": "2026-11-10T10:00:00Z"
+}

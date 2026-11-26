@@ -2880,6 +2880,78 @@ fn late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same
     );
 }
 
+/// A later answer is the result held only where its maker is the segment's provider and its body is equal: another
+/// provider's answer of the same body is a further statement, kept beside it, never the provider's result held
+/// (`REQ-AUD-2`, `INV-4`).
+// verifies: REQ-AUD-2, INV-4
+#[test]
+fn another_providers_answer_of_the_same_body_is_not_the_result_held() {
+    let mut world = exchange_failed();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let delivered = |maker: &str| {
+        result(
+            maker,
+            "conversion",
+            tx.as_str(),
+            json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+                "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
+        )
+    };
+    let keep = |world: &mut World, bytes: &[u8]| {
+        world
+            .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
+            .unwrap()
+    };
+    let held = keep(&mut world, &delivered(EXCHANGE));
+    let mark = world.log.len();
+    // The same figures, said by another provider: its own statement, not the provider's result held.
+    let other = keep(&mut world, &delivered(EXCHANGE_B));
+    assert_ne!(other, held, "not the result held");
+    assert_eq!(world.log.len(), mark + 1, "kept beside it");
+    // And the provider's own again is still the one entry.
+    assert_eq!(keep(&mut world, &delivered(EXCHANGE)), held);
+    assert_eq!(world.log.len(), mark + 1);
+}
+
+/// The held side of the same rule (the review of `T-020-48`'s first build, its L1): another provider's answer kept
+/// first, and the segment's own provider's answer of the same body after it, is the provider's own statement, kept
+/// beside the other's, never folded into it: a statement is the result held only where the one held is the provider's
+/// too (`REQ-AUD-2`, `INV-4`).
+// verifies: REQ-AUD-2, INV-4
+#[test]
+fn providers_own_answer_after_another_providers_of_the_same_body_is_kept_as_its_own() {
+    let mut world = exchange_failed();
+    let (order, part, s2) = (id(ORDER), id(PART), id("p1-s2"));
+    let tx = world.segments.sent(&order, &s2).unwrap().0.clone();
+    let delivered = |maker: &str| {
+        result(
+            maker,
+            "conversion",
+            tx.as_str(),
+            json!({ "status": "succeeded", "amount_in": EXCHANGED, "amount_out": "249250500", "rate": "2.5",
+                "fee": { "asset": "COP", "amount": "0" }, "evidence": piece(EXCHANGE) }),
+        )
+    };
+    let keep = |world: &mut World, bytes: &[u8]| {
+        world
+            .with(|r, p, _| r.later(p, at(&order, &part, &s2), bytes, &presenter_of(bytes)))
+            .unwrap()
+    };
+    let other = keep(&mut world, &delivered(EXCHANGE_B));
+    let mark = world.log.len();
+    let own = keep(&mut world, &delivered(EXCHANGE));
+    assert_ne!(
+        own, other,
+        "the provider's answer is its own, not another's held"
+    );
+    assert_eq!(world.log.len(), mark + 1, "kept beside it");
+    // And each again is its own one entry.
+    assert_eq!(keep(&mut world, &delivered(EXCHANGE)), own);
+    assert_eq!(keep(&mut world, &delivered(EXCHANGE_B)), other);
+    assert_eq!(world.log.len(), mark + 1);
+}
+
 /// A statement that says the outcome is unknown, kept, shadows no final delivery after it: the final one is kept as the
 /// provider's result of the segment, beside the unknown one, and moves nothing twice (`REQ-AUD-5`, `INV-4`, `T-020-47`).
 // verifies: REQ-AUD-5, INV-4

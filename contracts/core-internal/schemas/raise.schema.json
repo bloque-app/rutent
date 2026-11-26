@@ -20,9 +20,8 @@
       "$ref": "#/$defs/difference"
     },
     "cites": {
-      "description": "The receipts of the entries it rests on, at least one, each once.",
+      "description": "The receipts of the entries it rests on, at least one, each once; a raise of a `pair_not_built` may cite none, since a pair a restart dropped has no entry to cite, and so may a raise of a `holding_not_read`, since an account never read has no check to cite.",
       "type": "array",
-      "minItems": 1,
       "uniqueItems": true,
       "items": {
         "$ref": "urn:rutent:core-internal:receipt"
@@ -49,7 +48,9 @@
             "holding_not_comparable",
             "charge",
             "settlement_time",
-            "public_end"
+            "public_end",
+            "pair_not_built",
+            "holding_not_read"
           ]
         }
       },
@@ -157,6 +158,36 @@
           },
           "then": {
             "$ref": "#/$defs/difference_public_end"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pair_not_built"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_pair_not_built"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_not_read"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding_not_read"
           }
         }
       ]
@@ -505,6 +536,178 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         }
       }
+    },
+    "difference_pair_not_built": {
+      "description": "A segment's pair of reports was never built, so the comparison of the two parties' words was never made (REQ-ORD-9, ADR-0009, T-020-48): a pair a restart dropped, or one that couldn't be built or compared. Raised, never skipped silently. The only kind of raise that may cite no receipt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pair_not_built"
+        },
+        "order": {
+          "description": "The order.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The later segment of the two: the one whose end owed the pair.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/pair_not_built"
+        }
+      }
+    },
+    "pair_not_built": {
+      "description": "Why the pair was never built.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "no_sent_report",
+            "no_flight",
+            "not_an_amount",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "segment"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              },
+              "segment": {
+                "description": "The segment whose sent report is missing: the one before the pair's later segment.",
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "no_flight",
+                  "not_an_amount",
+                  "refused"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "difference_holding_not_read": {
+      "description": "A holding account whose balance Core asked and its module didn't give, so no check could be made (REQ-AUD-15, REQ-ORD-7, T-020-48): the platform passed no answer, the module refused, or it answered another question. It carries no balance (REQ-AUD-6). Raised once in a spell of failure; it may cite no receipt, and cites only its account's own last check where it has one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "node",
+        "provider",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_not_read"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The inner node it is at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider whose module holds it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/holding_not_read"
+        }
+      }
+    },
+    "holding_not_read": {
+      "description": "Why the balance wasn't read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "not_answered",
+            "refused",
+            "another_answer",
+            "not_a_balance"
+          ]
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "difference"
+        ],
+        "properties": {
+          "difference": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "pair_not_built",
+                  "holding_not_read"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "cites": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }

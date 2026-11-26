@@ -37,6 +37,9 @@ pub const CRASHED: &str = "the assembled core crashed (a planted fault)";
 #[derive(Clone, Default)]
 pub struct Disk {
     records: Rc<RefCell<Vec<Vec<u8>>>>,
+    /// The checkpoint store's records, apart from the log's and the evidence store's (ADR-0005): what Core's
+    /// checkpointer published survives a crash as the log does (`REQ-AUD-14`, `T-020-48`).
+    checkpoints: Rc<RefCell<Vec<Vec<u8>>>>,
     shelf: Rc<RefCell<MemoryShelf>>,
     crash: Rc<Cell<Option<Crash>>>,
     seen: Rc<RefCell<Vec<(String, usize)>>>,
@@ -126,6 +129,11 @@ impl Disk {
         ShelfDisk(self.clone())
     }
 
+    /// The checkpoint store on this disk.
+    pub(crate) fn checkpoint_store(&self) -> CheckpointDisk {
+        CheckpointDisk(self.clone())
+    }
+
     fn took(&self, record: &[u8]) {
         let Some(Crash::AfterRecord { call, nth }) = self.crash.get() else {
             return;
@@ -168,6 +176,20 @@ impl Store for LogDisk {
 
     fn records(&mut self) -> Result<Vec<Vec<u8>>, StoreError> {
         Ok(self.0.records.borrow().clone())
+    }
+}
+
+/// The checkpoint store, on a [`Disk`]: its own records, apart from the log's.
+pub struct CheckpointDisk(Disk);
+
+impl Store for CheckpointDisk {
+    fn append(&mut self, record: &[u8]) -> Result<(), StoreError> {
+        self.0.checkpoints.borrow_mut().push(record.to_vec());
+        Ok(())
+    }
+
+    fn records(&mut self) -> Result<Vec<Vec<u8>>, StoreError> {
+        Ok(self.0.checkpoints.borrow().clone())
     }
 }
 

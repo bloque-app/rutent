@@ -39,4 +39,24 @@ impl Comparisons for Unbuilt {
     fn holding_reading(&mut self, _reading: &HoldingReading) -> Result<Receipt, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
+
+    fn pair_not_built(
+        &mut self,
+        _order: &rutent_contracts::router_api::Id,
+        _segment: &rutent_contracts::router_api::Id,
+        _why: &rutent_contracts::core_internal::PairNotBuilt,
+    ) -> Result<Receipt, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
+
+    fn holding_not_read(
+        &mut self,
+        _account: &rutent_contracts::router_api::Id,
+        _node: &rutent_contracts::router_api::Id,
+        _provider: &rutent_contracts::router_api::Id,
+        _why: &rutent_contracts::core_internal::HoldingNotRead,
+        _last_check: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
 }

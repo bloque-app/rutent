@@ -1044,9 +1044,64 @@ impl Reversals {
         moving: &mut Moving<'_>,
         at: At<'_>,
     ) -> Result<Option<StatusAsked>, ReversalError> {
+        self.ask_unknown(parts, moving, at, false)
+    }
+
+    /// [`Reversals::ask_unknown_status`] for a segment already asked: Core's schedule asks it again at its provider's
+    /// cadence while it stays unknown (`REQ-ORD-1`, `T-020-48`), under a fresh transaction. What the provider answers
+    /// is kept as before: the same result held is the same entry, a differing one a further statement, and nothing
+    /// moves.
+    ///
+    /// # Errors
+    ///
+    /// As [`Reversals::ask_status`].
+    pub fn ask_unknown_status_again(
+        &mut self,
+        parts: &mut Parts<'_>,
+        moving: &mut Moving<'_>,
+        at: At<'_>,
+    ) -> Result<Option<StatusAsked>, ReversalError> {
+        self.ask_unknown(parts, moving, at, true)
+    }
+
+    /// The statements Core kept of `segment` of `order` after its answer was taken, as the bytes they came in: what a
+    /// provider said late, or in answer to Core's status question (`REQ-ORD-1`). Oldest first.
+    pub fn kept_statements(&self, order: &Id, segment: &Id) -> Vec<&[u8]> {
+        self.later
+            .get(&key(order, segment))
+            .map(|kept| kept.iter().map(|(bytes, _)| bytes.as_slice()).collect())
+            .unwrap_or_default()
+    }
+
+    /// [`Reversals::kept_statements`], each with the receipt of its stated entry where the log took it: what a
+    /// statement handed on is named by, so it is kept once (`T-020-48`).
+    pub fn kept_statement_receipts(
+        &self,
+        order: &Id,
+        segment: &Id,
+    ) -> Vec<(&[u8], Option<&Receipt>)> {
+        self.later
+            .get(&key(order, segment))
+            .map(|kept| {
+                kept.iter()
+                    .map(|(bytes, step)| (bytes.as_slice(), step.receipt.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn ask_unknown(
+        &mut self,
+        parts: &mut Parts<'_>,
+        moving: &mut Moving<'_>,
+        at: At<'_>,
+        again: bool,
+    ) -> Result<Option<StatusAsked>, ReversalError> {
         let at_key = key(at.order, at.segment);
         if parts.segments.unknown_move(at.order, at.segment).is_none()
-            || (self.unknown_asked.contains(&at_key) && !self.statuses.contains_key(&at_key))
+            || (!again
+                && self.unknown_asked.contains(&at_key)
+                && !self.statuses.contains_key(&at_key))
         {
             return Ok(None);
         }
@@ -1715,10 +1770,24 @@ impl Reversals {
         // The same result held, not a second: a statement whose body is one already kept (it may be made at another time
         // and signed again) is that entry. One whose body differs is kept beside it, a further statement that moves
         // nothing, whatever it says, so a contradiction is on the log (`REQ-AUD-2`, `REQ-AUD-5`, `T-020-47`).
+        // Held only where the maker is the segment's provider, on both sides: another provider's answer of the same body
+        // is not the provider's result (`REQ-AUD-2`, `INV-4`).
+        let provider = {
+            let followed = parts
+                .segments
+                .order(at.order)
+                .ok_or(ReversalError::Unknown)?;
+            find(followed, at)?.1.provider.as_str().to_owned()
+        };
+        let from_provider =
+            |b: &[u8]| journal::maker_named(b).is_some_and(|m| m.as_str() == provider);
         let body = body_of(bytes);
         if body.is_some()
+            && from_provider(bytes)
             && !kept.iter().any(|(b, _)| b == bytes)
-            && let Some((_, step)) = kept.iter_mut().find(|(b, _)| body_of(b) == body)
+            && let Some((_, step)) = kept
+                .iter_mut()
+                .find(|(b, _)| from_provider(b) && body_of(b) == body)
         {
             return Ok(step.append(parts.log)?);
         }

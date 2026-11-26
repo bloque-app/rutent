@@ -679,6 +679,81 @@ fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
     }
 }
 
+/// The order of `kit::RESERVE`, accepted and run to its end in a Core of its own, whose schedule has not yet run.
+fn completed_unclosed(name: &str) -> (Core, Id) {
+    let (mut core, session) = alone(kit::RESERVE, "AC-1");
+    let (order, told) = quoted(
+        &mut core,
+        request_at(kit::RESERVE, name, AMOUNT, &session, "lowest_total_cost"),
+    );
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = told
+    else {
+        panic!("quoted");
+    };
+    core.accept(&kit::customer(), &order, &digest)
+        .expect("accepted");
+    core.run(&order).expect("the order runs");
+    (core, order)
+}
+
+/// A completed order is closed by Core's schedule: its executed price is reported, once, by a tick, and a run reports
+/// none (`REQ-QTE-7`, `AC-1`, `T-020-48`).
+// verifies: REQ-QTE-7, AC-1
+#[test]
+fn completed_order_is_closed_and_its_price_reported_by_cores_schedule() {
+    let (mut core, order) = completed_unclosed("req-closed");
+    assert!(
+        core.price_reported(&order).is_none(),
+        "a run closes nothing: the schedule does"
+    );
+    let round = core.tick();
+    assert_eq!(round.closed, std::slice::from_ref(&order));
+    assert!(core.price_reported(&order).is_some(), "reported");
+    assert!(core.price_unreported(&order).is_none());
+    assert!(
+        core.tick().closed.is_empty(),
+        "closed once: a later tick reports nothing more"
+    );
+}
+
+/// An order completed before Core stopped, whose price its schedule had not yet reported, is closed by the reopened
+/// Core's schedule: one price in the log (`REQ-QTE-7`, `NFR-6`, `T-020-48`).
+// verifies: REQ-QTE-7, NFR-6
+#[test]
+fn order_completed_before_core_reopens_is_closed_after_it() {
+    let given = Given {
+        providers: vec![Spec::of(Role::Reserve, kit::RESERVE)],
+        staging: Staged::AtOnce,
+        deadline: std::time::Duration::from_secs(2),
+        delivery: rutent_scenarios::assembly::machine::Delivery::Once,
+    };
+    let (core, order) = completed_unclosed("req-closed-later");
+    let mut core = Scenario::new("charge-check", "AC-1", given).reopen(core, 1, &mut Reference);
+    assert!(
+        core.price_reported(&order).is_none(),
+        "nothing reported yet"
+    );
+    let round = core.tick();
+    assert_eq!(
+        round.closed,
+        std::slice::from_ref(&order),
+        "the reopened Core closes it"
+    );
+    assert!(core.price_reported(&order).is_some());
+    let prices = core
+        .verified_whats()
+        .iter()
+        .filter(|w| {
+            matches!(w, What::Shown { order: o, shown_as: rutent_contracts::core_internal::ShownAs::Price, .. }
+                if *o == order)
+        })
+        .count();
+    assert_eq!(prices, 1, "one price for the order");
+}
+
 /// An order's executed price reported through the assembly before Core stopped: the reopened Core holds it as
 /// reported from the log's `shown` entry (`Prices::recorded`), so the report asked again after the reopening is
 /// answered with the entry the log took, and the log holds one price for the order (`REQ-QTE-7`, `NFR-6`, `T-020-46`).
@@ -712,9 +787,10 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
     core.run(&order).expect("the order runs");
+    core.tick();
     let (_, receipt) = core
         .price_reported(&order)
-        .expect("Core reported the price when the order completed");
+        .expect("Core's schedule reported the price when the order completed");
     let prices = |core: &Core| {
         core.verified_whats()
             .iter()
@@ -729,6 +805,7 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     // Later: a price built afresh would be another entry, at another time.
     core.clock.advance(60);
     core.run(&order).expect("runs again");
+    core.tick();
     let again = core.price_reported(&order);
     assert!(
         matches!(&again, Some((_, r)) if *r == receipt),
@@ -776,7 +853,7 @@ fn measure_records_a_restart_dropped_are_written_once_after_core_reopens() {
 
     let (mut ran_on, session) = alone(kit::RESERVE, "AC-14");
     let _ = ran(&mut ran_on, &session, kit::RESERVE, "req-measured");
-    let written = ran_on.write_measures();
+    let written = ran_on.tick().measures;
     assert!(written > 0, "the run's endings give records");
     let expected = measures_in_the_log(&ran_on);
 
@@ -785,19 +862,19 @@ fn measure_records_a_restart_dropped_are_written_once_after_core_reopens() {
     let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
     let mut core = reopen(core);
     assert_eq!(
-        core.write_measures(),
+        core.tick().measures,
         written,
         "every record the restart dropped"
     );
-    assert_eq!(core.write_measures(), 0, "and none twice");
+    assert_eq!(core.tick().measures, 0, "and none twice");
     assert_eq!(measures_in_the_log(&core), expected);
 
     // Written before the reopening: none again after it.
     let (mut core, session) = alone(kit::RESERVE, "AC-14");
     let _ = ran(&mut core, &session, kit::RESERVE, "req-measured");
-    assert_eq!(core.write_measures(), written);
+    assert_eq!(core.tick().measures, written);
     let mut core = reopen(core);
-    assert_eq!(core.write_measures(), 0, "nothing measured twice");
+    assert_eq!(core.tick().measures, 0, "nothing measured twice");
     assert_eq!(measures_in_the_log(&core), expected);
 }
 

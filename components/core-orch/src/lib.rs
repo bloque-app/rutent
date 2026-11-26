@@ -20,6 +20,7 @@ mod relay;
 pub mod reliance;
 pub mod reversal;
 pub mod rounds;
+pub mod schedule;
 pub mod segments;
 pub mod snapshot;
 pub mod stuck;

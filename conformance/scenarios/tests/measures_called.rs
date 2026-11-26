@@ -3,7 +3,7 @@
 //! receipts of the entries it rests on; `core-audit`'s bulk measures are then read back from the log Core's own runs
 //! left, with no record written by a test (`REQ-AUD-7`).
 //!
-//! The writer is the one handle the assembly adds ([`Core::write_measures`], over `Core::measure_writer`): a run
+//! The writer is the one handle the assembly adds ([`Core::tick`]'s measures job, over `Core::measure_writer`): a run
 //! queues each record where the segment ends, and the writer's call hands the queue to the log. A run whose writer is
 //! not called leaves the queue unwritten, and the first test below holds that.
 
@@ -80,7 +80,7 @@ fn segment_ending_leaves_no_measure_record_when_its_writer_is_not_called() {
         records(&core).is_empty(),
         "no measure record is in the log before the writer is called"
     );
-    let written = core.write_measures();
+    let written = core.tick().measures;
     assert!(written > 0, "the writer was handed the segments' records");
     let written = records(&core);
     assert!(!written.is_empty(), "the log holds what the writer took");
@@ -108,7 +108,7 @@ fn segment_ending_leaves_no_measure_record_when_its_writer_is_not_called() {
     );
 
     // Called again, it writes nothing more: each ending is handed over once.
-    assert_eq!(core.write_measures(), 0);
+    assert_eq!(core.tick().measures, 0);
     assert_eq!(records(&core).len(), written.len());
 }
 
@@ -206,7 +206,7 @@ fn bulk_measures_over_assembled_runs_with_no_hand_written_record_count_a_failed_
 
     // No record was written by this test: the writer Core's own assembly gives takes what the runs queued.
     assert!(records(&core).is_empty());
-    core.write_measures();
+    core.tick();
 
     let report = {
         let log = core.log();
@@ -294,8 +294,8 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
         format!("{b:?}"),
         "the segment's outcome is as without it"
     );
-    assert!(with.write_measures() > 0);
-    assert_eq!(without.write_measures(), 0, "nothing could be written");
+    assert!(with.tick().measures > 0);
+    assert_eq!(without.tick().measures, 0, "nothing could be written");
     assert!(records(&without).is_empty());
 
     // Everything else the run left is the same entry for entry: the measure changed nothing.
@@ -311,10 +311,10 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
 
     // The log able to take them again, the caller's next call writes what waited, each once.
     without.refuse_log_appends("measure", 0);
-    let written = without.write_measures();
+    let written = without.tick().measures;
     assert!(written > 0, "retried by the caller as any append");
     assert_eq!(records(&without).len(), records(&with).len());
-    assert_eq!(without.write_measures(), 0);
+    assert_eq!(without.tick().measures, 0);
 }
 
 // verifies: REQ-AUD-7
@@ -326,7 +326,7 @@ fn completed_reversal_is_measured() {
         within("req-undone", &session, AMOUNT, RESERVE, OTHER),
     );
     let withdrawal = accounted(&ran)[0].segment.clone();
-    core.write_measures();
+    core.tick();
     let before = records(&core);
     assert!(
         !before
@@ -342,7 +342,7 @@ fn completed_reversal_is_measured() {
     let Confirmation::Completed(completed) = done else {
         panic!("the start is proven undone: {done:?}");
     };
-    assert_eq!(core.write_measures(), 1, "one record for the reversal");
+    assert_eq!(core.tick().measures, 1, "one record for the reversal");
     let after = records(&core);
     let reversals: Vec<_> = after
         .iter()
@@ -369,7 +369,7 @@ fn completed_reversal_is_measured() {
     assert_eq!(report.providers[RESERVE].reversals, 1);
     // Asked again, the completed reversal is not measured twice.
     let _ = core.confirm_reversal(&order, &withdrawal);
-    assert_eq!(core.write_measures(), 0);
+    assert_eq!(core.tick().measures, 0);
 }
 
 /// A reversal completed before Core stopped, its record not yet written: the reopened Core keeps the record again from
@@ -384,7 +384,7 @@ fn reversal_completed_before_core_reopens_is_measured_once() {
         within("req-undone", &session, AMOUNT, RESERVE, OTHER),
     );
     let withdrawal = accounted(&ran)[0].segment.clone();
-    core.write_measures();
+    core.tick();
     core.world()
         .script(RESERVE, Behaviour::crediting_a_reversal());
     let done = core.confirm_reversal(&order, &withdrawal).expect("asked");
@@ -396,11 +396,11 @@ fn reversal_completed_before_core_reopens_is_measured_once() {
         rutent_scenarios::harness::Scenario::new("execution", "AC-8", given(&[RESERVE, OTHER]))
             .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
     assert_eq!(
-        core.write_measures(),
+        core.tick().measures,
         1,
         "the reversal's record, which the restart dropped"
     );
-    assert_eq!(core.write_measures(), 0, "and nothing twice");
+    assert_eq!(core.tick().measures, 0, "and nothing twice");
     let after = records(&core);
     assert_eq!(after.len(), before + 1);
     let reversals: Vec<_> = after

@@ -887,6 +887,28 @@ fn replayed(
     held
 }
 
+/// One tick of Core's schedule with its holding check due: the wallet's account as the round read and checked it
+/// (`REQ-AUD-15`, `T-020-48`). The reading is taken through the platform, as the deployment's timer would have it.
+fn tick_holding(core: &mut Core) -> rutent_core_orch::schedule::HoldingChecked {
+    core.set_cadence(rutent_core_orch::schedule::Job::HoldingCheck, 0);
+    core.tick()
+        .holding
+        .into_iter()
+        .find(|h| h.node == WALLET_NODE)
+        .expect("the round read the wallet's account")
+}
+
+/// The balance the holding account states now, as one tick read it.
+fn holding_balance(core: &mut Core) -> u128 {
+    tick_holding(core)
+        .reading
+        .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"))
+        .balance
+        .as_str()
+        .parse()
+        .expect("a figure")
+}
+
 /// The balances a stand-in's fingerprint states: the figures of its first map, `{"account": 50000000}`.
 fn balances_in(state: &str) -> Vec<u128> {
     let Some(end) = state.find('}') else {
@@ -942,26 +964,13 @@ pub fn run_balanced(
         let (order, amount) = LANDED[n];
         core.land(WALLET_NODE, "USDC", order, amount)
             .unwrap_or_else(|e| panic!("the wallet didn't take {amount}: {e:?}"));
-        let held = core
-            .holding_reading(WALLET_NODE, 2)
-            .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"))
-            .balance
-            .as_str()
-            .parse()
-            .expect("a figure");
+        let held = holding_balance(core);
         running.borrow_mut().push((
             format!("balance of the holding account, after landing {}", n + 1),
             held,
         ));
     };
-    let read_holding = |core: &mut Core| -> u128 {
-        core.holding_reading(WALLET_NODE, 2)
-            .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"))
-            .balance
-            .as_str()
-            .parse()
-            .expect("a figure")
-    };
+    let read_holding = |core: &mut Core| -> u128 { holding_balance(core) };
     // What each reserve's books held after each entry of its journal so far, and what the holding account held.
     let read_running = |core: &mut Core, when: &str| {
         let context = core.fleet().context().clone();
@@ -1020,11 +1029,13 @@ pub fn run_balanced(
                 .provider
                 .clone();
             // The reading, as `REQ-AUD-15` takes it, checked, and the wallet's own statement of it kept.
-            let reading = core
-                .holding_reading(WALLET_NODE, 2)
+            let round = tick_holding(core);
+            let reading = round
+                .reading
                 .unwrap_or_else(|e| panic!("the holding account wasn't read: {e:?}"));
             holding = reading.balance.as_str().parse().expect("a figure");
-            core.check_holding(&reading)
+            round
+                .check
                 .unwrap_or_else(|e| panic!("the check wasn't recorded: {e:?}"));
             let question: Operation = serde_json::from_value(serde_json::json!({
                 "kind": "holding_balance", "transaction": "tx-holding-balance",

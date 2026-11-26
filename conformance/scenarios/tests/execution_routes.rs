@@ -179,9 +179,10 @@ fn order_across_three_providers_completes_with_who_did_what_when_and_the_execute
     }
 
     // The final executed price is reported as the price, from what each segment did, and recorded once.
+    core.tick();
     let (digest, _) = core
         .price_reported(&order)
-        .expect("Core reported the price when the order completed");
+        .expect("Core's schedule reported the price when the order completed");
     let price = core.price_of(&order).expect("its figures").clone();
     // What it says is what the segments did: 1 000 000 left the origin; the ramp took 5 000 from what it moved and the
     // rest charged nothing, so 995 000 is what the reserve deposited, and arrives, with no operator fee to take.
@@ -268,6 +269,7 @@ fn completed_orders_executed_price_is_reported_once_by_core() {
     let ran = core.run(&order).expect("the order ran");
     assert!(all_settled(accounted(&ran)));
     assert_eq!(state(&mut core, &order), OrderState::Complete);
+    core.tick();
     let (digest, receipt) = core.price_reported(&order).expect("Core reported it");
     assert_eq!(prices(&core), 1);
     let price = core.price_of(&order).expect("its figures");
@@ -277,6 +279,7 @@ fn completed_orders_executed_price_is_reported_once_by_core() {
     core.run(&order).expect("runs again");
     core.clock.advance(60);
     core.run(&order).expect("and again");
+    core.tick();
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
     assert_eq!(prices(&core), 1, "once");
 }

@@ -14,7 +14,8 @@ use rutent_contracts::core_internal::calls::{
     StuckOrders, is_decision,
 };
 use rutent_contracts::core_internal::{
-    AcceptanceBasis, LIFECYCLE_ACTIONS, OperatorSetting, SettingKind, without_rule,
+    AcceptanceBasis, HoldingNotRead, LIFECYCLE_ACTIONS, OperatorSetting, PairNotBuilt, SettingKind,
+    without_rule,
 };
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, CLOSING_RELATIONS, CatalogueChange, KeptStatement, PermissionChange,
@@ -335,7 +336,7 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 126] = [
+const SCHEMA_RULES: [SchemaRule; 131] = [
     (
         "filing-inputs-without-its-objective",
         &[("", "required")],
@@ -790,6 +791,31 @@ const SCHEMA_RULES: [SchemaRule; 126] = [
         "raise-of-a-holding-not-comparable-without-its-asset",
         &[("/difference", "required")],
         "a holding that can't be compared names its balance's word and asset exactly when a balance was read",
+    ),
+    (
+        "raise-of-a-pair-not-built-without-the-segment-it-misses",
+        &[("/difference/why", "required")],
+        "missing field `segment`",
+    ),
+    (
+        "raise-of-a-pair-not-built-citing-one-receipt-twice",
+        &[("/cites", "uniqueItems")],
+        "a raise cites the entries it rests on, each once",
+    ),
+    (
+        "raise-of-a-holding-not-read-naming-a-balance",
+        &[("/difference", "additionalProperties")],
+        "unknown field `balance`",
+    ),
+    (
+        "raise-of-a-holding-not-read-for-a-reason-it-has-no-name-for",
+        &[("/difference/why/kind", "enum")],
+        "unknown variant `lost`",
+    ),
+    (
+        "raise-of-a-pair-not-built-for-a-reason-it-has-no-name-for",
+        &[("/difference/why/kind", "enum")],
+        "unknown variant `lost`",
     ),
     (
         "raise-citing-nothing",
@@ -2878,6 +2904,24 @@ impl Comparisons for Unbuilt {
     fn holding_reading(&mut self, _: &HoldingReading) -> Result<Receipt, AppendFailure> {
         Ok(receipt())
     }
+    fn pair_not_built(
+        &mut self,
+        _: &Id,
+        _: &Id,
+        _: &PairNotBuilt,
+    ) -> Result<Receipt, AppendFailure> {
+        Ok(receipt())
+    }
+    fn holding_not_read(
+        &mut self,
+        _: &Id,
+        _: &Id,
+        _: &Id,
+        _: &HoldingNotRead,
+        _: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure> {
+        Ok(receipt())
+    }
 }
 impl Measures for Unbuilt {
     fn measure(&mut self, _: &MeasureRecord) -> Result<Receipt, AppendFailure> {
@@ -3329,6 +3373,60 @@ fn charge_raise_marked_as_having_no_formula_whose_fee_is_in_the_segments_own_ass
     assert_case("no-formula-marks-a-charge-in-another-asset--in-another-asset");
     assert_case_refused("no-formula-marks-a-charge-in-another-asset--asset");
     assert_case_refused("no-formula-marks-a-charge-in-another-asset--missing");
+}
+
+// verifies: REQ-ORD-9
+#[test]
+fn raise_of_a_pair_never_built_may_cite_nothing_and_no_other_raise_may() {
+    assert_accepted_by_both("raise-of-a-pair-a-restart-dropped");
+    assert_accepted_by_both("raise-of-a-pair-the-contract-refused");
+    assert_rejected("raise-of-a-pair-not-built-without-the-segment-it-misses");
+    assert_rejected("raise-of-a-pair-not-built-citing-one-receipt-twice");
+    assert_rejected("raise-of-a-pair-not-built-for-a-reason-it-has-no-name-for");
+    // Any other kind still cites at least one entry, in Rust as in the schema.
+    assert_rejected("raise-citing-nothing");
+    let mut pair = fixture("valid", "raise-of-a-pair-a-restart-dropped");
+    assert!(validator("raise").is_valid(&pair));
+    pair["difference"] =
+        fixture("valid", "raise-of-a-wrong-amount-at-a-public-end")["difference"].clone();
+    assert!(
+        !validator("raise").is_valid(&pair),
+        "a public end's raise citing nothing is refused by the schema"
+    );
+    assert!(through_rust("raise", &pair).is_err());
+    // The rule is the one exception: with it switched off a pair's raise is the same as any other.
+    assert_case("raise-of-a-pair-not-built-names-a-segment-its-plan-lists--its-plan-lists");
+    assert_case_refused("raise-of-a-pair-not-built-names-a-segment-its-plan-lists--missing");
+}
+
+// verifies: REQ-AUD-15
+#[test]
+fn raise_of_a_holding_not_read_carries_no_balance_and_cites_only_its_accounts_check() {
+    assert_accepted_by_both("raise-of-a-holding-account-not-read");
+    assert_accepted_by_both("raise-of-a-holding-account-not-read-citing-its-last-check");
+    assert_rejected("raise-of-a-holding-not-read-naming-a-balance");
+    assert_rejected("raise-of-a-holding-not-read-for-a-reason-it-has-no-name-for");
+    // It may cite nothing, as a pair never built may, and no other kind may.
+    let mut unread = fixture("valid", "raise-of-a-holding-account-not-read");
+    assert!(validator("raise").is_valid(&unread));
+    unread["difference"] =
+        fixture("valid", "raise-of-a-holding-account-short")["difference"].clone();
+    assert!(
+        !validator("raise").is_valid(&unread),
+        "a holding difference citing nothing is refused by the schema"
+    );
+    assert!(through_rust("raise", &unread).is_err());
+    // What it cites is its own account's check, at its node, by its provider: never another's.
+    for case in ["its-accounts-check", "never-read"] {
+        assert_case(&format!(
+            "raise-of-a-holding-not-read-cites-its-accounts-check--{case}"
+        ));
+    }
+    for broken in ["missing", "account", "node", "provider"] {
+        assert_case_refused(&format!(
+            "raise-of-a-holding-not-read-cites-its-accounts-check--{broken}"
+        ));
+    }
 }
 
 // verifies: REQ-ORD-39, REQ-AUZ-4

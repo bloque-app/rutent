@@ -94,7 +94,7 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
         difference: Difference,
         mut cites: Vec<Receipt>,
         at: &Timestamp,
-    ) -> Result<(), AppendFailure> {
+    ) -> Result<Receipt, AppendFailure> {
         let mut seen = Vec::new();
         cites.retain(|c| {
             let new = !seen.contains(c);
@@ -118,7 +118,7 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
         };
         // A raise the log can't record now is answered unavailable, so its writer appends the comparison again; one
         // the log refuses is answered refused, which no retry would change, so the writer doesn't raise it again.
-        self.record(What::Raise { raise }, outcome, at).map(|_| ())
+        self.record(What::Raise { raise }, outcome, at)
     }
 
     /// Records the check of `reading`, without its balance (`REQ-AUD-6`), and answers its receipt.
@@ -180,7 +180,7 @@ impl<L: Log, O: Operator, C: Clock> Compare<L, O, C> {
                     .map(|e| e.evidence.clone()),
             );
             match self.raise(difference, cites, &at) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(AppendFailure::Refused(violation)) => {
                     refused.get_or_insert(violation);
                 }
@@ -220,6 +220,48 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
             self.raise(difference, vec![receipt.clone()], &at)?;
         }
         Ok(receipt)
+    }
+
+    fn pair_not_built(
+        &mut self,
+        order: &rutent_contracts::router_api::Id,
+        segment: &rutent_contracts::router_api::Id,
+        why: &rutent_contracts::core_internal::PairNotBuilt,
+    ) -> Result<Receipt, AppendFailure> {
+        let at = self.now()?;
+        // A pair a restart dropped has no entry to cite: this kind of raise alone may cite none.
+        self.raise(
+            Difference::PairNotBuilt {
+                order: order.clone(),
+                segment: segment.clone(),
+                why: why.clone(),
+            },
+            Vec::new(),
+            &at,
+        )
+    }
+
+    fn holding_not_read(
+        &mut self,
+        account: &rutent_contracts::router_api::Id,
+        node: &rutent_contracts::router_api::Id,
+        provider: &rutent_contracts::router_api::Id,
+        why: &rutent_contracts::core_internal::HoldingNotRead,
+        last_check: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure> {
+        let at = self.now()?;
+        // No balance: there is none, and the log keeps none (`REQ-AUD-6`). The account's own last check, where it has
+        // one, is what the raise rests on; an account never read has nothing to cite.
+        self.raise(
+            Difference::HoldingNotRead {
+                account: account.clone(),
+                node: node.clone(),
+                provider: provider.clone(),
+                why: why.clone(),
+            },
+            last_check.cloned().into_iter().collect(),
+            &at,
+        )
     }
 }
 
