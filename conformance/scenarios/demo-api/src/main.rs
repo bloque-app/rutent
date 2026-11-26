@@ -8,6 +8,9 @@
 //!     [--lazy] [--warm-up] [--database-url postgres://…] [--database-ca FILE]
 //! ```
 //!
+//! `--warm-up` builds what Core needs (the platform's executables, the providers' modules, `audit-check`) and exits,
+//! without starting Core or reaching a database: a container image runs it when it is built.
+//!
 //! Then open the address it prints (`http://127.0.0.1:7040/` by default). `--lazy` puts Core together on the first
 //! call that needs it instead of at start; `--out` is where `POST /audit` writes the folder an outside checker is
 //! handed (`<target>/rutent-demo-api` by default). `conformance/demo/README.md` lists the endpoints.
@@ -101,6 +104,30 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if options.warm_up {
+        // Builds what Core needs on disk and stops, without putting Core together: the platform's executables, the
+        // simulated providers' and the operator's wallet's modules, and audit-check. Starting Core starts the
+        // platform's jailed processes, which a container build's sandbox refuses; this needs only cargo.
+        let built = std::panic::catch_unwind(|| {
+            let _ = rutent_scenarios::sim::disk::paths();
+            let _ = rutent_scenarios::sim::disk::guests();
+            let _ = rutent_scenarios::sim::disk::wallet_guests();
+        });
+        if let Err(p) = built {
+            eprintln!("the build for Core failed: {}", panicked(&p));
+            return ExitCode::FAILURE;
+        }
+        return match common::audit::binary() {
+            Ok(_) => {
+                println!("warmed up");
+                ExitCode::SUCCESS
+            }
+            Err(why) => {
+                eprintln!("{why}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let store = match world::Store::open(
         options.database_url.as_deref(),
         options.database_ca.as_deref(),
@@ -111,26 +138,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if options.warm_up {
-        // Builds what Core needs on disk (the platform's executables, the simulated providers' modules) and puts
-        // Core together once, then stops: a container image runs this at build time.
-        let mut api = Api::new(options.seed, options.out, store);
-        return match api.start() {
-            Ok(()) => {
-                println!("warmed up");
-                ExitCode::SUCCESS
-            }
-            Err(failure) => {
-                eprintln!(
-                    "{}",
-                    failure.body["error"]
-                        .as_str()
-                        .unwrap_or("Core couldn't start")
-                );
-                ExitCode::FAILURE
-            }
-        };
-    }
     eprintln!("transitions are kept in {}", store.engine());
     let listener = match TcpListener::bind(&options.addr) {
         Ok(listener) => listener,

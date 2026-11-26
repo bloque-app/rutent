@@ -2,6 +2,13 @@
 # The demo API's image (conformance/demo/README.md, "In a container"): rutent-demo-api serving the synthetic network,
 # its page and its transitions database's API. Nothing in it holds or moves real value.
 #
+# linux/amd64 only, and it needs a runtime that lets it make namespaces. The platform runs every provider's module
+# in a jail of its own (rutent_prov::module::sandbox, DEC-27): unshare of user, network, IPC, UTS, mount and PID
+# namespaces, pivot_root, Landlock and a seccomp allow-list written for x86_64, which refuses to run unconfined on
+# any other architecture. Docker's default seccomp profile refuses unshare, so run it with a seccomp profile that
+# allows it (seccomp=unconfined works) and Docker's default capabilities, on a kernel that allows unprivileged user
+# namespaces. Fargate allows neither; ECS on EC2 (x86_64) does.
+#
 # Build from the repository's root:
 #   docker build -f conformance/demo/Dockerfile -t rutent-demo-api .
 #
@@ -21,8 +28,9 @@ ENV CARGO_TARGET_DIR=/rutent/target
 RUN cargo build --locked --manifest-path conformance/scenarios/demo-api/Cargo.toml \
     && cargo build --locked -p rutent-core-audit --bin audit-check
 
-# Builds the platform's executables and the simulated providers' modules, and puts Core together once, so a
-# container answers within about a minute of starting instead of building first. No database is needed for it.
+# Builds the platform's executables, the providers' and the wallet's modules and audit-check, so a container
+# answers within about a minute of starting (Core admitting the modules) instead of building first. It doesn't start
+# Core: Core starts the platform's jailed processes, which the build's default sandbox refuses.
 RUN /rutent/target/debug/rutent-demo-api --warm-up
 
 # The certificate authorities of Amazon RDS, for the database's TLS (DATABASE_CA_FILE). Fetched when the image is

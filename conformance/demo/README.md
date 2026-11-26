@@ -54,7 +54,7 @@ build, as for the demo). The page shows:
 | `--lazy` | Puts Core together on the first call that needs it, not at start. The smoke test uses it |
 | `--database-url URL` | The transitions database, `postgres://…`; `DATABASE_URL` sets it too. Without one, transitions are kept in memory |
 | `--database-ca FILE` | A PEM bundle of the certificate authorities the database's certificate is checked against; `DATABASE_CA_FILE` sets it too. With it the connection is TLS, without it plain |
-| `--warm-up` | Builds what Core needs, puts Core together once, and exits. The container image runs it when it is built |
+| `--warm-up` | Builds what Core needs (the platform's executables, the providers' modules, `audit-check`) and exits, without starting Core. The container image runs it when it is built |
 
 Replaying act 1 after an order has run through `sim-andina-cop` puts Core together again first (`POST /reset`, about
 a minute): a second order through the same private reserve gets no evidence for its reversal, the known M3 finding
@@ -122,15 +122,25 @@ VOS adapter's, not this database's. The page shows the current run's transitions
 ### In a container
 
 ```sh
-docker build -f conformance/demo/Dockerfile -t rutent-demo-api .
-docker run --rm -p 7040:7040 -e DATABASE_URL='postgres://user@host:5432/db' rutent-demo-api
+docker build --platform linux/amd64 -f conformance/demo/Dockerfile -t rutent-demo-api .
+docker run --rm -p 7040:7040 --platform linux/amd64 --security-opt seccomp=unconfined \
+  -e DATABASE_URL='postgres://user@host:5432/db' rutent-demo-api
 ```
+
+**Where it can run.** The platform runs every provider's module in a jail of its own (`DEC-27`): new user,
+network, IPC, UTS, mount and PID namespaces through `unshare`, `pivot_root`, Landlock, and a seccomp allow-list
+written for x86_64 that refuses to run unconfined on any other architecture. So the image is `linux/amd64` only, and
+its runtime must let it make namespaces: Docker's default seccomp profile refuses `unshare`, so it runs with a
+profile that allows it (`--security-opt seccomp=unconfined` works) and Docker's default capabilities, on a kernel
+that allows unprivileged user namespaces. AWS Fargate allows neither a seccomp profile nor the namespaces; ECS on
+EC2 (x86_64) or a plain x86_64 host does. On macOS the platform uses `sandbox-exec` instead, which is why
+`cargo run` works on a Mac.
 
 The image is one stage, built from the repository's root: the assembly checks the platform's executables and the
 providers' modules against the sources beside its build, so the image keeps the toolchain, the sources and the
-build (several gigabytes; it is a test image). Building it runs `--warm-up`, so a container answers about a minute
-after it starts, while Core admits the eighteen modules. It listens on port 7040 on every interface, checks its
-health with `GET /health`, and trusts Amazon RDS's certificate authorities for the database's TLS
+build (several gigabytes; it is a test image). Building it runs `--warm-up`, which builds what Core needs without
+starting it, so a container answers about a minute after it starts, while Core admits the eighteen modules. It
+listens on port 7040 on every interface, checks its health with `GET /health`, and trusts Amazon RDS's certificate authorities for the database's TLS
 (`DATABASE_CA_FILE=/etc/rutent/rds-ca.pem`, fetched from AWS when the image is built). The server has no
 authentication: on `test` it belongs behind private-only access.
 
