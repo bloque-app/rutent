@@ -9,8 +9,8 @@ cargo run -p rutent-scenarios --bin rutent-demo
 ```
 
 Or, from the repository's root, `conformance/demo/run.sh`, which passes its arguments on. The first run builds the
-workspace, the simulated providers' Wasm modules and `audit-check`, which takes several minutes. Later runs take
-seconds.
+workspace, the simulated providers' Wasm modules and `audit-check`, which takes several minutes. A run after that
+takes about a minute, most of it the platform admitting eighteen modules.
 
 | Option | What it does |
 |---|---|
@@ -26,68 +26,78 @@ failing on the tampered copy.
 The demo reuses the scenario assembly: Core's three crates put together with the policy engine, the log, the evidence
 store and the module platform. The workspace's boundary check (`DEC-2`, `tools/boundary-check`) lets no crate depend
 on `rutent-scenarios`, so the demo can't be a package of its own without changing that rule. It is a binary target
-inside that package (`conformance/scenarios/src/bin/rutent-demo/`), made only of new files.
+inside that package (`conformance/scenarios/src/bin/rutent-demo/`). Outside it, the demo adds two things to M3's
+code and changes nothing there: the network's simulated providers, as new arms of `rutent_conformance::sim::shape_of`,
+and `Core::set_max_hops`, a setter beside `set_operator_fee`.
 
-## What each act shows
-
-The graph above is the network. Each act's order takes one path through it, drawn here as a lane:
-
-![The paths the demo's orders take](orders.svg)
-
-The demo prints a timeline as it goes. Each act ends with the log entries it added, one line each: its place in the
-log, whether Core *verified* it (Core's own record of a call between its parts, or of what the platform did) or a
-party *stated* it (a provider's signed statement, kept as signed), what it is, and who.
-
-### Act 0: the network
+## The network
 
 rutent moves value between **nodes**, and there are three kinds:
 
 | Kind | What it is | Who can see a movement there | In the demo |
 |---|---|---|---|
-| **Outer node** | Where the customer's money starts or ends, outside rutent: a bank rail, or an external chain the customer uses | That rail's own records, read through its reserve | `sim-join-in-bank` (COP), `sim-join-out-bank` (USD), `sim-chain-a` (where the USDC order starts), `sim-chain-e` (where it's paid to an address) |
-| **Private node** | A ledger held by one publisher, which only that publisher's providers work inside | Only that publisher. Inside it, rutent can rely only on the publisher's word, and the log labels it that way | `sim-join-ledger` (sim-join-publisher's), `sim-chain-ledger` (sim-chain-publisher's) |
-| **Public node** | A shared ledger on the operator's list, like a public blockchain | Anyone, so Core checks the movements there itself | `sim-join-chain`, `sim-chain-b` |
+| **Outer node** | Where the customer's money starts or ends, outside rutent: a bank rail, or a chain's addresses | That rail's own records, read through its reserve | `sim-co-bank` (COP), `sim-mx-bank` (MXN), `sim-us-bank` (USD), `sim-polygon-addresses`, `sim-base-addresses` (USDC) |
+| **Private node** | A ledger held by one publisher, which only that publisher's providers work inside | Only that publisher. Inside it, rutent can rely only on the publisher's word, and the log labels it that way | `sim-andina-ledger`, `sim-azteca-ledger`, `sim-liberty-ledger` |
+| **Public node** | A shared ledger on the operator's list, like a public blockchain | Anyone, so Core checks the movements there itself | `sim-polygon`, `sim-base` |
 
-The network is a graph: the nodes are its vertices, and each provider tuple is a directed edge from the node it takes
-value from to the node it gives it to. A reserve has two edges, its withdrawal from its outer network and its deposit
-back. A ramp has one. An exchange is an edge from a node to itself, since it changes the asset and not the place.
+The network is a graph: the nodes are its vertices, and each tuple a provider serves is a directed edge from the node
+it takes value from to the node it gives it to. A reserve has two edges, its withdrawal from its outer network and its
+deposit back. A ramp or a bridge has one. An exchange is an edge from a node to itself, since it changes the asset
+and not the place. Eighteen providers make 23 edges between 10 nodes:
 
 ![The demo's network as a graph](network.svg)
 
-This network has two connected components: no provider joins the peso and dollar side to the USDC side. A
-single order follows one path through this graph, and the graph is what the router searches. Every provider that
-joins adds an edge, often between nodes that already have one, so the same order can have several paths, and the
-router picks one for the order's objective (lowest total cost here). The demo writes this graph next to the log as
-`network.dot`, in Graphviz form.
+Three publishers each run a bank's reserve, exchanges and ramps inside their own ledger: `sim-andina` in Colombia
+(COP), `sim-azteca` in Mexico (MXN) and `sim-liberty` in the US (USD). Two public chains carry USDC between them,
+`sim-polygon` and `sim-base`, joined by three bridges: `sim-bridge` (0.10 USDC, 15 minutes), `sim-bridge-fast`
+(3.00 USDC, 20 seconds) and `sim-bridge-back`. On each chain a reserve serves the customer's addresses.
 
-Seven providers, each with a role, each between two nodes:
+The graph is what the router searches. For each order it weighs every path of at most six edges from where the money
+is to where it goes, and picks one for the order's objective, lowest total cost or fastest settlement. Most pairs of
+places have more than one path: two exchanges from COP to USDC, two ramps out of `sim-andina-ledger`, two bridges
+from `sim-polygon` to `sim-base`. Some have none: no route takes MXN to COP within six edges. Every provider that
+joins adds an edge. The demo writes this graph next to the log as `network.dot`, in Graphviz form, derived from the
+providers' own shapes (`rutent_conformance::sim::shape_of`), so the drawing is the network that runs.
 
-| Provider | Role | From | To | Asset |
-|---|---|---|---|---|
-| `sim-join-in` | reserve | its bank (outer) | `sim-join-ledger` (private) | COP |
-| `sim-join-exchange` | exchange | inside `sim-join-ledger` (private) | the same node | COP → USD |
-| `sim-join-ramp-quick` | ramp | `sim-join-ledger` (private) | `sim-join-chain` (public) | USD |
-| `sim-join-out` | reserve | `sim-join-chain` (public) | its bank (outer) | USD |
-| `sim-chain-in` | reserve | `sim-chain-a` (outer) | `sim-chain-ledger` (private) | USDC |
-| `sim-chain-ramp-b` | ramp | `sim-chain-ledger` (private) | `sim-chain-b` (public) | USDC |
-| `sim-chain-out-b` | reserve | `sim-chain-b` (public) | `sim-chain-e` (outer), to an address | USDC |
+Every exchange converts 1 unit for 1 unit: the simulated exchange has no rate and quotes no fee, so the two COP to
+USDC exchanges differ only in the time they declare. Ramps and bridges charge the fees shown.
 
-The first three belong to one publisher, `sim-join-publisher`, which is why they share the private node
-`sim-join-ledger`. Likewise, `sim-chain-in` and `sim-chain-ramp-b` share `sim-chain-ledger`.
+**Why six edges.** The router's search is hop-limited by design (ADR-0006, `DEC-8`); the limit itself is a policy
+bound, `max_hops`, the deployment's to set. M3's scenario kit sets 4; the demo sets 6 (`Core::set_max_hops`), the
+least that takes COP to USD across two publishers' ledgers and a chain.
+
+## What each act shows
+
+Each act's order takes one path through the graph, drawn here as a lane:
+
+![The paths the demo's orders take](orders.svg)
+
+The demo prints a timeline as it goes. Each act ends with the log entries it added, one line each: its place in the
+log, whether Core *verified* it (Core's own record of a call between its parts, or of what the platform did) or a
+party *stated* it (a provider's signed statement, kept as signed), what it is, and who. Every order sends 50,000.00 in
+its asset: the simulated exchanges and ramps serve no less than 10,000.00, and the fees on the way must leave that
+much for the next step.
+
+### Act 0: the network
+
+The demo lists every edge, provider by provider, with its fee and the time it declares.
 
 **What to say:** every provider is admitted by a decision recorded in the log, and its advertisement (what it does,
 at what price, how fast) is a signed statement the log keeps. The log knows each provider's key from those records,
 not from a setting. The log publishes its first *checkpoint*: a commitment to its contents, signed by the log's own
 key, which the operator doesn't hold.
 
-### Act 1: an order across four providers, one failing mid-route
+### Act 1: pesos in Colombia to dollars in the US, one exchange failing
 
-The customer sends 10,000.00 COP from their peso account to a dollar account at another bank. On this order the
-exchange has been scripted to fail the conversion after the withdrawal has settled.
+The customer sends 50,000.00 COP from their account at `sim-co-bank` to a dollar account at `sim-us-bank`. No
+provider does that alone: the route crosses `sim-andina-ledger`, the public chain `sim-base` and `sim-liberty-ledger`,
+converting twice, in six segments. On this order `sim-andina-exchange` has been scripted to fail the conversion after
+the withdrawal has settled.
 
-1. **Quote.** The router finds the route: withdrawal at `sim-join-in`, exchange at `sim-join-exchange`, a transfer
-   onto the public chain by `sim-join-ramp-quick`, and a deposit by `sim-join-out`. Core signs a *decision record*
-   explaining the choice. The customer is shown a quote, segment by segment, with each provider's fee.
+1. **Quote.** The router weighs the candidate routes and picks one: withdrawal at `sim-andina-cop`, COP to USDC at
+   `sim-andina-exchange`, `sim-andina-base` onto `sim-base`, `sim-liberty-in-base` into `sim-liberty-ledger`, USDC to
+   USD at `sim-liberty-fx-in`, and the deposit by `sim-liberty-usd`. Core signs a *decision record* explaining the
+   choice. The customer is shown a quote, segment by segment, with each provider's fee.
 2. **Accept.** The customer accepts the quote by its digest, so what they accepted can't change afterwards.
 3. **Route.** Core hands each segment to its provider in turn. Each line printed is a segment, how it ended, and the
    receipt of Core's record of handing it over. The withdrawal settles; the exchange fails, and nothing more is
@@ -96,8 +106,9 @@ exchange has been scripted to fail the conversion after the withdrawal has settl
    took in. Core asks for it, and the value is **shown back** at the node it came from. A provider's own word never
    undoes its own failure. Here the value is inside its publisher's private node, so the word that counts is the
    publisher's, and the log labels it that way.
-5. **Recovery.** Core **recalculates** a route from where the value now is, to the same destination, and runs it. The
-   customer isn't asked again, because the new route ends where they accepted. The order completes.
+5. **Recovery.** Core **recalculates** from where the value now is, weighing the routes from `sim-andina-ledger` to
+   the same destination, and runs the one it picks. The customer isn't asked again, because the new route ends where
+   they accepted. The order completes.
 6. **Executed price.** Once every segment has settled, Core reports the price the order *actually* ran at, built
    from what each provider said it did, and records it once.
 
@@ -105,20 +116,24 @@ exchange has been scripted to fail the conversion after the withdrawal has settl
 provider's answer and the reversal are in the log, in order, each with a receipt. The log shows where the value was
 at each step, who said so, and why the new route was allowed to run.
 
-### Act 2: the next order, straight through
+(The failure comes first on purpose. A second order through the same reserve doesn't get the private ledger's
+evidence the reversal needs, so a failure on it can't be shown back. That is reported to M3.)
 
-A second order on the same route, and nothing goes wrong: four segments settle, and Core reports the executed price.
-Set it beside the quote to show they agree, segment by segment.
+### Act 2: one request, two objectives, two routes
 
-(The failure comes first on purpose. A second order through `sim-join-in` doesn't get the private ledger's evidence
-the reversal needs, so a failure on it can't be shown back. That is reported to M3 as a gap in the assembly or the
-simulated world.)
+The customer moves 50,000.00 USDC from their address on `sim-polygon` to one on `sim-base`, and asks for a quote under
+each objective. Same request, same graph: the cheapest route crosses on `sim-bridge`, the fastest on
+`sim-bridge-fast`. The customer takes the fastest, and it runs and settles.
+
+**What to say:** the router doesn't have one answer per pair of places. It has a graph, and the customer's objective
+picks the path. Both quotes, with the candidates each weighed, are in the log.
 
 ### Act 3: a stuck order, handed on
 
-A USDC order to an address on `sim-chain-e`. The operator's own wallet, a real module and not a simulation, holds the
-public node `sim-chain-b`. The last step, the deposit out of `sim-chain-b`, is refused its start, and no other
-route is left: the order is **stuck**, its value resting in the operator's wallet.
+50,000.00 MXN from `sim-mx-bank` to USDC at the customer's address on `sim-polygon`: converted in
+`sim-azteca-ledger`, ramped onto `sim-base` and bridged back to `sim-polygon`. The operator's own wallet, a real module
+and not a simulation, holds `sim-polygon`. The last step, the deposit to the address, is refused its start, and no
+other route is left: the order is **stuck**, its value resting in the operator's wallet.
 
 1. The customer accepts a **linked order** that starts where the value rests.
 2. **alice** (operator desk A) decides to hand the value on to that linked order, citing a provider's kept statement
@@ -169,11 +184,11 @@ check the whole history, and a rewrite shows up.
 
 | Real: the same code that runs in production | Simulated |
 |---|---|
-| Core: intake, routing, segments, reversals, recalculation, stuck orders, hand-on, notices (`core-orch`) | Every provider except the operator's wallet: banks, the exchange, the ramps, the chains (`rutent_conformance::sim`) |
+| Core: intake, routing, segments, reversals, recalculation, stuck orders, hand-on, notices (`core-orch`) | Every provider except the operator's wallet: banks, exchanges, ramps, bridges, chains (`rutent_conformance::sim`) |
 | The policy engine deciding every move, and the two-person rule (`core-authz`) | The networks and their balances: an in-memory world, not a blockchain or a bank |
 | The authenticated log, its checkpoints, the evidence store and `audit-check` (`core-audit`) | The failures: scripted (the exchange fails) or planted at the platform's seam (the deposit refused its start) |
-| The router (`rutent-router`) and the state machine (`rutent-stm`, on the reference host) | Time: Core's clock is simulated, so "600 seconds to settle" takes no real time |
-| The module platform, running each provider as a Wasm module with real keys and signatures (`rutent-prov`) | The exchange rate: 1 COP unit to 1 USD unit, a placeholder, not a market rate |
+| The router (`rutent-router`) and the state machine (`rutent-stm`, on the reference host) | Time: Core's clock is simulated, so "15 minutes to settle" takes no real time |
+| The module platform, running each provider as a Wasm module with real keys and signatures (`rutent-prov`) | Exchange rates: every conversion is 1 unit for 1 unit, a placeholder, not a market rate |
 | The operator's plain wallet, built from `components/prov/guests/plain-wallet` | The customer, the operator's staff and their logins |
 
 What isn't there yet, so the demo doesn't show it:

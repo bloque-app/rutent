@@ -395,6 +395,21 @@ pub const GROSS_FEE: u128 = 5_000;
 /// - `sim-chain-out-c`, a reserve between `sim-chain-c` and the network `sim-chain-d`, and `sim-chain-out-b`, one
 ///   between `sim-chain-b` and `sim-chain-e`; each deposits to the address the requester provided
 ///   (`beneficiary.address`).
+///
+/// The demo's network (`conformance/demo/README.md`, `rutent-demo`): three publishers' private ledgers,
+/// `sim-andina-ledger` (COP), `sim-azteca-ledger` (MXN) and `sim-liberty-ledger` (USD), two public chains in USDC,
+/// `sim-polygon` and `sim-base`, and the outer networks `sim-co-bank`, `sim-mx-bank`, `sim-us-bank`,
+/// `sim-polygon-addresses` and `sim-base-addresses`:
+///
+/// - reserves: `sim-andina-cop`, `sim-azteca-mxn-desk` and `sim-liberty-usd` between each bank and its publisher's
+///   ledger, and `sim-polygon-wallets` and `sim-base-wallets` between each chain and its addresses;
+/// - exchanges, 1:1 in units and charging nothing (the simulated exchange quotes no fee): `sim-andina-exchange` and
+///   `sim-andina-exchange-fast` (COP to USDC, declaring 300 and 10 seconds), `sim-azteca-exchange` (MXN to USDC), `sim-azteca-fx-in` (USDC to MXN) and
+///   `sim-liberty-fx-in` (USDC to USD);
+/// - ramps: `sim-andina-ramp-polygon` and `sim-andina-base` out of `sim-andina-ledger`, `sim-azteca-base` out of
+///   `sim-azteca-ledger`, `sim-azteca-in-polygon` and `sim-liberty-in-base` from a chain into their publisher's
+///   ledger, and the bridges `sim-bridge`, `sim-bridge-fast` (`sim-polygon` to `sim-base`, 0.10 USDC and 15 minutes,
+///   3.00 USDC and 20 seconds) and `sim-bridge-back`.
 pub fn shape_of(provider: &str) -> Shape {
     use rutent_contracts::provider_role::EvidenceGrade;
     let join = |node: &str| Shape {
@@ -408,6 +423,14 @@ pub fn shape_of(provider: &str) -> Shape {
         asset: Some("COP".to_owned()),
         ..Shape::default()
     };
+    let private = |publisher: &str, node: &str| Shape {
+        publisher: Some(publisher.to_owned()),
+        node: Some(node.to_owned()),
+        ..Shape::default()
+    };
+    let andina = || private("sim-andina-publisher", "sim-andina-ledger");
+    let azteca = || private("sim-azteca-publisher", "sim-azteca-ledger");
+    let liberty = || private("sim-liberty-publisher", "sim-liberty-ledger");
     let chain = |node: &str| Shape {
         publisher: Some("sim-chain-publisher".to_owned()),
         node: Some(node.to_owned()),
@@ -554,6 +577,123 @@ pub fn shape_of(provider: &str) -> Shape {
                 node: Some(node.to_owned()),
                 public_node: true,
                 outer: Some(bank.to_owned()),
+                deposit_input: Some("beneficiary.address".to_owned()),
+                ..Shape::default()
+            }
+        }
+        // The demo's network (`conformance/demo/README.md`): three publishers' private ledgers, two public chains in
+        // USDC, three banks in three currencies and an address network on each chain, joined by reserves, exchanges
+        // and ramps, with more than one route between most places. Every exchange is 1:1 in units, with no fee: the
+        // simulated exchange quotes none, so the two COP to USDC exchanges differ by the time they declare.
+        "sim-andina-cop" => Shape {
+            asset: Some("COP".to_owned()),
+            outer: Some("sim-co-bank".to_owned()),
+            ..andina()
+        },
+        "sim-andina-exchange" | "sim-andina-exchange-fast" => Shape {
+            asset: Some("COP".to_owned()),
+            to_asset: Some("USDC".to_owned()),
+            grade: Some(EvidenceGrade::SignedByProvider),
+            settles_in: Some(if provider.ends_with("-fast") { 10 } else { 300 }),
+            ..andina()
+        },
+        "sim-andina-ramp-polygon" => Shape {
+            asset: Some("USDC".to_owned()),
+            outer: Some("sim-polygon".to_owned()),
+            fee: 50,
+            settles_in: Some(120),
+            ..andina()
+        },
+        "sim-andina-base" => Shape {
+            asset: Some("USDC".to_owned()),
+            outer: Some("sim-base".to_owned()),
+            fee: 150,
+            settles_in: Some(30),
+            ..andina()
+        },
+        "sim-azteca-mxn-desk" => Shape {
+            asset: Some("MXN".to_owned()),
+            outer: Some("sim-mx-bank".to_owned()),
+            ..azteca()
+        },
+        "sim-azteca-exchange" => Shape {
+            asset: Some("MXN".to_owned()),
+            to_asset: Some("USDC".to_owned()),
+            grade: Some(EvidenceGrade::SignedByProvider),
+            ..azteca()
+        },
+        "sim-azteca-fx-in" => Shape {
+            asset: Some("USDC".to_owned()),
+            to_asset: Some("MXN".to_owned()),
+            grade: Some(EvidenceGrade::SignedByProvider),
+            ..azteca()
+        },
+        "sim-azteca-base" => Shape {
+            asset: Some("USDC".to_owned()),
+            outer: Some("sim-base".to_owned()),
+            fee: 100,
+            settles_in: Some(60),
+            ..azteca()
+        },
+        "sim-azteca-in-polygon" => Shape {
+            asset: Some("USDC".to_owned()),
+            node: Some("sim-polygon".to_owned()),
+            public_node: true,
+            outer: Some("sim-azteca-ledger".to_owned()),
+            outer_private: true,
+            fee: 100,
+            settles_in: Some(60),
+            ..azteca()
+        },
+        "sim-liberty-usd" => Shape {
+            asset: Some("USD".to_owned()),
+            outer: Some("sim-us-bank".to_owned()),
+            ..liberty()
+        },
+        "sim-liberty-fx-in" => Shape {
+            asset: Some("USDC".to_owned()),
+            to_asset: Some("USD".to_owned()),
+            grade: Some(EvidenceGrade::SignedByProvider),
+            ..liberty()
+        },
+        "sim-liberty-in-base" => Shape {
+            asset: Some("USDC".to_owned()),
+            node: Some("sim-base".to_owned()),
+            public_node: true,
+            outer: Some("sim-liberty-ledger".to_owned()),
+            outer_private: true,
+            fee: 100,
+            settles_in: Some(60),
+            ..liberty()
+        },
+        "sim-bridge" | "sim-bridge-fast" | "sim-bridge-back" => {
+            let (from, to) = if provider.ends_with("-back") {
+                ("sim-base", "sim-polygon")
+            } else {
+                ("sim-polygon", "sim-base")
+            };
+            let fast = provider.ends_with("-fast");
+            Shape {
+                asset: Some("USDC".to_owned()),
+                node: Some(from.to_owned()),
+                public_node: true,
+                outer: Some(to.to_owned()),
+                fee: if fast { 300 } else { 10 },
+                settles_in: Some(if fast { 20 } else { 900 }),
+                ..Shape::default()
+            }
+        }
+        "sim-polygon-wallets" | "sim-base-wallets" => {
+            let chain = if provider.starts_with("sim-polygon") {
+                "sim-polygon"
+            } else {
+                "sim-base"
+            };
+            Shape {
+                asset: Some("USDC".to_owned()),
+                node: Some(chain.to_owned()),
+                public_node: true,
+                outer: Some(format!("{chain}-addresses")),
                 deposit_input: Some("beneficiary.address".to_owned()),
                 ..Shape::default()
             }

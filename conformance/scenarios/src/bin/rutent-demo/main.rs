@@ -3,14 +3,17 @@
 //! `rutent-scenarios`'s simulated providers, admitted to the real module platform and signing for real, and Core is
 //! the scenario assembly's, the same one `M3`'s scenarios run.
 //!
-//! The story, after the network (act 0), in three acts and an epilogue:
+//! The network (act 0) is eighteen providers making a graph of 23 edges between 10 nodes: three publishers' private
+//! ledgers with their banks in COP, MXN and USD, two public chains in USDC joined by three bridges, and the
+//! customer's addresses on each chain (`network`). The router searches it for routes of up to six segments. The story,
+//! in three acts and an epilogue:
 //!
-//! 1. A customer's order from Colombian pesos at one bank to US dollars at another, quoted, accepted and routed through
-//!    a reserve, an exchange, a ramp onto a public chain and a second reserve, with the exchange failing mid-route: the
-//!    reversal owed, asked and shown back, the route recalculated from where the value is, the order completed with no
-//!    new yes from the customer, and its executed price reported.
-//! 2. The next order on the same route, straight through, settled and priced.
-//! 3. An order whose last step can't start, stuck at a public node where the operator's wallet holds the value: one
+//! 1. Pesos at a Colombian bank to dollars at a US bank, across two private ledgers and a chain, converting twice,
+//!    with the first exchange failing mid-route: the reversal owed, asked and shown back, the route recalculated from
+//!    where the value is, the order completed with no new yes from the customer, and its executed price reported.
+//! 2. One request from one chain to the other, quoted under both objectives: the cheapest and the fastest route take
+//!    different bridges, and the fastest runs.
+//! 3. Mexican pesos to USDC at an address, stuck at a public chain where the operator's wallet holds the value: one
 //!    operator desk decides to hand it on to a linked order, another moves it, and the linked order runs.
 //! 4. The log, written to a folder with its checkpoints and its evidence, checked from outside by `audit-check`, then
 //!    a copy with one figure changed, which the checker rejects.
@@ -27,6 +30,7 @@
 //! presentation. `conformance/demo/README.md` is the presenter's guide.
 
 mod audit;
+mod network;
 mod show;
 
 use std::collections::BTreeMap;
@@ -35,7 +39,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use rutent_conformance::sim::{Act, Behaviour, Role as SimRole, Spec};
+use rutent_conformance::sim::{Act, Behaviour};
 use rutent_contracts::core_internal::{
     Actor, ActorKind, Decided, Destination, Entry, Parties, Resolution, Role,
 };
@@ -55,117 +59,29 @@ use rutent_scenarios::assembly::linked::LinkedOrder;
 use rutent_scenarios::assembly::machine::{Delivery, Reference};
 use rutent_scenarios::assembly::{Core, DESTINATION_ACCOUNT, ORIGIN_ACCOUNT, Staged, StepError};
 use rutent_scenarios::harness::{Given, Run, Scenario};
-use rutent_scenarios::kit::{self, AMOUNT, id};
+use rutent_scenarios::kit::{self, id};
 use serde_json::{Value, json};
 
 use show::{Transcript, money, receipt};
 
-// The network. Two groups of simulated providers, each of one publisher (`rutent_conformance::sim::shape_of`).
-
-/// A reserve between its bank, in COP, and its publisher's private ledger.
-const PESO_RESERVE: &str = "sim-join-in";
-/// An exchange at that private ledger, from COP to USD.
-const EXCHANGE: &str = "sim-join-exchange";
-/// A ramp from the private ledger onto the public chain `sim-join-chain`, in USD.
-const RAMP: &str = "sim-join-ramp-quick";
-/// A reserve between the public chain and its own bank, in USD.
-const DOLLAR_RESERVE: &str = "sim-join-out";
-/// A reserve between the network `sim-chain-a` and its private node, in USDC.
-const CHAIN_IN: &str = "sim-chain-in";
-/// A ramp from that private node onto the public node `sim-chain-b`.
-const CHAIN_RAMP: &str = "sim-chain-ramp-b";
-/// A reserve between `sim-chain-b` and the network `sim-chain-e`, which deposits to an address.
-const CHAIN_OUT: &str = "sim-chain-out-b";
-/// The public node the stuck order's value rests at, which the operator's wallet holds.
-const PUBLIC_NODE: &str = "sim-chain-b";
-/// The public nodes of the network, on the operator's list: where anyone can see what moved.
-const PUBLIC_NODES: &[&str] = &["sim-join-chain", PUBLIC_NODE];
-
-/// Every edge of the network: the provider, the node it takes value from, the node it gives it to, and what it does.
-/// A reserve serves both ways, a withdrawal from its outer network and a deposit back (`kit::reserve_prices`).
-const EDGES: &[(&str, &str, &str, &str)] = &[
-    (
-        PESO_RESERVE,
-        "sim-join-in-bank",
-        "sim-join-ledger",
-        "withdrawal · COP",
-    ),
-    (
-        PESO_RESERVE,
-        "sim-join-ledger",
-        "sim-join-in-bank",
-        "deposit · COP",
-    ),
-    (EXCHANGE, "sim-join-ledger", "sim-join-ledger", "COP → USD"),
-    (RAMP, "sim-join-ledger", "sim-join-chain", "USD"),
-    (
-        DOLLAR_RESERVE,
-        "sim-join-chain",
-        "sim-join-out-bank",
-        "deposit · USD",
-    ),
-    (
-        DOLLAR_RESERVE,
-        "sim-join-out-bank",
-        "sim-join-chain",
-        "withdrawal · USD",
-    ),
-    (
-        CHAIN_IN,
-        "sim-chain-a",
-        "sim-chain-ledger",
-        "withdrawal · USDC",
-    ),
-    (
-        CHAIN_IN,
-        "sim-chain-ledger",
-        "sim-chain-a",
-        "deposit · USDC",
-    ),
-    (CHAIN_RAMP, "sim-chain-ledger", PUBLIC_NODE, "USDC"),
-    (CHAIN_OUT, PUBLIC_NODE, "sim-chain-e", "deposit · USDC"),
-    (CHAIN_OUT, "sim-chain-e", PUBLIC_NODE, "withdrawal · USDC"),
-];
-
-/// The network as a Graphviz graph: each node a vertex, shaped and coloured by its kind (outer, private, public),
-/// and each provider a directed edge from the node it takes value from to the node it gives it to.
-fn network_dot() -> String {
-    let mut nodes: Vec<&str> = EDGES
-        .iter()
-        .flat_map(|(_, from, to, _)| [*from, *to])
-        .collect();
-    nodes.sort_unstable();
-    nodes.dedup();
-    let mut dot = String::from(
-        "// The rutent demo's network (conformance/demo/README.md). Render it with `dot -Tsvg network.dot > network.svg`.\n\
-         digraph network {\n  rankdir=LR;\n  node [fontname=\"Helvetica\", fontsize=11, style=filled];\n  \
-         edge [fontname=\"Helvetica\", fontsize=10];\n",
-    );
-    for node in nodes {
-        let (kind, shape, fill) = if PUBLIC_NODES.contains(&node) {
-            ("public", "doublecircle", "#9FE1CB")
-        } else if node.ends_with("-ledger") {
-            ("private", "circle", "#CECBF6")
-        } else {
-            ("outer", "box", "#D3D1C7")
-        };
-        dot.push_str(&format!(
-            "  \"{node}\" [label=\"{node}\\n({kind})\", shape={shape}, fillcolor=\"{fill}\"];\n"
-        ));
-    }
-    for (provider, from, to, asset) in EDGES {
-        dot.push_str(&format!(
-            "  \"{from}\" -> \"{to}\" [label=\"{provider}\\n{asset}\"];\n"
-        ));
-    }
-    dot.push_str(&format!(
-        "  \"{}\" [label=\"operator-wallet\\n(holding account)\", shape=note, fillcolor=\"#F1EFE8\"];\n  \
-         \"{}\" -> \"{PUBLIC_NODE}\" [style=dashed, arrowhead=none, label=\"holds\"];\n}}\n",
-        kit::OPERATOR_WALLET,
-        kit::OPERATOR_WALLET
-    ));
-    dot
-}
+/// The reserve of pesos at the Colombian bank, in sim-andina's ledger.
+const PESOS: &str = "sim-andina-cop";
+/// The exchange from COP to USDC in that ledger that act 1 makes fail.
+const FAILING_EXCHANGE: &str = "sim-andina-exchange";
+/// The reserve of dollars at the US bank, in sim-liberty's ledger.
+const DOLLARS: &str = "sim-liberty-usd";
+/// The reserve of Mexican pesos at the Mexican bank, in sim-azteca's ledger.
+const MEXICAN_PESOS: &str = "sim-azteca-mxn-desk";
+/// The reserves between each chain and its addresses.
+const POLYGON_WALLETS: &str = "sim-polygon-wallets";
+const BASE_WALLETS: &str = "sim-base-wallets";
+/// The public node the operator's wallet holds, where act 3's order is left stuck.
+const HELD_NODE: &str = "sim-polygon";
+/// What each order sends, in its asset's smallest unit: 50,000.00. The simulated exchanges and ramps serve no less
+/// than 10,000.00 (their tuples' band), and every step's fee must leave that much for the next.
+const AMOUNT: &str = "5000000";
+/// The most segments a route may have in the demo: enough to cross two publishers' ledgers and a chain.
+const MAX_HOPS: u8 = 6;
 
 /// The address the customer gives for the deposit on chain.
 const ADDRESS: &str = "0x5e11a9d0c0ffee";
@@ -294,7 +210,7 @@ fn main() -> ExitCode {
         .and_then(|()| demo.pause())
         .and_then(|()| demo.provider_fails_mid_route())
         .and_then(|()| demo.pause())
-        .and_then(|()| demo.order_across_providers())
+        .and_then(|()| demo.two_objectives())
         .and_then(|()| demo.pause())
         .and_then(|()| demo.stuck_order_handed_on())
         .and_then(|()| demo.pause())
@@ -310,6 +226,15 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// An order quoted: its id, the decision record its route is from, the quote's digest, and what the customer would
+/// receive, in the destination asset's smallest unit.
+struct Quoted {
+    order: Id,
+    record: rutent_contracts::router_api::DecisionRecord,
+    digest: rutent_contracts::module_interface::Digest,
+    shown_out: String,
 }
 
 /// The demo as it runs: Core, the checkpointer over its log, and what it has printed and done.
@@ -336,20 +261,8 @@ fn failed(what: &str) -> impl Fn(StepError) -> String + '_ {
 
 impl Demo {
     fn new(options: &Options) -> Step<Self> {
-        let names = [
-            (SimRole::Reserve, PESO_RESERVE),
-            (SimRole::Exchange, EXCHANGE),
-            (SimRole::Ramp, RAMP),
-            (SimRole::Reserve, DOLLAR_RESERVE),
-            (SimRole::Reserve, CHAIN_IN),
-            (SimRole::Ramp, CHAIN_RAMP),
-            (SimRole::Reserve, CHAIN_OUT),
-        ];
         let given = Given {
-            providers: names
-                .iter()
-                .map(|(role, name)| Spec::of(*role, name))
-                .collect(),
+            providers: network::specs(),
             staging: Staged::AtOnce,
             deadline: Duration::from_secs(2),
             delivery: Delivery::Once,
@@ -358,7 +271,8 @@ impl Demo {
         println!(
             "Putting Core together and admitting the simulated providers (their modules compile on first use)…"
         );
-        let (core, _) = scenario.core(options.seed, &mut Reference);
+        let (mut core, _) = scenario.core(options.seed, &mut Reference);
+        core.set_max_hops(std::num::NonZeroU8::new(MAX_HOPS).expect("more than none"));
         let checkpointer = core
             .checkpointer()
             .map_err(|e| format!("the checkpointer refused the log: {e:?}"))?;
@@ -432,69 +346,63 @@ impl Demo {
             .detail("       PRIVATE = one publisher's own ledger, seen only by its providers;");
         self.t.detail("       PUBLIC = a shared ledger on the operator's list, where anyone can see what moved.");
         self.t.gap();
-        let rows = [
-            (
-                PESO_RESERVE,
-                "reserve",
-                "sim-join-in-bank (outer) → sim-join-ledger (private)",
-                "COP",
-            ),
-            (
-                EXCHANGE,
-                "exchange",
-                "inside sim-join-ledger (private)",
-                "COP → USD",
-            ),
-            (
-                RAMP,
-                "ramp",
-                "sim-join-ledger (private) → sim-join-chain (public)",
-                "USD",
-            ),
-            (
-                DOLLAR_RESERVE,
-                "reserve",
-                "sim-join-chain (public) → sim-join-out-bank (outer)",
-                "USD",
-            ),
-            (
-                CHAIN_IN,
-                "reserve",
-                "sim-chain-a (outer) → sim-chain-ledger (private)",
-                "USDC",
-            ),
-            (
-                CHAIN_RAMP,
-                "ramp",
-                "sim-chain-ledger (private) → sim-chain-b (public)",
-                "USDC",
-            ),
-            (
-                CHAIN_OUT,
-                "reserve",
-                "sim-chain-b (public) → sim-chain-e (outer), to an address",
-                "USDC",
-            ),
-        ];
-        for (name, role, between, asset) in rows {
-            self.t
-                .detail(format!("{name:<22} {role:<9} {between:<58} {asset}"));
+        let kinds = network::nodes();
+        let kind_of = |n: &str| {
+            kinds
+                .iter()
+                .find(|(name, _)| name == n)
+                .map_or("?", |(_, k)| k.name())
+        };
+        self.t.detail(format!(
+            "{} providers, {} nodes, {} edges. Each line is one edge: a provider moving value from one node to another.",
+            network::PROVIDERS.len(),
+            kinds.len(),
+            network::edges().len()
+        ));
+        self.t.gap();
+        for e in network::edges() {
+            let from = format!("{} ({})", e.from, kind_of(&e.from));
+            let to = if e.from == e.to {
+                "same node".to_owned()
+            } else {
+                format!("{} ({})", e.to, kind_of(&e.to))
+            };
+            let terms = match (e.fee, e.seconds) {
+                (0, Some(s)) => format!("no fee, {s} s"),
+                (f, Some(s)) => format!("fee {}, {s} s", money(&f.to_string(), &e.asset_in)),
+                (0, None) => "no fee".to_owned(),
+                (f, None) => format!("fee {}", money(&f.to_string(), &e.asset_in)),
+            };
+            self.t.detail(format!(
+                "{:<26} {:<10} {:<36} → {:<32} {:<12} {terms}",
+                e.provider,
+                e.does,
+                from,
+                to,
+                e.assets()
+            ));
         }
-        self.t.detail("The first three share sim-join-publisher's private node; sim-chain-in and sim-chain-ramp-b share");
-        self.t.detail("sim-chain-publisher's.");
-        for node in PUBLIC_NODES {
+        let public: Vec<String> = network::public_nodes().into_iter().collect();
+        for node in &public {
             if !self.core().catalogue().nodes().is_public(node) {
                 return Err(format!(
                     "{node} isn't on the operator's list of public nodes"
                 ));
             }
         }
-        show::public_nodes(PUBLIC_NODES);
-        let graph = network_dot();
+        let public: Vec<&str> = public.iter().map(String::as_str).collect();
+        show::public_nodes(&public);
         std::fs::create_dir_all(&self.out).map_err(|e| e.to_string())?;
-        std::fs::write(self.out.join("network.dot"), graph).map_err(|e| e.to_string())?;
-        self.t.detail("The network is a graph: each node a vertex, each provider tuple a directed edge (a reserve has two).");
-        self.t.detail("It is written as network.dot (Graphviz) in the output folder; conformance/demo/network.svg draws it.");
+        std::fs::write(
+            self.out.join("network.dot"),
+            network::dot(kit::OPERATOR_WALLET, HELD_NODE),
+        )
+        .map_err(|e| e.to_string())?;
+        self.t.gap();
+        self.t.detail("The network is a graph, written as network.dot (Graphviz) in the output folder; conformance/demo/network.svg draws it.");
+        self.t.detail(format!(
+            "The router searches it for every path of at most {MAX_HOPS} edges, and picks one for the order's objective."
+        ));
         let session = self
             .core()
             .open_session(&kit::customer())
@@ -515,15 +423,44 @@ impl Demo {
 
     // Act 2 -------------------------------------------------------------------------------------------------------
 
-    fn order_across_providers(&mut self) -> Step {
+    fn two_objectives(&mut self) -> Step {
         self.t.act(
             "ACT 2",
-            "The next order, straight through four providers: settled and priced",
+            "One request, two objectives, two routes: USDC on sim-polygon to an address on sim-base",
         );
-        self.t
-            .say("A second order on the same route, and this time nothing goes wrong.");
-        let request = self.across("req-demo-2");
-        let (order, record) = self.quote_and_accept(request)?;
+        self.t.say(format!(
+            "The customer asks to move {} from their address on sim-polygon to one on sim-base.",
+            money(AMOUNT, "USDC")
+        ));
+        self.t.say("Two bridges join the chains: sim-bridge charges 0.10 USDC and takes 15 minutes, sim-bridge-fast");
+        self.t.say("charges 3.00 USDC and takes 20 seconds. The customer asks for a quote under each objective.");
+        self.register_address();
+        let ask = |name: &str, objective: &str, session: &Id| {
+            request(
+                name,
+                session,
+                POLYGON_WALLETS,
+                outer("sim-polygon-addresses", "USDC"),
+                outer("sim-base-addresses", "USDC"),
+                BASE_WALLETS,
+                ADDRESS,
+                objective,
+            )
+        };
+        let cheapest = ask("req-demo-2-cheapest", "lowest_total_cost", &self.session);
+        let cheapest = self.quote(cheapest, "lowest total cost")?;
+        let fastest = ask("req-demo-2-fastest", "fastest_settlement", &self.session);
+        let Quoted {
+            order,
+            record,
+            digest,
+            ..
+        } = self.quote(fastest, "fastest settlement")?;
+        self.t.say(format!(
+            "Same request, same graph, different edges: the cheapest quote delivers {}, the fastest settles in seconds.",
+            money(&cheapest.shown_out, "USDC")
+        ));
+        self.accept(&order, &digest)?;
         let ran = self.core().run(&order).map_err(failed("the order runs"))?;
         self.segments(
             "Core hands each segment to its provider, in order",
@@ -538,17 +475,13 @@ impl Demo {
         Ok(())
     }
 
-    /// The customer's order across the joined providers, from the peso bank to the dollar bank.
-    fn across(&self, name: &str) -> OrderRequest {
-        request(
-            name,
-            &self.session,
-            PESO_RESERVE,
-            outer("sim-join-in-bank", "COP"),
-            outer("sim-join-out-bank", "USD"),
-            DOLLAR_RESERVE,
-            DESTINATION_ACCOUNT,
-        )
+    /// The customer's address on the chains, which the reserves' registers hold as theirs.
+    fn register_address(&mut self) {
+        let customer = kit::customer();
+        self.core()
+            .registers()
+            .accounts
+            .insert(ADDRESS.to_owned(), customer.party.as_str().to_owned());
     }
 
     /// Opens `request`'s order, prints its quote and the route the router chose, and accepts it as the customer.
@@ -556,6 +489,26 @@ impl Demo {
         &mut self,
         request: OrderRequest,
     ) -> Step<(Id, rutent_contracts::router_api::DecisionRecord)> {
+        let quoted = self.quote(request, "lowest total cost")?;
+        self.accept(&quoted.order, &quoted.digest)?;
+        Ok((quoted.order, quoted.record))
+    }
+
+    /// The customer accepts `order`'s quote, on its digest.
+    fn accept(&mut self, order: &Id, digest: &rutent_contracts::module_interface::Digest) -> Step {
+        self.core()
+            .accept(&kit::customer(), order, digest)
+            .map_err(failed("the acceptance"))?;
+        self.t.step(format!(
+            "The customer accepts it, on the quote's digest {}",
+            show::short(digest.value.as_str())
+        ));
+        Ok(())
+    }
+
+    /// Opens `request`'s order and prints its quote, the route the router chose under `objective` and how many it
+    /// weighed: the order, the decision record and the quote's digest.
+    fn quote(&mut self, request: OrderRequest, objective: &str) -> Step<Quoted> {
         let customer = kit::customer();
         let told = self
             .core()
@@ -572,6 +525,28 @@ impl Demo {
             ..
         } = told
         else {
+            if let Some(record) = self.core().decision_records().last() {
+                let lines: Vec<String> = record
+                    .candidates()
+                    .iter()
+                    .map(|c| {
+                        let path: Vec<&str> = c
+                            .parts
+                            .iter()
+                            .flat_map(|p| p.operations.iter())
+                            .map(|o| o.provider.as_str())
+                            .collect();
+                        format!("{} — dropped: {:?}", path.join(" → "), c.dropped)
+                    })
+                    .collect();
+                self.t.step(format!(
+                    "The router weighed {} candidate routes and dropped each:",
+                    lines.len()
+                ));
+                for line in lines {
+                    self.t.detail(line);
+                }
+            }
             return Err(format!("the order wasn't quoted: {told:?}"));
         };
         let record = self
@@ -581,7 +556,8 @@ impl Demo {
             .find(|r| r.record_id() == &quote.decision_record)
             .ok_or("Core signed no decision record for the quote")?;
         self.t.step(format!(
-            "The router chose this route; Core signed the decision record {}:",
+            "The router weighed {} and chose this one for {objective}; Core signed the decision record {}:",
+            candidates(record.candidates().len()),
             record.record_id().as_str()
         ));
         for line in show::route(&record) {
@@ -589,14 +565,12 @@ impl Demo {
         }
         let shown = serde_json::to_value(&quote.price).unwrap_or(Value::Null);
         self.quote_lines("The customer is shown a quote", &shown);
-        self.core()
-            .accept(&customer, &order, &digest)
-            .map_err(failed("the acceptance"))?;
-        self.t.step(format!(
-            "The customer accepts it, on the quote's digest {}",
-            show::short(digest.value.as_str())
-        ));
-        Ok((order, record))
+        Ok(Quoted {
+            order,
+            record,
+            digest,
+            shown_out: shown["shown_out"].as_str().unwrap_or("?").to_owned(),
+        })
     }
 
     /// Prints what a shown quote or price says, segment by segment.
@@ -725,25 +699,34 @@ impl Demo {
     fn provider_fails_mid_route(&mut self) -> Step {
         self.t.act(
             "ACT 1",
-            "An order across four providers, one failing mid-route: reversed, recovered, priced",
+            "Pesos in Colombia to dollars in the US, across two private ledgers and a chain, one exchange failing",
         );
         self.t.say(format!(
-            "The customer asks to send {} from their peso account at {PESO_RESERVE}'s bank",
+            "The customer asks to send {} from their peso account at sim-co-bank to a dollar account at",
             money(AMOUNT, "COP")
         ));
+        self.t.say("sim-us-bank, by lowest total cost. No single provider can do it: the route crosses sim-andina's");
+        self.t
+            .say("ledger, a public chain and sim-liberty's ledger, converting twice.");
         self.t.say(format!(
-            "to a dollar account at {DOLLAR_RESERVE}'s bank, by lowest total cost."
-        ));
-        self.t.say(format!(
-            "On this order, {EXCHANGE} will fail the conversion after the withdrawal has settled."
+            "On this order, {FAILING_EXCHANGE} will fail the conversion after the withdrawal has settled."
         ));
         self.core()
             .world()
-            .script_for(EXCHANGE, "conversion", Behaviour::act(Act::Fail));
+            .script_for(FAILING_EXCHANGE, "conversion", Behaviour::act(Act::Fail));
         self.t.step(format!(
-            "(scripted on the simulated world: {EXCHANGE} fails its next conversion)"
+            "(scripted on the simulated world: {FAILING_EXCHANGE} fails its next conversion)"
         ));
-        let request = self.across("req-demo-1");
+        let request = request(
+            "req-demo-1",
+            &self.session,
+            PESOS,
+            outer("sim-co-bank", "COP"),
+            outer("sim-us-bank", "USD"),
+            DOLLARS,
+            DESTINATION_ACCOUNT,
+            "lowest_total_cost",
+        );
         let (order, record) = self.quote_and_accept(request)?;
         let ran = self.core().run(&order).map_err(failed("the order runs"))?;
         let segments = self.segments(
@@ -801,8 +784,9 @@ impl Demo {
             return Err(format!("no route from where the value is: {outcome:?}"));
         };
         self.t.step(format!(
-            "Core recalculates from where the value is shown back, {}, to the same destination:",
-            show::endpoint(&serde_json::to_value(&recalculated.from).unwrap_or(Value::Null))
+            "Core recalculates from where the value is shown back, {}, to the same destination ({}):",
+            show::endpoint(&serde_json::to_value(&recalculated.from).unwrap_or(Value::Null)),
+            candidates(recalculated.record.candidates().len())
         ));
         for line in show::route(&recalculated.record) {
             self.t.detail(line);
@@ -834,43 +818,53 @@ impl Demo {
             "A stuck order, handed on by two people under policy",
         );
         self.t.say(format!(
-            "A USDC order from network sim-chain-a to the address {ADDRESS} on sim-chain-e. The operator's own wallet"
+            "Mexican pesos at sim-mx-bank to USDC at the customer's address {ADDRESS} on sim-polygon. The route"
         ));
         self.t.say(format!(
-            "holds the public node {PUBLIC_NODE} the route passes through. The last step's start will be refused."
+            "converts in sim-azteca's ledger, ramps onto sim-base and bridges back to {HELD_NODE}, which the"
         ));
+        self.t.say("operator's own wallet holds. The last step, the deposit to the address, will be refused its start.");
+        self.register_address();
         let customer = kit::customer();
-        self.core()
-            .registers()
-            .accounts
-            .insert(ADDRESS.to_owned(), customer.party.as_str().to_owned());
         let wallet = self
             .core()
-            .install_wallet(PUBLIC_NODE, "USDC")
+            .install_wallet(HELD_NODE, "USDC")
             .map_err(|e| format!("the operator's wallet: {e:?}"))?;
         self.t.step(format!(
-            "The operator's plain wallet ({}, a real module) is installed as {PUBLIC_NODE}'s holding account",
+            "The operator's plain wallet ({}, a real module) is installed as {HELD_NODE}'s holding account",
             wallet.provider
         ));
         let asked = request(
             "req-demo-3",
             &self.session,
-            CHAIN_IN,
-            outer("sim-chain-a", "USDC"),
-            outer("sim-chain-e", "USDC"),
-            CHAIN_OUT,
+            MEXICAN_PESOS,
+            outer("sim-mx-bank", "MXN"),
+            outer("sim-polygon-addresses", "USDC"),
+            POLYGON_WALLETS,
             ADDRESS,
+            "lowest_total_cost",
         );
         let (order, record) = self.quote_and_accept(asked)?;
+        let hops = show::providers(&record).len();
         let part = self
             .core()
             .first_part(&order)
             .ok_or("the order has no part")?;
         let begun = self.core().faults.begun;
-        self.core().faults.refuse_begin = Some(begun + 2);
+        self.core().faults.refuse_begin = Some(begun + hops - 1);
         self.t.step("(planted at the platform's seam: the deposit out of the public node is refused its start)");
         let ran = self.core().run(&order).map_err(failed("the order runs"))?;
-        self.segments("Core runs the route", &ran, &record)?;
+        let ran = self.segments("Core runs the route", &ran, &record)?;
+        let resting = ran
+            .iter()
+            .rev()
+            .find_map(|s| match &s.outcome {
+                SegmentOutcome::Settled { amount_out, .. } => serde_json::to_value(amount_out)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned)),
+                _ => None,
+            })
+            .ok_or("nothing settled before the refusal")?;
         self.core()
             .leave_no_route(&order)
             .map_err(failed("no route left"))?;
@@ -879,7 +873,8 @@ impl Demo {
         }
         let state = self.state(&order)?;
         self.t.step(format!(
-            "No route is left from {PUBLIC_NODE}: the order is {state:?}, its value resting in the operator's wallet"
+            "No route is left from {HELD_NODE}: the order is {state:?}, {} resting in the operator's wallet",
+            money(&resting, "USDC")
         ));
         self.core()
             .accept_release(&wallet)
@@ -892,9 +887,9 @@ impl Demo {
             route: serde_json::from_value::<Request>(json!({
                 "request_id": "req-demo-3-linked",
                 "round": {"kind": "shortlist"},
-                "from": inner(PUBLIC_NODE, "USDC"),
-                "to": outer("sim-chain-e", "USDC"),
-                "amount": AMOUNT,
+                "from": inner(HELD_NODE, "USDC"),
+                "to": outer("sim-polygon-addresses", "USDC"),
+                "amount": resting,
                 "objective": {"kind": "lowest_total_cost"},
             }))
             .map_err(|e| format!("the linked route request: {e}"))?,
@@ -920,7 +915,7 @@ impl Demo {
                 id: "USDC".into(),
                 decimals: 2,
             },
-            amount: PositiveAmount::new(AMOUNT).ok_or("an amount")?,
+            amount: PositiveAmount::new(resting.as_str()).ok_or("an amount")?,
         };
         let evidence = self.evidence_about(&order)?;
         let decision = self
@@ -1194,6 +1189,15 @@ impl Demo {
     }
 }
 
+/// `n` candidate routes, in words.
+fn candidates(n: usize) -> String {
+    if n == 1 {
+        "1 candidate route".to_owned()
+    } else {
+        format!("{n} candidate routes")
+    }
+}
+
 fn verdict(code: Option<i32>) -> &'static str {
     match code {
         Some(0) => "it holds",
@@ -1238,7 +1242,8 @@ fn inner(node: &str, asset: &str) -> Value {
 }
 
 /// The customer's order of `AMOUNT` from the endpoint `from` of the reserve `origin` to the endpoint `to` of the
-/// reserve `at`, delivered to `account`, by lowest total cost: the customer is requester, beneficiary and payer.
+/// reserve `at`, delivered to `account`, ranked by `objective`: the customer is requester, beneficiary and payer.
+#[allow(clippy::too_many_arguments)]
 fn request(
     name: &str,
     session: &Id,
@@ -1247,6 +1252,7 @@ fn request(
     to: Value,
     at: &str,
     account: &str,
+    objective: &str,
 ) -> OrderRequest {
     let customer = kit::customer();
     let network = to["node"]["network"]
@@ -1274,7 +1280,7 @@ fn request(
             "from": from,
             "to": to,
             "amount": AMOUNT,
-            "objective": {"kind": "lowest_total_cost"},
+            "objective": {"kind": objective},
         }))
         .expect("a route request"),
         inputs: BTreeMap::from([

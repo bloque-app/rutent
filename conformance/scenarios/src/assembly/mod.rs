@@ -1111,6 +1111,13 @@ impl Core {
         self.bounds.operator_fee = fee;
     }
 
+    /// Sets the most segments a route may have (`DEC-8`, ADR-0006's hop limit), which the bounds of every route
+    /// decided from now on carry: a deployment setting of the policy, which the kit's bounds set at four. A route
+    /// already decided keeps the limit its record ran under.
+    pub fn set_max_hops(&mut self, hops: std::num::NonZeroU8) {
+        self.bounds.max_hops = hops;
+    }
+
     /// Sets the most in flight at a provider in one asset (`REQ-ORD-8`): the bounds of every route decided from now on
     /// carry it, in place of any the provider had in that asset. A deployment setting of the policy, as the operator's
     /// fee is: a Core opened again starts from the kit's bounds, with none (`T-020-46`).

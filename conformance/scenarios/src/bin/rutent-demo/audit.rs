@@ -75,7 +75,7 @@ pub fn write(
 
 /// A copy of the history at `to` with one figure changed in one record: what someone holding the file and the
 /// operator's full access could write. The record changed is the first that carries an `amount` of
-/// `kit::AMOUNT`; its index is handed back.
+/// `crate::AMOUNT`; its index is handed back.
 pub fn tamper(history: &[Vec<u8>], to: &Path) -> std::io::Result<Option<usize>> {
     let mut out = history.to_vec();
     let mut changed = None;
@@ -93,14 +93,14 @@ pub fn tamper(history: &[Vec<u8>], to: &Path) -> std::io::Result<Option<usize>> 
     Ok(changed)
 }
 
-/// Changes the first `amount` of `kit::AMOUNT` in `value` to ten times it.
+/// Changes the first `amount` of `crate::AMOUNT` in `value` to ten times it.
 fn rewrite_amount(value: &mut Value) -> bool {
     match value {
         Value::Object(map) => {
-            if map.get("amount").and_then(Value::as_str) == Some(kit::AMOUNT) {
+            if map.get("amount").and_then(Value::as_str) == Some(crate::AMOUNT) {
                 map.insert(
                     "amount".to_owned(),
-                    Value::from(format!("{}0", kit::AMOUNT)),
+                    Value::from(format!("{}0", crate::AMOUNT)),
                 );
                 return true;
             }
