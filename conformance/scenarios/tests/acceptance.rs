@@ -54,6 +54,9 @@ fn the_customers_agent(core: &Core) -> Actor {
         kind: ActorKind::Agent,
     };
     core.registers().list(&agent);
+    // Told the order's status at each call, which intake asks policy's read check for (`T-020-52`).
+    core.registers()
+        .scope(&agent, rutent_core_authz::parties::Scope::CheckRead);
     agent
 }
 

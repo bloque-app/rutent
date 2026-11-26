@@ -105,6 +105,8 @@ pub enum Scope {
     AskReversal,
     /// Asking a segment's provider for its late status (`decide`, `ask_status`).
     AskStatus,
+    /// Filing an arrival anew against its order (`decide`, `refile_arrival`, `T-020-52`).
+    RefileArrival,
     /// The customer accepting a showing of its fault (`decide`, `accept_fault`).
     AcceptFault,
     /// Giving an authorisation to move funds, a new destination included (`authorise`).
@@ -148,6 +150,7 @@ impl Scope {
                 Action::EraseStatement { .. } => Scope::EraseStatement,
                 Action::AskReversal { .. } => Scope::AskReversal,
                 Action::AskStatus { .. } => Scope::AskStatus,
+                Action::RefileArrival { .. } => Scope::RefileArrival,
                 Action::AcceptFault { .. } => Scope::AcceptFault,
                 Action::ResolveStuck { .. } => Scope::MoveStuck,
             },

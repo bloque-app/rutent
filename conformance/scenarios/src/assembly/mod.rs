@@ -67,11 +67,11 @@ use std::time::Duration;
 
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::Spec;
-use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, Reads};
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Authorisation, CatalogueChange, DecisionRequest, Entry, Outcome,
-    Receipt, RefusalClass, Role, RouteEnd, SessionOutcome, SessionRequest, TimeSource,
-    VerifiedEntry, VerifiedKind, What, When,
+    Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
+    Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role, RouteEnd,
+    SessionOutcome, SessionRequest, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
@@ -85,7 +85,7 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_authz::session::LONGEST_SESSION_SECS;
 use rutent_core_orch::intake::{
     Actors, DESTINATION_INPUT, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord,
-    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, Told,
+    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{
@@ -254,6 +254,32 @@ pub struct Signer {
     /// Each decision record Core signed, by its id: the envelope as signed, its bytes, and nothing read from them
     /// until they are held to the log's digest.
     records: BTreeMap<String, Vec<u8>>,
+    /// The ids of `records`, in the order they were signed: what a scenario that takes the first or the last record
+    /// means, since the ids are drawn and order by chance of what else Core drew.
+    signed: Vec<String>,
+}
+
+impl Signer {
+    /// The records, in the order they were signed; any the order doesn't name (carried over a restart) after, by id.
+    fn in_order(&self) -> Vec<(&String, &Vec<u8>)> {
+        let mut named: Vec<(&String, &Vec<u8>)> = self
+            .signed
+            .iter()
+            .filter_map(|id| self.records.get_key_value(id))
+            .collect();
+        for (id, bytes) in &self.records {
+            if !self.signed.contains(id) {
+                named.push((id, bytes));
+            }
+        }
+        named
+    }
+
+    /// The first record signed, to change.
+    fn first_mut(&mut self) -> Option<&mut Vec<u8>> {
+        let first = self.in_order().first().map(|(id, _)| (*id).clone())?;
+        self.records.get_mut(&first)
+    }
 }
 
 impl OperatorKey for Signer {
@@ -269,8 +295,10 @@ impl OperatorKey for Signer {
         {
             value["signature"]["value"] = rutent_conformance::signing::base64url(&signature).into();
             let recorded = serde_json::to_vec(&value).unwrap_or_default();
-            self.records
-                .insert(record.record_id().as_str().to_owned(), recorded);
+            let id = record.record_id().as_str().to_owned();
+            if self.records.insert(id.clone(), recorded).is_none() {
+                self.signed.push(id);
+            }
         }
         Some(signature)
     }
@@ -483,12 +511,41 @@ impl rutent_core_orch::quote::Recorded for LogNow<'_> {
     }
 }
 
-/// The register of actors, as intake reads it: the deployment's, the one policy reads.
+/// The register of actors, as intake reads it: the deployment's, the one policy reads, which binds the party, the kind
+/// and the role the actor states (`T-021-14`, `T-020-52`).
 struct Acting(Rc<RefCell<Registers>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
-        self.0.borrow().acts_as(acts, party, kind) == Some(true)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
+        self.0.borrow().acts_in(acts, party, kind, role) == Some(true)
+    }
+}
+
+/// Policy's read check, as intake asks it before it tells an order's status, and where intake hands over its own
+/// record of the filed request first, for policy's `Requester` source to answer from (`T-020-52`).
+struct StatusReading {
+    policy: PolicySide,
+    orders: rutent_core_authz::core_sources::OpenedOrders,
+}
+
+impl Reads for StatusReading {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        self.policy.check_read(check)
+    }
+
+    fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.grant_permission(change)
+    }
+
+    fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.revoke_permission(change)
+    }
+}
+
+impl StatusReads for StatusReading {
+    fn filed(&mut self, record: &OrderRecord) {
+        self.orders
+            .opened(&record.order, &record.parties, &record.origin_reserve);
     }
 }
 
@@ -496,6 +553,10 @@ impl Actors for Acting {
 struct Held(Rc<RefCell<PolicyEngine>>);
 
 impl SessionRegister for Held {
+    fn unread(&mut self) -> bool {
+        self.0.borrow().register().is_unread()
+    }
+
     fn held(&mut self, session: &Id) -> Option<HeldSession> {
         self.0
             .borrow()
@@ -824,6 +885,8 @@ impl Core {
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);
+            // The operator's login files an arrival anew where policy decides it (`REQ-ORD-23`, `T-020-52`).
+            r.permit(&kit::operator_login(), Permission::RefileArrival);
             r.accounts.insert(
                 context.account.clone(),
                 kit::customer().party.as_str().to_owned(),
@@ -941,6 +1004,7 @@ impl Core {
             signer: Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
+                signed: Vec::new(),
             },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds_for(&context, &config.providers),
@@ -982,12 +1046,12 @@ impl Core {
         Ok(core)
     }
 
-    /// Every decision record Core signed, by its id.
+    /// Every decision record Core signed, in the order it signed them.
     pub fn decision_records(&self) -> Vec<DecisionRecord> {
         self.signer
-            .records
-            .values()
-            .filter_map(|bytes| record_in(bytes))
+            .in_order()
+            .into_iter()
+            .filter_map(|(_, bytes)| record_in(bytes))
             .collect()
     }
 
@@ -995,8 +1059,8 @@ impl Core {
     /// a record (`T-024-22`: a scan that read only the records that parse would miss one that doesn't).
     pub fn decision_record_bytes(&self) -> Vec<(String, Vec<u8>)> {
         self.signer
-            .records
-            .iter()
+            .in_order()
+            .into_iter()
             .map(|(id, bytes)| (id.clone(), bytes.clone()))
             .collect()
     }
@@ -1004,7 +1068,7 @@ impl Core {
     /// A control for the check that every record Core signed is read (`T-024-22`): rewrites the first record kept with
     /// its `candidates` set to a string, so it no longer reads back as a record. False if Core kept none.
     pub fn corrupt_decision_record(&mut self) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        let Some(bytes) = self.signer.first_mut() else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -1026,7 +1090,21 @@ impl Core {
     /// rest itself, so a customer's figure can't be put there from outside; this puts it there from inside. False if
     /// Core kept no record, or the record has no text there, or reads back as no record with the figure in it.
     pub fn leak_into_decision_record(&mut self, leak: &str, at: &str) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        // The first record signed that has text at `at`: a refining round's record has fields the first round's hasn't.
+        let Some(id) = self
+            .signer
+            .in_order()
+            .into_iter()
+            .find(|(_, bytes)| {
+                serde_json::from_slice::<serde_json::Value>(bytes)
+                    .ok()
+                    .is_some_and(|v| v["statement"].pointer(at).is_some_and(|f| f.is_string()))
+            })
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        let Some(bytes) = self.signer.records.get_mut(&id) else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -1714,6 +1792,11 @@ impl Core {
         let mut acting = Acting(Rc::clone(&self.deployed.registers));
         let mut held = Held(Rc::clone(self.policy.engine()));
         let mut authorisations = self.policy.clone();
+        let mut decisions = self.policy.clone();
+        let mut reads = StatusReading {
+            policy: self.policy.clone(),
+            orders: self.sources.opened_orders(),
+        };
         let log = Rc::clone(&self.log);
         let recorded = LogNow(&log);
         let mut kept = Reading {
@@ -1724,8 +1807,10 @@ impl Core {
             parts: &mut parts,
             destinations: &mut owners,
             authorisations: &mut authorisations,
+            decisions: &mut decisions,
             actors: &mut acting,
             sessions: &mut held,
+            reads: &mut reads,
             bounds: &self.bounds,
             prices: &self.prices,
             core: &core,

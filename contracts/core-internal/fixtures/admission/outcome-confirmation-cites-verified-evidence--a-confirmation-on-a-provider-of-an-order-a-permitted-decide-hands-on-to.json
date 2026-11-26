@@ -2431,6 +2431,64 @@
     {
       "receipt": {
         "log": "log-main",
+        "index": 901,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "bank-co",
+          "acts": "bank-co",
+          "role": "provider",
+          "kind": "component"
+        },
+        "what": {
+          "call": "decide",
+          "decision": "dec-refile-1",
+          "request": {
+            "request": "req-refile-1",
+            "caller": {
+              "party": "bank-co",
+              "acts": "bank-co",
+              "role": "provider",
+              "kind": "component"
+            },
+            "action": {
+              "kind": "refile_arrival",
+              "arrival": {
+                "log": "log-main",
+                "index": 141,
+                "entry": {
+                  "algorithm": "sha-256",
+                  "value": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+                }
+              },
+              "order": "ord-1",
+              "filer": {
+                "party": "bank-co",
+                "acts": "bank-co",
+                "role": "provider",
+                "kind": "component"
+              }
+            },
+            "at": "2026-11-10T09:00:00Z"
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "permitted"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
         "index": 142,
         "entry": {
           "algorithm": "sha-256",
@@ -2455,7 +2513,15 @@
               "value": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
             }
           },
-          "order": "ord-1"
+          "order": "ord-1",
+          "decision": {
+            "log": "log-main",
+            "index": 901,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+            }
+          }
         },
         "when": {
           "at": "2026-11-10T09:00:00Z",
