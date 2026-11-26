@@ -254,6 +254,32 @@ pub struct Signer {
     /// Each decision record Core signed, by its id: the envelope as signed, its bytes, and nothing read from them
     /// until they are held to the log's digest.
     records: BTreeMap<String, Vec<u8>>,
+    /// The ids of `records`, in the order they were signed: what a scenario that takes the first or the last record
+    /// means, since the ids are drawn and order by chance of what else Core drew.
+    signed: Vec<String>,
+}
+
+impl Signer {
+    /// The records, in the order they were signed; any the order doesn't name (carried over a restart) after, by id.
+    fn in_order(&self) -> Vec<(&String, &Vec<u8>)> {
+        let mut named: Vec<(&String, &Vec<u8>)> = self
+            .signed
+            .iter()
+            .filter_map(|id| self.records.get_key_value(id))
+            .collect();
+        for (id, bytes) in &self.records {
+            if !self.signed.contains(id) {
+                named.push((id, bytes));
+            }
+        }
+        named
+    }
+
+    /// The first record signed, to change.
+    fn first_mut(&mut self) -> Option<&mut Vec<u8>> {
+        let first = self.in_order().first().map(|(id, _)| (*id).clone())?;
+        self.records.get_mut(&first)
+    }
 }
 
 impl OperatorKey for Signer {
@@ -269,8 +295,10 @@ impl OperatorKey for Signer {
         {
             value["signature"]["value"] = rutent_conformance::signing::base64url(&signature).into();
             let recorded = serde_json::to_vec(&value).unwrap_or_default();
-            self.records
-                .insert(record.record_id().as_str().to_owned(), recorded);
+            let id = record.record_id().as_str().to_owned();
+            if self.records.insert(id.clone(), recorded).is_none() {
+                self.signed.push(id);
+            }
         }
         Some(signature)
     }
@@ -938,6 +966,7 @@ impl Core {
             signer: Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
+                signed: Vec::new(),
             },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds_for(&context, &config.providers),
@@ -979,12 +1008,12 @@ impl Core {
         Ok(core)
     }
 
-    /// Every decision record Core signed, by its id.
+    /// Every decision record Core signed, in the order it signed them.
     pub fn decision_records(&self) -> Vec<DecisionRecord> {
         self.signer
-            .records
-            .values()
-            .filter_map(|bytes| record_in(bytes))
+            .in_order()
+            .into_iter()
+            .filter_map(|(_, bytes)| record_in(bytes))
             .collect()
     }
 
@@ -992,8 +1021,8 @@ impl Core {
     /// a record (`T-024-22`: a scan that read only the records that parse would miss one that doesn't).
     pub fn decision_record_bytes(&self) -> Vec<(String, Vec<u8>)> {
         self.signer
-            .records
-            .iter()
+            .in_order()
+            .into_iter()
             .map(|(id, bytes)| (id.clone(), bytes.clone()))
             .collect()
     }
@@ -1001,7 +1030,7 @@ impl Core {
     /// A control for the check that every record Core signed is read (`T-024-22`): rewrites the first record kept with
     /// its `candidates` set to a string, so it no longer reads back as a record. False if Core kept none.
     pub fn corrupt_decision_record(&mut self) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        let Some(bytes) = self.signer.first_mut() else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -1023,7 +1052,21 @@ impl Core {
     /// rest itself, so a customer's figure can't be put there from outside; this puts it there from inside. False if
     /// Core kept no record, or the record has no text there, or reads back as no record with the figure in it.
     pub fn leak_into_decision_record(&mut self, leak: &str, at: &str) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        // The first record signed that has text at `at`: a refining round's record has fields the first round's hasn't.
+        let Some(id) = self
+            .signer
+            .in_order()
+            .into_iter()
+            .find(|(_, bytes)| {
+                serde_json::from_slice::<serde_json::Value>(bytes)
+                    .ok()
+                    .is_some_and(|v| v["statement"].pointer(at).is_some_and(|f| f.is_string()))
+            })
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        let Some(bytes) = self.signer.records.get_mut(&id) else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {

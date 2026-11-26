@@ -138,9 +138,15 @@ fn charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segm
     let entries = raise_entries(&core);
     assert_eq!(entries.len(), 2);
     assert!(entries.iter().all(|(_, o)| *o == Outcome::Done {}));
+    // The inbox holds its events by identifier, the channel keeps them as sent: compared in one order, so a change in
+    // the identifiers Core draws moves neither.
+    let one_order = |mut raises: Vec<Raise>| {
+        raises.sort_by_key(|r| serde_json::to_string(r).unwrap_or_default());
+        raises
+    };
     assert_eq!(
-        core.raised(),
-        raised,
+        one_order(core.raised()),
+        one_order(raised.clone()),
         "the channel carried what the log holds"
     );
     // The first segment's charge is raised before the second segment is handed over.
