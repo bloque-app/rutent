@@ -539,9 +539,9 @@ fn checked(core: &mut Core, node: &str) -> rutent_core_orch::schedule::HoldingCh
         .expect("the round read the account")
 }
 
-// verifies: AC-39, REQ-AUD-15
+// verifies: AC-39
 #[test]
-fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator() {
+fn shared_holding_account_raises_on_a_difference_and_only_then() {
     let (mut core, _) = core_with("AC-39", &[IN]);
     let wallet = core
         .install_wallet(WALLET_NODE, "USDC")
@@ -613,10 +613,212 @@ fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_oper
         "{:?}",
         raised[1].difference
     );
-    // A tick that is not yet due runs no check: the cadence is the operator's.
-    core.set_cadence(Job::HoldingCheck, 3600);
+}
+
+/// Core's schedule checks each holding account at its cadence, and only then: the reading is the account's module's
+/// own answer, asked through the platform once each check for each account, never a reading handed in, and a
+/// difference raises the operator (`REQ-AUD-15`, `AC-39`, `T-020-48`; the review's L3: each account is asked once a
+/// check, not once for each account there is).
+// verifies: AC-39, REQ-AUD-15
+#[test]
+fn holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator() {
+    let (mut core, _) = core_with("AC-39", &[IN]);
+    let wallet = core
+        .install_wallet(WALLET_NODE, "USDC")
+        .expect("the wallet is installed");
+    let publishers = core
+        .install_publisher_account(NODE, PUBLISHER, "USDC")
+        .expect("the publisher's account is installed");
+    three_orders_hold(&mut core);
+    let asked = |core: &Core| {
+        (
+            core.operations_received(&wallet.provider),
+            core.operations_received(&publishers.provider),
+        )
+    };
+
+    // A Core's first tick runs every job: each account is read, once, and checked.
+    let before = asked(&core);
+    let round = core.tick();
+    assert!(round.did(Job::HoldingCheck));
+    assert_eq!(round.holding.len(), 2, "both accounts: {:?}", round.holding);
+    assert_eq!(
+        asked(&core),
+        (before.0 + 1, before.1 + 1),
+        "each account's module is asked once"
+    );
+    let public = round.holding_of(WALLET_NODE).expect("read");
+    assert_eq!(
+        public.reading.as_ref().expect("read").balance.as_str(),
+        "4000"
+    );
+    public.check.as_ref().expect("checked");
+    assert!(core.raised().is_empty(), "a match raises nothing");
+
+    // The check runs hourly by default: a tick before then reads no account and asks no module.
+    core.clock.advance(3599);
+    let round = core.tick();
+    assert!(!round.did(Job::HoldingCheck));
+    assert!(round.holding.is_empty());
+    ask_directly(&mut core, &wallet.provider, "withdrawal", "ord-2", "500");
+    let between = asked(&core);
+    assert_eq!(core.raised().len(), 0, "nothing is checked between");
+
+    // Due: the account is asked again, its own figure is what the check reads, and the short is raised.
+    core.clock.advance(1);
+    let round = core.tick();
+    assert!(round.did(Job::HoldingCheck));
+    assert_eq!(asked(&core), (between.0 + 1, between.1 + 1));
+    assert_eq!(
+        round
+            .holding_of(WALLET_NODE)
+            .and_then(|h| h.reading.as_ref().ok())
+            .map(|r| r.balance.as_str().to_owned()),
+        Some("3500".to_owned()),
+        "the module's figure, not one the schedule was handed"
+    );
+    let raised = core.raised();
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert!(matches!(
+        &raised[0].difference,
+        Difference::Holding { direction: Direction::Short, by, .. } if by.amount().as_str() == "500"
+    ));
+    // The operator's cadence is the job's: set to a day, an hour's ticks check nothing.
+    core.set_cadence(Job::HoldingCheck, 86_400);
+    core.clock.advance(3600);
     assert!(!core.tick().did(Job::HoldingCheck));
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(core.raised().len(), 1);
+}
+
+/// A holding account whose module doesn't give its balance is raised to the operator, never left silent: once in a
+/// spell of failure, the raise carrying no balance and citing the account's last check where it has one, and again
+/// in a later spell once a check came between (`REQ-AUD-15`, `REQ-ORD-7`; the review of `T-020-48`'s first build, its
+/// S2, `core-internal`'s `holding_not_read`). Nothing else moves.
+// verifies: REQ-AUD-15
+#[test]
+fn holding_reading_a_module_does_not_give_is_raised_to_the_operator() {
+    let (mut core, _) = core_with("AC-39", &[IN]);
+    let wallet = core
+        .install_publisher_account(NODE, PUBLISHER, "USDC")
+        .expect("the publisher's account is installed");
+    core.set_cadence(Job::HoldingCheck, 0);
+    let unread = |core: &Core| -> Vec<(Difference, usize)> {
+        core.raised()
+            .into_iter()
+            .filter(|r| matches!(r.difference, Difference::HoldingNotRead { .. }))
+            .map(|r| (r.difference, r.cites.len()))
+            .collect()
+    };
+
+    // The module's answer can't be signed and passed on: the platform passes no answer.
+    core.world().make_key_store_unavailable(&wallet.provider);
+    let round = core.tick();
+    let checked = round.holding_of(NODE).expect("the account was asked");
+    assert!(checked.reading.is_err(), "{checked:?}");
+    assert!(checked.check.is_err(), "no check without a reading");
+    assert!(
+        matches!(checked.not_read, Some(Ok(_))),
+        "raised: {checked:?}"
+    );
+    let raised = unread(&core);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    let account = rutent_contracts::router_api::Id::new(format!("holding-{NODE}")).expect("an id");
+    assert!(
+        matches!(
+            &raised[0],
+            (Difference::HoldingNotRead { account: a, node, provider, why: rutent_contracts::core_internal::HoldingNotRead::NotAnswered {} }, 0)
+                if a == &account && node.as_str() == NODE && provider.as_str() == wallet.provider.as_str()
+        ),
+        "an account never read cites nothing: {raised:?}"
+    );
+    // Delivered to the operator on Core's own channel (`raised` reads the operator's inbox), and recorded in the log.
+    let logged = |core: &Core| {
+        core.raise_entries()
+            .into_iter()
+            .filter(|r| matches!(r.difference, Difference::HoldingNotRead { .. }))
+            .count()
+    };
+    assert_eq!(logged(&core), 1);
+
+    // Still failing: the same spell, not raised again, at the next tick or the one after.
+    for _ in 0..2 {
+        core.clock.advance(60);
+        let round = core.tick();
+        assert!(matches!(
+            round.holding_of(NODE).and_then(|h| h.not_read.clone()),
+            Some(Err(_))
+        ));
+    }
+    assert_eq!(unread(&core).len(), 1, "once in a spell");
+    assert_eq!(logged(&core), 1);
+
+    // Read again: the check ends the spell, and nothing more is raised.
+    core.world().make_key_store_available(&wallet.provider);
+    core.clock.advance(60);
+    let round = core.tick();
+    round
+        .holding_of(NODE)
+        .and_then(|h| h.check.clone().ok())
+        .expect("checked");
+    assert_eq!(unread(&core).len(), 1);
+
+    // A later spell is raised again, resting on the account's last check.
+    core.world().make_key_store_unavailable(&wallet.provider);
+    core.clock.advance(60);
+    core.tick();
+    let raised = unread(&core);
+    assert_eq!(raised.len(), 2, "{raised:?}");
+    assert_eq!(raised[1].1, 1, "it cites the account's last check");
+    assert_eq!(logged(&core), 2);
+    assert!(
+        entries(&core)
+            .iter()
+            .filter(|v| matches!(v.what, What::HoldingCheck { .. }))
+            .count()
+            >= 1
+    );
+}
+
+/// The private nodes' publisher accounts are the deployment's register's, which goes on across a restart: a reopened
+/// Core reads each again on its first tick, its publisher's word as before, so no account is forgotten
+/// (`NFR-6`, `REQ-AUD-15`; the review of `T-020-48`'s first build, its S1).
+// verifies: NFR-6, REQ-AUD-15
+#[test]
+fn private_nodes_publisher_accounts_are_rebuilt_after_core_reopens() {
+    let (mut core, _) = core_with("AC-39", &[IN]);
+    let wallet = core
+        .install_publisher_account(NODE, PUBLISHER, "USDC")
+        .expect("the publisher's account is installed");
+    let before = checked(&mut core, NODE);
+    assert!(before.reading.is_ok(), "{before:?}");
+    ask_wallet_to_hold(&mut core, &wallet.provider, "ord-x", "3990");
+
+    let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-39", given(&[IN]))
+        .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    // A reopened Core's first tick runs every job, the holding check among them.
+    let round = core.tick();
+    let after = round
+        .holding_of(NODE)
+        .expect("the private node's account is read after the reopen");
+    let reading = after
+        .reading
+        .as_ref()
+        .expect("its publisher's module answers");
+    assert_eq!(reading.word, Word::Publisher);
+    assert_eq!(reading.balance.as_str(), "3990", "its figure, read again");
+    after.check.as_ref().expect("checked");
+    let raised = core.raised();
+    assert!(
+        raised.iter().any(|r| matches!(
+            &r.difference,
+            Difference::Holding {
+                direction: Direction::Over,
+                word: Word::Publisher,
+                ..
+            }
+        )),
+        "the difference it states is raised: {raised:?}"
+    );
 }
 
 // verifies: AC-39, REQ-AUD-15

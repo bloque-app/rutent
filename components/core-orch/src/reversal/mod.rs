@@ -1073,6 +1073,23 @@ impl Reversals {
             .unwrap_or_default()
     }
 
+    /// [`Reversals::kept_statements`], each with the receipt of its stated entry where the log took it: what a
+    /// statement handed on is named by, so it is kept once (`T-020-48`).
+    pub fn kept_statement_receipts(
+        &self,
+        order: &Id,
+        segment: &Id,
+    ) -> Vec<(&[u8], Option<&Receipt>)> {
+        self.later
+            .get(&key(order, segment))
+            .map(|kept| {
+                kept.iter()
+                    .map(|(bytes, step)| (bytes.as_slice(), step.receipt.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn ask_unknown(
         &mut self,
         parts: &mut Parts<'_>,

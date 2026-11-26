@@ -601,6 +601,17 @@ mod tests {
         ) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
         }
+
+        fn holding_not_read(
+            &mut self,
+            _: &Id,
+            _: &Id,
+            _: &Id,
+            _: &rutent_contracts::core_internal::HoldingNotRead,
+            _: Option<&Receipt>,
+        ) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
     }
 
     // verifies: REQ-ORD-9

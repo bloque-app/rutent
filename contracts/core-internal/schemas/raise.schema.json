@@ -20,7 +20,7 @@
       "$ref": "#/$defs/difference"
     },
     "cites": {
-      "description": "The receipts of the entries it rests on, at least one, each once; a raise of a `pair_not_built` may cite none, since a pair a restart dropped has no entry to cite.",
+      "description": "The receipts of the entries it rests on, at least one, each once; a raise of a `pair_not_built` may cite none, since a pair a restart dropped has no entry to cite, and so may a raise of a `holding_not_read`, since an account never read has no check to cite.",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -49,7 +49,8 @@
             "charge",
             "settlement_time",
             "public_end",
-            "pair_not_built"
+            "pair_not_built",
+            "holding_not_read"
           ]
         }
       },
@@ -172,6 +173,21 @@
           },
           "then": {
             "$ref": "#/$defs/difference_pair_not_built"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "holding_not_read"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_holding_not_read"
           }
         }
       ]
@@ -611,6 +627,56 @@
           }
         }
       ]
+    },
+    "difference_holding_not_read": {
+      "description": "A holding account whose balance Core asked and its module didn't give, so no check could be made (REQ-AUD-15, REQ-ORD-7, T-020-48): the platform passed no answer, the module refused, or it answered another question. It carries no balance (REQ-AUD-6). Raised once in a spell of failure; it may cite no receipt, and cites only its account's own last check where it has one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "account",
+        "node",
+        "provider",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "holding_not_read"
+        },
+        "account": {
+          "description": "The holding account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The inner node it is at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider whose module holds it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/holding_not_read"
+        }
+      }
+    },
+    "holding_not_read": {
+      "description": "Why the balance wasn't read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "not_answered",
+            "refused",
+            "another_answer",
+            "not_a_balance"
+          ]
+        }
+      }
     }
   },
   "allOf": [
@@ -626,7 +692,10 @@
             ],
             "properties": {
               "kind": {
-                "const": "pair_not_built"
+                "enum": [
+                  "pair_not_built",
+                  "holding_not_read"
+                ]
               }
             }
           }

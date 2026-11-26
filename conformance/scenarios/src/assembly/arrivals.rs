@@ -65,7 +65,10 @@ impl OpenOrders for Open {
 impl Core {
     /// Runs `call` on arrivals with the desk intake reaches. `Arrivals` is held beside intake, so it is taken out for
     /// the call, which the desk's closure can't otherwise reach.
-    fn with_arrivals<T>(&mut self, call: impl FnOnce(&mut Arrivals, &mut Desk<'_, '_>) -> T) -> T {
+    pub(super) fn with_arrivals<T>(
+        &mut self,
+        call: impl FnOnce(&mut Arrivals, &mut Desk<'_, '_>) -> T,
+    ) -> T {
         let mut arrivals = std::mem::take(&mut self.arrivals);
         let out = self.with_desk(|_, desk| call(&mut arrivals, desk));
         self.arrivals = arrivals;
@@ -206,14 +209,6 @@ impl Core {
         }
         self.feed()?;
         Ok(filed?)
-    }
-
-    /// Ends every wait for a customer past its lifetime, as Core's schedule does (`T-020-51`, `T-020-48`): the orders
-    /// ended.
-    pub(super) fn end_expired_waits(&mut self) -> Result<Vec<Id>, StepError> {
-        let ended = self.with_arrivals(|arrivals, desk| arrivals.end_expired(desk))?;
-        self.feed()?;
-        Ok(ended)
     }
 
     /// When the wait of the filed order `order` ends, where it waits for its customer (`T-020-51`).

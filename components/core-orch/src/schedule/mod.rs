@@ -6,30 +6,34 @@
 //! 1. the late answers the platform holds for Core's segments ([`Job::LateAnswers`], `AC-5`): each is kept, as a
 //!    statement that moves nothing;
 //! 2. the value of each segment that settled at a public node a holding account holds, landed in it
-//!    ([`Job::LandSettled`], `REQ-ORD-40`, `INV-5`), and the measures the segments' endings gave written
-//!    ([`Job::WriteMeasures`], `REQ-AUD-7`), and the orders that completed closed, each reporting its executed price
-//!    once ([`Job::Close`], `REQ-QTE-7`);
+//!    ([`Job::LandSettled`], `REQ-ORD-40`, `INV-5`), the measures the segments' endings gave written
+//!    ([`Job::WriteMeasures`], `REQ-AUD-7`), the pairs of adjacent reports compared ([`Job::WritePairs`], `REQ-ORD-9`,
+//!    `THR-14`), and the orders that completed closed, each reporting its executed price once ([`Job::Close`],
+//!    `REQ-QTE-7`);
 //! 3. the check of each holding account ([`Job::HoldingCheck`], `REQ-AUD-15`, `AC-39`, `INV-1`'s second half): its
 //!    reading is taken through the platform (the account's module's `holding_balance` at a public node, its
-//!    publisher's signed word at a private node), never handed in, and goes to the log's checks;
-//! 4. the publishers' signed records of their private nodes' segments, read for a replay ([`Job::PublishersRecords`],
-//!    `REQ-ORD-41`);
+//!    publisher's signed word at a private node), never handed in, and goes to the log's checks; an account whose
+//!    module gives no balance is raised to the operator (`holding_not_read`);
+//! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`; read as the
+//!    scenario world holds them until `T-020-58` gives the platform a question for them);
 //! 5. a status question again for each segment still unknown, at its provider's cadence ([`Job::StatusAsks`],
-//!    `REQ-ORD-1`), and what Core kept of an answer handed to the stuck mover ([`Job::StuckReports`], `REQ-ORD-1`,
-//!    `AC-6`): a segment its provider says failed is reported, not left unknown until its window;
+//!    `REQ-ORD-1`); each followed order's part timed, a material change of a p99 raised and a part over its time
+//!    declared stuck ([`Job::Watch`], `REQ-ORD-29`, `REQ-ORD-6`, `AC-5`); and what Core kept of an answer handed to the
+//!    stuck mover ([`Job::StuckReports`], `REQ-ORD-1`, `AC-6`): a segment its provider says failed is reported, not
+//!    left unknown until its window;
 //! 6. the filed waits past their lifetime ended ([`Job::EndExpired`], `T-020-51`);
-//! 7. the pairs a restart dropped, which reach the operator in the round's answer ([`Job::UnbuiltPairs`],
-//!    `REQ-ORD-9`).
+//! 7. the pairs a restart dropped, raised to the operator and recorded once ([`Job::UnbuiltPairs`], `REQ-ORD-9`);
+//! 8. the notices the log's changes call for, sent ([`Job::Notify`], `REQ-ORD-20`), and the checkpoints due on the
+//!    schedule fixed in advance, issued and published ([`Job::Checkpoints`], `REQ-AUD-14`), last, so they hold what
+//!    the tick wrote.
 //!
-//! **The schedule holds no value and decides nothing.** Every job is a call to a function Core already has, and each
-//! such function is the one that appends to the log, asks policy or moves value, as when a test called it. What the
-//! schedule adds is *when*: a cadence for each job, an operator's setting with a default ([`Cadences`];
-//! `T-020-49` makes it a decided one), and the time each job last ran, which a restart forgets, so a reopened Core runs
-//! every job on its first tick (it fails closed: a job done twice is done once, as the jobs' own rules say).
-//!
-//! **Its port is [`Duties`]**, which the assembly implements over the parts it holds: the platform, the holding
-//! accounts, the segments, the stuck orders. The deployment's production assembly (`F-030`) implements the same port
-//! and calls [`Schedule::tick`] on a timer.
+//! **The schedule decides when; each job's body is Core's** ([`jobs`]): the schedule adds a cadence for each job, an
+//! operator's setting with a default ([`Cadences`]; `T-020-49` makes it a decided one), and the time each job last ran,
+//! which a restart forgets, so a reopened Core runs every job on its first tick (it fails closed: a job done twice is
+//! done once, as the jobs' own rules say). What each job does is [`jobs::Jobs`]'s, over [`jobs::Ports`], which the
+//! deployment answers with what only it has (the platform, its register of holding accounts, the log, the evidence
+//! store, the notices channel, the clock, policy) and which decide nothing. [`Duties`] is the seam between the two, for
+//! the schedule's own tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,7 +41,17 @@ use rutent_contracts::core_internal::{HoldingReading, Receipt};
 use rutent_contracts::provider_role::{InnerSegments, Statement};
 use rutent_contracts::router_api::Id;
 
+use crate::closing::{Reported as PriceReported, Unreported};
+use crate::reversal::StatusAsked;
 use crate::segments::UnbuiltPair;
+use crate::stuck::Watch;
+
+pub mod jobs;
+
+pub use jobs::{
+    AccountRead, Actors, Jobs, NotConfirmed, Placed, Ports, PublisherAccount, Started, StuckLent,
+    confirm_reported_failure,
+};
 
 /// How often a segment left unknown is asked its status again until the operator or its provider says otherwise: a
 /// provider is not pressed (an hour).
@@ -52,6 +66,8 @@ pub enum Job {
     LandSettled,
     /// The measure records the segments' endings gave, written (`REQ-AUD-7`).
     WriteMeasures,
+    /// The pairs of adjacent reports the segments' endings gave, compared (`REQ-ORD-9`, `THR-14`).
+    WritePairs,
     /// The orders that completed closed: each reports its executed price, once (`REQ-QTE-7`).
     Close,
     /// Each holding account read and checked (`REQ-AUD-15`).
@@ -60,27 +76,38 @@ pub enum Job {
     PublishersRecords,
     /// A status question again for each segment still unknown (`REQ-ORD-1`).
     StatusAsks,
+    /// Each followed order's part timed: a material change of a p99 raised, a part over its time declared stuck
+    /// (`REQ-ORD-29`, `REQ-ORD-6`).
+    Watch,
     /// What a provider's kept answer says of a stuck move, reported to its mover (`AC-6`).
     StuckReports,
     /// The waits for a customer past their lifetime, ended (`T-020-51`).
     EndExpired,
     /// The pairs of reports a restart dropped, surfaced (`REQ-ORD-9`).
     UnbuiltPairs,
+    /// The notices the log's changes call for, sent (`REQ-ORD-20`).
+    Notify,
+    /// The checkpoints due on the schedule fixed in advance, issued and published (`REQ-AUD-14`).
+    Checkpoints,
 }
 
 impl Job {
     /// Every job, in the order a tick runs them.
-    pub const ALL: [Job; 10] = [
+    pub const ALL: [Job; 14] = [
         Job::LateAnswers,
         Job::LandSettled,
         Job::WriteMeasures,
+        Job::WritePairs,
         Job::Close,
         Job::HoldingCheck,
         Job::PublishersRecords,
         Job::StatusAsks,
+        Job::Watch,
         Job::StuckReports,
         Job::EndExpired,
         Job::UnbuiltPairs,
+        Job::Notify,
+        Job::Checkpoints,
     ];
 
     /// The job's name, as the operator's `cadence` setting names it (`core-internal`'s `OperatorSetting::Cadence`).
@@ -89,13 +116,17 @@ impl Job {
             Job::LateAnswers => "late_answers",
             Job::LandSettled => "land_settled",
             Job::WriteMeasures => "write_measures",
+            Job::WritePairs => "write_pairs",
             Job::Close => "close",
             Job::HoldingCheck => "holding_check",
             Job::PublishersRecords => "publishers_records",
             Job::StatusAsks => "status_asks",
+            Job::Watch => "watch",
             Job::StuckReports => "stuck_reports",
             Job::EndExpired => "end_expired",
             Job::UnbuiltPairs => "unbuilt_pairs",
+            Job::Notify => "notify",
+            Job::Checkpoints => "checkpoints",
         }
     }
 
@@ -192,6 +223,9 @@ pub struct HoldingChecked {
     pub reading: Result<HoldingReading, String>,
     /// The receipt of the check's record, where there was a reading and the log took the check, or why it didn't.
     pub check: Result<Receipt, String>,
+    /// Where the module gave no balance: the receipt of the raise to the operator (`holding_not_read`), or why none
+    /// was raised now (one was, earlier in this spell of failure). `None` where the account was read.
+    pub not_read: Option<Result<Receipt, String>>,
 }
 
 /// A publisher's signed record of the segments inside one of its private nodes, as Core read it.
@@ -212,6 +246,28 @@ pub struct StatusTried {
     pub asked: Result<Receipt, String>,
     /// The receipt of the provider's answer as Core kept it, where it answered.
     pub kept: Option<Receipt>,
+    /// The question as Core put it, where it did.
+    pub status: Option<StatusAsked>,
+}
+
+/// An order Core closed, or tried to: its price reported, or why it wasn't (`REQ-QTE-7`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Priced {
+    /// The order.
+    pub order: Id,
+    /// The price as Core reported it, or why it didn't.
+    pub reported: Result<PriceReported, Unreported>,
+    /// Whether this round reported it.
+    pub now: bool,
+}
+
+/// What timing an order's part found, where it was more than running: declared stuck now, or why it couldn't be timed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watched {
+    /// The order.
+    pub order: Id,
+    /// What the watch found.
+    pub found: Result<Watch, String>,
 }
 
 /// What Core's report of a stuck move's outcome to its mover came to (`AC-6`).
@@ -236,14 +292,20 @@ pub struct Round {
     pub landed: usize,
     /// How many measure records the log took.
     pub measures: usize,
+    /// How many pairs of reports the comparison took, or why it stopped.
+    pub pairs: Option<Result<usize, String>>,
     /// The orders closed: their executed price reported by this round.
     pub closed: Vec<Id>,
+    /// Each order this round closed or failed to, with its price or why it has none.
+    pub priced: Vec<Priced>,
     /// Each holding account read and checked.
     pub holding: Vec<HoldingChecked>,
     /// The records the publishers keep of their private nodes' segments.
     pub published: Vec<Published>,
     /// The status questions put again.
     pub statuses: Vec<StatusTried>,
+    /// The parts the watch declared stuck, or couldn't time.
+    pub watched: Vec<Watched>,
     /// The stuck moves a provider's answer was reported for.
     pub reported: Vec<Reported>,
     /// The orders whose wait for a customer ended.
@@ -252,6 +314,10 @@ pub struct Round {
     pub unbuilt_pairs: Vec<UnbuiltPair>,
     /// How many pairs this round raised to the operator and had the log record (each pair once).
     pub raised: usize,
+    /// How many notices were sent, or why they stopped.
+    pub notified: Option<Result<usize, String>>,
+    /// How many checkpoints were published, or why they stopped.
+    pub checkpoints: Option<Result<usize, String>>,
 }
 
 impl Round {
@@ -275,8 +341,8 @@ impl Round {
     }
 }
 
-/// What a tick calls, over the parts Core holds. Each method is a function Core already has, called as a test
-/// called it before the schedule did: the platform, the log and policy are reached by it and only by it.
+/// What a tick calls: each job, its body [`jobs::Jobs`]'s over the deployment's [`jobs::Ports`]. The seam is a trait so
+/// that the schedule's own rules (cadences, order, what a round says) are tested apart from the jobs.
 pub trait Duties {
     /// Takes the late answers the platform holds for Core's segments, each kept once as a statement.
     fn late_answers(&mut self) -> Vec<LateTaken>;
@@ -284,8 +350,14 @@ pub trait Duties {
     fn land_settled(&mut self) -> usize;
     /// Writes the measure records the segments' endings gave; how many the log took.
     fn write_measures(&mut self) -> usize;
-    /// Closes the orders that completed and reports each one's executed price, once; the orders it reported now.
-    fn close_completed(&mut self) -> Vec<Id>;
+    /// Compares the pairs of adjacent reports the segments' endings gave; how many the log took.
+    ///
+    /// # Errors
+    ///
+    /// Why the comparison stopped.
+    fn write_pairs(&mut self) -> Result<usize, String>;
+    /// Closes the orders that completed and reports each one's executed price, once.
+    fn close_completed(&mut self) -> Vec<Priced>;
     /// Reads each holding account through the platform and checks it.
     fn check_holdings(&mut self) -> Vec<HoldingChecked>;
     /// Reads the publishers' records of their private nodes.
@@ -294,6 +366,8 @@ pub trait Duties {
     fn unknown_segments(&self) -> Vec<Unknown>;
     /// Puts a status question about `unknown` again. Nothing is moved by it.
     fn ask_status_again(&mut self, unknown: &Unknown) -> StatusTried;
+    /// Times each followed order's part; the parts declared stuck now, or that couldn't be timed.
+    fn watch(&mut self) -> Vec<Watched>;
     /// Hands what Core kept of a provider's answer about a stuck move to its mover's report.
     fn report_kept_answers(&mut self) -> Vec<Reported>;
     /// Ends the waits for a customer past their lifetime; the orders ended.
@@ -302,6 +376,18 @@ pub trait Duties {
     fn unbuilt_pairs(&self) -> Vec<UnbuiltPair>;
     /// Raises each such pair to the operator and has the log record it, once; how many it raised now.
     fn raise_unbuilt_pairs(&mut self) -> usize;
+    /// Sends the notices the log's changes call for; how many.
+    ///
+    /// # Errors
+    ///
+    /// Why the notices stopped.
+    fn notify(&mut self) -> Result<usize, String>;
+    /// Issues and publishes the checkpoints due; how many were published.
+    ///
+    /// # Errors
+    ///
+    /// Why the checkpointer stopped.
+    fn checkpoints(&mut self) -> Result<usize, String>;
 }
 
 /// Core's schedule: the cadences and what ran when.
@@ -378,7 +464,16 @@ impl Schedule {
                 Job::LateAnswers => round.late = duties.late_answers(),
                 Job::LandSettled => round.landed = duties.land_settled(),
                 Job::WriteMeasures => round.measures = duties.write_measures(),
-                Job::Close => round.closed = duties.close_completed(),
+                Job::WritePairs => round.pairs = Some(duties.write_pairs()),
+                Job::Close => {
+                    round.priced = duties.close_completed();
+                    round.closed = round
+                        .priced
+                        .iter()
+                        .filter(|p| p.now)
+                        .map(|p| p.order.clone())
+                        .collect();
+                }
                 Job::HoldingCheck => round.holding = duties.check_holdings(),
                 Job::PublishersRecords => round.published = duties.read_publishers(),
                 Job::StatusAsks => {
@@ -391,6 +486,7 @@ impl Schedule {
                         round.statuses.push(tried);
                     }
                 }
+                Job::Watch => round.watched = duties.watch(),
                 Job::StuckReports => round.reported = duties.report_kept_answers(),
                 Job::EndExpired => round.ended = duties.end_expired(),
                 Job::UnbuiltPairs => {
@@ -405,6 +501,8 @@ impl Schedule {
                         }
                     }
                 }
+                Job::Notify => round.notified = Some(duties.notify()),
+                Job::Checkpoints => round.checkpoints = Some(duties.checkpoints()),
             }
         }
         round
@@ -433,7 +531,10 @@ mod tests {
         fn write_measures(&mut self) -> usize {
             0
         }
-        fn close_completed(&mut self) -> Vec<Id> {
+        fn write_pairs(&mut self) -> Result<usize, String> {
+            Ok(0)
+        }
+        fn close_completed(&mut self) -> Vec<Priced> {
             Vec::new()
         }
         fn check_holdings(&mut self) -> Vec<HoldingChecked> {
@@ -451,7 +552,11 @@ mod tests {
                 unknown: unknown.clone(),
                 asked: Err("a stand-in".to_owned()),
                 kept: None,
+                status: None,
             }
+        }
+        fn watch(&mut self) -> Vec<Watched> {
+            Vec::new()
         }
         fn report_kept_answers(&mut self) -> Vec<Reported> {
             Vec::new()
@@ -464,6 +569,12 @@ mod tests {
         }
         fn raise_unbuilt_pairs(&mut self) -> usize {
             0
+        }
+        fn notify(&mut self) -> Result<usize, String> {
+            Ok(0)
+        }
+        fn checkpoints(&mut self) -> Result<usize, String> {
+            Ok(0)
         }
     }
 

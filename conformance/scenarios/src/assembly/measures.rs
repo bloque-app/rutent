@@ -23,15 +23,3 @@ impl Core {
         )
     }
 }
-
-impl Core {
-    /// Hands the measure writer the records the segments' endings and the completed reversals gave since the last
-    /// call, and answers how many the log took (`REQ-AUD-7`, `T-020-31`). A record the log can't take now waits for the
-    /// next call. The assembly doesn't call it by itself: Core's schedule does ([`Core::tick`], `T-020-48`), so a run
-    /// whose caller doesn't tick leaves the records unwritten, and the counting test of `T-022-06`, which writes its
-    /// own, is unaffected.
-    pub(super) fn write_measures_now(&mut self) -> usize {
-        let mut writer = self.measure_writer();
-        self.segments.write_measures(&mut writer)
-    }
-}

@@ -1976,6 +1976,21 @@ pub enum Difference {
         /// Why the pair was never built.
         why: PairNotBuilt,
     },
+    /// A holding account whose balance Core asked and its module didn't give (`REQ-AUD-15`, `REQ-ORD-7`, `T-020-48`): the
+    /// platform passed no answer, the module refused, or it answered another question, so no check could be made. It
+    /// carries no balance (`REQ-AUD-6`): there is none. Raised once in a spell of failure, the spell ending at the
+    /// account's next check; it may cite no receipt, since an account never read has no check to cite, and cites only
+    /// the account's own last check where it has one (`raise-of-a-holding-not-read-cites-its-accounts-check`).
+    HoldingNotRead {
+        /// The holding account.
+        account: Id,
+        /// The inner node it is at.
+        node: Id,
+        /// The provider whose module holds it.
+        provider: Id,
+        /// Why it wasn't read.
+        why: HoldingNotRead,
+    },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
         /// The provider.
@@ -2002,6 +2017,20 @@ pub enum PairNotBuilt {
     NotAnAmount {},
     /// The contract refuses the pair.
     Refused {},
+}
+
+/// Why a holding account's balance wasn't read. Schema: `urn:rutent:core-internal:raise#/$defs/holding_not_read`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HoldingNotRead {
+    /// The platform passed the module's answer on to no one: it refused the question, or the module gave none.
+    NotAnswered {},
+    /// The module answered and didn't give the balance.
+    Refused {},
+    /// The module answered another question, or of another transaction, than the one asked.
+    AnotherAnswer {},
+    /// The balance the module gave is no amount a reading carries.
+    NotABalance {},
 }
 
 /// The mark of a charge stated in an asset no fee formula covers. Schema:

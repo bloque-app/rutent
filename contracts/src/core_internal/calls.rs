@@ -400,6 +400,18 @@ pub trait Comparisons {
         segment: &Id,
         why: &PairNotBuilt,
     ) -> Result<Receipt, AppendFailure>;
+
+    /// Raises a holding account whose balance its module didn't give, so no check could be made (`REQ-AUD-15`,
+    /// `REQ-ORD-7`, `T-020-48`): it goes to the operator and the log records the raise, with no balance, citing
+    /// `last_check`, the account's own last check, where it has one. The answer is the receipt of the raise's entry.
+    fn holding_not_read(
+        &mut self,
+        account: &Id,
+        node: &Id,
+        provider: &Id,
+        why: &HoldingNotRead,
+        last_check: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure>;
 }
 
 /// The records the bulk measures read (`REQ-AUD-7`).

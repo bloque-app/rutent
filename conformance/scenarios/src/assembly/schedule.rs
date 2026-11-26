@@ -1,55 +1,51 @@
-//! Core's schedule, as the assembly wires it (`T-020-48`, finding 4 of `M3`'s milestone review of 2026-11-24).
+//! Core's schedule, as the assembly wires it (`T-020-48`, finding 4 of `M3`'s milestone review of 2026-11-24, and the
+//! review of its first build).
 //!
-//! `core-orch`'s [`Schedule`](rutent_core_orch::schedule::Schedule) decides what is due; this module is its port, [`Duties`], over the parts the assembly
-//! holds: the platform, the holding accounts, the segments, the stuck orders and the log. [`Core::tick`] is the one
-//! entry point, the one call the deployment keeps (on a timer), and the one call a scenario makes on Core's clock. The
-//! assembly exposes no holding reading, landing, measure or late-answer call of its own: each is a job of the tick, and
-//! the readings it takes are taken through the platform and never handed in.
+//! `core-orch`'s [`Schedule`](rutent_core_orch::schedule::Schedule) decides what is due and its
+//! [`Jobs`](rutent_core_orch::schedule::Jobs) what each job does; this module answers only their
+//! [`Ports`](rutent_core_orch::schedule::Ports), over what the assembly holds: the platform, the deployment's register
+//! of holding accounts, the log, the evidence store, the notices channel, the clock and policy, and Core's own parts
+//! as the assembly keeps them, lent with the ports they are reached with. No method here decides anything: each reads,
+//! asks or lends. [`Core::tick`] is the one entry point, the one call the deployment keeps (on a timer), and the one
+//! call a scenario makes on Core's clock.
 //!
 //! **A private node's account.** At a public node the account's module is the operator's plain wallet, registered in
-//! [`Holdings`](rutent_prov::holding::wallet::Holdings). At a private node it is its publisher's module, whose answer
-//! to the operator's `holding_balance` question is the publisher's own word, labelled so (`REQ-AUD-15`): its reading is
-//! taken the same way, and what the orders hold there is what Core's segments rest at the node. No simulated provider
-//! stands in for a publisher's holding account, so a scenario installs the plain wallet as one
-//! ([`Core::install_publisher_account`]).
+//! [`Holdings`](rutent_prov::holding::wallet::Holdings). At a private node it is its publisher's module, which the
+//! deployment's register of holding accounts names with the publisher and the asset
+//! ([`Registers::publisher_accounts`](super::policy::Registers)), and which the register keeps across a reopen as it
+//! keeps the rest. No simulated provider stands in for a publisher's holding account, so a scenario installs the plain
+//! wallet as one ([`Core::install_publisher_account`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rutent_contracts::core_internal::HoldingReading;
-use rutent_contracts::provider_role::{
-    HoldingBalance, HoldingBalanceOutcome, Operation, ResultBody,
-};
-use rutent_contracts::router_api::Id;
+use rutent_contracts::core_internal::calls::{Comparisons, Measures, Operator, StuckOrders};
+use rutent_contracts::core_internal::{Actor, Entry, Receipt};
+use rutent_contracts::provider_role::Operation;
+use rutent_contracts::router_api::{DecisionRecord, Id};
+use rutent_core_audit::compare::Compare;
+use rutent_core_audit::log::General;
+use rutent_core_orch::arrival::Arrivals;
+use rutent_core_orch::closing::PriceDesk;
+use rutent_core_orch::intake::Desk;
+use rutent_core_orch::notice::{Channel, NoticeKey, Notices, Transport};
+use rutent_core_orch::reversal::{Moving, Parts as ReversalParts, Reversals};
+use rutent_core_orch::rounds::Fresh as _;
 use rutent_core_orch::schedule::{
-    Duties, HoldingChecked, Job, LateTaken, Published, Reported, Round, StatusTried, Unknown,
+    AccountRead, Actors, Job, Jobs, Ports, Published, PublisherAccount, Round, Started, StuckLent,
 };
-use rutent_core_orch::segments::{Live, Says, UnbuiltPair};
-use rutent_core_orch::snapshot::Clock as _;
-use rutent_core_orch::stuck::{
-    OperatorSigns, Parts as StuckParts, Reporting, ResolveError, Resolved, Stated,
-};
+use rutent_core_orch::segments::{Landings, NoProxy, Parts as SegmentParts, Segments};
+use rutent_core_orch::snapshot::Clock;
+use rutent_core_orch::stuck::{OperatorSigns, Parts as StuckParts, Stuck};
+use rutent_prov::catalogue::Catalogue;
 use rutent_prov::module::types::Handled;
-use serde_json::json;
 
-use super::{AssemblyError, Core, Running, SegmentParts};
-use crate::kit::{self, RealKey};
+use super::{AssemblyError, Core, CoreLog, Running};
+use crate::kit::{self, RealKey, SharedClock};
 use crate::sim::InstalledWallet;
-use rutent_core_orch::segments::NoProxy;
 
-/// The decimals of every asset the simulated world moves (`kit`): an account's reading is stated in them.
+/// The decimals of every asset the simulated world moves (`kit`): an account's reading is stated in them, as the
+/// deployment's register names its asset.
 const DECIMALS: u8 = 2;
-
-/// The account a private node's publisher keeps for the value resting inside the node.
-#[derive(Debug, Clone)]
-pub struct PublisherAccount {
-    /// The module that answers for the account: the platform runs it.
-    pub module: String,
-    /// The publisher whose word its balance is.
-    pub publisher: String,
-    /// The asset it holds.
-    pub asset: String,
-    sent: u64,
-}
 
 impl Core {
     /// Core's own clock, in whole seconds: what the schedule's cadences count in. Reading it moves nothing.
@@ -57,14 +53,30 @@ impl Core {
         u64::try_from(self.clock.peek() / 1_000_000_000).unwrap_or(u64::MAX)
     }
 
-    /// One tick of Core's schedule (`T-020-48`): runs each job that is due on Core's clock, over the parts Core holds,
-    /// and answers what ran and what it came to. The deployment calls it on a timer; a scenario calls it where the
-    /// deployment's timer would have. A job not yet due is left for a later tick.
+    /// One tick of Core's schedule (`T-020-48`): runs each job that is due on Core's clock, Core's own body of it over
+    /// the ports the assembly answers, and answers what ran and what it came to. The deployment calls it on a timer; a
+    /// scenario calls it where the deployment's timer would have. A job not yet due is left for a later tick.
     pub fn tick(&mut self) -> Round {
         let now = self.clock_seconds();
         let mut schedule = std::mem::take(&mut self.schedule);
-        let round = schedule.tick(now, &mut Due(self));
+        let round = schedule.tick(now, &mut Jobs::new(&mut Due(self)));
         self.schedule = schedule;
+        // What the round answered, kept for the readers that ask after it.
+        for tried in &round.statuses {
+            self.life.status_asks.insert(
+                (
+                    tried.unknown.order.as_str().to_owned(),
+                    tried.unknown.segment.as_str().to_owned(),
+                ),
+                match (&tried.status, &tried.asked) {
+                    (Some(asked), _) => Ok(asked.clone()),
+                    (None, Err(why)) => Err(why.clone()),
+                    (None, Ok(_)) => Err("no question was put".to_owned()),
+                },
+            );
+        }
+        self.closed.took(&round.priced);
+        let _ = self.feed();
         round
     }
 
@@ -81,8 +93,9 @@ impl Core {
     }
 
     /// Installs the plain wallet as the account `publisher` keeps for the private node `node`, holding `asset`: the
-    /// platform runs it, the catalogue records it as the node's holding account, and the schedule reads it as the
-    /// publisher's word. The node must be one a provider joined to the catalogue declares private.
+    /// platform runs it, the catalogue records it as the node's holding account, and the deployment's register of
+    /// holding accounts names it, its publisher and its asset, so the schedule reads it as the publisher's word, and
+    /// reads it again after Core reopens. The node must be one a provider joined to the catalogue declares private.
     ///
     /// # Errors
     ///
@@ -97,180 +110,202 @@ impl Core {
         self.catalogue
             .register_private_holding(node, publisher, &wallet.provider)
             .map_err(|e| AssemblyError::Listing(format!("the publisher's account: {e:?}")))?;
-        self.publisher_accounts.insert(
-            node.to_owned(),
-            PublisherAccount {
-                module: wallet.provider.clone(),
-                publisher: publisher.to_owned(),
-                asset: asset.to_owned(),
-                sent: 0,
-            },
-        );
+        self.deployed
+            .registers
+            .borrow_mut()
+            .publisher_accounts
+            .insert(
+                node.to_owned(),
+                PublisherAccount {
+                    node: node.to_owned(),
+                    publisher: publisher.to_owned(),
+                    module: wallet.provider.clone(),
+                    asset: asset.to_owned(),
+                    decimals: DECIMALS,
+                },
+            );
         Ok(wallet)
     }
 
-    /// The reading of the private node `node`'s account: what its publisher's module states of its balance, asked of it
-    /// through the platform as the operator's question, and what Core's segments rest there for each order.
-    fn publisher_reading(&mut self, node: &str) -> Result<HoldingReading, String> {
-        let account = self
+    /// The private nodes' accounts the deployment's register names, listed again in the reopened catalogue, as
+    /// [`Core::install_publisher_account`] listed them (the review's S1).
+    pub(super) fn relist_publisher_accounts(&mut self) {
+        let accounts: Vec<PublisherAccount> = self
+            .deployed
+            .registers
+            .borrow()
             .publisher_accounts
-            .get_mut(node)
-            .ok_or_else(|| format!("{node} has no publisher's account"))?;
-        account.sent += 1;
-        let account = account.clone();
-        let at = self.clock.instant();
-        self.fleet.platform.world.set_clock(at);
-        let made_at = self
-            .clock
-            .now()
-            .timestamp()
-            .ok_or("the clock can't be written as a timestamp")?;
-        let transaction = format!("{}-balance-{}", account.module, account.sent);
-        let operation = Operation::HoldingBalance(HoldingBalance {
-            transaction: transaction.clone(),
-            provider: account.module.clone(),
-            node: node.to_owned(),
-            asset: account.asset.clone(),
-        });
-        let mut key = RealKey::assembly();
-        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
-        let answered = match self.fleet.platform.handle(
-            &account.module,
-            &rutent_prov::holding::wallet::Operator::statement(&operator, operation),
-        ) {
-            Handled::Answered(result) => result.statement,
-            Handled::Refused(why) => return Err(format!("the module didn't answer: {why:?}")),
-        };
-        let ResultBody::HoldingBalance(result) = answered else {
-            return Err("the module answered another question".to_owned());
-        };
-        if result.transaction != transaction {
-            return Err("the answer names another transaction".to_owned());
-        }
-        let HoldingBalanceOutcome::Answered(answer) = result.outcome else {
-            return Err("the module refused".to_owned());
-        };
-        let held_for: Vec<_> = self
-            .segments
-            .resting_totals()
-            .into_iter()
-            .filter(|((at, _), amount)| at == node && amount.as_str() != "0")
-            .map(|((_, order), amount)| json!({ "order": order, "amount": amount.as_str() }))
+            .values()
+            .cloned()
             .collect();
-        serde_json::from_value(json!({
-            "account": format!("holding-{node}"),
-            "provider": account.module,
-            "node": node,
-            "asset": { "id": account.asset, "decimals": DECIMALS },
-            "balance": answer.balance,
-            "word": "publisher",
-            "held_for": held_for,
-            "at": self.clock.timestamp(),
-        }))
-        .map_err(|e| format!("not a reading: {e}"))
+        for account in accounts {
+            let _ = self.catalogue.register_private_holding(
+                &account.node,
+                &account.publisher,
+                &account.module,
+            );
+        }
+    }
+
+    /// Confirms the failed outcome a mover reported for the unknown `segment` of `order`, as Core does
+    /// ([`rutent_core_orch::schedule::confirm_reported_failure`], `AC-6`): `confirmer` is another actor than the
+    /// reporter, `report` the report's version and the statement it rests on (what the schedule's round told), and
+    /// `other` another maker's statement about the move's transaction, which bears the report out.
+    ///
+    /// # Errors
+    ///
+    /// If the order hasn't started, the statement isn't taken as evidence, or the confirmation is refused.
+    pub fn confirm_reported_failure(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        confirmer: &Actor,
+        report: (u64, &Receipt),
+        other: &[u8],
+    ) -> Result<rutent_core_orch::stuck::Moved, super::StepError> {
+        let confirmed = rutent_core_orch::schedule::confirm_reported_failure(
+            &mut Due(self),
+            order,
+            segment,
+            confirmer,
+            report,
+            other,
+        );
+        self.feed()?;
+        confirmed.map_err(|why| match why {
+            rutent_core_orch::schedule::NotConfirmed::Refused(why) => {
+                super::StepError::Resolve(why)
+            }
+            rutent_core_orch::schedule::NotConfirmed::NotStarted => {
+                super::StepError::NotNow("the order started")
+            }
+            _ => super::StepError::NotNow("the statement is taken as evidence"),
+        })
     }
 }
 
-/// The tick's reach: [`Duties`] over a [`Core`].
+/// The deployment's ports over a [`Core`]: each reads, asks or lends, and decides nothing.
 struct Due<'a>(&'a mut Core);
 
-impl Duties for Due<'_> {
-    fn late_answers(&mut self) -> Vec<LateTaken> {
+impl Due<'_> {
+    /// The operator's key, signing as the operator at Core's clock, for `with`; the world's clock set to Core's.
+    fn as_operator<T>(
+        &mut self,
+        with: impl FnOnce(&mut Core, &OperatorSigns<'_>) -> T,
+    ) -> Option<T> {
         let core = &mut *self.0;
-        let orders: Vec<Id> = core
-            .started
-            .keys()
-            .filter_map(|k| Id::new(k.as_str()))
-            .collect();
-        let mut taken = Vec::new();
-        for order in orders {
-            let Some(followed) = core.segments.order(&order).cloned() else {
-                continue;
-            };
-            let mut sent = BTreeMap::new();
-            for segment in followed.parts.iter().flat_map(|p| p.segments.iter()) {
-                let id = kit::id(segment.segment_id.as_str());
-                if let Some((transaction, _)) = core.segments.sent(&order, &id) {
-                    sent.insert(transaction.as_str().to_owned(), id);
-                }
-            }
-            if sent.is_empty() {
-                continue;
-            }
-            let transactions = sent.keys().cloned().collect();
-            core.fleet.platform.world.set_clock(core.clock.instant());
-            for (_, transaction, bytes) in core.fleet.late_answers(&transactions) {
-                let Some(segment) = sent.get(&transaction) else {
-                    continue;
-                };
-                let kept = core
-                    .late_delivery(&order, segment, &bytes)
-                    .map_err(|why| format!("{why:?}"));
-                taken.push(LateTaken {
-                    order: order.clone(),
-                    segment: segment.clone(),
-                    kept,
-                });
-            }
+        core.fleet.platform.world.set_clock(core.clock.instant());
+        let made_at = core.clock.now().timestamp()?;
+        let mut key = RealKey::assembly();
+        let bounds = core.bounds.clone();
+        let operator = OperatorSigns::new(&mut key, &bounds, kit::operator().acts, made_at);
+        Some(with(core, &operator))
+    }
+}
+
+impl Ports for Due<'_> {
+    fn clock(&self) -> &dyn Clock {
+        &self.0.clock
+    }
+
+    fn actors(&self) -> Actors {
+        Actors {
+            core: kit::core(),
+            operator: kit::operator(),
         }
-        taken
     }
 
-    fn land_settled(&mut self) -> usize {
-        self.0.land_settled_now()
+    fn started(&self) -> &BTreeMap<String, Started> {
+        &self.0.started
     }
 
-    fn write_measures(&mut self) -> usize {
-        self.0.write_measures_now()
+    fn recalculated(&self, order: &Id) -> Option<(DecisionRecord, Vec<Id>)> {
+        self.0.life.routes.get(order.as_str()).cloned()
     }
 
-    fn close_completed(&mut self) -> Vec<Id> {
-        let orders: Vec<Id> = self
-            .0
-            .started
-            .keys()
-            .filter_map(|k| Id::new(k.as_str()))
-            .collect();
-        orders
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0.log.borrow().entries().to_vec()
+    }
+
+    fn decision_record(&self, order: &Id, id: &Id) -> Option<DecisionRecord> {
+        self.0.record_of(order, id).ok()
+    }
+
+    fn segments(&self) -> &Segments {
+        &self.0.segments
+    }
+
+    fn stuck(&self) -> &Stuck {
+        &self.0.stuck
+    }
+
+    fn reversals(&self) -> &Reversals {
+        &self.0.life.reversals
+    }
+
+    fn catalogue(&self) -> &Catalogue {
+        &self.0.catalogue
+    }
+
+    fn fresh(&mut self) -> Id {
+        self.0.fresh.id()
+    }
+
+    fn late_answers(&mut self, transactions: &BTreeSet<String>) -> Vec<(String, Vec<u8>)> {
+        let core = &mut *self.0;
+        core.fleet.platform.world.set_clock(core.clock.instant());
+        core.fleet
+            .late_answers(transactions)
             .into_iter()
-            .filter(|order| self.0.close(order))
+            .map(|(_, transaction, bytes)| (transaction, bytes))
             .collect()
     }
 
-    fn check_holdings(&mut self) -> Vec<HoldingChecked> {
-        let core = &mut *self.0;
-        let public: Vec<String> = core
-            .holdings
-            .borrow()
-            .attributions()
-            .into_iter()
-            .map(|(node, _)| node)
-            .collect();
-        let private: Vec<String> = core.publisher_accounts.keys().cloned().collect();
-        let mut checked = Vec::new();
-        for node in public.into_iter().chain(private) {
-            let reading = if core.publisher_accounts.contains_key(&node) {
-                core.publisher_reading(&node)
-            } else {
-                core.holding_reading(&node, DECIMALS)
-                    .map_err(|why| format!("{why:?}"))
-            };
-            let check = match &reading {
-                Ok(reading) => core
-                    .check_holding(reading)
-                    .map_err(|why| format!("{why:?}")),
-                Err(why) => Err(why.clone()),
-            };
-            checked.push(HoldingChecked {
-                node,
-                reading,
-                check,
-            });
-        }
-        checked
+    fn holding_readings(&mut self) -> Vec<AccountRead> {
+        self.as_operator(|core, operator| {
+            let mut holdings = core.holdings.borrow_mut();
+            let readings = holdings.readings(&mut core.fleet.platform, operator);
+            readings
+                .into_iter()
+                .map(|(node, read)| AccountRead {
+                    provider: holdings
+                        .account(&node)
+                        .map(|a| a.provider().to_owned())
+                        .unwrap_or_default(),
+                    node,
+                    decimals: DECIMALS,
+                    read,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
-    fn read_publishers(&mut self) -> Vec<Published> {
+    fn publisher_accounts(&self) -> Vec<PublisherAccount> {
+        self.0
+            .deployed
+            .registers
+            .borrow()
+            .publisher_accounts
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled {
+        self.as_operator(|core, operator| {
+            core.fleet.platform.handle(
+                module,
+                &rutent_prov::holding::wallet::Operator::statement(operator, operation),
+            )
+        })
+        .unwrap_or(Handled::Refused(
+            rutent_contracts::module_interface::PlatformRefusal::Unavailable,
+        ))
+    }
+
+    fn publishers_records(&mut self) -> Vec<Published> {
+        // `T-020-58`: no operation asks a publisher for its record yet, so it is read as the scenario world holds it.
         let core = &mut *self.0;
         core.readings.refresh(&core.fleet.platform.world);
         let mut nodes: Vec<String> = core
@@ -301,335 +336,178 @@ impl Duties for Due<'_> {
             .collect()
     }
 
-    fn unknown_segments(&self) -> Vec<Unknown> {
-        let core = &*self.0;
-        let mut unknown = Vec::new();
-        for order in core.started.keys().filter_map(|k| Id::new(k.as_str())) {
-            let Some(followed) = core.segments.order(&order) else {
-                continue;
-            };
-            for segment in followed.parts.iter().flat_map(|p| p.segments.iter()) {
-                let id = kit::id(segment.segment_id.as_str());
-                if let Some(moved) = core.segments.unknown_move(&order, &id) {
-                    unknown.push(Unknown {
-                        order: order.clone(),
-                        segment: id,
-                        provider: moved.provider.as_str().to_owned(),
-                    });
-                }
-            }
-        }
-        unknown
+    fn run_checkpoints(&mut self) -> Result<usize, String> {
+        self.0.run_checkpoints()
     }
 
-    fn ask_status_again(&mut self, unknown: &Unknown) -> StatusTried {
+    fn fed(&mut self) {
+        let _ = self.0.feed();
+    }
+
+    fn with_segments(&mut self, with: &mut dyn FnMut(&mut Segments, &mut SegmentParts<'_>)) {
         let core = &mut *self.0;
-        let at = (
-            unknown.order.as_str().to_owned(),
-            unknown.segment.as_str().to_owned(),
-        );
-        core.life.status_asks.remove(&at);
-        let asked = match core.part_of(&unknown.order) {
-            Ok(part) => {
-                core.ask_unknown_among(
-                    &unknown.order,
-                    &part,
-                    std::slice::from_ref(&unknown.segment),
-                    true,
-                );
-                match core.life.status_asks.get(&at) {
-                    Some(Ok(asked)) => Ok(asked.clone()),
-                    Some(Err(why)) => Err(why.clone()),
-                    None => Err("no question was put".to_owned()),
-                }
-            }
-            Err(why) => Err(format!("{why:?}")),
-        };
-        StatusTried {
-            unknown: unknown.clone(),
-            kept: asked.as_ref().ok().and_then(|a| a.answer.clone()),
-            asked: asked.map(|a| a.effect),
-        }
-    }
-
-    fn report_kept_answers(&mut self) -> Vec<Reported> {
-        let unknown = self.unknown_segments();
-        let mut reported = Vec::new();
-        for one in unknown {
-            reported.extend(self.0.report_kept_for(&one));
-        }
-        reported
-    }
-
-    fn end_expired(&mut self) -> Vec<Id> {
-        self.0.end_expired_waits().unwrap_or_default()
-    }
-
-    fn unbuilt_pairs(&self) -> Vec<UnbuiltPair> {
-        self.0.segments.unbuilt_pairs().to_vec()
-    }
-
-    fn raise_unbuilt_pairs(&mut self) -> usize {
-        self.0.raise_unbuilt().unwrap_or(0)
-    }
-}
-
-impl Core {
-    /// Confirms the failed outcome a mover reported for the unknown `segment` of `order` (`Stuck::confirm_segment_outcome`,
-    /// `AC-6`): `confirmer` is another actor than the reporter, `report` the report's version and `reported_with` the
-    /// statement it rests on (what the schedule's round told, [`Reported`]), and `other` another maker's statement about
-    /// the move's transaction, which bears the report out. Core records the move's final result, `failed`, and the
-    /// segment's `segment_failed`.
-    ///
-    /// # Errors
-    ///
-    /// If the order hasn't started, the statement isn't taken as evidence, or the confirmation is refused.
-    pub fn confirm_reported_failure(
-        &mut self,
-        order: &Id,
-        segment: &Id,
-        confirmer: &rutent_contracts::core_internal::Actor,
-        report: (u64, &rutent_contracts::core_internal::Receipt),
-        other: &[u8],
-    ) -> Result<rutent_core_orch::stuck::Moved, super::StepError> {
-        let started = self
-            .started
-            .get(order.as_str())
-            .cloned()
-            .ok_or(super::StepError::NotNow("the order started"))?;
-        let (at, part) = started
-            .plan
-            .iter()
-            .enumerate()
-            .find(|(_, p)| {
-                p.segments
-                    .iter()
-                    .any(|s| s.segment_id.as_str() == segment.as_str())
-            })
-            .ok_or(super::StepError::NotNow("the segment is in a part"))?;
-        let part_id = kit::id(part.part_id.as_str());
-        let segments: Vec<Id> = part
-            .segments
-            .iter()
-            .map(|s| kit::id(s.segment_id.as_str()))
-            .collect();
-        let (core, operator) = (kit::core(), kit::operator());
-        let record_entry = self.record_entry_of(&started.record);
-        let live = Live {
-            order,
-            part: &part_id,
-            segments: &segments,
-            record: &started.record,
-            at,
-            authorisation: &started.authorisation,
-            origin_reserve: &started.origin,
-            route: &started.route,
-            caller: &core,
-            core: &core,
-            operator: &operator,
-            session: started.session.as_ref(),
-            inputs: &started.inputs,
-            floor: started.floor.as_ref(),
-            record_entry: record_entry.as_ref(),
-        };
-        let late = self
-            .take_late(&live, segment, other)
-            .map_err(|_| super::StepError::NotNow("the statement is taken as evidence"))?;
-        let stated = Stated::from(&late);
-        let mut policy = self.policy.clone();
-        let history: Vec<_> = self.log.borrow().entries().to_vec();
-        let mut parts = StuckParts {
-            clock: &self.clock,
-            log: &mut self.general,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-        };
-        let moved = self.stuck.confirm_segment_outcome(
-            &mut parts,
-            &mut policy,
-            rutent_core_orch::stuck::ConfirmingSegment {
-                order,
-                part: &part_id,
-                segment,
-                confirmer,
-                outcome: Resolved::Failed,
-                report: report.0,
-                reported_with: report.1,
-                evidence: &stated,
-                core: &core,
-            },
-            &history,
-        );
-        self.feed()?;
-        moved.map_err(super::StepError::Resolve)
-    }
-
-    /// What Core kept of its provider's answers about the unknown segment `one`, handed to its stuck mover: a
-    /// statement the provider's own result, which says the move failed or settled, is kept as evidence (`Segments::late_statement`)
-    /// and reported as the move's outcome by the mover, the actor whose request policy permitted it, through the stuck
-    /// mover's own report (`Stuck::report_segment_outcome`), which settles nothing until another actor confirms it
-    /// (`AC-6`, `REQ-ORD-1`). Only a segment of a part Core declared stuck can be reported; one already reported is
-    /// not told again.
-    fn report_kept_for(&mut self, one: &Unknown) -> Vec<Reported> {
-        let Some(started) = self.started.get(one.order.as_str()).cloned() else {
-            return Vec::new();
-        };
-        let Some((at, part)) = started.plan.iter().enumerate().find(|(_, p)| {
-            p.segments
-                .iter()
-                .any(|s| s.segment_id.as_str() == one.segment.as_str())
-        }) else {
-            return Vec::new();
-        };
-        let part_id = kit::id(part.part_id.as_str());
-        if !self.stuck.is_stuck(&one.order, &part_id) {
-            return Vec::new();
-        }
-        let Some(moved) = self.segments.unknown_move(&one.order, &one.segment) else {
-            return Vec::new();
-        };
-        let kept: Vec<Vec<u8>> = self
-            .life
-            .reversals
-            .kept_statements(&one.order, &one.segment)
-            .into_iter()
-            .map(<[u8]>::to_vec)
-            .collect();
-        let segments: Vec<Id> = part
-            .segments
-            .iter()
-            .map(|s| kit::id(s.segment_id.as_str()))
-            .collect();
-        let (core, operator) = (kit::core(), kit::operator());
-        let record_entry = self.record_entry_of(&started.record);
-        let live = Live {
-            order: &one.order,
-            part: &part_id,
-            segments: &segments,
-            record: &started.record,
-            at,
-            authorisation: &started.authorisation,
-            origin_reserve: &started.origin,
-            route: &started.route,
-            caller: &core,
-            core: &core,
-            operator: &operator,
-            session: started.session.as_ref(),
-            inputs: &started.inputs,
-            floor: started.floor.as_ref(),
-            record_entry: record_entry.as_ref(),
-        };
-        let mut reported = Vec::new();
-        for bytes in kept {
-            // Only an answer that says the move failed or succeeded is taken to the mover; any other is Core's already,
-            // kept once.
-            let said = serde_json::from_slice::<serde_json::Value>(&bytes)
-                .ok()
-                .and_then(|v| {
-                    v["statement"]["outcome"]["status"]
-                        .as_str()
-                        .map(str::to_owned)
-                });
-            if !matches!(said.as_deref(), Some("failed" | "succeeded")) {
-                continue;
-            }
-            let late = self.take_late(&live, &one.segment, &bytes);
-            let Ok(late) = late else { continue };
-            let outcome = match late.says {
-                Says::Failed => Resolved::Failed,
-                Says::Settled => Resolved::Done,
-                Says::Unknown | Says::Nothing => continue,
-            };
-            let mut policy = self.policy.clone();
-            let history: Vec<_> = self.log.borrow().entries().to_vec();
-            let mut parts = StuckParts {
-                clock: &self.clock,
-                log: &mut self.general,
-                fresh: &mut self.fresh,
-                issued: &self.issued,
-                segments: &mut self.segments,
-                exposures: &mut self.exposures,
-            };
-            let taken = self.stuck.report_segment_outcome(
-                &mut parts,
-                &mut policy,
-                Reporting {
-                    order: &one.order,
-                    part: &part_id,
-                    segment: &one.segment,
-                    reporter: &moved.mover,
-                },
-                outcome,
-                &Stated::from(&late),
-                &history,
-            );
-            if matches!(taken, Err(ResolveError::AlreadyReported)) {
-                continue;
-            }
-            reported.push(Reported {
-                unknown: one.clone(),
-                statement: late.receipt.clone(),
-                taken: taken
-                    .map_err(|why| format!("{why:?}"))
-                    .and_then(|moved| match moved {
-                        rutent_core_orch::stuck::Moved::AwaitsConfirmation { report } => Ok(report),
-                        other => Err(format!("{other:?}")),
-                    }),
-            });
-        }
-        let _ = self.feed();
-        reported
-    }
-
-    /// Takes `bytes`, the provider's later statement about the unknown `segment` of `live`'s order, as evidence of what
-    /// the move came to, kept once as the provider's stated entry (`Segments::late_statement`).
-    fn take_late(
-        &mut self,
-        live: &Live<'_>,
-        segment: &Id,
-        bytes: &[u8],
-    ) -> Result<rutent_core_orch::segments::Late, rutent_core_orch::segments::LateRefused> {
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
+        let readings = core.readings.clone();
+        readings.refresh(&core.fleet.platform.world);
         let mut running = Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
+            platform: &mut core.fleet.platform,
+            clock: &core.clock,
+            faults: &mut core.faults,
+            feed: &mut core.feed,
+            log: &core.log,
+            swap_to: core.swap_to.as_deref_mut(),
             readings: &readings,
         };
         let mut grading = rutent_core_orch::closing::Evidenced {
-            catalogue: &self.catalogue,
+            catalogue: &core.catalogue,
             records: &readings,
             books: &readings,
-            closing: &mut self.closing,
+            closing: &mut core.closing,
         };
-        let mut decisions = self.policy.clone();
-        let mut channel = rutent_core_orch::notice::Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
+        let mut decisions = core.policy.clone();
+        let mut channel = Channel {
+            notices: &mut core.notices,
+            key: &mut core.notice_signer,
+            transport: &mut core.wire,
         };
         let mut parts = SegmentParts {
-            clock: &self.clock,
-            catalogue: &self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
+            clock: &core.clock,
+            catalogue: &core.catalogue,
+            log: &mut core.general,
+            evidence: &mut core.keeper,
             decisions: &mut decisions,
             modules: &mut running,
             uses: &mut NoProxy,
             grading: &mut grading,
-            operator_key: &mut self.signer,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            exposures: &mut self.exposures,
+            operator_key: &mut core.signer,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            exposures: &mut core.exposures,
             channel: &mut channel,
         };
-        self.segments
-            .late_statement(&mut parts, live, segment, bytes)
+        with(&mut core.segments, &mut parts);
+    }
+
+    fn with_reversals(
+        &mut self,
+        with: &mut dyn FnMut(&mut Reversals, &mut ReversalParts<'_>, &mut Moving<'_>),
+    ) {
+        let core = &mut *self.0;
+        let (core_actor, operator) = (kit::core(), kit::operator());
+        let readings = core.readings.clone();
+        readings.refresh(&core.fleet.platform.world);
+        let mut running = Running {
+            platform: &mut core.fleet.platform,
+            clock: &core.clock,
+            faults: &mut core.faults,
+            feed: &mut core.feed,
+            log: &core.log,
+            swap_to: core.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut decisions = core.policy.clone();
+        let mut moving = Moving {
+            decisions: &mut decisions,
+            modules: &mut running,
+        };
+        let mut parts = ReversalParts {
+            clock: &core.clock,
+            catalogue: &mut core.catalogue,
+            log: &mut core.general,
+            evidence: &mut core.keeper,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+            core: &core_actor,
+            operator: &operator,
+        };
+        with(&mut core.life.reversals, &mut parts, &mut moving);
+    }
+
+    fn with_stuck(&mut self, with: &mut StuckLent<'_>) {
+        let core = &mut *self.0;
+        let mut policy = core.policy.clone();
+        let mut channel = Channel {
+            notices: &mut core.notices,
+            key: &mut core.notice_signer,
+            transport: &mut core.wire,
+        };
+        let mut parts = StuckParts {
+            clock: &core.clock,
+            log: &mut core.general,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+        };
+        with(
+            &mut core.stuck,
+            &mut parts,
+            &mut policy as &mut dyn StuckOrders,
+            &mut channel as &mut dyn Operator,
+        );
+    }
+
+    fn with_landings(&mut self, with: &mut dyn FnMut(&mut Segments, &mut dyn Landings)) {
+        let _ = self.as_operator(|core, operator| {
+            let holdings = std::rc::Rc::clone(&core.holdings);
+            let mut held = holdings.borrow_mut();
+            let mut landing = super::holding::Landing {
+                holdings: &mut held,
+                platform: &mut core.fleet.platform,
+                operator,
+            };
+            with(&mut core.segments, &mut landing);
+        });
+    }
+
+    fn with_audit(
+        &mut self,
+        with: &mut dyn FnMut(&mut Segments, &mut dyn Comparisons, &mut dyn Measures),
+    ) {
+        let core = &mut *self.0;
+        let channel = Channel {
+            notices: &mut core.notices,
+            key: &mut core.notice_signer,
+            transport: &mut core.wire,
+        };
+        let mut compare = Compare::new(
+            Compare::<CoreLog, Channel<'_>, SharedClock>::core_audit(kit::core().party),
+            General::new(&core.log),
+            channel,
+            core.clock.clone(),
+        );
+        let mut measures = rutent_core_audit::measures::Record::new(
+            rutent_core_audit::measures::Record::<CoreLog, SharedClock>::core_audit(kit::id(
+                kit::CORE_PARTY,
+            )),
+            General::new(&core.log),
+            core.clock.clone(),
+        );
+        with(&mut core.segments, &mut compare, &mut measures);
+    }
+
+    fn with_prices(&mut self, with: &mut dyn FnMut(PriceDesk<'_>, &Segments)) {
+        let core = &mut *self.0;
+        let core_actor = kit::core();
+        let desk = PriceDesk {
+            prices: &mut core.reported,
+            log: &mut core.general,
+            clock: &core.clock,
+            core: &core_actor,
+        };
+        with(desk, &core.segments);
+    }
+
+    fn with_arrivals(&mut self, with: &mut dyn FnMut(&mut Arrivals, &mut Desk<'_, '_>)) {
+        self.0.with_arrivals(|arrivals, desk| with(arrivals, desk));
+    }
+
+    fn with_notices(
+        &mut self,
+        with: &mut dyn FnMut(&mut Notices, &mut dyn NoticeKey, &mut dyn Transport),
+    ) {
+        let core = &mut *self.0;
+        with(&mut core.notices, &mut core.notice_signer, &mut core.wire);
     }
 }

@@ -129,6 +129,17 @@ impl History {
     }
 }
 
+/// What the stuck clock of a segment runs on, as the watch times it (`Stuck::watch`, `REQ-ORD-29`): its tuple's
+/// `history`, where Core has one, else none, held to the floor ([`FLOOR_SECONDS`]) where neither a history nor the
+/// record's `declared` time is known: a tuple that never settles is never left untimed, so an owed reversal at it makes
+/// its order stuck (`INV-3`, fails closed).
+pub fn stuck_clock(history: Option<&History>, declared: u64) -> (StuckBasis, u64) {
+    match history {
+        Some(history) => history.figure_or_floor(declared),
+        None => History::new().figure_or_floor(declared),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,9 +155,14 @@ mod tests {
     // verifies: INV-3, REQ-ORD-3
     #[test]
     fn owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window() {
-        // No history and no advertised time: `figure` times nothing, the clock's figure is the floor.
+        // No history and no advertised time: `figure` times nothing, the clock's figure is the floor, as the watch's
+        // own clock reads it (`stuck_clock`, which `Stuck::watch` runs on each tick of Core's schedule).
         assert_eq!(History::new().figure(u64::MAX), None);
-        let (basis, figure) = History::new().figure_or_floor(u64::MAX);
+        let (basis, figure) = stuck_clock(None, u64::MAX);
+        assert_eq!(
+            stuck_clock(Some(&History::new()), u64::MAX),
+            (basis, figure)
+        );
         assert_eq!(
             (basis, figure),
             (StuckBasis::TwiceAdvertised, FLOOR_SECONDS)

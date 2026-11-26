@@ -240,6 +240,29 @@ impl<L: Log, O: Operator, C: Clock> Comparisons for Compare<L, O, C> {
             &at,
         )
     }
+
+    fn holding_not_read(
+        &mut self,
+        account: &rutent_contracts::router_api::Id,
+        node: &rutent_contracts::router_api::Id,
+        provider: &rutent_contracts::router_api::Id,
+        why: &rutent_contracts::core_internal::HoldingNotRead,
+        last_check: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure> {
+        let at = self.now()?;
+        // No balance: there is none, and the log keeps none (`REQ-AUD-6`). The account's own last check, where it has
+        // one, is what the raise rests on; an account never read has nothing to cite.
+        self.raise(
+            Difference::HoldingNotRead {
+                account: account.clone(),
+                node: node.clone(),
+                provider: provider.clone(),
+                why: why.clone(),
+            },
+            last_check.cloned().into_iter().collect(),
+            &at,
+        )
+    }
 }
 
 impl ReportsVerdict {

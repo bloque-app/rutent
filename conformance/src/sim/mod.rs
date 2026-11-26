@@ -935,11 +935,16 @@ impl Simulated {
         // its books hold it, or says it knows none (`REQ-ORD-1`, `T-013-11`'s query, `T-020-47`).
         if let Operation::StatusQuery(q) = &operation.statement {
             use serde_json::json;
+            // The provider states what its books hold now, when it is asked: the result it nests, and each piece of evidence
+            // in it, are made at the question's time, Core's clock when it asked (`F-024`, `T-020-48`'s review, S4), not at
+            // the stand-ins' fixed time, which is before any move a scenario makes.
             let outcome = match self.provider.status(&q.about) {
-                Some(result) => json!({
-                    "status": "answered",
-                    "result": serde_json::to_value(result.statement()).expect("a result serialises"),
-                }),
+                Some(result) => {
+                    let mut stated =
+                        serde_json::to_value(result.statement()).expect("a result serialises");
+                    made_now(&mut stated, &operation.made_at);
+                    json!({ "status": "answered", "result": stated })
+                }
                 None => json!({ "status": "not_known" }),
             };
             let body = json!({
@@ -1085,6 +1090,19 @@ impl Behaviour {
             Act::RefuseLifting => RefusalClass::LiftsAtKnownTime,
             Act::RefuseWaitingOnThePerson => RefusalClass::WaitsOnPerson,
             _ => RefusalClass::Final,
+        }
+    }
+}
+
+/// A provider's own statement `stated`, and each piece of evidence in its outcome that states when it was made, made
+/// at `at`: what it says is said now.
+fn made_now(stated: &mut serde_json::Value, at: &str) {
+    stated["made_at"] = at.into();
+    if let Some(pieces) = stated["statement"]["outcome"]["evidence"].as_array_mut() {
+        for piece in pieces {
+            if piece.get("made_at").is_some() {
+                piece["made_at"] = at.into();
+            }
         }
     }
 }

@@ -48,4 +48,15 @@ impl Comparisons for Unbuilt {
     ) -> Result<Receipt, AppendFailure> {
         Err(AppendFailure::Unavailable)
     }
+
+    fn holding_not_read(
+        &mut self,
+        _account: &rutent_contracts::router_api::Id,
+        _node: &rutent_contracts::router_api::Id,
+        _provider: &rutent_contracts::router_api::Id,
+        _why: &rutent_contracts::core_internal::HoldingNotRead,
+        _last_check: Option<&Receipt>,
+    ) -> Result<Receipt, AppendFailure> {
+        Err(AppendFailure::Unavailable)
+    }
 }

@@ -107,6 +107,7 @@ use serde_json::json;
 
 use crate::kit::{self, RealKey, Seeded, SharedClock};
 use crate::sim::{Fleet, Installed, SimWorld};
+use rutent_core_orch::schedule::Started;
 
 /// Who hands a statement to Core in a scenario: the maker its envelope names, acting for its publisher. A scenario
 /// hands over its providers' own statements, so none is a relay's copy (`T-020-28`).
@@ -231,20 +232,6 @@ struct Begun {
     session: Option<Id>,
     inputs: BTreeMap<String, String>,
     delivers: rutent_contracts::router_api::Amount,
-}
-
-/// What an order needs to run once it started.
-#[derive(Debug, Clone)]
-struct Started {
-    record: DecisionRecord,
-    plan: Vec<PartPlan>,
-    authorisation: Id,
-    origin: Id,
-    route: RouteEnd,
-    session: Option<Id>,
-    inputs: BTreeMap<String, String>,
-    /// The least the customer takes at the destination, as the authorisation in the log names it (`T-020-10`).
-    floor: Option<rutent_contracts::router_api::PositiveAmount>,
 }
 
 /// The operator's key, watched: every decision record Core signs is kept by its id, for the segments to run the
@@ -508,6 +495,8 @@ struct Carried {
     /// The deployment's register of holding accounts, its own configuration, which goes on as the deployment keeps it
     /// (`T-020-55`): policy reads a node's holder from it, never from the host's holdings above.
     holding_accounts: BTreeMap<String, String>,
+    /// The same register's private nodes' accounts, which go on with it (`T-020-48`, the review's S1).
+    publisher_accounts: BTreeMap<String, rutent_core_orch::schedule::PublisherAccount>,
 }
 
 /// Core, put together.
@@ -584,9 +573,12 @@ pub struct Core {
     /// Core's schedule: what each tick runs and when it last did (`T-020-48`). A restart forgets it, so a reopened
     /// Core runs every job on its first tick.
     schedule: rutent_core_orch::schedule::Schedule,
-    /// The accounts a private node's publisher keeps for the value resting inside it, by node: the module that
-    /// answers for it and its asset (`REQ-CAT-23`, `T-020-48`).
-    publisher_accounts: BTreeMap<String, schedule::PublisherAccount>,
+    /// The checkpointer Core's schedule runs (`REQ-AUD-14`, `T-020-48`), on the disk's checkpoint store, signing with
+    /// the log's own key on the schedule fixed in advance; `None` where it refused the log or its store, which each
+    /// tick then answers.
+    checkpoints: Option<checking::ScheduledCheckpointer>,
+    /// What the checkpointer published, as the deployment's publication channel received it, in order.
+    published: Vec<Vec<u8>>,
 }
 
 /// Why a step of Core's failed.
@@ -704,6 +696,7 @@ impl Core {
             // The host's holdings are shared within Core (`Rc`), so they are taken out of the share, not moved.
             holdings: std::mem::take(&mut *self.holdings.borrow_mut()),
             holding_accounts: self.deployed.registers.borrow().holding_accounts.clone(),
+            publisher_accounts: self.deployed.registers.borrow().publisher_accounts.clone(),
         };
         Self::assemble_with(config, environment, self.disk, Some(carried))
     }
@@ -724,6 +717,10 @@ impl Core {
         let holding_accounts = carried
             .as_mut()
             .map(|c| std::mem::take(&mut c.holding_accounts))
+            .unwrap_or_default();
+        let publisher_accounts = carried
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.publisher_accounts))
             .unwrap_or_default();
         let (fleet, installed, clock, carried_feed, carried_fresh, ties) = match carried {
             Some(c) => (
@@ -810,6 +807,7 @@ impl Core {
             );
             // The register of holding accounts the deployment kept, on a reopen (`T-020-55`).
             r.holding_accounts = holding_accounts;
+            r.publisher_accounts = publisher_accounts;
         }
         // The operator's holding accounts, the host's: on a reopen they are the ones carried across it (`T-020-46`).
         let holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>> =
@@ -922,8 +920,17 @@ impl Core {
             faults: Faults::default(),
             swap_to: None,
             schedule: rutent_core_orch::schedule::Schedule::new(),
-            publisher_accounts: BTreeMap::new(),
+            checkpoints: None,
+            published: Vec::new(),
         };
+        // Core's checkpointer, over its log and the disk's checkpoint store, which a reopened Core reads back.
+        core.checkpoints = checking::ScheduledCheckpointer::new(
+            Rc::clone(&core.log),
+            core.disk.checkpoint_store(),
+            checking::log_key(),
+            checking::schedule(),
+        )
+        .ok();
         // Each provider is granted before the advertisement it sends was made; then the clock moves to the
         // scenario's start, and each advertisement is recorded as received then.
         // What the grading reads, and what it took, rebuilt from the log the disk holds (`T-020-09`).
@@ -937,6 +944,7 @@ impl Core {
             // The providers were listed before Core stopped: its catalogue is rebuilt from what its log holds, the host's
             // holding accounts listed again first.
             core.relist_holdings();
+            core.relist_publisher_accounts();
             core.relist()?;
             // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
             core.rebuild_from_log();

@@ -436,27 +436,6 @@ fn ramp_left_unknown() -> Failed {
     }
 }
 
-/// The ramp's own word on the transfer, restated at Core's clock as a provider's later answer would be (the stand-in's
-/// own answer carries a fixed time, from before the move, which the log refuses as the evidence of an outcome), of
-/// another body than the one held (it shows a fault) so that it is kept beside it.
-fn restated_failure(core: &mut Core, order: &Id, ramp: &Id) -> Vec<u8> {
-    let kept = core.kept_result(order, ramp).expect("kept");
-    let mut word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
-    assert_eq!(word["statement"]["outcome"]["status"], "failed");
-    word["statement"]["outcome"]["fault"] = "operator".into();
-    word["made_at"] = core.clock.timestamp().as_str().into();
-    for piece in word["statement"]["outcome"]["evidence"]
-        .as_array_mut()
-        .expect("evidence")
-    {
-        if piece.get("made_at").is_some() {
-            piece["made_at"] = core.clock.timestamp().as_str().into();
-        }
-    }
-    rutent_conformance::signing::sign_value(&mut word, &statements_key(QUICK));
-    serde_json::to_vec(&word).unwrap()
-}
-
 /// Another provider's statement about the ramp's transfer, as the exchange of the route would make it: of another
 /// maker than the ramp, so it states nothing of the move itself and only backs a confirmation.
 fn by_another_party(core: &mut Core, order: &Id, ramp: &Id) -> Vec<u8> {
@@ -468,18 +447,18 @@ fn by_another_party(core: &mut Core, order: &Id, ramp: &Id) -> Vec<u8> {
     serde_json::to_vec(&word).unwrap()
 }
 
-/// Core's schedule reports the failure the provider stated to the stuck mover, and another actor confirms it with
-/// another maker's statement: the segment ends failed. Returns the round's report.
+/// Core's schedule declares the order stuck past its time and reports the failure the provider stated, its own answer
+/// to Core's status question as Core kept it, to the stuck mover; another actor confirms it with another maker's
+/// statement: the segment ends failed. No test watches the order or hands an answer in (`T-020-48`, the review's S4).
 fn ended_failed(core: &mut Core, order: &Id, ramp: &Id) {
     core.clock.advance(2 * kit::DECLARED + 5);
-    assert!(matches!(
-        core.watch(order).expect("watched"),
-        rutent_core_orch::stuck::Watch::Stuck(_)
-    ));
-    let word = restated_failure(core, order, ramp);
-    core.late_delivery(order, ramp, &word)
-        .expect("kept beside the answer held");
     let round = core.tick();
+    assert!(
+        round.watched.iter().any(|w| &w.order == order
+            && matches!(w.found, Ok(rutent_core_orch::stuck::Watch::Stuck(_)))),
+        "the tick declared it stuck: {:?}",
+        round.watched
+    );
     let report = round
         .reported
         .iter()
@@ -718,38 +697,48 @@ fn segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_s
             .filter(|v| matches!(v.what, What::ReportOutcome { .. }))
             .count()
     };
+    let kept_of_the_ramp = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(&ramp))
+            })
+            .count()
+    };
+    // The provider's own answer to the question Core put when the run left the segment unknown, as Core kept it.
+    let answer = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put")
+        .answer
+        .expect("the ramp answered");
     // Not stuck yet: nothing is reported, whatever the provider said.
     assert!(core.tick().reported.is_empty());
+    let kept_before = kept_of_the_ramp(&core);
+    // Past its time the tick declares it stuck and hands the provider's own answer to the mover's report.
     core.clock.advance(2 * kit::DECLARED + 5);
-    assert!(matches!(
-        core.watch(&order).expect("watched"),
-        rutent_core_orch::stuck::Watch::Stuck(_)
-    ));
-    assert_eq!(reports(&core), 0);
-    let word = restated_failure(&mut core, &order, &ramp);
-    core.late_delivery(&order, &ramp, &word)
-        .expect("kept beside the answer held");
     let round = core.tick();
-    // The stand-in's own answer, with its fixed time from before the move, is refused by the log (the evidence of an
-    // outcome is made no earlier than its move): a stand-in's artefact, and the report is not taken. The restated one
-    // is taken, once.
+    assert_eq!(state(&mut core, &order), OrderState::Stuck);
     let taken: Vec<_> = round.reported.iter().filter(|r| r.taken.is_ok()).collect();
     assert_eq!(taken.len(), 1, "{:?}", round.reported);
     assert_eq!(taken[0].unknown.segment, ramp);
-    assert!(
-        round
-            .reported
-            .iter()
-            .filter(|r| r.taken.is_err())
-            .all(|r| format!("{:?}", r.taken).contains("no earlier than its move")),
-        "{:?}",
-        round.reported
+    assert_eq!(
+        taken[0].statement, answer,
+        "the report rests on the provider's own answer, the entry Core kept"
+    );
+    assert_eq!(
+        kept_of_the_ramp(&core),
+        kept_before,
+        "handed on, it is kept once: no second entry of the same statement"
     );
     assert_eq!(reports(&core), 1, "the log holds the mover's report");
     // The report settles nothing: the move is unknown until another actor confirms.
     assert!(core.is_unknown(&order, &ramp));
-    assert_eq!(state(&mut core, &order), OrderState::Stuck);
     // Told once: a later tick takes none again.
+    core.clock.advance(60);
     assert!(core.tick().reported.iter().all(|r| r.taken.is_err()));
     assert_eq!(reports(&core), 1);
     admitted(&core);
@@ -771,32 +760,13 @@ fn segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_
     let ran = core.run(&order).expect("the order ran");
     let deposit = segments_of(&ran)[1].segment.clone();
     assert!(core.is_unknown(&order, &deposit));
-    core.clock.advance(2 * kit::DECLARED + 5);
-    assert!(matches!(
-        core.watch(&order).expect("watched"),
-        rutent_core_orch::stuck::Watch::Stuck(_)
-    ));
-    // The reserve's word that the deposit settled, restated at Core's clock (the stand-in's carries a fixed time from
-    // before the move) and of another body than the one held (its evidence cites another record), so it is kept beside it.
+    // The reserve's own word that the deposit settled, its answer to Core's status question, as Core kept it.
     let kept = core.kept_result(&order, &deposit).expect("kept");
-    let mut word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    let word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
     assert_eq!(
         word["statement"]["outcome"]["status"], "succeeded",
         "{word}"
     );
-    word["made_at"] = core.clock.timestamp().as_str().into();
-    for piece in word["statement"]["outcome"]["evidence"]
-        .as_array_mut()
-        .expect("evidence")
-    {
-        piece["reference"] = "restated:book-1".into();
-        if piece.get("made_at").is_some() {
-            piece["made_at"] = core.clock.timestamp().as_str().into();
-        }
-    }
-    rutent_conformance::signing::sign_value(&mut word, &statements_key(RESERVE));
-    core.late_delivery(&order, &deposit, &serde_json::to_vec(&word).unwrap())
-        .expect("kept beside the answer held");
     let outcomes = |core: &Core| -> Vec<rutent_contracts::core_internal::MoveOutcome> {
         entries(core)
             .iter()
@@ -807,6 +777,8 @@ fn segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_
             .collect()
     };
     assert!(outcomes(&core).is_empty());
+    // Past its time the tick declares it stuck and reports what the reserve said.
+    core.clock.advance(2 * kit::DECLARED + 5);
     let round = core.tick();
     assert!(
         round.reported.iter().any(|r| r.taken.is_ok()),
@@ -1138,5 +1110,91 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         2,
         "the provider's books grew only by its own withdrawal and deposit"
     );
+    admitted(&core);
+}
+
+/// Core's tick alone times each followed order's part and declares it stuck past its time, sends the notices the log's
+/// changes call for, compares the pairs of adjacent reports the segments' ends gave, and issues and publishes the
+/// checkpoints due on the schedule fixed in advance: no test calls `watch`, `notify`, `write_pairs` or a checkpointer
+/// (`REQ-ORD-29`, `REQ-ORD-20`, `REQ-ORD-9`, `REQ-AUD-14`, `T-020-48`; the review of its first build, its B3).
+// verifies: REQ-ORD-3, REQ-AUD-14
+#[test]
+fn stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule() {
+    use rutent_core_orch::schedule::Job;
+    use rutent_scenarios::assembly::checking::{CHECKPOINT_EVERY, checker, history_of};
+    let Failed {
+        mut core, order, ..
+    } = ramp_left_unknown();
+    let round = core.tick();
+    for job in [Job::Watch, Job::Notify, Job::WritePairs, Job::Checkpoints] {
+        assert!(round.did(job), "{job:?} runs on Core's first tick");
+    }
+    // The notices the run's changes call for went with the tick: none is left for a caller.
+    assert!(
+        matches!(round.notified, Some(Ok(sent)) if sent > 0),
+        "{:?}",
+        round.notified
+    );
+    assert_eq!(core.notify().expect("notified"), 0, "the tick sent them");
+    // The pairs of reports the run's settled segments gave were compared by the tick.
+    assert!(
+        matches!(round.pairs, Some(Ok(written)) if written > 0),
+        "{:?}",
+        round.pairs
+    );
+    assert!(
+        entries(&core)
+            .iter()
+            .any(|v| matches!(v.what, What::ReportPair { .. }))
+    );
+    assert_eq!(core.write_pairs(), Ok(0), "none left for a caller");
+
+    // Inside its time the part runs; past it, the tick declares it stuck, with no test's watch.
+    assert_eq!(state(&mut core, &order), OrderState::FirstSegmentSettled);
+    core.clock.advance(2 * kit::DECLARED + 5);
+    let round = core.tick();
+    assert_eq!(
+        state(&mut core, &order),
+        OrderState::Stuck,
+        "the tick timed it"
+    );
+    assert!(
+        round
+            .watched
+            .iter()
+            .any(|w| w.order == order
+                && matches!(w.found, Ok(rutent_core_orch::stuck::Watch::Stuck(_)))),
+        "{:?}",
+        round.watched
+    );
+    assert!(
+        matches!(round.notified, Some(Ok(sent)) if sent > 0),
+        "the stuck order's notice went with the same tick: {:?}",
+        round.notified
+    );
+    // A later tick declares it no more.
+    core.clock.advance(60);
+    assert!(core.tick().watched.is_empty());
+
+    // The checkpoints fall on the schedule fixed in advance, an hour apart from the scenario's start, however busy the
+    // log: each due is issued and published once, and an outside checker holding the history finds nothing wrong.
+    core.clock.advance(3 * CHECKPOINT_EVERY);
+    core.tick();
+    let published = core.published_checkpoints().to_vec();
+    assert!(published.len() >= 3, "{} published", published.len());
+    assert_eq!(published.len(), core.scheduled_checkpoints().len());
+    core.tick();
+    assert_eq!(
+        core.published_checkpoints().len(),
+        published.len(),
+        "none twice"
+    );
+    let openings = rutent_scenarios::assembly::checking::openings_of(core.scheduled_checkpoints());
+    let through = core
+        .scheduled_checkpoints()
+        .last()
+        .and_then(|k| rutent_core_audit::checkpoint::tick_of(k.opening.tick.as_str()));
+    let checked = checker().check(&history_of(&core.log()), &published, &openings, through);
+    assert!(checked.findings.is_empty(), "{:?}", checked.findings);
     admitted(&core);
 }

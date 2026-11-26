@@ -1012,10 +1012,7 @@ impl Stuck {
                 .map_or(u64::MAX, |t| t.declared_seconds);
             // A tuple that never settles, with no history, is held to a floor window and not left untimed: an owed
             // reversal at it would never make its order stuck (`INV-3`).
-            let (basis, figure) = match self.timings.tuples.get(&tuple) {
-                Some(history) => history.figure_or_floor(declared),
-                None => History::new().figure_or_floor(declared),
-            };
+            let (basis, figure) = timing::stuck_clock(self.timings.tuples.get(&tuple), declared);
             let held = now.floor().0.saturating_sub(since.floor().0);
             if !over_time(figure, held) {
                 continue;

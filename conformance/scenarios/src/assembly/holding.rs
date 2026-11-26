@@ -173,10 +173,10 @@ impl Withdrawals for HeldWallets<'_, '_> {
 
 /// The operator's holding accounts, as the segments land the value that settles at their nodes (`T-020-33`): the wallet
 /// is asked through the platform, in a statement the operator signs.
-struct Landing<'a, W: World, O: Operator> {
-    holdings: &'a mut Holdings,
-    platform: &'a mut Platform<W>,
-    operator: &'a O,
+pub(super) struct Landing<'a, W: World, O: Operator> {
+    pub(super) holdings: &'a mut Holdings,
+    pub(super) platform: &'a mut Platform<W>,
+    pub(super) operator: &'a O,
 }
 
 impl<W: World, O: Operator> Landings for Landing<'_, W, O> {
@@ -750,27 +750,6 @@ impl Core {
             operator: &operator,
         };
         self.segments.reconcile_landings(&mut landing)
-    }
-
-    /// Lands in the holding accounts the value of each segment that settled at a public node they hold, as Core does
-    /// (`T-020-33`, `REQ-ORD-40`, `INV-5`): once for the segment, in a statement the operator signs. Core's schedule
-    /// calls it each tick ([`Core::tick`], `T-020-48`), so where the value rests is Core's own record: no scenario
-    /// calls it, and none can land twice. Answers how many it placed now.
-    pub(super) fn land_settled_now(&mut self) -> usize {
-        let at = self.clock.instant();
-        self.fleet.platform.world.set_clock(at);
-        let Some(made_at) = self.clock.now().timestamp() else {
-            return 0;
-        };
-        let mut key = RealKey::assembly();
-        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
-        let mut held = self.holdings.borrow_mut();
-        let mut landing = Landing {
-            holdings: &mut held,
-            platform: &mut self.fleet.platform,
-            operator: &operator,
-        };
-        self.segments.land_settled(&mut landing)
     }
 
     /// Value arrives at the holding account of `node` for `order`, as the operator lands it by hand

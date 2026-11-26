@@ -15,7 +15,7 @@ use rutent_core_audit::checkpoint::{Checker, Checkpointer, Kept, Schedule};
 use rutent_core_audit::log::{MemoryStore, record};
 use rutent_core_audit::receipts::store::LogsRead;
 
-use super::durable::LogDisk;
+use super::durable::{CheckpointDisk, LogDisk};
 use super::{Core, CoreLog, LOG_NAME};
 use crate::kit;
 
@@ -24,6 +24,9 @@ pub const CHECKPOINT_EVERY: u64 = 3_600;
 
 /// A checkpointer over Core's log, on the assembly's store of its own.
 pub type CoreCheckpointer = Checkpointer<LogDisk, LogsRead, MemoryStore>;
+
+/// The checkpointer Core's schedule runs, on the disk's checkpoint store (`REQ-AUD-14`, `T-020-48`).
+pub type ScheduledCheckpointer = Checkpointer<LogDisk, LogsRead, CheckpointDisk>;
 
 /// The log's own signing key: one the deployment's operator doesn't hold, which signs checkpoints as it signs
 /// parties' receipts (`T-022-04`).
@@ -75,6 +78,36 @@ pub fn openings_of(kept: &[Kept]) -> Vec<Vec<u8>> {
 }
 
 impl Core {
+    /// Runs the checkpoints due on Core's checkpointer and publishes what they issue on the deployment's publication
+    /// channel, then acknowledges them (Core's schedule's `checkpoints` job, `REQ-AUD-14`, `T-020-48`): how many it
+    /// published.
+    pub(super) fn run_checkpoints(&mut self) -> Result<usize, String> {
+        let checkpointer = self
+            .checkpoints
+            .as_mut()
+            .ok_or("the checkpointer refused the log or its store")?;
+        let ran = checkpointer.run_due();
+        let published = ran.published.len();
+        self.published.extend(ran.published.iter().cloned());
+        checkpointer
+            .acknowledge(&ran)
+            .map_err(|why| format!("{why:?}"))?;
+        match ran.stopped {
+            Some(why) => Err(format!("{why:?}")),
+            None => Ok(published),
+        }
+    }
+
+    /// What Core's checkpointer published, as the deployment's publication channel received it, in order.
+    pub fn published_checkpoints(&self) -> &[Vec<u8>] {
+        &self.published
+    }
+
+    /// The checkpoints Core's checkpointer keeps, with their openings, in tick order.
+    pub fn scheduled_checkpoints(&self) -> &[Kept] {
+        self.checkpoints.as_ref().map_or(&[], |c| c.kept())
+    }
+
     /// A checkpointer over Core's log, signing with [`log_key`] on [`schedule`], keeping its checkpoints in a store
     /// of its own. It reads the log and writes nothing to it.
     ///

@@ -1,115 +1,22 @@
 //! The check of a holding account against what its orders hold, as the assembly runs it (`REQ-AUD-15`, `AC-39`;
 //! `T-024-05`).
 //!
-//! Core's schedule reads each holding account and checks it (`T-020-48`, `schedule.rs`): the reading of a node's
-//! account (`Core::holding_reading`), the real plain wallet's own figure beside the host's attribution, and the check
-//! of a reading (`Core::check_holding`), which [`Compare`] records through the general handle on Core's log and
-//! raises to the operator on Core's own channel, the notices'. Both only read; the check can reach nothing that moves
-//! value. Neither is a call of the assembly's own: a scenario calls [`Core::tick`], and a reading is never handed in.
+//! Core's schedule reads each holding account and checks it (`T-020-48`): the job is `core-orch`'s
+//! (`rutent_core_orch::schedule::Jobs`), and the assembly answers only its ports (`schedule.rs`): the register's
+//! readings through the platform, and [`Compare`], which records the check through the general handle on Core's log
+//! and raises to the operator on Core's own channel, the notices'. A scenario calls [`Core::tick`], and a reading is
+//! never handed in. What stays here is the comparison of the pairs of reports, which the tick runs too, and its
+//! restating for a scenario that has a party report what the simulated providers don't ([`Core::write_pairs_as`]).
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Comparisons};
 use rutent_contracts::core_internal::{HoldingReading, PairNotBuilt, Receipt, ReportPair};
 use rutent_core_audit::compare::Compare;
 use rutent_core_audit::log::General;
-use rutent_core_orch::snapshot::Clock as _;
-use rutent_core_orch::stuck::OperatorSigns;
-use rutent_prov::holding::BalanceSource;
-use rutent_prov::holding::wallet::WalletError;
-use serde_json::json;
 
 use super::Core;
-use crate::kit::{self, RealKey};
+use crate::kit;
 
 impl Core {
-    /// The reading of the holding account of the public node `node`, held in an asset of `decimals` places, as
-    /// `CMP-CORE-AUDIT` takes it: the balance the account's wallet states, asked of it, and what the host attributes
-    /// to each order (`REQ-AUD-15`). The account is named `holding-` and its node.
-    ///
-    /// # Errors
-    ///
-    /// If the node has no account, or its wallet can't be read.
-    ///
-    /// # Panics
-    ///
-    /// If the clock's time can't be written as a timestamp.
-    pub(super) fn holding_reading(
-        &mut self,
-        node: &str,
-        decimals: u8,
-    ) -> Result<HoldingReading, WalletError> {
-        let at = self.clock.instant();
-        self.fleet.platform.world.set_clock(at);
-        let made_at = self
-            .clock
-            .now()
-            .timestamp()
-            .ok_or(WalletError::NotAnswered(
-                rutent_contracts::module_interface::PlatformRefusal::Unavailable,
-            ))?;
-        let mut key = RealKey::assembly();
-        let operator = OperatorSigns::new(&mut key, &self.bounds, kit::operator().acts, made_at);
-        let read = self
-            .holdings
-            .borrow_mut()
-            .readings(&mut self.fleet.platform, &operator)
-            .into_iter()
-            .find(|(n, _)| n == node)
-            .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?
-            .1?;
-        let provider = self
-            .holdings
-            .borrow()
-            .account(node)
-            .map(|account| account.provider().to_owned())
-            .ok_or_else(|| WalletError::NoHoldingAccount(node.to_owned()))?;
-        let word = match read.source {
-            BalanceSource::Module => "checked",
-            BalanceSource::Publisher(_) => "publisher",
-        };
-        Ok(serde_json::from_value(json!({
-            "account": format!("holding-{node}"),
-            "provider": provider,
-            "node": read.node,
-            "asset": { "id": read.asset, "decimals": decimals },
-            "balance": read.balance.to_string(),
-            "word": word,
-            "held_for": read.held.iter()
-                .map(|h| json!({ "order": h.order, "amount": h.amount.to_string() }))
-                .collect::<Vec<_>>(),
-            "at": self.clock.timestamp(),
-        }))
-        .expect("a reading of the contract's shape"))
-    }
-
-    /// Checks `reading` as `CMP-CORE-AUDIT` does: records the check, without its balance, in Core's log, and raises a
-    /// difference to the operator on Core's channel. A match raises nothing. The receipt is of the check's record.
-    ///
-    /// # Errors
-    ///
-    /// If the log can't take the check's record or the raise's.
-    pub(super) fn check_holding(
-        &mut self,
-        reading: &HoldingReading,
-    ) -> Result<Receipt, AppendFailure> {
-        let channel = rutent_core_orch::notice::Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
-        };
-        let mut compare =
-            Compare::new(
-                Compare::<
-                    super::CoreLog,
-                    rutent_core_orch::notice::Channel<'_>,
-                    crate::kit::SharedClock,
-                >::core_audit(kit::core().party),
-                General::new(&self.log),
-                channel,
-                self.clock.clone(),
-            );
-        compare.holding_reading(reading)
-    }
-
     /// How many pairs of reports the segments' ends owe the comparison: those waiting for [`Core::write_pairs`], and
     /// those that couldn't be built or that the log refused ([`Core::unbuilt_reports`]).
     pub fn unpaired_reports(&self) -> usize {
@@ -125,28 +32,6 @@ impl Core {
     /// their memory would: for a scenario of a pair that can't be built.
     pub fn lose_sent_reports(&mut self) {
         self.segments.lose_sent_reports();
-    }
-
-    /// Raises each pair that couldn't be built to the operator and has the log record it, once (`REQ-ORD-9`,
-    /// `T-020-48`): Core's schedule calls it.
-    pub(super) fn raise_unbuilt(&mut self) -> Result<usize, AppendFailure> {
-        let channel = rutent_core_orch::notice::Channel {
-            notices: &mut self.notices,
-            key: &mut self.notice_signer,
-            transport: &mut self.wire,
-        };
-        let mut compare =
-            Compare::new(
-                Compare::<
-                    super::CoreLog,
-                    rutent_core_orch::notice::Channel<'_>,
-                    crate::kit::SharedClock,
-                >::core_audit(kit::core().party),
-                General::new(&self.log),
-                channel,
-                self.clock.clone(),
-            );
-        self.segments.write_unbuilt(&mut compare)
     }
 
     /// Hands `CMP-CORE-AUDIT`'s comparison the pairs of reports the segments' ends gave since the last call, and
@@ -196,6 +81,18 @@ impl Core {
                 why: &PairNotBuilt,
             ) -> Result<Receipt, AppendFailure> {
                 self.inner.pair_not_built(order, segment, why)
+            }
+
+            fn holding_not_read(
+                &mut self,
+                account: &rutent_contracts::router_api::Id,
+                node: &rutent_contracts::router_api::Id,
+                provider: &rutent_contracts::router_api::Id,
+                why: &rutent_contracts::core_internal::HoldingNotRead,
+                last_check: Option<&Receipt>,
+            ) -> Result<Receipt, AppendFailure> {
+                self.inner
+                    .holding_not_read(account, node, provider, why, last_check)
             }
         }
         let channel = rutent_core_orch::notice::Channel {
