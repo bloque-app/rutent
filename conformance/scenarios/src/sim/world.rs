@@ -259,6 +259,11 @@ impl SimWorld {
         self.keys_down.push(provider.to_owned());
     }
 
+    /// Brings the store holding `provider`'s statement key back up.
+    pub fn make_key_store_available(&mut self, provider: &str) {
+        self.keys_down.retain(|p| p != provider);
+    }
+
     fn next_behaviour(&mut self, provider: &str, kind: &str, dry_run: bool) -> Option<Behaviour> {
         let script = self.scripts.get_mut(provider)?;
         let at = script

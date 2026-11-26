@@ -139,7 +139,9 @@ pub use journal::{APPEND_TRIES, is_receipt_of};
 use journal::{NO_TIME, Step};
 pub use mover::{Delivering, Mover, NotTaken, Ports, Stated, Withdrawn};
 pub use party::Recorded;
-pub use timing::{Change, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99};
+pub use timing::{
+    Change, FLOOR_SECONDS, HISTORY, History, MATERIAL_BPS, WINDOW, material, over_time, p99,
+};
 pub use view::{StuckValue, rank};
 
 /// What the stuck orders reach. The assembly builds it; Core's clock, segments and exposures are those the rest of
@@ -1008,13 +1010,9 @@ impl Stuck {
                 .iter()
                 .find(|t| t.part as usize == watching.at && t.operation as usize == place)
                 .map_or(u64::MAX, |t| t.declared_seconds);
-            let figure = match self.timings.tuples.get(&tuple) {
-                Some(history) => history.figure(declared),
-                None => History::new().figure(declared),
-            };
-            let Some((basis, figure)) = figure else {
-                continue;
-            };
+            // A tuple that never settles, with no history, is held to a floor window and not left untimed: an owed
+            // reversal at it would never make its order stuck (`INV-3`).
+            let (basis, figure) = timing::stuck_clock(self.timings.tuples.get(&tuple), declared);
             let held = now.floor().0.saturating_sub(since.floor().0);
             if !over_time(figure, held) {
                 continue;

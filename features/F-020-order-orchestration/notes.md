@@ -8006,7 +8006,6 @@ Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/
 | the same body is the result held (bytes compared instead) | `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not` |
 | a differing body is kept beside the first (first wins) | `kept_unknown_statement_does_not_shadow_a_later_final_delivery` |
 
-
 ## T-020-55: Core's own answers to policy's questions, and a regulator's read of the trail
 
 Finding 4 of `M3`'s milestone review of 2026-11-24, as the milestone reviewer read `T-021-16` and `T-021-17` (issue
@@ -8589,3 +8588,251 @@ path folded into the unreleased core-internal 1.0.0.
   | `target` names the handed-on route's holding account | `linked_orders_reversal_…_and_completes`, at the first ask (`NoOriginReserve`) |
   | an operator module attributed by its release key | `linked_orders_reversal_…_and_completes`, at the full credit (`Unattributable`) |
   | `Segments::rebuild_returns` | not switched off: gap 4 |
+
+## T-020-48: Core's own schedule, `tick` (finding 4 of the milestone review of 2026-11-24)
+
+Branch `f-020/t-020-48-core-tick`, from `28972690` (m3-next's batch holding `T-020-47`). Edits `components/core-orch/` (the
+new module `schedule`, declared in `lib.rs`; `reversal/` for the second ask and the kept statements) and the `F-024` files
+the commit body names: the assembly (`conformance/scenarios/src/assembly/`: the new `schedule.rs`, `mod.rs`, `audit.rs`,
+`holding.rs`, `measures.rs`, `arrivals.rs`, `lifecycle.rs`), `secrets.rs`, and the scenario tests. No `DEC-20` path, no
+contract edited, no simulated provider or stand-in touched (the sim guests are not rebuilt).
+
+- **`schedule`.** `Schedule::tick(now, &mut dyn Duties) -> Round`: one entry point, the one call the deployment keeps (on a
+  timer) and the scenarios make on Core's clock. `Duties` is its port, over the parts the assembly holds; the schedule holds
+  no value and decides nothing, it adds *when*. Jobs, in the order a tick runs them: late answers (`AC-5`), landing,
+  measures, the holding check of each account, the publishers' records, a status question again, what a kept answer says
+  handed to the stuck mover, the waits ended (`Arrivals::end_expired`), the pairs a restart dropped. `Cadences`: each job's
+  cadence is an operator setting with a default (`Job::name` is the token `T-020-49`'s `cadence` setting uses; its decided
+  path and its rebuild from the log are `T-020-49`'s). Defaults: every job each tick, but the holding check (an hour: it asks
+  a module) and a status question (an hour per segment, or its provider's cadence). The times each job last ran are in memory:
+  a reopened Core runs everything on its first tick, which is safe (each job is once-only by its own rule).
+- **The assembly** (`Core::tick`, `set_cadence`, `set_status_cadence`) exposes no `holding_reading`, `check_holding`,
+  `land_settled`, `write_measures`, `receive_late`, `publishers_records` or `end_expired_waits`: each is a private function the
+  tick calls. A run no longer lands what settled: the schedule does (scenarios that need the landing tick once).
+- **Holding check, public node.** The account's module's `holding_balance`, asked through the platform, beside the host's
+  attribution, handed to `Compare`; never a reading handed in. **Private node:** the publisher's module's signed answer to
+  the same question, `word: publisher`, beside what Core's segments rest at the node (`resting_totals`). No simulated provider
+  stands in for a publisher's account, so a scenario installs the plain wallet as one (`Core::install_publisher_account`).
+- **Late answers** (`AC-5`): each tick takes the late answers the platform holds for every order's segments
+  (`Fleet::late_answers`, once each) and keeps each as `late_delivery` did: the same result held is the same entry.
+  `late_answer_the_platform_receives_moves_nothing_twice` runs on `tick`.
+- **A status question again** (`Reversals::ask_unknown_status_again`): for each segment still unknown at a provider that
+  declares `status_query`, once its provider's cadence has passed since the last question (the run's own ask counts as the
+  first), under a fresh transaction. The answer is kept by the rule of `T-020-47` (the same body is the same entry).
+- **A kept answer to the stuck mover.** For an unknown segment of a part Core declared stuck, a kept statement whose outcome is
+  `failed` is taken through `Segments::late_statement` and its `Late` is handed to `Stuck::report_segment_outcome`, with the
+  move's mover as reporter. It settles nothing until another actor confirms it (`AC-6`); a report already made is not told again.
+  Only `failed` is handed on (the row's case); a statement that says settled is left kept.
+- **Defaults** (reversible, fail closed). (1) Cadences as above. (2) A provider's status cadence is the operator's per provider
+  (`set_status_cadence`), else an hour. (3) A reading whose module doesn't answer is an `Err` in the round and no check is
+  recorded: nothing is raised from a missing reading. (4) Asset decimals are the kit's two.
+- **Gaps, with owners.**
+  1. **A contract shape is missing: the log's record of an unbuilt pair.** The row has each pair a restart dropped recorded
+     once in the log with its reason. `core-internal` has no entry or raise for it (`Difference` has `Reports`,
+     `ReportsNotComparable`, … none fits a pair never built; a `Raise` needs at least one cited receipt, and a pair dropped by a
+     restart cites none). Shape needed: a `Difference` kind `pair_not_built { order, segment, why }` (`why`: `no_sent_report`
+     naming the segment whose sent report is missing, `no_flight`, `not_an_amount`, `refused`) whose `cites` may be the later
+     segment's result statement. Not edited (contracts). Done instead: each round reports each pair once to its caller
+     (`Round::unbuilt_pairs`), told once, never skipped. Owner: the lead (contract round, `DEC-20`), then this row's remainder.
+     The `NoSentReport` label is kept: it already names the segment whose sent report is missing (`Unbuilt::NoSentReport(sent)`).
+  2. **A provider's declared cadence has no contract shape.** `Declarations` carries `tracking` only. Core holds the cadence
+     per provider as an operator setting. Owner: the lead (a `Declarations` field) and `T-020-49` (the setting's decided path).
+  3. **The stand-ins' answers carry a fixed time from before the move**, so the log refuses a report resting on the status
+     answer as it comes (`an outcome's evidence was made no earlier than its move`); the scenario restates the answer at Core's
+     clock. A stand-in artefact (`conformance/src/role/stand_in.rs` `made_at`), owner `F-024`; the tick tells the refusal in its round.
+  4. **No operation reads a publisher's record of its private node, nor does a simulated provider answer `holding_balance` for
+     one.** "Through the platform" is the assembly's platform handle for the records (`Readings::refresh` over the platform's
+     world), and a real plain wallet stands for the publisher's account. Owner: `F-024`/`F-013` if the platform is to carry a
+     record question.
+  5. The report of a statement that says the move settled (`Resolved::Done`) is not handed on. Owner: `T-020-48`'s next round if wanted.
+- **The lead's four items (reviewer of `T-020-47`, added to the row).**
+  1. *Closing is Core's.* `Job::Close` (`Duties::close_completed`): each tick closes the orders that completed and reports
+     their price once (`closing::report_logged_price`); a run closes nothing, and the assembly's `Core::close` has no caller but the
+     tick. A reopened Core closes again what it hadn't (the log holds the price entry, so one is never twice). Tests
+     `completed_order_is_closed_and_its_price_reported_by_cores_schedule`, `order_completed_before_core_reopens_is_closed_after_it`
+     (`charge_check.rs`); the scenarios that read a price after a run tick first.
+  2. *A floor window* (`stuck/timing.rs`, `History::figure_or_floor`, `FLOOR_SECONDS` = an hour, stuck at twice it): a segment at a
+     tuple with no history and an advertised time the record couldn't give (`u64::MAX`) was never timed, so an owed reversal there
+     never made its order stuck. Test `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` is a unit test of the
+     figure the watch runs on: no scenario of the kit has a record that cites no settlement time (the record contract refuses one),
+     so the watch's own call is read, not driven. Default: an hour (reversible).
+  3. *`Reversals::later` holds the maker.* The same result held only where both statements' maker is the segment's provider and the
+     bodies are equal. Test `another_providers_answer_of_the_same_body_is_not_the_result_held` (`tests/reversal.rs`).
+  4. *`segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` now ends failed.* It runs on: the order
+     stuck, the schedule reports the provider's failed statement to the mover, and another actor (another desk, holding
+     `ConfirmOutcome`) confirms it on another party's statement (`Core::confirm_reported_failure`, a scenario call: the
+     confirmation is a person's decision, not the schedule's). The segment ends `FailedReversalOwed`. Two stand-in artefacts the
+     test works round: the stand-in's answers carry a fixed time before the move (the log refuses it as evidence), so the test
+     restates the answer at Core's clock with a fault shown, another body kept beside; and the evidence of another party must come
+     from a provider of another publisher (`OUT`).
+- **Rule-off table** (each alone, its test run through the lock, file restored; scripts `ruleoff.sh`, `ruleoff2.sh`).
+
+  | Rule switched off | Red |
+  |---|---|
+  | the late-answers job takes nothing | `late_answer_the_platform_receives_moves_nothing_twice` |
+  | a status question is not asked again | `unknown_segment_is_asked_again_at_its_providers_cadence` |
+  | a kept answer is not handed to the mover | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule`, `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
+  | landing off | `settled_segments_land_and_measures_are_written_on_cores_schedule` |
+  | measures off | the same |
+  | the publishers' records are not read | `publishers_records_are_read_through_the_platform_for_a_replay` |
+  | the holding check off | `holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator`, `private_nodes_holding_reading_is_its_publishers_signed_word` |
+  | a job ignores its cadence | `a_job_runs_when_its_cadence_has_passed_and_not_before` |
+  | the unbuilt pairs told at every tick | `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once` |
+  | the schedule closes nothing | `completed_order_is_closed_and_its_price_reported_by_cores_schedule`, `order_completed_before_core_reopens_is_closed_after_it` |
+  | no floor window | `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` |
+  | the maker isn't held | `another_providers_answer_of_the_same_body_is_not_the_result_held` |
+
+### T-020-48, the lead's two gaps (after the first review round began)
+
+- **Gap 1, closed: the log records each unbuilt pair once.** `core-internal`'s unreleased 1.0.0 (a `DEC-20` path) gains
+  `Difference::PairNotBuilt {order, segment, why}` (`why`: `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`),
+  `Comparisons::pair_not_built`, the schema, README and CHANGELOG entries and fixtures (valid `raise-of-a-pair-a-restart-dropped`,
+  `raise-of-a-pair-the-contract-refused`; three invalid; admission `--its-plan-lists`, `--missing`). It is the one raise that may
+  cite no receipt (`Raise::check`, the schema's `cites` conditional); row
+  `raise-of-a-pair-not-built-names-a-segment-its-plan-lists` holds it to its order's plan instead (118 relations).
+  `Segments::write_unbuilt` raises each parked pair once; a reopened Core reads the raises the log holds and raises none again.
+  The tick's `UnbuiltPairs` job calls it and `Round::raised` counts them. Test: `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once`
+  (three raises in the log, each citing nothing, each delivered to the operator, none again at the next tick or after another
+  reopening); contract test `raise_of_a_pair_never_built_may_cite_nothing_and_no_other_raise_may`.
+- **Gap 5, closed: a kept answer that says the move settled is reported to the mover as done**, as one that says failed is
+  reported failed. Test `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule`. Known: the
+  statement handed to the report is kept again by `Segments::late_statement` (a second stated entry of the same bytes, as the
+  segments attribute it), beside the one `Reversals::later` kept; unifying the two keepers is open (owner: the review round of
+  `T-020-48`). `late_answer_the_platform_receives_moves_nothing_twice` takes its tick before the part is declared stuck for that reason.
+
+| Rule switched off | Red |
+|---|---|
+| the tick raises no unbuilt pair | `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once` |
+| a settled answer is not reported | `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule` |
+| a pair's raise may not cite nothing | `raise_of_a_pair_never_built_may_cite_nothing_and_no_other_raise_may` |
+| a pair's raise isn't held to its plan | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+
+### T-020-48, round 2 (the review of its first build, #316, comment 7177780496)
+
+Branch `f-020/t-020-48-core-tick`, from `17a288ff`, with `origin/m3` merged (`6dfe7f71`, `T-020-55`'s `core_sources`; the
+one conflict was this file, both sections kept). `DEC-20` paths: `components/core-orch/` (`schedule/`, now a directory with
+`jobs.rs`; `segments/mod.rs`, `reversal/mod.rs`, `stuck/`), `contracts/core-internal/` and `contracts/src/core_internal/`
+(folded into the unreleased 1.0.0) and `components/core-audit/` (`compare/`). `F-024` files: the assembly
+(`conformance/scenarios/src/assembly/`), the simulated world (`sim/world.rs`), the simulated providers
+(`conformance/src/sim/mod.rs`) and the scenario tests.
+
+- **B2: every job's body is Core's, in `core-orch`** (`schedule::jobs`). `Jobs<'p>` implements the schedule's `Duties` over
+  `Ports`, which the deployment answers; the assembly's `Duties` is gone, and what it implements, `Ports` (`assembly/schedule.rs`),
+  only reads, asks or lends. Modelled on `T-020-55`: Core's rules in `core-orch`, the deployment's registers beside them.
+  - Core's (in `jobs.rs`): which transactions each segment was sent under and which late answer is whose, and keeping it
+    (`Reversals::later`, the maker presenting it); landing (`Segments::land_settled`); measures, pairs and unbuilt pairs
+    (`write_measures`, `write_pairs`, `write_unbuilt`); which orders close, the records of the routes each ran, and
+    `closing::report_logged_price` (`report_logged_price` now has its Core caller); the holding check: each account read
+    once, the reading built (account `holding-<node>`, provider, word from the read's source, what each order holds there and
+    nothing at zero, Core's time), checked through `Comparisons`, and an unread account raised (S2); the publisher's question
+    (`holding_balance` under a fresh transaction of Core's) and its answer held to the transaction asked; which segments are
+    unknown and asking again (`Reversals::ask_unknown_status_again`); the watch; the stuck reports (only a stuck part, only the
+    segments' typed `Says`, the mover as reporter, the kept statement named once); `Arrivals::end_expired`; `Notices::notify`;
+    and `confirm_reported_failure` (the review's L4: now `schedule::confirm_reported_failure`; the assembly's method is a call
+    of it). `Started` (what an order runs on) moved into `core-orch` with it, and `Started::live` builds the `Live` the jobs
+    run on.
+  - The deployment's (`Ports`): Core's clock; who Core and the operator are; the orders started and a recalculated route as
+    the assembly holds them; the log's entries; the decision records Core's key signed, held to the log's digest; a fresh
+    identifier; the platform's late answers; the register's readings of public accounts through the platform; the register's
+    private accounts; a question handed to a module in the operator's name through the platform; the checkpointer's run and
+    publication; feeding the state machine; and the lending of Core's parts with the ports they reach (`with_segments`,
+    `with_reversals`, `with_stuck`, `with_landings`, `with_audit`, `with_prices`, `with_arrivals`, `with_notices`), each a
+    construction of the parts and one call of the job's closure.
+  - Every value-moving path is the segments' own: landing goes through `Segments::land_settled`, whose landing is
+    `settled_at_node`'s; no job moves value by itself. The assembly's `holding_reading`, `check_holding`, `land_settled_now`,
+    `write_measures_now`, `close`, `raise_unbuilt`, `end_expired_waits`, `report_kept_for`, `take_late` and
+    `publisher_reading` are gone.
+- **B3: `tick` runs the watch, the notices, the pairs and the checkpoints.** New jobs `Watch` (each started order's first
+  part, its current route; `Stuck::watch` with the notices' channel), `WritePairs` (after the measures), `Notify` and
+  `Checkpoints` (last, so they hold what the tick wrote). Core holds its checkpointer (`Core::checkpoints`, signing with the
+  log's key on `checking::schedule`), on the disk's own checkpoint store (`durable::CheckpointDisk`, apart from the log's),
+  so a reopened Core reads its checkpoints back; what it publishes goes to the deployment's publication channel
+  (`Core::published_checkpoints`). Test `stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule`.
+- **B1.** `shared_holding_account_raises_on_a_difference_and_only_then` (`T-024-05`'s name, `PLAN.md:813`) is back, through
+  the tick; `holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator` is this row's own (the
+  cadence, each module asked once a check).
+- **S1.** The private nodes' accounts are the deployment's register's (`Registers::publisher_accounts`, beside
+  `T-020-55`'s `holding_accounts`), carried across a reopen with it; a reopened Core lists them in its catalogue again
+  (`Core::relist_publisher_accounts`) and the jobs read them from the register. The publisher's question runs under a fresh
+  transaction of Core's (`Fresh`, carried across a reopen), so a reopened Core never asks under a transaction it used.
+  Test `private_nodes_publisher_accounts_are_rebuilt_after_core_reopens`.
+- **S2.** `core-internal`'s `Difference::HoldingNotRead {account, node, provider, why}` (no balance), `Comparisons::holding_not_read`,
+  the schema, README, CHANGELOG, fixtures and row `raise-of-a-holding-not-read-cites-its-accounts-check` (119 relations), a
+  `DEC-20` path. Raised once in a spell of failure: the spell is read from the log (a `holding_not_read` raise of the account
+  since its last `holding_check`), so a restart raises none twice; it cites the account's last check where there is one.
+  Default (3) of round 1 is withdrawn: it failed open. Tests `holding_reading_a_module_does_not_give_is_raised_to_the_operator`
+  (scenario) and `raise_of_a_holding_not_read_carries_no_balance_and_cites_only_its_accounts_check` (contract).
+- **S4.** The simulated providers state their answer to a status question at the question's own time, Core's clock when it
+  asked (`Simulated::answer`, `conformance/src/sim/mod.rs`): the result the answer nests, and the evidence in it, are made then,
+  not at the stand-ins' fixed time. The provider's own answer, as Core kept it, now reaches the stuck mover: both stuck-mover
+  tests and `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` take it from the tick, with no
+  restated statement and no test's `watch`. The confirmer's evidence (`by_another_party`) is still a statement the test makes:
+  no simulated provider makes another party's statement about a move.
+- **Lows.** L1: `providers_own_answer_after_another_providers_of_the_same_body_is_kept_as_its_own` (`tests/reversal.rs`), the
+  held side's maker. L2: the watch's figure is `timing::stuck_clock`, which `Stuck::watch` runs on, and the floor test reads
+  it; a scenario can't reach the floor through the tick (the record contract refuses a record citing no settlement time).
+  L3: the register is read once a check (`Holdings::readings`), each publisher's module asked once. L4: above. L5: only the
+  segments' typed `Says` is read. **Kept once:** a statement handed to the mover is the entry the reversals kept
+  (`Segments::late_kept`, named by its receipt), never a second stated entry of the same bytes.
+- **Defaults** (reversible, fail closed). (1) Cadences as round 1; the new jobs run every tick (their work is what happened
+  since). (2) A provider's status cadence as round 1. (3) **Withdrawn**: an unread account is raised (S2). (4) Asset decimals
+  are the register's (two in the kit). (5) The watch times each started order's first part on its current route, as
+  `Core::watch` did. (6) A checkpointer that refuses the log or its store leaves Core without one, and every tick answers
+  that in `Round::checkpoints`; nothing else waits on it.
+- **Gaps, with owners.**
+  1. **S3: a private node's record.** No operation asks a publisher for its record: the `PublishersRecords` job and
+     closing's `Books` read the simulated world (`Ports::publishers_records`), and the job feeds nothing. New row `T-020-58`
+     (provider-role's `inner_segments_query`, the platform, `Books`). `REQ-ORD-41`'s evidence is not verified on the world read.
+  2. A provider's declared cadence has no contract shape (round 1's gap 2), still the operator's. Owner: the lead and
+     `T-020-49`.
+  3. The run's own status question after a part (`Core::ask_unknown_status`, `T-020-47`) and the run itself are still the
+     assembly's; this row moves the schedule's jobs. Owner: `T-020-61`, Core's order run in `core-orch` (the earlier
+     owner, "`T-020-47`'s line / `F-030`", is withdrawn).
+  4. The schedule's `told` set of unbuilt pairs, and when each job last ran, are in memory: a reopened Core tells the
+     unbuilt pairs again in its round (the log's raise is once), and runs every job on its first tick. Accepted in round 1.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, a private plain wallet): `fmt --check`, `clippy
+  --workspace --all-targets -D warnings` and the doc check clean; core-orch, contracts and core-audit 715 passed; core-authz
+  `--lib` 160; `rutent-conformance` 121; the role suite 2; `invariants` on seeds 11 to 15, 10; the whole `rutent-scenarios`
+  package 501 in 59 binaries (`sim_providers` among them); `plan-check --strict` 0 findings, `tag-check --strict` 2428 tests,
+  0 findings. Each rule-off below was run alone (`ruleoff.py`, the file restored from git after each) and went red.
+
+| Rule switched off | Red |
+|---|---|
+| the tick doesn't watch | `stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule`, `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule` |
+| the tick sends no notices | `stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule` |
+| the tick writes no pairs | `stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule` |
+| the tick issues no checkpoints | `stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule` |
+| an unread account is not raised | `holding_reading_a_module_does_not_give_is_raised_to_the_operator`, `every_job_of_the_schedule_is_cores_and_the_deployment_answers_only_its_ports` |
+| a spell is raised at every tick | `holding_reading_a_module_does_not_give_is_raised_to_the_operator` |
+| the publisher accounts aren't carried across a reopen | `private_nodes_publisher_accounts_are_rebuilt_after_core_reopens` |
+| the register read twice a check | `holding_account_check_runs_on_cores_schedule_and_a_difference_raises_the_operator`, `every_job_of_the_schedule_is_cores_and_the_deployment_answers_only_its_ports` |
+| a zero holding named in the reading | `every_job_of_the_schedule_is_cores_and_the_deployment_answers_only_its_ports` |
+| the held side's maker not checked | `providers_own_answer_after_another_providers_of_the_same_body_is_kept_as_its_own` |
+| the floor not applied | `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` |
+| a handed-on statement kept again | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule` |
+| the status answer at the stand-in's fixed time | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule`, `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule` |
+| a holding-not-read raise may cite another account's check (the row's three fields) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+
+### T-020-48, round 3 (the round-2 review of #316, its B4)
+
+Branch `f-020/t-020-48-core-tick`, `origin/m3` (`6e4dd5bf`, `T-020-52`) merged first: the conflicts were the relation,
+schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema rules) and this file (both sections kept).
+`DEC-20` path: `components/core-orch/` (`schedule/jobs.rs`). `F-024` files: the assembly's `schedule.rs` and `tests/failure.rs`.
+
+- **B4: the watch times the route Core's own record names.** `Ports::recalculated` is gone: it was answered from the
+  assembly's `life.routes`, which every reopened assembly starts empty, so a reopened Core timed an order's first route
+  and never its recalculated one, and the order was never declared stuck (fails open, `INV-3`, `AC-5`). `jobs::current_route`
+  reads the last route recalculated for the part from `Segments::routes_ran` (rebuilt from the log), its record through
+  `Ports::decision_record`, and its segments from the part's current route as Core follows it, after the ones that had
+  settled before the recalculation, one for each operation of the record's route. Fails closed: a recalculated route
+  whose record isn't held, or whose segments aren't the route's, is answered in the round (`Watched` with why), never
+  timed on another route. Test `recalculated_route_is_watched_after_a_restart` (`tests/failure.rs`), written first and seen
+  red (after the reopen the round watched nothing and the order stayed `FirstSegmentSettled`).
+- **Not taken here (the reviewer's call):** gap 3, Core's own order run (`T-020-61`) (`follow`, `run`, `recalculate`, the linked runs and
+  hand-ons, the stuck commands, the rebuild of `started` and the current route), becomes a row of its own, with
+  `Ports::started` and `Ports::decision_record`, which stay for it, and the review's L6 (the decision record's digest check,
+  still the assembly's `record_of`). Owner: `T-020-61`. The assembly's `life.routes` stays only for its own run.
+
+| Rule switched off | Red |
+|---|---|
+| the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |

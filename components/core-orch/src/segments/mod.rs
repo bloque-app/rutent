@@ -481,7 +481,10 @@ enum Settle {
 /// A late statement kept for a move whose outcome is unknown.
 #[derive(Debug, Clone)]
 struct LateKept {
-    step: Step,
+    /// Its stated entry, until the log takes it; none where Core kept the statement already ([`Segments::late_kept`]).
+    entry: Option<GeneralEntry>,
+    /// The receipt of its stated entry, once the log took it.
+    receipt: Option<Receipt>,
     bytes: Vec<u8>,
     says: Says,
     counted: Option<Counted>,
@@ -2992,6 +2995,35 @@ impl Segments {
         segment: &Id,
         bytes: &[u8],
     ) -> Result<Late, LateRefused> {
+        self.late_taken(parts, live, segment, bytes, None)
+    }
+
+    /// [`Segments::late_statement`] of a statement Core kept already, as the stated entry at `kept` (an answer the
+    /// reversals took, late or to Core's status question, `T-020-48`): judged as it is, and kept once, that entry
+    /// being its evidence, never a second entry of the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Segments::late_statement`].
+    pub fn late_kept(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        segment: &Id,
+        bytes: &[u8],
+        kept: &Receipt,
+    ) -> Result<Late, LateRefused> {
+        self.late_taken(parts, live, segment, bytes, Some(kept))
+    }
+
+    fn late_taken(
+        &mut self,
+        parts: &mut Parts<'_>,
+        live: &Live<'_>,
+        segment: &Id,
+        bytes: &[u8],
+        kept: Option<&Receipt>,
+    ) -> Result<Late, LateRefused> {
         if self.unknown_move(live.order, segment).is_none() {
             return Err(LateRefused::NotUnknown);
         }
@@ -3049,6 +3081,20 @@ impl Segments {
             (Says::Nothing, None)
         };
         let flight = self.flights.get_mut(&at).ok_or(LateRefused::NotUnknown)?;
+        if !flight.late.contains_key(bytes)
+            && let Some(kept) = kept
+        {
+            flight.late.insert(
+                bytes.to_vec(),
+                LateKept {
+                    entry: None,
+                    receipt: Some(kept.clone()),
+                    bytes: bytes.to_vec(),
+                    says,
+                    counted: counted.clone(),
+                },
+            );
+        }
         if !flight.late.contains_key(bytes) {
             let about = About {
                 order: Some(live.order.clone()),
@@ -3074,10 +3120,8 @@ impl Segments {
             flight.late.insert(
                 bytes.to_vec(),
                 LateKept {
-                    step: Step {
-                        entry,
-                        receipt: None,
-                    },
+                    entry: Some(entry),
+                    receipt: None,
                     bytes: bytes.to_vec(),
                     says,
                     counted,
@@ -3085,14 +3129,15 @@ impl Segments {
             );
         }
         let kept = flight.late.get_mut(bytes).ok_or(LateRefused::NotUnknown)?;
-        let receipt = match &kept.step.receipt {
-            Some(receipt) => receipt.clone(),
-            None => {
-                let receipt = journal::append_general(parts.log, &kept.step.entry)
-                    .map_err(LateRefused::Append)?;
-                kept.step.receipt = Some(receipt.clone());
+        let receipt = match (&kept.receipt, &kept.entry) {
+            (Some(receipt), _) => receipt.clone(),
+            (None, Some(entry)) => {
+                let receipt =
+                    journal::append_general(parts.log, entry).map_err(LateRefused::Append)?;
+                kept.receipt = Some(receipt.clone());
                 receipt
             }
+            (None, None) => return Err(LateRefused::NotUnknown),
         };
         Ok(Late { receipt, says })
     }
@@ -3138,7 +3183,7 @@ impl Segments {
             .get(at)?
             .late
             .values()
-            .find(|l| l.step.receipt.as_ref() == Some(evidence))?;
+            .find(|l| l.receipt.as_ref() == Some(evidence))?;
         let Some(Counted::Succeeded {
             amount_in,
             amount_out,

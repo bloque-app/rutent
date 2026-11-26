@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 118] = [
+pub static RELATIONS: [Relation; 120] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3568,6 +3568,99 @@ pub static RELATIONS: [Relation; 118] = [
                 Some(planned) => judge(true, &[&planned.from.asset != asset]),
                 None => Match::NotTarget,
             }
+        },
+    },
+    Relation {
+        name: "raise-of-a-pair-not-built-names-a-segment-its-plan-lists",
+        spec: &["REQ-ORD-9"],
+        quantifier: Quantifier::Exists,
+        refusal: "a pair raised as never built is of a segment its order's plan lists",
+        fields: &[],
+        // The one raise that may cite no receipt (`Raise::check`) is held to the plan instead: the segment it names is
+        // one its order's plan lists, so a raise can't name a pair of nothing the log knows.
+        cites: |e, _| match &e.what {
+            What::Raise { raise }
+                if matches!(raise.difference, Difference::PairNotBuilt { .. }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let What::Raise { raise } = &e.what else {
+                return Match::NotTarget;
+            };
+            let Difference::PairNotBuilt { order, segment, .. } = &raise.difference else {
+                return Match::NotTarget;
+            };
+            match verified(t)
+                .and_then(input)
+                .filter(|i| i.subject.order.as_str() == order.as_str())
+                .and_then(|i| planned(i, segment.as_str()))
+            {
+                Some(_) => judge(true, &[]),
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "raise-of-a-holding-not-read-cites-its-accounts-check",
+        spec: &["REQ-AUD-15"],
+        quantifier: Quantifier::Exists,
+        refusal: "a holding account raised as not read cites only that account's own check in this log",
+        fields: &[
+            (
+                "account",
+                "a holding not read cites a check of its own account",
+            ),
+            (
+                "node",
+                "a holding not read cites a check of its account at its node",
+            ),
+            (
+                "provider",
+                "a holding not read cites a check of its account's own provider",
+            ),
+        ],
+        // An account whose module didn't give its balance has no check now; the raise may cite none (an account never
+        // read has none, `Raise::check`), and cites only the account's own last check where it has one, so a raise can't
+        // rest on another account's reading.
+        cites: |e, _| match &e.what {
+            What::Raise { raise }
+                if matches!(raise.difference, Difference::HoldingNotRead { .. }) =>
+            {
+                raise
+                    .cites
+                    .iter()
+                    .enumerate()
+                    .map(|(i, receipt)| by_receipt(receipt, i))
+                    .collect()
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let (What::Raise { raise }, Some(v)) = (&e.what, verified(t)) else {
+                return Match::NotTarget;
+            };
+            let Difference::HoldingNotRead {
+                account,
+                node,
+                provider,
+                ..
+            } = &raise.difference
+            else {
+                return Match::NotTarget;
+            };
+            let What::HoldingCheck {
+                account: checked,
+                node: at,
+                provider: by,
+                ..
+            } = &v.what
+            else {
+                return Match::NotTarget;
+            };
+            judge(true, &[checked == account, at == node, by == provider])
         },
     },
     Relation {

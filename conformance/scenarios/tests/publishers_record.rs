@@ -141,7 +141,7 @@ fn publishers_emitted_record_is_read_by_the_assemblys_books() {
     assert_eq!(moved, (1_000_000 - RAMP_FEE).to_string());
 
     // Each provider that served in the node states its own record of it, for its publisher, as it signed it.
-    let records = core.publishers_records(NODE);
+    let records = published(&mut core, NODE);
     assert_eq!(
         records.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
         [IN, EXCHANGE, QUICK],
@@ -180,7 +180,7 @@ fn publishers_emitted_record_is_read_by_the_assemblys_books() {
         "the transfer out of it: what it took in, what it gave out, and what it kept"
     );
     // The other reserve's node holds its own record, of its own publisher, and the joined node's books don't read it.
-    let other = core.publishers_records("sim-reserve-b-ledger");
+    let other = published(&mut core, "sim-reserve-b-ledger");
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].maker, RESERVE);
     assert_eq!(other[0].statement.publisher, "sim-reserve-b-publisher");
@@ -316,8 +316,7 @@ fn mismatching_record_is_replayed_and_recorded_at_the_second_of_two_private_node
     let (order, segments) = joined(&mut core, &session);
     let moved = gave(&segments[2]).to_owned();
     assert_eq!(moved, (1_000_000 - RAMP_FEE).to_string());
-    let record = core
-        .publishers_records(NODE)
+    let record = published(&mut core, NODE)
         .into_iter()
         .find(|r| r.maker == QUICK)
         .expect("the ramp's record");
@@ -397,7 +396,7 @@ fn record_of_a_route_ending_inside_the_node_is_labelled_the_publishers_word() {
 
     // The withdrawal and the conversion end inside the node: its publisher's record of them is labelled as its word,
     // and no replay was recorded for either. Only the transfer out of the node was replayed.
-    let records = core.publishers_records(NODE);
+    let records = published(&mut core, NODE);
     assert_eq!(records.len(), 3);
     assert!(
         records
@@ -444,7 +443,7 @@ fn record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_reco
     let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
     // The first provider's record is refused, so the two others' segments are not the node's whole record.
     assert_eq!(
-        core.publishers_records(NODE)
+        published(&mut core, NODE)
             .iter()
             .map(|r| r.maker.as_str())
             .collect::<Vec<_>>(),
@@ -457,5 +456,37 @@ fn record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_reco
         matches!(&found[0].2, ReplayFound::NothingRecorded { nodes } if nodes.iter().map(|n| n.as_str()).eq([NODE])),
         "recorded as nothing recorded for the node: {:?}",
         found[0].2
+    );
+}
+
+/// Core's schedule reads each publisher's signed record of its private node through the platform, held to its maker's
+/// advertisement and signature, and the replay's books are the records it read (`REQ-ORD-41`, `T-020-48`).
+// verifies: REQ-ORD-41
+#[test]
+fn publishers_records_are_read_through_the_platform_for_a_replay() {
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    let (_, segments) = joined(&mut core, &session);
+    let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    let round = core.tick();
+    assert!(round.did(rutent_core_orch::schedule::Job::PublishersRecords));
+    let records = round.published_in(NODE);
+    assert_eq!(
+        records.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
+        [IN, EXCHANGE, QUICK],
+        "one record for each provider that served in the node"
+    );
+    let books = core.books_for(NODE, &asked).expect("the node's books");
+    let stated: usize = records.iter().map(|r| r.statement.segments.len()).sum();
+    assert_eq!(books.len(), stated, "the replay reads what the round read");
+    // A record altered after it was signed is refused: it is not among those the round read.
+    core.forge_record_of(IN);
+    let round = core.tick();
+    assert_eq!(
+        round
+            .published_in(NODE)
+            .iter()
+            .map(|r| r.maker.as_str())
+            .collect::<Vec<_>>(),
+        [EXCHANGE, QUICK]
     );
 }

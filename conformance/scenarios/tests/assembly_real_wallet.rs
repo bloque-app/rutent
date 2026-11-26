@@ -80,8 +80,15 @@ fn usdc() -> Denomination {
 }
 
 /// The order across the three providers, run until the deposit is refused its start, and left no route; the wallet
-/// installed at the node and holding the order's value.
+/// installed at the node and holding the order's value, which Core's schedule has landed there.
 fn stuck_at_the_public_node() -> Stuck {
+    let mut stuck = stuck_before_the_schedule_runs();
+    assert_eq!(stuck.core.tick().landed, 1, "the schedule lands the value");
+    stuck
+}
+
+/// [`stuck_at_the_public_node`] before Core's schedule has run: the value settled at the node and is not landed yet.
+fn stuck_before_the_schedule_runs() -> Stuck {
     let (mut core, session) = core_with("AC-6", &[CHAIN_IN, RAMP_B, OUT_B]);
     core.registers().accounts.insert(
         ADDRESS.to_owned(),
@@ -116,6 +123,47 @@ fn stuck_at_the_public_node() -> Stuck {
     }
 }
 
+/// What settled at a public node a holding account holds is landed by Core's schedule, and the measures the segments'
+/// endings gave are written by it: a run does neither, a tick does each once (`REQ-AUD-7`, `INV-1`, `T-020-48`).
+// verifies: REQ-AUD-7, INV-1
+#[test]
+fn settled_segments_land_and_measures_are_written_on_cores_schedule() {
+    let mut stuck = stuck_before_the_schedule_runs();
+    let measures = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(
+                |(_, e)| matches!(e, Entry::Verified(v) if matches!(v.what, What::Measure { .. })),
+            )
+            .count()
+    };
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "the run landed nothing"
+    );
+    assert_eq!(measures(&stuck.core), 0, "and wrote no measure");
+    let round = stuck.core.tick();
+    assert_eq!(round.landed, 1, "the schedule landed the segment's value");
+    assert!(round.measures > 0, "and wrote the endings' measures");
+    assert_eq!(measures(&stuck.core), round.measures);
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(
+            NODE.to_owned(),
+            vec![rutent_prov::holding::HeldForOrder {
+                order: stuck.order.as_str().to_owned(),
+                amount: AMOUNT.parse().unwrap(),
+            }]
+        )]
+    );
+    // Each once: a later tick lands and writes nothing more.
+    let again = stuck.core.tick();
+    assert_eq!((again.landed, again.measures), (0, 0));
+    assert_eq!(measures(&stuck.core), round.measures);
+}
+
 /// An order whose value only passes through the node, its deposit out of it settling, leaves the wallet's account
 /// holding nothing for it: the account's attribution is what the node holds (`REQ-AUD-15`, `INV-5`).
 // verifies: REQ-AUD-15, INV-5
@@ -141,7 +189,7 @@ fn value_that_passes_through_the_wallets_node_is_not_held_for_the_order() {
     );
     let order = accepted(&mut core, asked);
     core.run(&order).expect("the order runs");
-    assert_eq!(core.land_settled(), 0, "nothing rests at the node");
+    assert_eq!(core.tick().landed, 0, "nothing rests at the node");
     assert_eq!(
         core.holdings().attributions(),
         [(NODE.to_owned(), Vec::new())],
@@ -518,11 +566,12 @@ fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_
 fn value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it() {
     let mut stuck = stuck_at_the_public_node();
     let wallet = stuck.wallet.clone();
-    // The wallet was asked once, to take the value in, and the account holds it for the order, all of it.
+    // The wallet was asked once, to take the value in, and once for its balance by the tick's check, and the account
+    // holds it for the order, all of it.
     assert_eq!(
         stuck.core.operations_received(&wallet.provider),
-        1,
-        "one deposit into the account"
+        2,
+        "one deposit into the account, and the balance question of the tick's check"
     );
     let held = stuck.core.holdings().attributions();
     assert_eq!(
@@ -536,8 +585,8 @@ fn value_settled_at_a_public_node_held_by_a_holding_account_lands_in_it() {
         )]
     );
     // Landed once for the segment, however often Core is asked to land what settled.
-    assert_eq!(stuck.core.land_settled(), 0);
-    assert_eq!(stuck.core.operations_received(&wallet.provider), 1);
+    assert_eq!(stuck.core.tick().landed, 0);
+    assert_eq!(stuck.core.operations_received(&wallet.provider), 2);
     assert_eq!(stuck.core.holdings().attributions(), held);
 }
 

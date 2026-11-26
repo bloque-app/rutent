@@ -233,9 +233,10 @@ fn operators_fee_is_figured_on_what_arrives_of_a_gross_segment() {
     assert_eq!(quote.delivers, amount("990000"));
 
     // The price reported once it ran, on what each segment did, says the same.
+    core.tick();
     let price = core
         .price_of(&order)
-        .expect("Core reported the price when the order completed")
+        .expect("Core's schedule reported the price when the order completed")
         .clone();
     let fees: Vec<_> = price
         .segments
