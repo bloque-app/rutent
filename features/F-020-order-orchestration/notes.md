@@ -8220,3 +8220,41 @@ The full suite runs in CI.
   `assembly_arrivals`, `deposit_waits`, `authz_scenarios`, `execution`, `deposit_destination`, `execution_routes`: 160
   pass); the doc check; `plan-check --strict` (0 findings), `tag-check --strict` (2389 tests, 0 findings); the
   contract guard against `origin/develop` (no violations). No contract or core-orch file changed in this round.
+
+### T-020-52, round 3 (the review of `96d161a0`, PR #319)
+
+`origin/m3` (`6dfe7f71`: `T-020-47`, `T-020-55`) merged first; both notes sections kept. `T-020-55`'s `core_sources` answers
+`Requester` and `OrderOrigin` from `OpenedOrders`, else the log's `order_opened`, so the assembly's `Reading::filed` now hands
+intake's record to `OpenedOrders::opened` (the `Records::orders` map is gone), as the arrival filing does. The merge brought one
+refiling into the admission cases (`stuck-decide-held-at-is-a-held-node--a-wallet-held-at-its-routes-first-node`), migrated like
+the rest; 775 admission cases.
+
+- **1. A built refiling is the filer's own.** `Arrivals::refilings` is keyed by the arrival and the filer
+  (`refiling_key`): another actor is asked of policy on its own, never told the arrival was filed anew on a permit that
+  wasn't its. Test `a_built_refiling_is_reused_only_by_the_filer_it_was_built_for` (the reviewer's probe, turned into a
+  refused case, then the operator's own call carries its entry on with no second question).
+- **2. Errors that show an order are read first.** `Intake::told_error` asks the read check before `NotNow`,
+  `NotTheQuoteShown`, `OtherActor` or `Conflicting { order: Some(_) }` reaches the caller, so a refused reader gets
+  `ReadRefused` alike whatever the order's state. A `Conflicting { order: None }` (a request refused before an order
+  existed) has no order to ask about: an agent is told `ReadRefused` (default: fail closed, a scoped agent loses that
+  detail); a person is told as before. Test `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` (both
+  probes, and the ended-order quote, which the person is still told is `NotNow`). Each such error now records one read.
+- **3. A held order hands no record.** `read_order` doesn't call `StatusReads::filed` for a held order; policy reads its
+  requester from the log's `order_opened`. Test `a_held_orders_status_read_hands_no_record_to_policys_sources`.
+- **4. `--arrival`.** An admission case whose decision is for another arrival of the same order, refused on `action`; the
+  README row and the contracts test name it.
+- **5. `unread` first.** `session_refusal` asks `unread()` before `held()`; the test double keeps its sessions while
+  unread, so a register that answers stale sessions can't let a request through.
+
+Rule-off (`scratchpad/t-020-52/ruleoff3.py`, each alone, restored, `contracts/src/lib.rs` touched first):
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a built refiling keyed by the arrival alone | `a_built_refiling_is_reused_only_by_the_filer_it_was_built_for` |
+| errors showing an order's state asked of the read check | `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` |
+| an agent told `ReadRefused` for a conflict with no order | the same |
+| a held order's record handed to the deployment | `a_held_orders_status_read_hands_no_record_to_policys_sources` |
+| `held` asked before `unread` | `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input`; `automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived` |
+| the relation's decision need not name this arrival | `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`; `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` (`--arrival`) |
+
+Round 2's table claimed each of the three fields turned the tests red; the arrival's didn't until `--arrival`.
