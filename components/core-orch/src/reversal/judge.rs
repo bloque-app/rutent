@@ -2,7 +2,8 @@
 //! order, and the first rule it breaks is why it doesn't.
 //!
 //! 1. **Attributable**: its signature verifies under a `statements` key its maker listed (`Catalogue::verify_statement`),
-//!    and it is a result in its envelope.
+//!    or, for a module the operator publishes (a public node's holding account, which advertises nothing), under a
+//!    statement key its accepted release names in the log (`T-020-57`); and it is a result in its envelope.
 //! 2. **Not the failed provider's own word**, unless the failed provider is the origin reserve, the reserve at the
 //!    node the value is back at, whose own statement counts, labelled its word.
 //! 3. **The origin reserve's**: ADR-0008 takes the origin node's own reserve as the party other than the failed
@@ -19,13 +20,14 @@
 //! What counts is graded: the reserve's own word about its own segment as a statement (4), its signed confirmation of
 //! another provider's reversal as signed by its maker (3); the evidence says whose it is.
 
+use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::provider_role::{
     EvidenceGrade, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ResultBody,
     ReversalConfirmationOutcome, Statement,
 };
 use rutent_contracts::provider_role::{ReversalOutcome, ReversalResult};
 use rutent_contracts::router_api::Id;
-use rutent_prov::catalogue::{Catalogue, HoldingSource, Instant, Publisher};
+use rutent_prov::catalogue::{Catalogue, HoldingSource, Instant, Publisher, verify_envelope};
 
 use super::Word;
 
@@ -93,19 +95,60 @@ pub(super) struct Whose {
     pub maker: Id,
     pub grade: EvidenceGrade,
     pub word: Word,
+    /// What the statement says came back: what is landed again where the value is back at a held node (`T-020-57`).
+    pub back: String,
+}
+
+/// The statement keys the log names for each module the operator publishes, by module: the keys its accepted
+/// releases name in force (core-internal's `release_statement_keys`). Such a module, a public node's holding account,
+/// advertises nothing, so its statements are attributed by these, as the log attributes them (`T-020-57`).
+pub(super) type ReleaseKeys = std::collections::BTreeMap<String, Vec<PublicKey>>;
+
+/// Whether `received` is attributable to its maker: its signature verifies under a `statements` key its maker
+/// listed in its advertisement (`Catalogue::verify_statement`), or, for a module the operator publishes, which
+/// advertises nothing, under a statement key one of its accepted releases names in the log, in the catalogue's
+/// deployment and protocol version (`T-020-57`).
+fn attributable(catalogue: &Catalogue, keys: &ReleaseKeys, received: &[u8], at: Instant) -> bool {
+    if catalogue.verify_statement(received, at).is_ok() {
+        return true;
+    }
+    let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(received) else {
+        return false;
+    };
+    let text = |path: &[&str]| {
+        path.iter()
+            .try_fold(&envelope, |v, k| v.get(*k))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let (Some(maker), Some(key), Some(value), Some((deployment, version))) = (
+        text(&["maker"]),
+        text(&["signature", "key"]).and_then(PublicKey::new),
+        text(&["signature", "value"]),
+        catalogue.context(),
+    ) else {
+        return false;
+    };
+    let in_context = serde_json::to_value(deployment).ok().as_ref() == envelope.get("deployment")
+        && text(&["protocol_version"]).as_deref() == Some(version);
+    in_context
+        && catalogue.publishers().published_by_operator(&maker)
+        && keys.get(&maker).is_some_and(|listed| listed.contains(&key))
+        && verify_envelope(&key, &value, received).is_ok()
 }
 
 /// Judges `received` about `reversed`, as the answer to Core's question under `question` where Core asked one.
 pub(super) fn judge(
     catalogue: &Catalogue,
+    keys: &ReleaseKeys,
     at: Instant,
     reversed: &Reversed<'_>,
     question: Option<&Id>,
     received: &[u8],
 ) -> Result<Whose, NotCounted> {
-    catalogue
-        .verify_statement(received, at)
-        .map_err(|_| NotCounted::Unattributable)?;
+    if !attributable(catalogue, keys, received, at) {
+        return Err(NotCounted::Unattributable);
+    }
     let result: Statement<ResultBody> =
         serde_json::from_slice(received).map_err(|_| NotCounted::Unreadable)?;
     if result.shape != RESULT_SHAPE {
@@ -149,7 +192,7 @@ pub(super) fn judge(
     let inner = serde_json::to_vec(&**confirmed).map_err(|_| NotCounted::Unreadable)?;
     if confirmed.maker != result.maker
         || confirmed.shape != REVERSAL_CONFIRMATION_SHAPE
-        || catalogue.verify_statement(&inner, at).is_err()
+        || !attributable(catalogue, keys, &inner, at)
     {
         return Err(NotCounted::NotItsOwn);
     }
@@ -173,7 +216,12 @@ pub(super) fn judge(
     } else {
         EvidenceGrade::SignedByProvider
     };
-    Ok(Whose { maker, grade, word })
+    Ok(Whose {
+        maker,
+        grade,
+        word,
+        back: credit.amount.clone(),
+    })
 }
 
 /// Judges `received`, the failed provider's answer to Core's reversal under `question`, about `reversed`: it counts
@@ -239,5 +287,6 @@ pub(super) fn judge_reversal(
         maker: reversed.provider.clone(),
         grade: EvidenceGrade::Statement,
         word: Word::Publishers(Id::new(publisher.as_str()).ok_or(NotCounted::NoPublisher)?),
+        back: back.amount.clone(),
     })
 }

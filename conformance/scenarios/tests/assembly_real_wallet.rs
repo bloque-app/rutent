@@ -1305,3 +1305,199 @@ fn holding_account_answer_reads_the_deployments_register_not_holdings_carried_ac
         "{decision:?}"
     );
 }
+
+// A linked order's reversal back into the held node (`T-020-57`) ------------------------------------------------
+
+const RAMP_C: &str = "sim-chain-ramp-c";
+const OUT_C: &str = "sim-chain-out-c";
+
+/// An order across a reserve, two ramps and a reserve out, to the network `sim-chain-d`: its move out of the public
+/// node, the second ramp's, is refused its start, so its value rests in the wallet there, stuck for want of a route;
+/// the wallet's release accepted in the log.
+fn stuck_before_the_second_ramp() -> Stuck {
+    let (mut core, session) = core_with("AC-6", &[CHAIN_IN, RAMP_B, RAMP_C, OUT_C]);
+    core.registers().accounts.insert(
+        ADDRESS.to_owned(),
+        kit::customer().party.as_str().to_owned(),
+    );
+    let wallet = core
+        .install_wallet(NODE, "USDC")
+        .expect("the wallet is installed");
+    core.accept_release(&wallet)
+        .expect("the release is accepted");
+    let asked = request(
+        "req-stuck",
+        &session,
+        AMOUNT,
+        CHAIN_IN,
+        outer("sim-chain-a", "USDC"),
+        outer("sim-chain-d", "USDC"),
+        OUT_C,
+        ADDRESS,
+        "lowest_total_cost",
+    );
+    let order = accepted(&mut core, asked);
+    let part = core.first_part(&order).expect("a started order");
+    core.faults.refuse_begin = Some(2);
+    core.run(&order).expect("the order runs");
+    core.leave_no_route(&order).expect("the part is stuck");
+    assert!(core.is_stuck(&order, &part));
+    Stuck {
+        core,
+        order,
+        part,
+        session,
+        wallet,
+    }
+}
+
+/// The customer's ask of the linked order: from the node, by the second ramp, to the address on `sim-chain-d`.
+fn linked_on_the_second_ramp(stuck: &Stuck) -> LinkedOrder {
+    let mut linked = linked_order(stuck);
+    linked.route = serde_json::from_value(json!({
+        "request_id": "req-linked",
+        "round": {"kind": "shortlist"},
+        "from": inner(NODE, "USDC"),
+        "to": outer("sim-chain-d", "USDC"),
+        "amount": AMOUNT,
+        "objective": {"kind": "lowest_total_cost"},
+    }))
+    .expect("a route request");
+    linked
+}
+
+/// The stuck order's value handed on to a linked order whose first move, the second ramp's transfer out of the node,
+/// fails owing its reversal: the linked order, its accepted route, and the failed move's segment.
+fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
+    let mut stuck = stuck_before_the_second_ramp();
+    let wallet = stuck.wallet.clone();
+    let asked = linked_on_the_second_ramp(&stuck);
+    let linked = stuck
+        .core
+        .accept_linked(&asked)
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    handed_on_once(&mut stuck, &linked, &bob, &carries_out);
+    stuck.core.world().script_for(
+        RAMP_C,
+        "transfer",
+        rutent_conformance::sim::Behaviour::act(rutent_conformance::sim::Act::Fail),
+    );
+    let ran = stuck
+        .core
+        .run_linked(&stuck.order, &asked, &linked)
+        .expect("the linked order's route runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Failed),
+        "{done:?}"
+    );
+    let segment = done[0].segment.clone();
+    (stuck, asked, linked, segment)
+}
+
+/// A hand-on's linked order's first move out of the public node fails, owing its reversal. A route handed on has no
+/// withdrawal: it starts from the node's holding account, which counts as its origin reserve, so Core asks the wallet
+/// whether the credit came back. Until the account's statement holds it, the wallet doesn't confirm it and nothing is
+/// landed; once the account took the credit back, in full, the wallet's own signed confirmation completes the reversal,
+/// the log takes its evidence as the wallet's, and the value is landed again in the wallet for the linked order, whose
+/// value it is now, as the wallet itself says (`REQ-ORD-43`, `INV-1`, `T-020-57`).
+///
+/// Ignored until core-internal's `reversal-rests-on-its-evidence` names the holding account as the reserve at a
+/// handed-on route's from-node: today the log reads the failed provider there (`reserve_at_from`), so it refuses the
+/// wallet's evidence ("…the word of the reserve at the segment's from-node"). Everything before that append runs:
+/// the wallet is asked, answers, is signed by the platform and counted by Core (`F-020`'s notes, `T-020-57`'s gap 1).
+// verifies: REQ-ORD-43, INV-1
+#[test]
+#[ignore = "core-internal's reversal-rests-on-its-evidence reads the failed provider as the reserve at a handed-on route's from-node (T-020-57's gap 1)"]
+fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes() {
+    use rutent_core_orch::reversal::{Confirmation, NotCounted};
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    assert_eq!(owing.provider.as_str(), RAMP_C, "owed by the failed ramp");
+
+    // Nothing came back yet, then less than the move took in: neither is confirmed, and nothing is landed again.
+    for credit in [None, Some("999999")] {
+        if let Some(amount) = credit {
+            stuck
+                .core
+                .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", amount);
+        }
+        let answer = stuck
+            .core
+            .confirm_reversal(&linked.order, &segment)
+            .expect("the wallet is asked");
+        assert!(
+            matches!(
+                answer,
+                Confirmation::NotCompleted {
+                    why: NotCounted::NotConfirmed,
+                    ..
+                }
+            ),
+            "{credit:?}: {answer:?}"
+        );
+        stuck.core.land_settled();
+        assert!(
+            !wallet_holds_at_least(
+                &mut stuck.core,
+                &wallet,
+                linked.order.as_str(),
+                "ask-short",
+                "1"
+            ),
+            "{credit:?}: nothing landed again"
+        );
+    }
+
+    // The account took the credit back, in full: the wallet confirms it, and the reversal completes on its word.
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the wallet is asked");
+    let Confirmation::Completed(done) = answer else {
+        panic!("completed: {answer:?}")
+    };
+    assert_eq!(done.whose.as_str(), wallet.provider, "on the wallet's word");
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Evidence { order, segment: s, whose, .. }
+                if *order == linked.order && *s == segment && whose.as_str() == wallet.provider)),
+        "the log takes the evidence as the wallet's"
+    );
+    stuck.core.land_settled();
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
+        "landed again in the wallet for the linked order, as the wallet says"
+    );
+    assert!(
+        !wallet_holds(&mut stuck.core, &wallet, stuck.order.as_str(), "ask-first"),
+        "nothing for the order it was handed on from"
+    );
+    stuck.core.land_settled();
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(
+            NODE.to_owned(),
+            vec![rutent_prov::holding::HeldForOrder {
+                order: linked.order.as_str().to_owned(),
+                amount: AMOUNT.parse().unwrap(),
+            }]
+        )],
+        "attributed once, to the linked order"
+    );
+}

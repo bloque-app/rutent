@@ -75,7 +75,7 @@ fn quoted(
 ) {
     match env.quote(sim, order).expect("the routing runs") {
         Told::Exists {
-            status: Status::Quoted { quote, digest },
+            status: Status::Quoted { quote, digest, .. },
             ..
         } => (*quote, digest),
         other => panic!("no quote: {other:?}"),

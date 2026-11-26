@@ -406,3 +406,28 @@ no module-interface change.
   - Core-orch's docs that still read the handed-on withdrawal as the route's first segment (`core-orch`'s `stuck`
     and `reversal`, which this row doesn't edit): `T-020-46`'s or `T-020-45`'s files, for whoever next touches them.
 - **`DEC-20`.** No `DEC-20` path is touched.
+
+### T-016-05's record, extended by `T-020-57`: the wallet confirms a reversal's credit
+
+- **What it answers.** `reversal_confirmation` joins the plain wallet's operations (`WALLET_HANDLES`): a route handed
+  on starts from the node's holding account, its origin reserve (`REQ-ORD-16`, `REQ-ORD-43`), so its first move's
+  reversal brings the value back into the account and Core asks the account. `Wallet::confirmation` (`wallet.rs`, run
+  natively by `holding_wallet_record.rs`) confirms only a credit the account's statement holds for that very segment,
+  in the asset asked and in full; a short credit, another asset or none is `not_confirmed`; a malformed or zero
+  amount, or an account fixed to another asset, is refused as final. The confirmation is nested in the wallet's own
+  name, in the question's deployment and protocol version, and the platform signs it (the signer's existing
+  reversal-confirmation rule: the segment, asset and amount asked).
+- **Where the credit is read.** The sandboxed part reads no state, so it asks its outside part (`wallet.credit`, the
+  wallet's one declared outside operation, with no destination and no secret), which reads `credit/{segment}` from the
+  provider's own state: the account's statement, `{"asset", "amount"}`. In the simulated world the world writes it
+  (`Fleet::credit_wallet`), as it does a simulated reserve's credit (`Behaviour::reversal_credited`).
+- **Default, failing closed.** A deployment keeps no such statement for a plain wallet yet, so in production the wallet
+  confirms nothing and the reversal stays owed (and is declared stuck on its window, `T-020-47`). Gap, owner `F-016`:
+  how a plain wallet at a public node sees credits arrive at its account (a reading of its node, or the deployment
+  keeping the account's statement in the provider's state).
+- **Tests.** `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` (native, rule-off below).
+  The Wasm build answers through the assembly in `T-020-57`'s scenario (ignored, `F-020`'s notes, gap 1).
+
+| Rule switched off | Red |
+|---|---|
+| the wallet confirms only a credit in full (`== Some(units)` → any amount) | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |

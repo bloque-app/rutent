@@ -203,6 +203,11 @@ pub enum Status {
         quote: Box<Quote>,
         /// Its digest: what an acceptance names.
         digest: Digest,
+        /// Until when it is valid, where anything bounds it: the earliest expiry of the figures its route cites, and,
+        /// where a reserve holds it, no later than its hold (`REQ-QTE-15`, `T-020-57`): a held quote's acceptance
+        /// redeems its hold, so a quote is never shown as valid past the hold that would refuse it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_until: Option<rutent_contracts::router_api::Timestamp>,
     },
     /// It waits.
     Waiting {
@@ -824,6 +829,7 @@ impl Intake {
         kept.status = Status::Quoted {
             quote: Box::new(quote.clone()),
             digest: digest.clone(),
+            valid_until: None,
         };
         // The reserve the route starts at is asked to hold the quote shown, where it declares that it answers hold
         // requests; any failure leaves the quote shown unheld (`REQ-QTE-15`, `T-020-56`).
@@ -835,6 +841,16 @@ impl Intake {
             &candidate,
             &session,
         );
+        // The quote is valid no longer than its figures, nor than the hold its acceptance redeems (failing closed).
+        let validity = quote_validity(
+            chosen.record.earliest_expiry(&candidate),
+            held.as_ref()
+                .and_then(|h| desk.holds.held(h))
+                .map(|h| h.valid_until()),
+        );
+        if let Status::Quoted { valid_until, .. } = &mut kept.status {
+            *valid_until = validity;
+        }
         kept.offered = Some(Offered {
             quote,
             digest,
@@ -1446,6 +1462,27 @@ fn check_destination(
 }
 
 /// The digest of what was shown: SHA-256 of its RFC 8785 canonical JSON, the recorded decision's own rule.
+/// A quote's validity: the earlier of `expiry`, its figures' earliest expiry in nanoseconds (to the whole second below
+/// it), and `hold`, the validity of the hold its acceptance would redeem; `None` where neither bounds it.
+fn quote_validity(
+    expiry: Option<i128>,
+    hold: Option<&rutent_contracts::router_api::Timestamp>,
+) -> Option<rutent_contracts::router_api::Timestamp> {
+    let figures = expiry.and_then(|nanos| {
+        let seconds = u64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+        rutent_contracts::router_api::Timestamp::new(
+            rutent_prov::catalogue::Instant(seconds).rfc3339()?,
+        )
+    });
+    match (figures, hold) {
+        (Some(figures), Some(hold)) if hold.unix_nanos() < figures.unix_nanos() => {
+            Some(hold.clone())
+        }
+        (Some(figures), _) => Some(figures),
+        (None, hold) => hold.cloned(),
+    }
+}
+
 fn digest_of(quote: &Quote) -> Option<Digest> {
     let canonical = to_canonical(quote).ok()?;
     let value = rutent_prov::module::wire::sha256(&canonical);

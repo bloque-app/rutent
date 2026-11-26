@@ -29,6 +29,13 @@
 //!   a private node the failed provider's own publisher holds, the publisher's word through [`Reversals::ask`] counts
 //!   as before, labelled. With no such party nothing is asked or recorded and the reversal stays owed and held,
 //!   failing closed (`NoReserveAtNode`).
+//! - **On a route handed on** ([`Reversals::confirm`], `REQ-ORD-43`, `REQ-ORD-16`, `T-020-57`). A linked order's route
+//!   has no withdrawal: it starts from the holding account of the node the value was handed on at, which counts as its
+//!   origin reserve. Its first move's reversal is confirmed by that account, the module the operator registered for
+//!   the node, whose statements the log attributes by the key its accepted release names (it advertises nothing). The
+//!   value is back at the held node for the linked order, and what the confirmation says came back is landed there
+//!   again (`Segments::note_reversed`). A node whose account is a private node's publisher's interface names no
+//!   party: nothing is asked, and the reversal stays owed (`NoOriginReserve`).
 //! - **A late status** ([`Reversals::ask_status`], `REQ-ORD-1`, `T-020-27`). Policy decides `ask_status`; Core records
 //!   the effect under a fresh transaction before the platform is asked where the segment's provider says it stands,
 //!   and keeps the answer as that provider's statement ([`Reversals::later`]). It moves nothing.
@@ -529,6 +536,9 @@ pub struct Reversals {
     statuses: BTreeMap<(String, String), StatusState>,
     /// The segments whose unknown outcome Core asked the status of once already ([`Reversals::ask_unknown_status`]).
     unknown_asked: std::collections::BTreeSet<(String, String)>,
+    /// The statement keys the log names for each module the operator publishes ([`Reversals::follow`]): how a public
+    /// node's holding account, which advertises nothing, is attributed its confirmation (`T-020-57`).
+    release_keys: judge::ReleaseKeys,
 }
 
 impl Reversals {
@@ -631,6 +641,31 @@ impl Reversals {
         }
         self.bound.insert(order.as_str().to_owned(), bound);
         self.faults.insert(order.as_str().to_owned(), faults);
+        // The modules the operator publishes whose release the log accepted, each with the statement keys its releases
+        // in force name, as the log attributes their statements (`T-020-57`).
+        self.release_keys.clear();
+        for (_, entry) in history {
+            if let Some(v) = verified(entry)
+                && let What::Effect {
+                    action:
+                        Action::ChangeCatalogue {
+                            change: rutent_contracts::core_internal::CatalogueChange::AcceptModule,
+                            provider,
+                            ..
+                        },
+                    ..
+                } = &v.what
+                && !self.release_keys.contains_key(provider.as_str())
+            {
+                let keys = rutent_contracts::core_internal::release_statement_keys(
+                    history, provider, None,
+                )
+                .into_iter()
+                .cloned()
+                .collect();
+                self.release_keys.insert(provider.as_str().to_owned(), keys);
+            }
+        }
         match requester {
             Some(requester) => {
                 self.requesters.insert(order.as_str().to_owned(), requester);
@@ -1218,6 +1253,7 @@ impl Reversals {
         let reversed = target.reversed();
         let judged = judge::judge(
             parts.catalogue,
+            &self.release_keys,
             parts.clock.now().floor(),
             &reversed,
             Some(&transaction),
@@ -1283,6 +1319,7 @@ impl Reversals {
         let statement = step.append(parts.log)?;
         let why = match judge::judge(
             parts.catalogue,
+            &self.release_keys,
             parts.clock.now().floor(),
             &target.reversed(),
             None,
@@ -1781,7 +1818,14 @@ impl Reversals {
             .order(at.order)
             .ok_or(ReversalError::Unknown)?;
         let (part, segment) = find(followed, at)?;
-        let origin = origin_of(part)?;
+        // A route handed on starts from the holding account where the value sits, which counts as its origin reserve
+        // (`REQ-ORD-16`, `REQ-ORD-43`): the module the operator registered as the account of the node its first move
+        // leaves (`T-020-57`).
+        let handed_on = handed_on_holder(parts.catalogue, followed, part);
+        let origin = match origin_of(part) {
+            Ok(origin) => origin,
+            Err(none) => handed_on.clone().ok_or(none)?,
+        };
         let start = part.segments.first().is_some_and(|s| {
             s.segment_id.as_str() == at.segment.as_str() && s.kind == OperationKind::Withdrawal
         });
@@ -1843,8 +1887,17 @@ impl Reversals {
         // The origin reserve can show the value back only at its own node: the one the withdrawal took it to. At a
         // later inner node the party is that node's holding account, where it is the provider that delivered the
         // value there and isn't the one that failed (`later_confirmer`), and nobody otherwise.
+        // A handed-on route's first move left the held node: its holding account, the route's starting reserve, is the
+        // party the value is back with, and it isn't the provider that failed (`T-020-57`).
+        let first_of_handed_on = handed_on.is_some()
+            && part
+                .segments
+                .first()
+                .is_some_and(|first| first.segment_id == segment.segment_id);
         let confirmer = if at_node {
             Some(origin.clone())
+        } else if first_of_handed_on {
+            Some(origin.clone()).filter(|origin| *origin != provider)
         } else {
             later_confirmer(parts.catalogue, part, segment, &provider)
         };
@@ -1992,10 +2045,18 @@ impl Reversals {
             input,
         };
         let recorded = completion.recorded.clone();
+        let back = completion.whose.back.clone();
         reversal.completion = None;
         reversal.completed = Some(done.clone());
-        // What the segment landed in a holding account at its node is released (`T-020-33`).
-        parts.segments.note_reversed(at.order, at.segment);
+        // What the segment landed in a holding account at its node is released (`T-020-33`); where the value is back at
+        // a held node, what the confirmation says came back is landed there again (`T-020-56`, `T-020-57`). A
+        // confirmation whose amount can't be read lands nothing again (failing closed).
+        parts.segments.note_reversed(
+            at.order,
+            at.segment,
+            &rutent_contracts::router_api::Amount::new(back)
+                .unwrap_or_else(rutent_contracts::router_api::Amount::zero),
+        );
         // The measure of it, kept for the writer: what it rests on is the confirmation and the input that recorded
         // it. A measure is a detection: no failure of it touches the reversal (`ADR-0009`).
         if let Ok(when) = journal::now(parts.clock) {
@@ -2309,6 +2370,27 @@ fn held_to_its_question(
         },
         _ => None,
     }
+}
+
+/// The holding account a route handed on starts from: where `order` was handed on to (`handed_on_from`) and `part`'s
+/// first segment leaves an inner node, the module the operator registered as that node's holding account and
+/// publishes (`REQ-CAT-23`), the linked order's starting reserve under the hand-on rule (`REQ-ORD-16`, `REQ-ORD-43`).
+/// None for any other order or route, and for a node whose holding account is a private node's publisher's interface,
+/// which names no party: nothing is asked there, and the reversal stays owed (`T-020-57`, failing closed).
+fn handed_on_holder(catalogue: &Catalogue, order: &stm::Order, part: &stm::Part) -> Option<Id> {
+    order.handed_on_from.as_ref()?;
+    let first = part.segments.first()?;
+    if first.kind == OperationKind::Withdrawal {
+        return None;
+    }
+    let node = inner_node(first)?;
+    let holding = catalogue.nodes().holding(&node)?;
+    (holding.source == rutent_prov::catalogue::HoldingSource::Operator
+        && catalogue
+            .publishers()
+            .published_by_operator(&holding.reference))
+    .then(|| Id::new(holding.reference.as_str()))
+    .flatten()
 }
 
 /// A part's origin reserve: the provider of its withdrawal, its first segment. A route handed on has no withdrawal

@@ -807,6 +807,12 @@ impl Core {
         )
     }
 
+    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
+    /// under `segment` ([`crate::sim::fleet::Fleet::credit_wallet`], `T-020-57`): the world's, never Core's.
+    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
+        self.fleet.credit_wallet(provider, segment, asset, amount);
+    }
+
     /// Asks the wallet of `provider` `operation`, in a statement the operator signs, and gives the statement and the
     /// wallet's answer as the platform passed it on: a signed result, re-serialised (`REQ-AUD-2`).
     pub fn ask_wallet(

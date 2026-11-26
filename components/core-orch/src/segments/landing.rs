@@ -214,14 +214,12 @@ impl Landing {
         }
     }
 
-    /// The segment's reversal completed: its value is back where it came from. Where that is the held node the
-    /// segment left, a linked order's first move out of it (`back_at_node`, `T-020-56`), the value rests there again and
-    /// is owed a landing, as one that settled there is; otherwise what the segment landed at the node it brought the
-    /// value to is released.
-    pub(super) fn reverse(&mut self, at: At, back_at_node: bool) {
-        if !back_at_node {
-            self.reversed.insert(at);
-        }
+    /// The segment's reversal completed: its value is back where it came from, so what the segment landed at the node
+    /// it brought the value to is released. Where that is the held node the segment left, a linked order's first move
+    /// out of it (`T-020-56`), the value rests there again and is owed a landing of its own, apart from this one
+    /// (`T-020-57`).
+    pub(super) fn reverse(&mut self, at: At) {
+        self.reversed.insert(at);
     }
 
     pub(super) fn unconfirmed(&self) -> usize {
@@ -383,11 +381,11 @@ mod tests {
         let mut reversed = Landing::default();
         assert!(reversed.landed(at(), Landed::Placed));
         assert_eq!(reversed.owes(&at(), false), Owes::Nothing, "resting");
-        reversed.reverse(at(), false);
+        reversed.reverse(at());
         assert_eq!(reversed.owes(&at(), false), Owes::Release, "reversed");
 
         let mut never = Landing::default();
-        never.reverse(at(), false);
+        never.reverse(at());
         assert_eq!(
             never.owes(&at(), false),
             Owes::Nothing,

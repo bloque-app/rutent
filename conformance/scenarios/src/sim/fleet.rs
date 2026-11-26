@@ -120,13 +120,22 @@ pub struct Installed {
     pub released: Option<AdmissionArtefact>,
 }
 
-/// The operations a plain wallet handles.
-pub const WALLET_HANDLES: [&str; 4] = [
+/// The operations a plain wallet handles: a reversal's confirmation among them, which a route handed on from its node
+/// asks of it as the route's origin reserve (`T-020-57`).
+pub const WALLET_HANDLES: [&str; 5] = [
     "deposit",
     "withdrawal",
     "balance_verification",
     "holding_balance",
+    "reversal_confirmation",
 ];
+
+/// The outside operation a plain wallet's sandboxed part asks its outside part for the account's statement of one
+/// credit, and the prefix of the provider's own state keys that statement is kept under, one per reversed segment, as
+/// the guest names them (`components/prov/guests/plain-wallet/src/wallet.rs`, `T-020-57`).
+pub const WALLET_CREDIT: &str = "wallet.credit";
+/// See [`WALLET_CREDIT`].
+pub const WALLET_CREDIT_PREFIX: &str = "credit/";
 
 /// The plain wallet of a public node, admitted to the platform on the operator's own signed release (`T-024-17`).
 #[derive(Debug, Clone)]
@@ -465,7 +474,7 @@ impl Fleet {
             "interface": rutent_contracts::module_interface::VERSION,
             "sandboxed": { "handles": WALLET_HANDLES },
             "outside": {
-                "operations": [],
+                "operations": [{ "name": WALLET_CREDIT, "destinations": [], "secrets": [] }],
                 "destinations": [],
                 "secrets": [],
                 "calls": [],
@@ -503,6 +512,19 @@ impl Fleet {
             version,
             declaration,
         }
+    }
+
+    /// The world's account at the wallet `provider`'s node takes a credit back for the reversal of the segment that ran
+    /// under `segment`: `amount` of `asset`, as the node's own record of the account would show it. The account's
+    /// statement, which the deployment keeps for the wallet among the provider's own state, holds it from then, and the
+    /// wallet's outside part reads it when Core asks whether the credit came back (`T-020-57`). It is the world's, as a
+    /// simulated reserve's credit is (`Behaviour::reversal_credited`): nothing of Core's writes it.
+    pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
+        self.platform.world.seed_state(
+            provider,
+            &format!("{WALLET_CREDIT_PREFIX}{segment}"),
+            &json!({ "asset": asset, "amount": amount }).to_string(),
+        );
     }
 
     /// Admits one release.

@@ -207,8 +207,8 @@ pub struct RecordedAs<'a> {
     pub digest: &'a Digest,
 }
 
-/// Core's record of the quotes reserves hold (`REQ-QTE-15`), in memory, keeping it across a restart the
-/// deployment's (`F-030`). A held quote stays a quote until each of its segments starts: it binds no provider, so
+/// Core's record of the quotes reserves hold (`REQ-QTE-15`), rebuilt from the log when Core reopens
+/// ([`Holds::reopened`], `T-020-57`). A held quote stays a quote until each of its segments starts: it binds no provider, so
 /// dropping it, or its route failing to start, has no effect beyond the hold.
 ///
 /// A hold is the reserve's own signed statement (provider-role's `Hold`), kept and appended as a stated entry about
@@ -219,8 +219,8 @@ pub struct RecordedAs<'a> {
 /// order accepted in the session, its signed hold names, and by one order.
 ///
 /// Intake redeems the hold an acceptance names (`Intake::accept_holding`), and cites the receipt [`Redeemed::hold`] as
-/// the acceptance's `held`. The holds themselves stay in memory, the deployment's to keep across a restart (`F-030`);
-/// which order redeemed which is rebuilt from the log ([`Holds::recorded`]).
+/// the acceptance's `held`. A Core that reopens keeps each hold again from the log and what the evidence store keeps
+/// behind it, and which order redeemed which from the log's acceptances ([`Holds::reopened`], [`Holds::recorded`]).
 #[derive(Debug, Clone, Default)]
 pub struct Holds {
     held: BTreeMap<String, Held>,
@@ -388,8 +388,8 @@ impl Holds {
 
     /// Which order redeemed which hold, rebuilt from the log's `history`, as after a restart: each acceptance that
     /// cites a hold's stated entry binds that hold's transaction, the one its entry is about, to the acceptance's order,
-    /// the first acceptance to do so. The holds themselves are kept again by the deployment (`F-030`), and meet
-    /// the order that redeemed them, so a restarted Core does not leave the refusal of a second order to the log.
+    /// the first acceptance to do so. The holds themselves are kept again by [`Holds::reopened`], and meet the order
+    /// that redeemed them, so a restarted Core does not leave the refusal of a second order to the log.
     pub fn recorded(history: &[(Receipt, Entry)]) -> Self {
         let mut holds = Self::new();
         for (_, entry) in history {
@@ -414,6 +414,71 @@ impl Holds {
                     .entry(transaction.as_str().to_owned())
                     .or_insert_with(|| order.clone());
             }
+        }
+        holds
+    }
+
+    /// The holds rebuilt from `history`, the log's own entries, as a Core that reopens reads them (`T-020-57`, the
+    /// milestone reviewer's check of `T-020-56`): which order redeemed which, as [`Holds::recorded`] reads it, and each
+    /// hold the log holds kept again, from what Core itself keeps, never a deployment's copy. A hold's stated entry is
+    /// read back from the evidence store behind its commitment (`reading`), held to the decision record its quote names,
+    /// as Core signed it and the log names it by digest, and kept by [`Holds::hold`] under the same rules as when it was
+    /// taken, valid until the validity it states. A hold whose bytes or record can't be read back, or that the rules
+    /// refuse now, is held no more (failing closed): an acceptance naming it is refused, and a held quote binds no
+    /// provider.
+    pub fn reopened(
+        history: &[(Receipt, Entry)],
+        reading: &mut dyn crate::segments::Reopening,
+    ) -> Self {
+        let mut holds = Self::recorded(history);
+        for (receipt, entry) in history {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str() != HOLD_SHAPE {
+                continue;
+            }
+            let Some(signed) = reading
+                .kept(&stated.commitment)
+                .and_then(|bytes| serde_json::from_slice::<Statement<Hold>>(&bytes).ok())
+            else {
+                continue;
+            };
+            let Some(id) = Id::new(signed.statement.record.id.as_str()) else {
+                continue;
+            };
+            let Some(digest) = history.iter().find_map(|(_, e)| match e {
+                Entry::Verified(v) => match &v.what {
+                    What::DecisionRecord {
+                        decision_record,
+                        record,
+                        ..
+                    } if decision_record == &id => Some(record.clone()),
+                    _ => None,
+                },
+                Entry::Stated(_) => None,
+            }) else {
+                continue;
+            };
+            let (Some(record), Some(until)) = (
+                reading.record(&id),
+                Timestamp::new(signed.statement.valid_until.as_str()),
+            ) else {
+                continue;
+            };
+            let _ = holds.hold(
+                Signed {
+                    hold: &signed,
+                    stated,
+                    receipt,
+                },
+                RecordedAs {
+                    id: &id,
+                    digest: &digest,
+                },
+                record,
+                until,
+            );
         }
         holds
     }
