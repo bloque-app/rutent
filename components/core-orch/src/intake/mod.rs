@@ -57,7 +57,10 @@
 //! deployment's (`F-030`), as with the rounds' `Issued`.
 
 mod class;
+mod hold;
 mod record;
+
+pub use hold::HOLD_SECONDS;
 
 use std::collections::BTreeMap;
 
@@ -80,7 +83,7 @@ use rutent_contracts::state_machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::quote::{AcceptedQuote, HoldError, Holds, Redemption};
+use crate::quote::{AcceptedQuote, HoldError, Holds, Recorded, Redemption, TakesTerms};
 use crate::rounds::{self, History, Need, Offer, Order, Parts, Presence, Routing, RoutingError};
 use crate::snapshot::{Price, check_part};
 
@@ -363,8 +366,14 @@ pub struct Desk<'a, 'p> {
     /// The quotes reserves hold, which an acceptance may redeem (`REQ-QTE-15`).
     pub holds: &'a mut Holds,
     /// The log's own read of what the evidence store kept under a commitment: what a hold is held to before it is
-    /// redeemed.
+    /// redeemed, and a provider's terms before they are kept.
     pub kept: &'a mut dyn KeptStatements,
+    /// The log's recorded entries, read back by receipt: a provider's terms and a reserve's hold are read back as the
+    /// log attributed them, once appended (`T-020-56`).
+    pub recorded: &'a dyn Recorded,
+    /// Where the terms each of Core's own dry runs handed back are taken for the segments that start after them
+    /// (`Segments::take_terms`, `REQ-QTE-6`, `T-020-56`).
+    pub terms: &'a mut dyn TakesTerms,
 }
 
 /// The route offered, kept until it is accepted.
@@ -376,6 +385,9 @@ struct Offered {
     /// Each part's yes, in part order.
     reserve_yes: Vec<Receipt>,
     session: Id,
+    /// The transaction of the reserve's hold of this quote, where Core asked for one and holds it: what its acceptance
+    /// redeems where it names no other (`REQ-QTE-15`, `T-020-56`).
+    hold: Option<Id>,
 }
 
 /// An acceptance under way, once policy permitted its authorisation: who policy permitted, and the entries built,
@@ -923,6 +935,9 @@ impl Intake {
             operator: desk.operator,
         };
         let routed = rounds::route::<R>(desk.parts, routing, &mut kept.history)?;
+        // The terms the providers handed back in their answers, stated before any segment of the order starts, are
+        // held for the segments that do (`REQ-QTE-6`).
+        take_terms(desk, &routed.terms)?;
         kept.offered = None;
         let (candidate, reserve_yes, session) = match &routed.offer {
             Offer::NotOffered(why) => {
@@ -1008,12 +1023,23 @@ impl Intake {
             quote: Box::new(quote.clone()),
             digest: digest.clone(),
         };
+        // The reserve the route starts at is asked to hold the quote shown, where it declares that it answers hold
+        // requests; any failure leaves the quote shown unheld (`REQ-QTE-15`, `T-020-56`).
+        let held = hold::ask(
+            desk,
+            order,
+            &kept.request.origin_reserve,
+            chosen,
+            &candidate,
+            &session,
+        );
         kept.offered = Some(Offered {
             quote,
             digest,
             candidate,
             reserve_yes,
             session,
+            hold: held,
         });
         Ok(kept.told())
     }
@@ -1038,7 +1064,8 @@ impl Intake {
     /// acceptance cites the receipt of the hold's stated entry as its `held`. A hold that is not redeemed (not
     /// held, for another order or session, redeemed by another order, not a hold of this quote, kept bytes that
     /// are not the hold, past its validity) is [`IntakeError::Hold`], with the acceptance not recorded and the hold
-    /// not redeemed. Naming no hold records an acceptance that cites none and redeems none.
+    /// not redeemed. Naming no hold redeems the hold Core took of the quote shown, where it took one (`T-020-56`), and
+    /// otherwise records an acceptance that cites none and redeems none.
     ///
     /// An acceptance carried on from where it stopped is already built and cites what it cited: `hold` is read
     /// only when the acceptance is built.
@@ -1209,7 +1236,8 @@ impl Intake {
         // The hold the acceptance names, redeemed for this order only: in the session the acceptance is given in
         // (`offered.session`, the one the reserve's yes was asked in) and for the request's origin reserve, never a
         // session or reserve the caller says. Last before the acceptance is built, so a refusal leaves nothing behind.
-        let held = match hold {
+        // The hold the caller names, or else the one Core took of the quote shown.
+        let held = match hold.or(offered.hold.as_ref()) {
             None => None,
             Some(transaction) => {
                 let now = record::now(desk.parts.clock)?;
@@ -1604,6 +1632,24 @@ fn refusal(request: &Id, order: Option<&Id>, class: OrderRefusalClass) -> What {
 }
 
 /// Records an `order_refusal` of `class`, naming the order where one exists.
+/// Takes each of `terms`, a provider's own terms one of Core's dry runs handed back ([`rounds::Routed::terms`]),
+/// through the desk's [`TakesTerms`] (`crate::quote::take_handed_back`, `REQ-QTE-6`, `T-020-56`).
+pub(crate) fn take_terms(desk: &mut Desk<'_, '_>, terms: &[Vec<u8>]) -> Result<(), IntakeError> {
+    crate::quote::take_handed_back(
+        &mut *desk.terms,
+        crate::quote::HandedBack {
+            evidence: &mut *desk.parts.evidence,
+            log: &mut *desk.parts.log,
+            kept: &mut *desk.kept,
+            recorded: desk.recorded,
+            clock: desk.parts.clock,
+            catalogue: desk.parts.catalogue,
+        },
+        terms,
+    )
+    .map_err(IntakeError::Log)
+}
+
 fn refuse(
     desk: &mut Desk<'_, '_>,
     request: &Id,

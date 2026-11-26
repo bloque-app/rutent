@@ -16,7 +16,8 @@ use rutent_contracts::router_api::{Amount, FeeFormula, Id, Operation, TupleKey};
 
 use super::{Live, Parts, Segments, SegmentsError};
 use crate::quote::{
-    ChargeDesk, ChargeError, Charged, Charges, Checked, TakeError, Taken, Terms, TermsDesk,
+    ChargeDesk, ChargeError, Charged, Charges, Checked, TakeError, Taken, TakesTerms, Terms,
+    TermsDesk,
 };
 
 impl Segments {
@@ -49,8 +50,8 @@ impl Segments {
 
     /// Takes a provider's signed terms, `bytes` as they arrived (`Terms::take`): kept and appended as a stated entry,
     /// the statement kept behind its commitment compared with the one handed in, then held for the segments that
-    /// start after them (`REQ-QTE-6`). Nothing in Core delivers a provider's terms to this call yet: no module
-    /// hands them over (`T-020-14`'s notes).
+    /// start after them (`REQ-QTE-6`). Intake hands it the terms each of Core's own dry runs handed back, before any
+    /// segment of the order starts (`crate::quote::TakesTerms`, `T-020-56`).
     ///
     /// # Errors
     ///
@@ -161,5 +162,11 @@ impl Segments {
             }
         }
         first
+    }
+}
+
+impl TakesTerms for Segments {
+    fn take_terms(&mut self, desk: TermsDesk<'_>, bytes: &[u8]) -> Result<Taken, TakeError> {
+        Segments::take_terms(self, desk, bytes)
     }
 }

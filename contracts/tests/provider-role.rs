@@ -816,6 +816,13 @@ fn schema_rule_fixtures() -> Vec<(&'static str, Vec<(&'static str, &'static str)
             vec![("/statement/declarations/safe_retry", "type")],
         ),
         (
+            "advertisement-reserve-declaring-hold-requests-as-null",
+            vec![(
+                "/statement/offers/reserve/declaration/answers_hold_requests",
+                "type",
+            )],
+        ),
+        (
             "advertisement-with-a-null-offer",
             vec![("/statement/offers/exchange", "type")],
         ),
