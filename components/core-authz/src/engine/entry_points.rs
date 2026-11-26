@@ -21,6 +21,11 @@
 //! 3. **Only on a decision.** In `core-orch`, a function that records an effect holds a `Permit` or an `Effect` among
 //!    its parameters, or takes one from a decision (`.permit()`); a function that carries out an action holds the
 //!    `Effect` it carries out among its parameters, whose entry the log admitted only on a permit.
+//! 4. **Lifecycle actions through the decided path.** In `core-orch`, a function that carries out one of a release's
+//!    lifecycle actions on the platform (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`,
+//!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl: so no
+//!    caller outside `core-orch` reaches one but through the decided path, which asks policy, records the effect and
+//!    carries it out (`F-025`'s note on `carry_out_roll_back`, `T-020-49`).
 //!
 //! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
 //! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
@@ -86,7 +91,7 @@ pub(super) const CARRY_OUT: &[(&str, &str, &str)] = &[
         "change_catalogue: roll_back",
     ),
     // Puts a provider's releases back in force after a restart whose record couldn't vouch for them (`T-013-11`): a
-    // lifecycle action of its own, which no `CatalogueChange` names yet (`T-021-15`, `T-020-49`).
+    // sixth lifecycle action, core-internal's `confirm_releases` (`T-020-49`).
     (
         "confirm",
         "prov/src/module/platform.rs",
@@ -388,6 +393,8 @@ pub(super) struct Scan {
 #[derive(Default)]
 struct Context {
     name: String,
+    /// Visible outside its crate, and no method of a trait impl.
+    exposed: bool,
     holds_effect: bool,
     holds_permit: bool,
     takes_permit: bool,
@@ -478,6 +485,16 @@ const WATCHED_ENUMS: &[&str] = &[
 /// The types the rules watch by name, which may not be renamed.
 const WATCHED_TYPES: &[&str] = &["Decision", "Effect", "Permit"];
 
+/// Whether `name` is one of the platform's lifecycle actions on a release, rule 4's: a [`CARRY_OUT`] method of the
+/// platform that changes the catalogue.
+fn is_a_lifecycle_action(name: &str) -> bool {
+    CARRY_OUT.iter().any(|(n, file, action)| {
+        *n == name
+            && *file == "prov/src/module/platform.rs"
+            && action.starts_with("change_catalogue: ")
+    })
+}
+
 /// Whether `name` is one the rules watch, so renaming it would take it out of their sight.
 fn watched(name: &str) -> bool {
     WATCHED_ENUMS.contains(&name)
@@ -517,6 +534,7 @@ impl Visitor<'_> {
         self.scan.functions += 1;
         let mut context = Context {
             name,
+            exposed: public && !self.in_trait_impl,
             ..Context::default()
         };
         for input in &sig.inputs {
@@ -541,6 +559,10 @@ impl Visitor<'_> {
             } else if !context.holds_effect {
                 found.push(format!(
                     "carries out `{call}` without the effect it rests on"
+                ));
+            } else if context.exposed && is_a_lifecycle_action(call) {
+                found.push(format!(
+                    "carries out `{call}` from a public function, outside the decided path"
                 ));
             }
         }
@@ -1289,4 +1311,74 @@ fn found_outside(source: &str) -> Vec<String> {
         .into_iter()
         .map(|f| format!("{}: {}", f.function, f.what))
         .collect()
+}
+
+/// Rule 4 (`T-020-49`, `F-025`'s note on `carry_out_roll_back`): roll back and its siblings, each of the platform's
+/// lifecycle actions on a release, are carried out in `core-orch` only by a function visible in the crate at most, or
+/// by a port's trait impl, so a caller outside it reaches them only through the decided path (`Segments::promote`,
+/// `roll_back`, `change_release`), which asks policy first. Planted: a public carrier is found, a crate-visible one and
+/// a port's impl are not; and Core's own tree holds none.
+pub(super) fn lifecycle_actions_are_reached_only_through_the_decided_path() {
+    let orch = |source: &str| {
+        let mut scan = Scan::default();
+        scan_source(Crate::Orch, "planted.rs", false, source, &mut scan);
+        scan.findings
+            .into_iter()
+            .map(|f| format!("{}: {}", f.function, f.what))
+            .collect::<Vec<_>>()
+    };
+    let lifecycle: Vec<&str> = CARRY_OUT
+        .iter()
+        .filter(|(_, file, action)| {
+            *file == "prov/src/module/platform.rs" && action.starts_with("change_catalogue: ")
+        })
+        .map(|(n, ..)| *n)
+        .collect();
+    assert_eq!(
+        lifecycle,
+        [
+            "accept",
+            "withdraw",
+            "revoke",
+            "declare_exploited",
+            "mark_stale",
+            "promote",
+            "roll_back",
+            "confirm"
+        ]
+    );
+    for name in lifecycle {
+        assert_eq!(
+            orch(&format!(
+                "pub fn carry_out_{name}(m: &mut M, effect: &Effect) {{ m.{name}(effect, \"p\"); }}"
+            )),
+            [format!(
+                "carry_out_{name}: carries out `{name}` from a public function, outside the decided path"
+            )]
+        );
+        assert_eq!(
+            orch(&format!(
+                "impl S {{ pub fn carry(&mut self, effect: &Effect) {{ self.m.{name}(effect, \"p\"); }} }}"
+            )),
+            [format!(
+                "carry: carries out `{name}` from a public function, outside the decided path"
+            )]
+        );
+        for kept in [
+            format!(
+                "pub(crate) fn carry_out_{name}(m: &mut M, effect: &Effect) {{ m.{name}(effect, \"p\"); }}"
+            ),
+            format!("fn carry(m: &mut M, effect: &Effect) {{ m.{name}(effect, \"p\"); }}"),
+            format!(
+                "impl Port for Platform {{ fn {name}(&mut self, effect: &Effect) {{ Platform::{name}(self, \"p\"); }} }}"
+            ),
+        ] {
+            assert_eq!(orch(&kept), Vec::<String>::new(), "{kept}");
+        }
+    }
+    // `handle` moves value and is no lifecycle action: a public carrier holding its effect is rule 3's alone.
+    assert_eq!(
+        orch("pub fn go(m: &mut M, effect: &Effect) { m.handle(\"p\", effect); }"),
+        Vec::<String>::new()
+    );
 }

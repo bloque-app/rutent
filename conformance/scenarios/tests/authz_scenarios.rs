@@ -95,6 +95,7 @@ fn promotion(core: &mut Core, caller: &Actor, request: &str) -> DecisionRequest 
             advertising_keys: Vec::new(),
             statement_key: None,
             setting: None,
+            versions: Vec::new(),
         },
         at: core.clock.timestamp(),
     }

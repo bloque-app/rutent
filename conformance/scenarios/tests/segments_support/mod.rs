@@ -701,9 +701,8 @@ impl authz::Sources for Register {
             }
             authz::Source::Permissions { permission, .. } => yes(match permission {
                 Permission::CarryOnward => need.input == core().acts,
-                Permission::Change(CatalogueChange::Promote) | Permission::ReadOrderState => {
-                    need.input == operator().acts
-                }
+                Permission::Change(CatalogueChange::Promote | CatalogueChange::MarkStale)
+                | Permission::ReadOrderState => need.input == operator().acts,
                 _ => false,
             }),
             // The deployment operator's logins (`T-021-15`): a catalogue change is held to one, as the assembly's
@@ -2803,6 +2802,7 @@ pub fn release_change(
         advertising_keys: Vec::new(),
         statement_key,
         setting: None,
+        versions: Vec::new(),
     }
 }
 

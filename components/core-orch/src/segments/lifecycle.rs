@@ -1,0 +1,583 @@
+//! A module release's lifecycle actions, each through policy (`T-020-49`, `M2`'s item 6 and `F-025`'s L6 of `M3`'s
+//! milestone review): `accept`, `withdraw`, `revoke`, `declare_exploited` and `mark_stale` (core-internal's
+//! `LIFECYCLE_ACTIONS`) and the platform's `confirm` of a provider's releases after an unclean end (`CONFIRM_RELEASES`,
+//! `T-013-11`) are carried out as [`Segments::promote`] and [`Segments::roll_back`] are: on a permitted decision's effect
+//! alone, the effect recorded before the platform is asked and its result after.
+//!
+//! **Policy first.** Core asks the decision before it reads anything of the platform's releases (what waits, what is
+//! held), so a refused caller is told it is not permitted whether or not anything is there, and its attempt is the
+//! decision's entry (`F-025`'s L6, `REQ-AUZ-1`). Only a permitted caller learns that nothing is there to act on, or that
+//! what is there isn't what it named.
+//!
+//! **A permit names what it acts on.** An acceptance names the waiting release's version and statement key, a withdrawal
+//! its version, and both are held to the release that waits right before the platform is asked, so a permit to accept
+//! one release accepts no other; a confirmation names the versions the platform holds the provider's releases at, and
+//! confirms nothing where it holds others. Revoking, declaring a version exploited and marking one stale act on the
+//! version named and no other, which the platform holds them to.
+//!
+//! **Taken unrecorded.** A decision that only restricts what runs (revoking, declaring exploited, marking stale) is taken
+//! by the platform even where its own record can't hold it (`LifecycleRefusal::TakenUnrecorded`, `T-013-10`): its result
+//! here is `done`, since it took effect, and the answer says it isn't durable on the platform, so the operator takes it
+//! again once the platform reopens. Recording it `failed` would leave the log trusting a release declared exploited.
+//!
+//! The platform is reached through [`Releases`], apart from [`super::Modules`], whose carrying methods each take the
+//! [`Effect`] they carry out, so `CMP-CORE-AUTHZ`'s scan holds each to a decision (`REQ-AUZ-1`); the functions here that
+//! call them are visible in this crate alone (the scan's rule 4), so a caller outside `core-orch` reaches them only through
+//! [`Segments::change_release`].
+
+use std::collections::BTreeSet;
+
+use rutent_contracts::core_internal::calls::{AppendFailure, Decisions, Log};
+use rutent_contracts::core_internal::{
+    Action, Actor, Answer, CatalogueChange, DecisionRequest, Effect, Outcome, What,
+};
+use rutent_contracts::module_interface::Digest;
+use rutent_contracts::provider_role::PublicKey;
+use rutent_contracts::router_api::Id;
+use rutent_prov::catalogue::{Catalogue, Instant};
+use rutent_prov::module::lifecycle::LifecycleRefusal;
+use rutent_prov::module::platform::{Platform, World};
+
+use super::{Segments, journal, key, now};
+use crate::rounds::Fresh;
+use crate::snapshot::Clock;
+
+/// A release waiting for its fresh acceptance, as the platform holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    /// Its version.
+    pub version: String,
+    /// The digest of its assertion as received, which the platform accepts it by.
+    pub digest: Digest,
+    /// The key its module signs its statements with.
+    pub statement_key: PublicKey,
+}
+
+/// The platform's releases, as the lifecycle actions reach them. Each carrying method takes the [`Effect`] it carries
+/// out, whose entry the log admitted only on a permit.
+pub trait Releases {
+    /// The provider's release waiting for its fresh acceptance, if one waits.
+    fn waiting(&self, provider: &Id) -> Option<Waiting>;
+
+    /// The versions of the provider's releases the platform holds out of force until the operator confirms them, after
+    /// a restart whose record didn't end with its clean close (`T-013-11`); `None` where nothing of it waits.
+    fn held(&self, provider: &Id) -> Option<BTreeSet<String>>;
+
+    /// Gives the waiting release under `digest` its fresh acceptance, by `by` at `at` (`Platform::accept`).
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchVersion` where no release waits under `digest`, or the platform's judge no longer passes its assertion.
+    fn accept(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        digest: &Digest,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Withdraws the waiting release under `digest`, by `by` at `at` (`Platform::withdraw`).
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchVersion` where no release waits under `digest`, or the platform's record couldn't hold the withdrawal.
+    fn withdraw(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        digest: &Digest,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Revokes the provider's `version` (`Platform::revoke`): the version put back in force, if any.
+    ///
+    /// # Errors
+    ///
+    /// As the platform refuses.
+    fn revoke(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal>;
+
+    /// Declares the provider's `version` actively exploited (`Platform::declare_exploited`): the version put back in
+    /// force, if any.
+    ///
+    /// # Errors
+    ///
+    /// As the platform refuses.
+    fn declare_exploited(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal>;
+
+    /// Marks the provider's `version` stale (`Platform::mark_stale`): how many segments moved.
+    ///
+    /// # Errors
+    ///
+    /// As the platform refuses.
+    fn mark_stale(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<usize, LifecycleRefusal>;
+
+    /// Confirms the provider's releases as the platform's record holds them (`Platform::confirm`).
+    ///
+    /// # Errors
+    ///
+    /// As the platform refuses.
+    fn confirm(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal>;
+}
+
+/// The platform, with the judge it holds a waiting release's assertion to again when it is accepted (the catalogue,
+/// `ReleaseJudge`).
+pub struct Judged<'a, W: World> {
+    /// The platform.
+    pub platform: &'a mut Platform<W>,
+    /// The judge.
+    pub judge: &'a Catalogue,
+}
+
+impl<W: World> Releases for Judged<'_, W> {
+    fn waiting(&self, provider: &Id) -> Option<Waiting> {
+        let artefact = self.platform.pending(provider.as_str())?;
+        Some(Waiting {
+            version: artefact.declaration().version.as_str().to_owned(),
+            digest: artefact.assertion_digest.clone(),
+            statement_key: artefact.declaration().outside.statement_key.clone(),
+        })
+    }
+
+    fn held(&self, provider: &Id) -> Option<BTreeSet<String>> {
+        self.platform.awaiting_confirmation(provider.as_str())
+    }
+
+    fn accept(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        digest: &Digest,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform
+            .accept(provider.as_str(), digest, by.as_str(), self.judge, at)
+            .map(|_| ())
+            .ok_or(LifecycleRefusal::NoSuchVersion)
+    }
+
+    fn withdraw(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        digest: &Digest,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform
+            .withdraw(provider.as_str(), digest, by.as_str(), at)
+            .map(|_| ())
+            .ok_or(LifecycleRefusal::NoSuchVersion)
+    }
+
+    fn revoke(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform
+            .revoke(provider.as_str(), version.as_str(), by.as_str(), at)
+    }
+
+    fn declare_exploited(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<Option<String>, LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform
+            .declare_exploited(provider.as_str(), version.as_str(), by.as_str(), at)
+    }
+
+    fn mark_stale(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        version: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<usize, LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform
+            .mark_stale(provider.as_str(), version.as_str(), by.as_str(), at)
+    }
+
+    fn confirm(
+        &mut self,
+        effect: &Effect,
+        provider: &Id,
+        by: &Id,
+        at: Instant,
+    ) -> Result<(), LifecycleRefusal> {
+        let _permitted = effect;
+        self.platform.confirm(provider.as_str(), by.as_str(), at)
+    }
+}
+
+/// Which lifecycle action is asked, and what it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseChange<'a> {
+    /// Accepting the release waiting at the provider, of this version and statement key (`accept_module`).
+    Accept {
+        /// The waiting release's version.
+        version: &'a Id,
+        /// The key its module signs its statements with.
+        statement_key: &'a PublicKey,
+    },
+    /// Withdrawing the release waiting at the provider, of this version (`withdraw_release`).
+    Withdraw {
+        /// The waiting release's version.
+        version: &'a Id,
+    },
+    /// Revoking this version (`revoke_release`, `REQ-MDL-20`).
+    Revoke {
+        /// The version.
+        version: &'a Id,
+    },
+    /// Declaring this version actively exploited (`declare_exploited`, `REQ-MDL-20`).
+    DeclareExploited {
+        /// The version.
+        version: &'a Id,
+    },
+    /// Marking this version stale, its segments moving to the version in force (`mark_stale`, `REQ-MDL-5`,
+    /// `REQ-MDL-19`).
+    MarkStale {
+        /// The version.
+        version: &'a Id,
+    },
+    /// Confirming the provider's releases held after an unclean end, at these versions (`confirm_releases`,
+    /// `T-013-11`).
+    Confirm {
+        /// The versions the platform holds them at.
+        versions: &'a [Id],
+    },
+}
+
+impl ReleaseChange<'_> {
+    /// The decided action, for `provider`.
+    fn action(&self, provider: &Id) -> Action {
+        let (change, version, statement_key, versions) = match *self {
+            ReleaseChange::Accept {
+                version,
+                statement_key,
+            } => (
+                CatalogueChange::AcceptModule,
+                Some(version.clone()),
+                Some(statement_key.clone()),
+                Vec::new(),
+            ),
+            ReleaseChange::Withdraw { version } => (
+                CatalogueChange::WithdrawRelease,
+                Some(version.clone()),
+                None,
+                Vec::new(),
+            ),
+            ReleaseChange::Revoke { version } => (
+                CatalogueChange::RevokeRelease,
+                Some(version.clone()),
+                None,
+                Vec::new(),
+            ),
+            ReleaseChange::DeclareExploited { version } => (
+                CatalogueChange::DeclareExploited,
+                Some(version.clone()),
+                None,
+                Vec::new(),
+            ),
+            ReleaseChange::MarkStale { version } => (
+                CatalogueChange::MarkStale,
+                Some(version.clone()),
+                None,
+                Vec::new(),
+            ),
+            ReleaseChange::Confirm { versions } => (
+                CatalogueChange::ConfirmReleases,
+                None,
+                None,
+                versions.to_vec(),
+            ),
+        };
+        Action::ChangeCatalogue {
+            change,
+            provider: provider.clone(),
+            version,
+            tuple: None,
+            class: None,
+            advertising_keys: Vec::new(),
+            statement_key,
+            setting: None,
+            versions,
+        }
+    }
+}
+
+/// A lifecycle action to carry out, asked by `caller`.
+#[derive(Debug, Clone, Copy)]
+pub struct ReleaseAsked<'a> {
+    /// The provider.
+    pub provider: &'a Id,
+    /// The action and what it names.
+    pub change: ReleaseChange<'a>,
+    /// Who asks: the operator's login, which policy decides and the platform records as `by`.
+    pub caller: &'a Actor,
+    /// Core, which writes the effect and its result.
+    pub core: &'a Actor,
+}
+
+/// What a lifecycle action came to on the platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Changed {
+    /// The waiting release was accepted, and runs.
+    Accepted,
+    /// The waiting release was withdrawn.
+    Withdrawn,
+    /// The version was revoked; the version put back in force, if any.
+    Revoked(Option<String>),
+    /// The version was declared exploited; the version put back in force, if any.
+    DeclaredExploited(Option<String>),
+    /// The version was marked stale; how many segments moved.
+    MarkedStale(usize),
+    /// The provider's releases were confirmed.
+    Confirmed,
+    /// The platform took a decision that only restricts what runs but couldn't write it to its record
+    /// (`LifecycleRefusal::TakenUnrecorded`): it is in force now, its result `done`, and a reopened platform doesn't know
+    /// it, so the operator takes it again then (`T-013-10`).
+    TakenUnrecorded,
+}
+
+/// Why a lifecycle action wasn't carried out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseRefused {
+    /// Policy didn't permit it: no effect was recorded, and nothing of the platform's releases was read. The answer is
+    /// the same whatever the platform holds (`F-025`'s L6).
+    NotPermitted(Answer),
+    /// Permitted, but there is nothing to act on: no release waits at the provider, or nothing of it is held for
+    /// confirmation. No effect was recorded.
+    NothingToDo,
+    /// Permitted, but what the platform holds isn't what the permit names: the waiting release is of another version or
+    /// statement key, or the provider's releases are held at other versions. No effect was recorded, and a permit to
+    /// act on one release acts on no other.
+    NotWhatItNames {
+        /// What the platform holds, by version: the waiting release's, or the held versions.
+        holds: Vec<String>,
+    },
+    /// The log refused or failed an append: before the effect's receipt nothing changed.
+    Append(AppendFailure),
+    /// The platform refused: the effect's result is `failed`, and nothing changed.
+    Lifecycle(LifecycleRefusal),
+}
+
+impl From<AppendFailure> for ReleaseRefused {
+    fn from(failure: AppendFailure) -> Self {
+        ReleaseRefused::Append(failure)
+    }
+}
+
+/// What the permitted change acts on, read once permitted: the waiting release's digest for an acceptance or a
+/// withdrawal, nothing for the others. A release, or a held set, other than the permit names is refused.
+fn target(
+    releases: &dyn Releases,
+    provider: &Id,
+    change: &ReleaseChange<'_>,
+) -> Result<Option<Digest>, ReleaseRefused> {
+    match *change {
+        ReleaseChange::Accept {
+            version,
+            statement_key,
+        } => {
+            let waiting = releases
+                .waiting(provider)
+                .ok_or(ReleaseRefused::NothingToDo)?;
+            if waiting.version != version.as_str() || &waiting.statement_key != statement_key {
+                return Err(ReleaseRefused::NotWhatItNames {
+                    holds: vec![waiting.version],
+                });
+            }
+            Ok(Some(waiting.digest))
+        }
+        ReleaseChange::Withdraw { version } => {
+            let waiting = releases
+                .waiting(provider)
+                .ok_or(ReleaseRefused::NothingToDo)?;
+            if waiting.version != version.as_str() {
+                return Err(ReleaseRefused::NotWhatItNames {
+                    holds: vec![waiting.version],
+                });
+            }
+            Ok(Some(waiting.digest))
+        }
+        ReleaseChange::Confirm { versions } => {
+            let held = releases.held(provider).ok_or(ReleaseRefused::NothingToDo)?;
+            let named: BTreeSet<String> = versions.iter().map(|v| v.as_str().to_owned()).collect();
+            if named != held {
+                return Err(ReleaseRefused::NotWhatItNames {
+                    holds: held.into_iter().collect(),
+                });
+            }
+            Ok(None)
+        }
+        ReleaseChange::Revoke { .. }
+        | ReleaseChange::DeclareExploited { .. }
+        | ReleaseChange::MarkStale { .. } => Ok(None),
+    }
+}
+
+/// Carries out the lifecycle action `effect` permits, by `by`, on what it names: only where its action is the change
+/// `asked` is and names the same release, held to what the platform holds right before it is asked. Anything else asks
+/// nothing of the platform. Visible in this crate alone: the decided path is its one caller.
+pub(crate) fn carry_out_release_change(
+    releases: &mut dyn Releases,
+    effect: &Effect,
+    asked: &ReleaseAsked<'_>,
+    by: &Id,
+    clock: &dyn Clock,
+) -> Result<Changed, ReleaseRefused> {
+    if effect.action != asked.change.action(asked.provider) {
+        return Err(ReleaseRefused::NotWhatItNames { holds: Vec::new() });
+    }
+    // Held again right before the platform is asked.
+    let digest = target(releases, asked.provider, &asked.change)?;
+    let at = clock.now().floor();
+    let provider = asked.provider;
+    let taken = |refusal: LifecycleRefusal| match refusal {
+        LifecycleRefusal::TakenUnrecorded => Ok(Changed::TakenUnrecorded),
+        other => Err(ReleaseRefused::Lifecycle(other)),
+    };
+    match (asked.change, digest) {
+        (ReleaseChange::Accept { .. }, Some(digest)) => releases
+            .accept(effect, provider, &digest, by, at)
+            .map(|()| Changed::Accepted)
+            .map_err(ReleaseRefused::Lifecycle),
+        (ReleaseChange::Withdraw { .. }, Some(digest)) => releases
+            .withdraw(effect, provider, &digest, by, at)
+            .map(|()| Changed::Withdrawn)
+            .map_err(ReleaseRefused::Lifecycle),
+        (ReleaseChange::Revoke { version }, _) => releases
+            .revoke(effect, provider, version, by, at)
+            .map(Changed::Revoked)
+            .or_else(taken),
+        (ReleaseChange::DeclareExploited { version }, _) => releases
+            .declare_exploited(effect, provider, version, by, at)
+            .map(Changed::DeclaredExploited)
+            .or_else(taken),
+        (ReleaseChange::MarkStale { version }, _) => releases
+            .mark_stale(effect, provider, version, by, at)
+            .map(Changed::MarkedStale)
+            .or_else(taken),
+        (ReleaseChange::Confirm { .. }, _) => releases
+            .confirm(effect, provider, by, at)
+            .map(|()| Changed::Confirmed)
+            .map_err(ReleaseRefused::Lifecycle),
+        (ReleaseChange::Accept { .. } | ReleaseChange::Withdraw { .. }, None) => {
+            Err(ReleaseRefused::NothingToDo)
+        }
+    }
+}
+
+impl Segments {
+    /// Carries out one of a release's lifecycle actions, as policy decides, by the decision's caller (`REQ-AUZ-6`,
+    /// `REQ-MDL-5`, `REQ-MDL-20`, `T-020-49`): Core asks the decision first, before it reads anything of the platform's
+    /// releases, so a refused caller is told the same whatever is there and its attempt is recorded; then, permitted,
+    /// it holds the action to what the platform holds, records the effect before it calls the platform, and records its
+    /// result after, `done` where the platform took it (unrecorded on its side included) and `failed` where it
+    /// refused. An effect is marked acted on only once the platform took it.
+    pub fn change_release(
+        &mut self,
+        log: &mut dyn Log,
+        decisions: &mut dyn Decisions,
+        releases: &mut dyn Releases,
+        clock: &dyn Clock,
+        fresh: &mut dyn Fresh,
+        asked: &ReleaseAsked<'_>,
+    ) -> Result<Changed, ReleaseRefused> {
+        let action = asked.change.action(asked.provider);
+        let request = DecisionRequest {
+            request: fresh.id(),
+            caller: asked.caller.clone(),
+            action: action.clone(),
+            at: now(clock)?,
+        };
+        let decision = decisions.decide(&request)?;
+        let Some(permit) = decision.permit() else {
+            return Err(ReleaseRefused::NotPermitted(decision.outcome));
+        };
+        // Read only once permitted: what the platform holds is the permitted caller's to learn.
+        target(releases, asked.provider, &asked.change)?;
+        let receipt = journal::append(
+            log,
+            journal::verified(
+                asked.core,
+                What::Effect {
+                    action: action.clone(),
+                    decision: permit.clone(),
+                },
+                &now(clock)?,
+                Outcome::ToTakeEffect {},
+            ),
+        )?;
+        let effect = Effect {
+            action,
+            decision: permit,
+            receipt,
+        };
+        let changed =
+            carry_out_release_change(releases, &effect, asked, &request.caller.acts, clock);
+        let outcome = match changed {
+            Ok(_) => Outcome::Done {},
+            Err(_) => Outcome::Failed {},
+        };
+        journal::append(
+            log,
+            journal::verified(
+                asked.core,
+                What::Result {
+                    effect: effect.receipt.clone(),
+                },
+                &now(clock)?,
+                outcome,
+            ),
+        )?;
+        if changed.is_ok() {
+            self.acted.insert(key(&effect.receipt));
+        }
+        changed
+    }
+}

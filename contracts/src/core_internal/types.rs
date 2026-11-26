@@ -351,6 +351,13 @@ pub enum CatalogueChange {
     /// rebuilt from the log (finding 4 of `M3`'s milestone review, `M2`'s item 6, `T-020-45`). Policy decides it under
     /// a permission of its own from `T-021-15`; until then no rule answers it.
     SetSetting,
+    /// The operator's word that a provider's releases may come back into force after the platform's unclean end
+    /// (`T-013-11`): the platform's `confirm`, a lifecycle action of its own (`T-020-49`). It names the provider's
+    /// versions the confirmation puts back as the platform's record holds them, at least one, each once
+    /// (`Action::ChangeCatalogue::versions`), and no single release, so a permit to confirm one set of versions
+    /// confirms no other: Core checks the platform holds exactly those versions before it carries the confirmation
+    /// out. Policy decides it under a permission of its own, held to the deployment operator's logins.
+    ConfirmReleases,
 }
 
 /// The platform's lifecycle actions on a module release, each a [`CatalogueChange`] of its own, which Core carries
@@ -364,12 +371,29 @@ pub const LIFECYCLE_ACTIONS: [(&str, CatalogueChange); 5] = [
     ("mark_stale", CatalogueChange::MarkStale),
 ];
 
+/// The name of Core's scheduled job that asks a segment left unknown its status again (`T-020-48`): the one job a
+/// provider's own cadence is for (`OperatorSetting::Cadence::provider`, `T-020-49`).
+pub const STATUS_ASKS_JOB: &str = "status_asks";
+
+/// The platform's confirmation of a provider's releases after an unclean end (`T-013-11`, `T-020-49`): a sixth
+/// lifecycle action, about a provider's versions as the platform's record holds them rather than one release, so it is
+/// apart from [`LIFECYCLE_ACTIONS`]: the action's name on the platform and its change.
+pub const CONFIRM_RELEASES: (&str, CatalogueChange) = ("confirm", CatalogueChange::ConfirmReleases);
+
 impl CatalogueChange {
     /// Whether the change is one of the platform's lifecycle actions on a release that Core carries out only on a
-    /// permitted effect: the five of [`LIFECYCLE_ACTIONS`], `promote` and `roll_back`.
+    /// permitted effect: the five of [`LIFECYCLE_ACTIONS`], `promote`, `roll_back` and the confirmation of a provider's
+    /// releases ([`CONFIRM_RELEASES`]).
     pub fn is_a_lifecycle_action(self) -> bool {
-        matches!(self, CatalogueChange::Promote | CatalogueChange::RollBack)
-            || LIFECYCLE_ACTIONS.iter().any(|(_, c)| *c == self)
+        matches!(
+            self,
+            CatalogueChange::Promote | CatalogueChange::RollBack | CatalogueChange::ConfirmReleases
+        ) || LIFECYCLE_ACTIONS.iter().any(|(_, c)| *c == self)
+    }
+
+    /// Whether the change confirms a provider's releases, and so names the versions it confirms.
+    pub fn confirms_releases(self) -> bool {
+        self == CatalogueChange::ConfirmReleases
     }
 
     /// Whether the change sets one of the operator's settings, and so names it.
@@ -450,12 +474,21 @@ pub enum OperatorSetting {
         /// The ceiling.
         ceiling: crate::router_api::PublisherCeiling,
     },
-    /// How often one of Core's scheduled jobs runs (`T-020-48`).
+    /// How often one of Core's scheduled jobs runs (`T-020-48`), or, naming a provider, how often a segment left unknown
+    /// at that provider is asked its status again (the status question's job, `status_asks`, alone: `T-020-49`), until a
+    /// provider's declarations carry a cadence of their own.
     Cadence {
         /// The job, by name.
         job: Token,
-        /// Its period, in whole seconds.
-        seconds: Count,
+        /// Its period, in whole seconds: zero runs it on every tick of Core's schedule (`T-020-49`).
+        seconds: SafeInteger,
+        /// The provider the cadence is for, where it is one provider's: named only for `status_asks`.
+        #[serde(
+            default,
+            deserialize_with = "some",
+            skip_serializing_if = "Option::is_none"
+        )]
+        provider: Option<Id>,
     },
     /// An older protocol version's cutover date, from which a statement under it is void (`REQ-PRT-4`, `T-020-54`).
     Cutover {
@@ -520,6 +553,10 @@ impl OperatorSetting {
             OperatorSetting::SlippageLimit { limit } => Some(&limit.tuple.provider),
             OperatorSetting::EvidenceFloor { tuple, .. } => Some(&tuple.provider),
             OperatorSetting::ProviderCeiling { ceiling } => Some(&ceiling.provider),
+            OperatorSetting::Cadence {
+                provider: Some(provider),
+                ..
+            } => Some(provider),
             _ => None,
         }
     }
@@ -619,6 +656,10 @@ pub enum Action {
             skip_serializing_if = "Option::is_none"
         )]
         setting: Option<alloc::boxed::Box<OperatorSetting>>,
+        /// The provider's versions a confirmation of its releases puts back in force, as the platform's record holds
+        /// them, at least one, each once: named exactly by `confirm_releases` (`T-020-49`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        versions: Vec<Id>,
     },
     /// Asking the provider of a failed segment to reverse it, a decided action like any other (`REQ-ORD-3`,
     /// `REQ-ORD-11`): the segment owes its reversal, and the provider is the one that failed it.

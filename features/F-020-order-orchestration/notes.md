@@ -8679,3 +8679,99 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
 | Rule switched off | Red |
 |---|---|
 | the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
+
+## T-020-49: the operator's settings and a release's lifecycle actions, each through policy
+
+Branch `f-020/t-020-49`, from `e7418a53` (`origin/m3`, with `T-020-48`'s schedule and `tick`). Edits `components/core-orch/`
+(the new module `settings`; `segments/` for the new `lifecycle.rs`, `roll_back.rs`, `mod.rs` and `journal.rs`;
+`arrival/reopen.rs`), and the `DEC-20` paths `contracts/` (core-internal's unreleased 1.0.0, folded), `components/core-authz/`
+(`engine/entry_points.rs` rule 4, `core_sources/`, the tests' lists of changes), `components/core-audit/` (`log/keys.rs`)
+and `components/prov/src/module/platform.rs` with `record.rs` (the partial confirmation). `F-024` files: the assembly
+(`conformance/scenarios/src/assembly/mod.rs`, `releases.rs`, `schedule.rs`), `sim/fleet.rs` and the scenario tests
+(`execution_routes.rs`, `module_scenarios.rs`, `segments.rs` with `segments_support/`, `assembly_policy.rs`).
+
+- **Design.**
+  1. *Settings* (`core-orch/src/settings`). `Settings::set` is the operator's one command for every `OperatorSetting`: it asks
+     policy for core-internal's `set_setting` (held by `core-authz` to `Permission::Setting(kind)` of the deployment
+     operator's login, `T-021-15`), appends the effect, applies the setting, and appends its `done` result. The action's
+     `provider` is the setting's own (a tuple's, a provider's ceiling, a provider's status cadence) or the caller's party.
+     `Settings::reopened(history)` rebuilds every setting from the `set_setting` effects with a `done` result, in log order,
+     the later standing; an effect with no result or a `failed` one sets nothing. Readers: `Settings::bounds(base)` (the
+     deployment's own bounds overlaid with the fee, slippage limits and ceilings) is what the router runs under;
+     `Settings::apply(Targets)` puts the floors and listed public nodes in the catalogue, the cadences in the schedule's
+     `Cadences` and the deposit wait in `Arrivals`; `Arrivals::reopened` reads the deposit wait from the log itself.
+  2. *Lifecycle* (`segments/lifecycle.rs`). `Segments::change_release` carries out `accept`, `withdraw`, `revoke`,
+     `declare_exploited`, `mark_stale` and `confirm` as `promote` and `roll_back` are: policy, then (permitted) the action
+     held to what the platform holds (the waiting release's version and statement key; the held versions), the effect, the
+     platform through the `Releases` port (each carrying method takes the `Effect`), the result. `Judged { platform, judge }`
+     is the port over `Platform`, its judge the catalogue an acceptance is judged again by. A restriction the platform took
+     but couldn't record (`TakenUnrecorded`) is recorded `done` and answered `Changed::TakenUnrecorded`: it is in force, and
+     recording it `failed` would leave the log trusting a release declared exploited.
+  3. *L6.* `promote`, `roll_back` and `change_release` ask policy before they read the staging or the waiting or held
+     releases. A refused caller is told `NotPermitted(answer)` whatever is there, nothing of the platform is read, and its
+     attempt is policy's decision entry. A permitted caller learns `NothingStaged` / `NotTheStagedVersion` / `NothingToDo` /
+     `NotWhatItNames`, with no effect recorded.
+  4. *Narrowed.* `carry_out_roll_back`, `carry_promotion` and `carry_out_release_change` are `pub(crate)`; `core-authz`'s
+     scan gains rule 4: in `core-orch`, a function that carries out a platform lifecycle action is crate-visible at most or a
+     port's trait impl. Its unit test moved into `roll_back.rs`.
+  5. *Confirm.* core-internal 1.0.0 (folded): `CatalogueChange::ConfirmReleases` (`confirm_releases`, `CONFIRM_RELEASES`)
+     with `Action::ChangeCatalogue.versions` (at least one, each once, exactly for it), so a permit to confirm one set of
+     versions confirms no other; `Permission::Change(ConfirmReleases)` is held to the deployment operator by `core-authz`'s
+     generic catalogue arm, beside `T-021-15`'s. The platform answers `awaiting_confirmation(provider)` and writes an
+     `Opened` entry when it opens and rewrites its record; on an unclean opening, a provider whose `confirmed` decision is
+     after the last `Opened` is not held again. The assembly's operator command (`Core::change_release`) is its caller.
+  6. *Contract, also folded:* `OperatorSetting::Cadence.provider` (a provider's own status cadence, for `status_asks`
+     alone, `STATUS_ASKS_JOB`), and `Cadence.seconds` a safe integer (zero: every tick, as the defaults are).
+  7. *T-020-55 check.* core-audit's `Register::accepted` answers nothing for a provider none of whose grants stands (from
+     the revocation's effect); `core_sources`' `Statement` answers only a verified entry's maker; `OrderParties` reads the
+     order's record in the one precedence (hand-over, `order_opened`, acceptance); the named test asks all ten sources,
+     each for its value.
+  8. *The assembly.* `Core::set_setting(_as)`; `set_operator_fee`, `set_evidence_floor`, `set_provider_ceiling`,
+     `set_cadence`, `set_status_cadence` and the constructor's slippage limits all go through it; `bounds` is recomputed
+     from `Settings` and rebuilt on reopening, as are the catalogue's floors and nodes, the schedule's cadences and the
+     deposit wait. `Core::relist` leaves `set_setting` effects to `Settings::reopened`. The operator's login holds every
+     setting's permission and the six lifecycle changes.
+- **Defaults** (reversible, each failing closed).
+  1. The deposit wait's ceiling is thirty days (`DEPOSIT_WAIT_CEILING_SECONDS`); a wait above it is refused before policy is
+     asked, nothing recorded.
+  2. A setting of the whole deployment names the caller's party as the change's `provider` (the deployment operator's,
+     which policy holds the login to).
+  3. A setting whose result the log didn't take is in force until Core reopens, and gone after (only `done` effects are
+     replayed); the command answers `Append`.
+  4. A restriction the platform took unrecorded is `done` in Core's log (it is in force), answered `TakenUnrecorded`.
+  5. A permitted caller is told what isn't there (`NothingStaged`, `NothingToDo`, `NotWhatItNames`); a refused one only
+     `NotPermitted`.
+  6. A record with no `Opened` entry (written before this row) holds every provider on an unclean opening, as before.
+  7. The deployment's catalogue defaults at an advertisement's join stay the kit's (`kit::join`: a statement floor on each
+     tuple, the public nodes the tuples reach listed); the operator's floors and nodes are set on top through the command
+     and reapplied after the relisting on reopening.
+  8. A cadence past 2^53 - 1 seconds is set at 2^53 - 1 (never, in practice): the setting holds a safe integer.
+- **Gaps, with owners.**
+  1. **A public node's `confirmations` reach Core and stop there.** `Settings::public_node` holds them, but no seam takes
+     them to the grading: `CMP-EVIDENCE`'s `Status` says pending or final by the network's own rules and carries no count,
+     so Core can't hold a movement to more confirmations than its reader counts. Owner: the network reader as an operator's
+     module (`DEC-28`; `T-020-59`/`T-020-60`), which can apply them, and `F-031` for each network's values. `listed` takes
+     effect (the catalogue's public list, a holding account at the node).
+  2. **`listed: false` lists nothing off.** The catalogue has no way to take a node off its public list; a setting that
+     unlists is recorded and has no effect. Owner: `F-013`'s catalogue (`nodes.rs`), if unlisting is wanted.
+  3. **A confirmation is forgotten only by a later unclean run.** A provider confirmed after the platform's last opening is
+     not held at the next unclean one. Were a restriction on it taken unrecorded later in that same run, and the platform
+     ended before any write succeeded, the next opening wouldn't know it and wouldn't hold the provider. Core's log holds that
+     effect (`done`, `TakenUnrecorded`), so taking Core's restrictive effects again on reopening before confirming is the
+     close. Owner: `T-024-21` (restarts) with `F-013`.
+  4. **The cutover date is recorded, not read.** `Settings::cutover` holds it; voiding statements under an older version
+     from it is `T-020-54`'s.
+  5. **`T-020-42`'s roll-back scenario changed with L6.** `a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing`
+     counted no decision for a roll back naming a version not staged; with policy asked first there is one, so its recorded
+     list is `["decide", "decide"]`, then `["decide", "decide", "decide", "effect"]`. The same for `T-020-08`'s
+     `promotion_whose_staged_version_differs_from_its_permit_is_refused` (policy asked once) and `T-021-12`'s core-orch
+     `roll_back_without_its_effect_or_its_staged_version_ends_nothing` (two decisions, no effect). `carry_out_roll_back`'s own
+     test moved into the crate (`roll_back.rs`), as the function is now. The row's "pass unchanged" and its (3) can't both
+     hold for these lines; (3) is the reviewer's L6, so it wins, and the named tests of `T-021-12`
+     (`roll back without its permission is refused`, `staging is rolled back only on a permitted decision's effect`,
+     `each permission alone allows only its own action`) pass unchanged. Owner: the lead, to confirm.
+  6. **The scenario's release acceptance is still the platform's test reviewer.** `Core::accept_waiting_release`
+     (`T-024-07`) accepts through the fleet, and `Core::accept_release` (the operator's wallet) writes its own decided
+     effect; Core's decided `accept` (`ReleaseChange::Accept`) is built and tested in core-orch, not yet the scenarios'
+     caller. Owner: `F-024` (the assembly), with `T-020-61`'s run.
+  7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; `T-020-62` carries that check.

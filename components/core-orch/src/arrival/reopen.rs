@@ -38,9 +38,10 @@ use super::{Arrivals, Arrived, Noted, Recorded, Report, key, read_notice, unbase
 impl Arrivals {
     /// The arrivals, the deposits held and the waits for a customer rebuilt from `history`, the log's own entries, as a
     /// Core that reopens reads them (see the module's docs), reading each notice back through `kept`. The lifetime of a
-    /// wait is the default until [`Arrivals::set_deposit_wait`] sets it.
+    /// wait is the operator's decided `deposit_wait` the log holds last (`T-020-49`), the default where it holds none.
     pub fn reopened(history: &[(Receipt, Entry)], kept: &mut dyn KeptStatements) -> Self {
         let mut arrivals = Arrivals::new();
+        arrivals.deposit_wait = crate::settings::Settings::reopened(history).deposit_wait();
         let verified = || {
             history.iter().filter_map(|(receipt, entry)| match entry {
                 Entry::Verified(v) => Some((receipt, v)),

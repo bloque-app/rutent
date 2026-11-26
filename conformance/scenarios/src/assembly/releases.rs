@@ -10,6 +10,7 @@ use rutent_contracts::core_internal::{Entry, HandedOver, What};
 use rutent_contracts::module_interface::AdmissionArtefact;
 use rutent_prov::module::types::Admitted;
 
+use rutent_core_orch::segments::lifecycle::{Changed, ReleaseAsked, ReleaseChange, ReleaseRefused};
 use rutent_core_orch::segments::roll_back::{RollBackAsked, RollBackRefused};
 use rutent_core_orch::segments::{PromoteRefused, Promotion};
 
@@ -156,5 +157,52 @@ impl Core {
     /// As [`Core::roll_back_as`].
     pub fn roll_back(&mut self, provider: &str, version: &str) -> Result<String, RollBackRefused> {
         self.roll_back_as(&crate::kit::operator_login(), provider, version)
+    }
+
+    /// Carries out one of a release's lifecycle actions at `provider` (accepting or withdrawing the waiting release,
+    /// revoking a version, declaring it exploited, marking it stale, or confirming the provider's releases after the
+    /// platform's unclean end), as `caller` asks and policy decides, through Core's decided path
+    /// (`Segments::change_release`, `T-020-49`): policy first, the effect recorded before the platform is asked and its
+    /// result after.
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, what the platform holds isn't what it names, or the platform refuses.
+    pub fn change_release_as(
+        &mut self,
+        caller: &rutent_contracts::core_internal::Actor,
+        provider: &str,
+        change: ReleaseChange<'_>,
+    ) -> Result<Changed, ReleaseRefused> {
+        let mut decisions = self.policy.clone();
+        let provider = crate::kit::id(provider);
+        let core = crate::kit::core();
+        let mut releases = self.fleet.releases();
+        self.segments.change_release(
+            &mut self.general,
+            &mut decisions,
+            &mut releases,
+            &self.clock,
+            &mut self.fresh,
+            &ReleaseAsked {
+                provider: &provider,
+                change,
+                caller,
+                core: &core,
+            },
+        )
+    }
+
+    /// [`Core::change_release_as`] by the operator's login.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::change_release_as`].
+    pub fn change_release(
+        &mut self,
+        provider: &str,
+        change: ReleaseChange<'_>,
+    ) -> Result<Changed, ReleaseRefused> {
+        self.change_release_as(&crate::kit::operator_login(), provider, change)
     }
 }

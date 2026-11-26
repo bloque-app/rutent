@@ -28,7 +28,7 @@ struct Claimed {
 }
 
 /// Appends `entry` through orchestration's handle, trying again while the log can't take it now.
-pub(super) fn append(log: &mut dyn Log, entry: Entry) -> Result<Receipt, AppendFailure> {
+pub(crate) fn append(log: &mut dyn Log, entry: Entry) -> Result<Receipt, AppendFailure> {
     entry.check().map_err(AppendFailure::Refused)?;
     let general = GeneralEntry::try_from(entry).map_err(AppendFailure::Refused)?;
     append_general(log, &general)
@@ -114,4 +114,4 @@ pub(crate) fn stated_entry(
 }
 
 /// The refusal of a time Core's clock reads that no timestamp holds.
-pub(super) const NO_TIME: Violation = Violation("Core's clock reads a time a timestamp can hold");
+pub(crate) const NO_TIME: Violation = Violation("Core's clock reads a time a timestamp can hold");

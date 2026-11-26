@@ -698,6 +698,7 @@ impl Core {
             advertising_keys: Vec::new(),
             statement_key: Some(wallet.statement_key()),
             setting: None,
+            versions: Vec::new(),
         };
         let request = DecisionRequest {
             request: self.fresh.id(),

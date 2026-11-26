@@ -1172,3 +1172,34 @@ fn store_still_opens_after_a_trusted_providers_grant_is_revoked_later() {
         Entry::Stated(s) if matches!(s.attribution, Attribution::Verified { .. })
     ));
 }
+
+/// A provider whose grants are all revoked has no accepted advertisement (`T-020-49`, the milestone reviewer's check of
+/// `T-020-55`): the log's key register answers none for it from the revocation's effect, so nothing Core reads of the
+/// advertisement (policy's `Declarations`, closing, the snapshot) trusts what it advertised. A provider still granted
+/// keeps its own, and a reopened log answers the same.
+// verifies: REQ-AUZ-9, REQ-MDL-20
+#[test]
+fn revoked_providers_advertisement_declares_nothing() {
+    let (run, _) = honest("revoked-advertisement");
+    assert!(run.log.borrow().accepted_advertisement("us-bank").is_some());
+    run.carry_out(
+        json!({"kind": "change_catalogue", "change": "revoke_grant", "provider": "us-bank", "tuple": "tuple-us-bank"}),
+        "2026-11-07T00:00:00Z",
+    );
+    assert_eq!(
+        run.log.borrow().accepted_advertisement("us-bank"),
+        None,
+        "every grant revoked: nothing it advertised is accepted"
+    );
+    assert!(
+        run.log
+            .borrow()
+            .accepted_advertisement("relay-net")
+            .is_some(),
+        "another provider's stands"
+    );
+    let dir = run.close();
+    let reopened = reopen(&dir).expect("reopened");
+    assert_eq!(reopened.accepted_advertisement("us-bank"), None);
+    assert!(reopened.accepted_advertisement("relay-net").is_some());
+}

@@ -1006,3 +1006,67 @@ fn a_release_admitted_while_its_provider_waits_for_confirmation_starts_nothing()
         .expect("confirmed");
     assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.1.0"));
 }
+
+/// Confirming some of the held providers records each one confirmed (`T-020-49`, the reviewer's Low on `T-013-11`): a
+/// platform that ends unclean again before the others are confirmed holds only those, and the ones confirmed run again
+/// once admitted, with no second word from the operator. A provider confirmed only before an earlier opening, whose run
+/// since then ended unclean too, is held again.
+// verifies: NFR-6
+#[test]
+fn providers_confirmed_before_a_restart_are_not_held_again_after_it() {
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inner = MemoryRecord::new();
+    let mut s = Signed::on(
+        Box::new(Breakable {
+            inner: inner.clone(),
+            broken: broken.clone(),
+        }),
+        TestWorld::default(),
+    );
+    admit_version(&mut s, RESERVE, "1.0.0");
+    admit_version(&mut s, RAMP, "1.0.0");
+    // The record fails: the platform ends with nothing of its closing written.
+    broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    let world = stop(s);
+
+    // Both are held; the operator confirms the reserve alone, and the platform stops again, the ramp still held, so
+    // its record doesn't end whole.
+    let mut s = Signed::on(Box::new(inner.clone()), world);
+    for provider in [RESERVE, RAMP] {
+        assert!(matches!(
+            readmitted(&mut s, provider, "1.0.0"),
+            Admitted::Artefact(_)
+        ));
+        assert_eq!(s.platform.active_version(provider), None, "{provider}");
+        assert!(s.platform.awaiting_confirmation(provider).is_some());
+    }
+    assert_eq!(
+        s.platform.awaiting_confirmation(RESERVE),
+        Some(std::collections::BTreeSet::from(["1.0.0".to_owned()]))
+    );
+    s.platform
+        .confirm(RESERVE, "test-operator", AT)
+        .expect("confirmed");
+    assert_eq!(s.platform.awaiting_confirmation(RESERVE), None);
+    let world = stop(s);
+
+    // After the restart, the reserve runs once admitted again; only the ramp waits.
+    let mut s = Signed::on(Box::new(inner.clone()), world);
+    for provider in [RESERVE, RAMP] {
+        assert!(matches!(
+            readmitted(&mut s, provider, "1.0.0"),
+            Admitted::Artefact(_)
+        ));
+    }
+    assert_eq!(s.platform.awaiting_confirmation(RESERVE), None);
+    assert_eq!(s.platform.active_version(RESERVE).as_deref(), Some("1.0.0"));
+    assert!(s.answers_as(RESERVE, "1.0.0", 7));
+    assert!(s.platform.awaiting_confirmation(RAMP).is_some());
+    assert_eq!(s.platform.active_version(RAMP), None);
+    let world = stop(s);
+
+    // This run ended unclean too, the ramp unconfirmed: the reserve, which ran in it, is held again.
+    let s = Signed::on(Box::new(inner), world);
+    assert!(s.platform.awaiting_confirmation(RESERVE).is_some());
+    assert!(s.platform.awaiting_confirmation(RAMP).is_some());
+}

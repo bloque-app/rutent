@@ -531,6 +531,15 @@ impl Fleet {
         )
     }
 
+    /// The platform's releases as Core's decided lifecycle actions reach them (`T-020-49`): the platform, with the
+    /// catalogue it judges a waiting release's assertion by again when it is accepted.
+    pub fn releases(&mut self) -> rutent_core_orch::segments::lifecycle::Judged<'_, SimWorld> {
+        rutent_core_orch::segments::lifecycle::Judged {
+            platform: &mut self.platform,
+            judge: &self.catalogue,
+        }
+    }
+
     /// The answers simulated providers give past their deadline, for the operations named by `transactions`
     /// (`T-024-23`, `AC-5`): each provider whose books hold an operation it answered late, one it took effect on and
     /// never answered within its deadline, answers it now, as the module that served it signs it, once. The platform

@@ -5019,6 +5019,68 @@ fn filed_order_waiting_for_its_customer_still_waits_after_core_reopens() {
     assert_admitted(&env);
 }
 
+/// The deposit wait the operator sets through policy bounds a wait (`T-020-49`, `T-020-51`): a decided `deposit_wait`
+/// reaches arrivals, whose wait then ends at its lifetime from the first quote shown, not at the one-day default; and a
+/// reopened Core rebuilds it from the log, with nothing handed to it, so the wait ends there at the same time.
+// verifies: REQ-AUZ-6, REQ-QTE-10, NFR-6
+#[test]
+fn deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart() {
+    use rutent_core_orch::settings::{SettingAsked, Settings, Targets};
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let mut arrivals = Arrivals::new();
+    let setting = rutent_contracts::core_internal::OperatorSetting::DepositWait {
+        seconds: Count::new(WAIT).unwrap(),
+    };
+    let clock = std::rc::Rc::clone(&env.clock);
+    Settings::new()
+        .set(
+            &mut env.log,
+            &mut env.deciding,
+            &*clock,
+            &mut env.ids,
+            &mut Targets {
+                arrivals: Some(&mut arrivals),
+                ..Targets::default()
+            },
+            &SettingAsked {
+                setting: &setting,
+                caller: &operator(),
+                core: &rutent_contracts::core_internal::Actor {
+                    party: id("rutent"),
+                    acts: id("rutent-core"),
+                    role: rutent_contracts::core_internal::Role::Core,
+                    kind: rutent_contracts::core_internal::ActorKind::Component,
+                },
+            },
+        )
+        .expect("the operator's setting is permitted");
+    let (_, order, _) = waiting_in_a_short_session(&mut env, &mut providers, &mut arrivals);
+    let ends = arrivals.wait_ends(&order).unwrap();
+    assert_eq!(
+        seconds(&ends),
+        first_shown_at(&env) + WAIT,
+        "the operator's wait, not a day"
+    );
+
+    // Reopened from its log alone, the wait still ends then.
+    let history = env.history();
+    let mut reopened = env.with_providers(&mut providers, |_, desk| {
+        Arrivals::reopened(&history, desk.kept)
+    });
+    assert_eq!(
+        reopened.wait_ends(&order),
+        Some(ends.clone()),
+        "rebuilt from the log"
+    );
+    env.clock.set(seconds(&ends));
+    let ended = env
+        .with_providers(&mut providers, |_, desk| reopened.end_expired(desk))
+        .unwrap();
+    assert_eq!(ended, std::slice::from_ref(&order));
+    assert_admitted(&env);
+}
+
 /// A waiting quote past its validity is asked again on the customer's acceptance, as the figures it stood on were:
 /// nothing is accepted, the route is shown anew, and the wait goes on from the first quote shown, not from this one;
 /// a quote's validity never outlasts its wait (`REQ-QTE-15`).

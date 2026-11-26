@@ -71,8 +71,9 @@ use rutent_conformance::sim::Spec;
 use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, Reads};
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
-    Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role, RouteEnd,
-    SessionOutcome, SessionRequest, TimeSource, VerifiedEntry, VerifiedKind, What, When,
+    OperatorSetting, Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role,
+    RouteEnd, SessionOutcome, SessionRequest, SettingKind, TimeSource, VerifiedEntry, VerifiedKind,
+    What, When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
@@ -655,7 +656,13 @@ pub struct Core {
     releases: Releases,
     signer: Signer,
     fresh: Seeded,
+    /// The router's bounds as the operator's settings leave them (`T-020-49`): the deployment's own, `base_bounds`, with
+    /// the decided fee, slippage limits and ceilings in place, recomputed whenever a setting is set or Core reopens.
     bounds: PolicyBounds,
+    /// The deployment's own bounds: hops, parts, policy version and exclusions, which no operator setting names.
+    base_bounds: PolicyBounds,
+    /// The operator's settings, each decided through policy and rebuilt from the log on reopening (`T-020-49`).
+    settings: rutent_core_orch::settings::Settings,
     prices: Vec<Price>,
     quotes: BTreeMap<String, Quote>,
     requests: BTreeMap<String, OrderRequest>,
@@ -877,8 +884,29 @@ impl Core {
                 CatalogueChange::Grant,
                 CatalogueChange::Promote,
                 CatalogueChange::RollBack,
+                // A release's lifecycle actions and the confirmation of a provider's releases (`T-020-49`).
+                CatalogueChange::AcceptModule,
+                CatalogueChange::WithdrawRelease,
+                CatalogueChange::RevokeRelease,
+                CatalogueChange::DeclareExploited,
+                CatalogueChange::MarkStale,
+                CatalogueChange::ConfirmReleases,
             ] {
                 r.permit(&kit::operator_login(), Permission::Change(change));
+            }
+            // Each of the operator's settings, a permission of its own apiece (`T-021-15`, `T-020-49`).
+            for kind in [
+                SettingKind::OperatorFee,
+                SettingKind::SlippageLimit,
+                SettingKind::EvidenceFloor,
+                SettingKind::PublicNode,
+                SettingKind::ProviderCeiling,
+                SettingKind::PublisherCeiling,
+                SettingKind::Cadence,
+                SettingKind::Cutover,
+                SettingKind::DepositWait,
+            ] {
+                r.permit(&kit::operator_login(), Permission::Setting(kind));
             }
             r.permit(&kit::operator_login(), Permission::ReadOrderState);
             // The operator's login erases a kept statement's bytes where policy decides it (`REQ-AUD-13`, `T-020-37`).
@@ -1012,7 +1040,9 @@ impl Core {
                 signed: Vec::new(),
             },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
-            bounds: kit::bounds_for(&context, &config.providers),
+            bounds: kit::bounds(&context),
+            base_bounds: kit::bounds(&context),
+            settings: rutent_core_orch::settings::Settings::new(),
             prices,
             quotes: BTreeMap::new(),
             requests: BTreeMap::new(),
@@ -1050,6 +1080,16 @@ impl Core {
             core.relist()?;
             // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
             core.rebuild_from_log();
+            // The operator's settings, rebuilt from the log and put back where they are read (`T-020-49`).
+            core.settings =
+                rutent_core_orch::settings::Settings::reopened(core.log.borrow().entries());
+            core.bounds = core.settings.bounds(&core.base_bounds);
+            core.settings
+                .apply(&mut rutent_core_orch::settings::Targets {
+                    catalogue: Some(&mut core.catalogue),
+                    cadences: Some(core.schedule.cadences_mut()),
+                    arrivals: Some(&mut core.arrivals),
+                });
             return Ok(core);
         }
         let installed = core.installed.clone();
@@ -1059,6 +1099,12 @@ impl Core {
         core.clock.set_nanos(u128::from(kit::START) * 1_000_000_000);
         for one in &installed {
             core.advertise(one)?;
+        }
+        // The operator's slippage limit on each exchange tuple the providers serve, the deployment's starting settings,
+        // set through the operator's command as any setting is (`T-020-49`).
+        for limit in kit::bounds_for(&context, &config.providers).slippage_limits {
+            core.set_setting(&OperatorSetting::SlippageLimit { limit })
+                .map_err(|e| AssemblyError::Listing(format!("the slippage limit: {e:?}")))?;
         }
         Ok(core)
     }
@@ -1240,32 +1286,103 @@ impl Core {
         self.fleet.world()
     }
 
-    /// Sets the weakest evidence the operator accepts on `tuple` (`REQ-ORD-39`): a provider declaring weaker is left
-    /// out of the snapshot for it. A deployment setting of the catalogue, which `core-internal` has no catalogue
-    /// change for, so it isn't recorded in the log (`T-024-03`'s notes).
+    /// Sets `setting` by the operator's command, as the operator's login asks and policy decides (`T-020-49`): Core's
+    /// `Settings::set` records the effect before it applies the setting and its result after, and a reopened Core
+    /// rebuilds it from the log. The router's bounds of every route decided from now on carry it.
+    ///
+    /// # Errors
+    ///
+    /// If policy doesn't permit it, the log takes no step of it, or it is a deposit wait above its ceiling.
+    pub fn set_setting(
+        &mut self,
+        setting: &OperatorSetting,
+    ) -> Result<Receipt, rutent_core_orch::settings::SettingRefused> {
+        self.set_setting_as(&kit::operator_login(), setting)
+    }
+
+    /// [`Core::set_setting`], asked by `caller`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::set_setting`].
+    pub fn set_setting_as(
+        &mut self,
+        caller: &Actor,
+        setting: &OperatorSetting,
+    ) -> Result<Receipt, rutent_core_orch::settings::SettingRefused> {
+        let mut decisions = self.policy.clone();
+        let core = kit::core();
+        let set = self.settings.set(
+            &mut self.general,
+            &mut decisions,
+            &self.clock,
+            &mut self.fresh,
+            &mut rutent_core_orch::settings::Targets {
+                catalogue: Some(&mut self.catalogue),
+                cadences: Some(self.schedule.cadences_mut()),
+                arrivals: Some(&mut self.arrivals),
+            },
+            &rutent_core_orch::settings::SettingAsked {
+                setting,
+                caller,
+                core: &core,
+            },
+        );
+        self.bounds = self.settings.bounds(&self.base_bounds);
+        set
+    }
+
+    /// The operator's settings, as Core holds them (`T-020-49`).
+    pub fn settings(&self) -> &rutent_core_orch::settings::Settings {
+        &self.settings
+    }
+
+    /// Sets the weakest evidence the operator accepts on `tuple` (`REQ-ORD-39`) through the operator's command
+    /// ([`Core::set_setting`], `T-020-49`): a provider declaring weaker is left out of the snapshot for it.
+    ///
+    /// # Panics
+    ///
+    /// If no price Core holds names the tuple, or policy doesn't permit the setting.
     pub fn set_evidence_floor(
         &mut self,
         tuple: rutent_prov::catalogue::TupleKey,
         floor: rutent_contracts::provider_role::EvidenceGrade,
     ) {
-        self.catalogue.set_evidence_floor(tuple, floor);
+        let routed = self
+            .prices
+            .iter()
+            .map(|p| p.tuple.clone())
+            .find(|t| rutent_core_orch::settings::catalogue_tuple(t) == tuple)
+            .expect("a tuple Core prices");
+        self.set_setting(&OperatorSetting::EvidenceFloor {
+            tuple: routed,
+            grade: floor,
+        })
+        .expect("the operator's evidence floor is set");
     }
 
-    /// Sets the operator's own fee (`REQ-QTE-2`), the formula the bounds of every route decided from now on carry: a
-    /// deployment setting of the policy, which the kit's bounds leave at nothing (`T-024-13`). A route already
-    /// decided keeps the formula its record ran under.
+    /// Sets the operator's own fee (`REQ-QTE-2`) through the operator's command ([`Core::set_setting`], `T-020-49`):
+    /// the formula the bounds of every route decided from now on carry. A route already decided keeps the formula its
+    /// record ran under.
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
     pub fn set_operator_fee(&mut self, fee: rutent_contracts::router_api::FeeFormula) {
-        self.bounds.operator_fee = fee;
+        self.set_setting(&OperatorSetting::OperatorFee { formula: fee })
+            .expect("the operator's fee is set");
     }
 
-    /// Sets the most in flight at a provider in one asset (`REQ-ORD-8`): the bounds of every route decided from now on
-    /// carry it, in place of any the provider had in that asset. A deployment setting of the policy, as the operator's
-    /// fee is: a Core opened again starts from the kit's bounds, with none (`T-020-46`).
+    /// Sets the most in flight at a provider in one asset (`REQ-ORD-8`) through the operator's command
+    /// ([`Core::set_setting`], `T-020-49`): the bounds of every route decided from now on carry it, in place of any the
+    /// provider had in that asset, and a Core opened again rebuilds it from the log.
+    ///
+    /// # Panics
+    ///
+    /// If policy doesn't permit the setting.
     pub fn set_provider_ceiling(&mut self, ceiling: rutent_contracts::router_api::ProviderCeiling) {
-        self.bounds
-            .provider_ceilings
-            .retain(|c| !(c.provider == ceiling.provider && c.asset == ceiling.asset));
-        self.bounds.provider_ceilings.push(ceiling);
+        self.set_setting(&OperatorSetting::ProviderCeiling { ceiling })
+            .expect("the provider's ceiling is set");
     }
 
     /// The holder's delegate asks `reserve` whether the account's balance covers `amount`, in `session`: a balance
@@ -1443,6 +1560,7 @@ impl Core {
                 advertising_keys: vec![key.clone()],
                 statement_key: None,
                 setting: None,
+                versions: Vec::new(),
             };
             let request = DecisionRequest {
                 request: self.fresh.id(),
@@ -1575,6 +1693,10 @@ impl Core {
                 continue;
             };
             if !done.contains(&receipt) {
+                continue;
+            }
+            // An operator's setting is Core's to rebuild, from the log, apart (`Settings::reopened`, `T-020-49`).
+            if *change == CatalogueChange::SetSetting {
                 continue;
             }
             // A verifier's class grant has no tuple to rebuild: the category grant is made where its advertisement is
@@ -2677,6 +2799,7 @@ mod tests {
             advertising_keys: Vec::new(),
             statement_key: None,
             setting: None,
+            versions: Vec::new(),
         };
         let request = DecisionRequest {
             request: core.fresh.id(),

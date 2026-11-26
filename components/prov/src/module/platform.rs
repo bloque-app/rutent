@@ -48,8 +48,8 @@ use crate::module::limits::{
 };
 use crate::module::output;
 use crate::module::record::{
-    AcceptedEntry, CarriedEntry, DecisionEntry, Entry, MarkEntry, MemoryRecord, Record,
-    ReleasesEntry,
+    AcceptedEntry, CarriedEntry, DecisionEntry, DecisionKindEntry, Entry, MarkEntry, MemoryRecord,
+    Record, ReleasesEntry,
 };
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
@@ -650,11 +650,13 @@ impl<W: World> Platform<W> {
                 .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
         }
         // A record that doesn't end with the platform's clean close can't vouch for a decision the platform took and
-        // couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`).
+        // couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`), but
+        // one the operator confirmed since the record was last opened, which it holds no more (`T-020-49`).
         let closed = lines
             .last()
             .is_none_or(|line| matches!(Entry::read(line), Ok(Entry::Closed)));
         if !closed {
+            let confirmed = confirmed_since_opened(&lines);
             platform.unconfirmed = platform
                 .lifecycle
                 .providers()
@@ -664,14 +666,20 @@ impl<W: World> Platform<W> {
                         .in_force(p)
                         .or_else(|| platform.lifecycle.staged(p))
                         .is_some()
+                        && !confirmed.contains(*p)
                 })
                 .map(str::to_owned)
                 .collect();
         }
         platform.free_spent();
-        let lines = platform
+        let mut lines = platform
             .held()
             .map_err(|e| format!("the platform's record can't be written: {e}"))?;
+        lines.push(
+            Entry::Opened
+                .line()
+                .map_err(|e| format!("the platform's record can't be written: {e}"))?,
+        );
         platform
             .record
             .replace(&lines)
@@ -744,7 +752,7 @@ impl<W: World> Platform<W> {
                 }
             }
             Entry::Releases(release) => self.restore_releases(&release)?,
-            Entry::Closed => {}
+            Entry::Closed | Entry::Opened => {}
             Entry::Ended { transaction } => {
                 self.carried.remove(&transaction);
                 self.lifecycle.spend(&transaction);
@@ -2496,6 +2504,28 @@ fn placeholder_signature() -> String {
     format!("{}A", "s".repeat(85))
 }
 
+/// The providers a `confirmed` decision was written for after the record's last [`Entry::Opened`], the run that ended
+/// last: the operator's word on each was given since its last unclean end (`T-020-49`). Nothing on a record with no
+/// opening written, whose decisions can't be told apart by run (it fails closed: every provider is held).
+fn confirmed_since_opened(lines: &[String]) -> BTreeSet<String> {
+    let Some(opened) = lines
+        .iter()
+        .rposition(|line| matches!(Entry::read(line), Ok(Entry::Opened)))
+    else {
+        return BTreeSet::new();
+    };
+    lines[opened + 1..]
+        .iter()
+        .filter_map(|line| match Entry::read(line) {
+            Ok(Entry::Decided { decisions, .. }) => Some(decisions),
+            _ => None,
+        })
+        .flatten()
+        .filter(|d| d.kind == DecisionKindEntry::Confirmed)
+        .map(|d| d.provider)
+        .collect()
+}
+
 impl<W: World> Drop for Platform<W> {
     fn drop(&mut self) {
         // A record this platform could write to the end, and whose releases nothing waits on, ends whole: the next
@@ -3019,6 +3049,15 @@ impl<W: World> Platform<W> {
             self.start_restored(provider, &version);
         }
         Ok(())
+    }
+
+    /// The versions of the provider's releases held out of force until the operator confirms them (`Platform::confirm`),
+    /// as the record holds them: the one in force, the staged one and every one a segment in flight runs on. `None` where
+    /// nothing of the provider waits (`T-013-11`, `T-020-49`).
+    pub fn awaiting_confirmation(&self, provider: &str) -> Option<BTreeSet<String>> {
+        self.unconfirmed
+            .contains(provider)
+            .then(|| self.lifecycle.wanted(provider))
     }
 
     /// [`Platform::handle`], in the segment of `transaction` if one holds it, and on the version in force for

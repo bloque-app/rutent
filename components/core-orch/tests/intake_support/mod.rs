@@ -245,8 +245,8 @@ impl Authorisations for Policy {
 /// Policy's decisions, as far as intake and the arrivals reach them (`T-020-52`): an arrival's refiling, decided as
 /// the register of actors binds the caller (its party, kind and role) and, for an operator's login, the register
 /// listing it for the permission, and each decision recorded on policy's path before it is answered. It permits a
-/// refiling asked by the operator's login or by a reserve acting for itself, unless `refuse` says policy refuses
-/// every one; any other action is refused.
+/// refiling asked by the operator's login or by a reserve acting for itself, and an operator's setting asked by the
+/// operator's login, unless `refuse` says policy refuses every one; any other action is refused.
 pub struct Deciding {
     pub book: Rc<RefCell<Book>>,
     pub clock: Rc<TestClock>,
@@ -274,6 +274,11 @@ impl Decisions for Deciding {
             {
                 Answer::Permit {}
             }
+            // An operator's setting by the operator's login the register lists (`T-020-49`).
+            Action::ChangeCatalogue {
+                change: rutent_contracts::core_internal::CatalogueChange::SetSetting,
+                ..
+            } if listed && !self.refuse && caller.role == Role::Operator => Answer::Permit {},
             _ => refusal(RefusalClass::NotPermitted),
         };
         let decision = id(&format!("dec-{}", request.request.as_str()));
