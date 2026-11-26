@@ -747,6 +747,15 @@ pub struct Recalculated {
 /// node, the asset, the amount and where it stands there.
 type ValueAtNode = ((String, String), String, String, Amount, AtNode);
 
+/// The landing of the value a reversal of `segment` of `order` brought back to the held node the segment left: its own,
+/// apart from the segment's landing at the node it brought the value to (`T-020-57`).
+fn returned_at(order: &str, segment: &str) -> (String, String) {
+    (order.to_owned(), format!("{segment}{RETURNED}"))
+}
+
+/// What marks a return's landing apart from its segment's: no segment identifier holds it.
+const RETURNED: &str = "\u{0}returned";
+
 /// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AtNode {
@@ -1065,21 +1074,23 @@ impl Segments {
     /// was reversed back into it, what that move took in ([`Segments::returned_to_node`], `T-020-56`). The one reading
     /// the landings, the restore and the totals share, so a Core that reopens lands, restores and counts what a Core
     /// that ran on would.
+    ///
+    /// A segment's value at the node it brought it to and a reversal's return to the node it left are two values, each
+    /// its own landing ([`returned_at`]): a linked order's first move that settled and was then reversed, as the state
+    /// machine lets a starting segment be proven undone, left its value at the next node, which the reversal took
+    /// back, and brought it back to the held node, where it rests for the linked order (`T-020-57`, the milestone
+    /// reviewer's check of `T-020-56`).
     fn values_at_nodes(&self) -> Vec<ValueAtNode> {
         let mut values = Vec::new();
         for ((order, segment), flight) in &self.flights {
             let key = (order.clone(), segment.clone());
-            match &flight.outcome {
-                Some(SegmentOutcome::Settled { amount_out, .. }) => {
-                    if let Some((node, asset, at)) = self.settled_at_node(order, segment) {
-                        values.push((key, node, asset, amount_out.clone(), at));
-                    }
-                }
-                _ => {
-                    if let Some((node, asset, amount, at)) = self.returned_to_node(order, segment) {
-                        values.push((key, node, asset, amount, at));
-                    }
-                }
+            if let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome
+                && let Some((node, asset, at)) = self.settled_at_node(order, segment)
+            {
+                values.push((key, node, asset, amount_out.clone(), at));
+            }
+            if let Some((node, asset, amount, at)) = self.returned_to_node(order, segment) {
+                values.push((returned_at(order, segment), node, asset, amount, at));
             }
         }
         values
@@ -1116,6 +1127,8 @@ impl Segments {
             self.returned.get(&(order.to_owned(), segment.to_owned())),
             current,
         ) {
+            // A return kept at nothing confirmed lands nothing, and the order's reading doesn't replace it.
+            (Some((_, _, amount)), _) if amount.is_zero() => return None,
             (Some(kept), _) => kept.clone(),
             (None, Some(first)) if first.state == stm::SegmentState::ReversalComplete => {
                 self.returned_value(order, segment)?
@@ -1200,12 +1213,23 @@ impl Segments {
     /// a held node, out of which the segment was a linked order's first move, the value is back there for the linked
     /// order, and the next [`Segments::land_settled`] lands it again in the node's holding account for that order
     /// (`INV-1`, `T-020-56`).
-    pub(crate) fn note_reversed(&mut self, order: &Id, segment: &Id) {
+    ///
+    /// What is landed again is `back`, what the confirmation the completion rests on says came back, never more than
+    /// the move took in: less returned attributes less (`INV-1`, `T-020-57`).
+    pub(crate) fn note_reversed(&mut self, order: &Id, segment: &Id, back: &Amount) {
         let at = (order.as_str().to_owned(), segment.as_str().to_owned());
-        let returned = self.returned_value(order.as_str(), segment.as_str());
-        self.landing.reverse(at.clone(), returned.is_some());
-        if let Some(value) = returned {
-            self.returned.insert(at, value);
+        // What the segment landed at the node it brought the value to, if anything, is released: the value is back.
+        self.landing.reverse(at.clone());
+        if let Some((node, asset, taken_in)) = self.returned_value(order.as_str(), segment.as_str())
+        {
+            let amount = if *back < taken_in {
+                back.clone()
+            } else {
+                taken_in
+            };
+            // Kept even where nothing is confirmed to have come back (zero, or an amount that couldn't be read), so the
+            // order's reading never stands in for the confirmation: that return lands nothing (failing closed).
+            self.returned.insert(at, (node, asset, amount));
         }
     }
 
@@ -1507,6 +1531,15 @@ impl Segments {
     /// (`T-020-10`).
     pub fn order(&self, order: &Id) -> Option<&stm::Order> {
         self.orders.get(order.as_str()).map(|t| &t.order)
+    }
+
+    /// What a completed reversal of `segment` of `order` brought back to the held node a route handed on's first move
+    /// left: the confirmed amount, never more than the move took in, as `Segments::note_reversed` kept it or a
+    /// reopened Core rebuilt it from the log (`T-020-57`). `None` for any other segment: nothing is evidenced on it.
+    pub fn returned_amount(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        self.returned
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|(_, _, amount)| amount)
     }
 
     /// What `segment` of `order` gave out by its result that counted, net of its charge as its tuple reports it,

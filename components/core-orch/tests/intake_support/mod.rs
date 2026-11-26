@@ -992,7 +992,7 @@ fn kept_salt(store: &Store, wanted: &Digest) -> [u8; 32] {
 }
 
 /// [`kept_under`], with one byte more than was kept where `altered`.
-fn kept_as(store: &Store, wanted: &Digest, altered: bool) -> Option<KeptStatement> {
+pub fn kept_as(store: &Store, wanted: &Digest, altered: bool) -> Option<KeptStatement> {
     let place = (0..store.kept.len()).find(|i| &commitment(*i, &store.kept[*i]) == wanted)?;
     let mut bytes = store.kept[place].clone();
     if altered {

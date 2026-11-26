@@ -1,0 +1,427 @@
+{
+  "row": "reversal-rests-on-its-evidence",
+  "breaks": "whose",
+  "history": [
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 500,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5151515151515151515151515151515151515151515151515151515151515151"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-o9-route",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "customer",
+              "id": "user-42"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-9"
+            },
+            "observed": {
+              "kind": "route_chosen",
+              "decision_record": "dr-o9",
+              "parts": [
+                {
+                  "part_id": "p1",
+                  "segments": [
+                    {
+                      "segment_id": "o9-s1",
+                      "provider": "ramp-c",
+                      "kind": "route",
+                      "from": {
+                        "node": "chain-b",
+                        "asset": {
+                          "id": "USDC",
+                          "decimals": 6
+                        }
+                      },
+                      "to": {
+                        "node": "chain-c",
+                        "asset": {
+                          "id": "USDC",
+                          "decimals": 6
+                        }
+                      }
+                    },
+                    {
+                      "segment_id": "o9-s2",
+                      "provider": "out-c",
+                      "kind": "deposit",
+                      "from": {
+                        "node": "chain-c",
+                        "asset": {
+                          "id": "USDC",
+                          "decimals": 6
+                        }
+                      },
+                      "to": {
+                        "node": {
+                          "network": "chain-d"
+                        },
+                        "asset": {
+                          "id": "USDC",
+                          "decimals": 6
+                        }
+                      }
+                    }
+                  ]
+                }
+              ],
+              "handed_on_from": "ord-8"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 502,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5252525252525252525252525252525252525252525252525252525252525252"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "holding_withdrawal",
+          "order": "ord-9",
+          "handed_on_from": "ord-8",
+          "holder": "plain-wallet",
+          "node": "chain-b",
+          "record": {
+            "log": "log-main",
+            "index": 501,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "5353535353535353535353535353535353535353535353535353535353535353"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 503,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5454545454545454545454545454545454545454545454545454545454545454"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-o9-1",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "orchestrator",
+              "id": "core-orch"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-9",
+              "part": "p1",
+              "segment": "o9-s1"
+            },
+            "observed": {
+              "kind": "provider_bound"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 504,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "effect",
+          "action": {
+            "kind": "move_value",
+            "order": "ord-9",
+            "segment": "o9-s1",
+            "provider": "ramp-c",
+            "origin_reserve": "plain-wallet",
+            "authorisation": "auth-o9",
+            "route": {
+              "destination": {
+                "reserve": "out-c",
+                "node": {
+                  "network": "chain-d"
+                },
+                "account": "0xdest-9"
+              },
+              "to_asset": {
+                "id": "USDC",
+                "decimals": 6
+              },
+              "delivers": "1000000"
+            }
+          },
+          "decision": {
+            "request": "req-o9",
+            "decision": "dec-o9",
+            "answer": "permit",
+            "receipt": {
+              "log": "log-main",
+              "index": 499,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "5656565656565656565656565656565656565656565656565656565656565656"
+              }
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "to_take_effect"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 505,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5757575757575757575757575757575757575757575757575757575757575757"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "input",
+          "input": {
+            "record_id": "rec-o9-2",
+            "recorded_at": "2026-11-06T10:00:00Z",
+            "time_source": "core-orch clock",
+            "source": {
+              "kind": "orchestrator",
+              "id": "core-orch"
+            },
+            "standing": "stated",
+            "subject": {
+              "order": "ord-9",
+              "part": "p1",
+              "segment": "o9-s1"
+            },
+            "observed": {
+              "kind": "segment_failed"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 506,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5858585858585858585858585858585858585858585858585858585858585858"
+        }
+      },
+      "entry": {
+        "kind": "stated",
+        "attribution": {
+          "signature": "verified",
+          "who": {
+            "party": "ramp-c",
+            "acts": "ramp-c",
+            "role": "provider",
+            "kind": "component"
+          }
+        },
+        "what": {
+          "statement": "urn:rutent:provider-role:result"
+        },
+        "when": {
+          "at": "2026-11-10T09:00:05Z",
+          "source": "party_stated"
+        },
+        "received_at": "2026-11-10T09:00:05Z",
+        "outcome": {
+          "status": "stated"
+        },
+        "signed_with": {
+          "scheme": "ed25519",
+          "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+        },
+        "commitment": {
+          "algorithm": "sha-256",
+          "value": "f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8"
+        },
+        "about": {
+          "order": "ord-9",
+          "segment": "o9-s1",
+          "transaction": "tx-o9-ask"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 507,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "5959595959595959595959595959595959595959595959595959595959595959"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "evidence",
+          "evidence": "ev-o9",
+          "order": "ord-9",
+          "segment": "o9-s1",
+          "grade": 4,
+          "whose": "ramp-c",
+          "rests_on": [
+            {
+              "log": "log-main",
+              "index": 506,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "5858585858585858585858585858585858585858585858585858585858585858"
+              }
+            }
+          ]
+        },
+        "when": {
+          "at": "2026-11-10T09:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "observed"
+        }
+      }
+    }
+  ],
+  "entry": {
+    "kind": "verified",
+    "who": {
+      "party": "rutent",
+      "acts": "core-orch",
+      "role": "core",
+      "kind": "component"
+    },
+    "what": {
+      "call": "input",
+      "input": {
+        "record_id": "rec-o9-back",
+        "recorded_at": "2026-11-06T10:00:00Z",
+        "time_source": "core-orch clock",
+        "source": {
+          "kind": "evidence_checker",
+          "id": "evidence"
+        },
+        "standing": "stated",
+        "subject": {
+          "order": "ord-9",
+          "part": "p1",
+          "segment": "o9-s1"
+        },
+        "observed": {
+          "kind": "reversal_completed",
+          "evidence": "ev-o9"
+        }
+      }
+    },
+    "when": {
+      "at": "2026-11-10T09:00:00Z",
+      "source": "core_clock"
+    },
+    "outcome": {
+      "status": "observed"
+    }
+  }
+}

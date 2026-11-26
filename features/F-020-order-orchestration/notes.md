@@ -8532,6 +8532,230 @@ scenarios `holds`, `charge_check`, `landing`, `recalc`, `failure`, `reversing`, 
 `stuck_hand_on` (125); the doc check; plan-check and tag-check `--strict` (0 findings, 2406 tests tagged); the contract
 guard against `origin/develop` (`fb883e01`): "1977 changed path(s) … no violations".
 
+## T-020-57: a linked order's reversal back into a held node, completed
+
+Branch `f-020/t-020-57-linked-reversal`, from `cd9cb8dd` (m3), fast-forwarded to the plan follow-up `67204884`, which
+adds the milestone reviewer's three items from its check of `T-020-56`. Edits `components/core-orch/` (`reversal/`,
+`segments/`, `quote/held.rs`, `intake/mod.rs`), `components/prov/guests/plain-wallet/` and its native test, and `F-024`
+files (`conformance/src/sim/mod.rs`, `conformance/src/role/stand_in.rs`, `conformance/scenarios/src/sim/fleet.rs`,
+`conformance/scenarios/src/assembly/{mod,holding,reopen}.rs`, the scenarios `holds.rs`, `assembly_real_wallet.rs`, and
+two patterns in `execution_routes.rs` and `gross_charged.rs`). No `contracts/` edit, no `DEC-20` path.
+
+- **Design.**
+  1. *The confirmer* (`Reversals::target`). A route handed on has no withdrawal (`origin_of` answers
+     `NoOriginReserve`); it starts from the holding account where the value sits, which counts as its origin reserve
+     (`REQ-ORD-16`, `REQ-ORD-43`). `handed_on_holder` names it: for an order with `handed_on_from` whose part's first
+     segment leaves an inner node, the module the operator registered as that node's holding account and publishes
+     (`HoldingSource::Operator`, `published_by_operator`). The reversal of that first move is asked of it, unless it is
+     the failed provider. A node whose account is a private node's publisher's interface names no party: nothing is
+     asked (fail closed).
+  2. *Attributing the wallet* (`judge::attributable`). A module the operator publishes advertises nothing, so
+     `Catalogue::verify_statement` can't verify it. Its statements, the answer and the nested confirmation, verify by a
+     statement key its accepted release names in the log (core-internal's `release_statement_keys`, read in
+     `Reversals::follow`), in the catalogue's deployment and protocol version, as the log attributes them.
+  3. *The wallet answers* (`F-016`'s notes, under `T-016-05`'s record). `reversal_confirmation` in the guest: confirmed
+     only where the account's statement (`credit/{segment}` in the provider's own state, read by the outside part's one
+     operation `wallet.credit`) holds that segment's credit in full and in the asset asked.
+  4. *What is landed again* (`Segments::note_reversed`). The completion carries what its statement says came back
+     (`Whose::back`: the confirmed credit, or the publisher's `back.amount`), and the return is kept at that, capped at
+     what the move took in: less returned attributes less. (`REQ-ORD-3` and the signer already hold a confirmation to
+     the amount asked, so today the two are equal; the landing takes the confirmation's word all the same.)
+  5. *A settled-then-reversed first move* (reviewer's item 2). `values_at_nodes` reads every flight's return, settled
+     or not, and a return is its own landing (`returned_at`, a key no segment id holds), apart from the segment's
+     landing at the node it brought the value to; `Landing::reverse` now only marks that landing released.
+  6. *Returns rebuilt on reopening* (`Segments::rebuild_returns`, `NFR-6`). For each `reversal_completed` of a move the
+     order's plan put first in its part, out of an inner node, of an order handed on: what the confirmation its
+     evidence rests on says came back (read back from the evidence store), capped at what the move took in, also once a
+     recalculation retired the move. Unreadable, it is rebuilt as nothing.
+  7. *Holds rebuilt by Core* (reviewer's item 1, a #143 blocker). `Holds::reopened(history, &mut dyn Reopening)`:
+     `Holds::recorded` plus each hold's stated entry read back from the evidence store, held to the decision record its
+     quote names (Core's signed record, by the digest the log names), kept by `Holds::hold` under the same rules. The
+     assembly's `holds_rebuilt_from_log` is gone; its `rebuild_from_log` calls `Holds::reopened`, and the restart
+     scenario runs on `Scenario::reopen`.
+  8. *A quote valid no longer than its hold* (reviewer's item 3). `Status::Quoted` gains `valid_until` (serde-optional):
+     the earlier of the figures' earliest expiry and the validity of the hold Core took of it (`quote_validity`). The
+     quote's digest is unchanged.
+- **Tests.** Named: `value_landed_again_is_what_the_wallet_confirms_came_back` and
+  `linked_orders_settled_then_reversed_first_move_is_returned_to_its_node` (`segments/returned.rs`);
+  `a_hold_kept_before_a_restart_is_redeemed_after_it` (`components/core-orch/tests/intake_holds.rs`);
+  `quote_held_for_less_than_its_figures_is_valid_no_longer_than_its_hold` (`tests/holds.rs`, over the new simulated
+  reserve `sim-reserve-holding-briefly`, which holds for at most 60 s); and
+  `linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes`
+  (`tests/assembly_real_wallet.rs`), **ignored** (gap 1). Beside them:
+  `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` (native wallet); the restart scenario
+  `a_hold_is_redeemed_by_one_order_only_also_after_a_restart` now on Core's reopen. `T-020-56`'s
+  `reversal_out_of_a_held_node_lands_the_value_there_again` passes beside them; its only change is the confirmed amount
+  `note_reversed` now takes. **Not written:** `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens`
+  (gap 1).
+- **Tests first.** The settled-then-reversed and landed-amount tests were written before their rules; each named test
+  was watched red by switching its rule off (the table).
+- **Histories the log refused, sorted.** One, a real contract gap, not an artefact (gap 1): the assembled Core's
+  completion of the linked order's reversal, the wallet's evidence refused by `reversal-rests-on-its-evidence`'s field
+  `reserve`. No log relaxed.
+- **Defaults** (reversible, failing closed):
+  - The confirmer of a handed-on route's first move is the operator-registered holding module of the node it leaves;
+    none for a private node's publisher's interface (the reversal stays owed).
+  - An operator-published module is attributed by its in-force accepted release keys (`release_statement_keys` with no
+    transaction: a revoked release attributes nothing here).
+  - A plain wallet confirms only from the account's statement in the provider's state; no deployment writes it yet, so
+    in production it confirms nothing and the reversal stays owed (`T-020-47` declares the order stuck on its window).
+  - What is landed again is the confirmed amount capped at what the move took in; a zero or unreadable amount lands
+    nothing again.
+  - A current reversed first move whose completion a reopened Core couldn't read back is still read at what the move
+    took in (`T-020-56`'s fallback, kept: a logged `reversal_completed` held the confirmation to that in full).
+  - A hold whose bytes or record can't be read back on reopening is held no more; an acceptance naming it is refused.
+  - A quote is shown valid until the earlier of its figures' expiry and its hold's validity; past it the acceptance is
+    refused as before (`IntakeError::Hold`) and the order stays quoted.
+- **Gaps, with owners.**
+  1. **Contract (core-internal, a `DEC-20` path), blocking the completion; owner: the lead.**
+     `reversal-rests-on-its-evidence`'s field `reserve` reads the reserve at a segment's from-node by `reserve_at_from`
+     (`contracts/src/core_internal/relations.rs`): the provider of a plan's segment delivering to that node, else the
+     segment's own provider. A route handed on has no segment delivering to its first node, so for its first move the
+     log reads **the failed provider itself** as the reserve there. Two consequences: the wallet's evidence is refused
+     ("a completed reversal's evidence is the word of the reserve at the segment's from-node", seen through the
+     assembly: the wallet was asked, answered, was signed by the platform and counted by Core, and only the evidence's
+     append was refused); and, read with `another` (`whose != provider || (reserve && grade == Statement)`), the log
+     would **admit the failed provider's own word, graded a statement, as completing its reversal** (`REQ-ORD-3`,
+     `THR-13`), which Core never records (its judge holds the confirmer to the holding account) but the log doesn't
+     refuse. The shape needed: for an order whose `route_chosen` names `handed_on_from`, the reserve at its first
+     segment's from-node is the `holder` of the `holding_withdrawal` entry about that order at that node (the record
+     that proved its start, `REQ-ORD-40`); with its valid and invalid admission fixtures. Until then the named scenario
+     is ignored, the reviewer's ask to run the landing through the assembly can't be met, and
+     `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` can't be built on an admitted log (it
+     needs a logged `reversal_completed` of a linked order's first move). `Segments::rebuild_returns` is in place for
+     it, untested end to end.
+  2. Owner `F-016`: how a plain wallet sees a credit arrive at its account in a deployment (a reading of its node, or
+     the deployment keeping the account's statement in the provider's state); until then it confirms nothing.
+  3. A quote shown before a reopening is shown again on a new routing (`T-020-46`'s default), so through the assembly
+     a hold Core kept before a restart is kept again and refuses a second order, but its own quote is re-routed; the
+     redemption after a restart is shown at intake's level, where the quote stands (`intake_holds.rs`). Rebuilding
+     intake's offered quote from the log is a later choice; owner: `F-020`.
+- **Rule-off table** (each switched off alone from the staged tree, the tests run through the lock with the row's
+  private wallet build, the file restored with `git checkout`; script `ruleoff.py` in the row's scratch folder).
+  "Ignored scenario" is the named assembly test run with `--ignored`: at the base it stops at the log's refusal of the
+  completion's evidence (line 1471), so a rule is shown by an earlier stop.
+
+  | Rule switched off | Red |
+  |---|---|
+  | `Holds::reopened` keeps no hold again | `a_hold_kept_before_a_restart_is_redeemed_after_it`, `a_hold_is_redeemed_by_one_order_only_also_after_a_restart` |
+  | the quote's validity capped at its hold's | `quote_held_for_less_than_its_figures_is_valid_no_longer_than_its_hold` |
+  | a settled move's return read (Settled arm first again) | `linked_orders_settled_then_reversed_first_move_is_returned_to_its_node` |
+  | what is landed again is the confirmed amount | `value_landed_again_is_what_the_wallet_confirms_came_back` (confirmed 900) |
+  | the wallet confirms only a credit in full | `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` |
+  | `target` names the handed-on route's holding account | ignored scenario, at the first ask (`NoOriginReserve`) |
+  | an operator module attributed by its release key | ignored scenario, at the full credit (`Unattributable`) |
+  | `Segments::rebuild_returns` | not switched off: gap 1 |
+
+### T-020-57, round 2: the contract change (the lead's authorisation, 2026-11-26)
+
+`origin/m3` (`6e4dd5bf`, `T-020-52` merged) merged in cleanly. The lead authorised gap 1's contract change, a `DEC-20`
+path folded into the unreleased core-internal 1.0.0.
+
+- **The change** (`contracts/src/core_internal/relations.rs`, `reserve_at_from`). For an order whose `route_chosen`
+  names `handed_on_from`, the reserve at a from-node no segment of its plans delivered to is the `holder` of the
+  order's verified `holding_withdrawal` at that node; with no such record there is none (fail closed), so nothing is
+  that reserve's word. Every other route reads as before. No shape changes; `RELATIONS` stays 118. README's
+  `reversal-rests-on-its-evidence` row and the changelog updated; totals recounted from the files (30 schemas, 187
+  valid, 186 invalid, 778 admission cases, 58 attribution cases).
+- **Fixtures** (admission, generated by `gen_fixtures.py` in the row's scratch folder): admitted
+  `reversal-rests-on-its-evidence--a-handed-on-routes-holding-account-confirms-its-first-move`; refused
+  `--a-handed-on-routes-failed-providers-own-word` (`whose`) and `--a-handed-on-route-with-no-holding-record`
+  (`reserve`).
+- **Tests.** New: `failed_providers_own_word_does_not_complete_its_reversal_on_a_handed_on_route` [`REQ-ORD-3`,
+  `THR-13`] (`contracts/tests/core-internal.rs`). Un-ignored and green through the assembly:
+  `linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes` (the landing runs
+  through the assembly: the wallet holds the linked order's value again, attributed once). Written, **ignored**:
+  `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (gap 4). The assembly's `run_linked` now
+  keeps the linked order's request, as Core holds one for a recalculation of its part.
+- **Gap 1 closed.** Gaps 2 (`F-016`'s credit visibility) and 3 (`F-020`'s re-routed quote) stand.
+- **Gap 4, new, a second contract rule and Core's own; owner: the lead.** A handed-on route whose first move was
+  reversed can't be recalculated: Core's `recalc::rule::evidenced` evidences a part's value only at the end of a
+  settled segment of it (`index == 0` at an inner node answers `NoSettledEnd`), and core-internal's
+  `recalculation-starts-from-evidenced-value` holds a `route_recalculated` to the part's latest settled segment.
+  Such a route has none, so the scenario stops at `NotNow(NoSettledEnd)`; its part can only be declared stuck and
+  resolved or handed on. The shape needed, in both: for a part of an order handed on whose first segment's reversal
+  completed, the value is evidenced at that segment's from-node by its `reversal_completed` (whose evidence is the
+  holding account's word, now that gap 1 is closed), and a recalculation may start there. Until then the "retired by a
+  recalculation" case is unreachable, and `Segments::rebuild_returns` can't be switched off to a red test: a current
+  reversed first move after a reopen is read by `T-020-56`'s fallback (what the move took in, which `REQ-ORD-3` holds
+  the confirmation to), so the rebuild changes nothing observable today.
+- **Rule-offs, round 2** (script `ruleoff2.py`, from the staged tree):
+
+  | Rule switched off | Red |
+  |---|---|
+  | a handed-on route's reserve is its holding record's holder (`reserve_at_from` reads the segment's own provider again) | `failed_providers_own_word_does_not_complete_its_reversal_on_a_handed_on_route` (the failed ramp's own word admitted), `linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes` (the wallet's evidence refused) |
+  | no holding record, no reserve (a holder assumed) | `failed_providers_own_word_does_not_complete_its_reversal_on_a_handed_on_route` (the case with no record admitted) |
+  | `target` names the handed-on route's holding account | `linked_orders_reversal_…_and_completes`, at the first ask (`NoOriginReserve`) |
+  | an operator module attributed by its release key | `linked_orders_reversal_…_and_completes`, at the full credit (`Unattributable`) |
+  | `Segments::rebuild_returns` | not switched off: gap 4 |
+
+### T-020-57, round 3: a handed-on route recalculated from its reversed first move (the lead's authorisation)
+
+`origin/m3` (`e7418a53`, `T-020-48` and the plan follow-up) merged in; the two conflicts (core-internal's changelog
+totals, these notes) kept both sides, the totals recounted from the files. `T-020-48` removed the assembly's
+`land_settled`: the scenarios land on `tick`, and the stuck order is ticked after its run so the wallet holds its value.
+
+- **Gap 4 closed, both sides** (a `DEC-20` path, folded into the unreleased core-internal 1.0.0).
+  - *The log* (`recalculation-starts-from-evidenced-value`): beside the part's latest `segment_settled`, the
+    `reversal_completed` of a route handed on's first move (`handed_on_first_move`: the order's `route_chosen` names
+    `handed_on_from`, the segment starts at an inner node no segment of its plans delivered to, no withdrawal)
+    evidences the value back at that move's `from` (`planned_start`), and the new route starts there. The log took that
+    input only on the holding account's word (round 2's `reserve_at_from`); a reversal still owed or refused is no
+    `reversal_completed`, so it evidences nothing.
+  - *Core* (`recalc::rule::evidenced_in`, used by `Recalculations::recalculate` and its staleness check): for an order
+    handed on whose part's first segment is `ReversalComplete` (no withdrawal, from an inner node, the part open), the
+    value is evidenced at that segment's `from`, and the amount the new route moves is `Segments::returned_amount`,
+    what the confirmation said came back, capped at what the move took in; with none kept, nothing is recalculated
+    (`NoSettledEnd`, fail closed). `evidenced(part)` is unchanged for every other caller.
+  - Fixtures: admitted `recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move`; refused
+    `--a-handed-on-routes-first-move-still-owed` (`missing`) and `--a-handed-on-routes-reversal-from-another-node`
+    (`node`) (script `gen_fixtures2.py`). README and changelog updated; 789 admission cases, `RELATIONS` 120.
+- **Tests.** New: `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` [`REQ-ORD-2`, `INV-4`].
+  Un-ignored and green: `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens`, through the
+  assembly: the reversal completes on the wallet's word, the value is landed again, the part is recalculated from the
+  node (the reversed move retired), Core reopens, the new route runs, and the wallet's landing is released once.
+- **Gaps** now: 2 (`F-016`'s credit visibility) and 3 (`F-020`'s quote re-routed after a reopen) stand; 1 and 4 closed.
+- **Rule-offs, round 3** (script `ruleoff3.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the log takes a handed-on route's `reversal_completed` as evidence (`reversed_back` false) | `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` (the admitted case refused), `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (the log refuses Core's recalculation) |
+  | Core evidences a handed-on route's reversed first move (`evidenced_in` falls back to `evidenced`) | `returned_value_retired_…_after_core_reopens` (`NotNow(NoSettledEnd)`) |
+  | `Segments::rebuild_returns` (round 1's missing rule-off) | `returned_value_retired_…_after_core_reopens`: after the reopen the wallet's landing is never released ("released once the value left the node") |
+
+### T-020-57, review round 1 (#331, CHANGES at `045959ae`)
+
+`origin/m3` (`f0c66ab4`, the plan follow-up) merged in with no conflict.
+
+- **L1, one confirmer for Core and the log.** `Reversals::follow` keeps each linked order's holding record from the log
+  (`holders`: the node and `holder` of its verified `holding_withdrawal`), and `handed_on_holder` names that holder,
+  never the module the catalogue registers for the node now: the one party the log takes as the reserve there
+  (`reserve_at_from`). A holder that is a module the operator publishes with no release in force in the log isn't
+  asked: `ReversalError::HolderNotInForce(holder)`, and the reversal stays owed. Tests (`assembly_real_wallet.rs`):
+  `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` [`REQ-ORD-43`, `REQ-ORD-3`] (the
+  node registered to another module after the hand-on, `Core::register_node_holding`; the reversal completes on the
+  first wallet's word) and `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` [`REQ-ORD-3`]
+  (the wallet's release revoked after the hand-on, `Core::revoke_release`; the wallet is asked nothing). The
+  reviewer's residual stands as the log's: where Core records the failed provider as the holder, the log admits its
+  word graded a statement, as for a withdrawal's own reserve; Core records the holding account's own record only.
+- **L2, a zero or unreadable confirmed amount lands nothing.** `note_reversed` keeps the return even at zero, and
+  `returned_to_node` reads a kept zero as nothing landed, so `T-020-56`'s fallback (what the move took in) never stands
+  in for a confirmation; `rebuild_returns` keeps an unreadable confirmation or operation as zero too. Test
+  `return_confirmed_at_nothing_lands_nothing_again` [`INV-1`] (`segments/returned.rs`), driven directly, since the
+  judges refuse anything but the amount asked (`NotInFull`). The defaults' wording above now holds.
+- **L3.** `planned_end`'s and `short_of`'s doc comments moved back onto their functions.
+- **M1, routed to `T-020-60` (the reader adapter).** `Fleet::credit_wallet`, `Core::credit_wallet` and each scenario
+  call say they stand in for the network reader's confirmation, owned by `T-020-60`. **Gap 2 now reads:** the plain
+  wallet's credit record has no production source; in a deployment a reversal back into a held public node is a
+  movement on that node's network, which its reader confirms (`T-020-60`).
+- **Rule-offs, review round 1** (script `ruleoff4.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
+  | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
+  | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |
+
 ## T-020-48: Core's own schedule, `tick` (finding 4 of the milestone review of 2026-11-24)
 
 Branch `f-020/t-020-48-core-tick`, from `28972690` (m3-next's batch holding `T-020-47`). Edits `components/core-orch/` (the

@@ -73,8 +73,8 @@ use crate::segments::Segments;
 use crate::snapshot::{Clock, Exposures, OrchestrationLog, Price, Releases};
 
 pub use rule::{
-    NotRecalculable, PassedAgain, Rejected, check_route, evidenced, holds_floor, left_after,
-    passed_again, route_end,
+    NotRecalculable, PassedAgain, Rejected, check_route, evidenced, evidenced_in, holds_floor,
+    left_after, passed_again, route_end,
 };
 
 /// How many times one order's routes may be recalculated (`REQ-ORD-4`). Past it, the order has no route left. A
@@ -375,7 +375,7 @@ impl Recalculations {
             return Ok(Recalculation::NotNow(NotRecalculable::Unknown));
         };
         // Only from where the value is evidenced (`REQ-ORD-2`, `INV-4`).
-        let (at, settled) = match evidenced(part) {
+        let (at, settled) = match evidenced_in(&order, part) {
             Ok(evidenced) => evidenced,
             Err(why) => return Ok(Recalculation::NotNow(why)),
         };
@@ -386,11 +386,14 @@ impl Recalculations {
         }
         let settled_id =
             Id::new(settled.segment_id.as_str()).ok_or(RecalcError::Id("a segment id"))?;
-        let Some(amount) = parts
-            .segments
-            .handed_on(order_id, &settled_id)
-            .and_then(|a| PositiveAmount::new(a.as_str()))
-        else {
+        // What the settled segment gave out there, or, the route handed on's first move reversed, what the
+        // confirmation of its reversal says came back, never more than the move took in (`T-020-57`).
+        let evidenced_amount = if settled.state == stm::SegmentState::ReversalComplete {
+            parts.segments.returned_amount(order_id, &settled_id)
+        } else {
+            parts.segments.handed_on(order_id, &settled_id)
+        };
+        let Some(amount) = evidenced_amount.and_then(|a| PositiveAmount::new(a.as_str())) else {
             return Ok(Recalculation::NotNow(NotRecalculable::NoSettledEnd));
         };
         // Bounded in count (`REQ-ORD-4`).
@@ -704,7 +707,7 @@ impl Recalculations {
                     .parts
                     .iter()
                     .find(|p| p.part_id.as_str() == part.as_str());
-                match now.map(|p| (evidenced(p), p)) {
+                match now.map(|p| (evidenced_in(followed_order, p), p)) {
                     None => Some(Recalculation::NotNow(NotRecalculable::Unknown)),
                     Some((Err(why), _)) => Some(Recalculation::NotNow(why)),
                     Some((Ok(_), p)) => match handed_over(parts.segments, &order, p) {

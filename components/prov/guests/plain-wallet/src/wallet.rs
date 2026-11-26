@@ -5,11 +5,44 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::provider_role::{
-    BalanceAnswer, BalanceOutcome, BalanceVerification, BalanceVerificationResult, Deposit,
-    EvidenceGrade, EvidencePiece, Fee, HoldingBalance, HoldingBalanceAnswer, HoldingBalanceOutcome,
-    HoldingBalanceResult, MovementSettlement, NoDetail, Refusal, Refused, ReserveMovementOutcome,
-    ReserveMovementResult, ResultBody, Unknown, Withdrawal,
+    BalanceAnswer, BalanceOutcome, BalanceVerification, BalanceVerificationResult, Confirmed,
+    Deposit, EvidenceGrade, EvidencePiece, Fee, HoldingBalance, HoldingBalanceAnswer,
+    HoldingBalanceOutcome, HoldingBalanceResult, MovementSettlement, NoDetail, Operation,
+    REVERSAL_CONFIRMATION_SHAPE, Refusal, Refused, ReserveMovementOutcome, ReserveMovementResult,
+    ResultBody, ReversalConfirmation, ReversalConfirmationOutcome, ReversalConfirmationRequest,
+    ReversalConfirmationResult, Signature, SignatureScheme, Statement, Unknown, Withdrawal,
 };
+
+/// The prefix of the provider's own state keys under which the account's statement of credits is kept, one per
+/// reversed segment: `credit/{segment's transaction}` holds the JSON `{"asset": …, "amount": …}` of the credit that
+/// came back into the account for that segment's reversal (`T-020-57`). The wallet's outside part reads it; the
+/// sandboxed part reads no state. The outside part, built without this file, keeps the same text.
+#[allow(dead_code)]
+pub const CREDIT_PREFIX: &str = "credit/";
+
+/// The outside operation the sandboxed part asks its outside part for the account's statement of one credit.
+pub const CREDIT: &str = "wallet.credit";
+
+/// A credit the account's statement says came back for a reversed segment: in which asset, and how much.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Credit {
+    /// The asset.
+    pub asset: String,
+    /// The amount, in whole units.
+    pub amount: String,
+}
+
+impl Credit {
+    /// The credit an entry of the account's statement states, as the outside part read it: `None` where it states
+    /// nothing readable.
+    pub fn read(text: &str) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        Some(Credit {
+            asset: value.get("asset")?.as_str()?.to_owned(),
+            amount: value.get("amount")?.as_str()?.to_owned(),
+        })
+    }
+}
 
 /// What rests in the account.
 #[derive(Default)]
@@ -199,6 +232,63 @@ impl Wallet {
         };
         ResultBody::BalanceVerification(BalanceVerificationResult {
             transaction: v.transaction.clone(),
+            outcome,
+        })
+    }
+
+    /// The answer to Core's question whether the credit of a reversed segment came back into the account
+    /// (`reversal_confirmation`, `T-020-57`): confirmed only where the account's statement holds a credit for that very
+    /// segment, in the asset asked and of the amount asked, in full; otherwise not confirmed, which says nothing else.
+    /// A credit short of what is asked is not confirmed, so less returned never completes the reversal (`REQ-ORD-3`).
+    /// A malformed or zero amount, or an asset the account isn't fixed to, is refused as final. The confirmation is
+    /// nested in the account's own name, in the deployment and protocol version of `asked`, for the platform to sign.
+    pub fn confirmation(
+        &self,
+        asked: &Statement<Operation>,
+        c: &ReversalConfirmationRequest,
+        credit: Option<&Credit>,
+    ) -> ResultBody {
+        let units = amount(&c.amount).filter(|u| *u > 0);
+        let fixed_elsewhere = self.fixed.as_ref().is_some_and(|(_, a)| *a != c.asset);
+        let outcome = match units {
+            None => ReversalConfirmationOutcome::Refused(Refused {
+                refusal: Refusal::Final(NoDetail {}),
+            }),
+            Some(_) if fixed_elsewhere => ReversalConfirmationOutcome::Refused(Refused {
+                refusal: Refusal::Final(NoDetail {}),
+            }),
+            Some(units) => {
+                let arrived = credit.is_some_and(|credit| {
+                    credit.asset == c.asset && amount(&credit.amount) == Some(units)
+                });
+                if arrived {
+                    ReversalConfirmationOutcome::Confirmed(Confirmed {
+                        confirmation: Box::new(Statement {
+                            deployment: asked.deployment.clone(),
+                            protocol_version: asked.protocol_version.clone(),
+                            shape: REVERSAL_CONFIRMATION_SHAPE.to_owned(),
+                            maker: c.provider.clone(),
+                            made_at: asked.made_at.clone(),
+                            // The platform signs it in the account's name; the module holds no key.
+                            signature: Signature {
+                                scheme: SignatureScheme::Ed25519,
+                                key: asked.signature.key.clone(),
+                                value: asked.signature.value.clone(),
+                            },
+                            statement: ReversalConfirmation {
+                                segment: c.segment.clone(),
+                                asset: c.asset.clone(),
+                                amount: c.amount.clone(),
+                            },
+                        }),
+                    })
+                } else {
+                    ReversalConfirmationOutcome::NotConfirmed(NoDetail {})
+                }
+            }
+        };
+        ResultBody::ReversalConfirmation(ReversalConfirmationResult {
+            transaction: c.transaction.clone(),
             outcome,
         })
     }

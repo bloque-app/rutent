@@ -11,6 +11,12 @@
 //!
 //! - `holding_balance`: the balance the account holds at its node, in whole units of its asset, which is the sum of
 //!   what its orders hold. The operator asks it so the balance is the wallet's own word (`REQ-AUD-15`).
+//! - `reversal_confirmation`: whether the credit of a reversed segment came back into the account (`T-020-57`). A
+//!   route handed on starts from the account, its origin reserve (`REQ-ORD-16`, `REQ-ORD-43`), so its first move's
+//!   reversal brings the value back here, and Core asks the account. The wallet confirms only a credit the account's
+//!   statement holds for that segment, in full and in the asset asked: its outside part reads the statement from the
+//!   provider's own state (`credit/{segment}`), which the deployment keeps for the account; the sandboxed part reads no
+//!   state. Where the statement holds none, it is not confirmed and the reversal stays owed.
 //!
 //! The record lives in the instance, so a restart of the account's module empties it (a module's state is read-only
 //! through the host, and the wallet holds none outside its instance). It is rebuilt from the log, by Core, which reads
@@ -26,8 +32,9 @@
 //!
 //! The account is one node's and one asset's: the first movement that succeeds fixes both, and an operation naming
 //! another is refused. A refused operation fixes nothing. A request that is not well formed, a dry run, a zero amount or a release above what an order
-//! holds is refused as final, and changes nothing. Its outside part has nothing to do: a plain wallet declares no
-//! outside operation, destination or secret.
+//! holds is refused as final, and changes nothing. Its outside part calls nowhere: a plain wallet declares no
+//! secret or destination; it declares one outside operation, `wallet.credit`, which reads the account's statement of one
+//! credit.
 //!
 //! The parts are chosen by a feature (see `Cargo.toml`).
 
@@ -46,6 +53,26 @@ mod sandboxed {
     use super::wallet::Wallet;
 
     wit_bindgen::generate!({ world: "sandboxed", path: "../../src/module/wit" });
+
+    use rutent::binding::outside_requests;
+
+    use super::wallet::{CREDIT, Credit};
+
+    /// The account's statement of the credit for `segment`, asked of the outside part under `transaction`: `None`
+    /// where it holds none, or the outside part didn't answer.
+    fn credit(transaction: &str, segment: &str) -> Option<Credit> {
+        let request = serde_json::json!({
+            "transaction": transaction,
+            "operation": CREDIT,
+            "arguments": { "segment": segment },
+        });
+        let response: serde_json::Value =
+            serde_json::from_str(&outside_requests::request(&request.to_string())).ok()?;
+        if response["outcome"]["status"] != "completed" {
+            return None;
+        }
+        Credit::read(response["outcome"]["body"]["credit"].as_str()?)
+    }
 
     thread_local! {
         static WALLET: RefCell<Wallet> = RefCell::new(Wallet::default());
@@ -69,6 +96,10 @@ mod sandboxed {
                     Operation::Withdrawal(w) => Some(wallet.withdrawal(w)),
                     Operation::BalanceVerification(v) => Some(wallet.verification(v)),
                     Operation::HoldingBalance(h) => Some(wallet.balance(h)),
+                    Operation::ReversalConfirmation(c) => {
+                        let arrived = credit(&c.transaction, &c.segment);
+                        Some(wallet.confirmation(&operation, c, arrived.as_ref()))
+                    }
                     _ => None,
                 }
             });
@@ -86,6 +117,13 @@ mod sandboxed {
 mod outside {
     wit_bindgen::generate!({ world: "outside", path: "../../src/module/wit" });
 
+    use rutent::binding::state;
+
+    /// The outside operation that reads the account's statement of one credit, and its state keys' prefix: as
+    /// `wallet.rs` names them (`T-020-57`).
+    const CREDIT: &str = "wallet.credit";
+    const CREDIT_PREFIX: &str = "credit/";
+
     struct Part;
 
     impl Guest for Part {
@@ -93,9 +131,24 @@ mod outside {
             Ok(())
         }
 
-        /// A plain wallet's sandboxed part asks for nothing outside, so nothing is performed.
-        fn perform(_outside_request: String) -> String {
-            "{}".to_owned()
+        /// The one outside operation a plain wallet asks: the account's statement of the credit for a reversed
+        /// segment, read from the provider's own state. Anything else performs nothing.
+        fn perform(outside_request: String) -> String {
+            let request: serde_json::Value =
+                serde_json::from_str(&outside_request).unwrap_or(serde_json::Value::Null);
+            let operation = request["operation"].as_str().unwrap_or_default();
+            let body = match (operation, request["arguments"]["segment"].as_str()) {
+                (CREDIT, Some(segment)) if !segment.is_empty() => serde_json::json!({
+                    "credit": state::read(&format!("{CREDIT_PREFIX}{segment}")),
+                }),
+                _ => serde_json::json!({}),
+            };
+            serde_json::json!({
+                "transaction": request["transaction"],
+                "operation": operation,
+                "outcome": { "status": "completed", "body": body },
+            })
+            .to_string()
         }
     }
 
