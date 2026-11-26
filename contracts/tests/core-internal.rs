@@ -3252,7 +3252,7 @@ fn a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew() {
     assert_rejected("verified-entry-of-a-refiling-without-its-decision");
     // The decision is asked by the filer, names its arrival, order and filer, and is permitted.
     assert_case("refiling-rests-on-policys-permit--the-operators-permit");
-    for broken in ["missing", "action", "yes", "filer"] {
+    for broken in ["missing", "action", "arrival", "yes", "filer"] {
         assert_case_refused(&format!("refiling-rests-on-policys-permit--{broken}"));
     }
 }

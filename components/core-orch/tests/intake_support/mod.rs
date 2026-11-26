@@ -496,9 +496,7 @@ pub struct Sessions {
 
 impl SessionRegister for Sessions {
     fn held(&mut self, session: &Id) -> Option<HeldSession> {
-        if self.unread {
-            return None;
-        }
+        // An unread register that still answers what it held before: the check asks `unread` first.
         self.held.get(session.as_str()).cloned()
     }
 

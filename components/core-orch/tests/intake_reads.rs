@@ -355,7 +355,7 @@ fn held_order_whose_waiting_quote_is_rebuilt_is_not_accepted() {
         },
     );
     assert!(env.intake.held(&order));
-    let before = env.len();
+    let before = env.len_but_reads();
     assert_eq!(
         env.accept(&mut sim, &order, &customer(), &digest),
         Err(IntakeError::NotNow)
@@ -364,7 +364,7 @@ fn held_order_whose_waiting_quote_is_rebuilt_is_not_accepted() {
         env.quote_by(&mut sim, &customer(), &order),
         Err(IntakeError::NotNow)
     );
-    assert_eq!(env.len(), before, "nothing is recorded");
+    assert_eq!(env.len_but_reads(), before, "nothing is recorded");
     assert!(env.acceptances().is_empty());
     assert!(env.started().is_empty());
     assert_admitted(&env);
@@ -460,6 +460,98 @@ fn request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input()
             }
         )),
         "recorded as an order refusal of its class, naming no order"
+    );
+    assert_admitted(&env);
+}
+
+/// A refused agent is told `ReadRefused` alike by every answer that would show an order's state or identifier: a quote
+/// on an order that has since ended is no `NotNow`, and another request under its identifier is no `Conflicting` naming
+/// the order (or none) (`T-023-01`, the review of `96d161a0`). A caller policy lets read gets them as before.
+// verifies: REQ-AUZ-8
+#[test]
+fn a_refused_agent_is_told_no_order_state_or_identifier_by_an_error() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    env.reads.scoped.clear();
+    // The person opens and quotes; the unscoped agent's quote of a live order is refused to it.
+    let (order, _) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    assert_eq!(
+        env.quote_by(&mut sim, &agent(), &order),
+        Err(IntakeError::ReadRefused)
+    );
+    // The agent's quote was routed all the same, and showed a quote anew: the person accepts the one it is shown now.
+    let Some(Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    }) = env.told_customer("client-req-1")
+    else {
+        panic!("a quote is shown");
+    };
+    // Policy refuses the person's acceptance, so the order ends; the agent's quote is told no more than before.
+    env.policy.answer = rutent_contracts::core_internal::Answer::Refuse {
+        class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+    };
+    env.accept(&mut sim, &order, &customer(), &digest)
+        .expect("the person is told it ended");
+    assert_eq!(
+        env.quote_by(&mut sim, &agent(), &order),
+        Err(IntakeError::ReadRefused),
+        "an ended order is no NotNow to it"
+    );
+    assert_eq!(
+        env.quote_by(&mut sim, &customer(), &order),
+        Err(IntakeError::NotNow),
+        "the person is told it is not now, as before"
+    );
+    // Another request under the identifier names no order to the agent.
+    let mut other = order_request("client-req-1", agent());
+    other.route = route("999");
+    assert_eq!(env.open(&mut sim, &other), Err(IntakeError::ReadRefused));
+    other.caller = customer();
+    assert!(matches!(
+        env.open(&mut sim, &other),
+        Err(IntakeError::Conflicting { order: Some(o) }) if o == order
+    ));
+    // Nor does it learn that a request was refused before an order existed.
+    let mut malformed = order_request("client-req-bad", customer());
+    malformed.parties.requester = id("someone-else");
+    assert!(matches!(
+        env.open(&mut sim, &malformed),
+        Ok(Told::Refused { .. })
+    ));
+    let mut again = malformed.clone();
+    again.caller = agent();
+    again.route = route("999");
+    assert_eq!(env.open(&mut sim, &again), Err(IntakeError::ReadRefused));
+    assert_admitted(&env);
+}
+
+/// A read of a held order hands its record to nobody: after a restart that can't read its inputs back, telling its
+/// status and repeating its request leave the deployment's records of filed orders where they were (`T-020-52`, the
+/// review of `96d161a0`).
+// verifies: NFR-6
+#[test]
+fn a_held_orders_status_read_hands_no_record_to_policys_sources() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let request = order_request("client-req-1", customer());
+    let (order, _) = env.quoted(&mut sim, &request);
+    let statements = env.store.borrow().kept.clone();
+    env.intake = Intake::reopened(
+        &env.history(),
+        &mut Shelf {
+            statements,
+            lost: true,
+        },
+    );
+    assert!(env.intake.held(&order));
+    env.reads.filed.clear();
+    let _ = env.told_customer("client-req-1");
+    let _ = env.open(&mut sim, &request);
+    assert!(
+        env.reads.filed.is_empty(),
+        "no record of a held order reached the deployment: {:?}",
+        env.reads.filed
     );
     assert_admitted(&env);
 }

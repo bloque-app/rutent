@@ -344,6 +344,15 @@ fn key(receipt: &Receipt) -> String {
     serde_json::to_string(receipt).unwrap_or_default()
 }
 
+/// A key for the refiling of an arrival by a filer: the arrival and the actor, whole, so no other actor reuses it.
+fn refiling_key(arrival: &Receipt, filer: &Actor) -> String {
+    format!(
+        "{}|{}",
+        key(arrival),
+        serde_json::to_string(filer).unwrap_or_default()
+    )
+}
+
 /// Whether `filer` may file at all: the deployment's operator (its party the operator's), or a reserve, and in either
 /// case an actor the register of actors says acts for the party it states, as the kind and in the role it states, which
 /// policy's register binds (`REQ-ORD-13`, `REQ-ORD-23`, `T-020-52`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
@@ -793,7 +802,10 @@ impl Arrivals {
         let (Some(order), ArrivalMatch::Differs) = (&recorded.order, recorded.matched) else {
             return Err(ArrivalError::NoSuchArrival);
         };
-        let refiled = match self.refilings.get_mut(&key(arrival)) {
+        // A refiling built is reused only by the filer it was built for and policy permitted: another filer is asked of
+        // policy on its own, never told an arrival was filed anew on a permit that wasn't its own (`T-020-52`).
+        let built = refiling_key(arrival, filer);
+        let refiled = match self.refilings.get_mut(&built) {
             Some(refiled) => refiled,
             None => {
                 // Policy decides the refiling first, as it decides any action (`T-020-52`): the entry cites its
@@ -823,7 +835,7 @@ impl Arrivals {
                     decision: permit.receipt().clone(),
                 };
                 let entry = journal::build(desk.parts.clock, filer, what)?;
-                self.refilings.entry(key(arrival)).or_insert(Refiled {
+                self.refilings.entry(built).or_insert(Refiled {
                     entry,
                     receipt: None,
                 })

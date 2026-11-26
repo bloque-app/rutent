@@ -5410,3 +5410,71 @@ fn reopened_wait_reads_the_filings_needs_back_from_the_statement() {
     let read = reopened.filing_of(&order).expect("the wait's filing");
     assert_eq!(read.needs, one.needs);
 }
+
+/// A refiling built for one filer, whose append failed, is appended again only on that filer's own call: another filer
+/// is asked of policy on its own, and one policy refuses is refused, never told the arrival was filed anew on a permit
+/// that wasn't its own (`T-020-52`, the review of `96d161a0`).
+// verifies: REQ-ORD-23, REQ-AUZ-1
+#[test]
+fn a_built_refiling_is_reused_only_by_the_filer_it_was_built_for() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let first = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&order)]),
+        &report(600, 0),
+    )
+    .unwrap()
+    {
+        Arrived::Held { arrival, .. } => arrival,
+        other => panic!("{other:?}"),
+    };
+    // The operator's refiling is permitted and built, and the log can't take it now.
+    env.book.borrow_mut().fail_next = Some("other");
+    assert!(matches!(
+        refile(&mut env, &mut providers, &mut arrivals, &operator(), &first),
+        Err(ArrivalError::Log(_))
+    ));
+    // Policy refuses the reserve: it is told so, asked on its own, and nothing is appended on the operator's permit.
+    env.deciding.refuse = true;
+    let asked = env.deciding.asked.len();
+    assert_eq!(
+        refile(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &reserve_filer(),
+            &first
+        ),
+        Err(ArrivalError::Refused {
+            class: OrderRefusalClass::RefusedByPolicy
+        })
+    );
+    assert_eq!(env.deciding.asked.len(), asked + 1, "policy was asked");
+    assert!(
+        !env.book
+            .borrow()
+            .verified()
+            .iter()
+            .any(|w| matches!(w, What::Refiling { .. })),
+        "no refiling is appended"
+    );
+    // The operator's own call carries its built refiling on, with no second question.
+    env.deciding.refuse = false;
+    let asked = env.deciding.asked.len();
+    let receipt = refile(&mut env, &mut providers, &mut arrivals, &operator(), &first).unwrap();
+    assert_eq!(
+        env.deciding.asked.len(),
+        asked,
+        "its permit is the one it built on"
+    );
+    let Entry::Verified(v) = at(&env, &receipt) else {
+        panic!("a refiling is a verified entry");
+    };
+    assert_eq!(v.who, operator());
+    assert_admitted(&env);
+}

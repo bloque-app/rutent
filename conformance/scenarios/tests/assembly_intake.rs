@@ -116,7 +116,7 @@ fn order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_c
         ),
         "not quoted again"
     );
-    let before = core.verified_whats().len();
+    let before = recorded_but_reads(&core);
     assert!(
         matches!(
             core.accept(&kit::customer(), &order, &digest),
@@ -124,7 +124,16 @@ fn order_whose_inputs_cannot_be_read_back_is_neither_quoted_nor_accepted_after_c
         ),
         "not accepted"
     );
-    assert_eq!(core.verified_whats().len(), before, "nothing recorded");
+    assert_eq!(recorded_but_reads(&core), before, "nothing recorded");
+}
+
+/// How many verified entries the log holds, but for policy's recorded reads: telling a status is checked and recorded
+/// (`T-020-52`), which is no change to an order.
+fn recorded_but_reads(core: &Core) -> usize {
+    core.verified_whats()
+        .iter()
+        .filter(|w| !matches!(w, What::CheckRead { .. }))
+        .count()
 }
 
 /// The customer's agent: a login of its own the deployment's register lists, as an agent of the customer's party.

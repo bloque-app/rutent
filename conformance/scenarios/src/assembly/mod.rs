@@ -463,7 +463,7 @@ impl Actors for Acting {
 /// record of the filed request first, for policy's `Requester` source to answer from (`T-020-52`).
 struct Reading {
     policy: PolicySide,
-    orders: Rc<RefCell<BTreeMap<String, OrderRecord>>>,
+    orders: rutent_core_authz::core_sources::OpenedOrders,
 }
 
 impl Reads for Reading {
@@ -483,8 +483,7 @@ impl Reads for Reading {
 impl StatusReads for Reading {
     fn filed(&mut self, record: &OrderRecord) {
         self.orders
-            .borrow_mut()
-            .insert(record.order.as_str().to_owned(), record.clone());
+            .opened(&record.order, &record.parties, &record.origin_reserve);
     }
 }
 
@@ -1701,7 +1700,7 @@ impl Core {
         let mut decisions = self.policy.clone();
         let mut reads = Reading {
             policy: self.policy.clone(),
-            orders: Rc::clone(&self.records.orders),
+            orders: self.sources.opened_orders(),
         };
         let mut desk = Desk {
             parts: &mut parts,

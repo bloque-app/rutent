@@ -508,6 +508,20 @@ impl Intake {
         let Told::Exists { order, .. } = &told else {
             return Ok(told);
         };
+        self.read_order(desk, caller, order)?;
+        Ok(told)
+    }
+
+    /// Asks policy whether `caller` may read the status of `order`, as [`Intake::read`] does, recording the check.
+    /// [`IntakeError::ReadRefused`] where it may not, or where intake holds no order of that name; a check that
+    /// couldn't be made is the log's failure, nothing told. A held order (`T-020-46`) hands its record to nobody
+    /// (`T-020-52`).
+    fn read_order(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+    ) -> Result<(), IntakeError> {
         let kept = self
             .orders
             .get(order.as_str())
@@ -519,13 +533,16 @@ impl Intake {
             }
         } else {
             // Intake's own record of the filed request goes to the deployment first: policy asks the order's record
-            // who its requester is, never the read's word.
-            desk.reads.filed(&OrderRecord {
-                order: order.clone(),
-                request: kept.request.request.clone(),
-                parties: kept.request.parties.clone(),
-                origin_reserve: kept.request.origin_reserve.clone(),
-            });
+            // who its requester is, never the read's word. A held order's goes to nobody (`T-020-46`): the log's own
+            // `order_opened` is what policy reads it from.
+            if !self.held.contains(order.as_str()) {
+                desk.reads.filed(&OrderRecord {
+                    order: order.clone(),
+                    request: kept.request.request.clone(),
+                    parties: kept.request.parties.clone(),
+                    origin_reserve: kept.request.origin_reserve.clone(),
+                });
+            }
             Read::FiledOrder {
                 order: order.clone(),
                 requester: kept.request.parties.requester.clone(),
@@ -539,8 +556,40 @@ impl Intake {
             at: record::now(desk.parts.clock)?,
         })?;
         match answer.outcome {
-            ReadOutcome::Allowed {} => Ok(told),
+            ReadOutcome::Allowed {} => Ok(()),
             ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
+    }
+
+    /// What a failed call tells `caller`: the error itself, unless it shows the state or the identifier of an order the
+    /// caller may not read, in which case the same read check is asked first and a refused reader is told
+    /// [`IntakeError::ReadRefused`] alike whatever the order's state (`T-023-01`). An error of that kind with no order
+    /// behind it (a request refused before one existed) is no one's to read, so an agent, whose party's scope for
+    /// reading nothing can be asked of, is told [`IntakeError::ReadRefused`] too: fail closed.
+    fn told_error(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        order: &Id,
+        error: IntakeError,
+    ) -> IntakeError {
+        let named = match &error {
+            IntakeError::Conflicting { order: Some(named) } => Some(named),
+            IntakeError::Conflicting { order: None } => {
+                return if caller.kind == ActorKind::Agent {
+                    IntakeError::ReadRefused
+                } else {
+                    error
+                };
+            }
+            IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
+                Some(order)
+            }
+            _ => return error,
+        };
+        match named.map(|o| self.read_order(desk, caller, o)) {
+            Some(Ok(())) | None => error,
+            Some(Err(refused)) => refused,
         }
     }
 
@@ -763,7 +812,13 @@ impl Intake {
         request: OrderRequest,
     ) -> Result<Told, IntakeError> {
         let caller = request.caller.clone();
-        let told = self.open_inner(desk, request)?;
+        let told = match self.open_inner(desk, request) {
+            Ok(told) => told,
+            Err(error) => {
+                let none = Id::new("none").expect("an identifier");
+                return Err(self.told_error(desk, &caller, &none, error));
+            }
+        };
         self.read(desk, &caller, told)
     }
 
@@ -817,7 +872,10 @@ impl Intake {
         caller: &Actor,
         order: &Id,
     ) -> Result<Told, IntakeError> {
-        let told = self.quote_inner::<R>(desk, caller, order)?;
+        let told = match self.quote_inner::<R>(desk, caller, order) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, caller, order, error)),
+        };
         self.read(desk, caller, told)
     }
 
@@ -996,7 +1054,10 @@ impl Intake {
         owner: Option<&Id>,
         hold: Option<&Id>,
     ) -> Result<Told, IntakeError> {
-        let told = self.accept_inner(desk, order, by, quote, owner, hold)?;
+        let told = match self.accept_inner(desk, order, by, quote, owner, hold) {
+            Ok(told) => told,
+            Err(error) => return Err(self.told_error(desk, by, order, error)),
+        };
         self.read(desk, by, told)
     }
 
@@ -1443,13 +1504,15 @@ pub(crate) fn session_refusal(
     holder: &Id,
     now: &Timestamp,
 ) -> Option<OrderRefusalClass> {
+    // Asked first, so a register that is unread refuses whatever sessions its adapter still answers (fail closed).
+    if sessions.unread() {
+        return Some(OrderRefusalClass::MissingInput);
+    }
     let held = sessions.held(session).is_some_and(|held| {
         &held.holder == holder && held.expires_at.unix_nanos() > now.unix_nanos()
     });
     if held {
         None
-    } else if sessions.unread() {
-        Some(OrderRefusalClass::MissingInput)
     } else {
         Some(OrderRefusalClass::RefusedByPolicy)
     }
