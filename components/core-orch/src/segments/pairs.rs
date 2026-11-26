@@ -37,6 +37,21 @@ pub enum Unbuilt {
     Refused(&'static str),
 }
 
+impl Unbuilt {
+    /// The reason as a raise states it ([`rutent_contracts::core_internal::PairNotBuilt`]).
+    pub fn as_raised(&self) -> rutent_contracts::core_internal::PairNotBuilt {
+        use rutent_contracts::core_internal::PairNotBuilt;
+        match self {
+            Unbuilt::NoSentReport(segment) => PairNotBuilt::NoSentReport {
+                segment: segment.clone(),
+            },
+            Unbuilt::NoFlight => PairNotBuilt::NoFlight {},
+            Unbuilt::NotAnAmount(_) => PairNotBuilt::NotAnAmount {},
+            Unbuilt::Refused(_) => PairNotBuilt::Refused {},
+        }
+    }
+}
+
 /// What a settled segment reports having given out, kept for the segment after it.
 #[derive(Debug, Clone)]
 pub(super) struct Sent {
@@ -62,6 +77,9 @@ pub(super) struct Pairing {
     built: BTreeSet<(String, String)>,
     unbuilt: Vec<UnbuiltPair>,
     lost: bool,
+    /// The pairs already raised to the operator, by order and later segment: the log holds each once
+    /// ([`Segments::write_unbuilt`]).
+    raised: BTreeSet<(String, String)>,
 }
 
 /// `amount`'s tuple increment restated from the origin's unit to the out unit, rounded down: `None` where there is
@@ -249,6 +267,42 @@ impl Segments {
         Ok(written)
     }
 
+    /// Raises each pair that couldn't be built, or that the log refused, to the operator, and the log records the raise,
+    /// once for the pair (`REQ-ORD-9`, `ADR-0009`, `T-020-48`): a pair dropped by a restart is no longer held in memory
+    /// alone. Answers how many it raised now. A pair the log can't take now waits for the next call; one the log
+    /// refuses is not raised again (the same raise would be refused). The pairs a reopened Core finds the log already
+    /// raised are not raised again.
+    ///
+    /// # Errors
+    ///
+    /// The log's unavailability, the pairs after it left waiting.
+    pub fn write_unbuilt(
+        &mut self,
+        comparisons: &mut dyn Comparisons,
+    ) -> Result<usize, AppendFailure> {
+        let mut raised = 0;
+        for parked in self.pairing.unbuilt.clone() {
+            let at = (
+                parked.order.as_str().to_owned(),
+                parked.segment.as_str().to_owned(),
+            );
+            if self.pairing.raised.contains(&at) {
+                continue;
+            }
+            match comparisons.pair_not_built(
+                &parked.order,
+                &parked.segment,
+                &parked.why.as_raised(),
+            ) {
+                Ok(_) => raised += 1,
+                Err(AppendFailure::Unavailable) => return Err(AppendFailure::Unavailable),
+                Err(AppendFailure::Refused(_)) => {}
+            }
+            self.pairing.raised.insert(at);
+        }
+        Ok(raised)
+    }
+
     /// How many pairs wait for [`Segments::write_pairs`].
     pub fn unpaired(&self) -> usize {
         self.pairing.waiting.len()
@@ -281,6 +335,21 @@ impl Segments {
                 rutent_contracts::core_internal::Entry::Stated(_) => None,
             })
             .collect();
+        // The pairs the log already holds a raise of are told no more.
+        for (_, entry) in history {
+            if let rutent_contracts::core_internal::Entry::Verified(v) = entry
+                && let rutent_contracts::core_internal::What::Raise { raise } = &v.what
+                && let rutent_contracts::core_internal::Difference::PairNotBuilt {
+                    order,
+                    segment,
+                    ..
+                } = &raise.difference
+            {
+                self.pairing
+                    .raised
+                    .insert((order.as_str().to_owned(), segment.as_str().to_owned()));
+            }
+        }
         let settled = |order: &str, segment: &str| {
             self.flights
                 .get(&(order.to_owned(), segment.to_owned()))
@@ -520,6 +589,15 @@ mod tests {
         fn holding_reading(
             &mut self,
             _: &rutent_contracts::core_internal::HoldingReading,
+        ) -> Result<Receipt, AppendFailure> {
+            Err(AppendFailure::Unavailable)
+        }
+
+        fn pair_not_built(
+            &mut self,
+            _: &Id,
+            _: &Id,
+            _: &rutent_contracts::core_internal::PairNotBuilt,
         ) -> Result<Receipt, AppendFailure> {
             Err(AppendFailure::Unavailable)
         }

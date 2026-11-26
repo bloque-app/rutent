@@ -7951,3 +7951,28 @@ contract edited, no simulated provider or stand-in touched (the sim guests are n
   | the schedule closes nothing | `completed_order_is_closed_and_its_price_reported_by_cores_schedule`, `order_completed_before_core_reopens_is_closed_after_it` |
   | no floor window | `owed_reversal_at_a_tuple_that_never_settles_is_held_to_a_floor_window` |
   | the maker isn't held | `another_providers_answer_of_the_same_body_is_not_the_result_held` |
+
+### T-020-48, the lead's two gaps (after the first review round began)
+
+- **Gap 1, closed: the log records each unbuilt pair once.** `core-internal`'s unreleased 1.0.0 (a `DEC-20` path) gains
+  `Difference::PairNotBuilt {order, segment, why}` (`why`: `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`),
+  `Comparisons::pair_not_built`, the schema, README and CHANGELOG entries and fixtures (valid `raise-of-a-pair-a-restart-dropped`,
+  `raise-of-a-pair-the-contract-refused`; three invalid; admission `--its-plan-lists`, `--missing`). It is the one raise that may
+  cite no receipt (`Raise::check`, the schema's `cites` conditional); row
+  `raise-of-a-pair-not-built-names-a-segment-its-plan-lists` holds it to its order's plan instead (118 relations).
+  `Segments::write_unbuilt` raises each parked pair once; a reopened Core reads the raises the log holds and raises none again.
+  The tick's `UnbuiltPairs` job calls it and `Round::raised` counts them. Test: `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once`
+  (three raises in the log, each citing nothing, each delivered to the operator, none again at the next tick or after another
+  reopening); contract test `raise_of_a_pair_never_built_may_cite_nothing_and_no_other_raise_may`.
+- **Gap 5, closed: a kept answer that says the move settled is reported to the mover as done**, as one that says failed is
+  reported failed. Test `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule`. Known: the
+  statement handed to the report is kept again by `Segments::late_statement` (a second stated entry of the same bytes, as the
+  segments attribute it), beside the one `Reversals::later` kept; unifying the two keepers is open (owner: the review round of
+  `T-020-48`). `late_answer_the_platform_receives_moves_nothing_twice` takes its tick before the part is declared stuck for that reason.
+
+| Rule switched off | Red |
+|---|---|
+| the tick raises no unbuilt pair | `pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recorded_once` |
+| a settled answer is not reported | `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule` |
+| a pair's raise may not cite nothing | `raise_of_a_pair_never_built_may_cite_nothing_and_no_other_raise_may` |
+| a pair's raise isn't held to its plan | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |

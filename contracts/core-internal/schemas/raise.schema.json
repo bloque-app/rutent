@@ -20,9 +20,8 @@
       "$ref": "#/$defs/difference"
     },
     "cites": {
-      "description": "The receipts of the entries it rests on, at least one, each once.",
+      "description": "The receipts of the entries it rests on, at least one, each once; a raise of a `pair_not_built` may cite none, since a pair a restart dropped has no entry to cite.",
       "type": "array",
-      "minItems": 1,
       "uniqueItems": true,
       "items": {
         "$ref": "urn:rutent:core-internal:receipt"
@@ -49,7 +48,8 @@
             "holding_not_comparable",
             "charge",
             "settlement_time",
-            "public_end"
+            "public_end",
+            "pair_not_built"
           ]
         }
       },
@@ -157,6 +157,21 @@
           },
           "then": {
             "$ref": "#/$defs/difference_public_end"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pair_not_built"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/difference_pair_not_built"
           }
         }
       ]
@@ -505,6 +520,125 @@
           "$ref": "urn:rutent:provider-role:common#/$defs/amount"
         }
       }
+    },
+    "difference_pair_not_built": {
+      "description": "A segment's pair of reports was never built, so the comparison of the two parties' words was never made (REQ-ORD-9, ADR-0009, T-020-48): a pair a restart dropped, or one that couldn't be built or compared. Raised, never skipped silently. The only kind of raise that may cite no receipt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "order",
+        "segment",
+        "why"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pair_not_built"
+        },
+        "order": {
+          "description": "The order.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "segment": {
+          "description": "The later segment of the two: the one whose end owed the pair.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "why": {
+          "$ref": "#/$defs/pair_not_built"
+        }
+      }
+    },
+    "pair_not_built": {
+      "description": "Why the pair was never built.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "no_sent_report",
+            "no_flight",
+            "not_an_amount",
+            "refused"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "segment"
+            ],
+            "properties": {
+              "kind": {
+                "const": "no_sent_report"
+              },
+              "segment": {
+                "description": "The segment whose sent report is missing: the one before the pair's later segment.",
+                "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "no_flight",
+                  "not_an_amount",
+                  "refused"
+                ]
+              }
+            }
+          }
+        }
+      ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "difference"
+        ],
+        "properties": {
+          "difference": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pair_not_built"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "cites": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }

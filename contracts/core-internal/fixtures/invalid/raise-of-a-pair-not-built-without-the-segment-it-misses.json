@@ -1,0 +1,13 @@
+{
+  "raise": "raise-pair-1",
+  "difference": {
+    "kind": "pair_not_built",
+    "order": "ord-17",
+    "segment": "seg-2",
+    "why": {
+      "kind": "no_sent_report"
+    }
+  },
+  "cites": [],
+  "at": "2026-11-10T09:00:00Z"
+}

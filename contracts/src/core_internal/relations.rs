@@ -489,7 +489,7 @@ fn statement_about(
 }
 
 /// The citation table, in the order the engine reads it. `contracts/core-internal/README.md` lists it.
-pub static RELATIONS: [Relation; 117] = [
+pub static RELATIONS: [Relation; 118] = [
     Relation {
         name: "effect-permits-a-decided-action",
         spec: &["REQ-AUZ-1"],
@@ -3522,6 +3522,39 @@ pub static RELATIONS: [Relation; 117] = [
                 .and_then(|i| planned(i, segment.as_str()))
             {
                 Some(planned) => judge(true, &[&planned.from.asset != asset]),
+                None => Match::NotTarget,
+            }
+        },
+    },
+    Relation {
+        name: "raise-of-a-pair-not-built-names-a-segment-its-plan-lists",
+        spec: &["REQ-ORD-9"],
+        quantifier: Quantifier::Exists,
+        refusal: "a pair raised as never built is of a segment its order's plan lists",
+        fields: &[],
+        // The one raise that may cite no receipt (`Raise::check`) is held to the plan instead: the segment it names is
+        // one its order's plan lists, so a raise can't name a pair of nothing the log knows.
+        cites: |e, _| match &e.what {
+            What::Raise { raise }
+                if matches!(raise.difference, Difference::PairNotBuilt { .. }) =>
+            {
+                by_fields(0)
+            }
+            _ => none(),
+        },
+        answers: |e, _, t, _| {
+            let What::Raise { raise } = &e.what else {
+                return Match::NotTarget;
+            };
+            let Difference::PairNotBuilt { order, segment, .. } = &raise.difference else {
+                return Match::NotTarget;
+            };
+            match verified(t)
+                .and_then(input)
+                .filter(|i| i.subject.order.as_str() == order.as_str())
+                .and_then(|i| planned(i, segment.as_str()))
+            {
+                Some(_) => judge(true, &[]),
                 None => Match::NotTarget,
             }
         },

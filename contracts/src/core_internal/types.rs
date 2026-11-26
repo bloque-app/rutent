@@ -1963,6 +1963,19 @@ pub enum Difference {
         /// What the provider said it moved.
         stated: PublicFigures,
     },
+    /// A segment's pair of reports was never built, so the comparison of the two parties' words was never made
+    /// (`REQ-ORD-9`, `ADR-0009`, `T-020-48`): a pair a restart dropped, whose sent report went with the stopped process,
+    /// or one that couldn't be built or compared. A comparison is a detection, so the pair is parked and raised, never
+    /// skipped silently. The raise may cite no receipt, as a pair dropped by a restart has none to cite; no other kind
+    /// of raise may (`raise-of-a-pair-not-built-names-a-segment-its-plan-lists`).
+    PairNotBuilt {
+        /// The order.
+        order: Id,
+        /// The later segment of the two: the one whose end owed the pair.
+        segment: Id,
+        /// Why the pair was never built.
+        why: PairNotBuilt,
+    },
     /// A material change in a provider's p99 settlement time (`REQ-ORD-6`).
     SettlementTime {
         /// The provider.
@@ -1972,6 +1985,23 @@ pub enum Difference {
         /// The p99 now, in seconds.
         now_seconds: SafeInteger,
     },
+}
+
+/// Why a segment's pair of reports was never built. Schema: `urn:rutent:core-internal:raise#/$defs/pair_not_built`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PairNotBuilt {
+    /// Core holds no sent report of the segment before: its result that counted isn't in hand, as after a restart.
+    NoSentReport {
+        /// The segment whose sent report is missing: the one before the pair's later segment.
+        segment: Id,
+    },
+    /// The segment's flight isn't held.
+    NoFlight {},
+    /// A figure of one of the reports isn't an amount the contract carries.
+    NotAnAmount {},
+    /// The contract refuses the pair.
+    Refused {},
 }
 
 /// The mark of a charge stated in an asset no fee formula covers. Schema:

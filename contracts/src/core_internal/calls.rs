@@ -390,6 +390,16 @@ pub trait Comparisons {
     /// operator. The log keeps the check without the balance (`REQ-AUD-6`). The answer is the receipt of the
     /// check's entry, and says nothing of the comparison.
     fn holding_reading(&mut self, reading: &HoldingReading) -> Result<Receipt, AppendFailure>;
+
+    /// Raises a segment's pair of reports that was never built, so the comparison was never made (`REQ-ORD-9`,
+    /// `ADR-0009`, `T-020-48`): it goes to the operator and the log records the raise, which cites nothing where a
+    /// restart dropped the pair. The answer is the receipt of the raise's entry.
+    fn pair_not_built(
+        &mut self,
+        order: &Id,
+        segment: &Id,
+        why: &PairNotBuilt,
+    ) -> Result<Receipt, AppendFailure>;
 }
 
 /// The records the bulk measures read (`REQ-AUD-7`).

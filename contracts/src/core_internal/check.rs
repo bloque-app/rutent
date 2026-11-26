@@ -344,10 +344,17 @@ impl HandedOver {
 impl Raise {
     /// Checks that a raise rests on cited entries and carries a real difference.
     pub fn check(&self) -> Result<(), Violation> {
-        listed(
-            &self.cites,
-            "a raise cites the entries it rests on, at least one, each once",
-        )?;
+        // A pair never built has no entry to cite where a restart dropped it: that kind alone may cite none, each once.
+        if matches!(self.difference, Difference::PairNotBuilt { .. }) {
+            if !distinct(&self.cites) {
+                broke("a raise cites the entries it rests on, each once")?;
+            }
+        } else {
+            listed(
+                &self.cites,
+                "a raise cites the entries it rests on, at least one, each once",
+            )?;
+        }
         if let Difference::HoldingNotComparable {
             word,
             asset,
@@ -382,7 +389,7 @@ impl Raise {
             Difference::Charge {
                 charged, maximum, ..
             } => charged <= maximum,
-            Difference::Holding { .. } => false,
+            Difference::Holding { .. } | Difference::PairNotBuilt { .. } => false,
             Difference::PublicEnd {
                 found,
                 moved,

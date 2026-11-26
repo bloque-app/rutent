@@ -8,7 +8,7 @@
 //! value. Neither is a call of the assembly's own: a scenario calls [`Core::tick`], and a reading is never handed in.
 
 use rutent_contracts::core_internal::calls::{AppendFailure, Comparisons};
-use rutent_contracts::core_internal::{HoldingReading, Receipt, ReportPair};
+use rutent_contracts::core_internal::{HoldingReading, PairNotBuilt, Receipt, ReportPair};
 use rutent_core_audit::compare::Compare;
 use rutent_core_audit::log::General;
 use rutent_core_orch::snapshot::Clock as _;
@@ -127,6 +127,28 @@ impl Core {
         self.segments.lose_sent_reports();
     }
 
+    /// Raises each pair that couldn't be built to the operator and has the log record it, once (`REQ-ORD-9`,
+    /// `T-020-48`): Core's schedule calls it.
+    pub(super) fn raise_unbuilt(&mut self) -> Result<usize, AppendFailure> {
+        let channel = rutent_core_orch::notice::Channel {
+            notices: &mut self.notices,
+            key: &mut self.notice_signer,
+            transport: &mut self.wire,
+        };
+        let mut compare =
+            Compare::new(
+                Compare::<
+                    super::CoreLog,
+                    rutent_core_orch::notice::Channel<'_>,
+                    crate::kit::SharedClock,
+                >::core_audit(kit::core().party),
+                General::new(&self.log),
+                channel,
+                self.clock.clone(),
+            );
+        self.segments.write_unbuilt(&mut compare)
+    }
+
     /// Hands `CMP-CORE-AUDIT`'s comparison the pairs of reports the segments' ends gave since the last call, and
     /// answers how many it took (`REQ-ORD-9`, `T-020-35`): each pair is recorded in Core's log and, where its figures
     /// differ by one increment or more, raised to the operator on Core's channel. The assembly doesn't call it by
@@ -165,6 +187,15 @@ impl Core {
                 reading: &HoldingReading,
             ) -> Result<Receipt, AppendFailure> {
                 self.inner.holding_reading(reading)
+            }
+
+            fn pair_not_built(
+                &mut self,
+                order: &rutent_contracts::router_api::Id,
+                segment: &rutent_contracts::router_api::Id,
+                why: &PairNotBuilt,
+            ) -> Result<Receipt, AppendFailure> {
+                self.inner.pair_not_built(order, segment, why)
             }
         }
         let channel = rutent_core_orch::notice::Channel {

@@ -361,4 +361,44 @@ fn pairs_a_restart_dropped_reach_the_operator_through_the_schedule_and_are_recor
         "told once, not again at each tick"
     );
     assert_eq!(core.write_pairs(), Ok(0), "none written");
+    // Each is raised to the operator and recorded in the log, once, citing nothing (a pair a restart dropped has no
+    // entry to cite).
+    assert_eq!(round.raised, 3);
+    let in_log = |core: &Core| -> Vec<(Id, Id)> {
+        entries(core)
+            .into_iter()
+            .filter_map(|v| match v.what {
+                rutent_contracts::core_internal::What::Raise { raise } => match raise.difference {
+                    rutent_contracts::core_internal::Difference::PairNotBuilt {
+                        order,
+                        segment,
+                        why,
+                    } => {
+                        assert!(raise.cites.is_empty(), "nothing to cite");
+                        assert!(matches!(
+                            why,
+                            rutent_contracts::core_internal::PairNotBuilt::NoSentReport { .. }
+                        ));
+                        Some((order, segment))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    let raised = in_log(&core);
+    assert_eq!(raised.len(), 3, "one raise for each pair: {raised:?}");
+    assert_eq!(core.raised().len(), 3, "and each reached the operator");
+    assert_eq!(core.tick().raised, 0, "not again");
+    assert_eq!(in_log(&core).len(), 3);
+    // A Core that reopens again finds them raised in the log and raises none.
+    let mut core = rutent_scenarios::harness::Scenario::new(
+        "execution",
+        "AC-1",
+        given(&[IN, EXCHANGE, QUICK, OUT]),
+    )
+    .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
+    assert_eq!(core.tick().raised, 0, "the log holds them");
+    assert_eq!(in_log(&core).len(), 3);
 }

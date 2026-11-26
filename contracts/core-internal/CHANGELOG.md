@@ -3,6 +3,13 @@
 ## 1.0.0
 - The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`), folded into this unreleased version
   while `develop` holds none of it:
+  - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
+    `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so
+    the comparison was never made (`REQ-ORD-9`, `ADR-0009`); `Comparisons::pair_not_built`. The one raise that may cite no
+    receipt, since a pair a restart dropped has none: `Raise::check` and the schema (`cites` needs one item for any other
+    kind), with row `raise-of-a-pair-not-built-names-a-segment-its-plan-lists` instead. Fixtures: valid
+    `raise-of-a-pair-a-restart-dropped`, `raise-of-a-pair-the-contract-refused`; invalid `raise-of-a-pair-not-built-without-the-segment-it-misses`,
+    `--citing-one-receipt-twice`, `--for-a-reason-it-has-no-name-for`; admission `--its-plan-lists`, `--missing`. 118 relations.
   - `F-025`'s L7: row `automatic-deposit-takes-a-firm-quote`, an `automatic_deposit` acceptance's quote is no `shown`
     without a firm rate or awaiting its customer.
   - R-AWAITING: `arrival.holder` (optional), and row `waiting-quote-is-for-its-arrivals-holder`, a `shown` with
@@ -63,7 +70,7 @@
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s and `T-020-51`'s rounds, merged beside it:
-  thirty schemas, 185 valid fixtures and 184 invalid, 768 admission cases and 58 attribution cases (counted from the files); 117
+  thirty schemas, 185 valid fixtures and 184 invalid, 768 admission cases and 58 attribution cases (counted from the files); 118
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

@@ -250,6 +250,8 @@ pub struct Round {
     pub ended: Vec<Id>,
     /// The pairs a restart dropped, that no earlier round told the operator of.
     pub unbuilt_pairs: Vec<UnbuiltPair>,
+    /// How many pairs this round raised to the operator and had the log record (each pair once).
+    pub raised: usize,
 }
 
 impl Round {
@@ -298,6 +300,8 @@ pub trait Duties {
     fn end_expired(&mut self) -> Vec<Id>;
     /// The pairs a restart dropped or that couldn't be built, with why.
     fn unbuilt_pairs(&self) -> Vec<UnbuiltPair>;
+    /// Raises each such pair to the operator and has the log record it, once; how many it raised now.
+    fn raise_unbuilt_pairs(&mut self) -> usize;
 }
 
 /// Core's schedule: the cadences and what ran when.
@@ -390,6 +394,7 @@ impl Schedule {
                 Job::StuckReports => round.reported = duties.report_kept_answers(),
                 Job::EndExpired => round.ended = duties.end_expired(),
                 Job::UnbuiltPairs => {
+                    round.raised = duties.raise_unbuilt_pairs();
                     for pair in duties.unbuilt_pairs() {
                         let at = (
                             pair.order.as_str().to_owned(),
@@ -456,6 +461,9 @@ mod tests {
         }
         fn unbuilt_pairs(&self) -> Vec<UnbuiltPair> {
             Vec::new()
+        }
+        fn raise_unbuilt_pairs(&mut self) -> usize {
+            0
         }
     }
 

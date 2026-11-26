@@ -755,6 +755,73 @@ fn segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_s
     admitted(&core);
 }
 
+/// What a provider says of a stuck move, kept, reaches the move's mover whichever way it says it went: a kept answer that
+/// says the move settled is reported as done, as one that says it failed is reported as failed (`REQ-ORD-1`, `AC-6`,
+/// `T-020-48`). Nothing is settled by it until another actor confirms it.
+// verifies: REQ-ORD-1, AC-6
+#[test]
+fn segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule() {
+    let (mut core, session) = core_with("AC-5", &[RESERVE]);
+    let order = accepted(
+        &mut core,
+        within("req-says-settled", &session, AMOUNT, RESERVE, OTHER),
+    );
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::late());
+    let ran = core.run(&order).expect("the order ran");
+    let deposit = segments_of(&ran)[1].segment.clone();
+    assert!(core.is_unknown(&order, &deposit));
+    core.clock.advance(2 * kit::DECLARED + 5);
+    assert!(matches!(
+        core.watch(&order).expect("watched"),
+        rutent_core_orch::stuck::Watch::Stuck(_)
+    ));
+    // The reserve's word that the deposit settled, restated at Core's clock (the stand-in's carries a fixed time from
+    // before the move) and of another body than the one held (its evidence cites another record), so it is kept beside it.
+    let kept = core.kept_result(&order, &deposit).expect("kept");
+    let mut word: serde_json::Value = serde_json::from_slice(&kept).expect("JSON");
+    assert_eq!(
+        word["statement"]["outcome"]["status"], "succeeded",
+        "{word}"
+    );
+    word["made_at"] = core.clock.timestamp().as_str().into();
+    for piece in word["statement"]["outcome"]["evidence"]
+        .as_array_mut()
+        .expect("evidence")
+    {
+        piece["reference"] = "restated:book-1".into();
+        if piece.get("made_at").is_some() {
+            piece["made_at"] = core.clock.timestamp().as_str().into();
+        }
+    }
+    rutent_conformance::signing::sign_value(&mut word, &statements_key(RESERVE));
+    core.late_delivery(&order, &deposit, &serde_json::to_vec(&word).unwrap())
+        .expect("kept beside the answer held");
+    let outcomes = |core: &Core| -> Vec<rutent_contracts::core_internal::MoveOutcome> {
+        entries(core)
+            .iter()
+            .filter_map(|v| match &v.what {
+                What::ReportOutcome { request, .. } => Some(request.outcome),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(outcomes(&core).is_empty());
+    let round = core.tick();
+    assert!(
+        round.reported.iter().any(|r| r.taken.is_ok()),
+        "{:?}",
+        round.reported
+    );
+    assert_eq!(
+        outcomes(&core),
+        [rutent_contracts::core_internal::MoveOutcome::Done],
+        "reported as done"
+    );
+    assert!(core.is_unknown(&order, &deposit), "settled by nothing yet");
+    admitted(&core);
+}
+
 /// A segment Core asked the status of while it was unknown is not asked again by a Core that reopened on the log: the
 /// log holds the question's effect and its result (`T-020-47`).
 // verifies: REQ-ORD-1
@@ -1016,13 +1083,6 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
         matches!(segments[1].outcome, SegmentOutcome::Unknown(_)),
         "the deposit's outcome is not known: {segments:?}"
     );
-    // Past its time the order is stuck.
-    core.clock.advance(2 * kit::DECLARED + 5);
-    assert!(matches!(
-        core.watch(&order).expect("watched"),
-        rutent_core_orch::stuck::Watch::Stuck(_)
-    ));
-    let held = core.stuck_values();
     // The provider's answer comes late and the platform hands it on: Core's own schedule takes it, with no call of a
     // test's (`T-020-48`). Core's own status question, asked when the segment was left unknown, already brought the
     // provider's result of it, kept once as its statement: the late answer is that result held, never a second result
@@ -1039,14 +1099,23 @@ fn late_answer_the_platform_receives_moves_nothing_twice() {
             .count()
     };
     core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
-    let (results_before, inputs_before, effects_before) =
-        (results(&core), core.inputs().len(), effects(&core));
+    core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
+    let (results_before, effects_before) = (results(&core), effects(&core));
     let round = core.tick();
     assert_eq!(round.late.len(), 1, "one late answer: {:?}", round.late);
     assert!(round.late[0].kept.is_ok(), "{:?}", round.late[0]);
     assert_eq!(results(&core), results_before, "no second statement");
     assert!(core.tick().late.is_empty(), "the platform takes it once");
     assert_eq!(results(&core), results_before);
+    // Past its time the order is stuck.
+    core.clock.advance(2 * kit::DECLARED + 5);
+    assert!(matches!(
+        core.watch(&order).expect("watched"),
+        rutent_core_orch::stuck::Watch::Stuck(_)
+    ));
+    let held = core.stuck_values();
+    // The part's being declared stuck is an input of its own: what follows is held to it.
+    let inputs_before = core.inputs().len();
     let log_before = core.log().entries().len();
     // The same answer handed to Core directly, past the fleet's once: Core itself moves nothing and records nothing new.
     let segment = id(

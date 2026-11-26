@@ -368,6 +368,10 @@ impl Duties for Due<'_> {
     fn unbuilt_pairs(&self) -> Vec<UnbuiltPair> {
         self.0.segments.unbuilt_pairs().to_vec()
     }
+
+    fn raise_unbuilt_pairs(&mut self) -> usize {
+        self.0.raise_unbuilt().unwrap_or(0)
+    }
 }
 
 impl Core {
@@ -463,7 +467,7 @@ impl Core {
     }
 
     /// What Core kept of its provider's answers about the unknown segment `one`, handed to its stuck mover: a
-    /// statement the provider's own result, which says the move failed, is kept as evidence (`Segments::late_statement`)
+    /// statement the provider's own result, which says the move failed or settled, is kept as evidence (`Segments::late_statement`)
     /// and reported as the move's outcome by the mover, the actor whose request policy permitted it, through the stuck
     /// mover's own report (`Stuck::report_segment_outcome`), which settles nothing until another actor confirms it
     /// (`AC-6`, `REQ-ORD-1`). Only a segment of a part Core declared stuck can be reported; one already reported is
@@ -519,17 +523,25 @@ impl Core {
         };
         let mut reported = Vec::new();
         for bytes in kept {
-            // Only an answer that says the move failed is taken to the mover; any other is Core's already, kept once.
-            let failed = serde_json::from_slice::<serde_json::Value>(&bytes)
-                .is_ok_and(|v| v["statement"]["outcome"]["status"] == "failed");
-            if !failed {
+            // Only an answer that says the move failed or succeeded is taken to the mover; any other is Core's already,
+            // kept once.
+            let said = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| {
+                    v["statement"]["outcome"]["status"]
+                        .as_str()
+                        .map(str::to_owned)
+                });
+            if !matches!(said.as_deref(), Some("failed" | "succeeded")) {
                 continue;
             }
             let late = self.take_late(&live, &one.segment, &bytes);
             let Ok(late) = late else { continue };
-            if late.says != Says::Failed {
-                continue;
-            }
+            let outcome = match late.says {
+                Says::Failed => Resolved::Failed,
+                Says::Settled => Resolved::Done,
+                Says::Unknown | Says::Nothing => continue,
+            };
             let mut policy = self.policy.clone();
             let history: Vec<_> = self.log.borrow().entries().to_vec();
             let mut parts = StuckParts {
@@ -549,7 +561,7 @@ impl Core {
                     segment: &one.segment,
                     reporter: &moved.mover,
                 },
-                Resolved::Failed,
+                outcome,
                 &Stated::from(&late),
                 &history,
             );
