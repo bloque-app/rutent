@@ -2,7 +2,7 @@
 name: rutent architecture
 status: accepted by the owner on 2026-11-06 (decision-form item accept-sad), ending STEP-2. Digests SPEC.md v0.4.1 (accepted 2026-11-05); SPEC.md v0.4.2 (2026-11-23) adds no identifier. Produced under Narthex STEP-2 (REQ-CHN-8 to REQ-CHN-10, REQ-CHN-12); every ADR it links to is accepted.
 date: 2026-11-06
-updated: 2026-11-23 (§6's threat-model revisit, as re-checked by F-025's T-025-04, on the owner's item recheck-amendments of 2026-11-18)
+updated: 2026-11-26 (§2, §3 and §5: each public network's reader is an operator's module the platform runs, ADR-0007 as amended on the owner's finding of 2026-11-25); 2026-11-23 (§6's threat-model revisit, as re-checked by F-025's T-025-04, on the owner's item recheck-amendments of 2026-11-18)
 ---
 
 # rutent — Software Architecture Document
@@ -84,11 +84,11 @@ contract (`REQ-MOD-3`). No component depends on a specific provider (`REQ-MOD-4`
 |---|---|---|
 | `CMP-ROUTER` | Reads the catalogue's advertised tuples, finds routes and splits for a customer's objective, under a hop limit, evaluated at the actual amount and direction (`REQ-QTE-11/12`) | Yes — pure function of (request, catalogue snapshot) |
 | `CMP-STM` | One current state per order and segment; changes only on a recorded input; replay-deterministic (`REQ-STM-1/3`) | Yes — host-agnostic transition library (ADR-0002) |
-| `CMP-PROV` | The provider catalogue, module admission/runtime/sandbox, the credential proxy (ADR-0004: shared while every provider is the operator's own, per-provider before an outside one joins), and the holding-account modules at public nodes (`REQ-CAT-23`) | Yes |
+| `CMP-PROV` | The provider catalogue, module admission/runtime/sandbox, the credential proxy (ADR-0004: shared while every provider is the operator's own, per-provider before an outside one joins), the holding-account modules at public nodes (`REQ-CAT-23`), and each public network's reader, an operator's module like the holding wallet (ADR-0007 as amended) | Yes |
 | `CMP-CORE-ORCH` | Binds the three: order/segment orchestration, decision-record capture (`REQ-AUD-4`), notice emission (`REQ-ORD-20`) | No — this is Core's binding logic |
 | `CMP-CORE-AUTHZ` | The policy and authorization engine: every value-moving/route-posting/catalogue-changing action passes it (`REQ-AUZ-1`); judgements are a policy input, never the decision (`REQ-CPL-3`) | No |
 | `CMP-CORE-AUDIT` | The authenticated log, checkpoints (ADR-0005), and the `REQ-AUD-15` holding-account balance check (reading `CMP-PROV`'s holding-account data) | No |
-| `CMP-EVIDENCE` | A read-only, per-public-node checker, deliberately apart from any provider's module: grades/validates segment evidence (ADR-0007) and replays a private node's recorded inner segments against its public exit (ADR-0005/0007) | Yes, as a standalone checking service; not one of the three `REQ-MOD-1` libraries, since it is neither reused-elsewhere-shaped nor bound into Core's order logic |
+| `CMP-EVIDENCE` | A read-only, per-public-node checker, deliberately apart from any provider's module: grades/validates segment evidence (ADR-0007) and replays a private node's recorded inner segments against its public exit (ADR-0005/0007). It reads each public network through that network's reader, an operator's module that `CMP-PROV`'s platform admits on the operator's signed release and runs in its sandbox, behind its egress allow-list, never linked into Core (ADR-0007 as amended) | Yes, as a standalone checking service; not one of the three `REQ-MOD-1` libraries, since it is neither reused-elsewhere-shaped nor bound into Core's order logic |
 
 `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT` are Core's own internal decomposition (ADR-0001) — `SPEC.md`
 requires Core to bind the three outer libraries but says nothing about Core's own shape. Naming these three now is
@@ -114,6 +114,12 @@ what makes allocating `REQ-AUD-*`, `REQ-AUZ-*` and the cross-cutting slice of `R
 - **`CMP-EVIDENCE`'s interface**: read-only per-network checks (finality, reorg handling, movement-to-segment
   matching) and a replay call (recorded inner segments vs. a public exit). Called by `CMP-CORE-ORCH`/`CMP-CORE-AUDIT`,
   never by a provider module checking itself (ADR-0007).
+  Core reads each public network through `PublicRecords`, its own seam. An adapter serves it by asking that network's
+  reader module three operator's questions (`network_rules`, `movement_status`, `movement_of`) through the platform's
+  synchronous call path. Each question is asked once per pass, and the answer is never cached past the pass. An answer
+  the platform couldn't get or the schema refuses is "unreadable": the segment waits, and Core neither confirms it nor
+  grades it down. Each `evidence` entry names the reader and the version that read it (ADR-0007 as amended,
+  `REQ-AUD-4`, `REQ-MDL-2`).
 - **Notice contract** (`REQ-ORD-20`): authenticated, safe to receive twice or out of order, current state always
   pullable on demand. Integrators are told to act on notices, not poll (`INTEGRATORS.md`).
 - **Credential/destination contract** (ADR-0004): a narrow resolve-by-name-at-call-time interface; destination
@@ -189,7 +195,8 @@ apart from the execution store (ADR-0005); the evidence checker is operator-run,
   costs were measured on one host only; `F-033` measures them again over a network (`G-42`).
 - **`CMP-EVIDENCE`'s placement**: operator-run, apart from provider modules. Requiring an *outside* party to run it
   would conflict with `REQ-OPS-4`'s independent-operation requirement, so it is explicitly operator-run — weaker
-  than third-party verification, and stated as such in §6.
+  than third-party verification, and stated as such in §6. Its reader for each public network is the operator's own
+  module, deployed as any module is: one jailed process, reaching only the RPC nodes it declares (`REQ-MDL-7`).
 - **Module lifecycle**: adding, upgrading or removing one provider's module must not reload the service or
   interrupt others (`REQ-MDL-13`, `NFR-2/3`); upgrades are staged and observable with rollback (`REQ-MDL-4`,
   ADR-0014).
@@ -309,7 +316,7 @@ The rest of v0's scope, and how it splits into milestones, belongs in `PLAN.md`,
 | `adr/0004-outside-part-credential-proxy.md` | Shared credential proxy now, per-provider before outside providers; resolver interface | **Accepted** (Pablo, 2026-11-06, `credential-proxy-model` and `credential-proxy-scope`) |
 | `adr/0005-authenticated-log-checkpoints.md` | Merkle log + salted, size-hiding checkpoints | **Accepted** (Pablo, 2026-11-06, `log-checkpoints-mechanism`) |
 | `adr/0006-route-search-quoting.md` | Hop-limited search over a snapshot; simple threshold splitting, in v1 and not v0 | **Accepted** (Pablo, 2026-11-06, `route-search-algorithm` and `v0-before-v1`) |
-| `adr/0007-transition-evidence-checker.md` | Four-grade evidence scale; `CMP-EVIDENCE` | **Accepted** (Pablo, 2026-11-06, `evidence-grading-checker`) |
+| `adr/0007-transition-evidence-checker.md` | Four-grade evidence scale; `CMP-EVIDENCE`; amended: each public network's reader is an operator's module the platform runs | **Accepted** (Pablo, 2026-11-06, `evidence-grading-checker`); amended (Pablo, in chat, 2026-11-25, the demo's finding 7) |
 | `adr/0008-reversal-confirmation.md` | Origin reserve's own signed statement | **Accepted** (Pablo, 2026-11-06, `reversal-confirmation-source`) |
 | `adr/0009-report-difference-detection.md` | Detection-only comparison, no state/value power | **Accepted** (Pablo, 2026-11-06, `report-difference-detection-scope`) |
 | `adr/0010-reversal-backing.md` | Third-party-held bond sized to the per-provider ceiling | **Accepted** (Pablo, 2026-11-06, `reversal-bonding-model`), with a scope note: a reversal guarantee while every provider is Bloque's own (v0); counsel before v1 |
