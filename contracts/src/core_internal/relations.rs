@@ -6486,7 +6486,7 @@ fn reversal_answers(entry: &VerifiedEntry, target: &Entry, history: &History) ->
         .segment
         .as_ref()
         .and_then(|segment| reserve_at_from(i.subject.order.as_str(), segment.as_str(), history))
-        .is_some_and(|r| r.as_str() == whose.as_str());
+        .is_some_and(|r| r == whose.as_str());
     let moved = history
         .iter()
         .find_map(|(_, e)| match verified(e).and_then(effect_action) {
@@ -6622,15 +6622,21 @@ fn private_node_of(order: &str, node: &str, publisher: &Id, history: &History) -
 /// The reserve at the from-node of `segment` of `order`: the provider of the segment of its plans that delivered
 /// value to that node in that asset, or, for a segment no other delivered to (the first withdrawal, from an outer
 /// node), its own provider, the origin reserve.
-fn reserve_at_from<'a>(
-    order: &str,
-    segment: &str,
-    history: &'a History,
-) -> Option<&'a crate::state_machine::Id> {
-    let plans: Vec<&crate::state_machine::SegmentPlan> = history
-        .iter()
-        .filter_map(|(_, e)| verified(e).and_then(input))
-        .filter(|i| i.subject.order.as_str() == order)
+///
+/// A route handed on (`route_chosen` names `handed_on_from`) has no withdrawal: it starts from the holding account
+/// where the value sits, which counts as its origin reserve (`REQ-ORD-16`, `REQ-ORD-43`). For a segment of it no other
+/// delivered to, the reserve at its from-node is the `holder` of the order's verified `holding_withdrawal` at that node,
+/// the record that proved its start (`REQ-ORD-40`); with no such record there is none, and nothing is that reserve's
+/// word. Never the segment's own provider there: that would take a failed provider's word for its own reversal
+/// (`REQ-ORD-3`, `THR-13`; `T-020-57`).
+fn reserve_at_from<'a>(order: &str, segment: &str, history: &'a History) -> Option<&'a str> {
+    let inputs = || {
+        history
+            .iter()
+            .filter_map(|(_, e)| verified(e).and_then(input))
+            .filter(|i| i.subject.order.as_str() == order)
+    };
+    let plans: Vec<&crate::state_machine::SegmentPlan> = inputs()
         .flat_map(|i| match &i.observed {
             Observed::RouteChosen { parts, .. } => parts
                 .iter()
@@ -6642,12 +6648,38 @@ fn reserve_at_from<'a>(
         })
         .collect();
     let this = plans.iter().find(|s| s.segment_id.as_str() == segment)?;
-    Some(
-        plans
-            .iter()
-            .find(|s| s.segment_id.as_str() != segment && s.to == this.from)
-            .map_or(&this.provider, |s| &s.provider),
-    )
+    if let Some(delivered) = plans
+        .iter()
+        .find(|s| s.segment_id.as_str() != segment && s.to == this.from)
+    {
+        return Some(delivered.provider.as_str());
+    }
+    let handed_on = inputs().any(|i| {
+        matches!(
+            &i.observed,
+            Observed::RouteChosen {
+                handed_on_from: Some(_),
+                ..
+            }
+        )
+    });
+    if !handed_on {
+        return Some(this.provider.as_str());
+    }
+    let crate::provider_role::NodeRef::Inner(node) = &this.from.node else {
+        return None;
+    };
+    history
+        .iter()
+        .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
+            Some(What::HoldingWithdrawal {
+                order: o,
+                holder,
+                node: at,
+                ..
+            }) if o.as_str() == order && at.as_str() == node.as_str() => Some(holder.as_str()),
+            _ => None,
+        })
 }
 
 /// Which of the log's handles an entry came through.

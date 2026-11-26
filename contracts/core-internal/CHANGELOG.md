@@ -77,10 +77,22 @@
     (`decision-request-to-refile-an-arrival-without-its-filer`, `verified-entry-of-a-refiling-without-its-decision`),
     six admission cases, and every refiling in the admission cases now rests on a decision of its own. (REQ-ORD-23,
     REQ-AUZ-1, REQ-AUZ-5, T-020-52)
+  - `T-020-57` (the lead's authorisation, a `DEC-20` path folded into this unreleased version): the reserve at a
+    handed-on route's from-node. `reversal-rests-on-its-evidence`'s field `reserve` read the reserve at a segment's
+    from-node as the provider of a plan's segment that delivered there, else the segment's own provider; a route handed
+    on has no segment delivering to its first node, so for its first move the log read the failed provider itself as
+    the reserve, refused the holding account's confirmation, and would have admitted the failed provider's own word,
+    graded a statement, as completing its own reversal (`REQ-ORD-3`, `THR-13`). Now, for an order whose `route_chosen`
+    names `handed_on_from`, the reserve at a from-node no segment delivered to is the `holder` of the order's verified
+    `holding_withdrawal` at that node (`REQ-ORD-16`, `REQ-ORD-40`, `REQ-ORD-43`), and with no such record there is
+    none. No shape changes. Three admission cases: `--a-handed-on-routes-holding-account-confirms-its-first-move`
+    (admitted), `--a-handed-on-routes-failed-providers-own-word` (`whose`), `--a-handed-on-route-with-no-holding-record`
+    (`reserve`). (REQ-ORD-3, THR-13, REQ-ORD-43, T-020-57)
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
-  row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s and `T-020-51`'s rounds, merged beside it:
-  thirty schemas, 187 valid fixtures and 186 invalid, 775 admission cases and 58 attribution cases (counted from the files); 118
+  row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s and
+  `T-020-57`'s rounds, merged beside it: thirty schemas, 187 valid fixtures and 186 invalid, 778 admission cases and 58
+  attribution cases (counted from the files); 118
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

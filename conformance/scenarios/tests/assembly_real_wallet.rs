@@ -1409,14 +1409,8 @@ fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
 /// landed; once the account took the credit back, in full, the wallet's own signed confirmation completes the reversal,
 /// the log takes its evidence as the wallet's, and the value is landed again in the wallet for the linked order, whose
 /// value it is now, as the wallet itself says (`REQ-ORD-43`, `INV-1`, `T-020-57`).
-///
-/// Ignored until core-internal's `reversal-rests-on-its-evidence` names the holding account as the reserve at a
-/// handed-on route's from-node: today the log reads the failed provider there (`reserve_at_from`), so it refuses the
-/// wallet's evidence ("…the word of the reserve at the segment's from-node"). Everything before that append runs:
-/// the wallet is asked, answers, is signed by the platform and counted by Core (`F-020`'s notes, `T-020-57`'s gap 1).
 // verifies: REQ-ORD-43, INV-1
 #[test]
-#[ignore = "core-internal's reversal-rests-on-its-evidence reads the failed provider as the reserve at a handed-on route's from-node (T-020-57's gap 1)"]
 fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet_and_completes() {
     use rutent_core_orch::reversal::{Confirmation, NotCounted};
     let (mut stuck, _, linked, segment) = linked_first_move_failed();
@@ -1499,5 +1493,98 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
             }]
         )],
         "attributed once, to the linked order"
+    );
+}
+
+/// The linked order's first move fails and its reversal completes on the wallet's word: the value is landed again in
+/// the wallet for the linked order. The part is recalculated from the node, which retires the reversed move, and Core
+/// stops before the new route runs. Reopened, Core rebuilds the returned value from the log's `reversal_completed` and
+/// the wallet's confirmation it rests on, so when the new route's first move takes the value out of the node, the
+/// wallet's landing of it is released, once, as a Core that ran on would release it: the wallet holds nothing more
+/// for the linked order (`NFR-6`, `INV-1`, `T-020-57`).
+///
+/// Ignored until a handed-on route whose first move was reversed can be recalculated: Core's `recalc::rule::evidenced`
+/// and core-internal's `recalculation-starts-from-evidenced-value` both evidence a part's value only at the end of a
+/// settled segment of it, and such a route has none, so the recalculation answers `NotNow(NoSettledEnd)` (`F-020`'s
+/// notes, `T-020-57`'s gap 4). Everything before it runs.
+// verifies: NFR-6, INV-1
+#[test]
+#[ignore = "a handed-on route reversed at its first move has no settled segment to recalculate from (T-020-57's gap 4)"]
+fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
+    use rutent_core_orch::recalc::Recalculation;
+    use rutent_core_orch::reversal::Confirmation;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    stuck.core.land_settled();
+    assert!(
+        wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
+        "landed again for the linked order"
+    );
+
+    // Recalculated from the node: the reversed move is retired, and the new route waits to run.
+    let recalculated = match stuck
+        .core
+        .recalculate(&linked.order)
+        .expect("the part is recalculated")
+    {
+        Recalculation::Recalculated(recalculated) => recalculated,
+        other => panic!("recalculated: {other:?}"),
+    };
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(w,
+            What::Input { input } if input.subject.order.as_str() == linked.order.as_str()
+                && matches!(&input.observed,
+                    rutent_contracts::state_machine::Observed::RouteRecalculated { segments, .. }
+                        if segments.iter().all(|s| s.segment_id.as_str() != segment.as_str())))),
+        "the log recalculated the part, the reversed move left out"
+    );
+
+    // Core stops and is opened again on its disk.
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    assert!(
+        wallet_holds(
+            &mut stuck.core,
+            &wallet,
+            linked.order.as_str(),
+            "ask-reopened"
+        ),
+        "the wallet still holds the returned value"
+    );
+
+    // The new route's first move takes the value out of the node: its landing is released, once.
+    stuck
+        .core
+        .run_recalculated(&linked.order, &recalculated)
+        .expect("the recalculated route runs");
+    stuck.core.land_settled();
+    stuck.core.land_settled();
+    assert!(
+        !wallet_holds_at_least(
+            &mut stuck.core,
+            &wallet,
+            linked.order.as_str(),
+            "ask-gone",
+            "1"
+        ),
+        "released once the value left the node"
+    );
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "the account holds nothing for any order"
     );
 }

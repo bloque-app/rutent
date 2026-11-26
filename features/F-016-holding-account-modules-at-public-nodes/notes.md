@@ -426,7 +426,7 @@ no module-interface change.
   how a plain wallet at a public node sees credits arrive at its account (a reading of its node, or the deployment
   keeping the account's statement in the provider's state).
 - **Tests.** `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` (native, rule-off below).
-  The Wasm build answers through the assembly in `T-020-57`'s scenario (ignored, `F-020`'s notes, gap 1).
+  The Wasm build answers through the assembly in `T-020-57`'s scenario, green since its round 2's contract change.
 
 | Rule switched off | Red |
 |---|---|

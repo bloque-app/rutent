@@ -5080,3 +5080,28 @@ fn read_of_a_filed_order_names_its_requester() {
         rutent_contracts::core_internal::Reads::FiledOrder { requester, .. } if requester == &check.reader.party
     ));
 }
+
+// --- T-020-57: the reserve at a handed-on route's from-node ---------------------------------------------------
+
+/// A route handed on has no withdrawal: it starts from the holding account where the value sits, its origin reserve
+/// (`REQ-ORD-16`, `REQ-ORD-43`). Its first move's reversal is the holding account's word to give, the `holder` of the
+/// order's `holding_withdrawal` at the node, never the failed provider's: the failed ramp's own statement offered as
+/// the evidence is refused, the holding account's confirmation is admitted, and with no holding record there is no
+/// reserve there, so nothing is (`REQ-ORD-3`, `THR-13`, `T-020-57`).
+// verifies: REQ-ORD-3, THR-13
+#[test]
+fn failed_providers_own_word_does_not_complete_its_reversal_on_a_handed_on_route() {
+    assert_case_refused(
+        "reversal-rests-on-its-evidence--a-handed-on-routes-failed-providers-own-word",
+    );
+    assert_eq!(
+        read_admission(
+            "reversal-rests-on-its-evidence--a-handed-on-routes-failed-providers-own-word"
+        )["breaks"],
+        "whose"
+    );
+    assert_case(
+        "reversal-rests-on-its-evidence--a-handed-on-routes-holding-account-confirms-its-first-move",
+    );
+    assert_case_refused("reversal-rests-on-its-evidence--a-handed-on-route-with-no-holding-record");
+}
