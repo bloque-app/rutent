@@ -502,3 +502,27 @@ fn a_symbolic_link_lock_fails_closed() {
         "{result:?}"
     );
 }
+
+// verifies: DEC-6
+#[test]
+fn a_git_submodule_fails_closed() {
+    let base = fixture_repo("licence-find-submodule", "", &["tools/x/Cargo.lock"]);
+    // A gitlink entry, as a submodule leaves in the index.
+    let git = std::process::Command::new("git")
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,vendor/sub",
+        ])
+        .current_dir(&base)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    let result = find_all_locks(&base);
+    fs::remove_dir_all(&base).expect("clean up");
+    assert!(
+        matches!(&result, Err(e) if e.contains("vendor/sub") && e.contains("submodule")),
+        "{result:?}"
+    );
+}

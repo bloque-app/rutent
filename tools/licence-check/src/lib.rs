@@ -318,7 +318,8 @@ fn check_one(lock: &LockFile, record: &Record, found: &mut Vec<Violation>) -> Re
 /// lock in a new place is read, and a lock that `.gitignore` ignores (a build artefact) is not.
 ///
 /// The check fails closed: it is an error if git cannot be run, if a listed lock is a symbolic link, or if the
-/// listing holds a nested git repository (git lists it as a directory, and its locks would otherwise go unread).
+/// listing holds a nested git repository (git lists it as a directory, and its locks would otherwise go unread), or
+/// if the index holds a submodule (mode 160000), which `git ls-files --stage` shows.
 pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .args([
@@ -340,6 +341,7 @@ pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
     }
     let listing =
         String::from_utf8(out.stdout).map_err(|_| "git ls-files is not UTF-8".to_string())?;
+    reject_gitlinks(root)?;
     let mut all = Vec::new();
     for path in listing.split('\0').filter(|p| !p.is_empty()) {
         if path.ends_with('/') {
@@ -362,6 +364,35 @@ pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
     all.sort();
     all.dedup();
     Ok(all)
+}
+
+/// Fails if the index holds a gitlink (mode 160000, a submodule): its locks are in another repository, and the
+/// listing shows it as a plain path, so they would go unread.
+fn reject_gitlinks(root: &Path) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--stage"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cannot run git to list the repository's index: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-files --stage failed in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let text =
+        String::from_utf8(out.stdout).map_err(|_| "git ls-files is not UTF-8".to_string())?;
+    for entry in text.split('\0').filter(|e| !e.is_empty()) {
+        if let Some((meta, path)) = entry.split_once('\t')
+            && meta.split(' ').next() == Some("160000")
+        {
+            return Err(format!(
+                "{path} is a git submodule; the licence check cannot read its locks"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` or `.git` is
