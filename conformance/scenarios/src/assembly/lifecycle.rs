@@ -38,6 +38,9 @@ pub struct Lifecycle {
     /// The route each order's part runs now, once recalculated: its record and its segments.
     routes: BTreeMap<String, (DecisionRecord, Vec<Id>)>,
     reversals: Reversals,
+    /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
+    status_asks:
+        BTreeMap<(String, String), Result<rutent_core_orch::reversal::StatusAsked, String>>,
 }
 
 impl Lifecycle {
@@ -811,6 +814,78 @@ impl Core {
         })?;
         self.feed()?;
         done.map_err(StepError::Reversal)
+    }
+
+    /// Core's step after a run of a part: for each segment of it left unknown at a provider that declares a status
+    /// query, asks the provider where it stands, once, under a transaction of Core's own (`REQ-ORD-1`, `T-020-47`).
+    /// What the provider answers is kept as its statement and moves nothing (`INV-4`); a question policy refuses or the
+    /// log can't take now is kept in [`Core::status_asks`] for a reader, and the run goes on.
+    pub(super) fn ask_unknown_status(&mut self, live: &Live<'_>) {
+        self.ask_unknown_among(live.order, live.part, live.segments);
+    }
+
+    /// Core's step over `order`'s own part, as after a run of it (also what a Core that reopened takes up).
+    ///
+    /// # Errors
+    ///
+    /// If the order didn't start.
+    pub fn ask_unknown_statuses(&mut self, order: &Id) -> Result<(), StepError> {
+        let part = self.part_of(order)?;
+        let (_, segments) = self.current_route(order)?;
+        self.ask_unknown_among(order, &part, &segments);
+        Ok(())
+    }
+
+    fn ask_unknown_among(&mut self, order: &Id, part: &Id, segments: &[Id]) {
+        for segment in segments {
+            if self.segments.unknown_move(order, segment).is_none() {
+                continue;
+            }
+            let done = self.reversing(order, |reversals, parts, _, moving| {
+                reversals.ask_unknown_status(
+                    parts,
+                    moving,
+                    At {
+                        order,
+                        part,
+                        segment,
+                    },
+                )
+            });
+            let asked = match done {
+                Ok(Ok(Some(asked))) => Ok(asked),
+                Ok(Ok(None)) => continue,
+                Ok(Err(refused)) => Err(StepError::Reversal(refused)),
+                Err(other) => Err(other),
+            };
+            let _ = self.feed();
+            self.life.status_asks.insert(
+                (order.as_str().to_owned(), segment.as_str().to_owned()),
+                asked.map_err(|why| format!("{why:?}")),
+            );
+        }
+    }
+
+    /// Whether `segment` of `order` is a move whose outcome Core holds unknown.
+    pub fn is_unknown(&self, order: &Id, segment: &Id) -> bool {
+        self.segments.unknown_move(order, segment).is_some()
+    }
+
+    /// The transactions of the reversals Core carried out for `order`, in the order it did (`REQ-ORD-41`).
+    pub fn reversal_transactions(&self, order: &Id) -> Vec<Id> {
+        self.segments.reversal_transactions(order).to_vec()
+    }
+
+    /// What Core's status question of the unknown `segment` of `order` came to: the question it asked, or why none was
+    /// asked (the step Core's run takes after each part).
+    pub fn status_asked(
+        &self,
+        order: &Id,
+        segment: &Id,
+    ) -> Option<&Result<rutent_core_orch::reversal::StatusAsked, String>> {
+        self.life
+            .status_asks
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
     }
 
     /// Asks the origin reserve whether the credit of `segment`'s reversal arrived, and completes the reversal where

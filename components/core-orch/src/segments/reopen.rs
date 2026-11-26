@@ -99,6 +99,31 @@ impl Segments {
             .transactions()
             .map(str::to_owned)
             .collect();
+        // The reversals Core carried out for each order: the operator's questions the log holds about an order, whose
+        // statement kept behind their commitment is a reversal. A private node's record that lists one is read again
+        // after a restart (`REQ-ORD-41`, `T-020-47`).
+        for (_, entry) in history {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            let Some(about) = &stated.about else {
+                continue;
+            };
+            let (Some(order), Some(transaction)) = (&about.order, &about.transaction) else {
+                continue;
+            };
+            if stated.what.statement.as_str() != rutent_contracts::provider_role::OPERATION_SHAPE {
+                continue;
+            }
+            let Some(bytes) = reading.kept(&stated.commitment) else {
+                continue;
+            };
+            if let Ok(question) = serde_json::from_slice::<Statement<ProviderOperation>>(&bytes)
+                && matches!(question.statement, ProviderOperation::Reversal(_))
+            {
+                segments.note_reversal_ran(order, transaction);
+            }
+        }
         for input in &inputs {
             if let (Observed::StuckResolved { .. }, Some(part)) =
                 (&input.observed, &input.subject.part)
@@ -386,27 +411,29 @@ impl Segments {
         } else {
             None
         };
-        let charged = match &outcome {
-            Some(SegmentOutcome::Settled { .. }) => {
+        let judged = match &outcome {
+            Some(SegmentOutcome::Settled { .. }) => settled_result(
+                catalogue,
+                history,
+                reading,
+                (handed, &transaction),
+                (&record, &operation, &statement),
+            ),
+            _ => None,
+        };
+        let stated_out = judged.as_ref().and_then(|j| Amount::new(j.4.clone()));
+        let charged = match (&outcome, judged) {
+            (Some(SegmentOutcome::Settled { .. }), Some(judged)) => {
                 let started_at = match &history[handed.at].1 {
                     Entry::Verified(v) => v.when.at.clone(),
                     Entry::Stated(_) => return None,
                 };
-                settled_result(
-                    catalogue,
-                    history,
-                    reading,
-                    (handed, &transaction),
-                    (&record, &operation, &statement),
+                charged_of(
+                    handed,
+                    &started_at,
+                    (&record, &operation),
+                    (judged.1, judged.2, judged.3),
                 )
-                .and_then(|judged| {
-                    charged_of(
-                        handed,
-                        &started_at,
-                        (&record, &operation),
-                        (judged.1, judged.2, judged.3),
-                    )
-                })
             }
             _ => None,
         };
@@ -431,6 +458,7 @@ impl Segments {
             ended: outcome.as_ref().is_some_and(is_final),
             outcome,
             charged,
+            stated_out,
             reported: None,
             begin_refused: None,
             verdict: None,
@@ -1035,6 +1063,7 @@ fn settled_result(
     String,
     rutent_contracts::provider_role::Fee,
     Receipt,
+    String,
 )> {
     let cited = sign::cited(record, operation)?;
     let units = Units {
@@ -1071,8 +1100,15 @@ fn settled_result(
                 handed_on,
                 amount_in,
                 fee,
+                amount_out,
                 ..
-            }) => Some((Amount::new(handed_on)?, amount_in, fee, receipt.clone())),
+            }) => Some((
+                Amount::new(handed_on)?,
+                amount_in,
+                fee,
+                receipt.clone(),
+                amount_out,
+            )),
             _ => None,
         }
     })

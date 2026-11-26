@@ -7844,3 +7844,379 @@ and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is 
   | the filer need not be the caller | the same (the operator's login naming another filer) |
   | the relation's decision need not be permitted | `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`; `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
   | the relation's decision need not name this arrival, order and filer (any one of the three) | the same two |
+## T-020-47: Core's own callers in the run (parts 1, 3, 5 and the second half of 4)
+
+Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/` (`closing/`, `segments/`, `reversal/`,
+`stuck/` comments), the assembly and the simulated providers (`F-024` files: `conformance/scenarios/src/assembly/`,
+`sim/fleet.rs`, `conformance/src/sim/mod.rs`, `conformance/src/role/`), no `DEC-20` path.
+
+- **Done.**
+  - (5) `Segments::carried_since` also times a failed segment that owes its reversal (state `FailedReversalOwed`), so
+    `Stuck::watch` declares the order stuck once its window passes, whether the reversal was refused, left unknown or
+    stated short. `T-024-23`'s scenario asserts stuck now. Test `owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck`.
+  - (1) `closing::report_price` (new `closing/price.rs`) builds the price from `Segments::charged` and the new
+    `Segments::stated_out` (rebuilt by a reopened Core) and records it through `Prices::report` when every part is complete;
+    the assembly's `report_price` is gone, `Core::run` closes, scenarios read `price_reported` / `price_of`. Test
+    `completed_orders_executed_price_is_reported_once_by_core`.
+  - (3) `Reversals::ask_unknown_status`: once per unknown segment, at a provider whose advertisement declares
+    `status_query`, through `ask_status`; the answer is held to its question with `check_status_answer` and what is kept is
+    the nested result of the segment's own transaction (nothing on a mismatch, not-known or refusal). `impl Modules for
+    Platform` and the assembly's `Running` forward `status`; the port's doc is corrected. The simulated providers handle
+    `status_query` (answered from the stand-in's books); `Behaviour::unknown_that_failed` (ramp transfers only).
+    Tests `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer`, `status_answer_moves_nothing`.
+  - (4, second half) `Segments` keeps the transactions of the reversals Core ran per order and `ToGrade.reversals` carries
+    them, so `Closing::to_keep` no longer skips a private node's record that lists one. Test
+    `private_node_record_listing_a_reversal_is_read` (core-orch `tests/closing.rs`).
+  - `T-016-05`'s comments in `stuck` and `reversal` read the handed-on route as having no withdrawal segment.
+- **Defaults** (reversible, fail closed). An owed reversal is timed from its segment's start, with the tuple's figure, as an
+  unfinished move is. A status answer that fails `check_status_answer` keeps nothing. Core asks an unknown segment's status
+  once; asking again at the provider's cadence is `T-020-48`'s. A price covers every route and part an order ran (`executed_across`, review round 2); `Core::price_unreported` says why one isn't reported, and only the fail-closed cases of review round 2 do not report one.
+- **Gaps, with owners.**
+  1. **Moved to `T-020-56` (issue #311): (2), terms and holds.** Its starting point: Needs (a) the platform's signer (`components/prov/src/proxy/signing.rs`, `DEC-20`)
+     to sign nested `terms` in a dry run's answer and a nested `hold` in a hold's answer, (b) the simulated providers to
+     state both, (c) Core to take them from the answers (`Segments::take_terms`, `Holds::take`) and the assembly's
+     `state_terms`/`state_hold` to go. For holds a **contract shape is missing**: nothing in the advertisement or the
+     declaration says a reserve answers hold requests (module-interface's `handles` is the module's, which Core doesn't
+     read), so Core can't tell when to ask without asking every reserve at every quote. Owner: the lead, a decision on that
+     signal, then this row's remainder.
+  2. **Moved to `T-020-56`: (4), first half, a reversal out of a held node landing the value again.** Its starting point: Under the state machine's rules
+     (`rules.rs::after_segment_input`) a `reversal_completed` applies only to a failed non-deposit segment, an unknown one,
+     or the part's settled starting segment; a settled segment out of a node is never reversed, so a landing is never
+     released and then due again. The one path left is a hand-on's linked order whose first move out of the held node fails
+     and is reversed; that needs a decision on who is landed for. Left as it is; owner: the lead.
+  3. Closed in review round 1: a reopened Core rebuilds the reversal transactions (from the operator's reversal questions the
+     log holds) and the unknown segments already asked (from `ask_status` effects with their result).
+  4. Unknown then failed is driven for a ramp's transfer only; a reserve's or exchange's unknown still resolves as before.
+  5. **`T-020-48`'s:** "ends failed on the provider's answer": Core keeps the answer and moves nothing; the mover's report of the failure
+     (`Stuck::report_segment_outcome`) takes a `Late` from `Segments::late_statement`, which no assembly step calls yet.
+     Owner: `T-020-48`.
+- **Rule-off table** (each switched off alone, its test run through the lock, file restored with `git checkout`; script
+  `ruleoff.py` in the row's scratch folder). Parts 2 and 4a moved to `T-020-56`.
+
+  | Rule switched off | Red |
+  |---|---|
+  | part 5: a failed segment owing its reversal is timed (`carried_since`) | `owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck` |
+  | part 1: an order's price is reported once (`Prices::report` rebuilds) | `completed_orders_executed_price_is_reported_once_by_core` |
+  | part 3: an unknown segment is asked once | `segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_answer` |
+  | part 3: the answer is held to its question (`check_status_answer`) | `status_answer_to_another_question_keeps_nothing` (a unit test added for it: no scenario had a mismatching answer) |
+  | part 4: the order's reversal transactions are its own in a node's record | `private_node_record_listing_a_reversal_is_read` |
+
+### T-020-47, review round 1 (PR #312, `48d6b5db`)
+
+- Parts 2 and 4a moved to `T-020-56`. Gap 5 above is `T-020-48`'s.
+- **Part 5 times only a segment a reversal can apply to** (not a deposit, whose reversal never applies and whose failed
+  value waits for its customer, `REQ-ORD-43`). Test `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window`.
+  An owed reversal is timed from its segment's start, so a late failure (most of the window spent unknown) is declared
+  stuck almost at once; a failure time would need new state and a rebuild.
+- **Part 1 across a recalculation:** `executed_across` / `Priced::across` compose the price of the segments settled on each
+  route, each leg held to its own route's record, under the last route's bounds; the assembly keeps the records of the
+  routes an order ran. Test `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once`. No contract
+  shape was needed.
+- **Reopening:** `Segments::reopened` rebuilds the reversal transactions; `Reversals::follow` rebuilds the unknown segments
+  asked (any finished `ask_status` of the segment counts). Tests `reversals_core_carried_out_are_known_again_after_core_reopens`,
+  `unknown_segment_already_asked_is_not_asked_again_after_core_reopens`. A reopened Core holds no answer for a segment it
+  rebuilt unknown, so it asks nothing more of it anyway; the rebuilt set keeps that from turning into an error.
+
+| Rule switched off | Red |
+|---|---|
+| a failed deposit is never timed | `failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_window` |
+| the price covers the first route too | `executed_price_of_an_order_completed_after_a_recalculation_is_reported_once` |
+| unknown segments asked are rebuilt | `unknown_segment_already_asked_is_not_asked_again_after_core_reopens` |
+| reversal transactions are rebuilt | `reversals_core_carried_out_are_known_again_after_core_reopens` |
+
+### T-020-47, review round 2: the price across any number of routes and parts
+
+- `executed_across` / `Priced::across` take `RouteRan { record, candidate, parts: [PartRan { order_part, candidate_part,
+  ran }] }` for each route the order ran, in order: each order part's segments are the first route's prefix, then each
+  recalculated route's, every one held to its own route's record (reporting, declared time, slippage commitment) under
+  the last route's bounds. `closing::report_price` takes the routes as `RouteRun`; the assembly keeps, for a recalculated
+  part, what settled on each route (the settled segments of the part when it was recalculated, less what earlier routes
+  account for), so a route that settled nothing contributes nothing. The assembly recalculates its first part only; a
+  recalculated route is of one part, and the model carries any part.
+- **Not reported (`price_unreported`), fail closed:** a record that chose no route (nothing is reported, no error); what
+  ran of the routes not adding up to the segments Core holds (`Unexplained`) or past a candidate part (`NotTheRecords`);
+  a segment whose figures Core doesn't hold (not complete yet: nothing is reported); and the composition's own refusals
+  (the operator's fee above what arrives, a sum past an amount, a leg with no terms, a result cited twice).
+- Tests: `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` (assembly: refused twice, recalculated
+  twice), `price_of_an_order_of_two_parts_covers_each_parts_segments` (core-orch: a two-part record). Not built: a
+  scenario of a recalculated part of a two-part order, which the kit can't route (its splits are of one candidate part).
+
+| Rule switched off | Red |
+|---|---|
+| the price is composed part by part (one order part only) | `price_of_an_order_of_two_parts_covers_each_parts_segments` |
+| a route's settled share is less what earlier routes account for | `executed_price_of_an_order_completed_on_its_third_route_is_reported_once` |
+
+### T-020-47, review round 3 (PR #312, `bd69d262`)
+
+- **`price_unreported` always says why.** A completed order whose record chose no route is `Unreported::NoRoute`, and one whose
+  segment's figures aren't kept is `NotKept(segment)`; a route's record Core can't read back is `RecordNotHeld(id)`. Only
+  an order not yet complete reports nothing and no reason.
+- **The routes an order ran are Core's state, rebuilt from the log.** `Segments` notes the record each `route_chosen`,
+  `route_recalculated` and `destination_changed` input names, with how many of the part's segments had settled by then
+  (`Segments::routes_ran`), on every path that follows an order: live (`follow`, `observe`) and replayed
+  (`follow_recorded`, which a reopened Core runs). `closing::report_logged_price` prices from it, reading each record
+  through a lookup the assembly gives; the assembly keeps no copy. The record lookup itself is still the assembly's
+  (`Core::record_of`, over the signer's records and the log's digest): moving Core's own log reads out of the assembly
+  is `T-020-55`'s.
+- Tests: `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` (the order on its second route when
+  Core reopens, completed on a third after; the routes held are counted before and after the reopen: a route that
+  settled nothing prices the same, so the count is what shows the rebuild), and
+  `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` (core-orch).
+
+| Rule switched off | Red |
+|---|---|
+| routes ran are noted when the log is replayed | `executed_price_is_reported_correctly_after_core_reopens_mid_recalculation` |
+| the parts of a price are taken in order | `price_of_two_routes_over_two_parts_orders_each_parts_segments_by_route` |
+
+### T-020-47, CI of the batch (m3-next `79a28d25`, run 45651818575)
+
+- **The role suite's `OutcomeUnknownDistinct`.** My ramp stand-in's unknown-then-failed hook took `unknown_next` in a
+  short-circuited condition, so with the hook unset the flag was cleared and the unknown answered `Succeeded`. It tests both
+  flags before taking either now; the role check is untouched. Switching it back turns `stand_in_with_internal_steps_passes` and
+  `stand_in_that_breaks_its_role_is_flagged` red.
+- **Two result statements for one segment** (`invariants`, seeds 1 and 105): Core's status answer was kept as the segment's late
+  result and the platform's late answer of its own was kept beside it. A segment's result is kept once: what Core's status
+  question brought is the provider's own result of it, and a later answer is that result held (`Reversals::later` answers the
+  entry it has), and a status answer is not kept where one is held. Test
+  `status_answer_is_never_a_second_result_statement_for_its_segment`; `late_answer_the_platform_receives_moves_nothing_twice`
+  now expects no new statement for the late answer. See review round 5 below: the rule is by body.
+
+| Rule switched off | Red |
+|---|---|
+| a status-kept result is kept once | `status_answer_is_never_a_second_result_statement_for_its_segment` |
+| the stand-in's unknown keeps its flags | `stand_in_with_internal_steps_passes`, `stand_in_that_breaks_its_role_is_flagged` |
+
+### T-020-47, review round 5 (PR #312, `56e2b2f9`): by body, not first wins
+
+- A later statement of a segment's result is "the same result held" only where its `statement` body equals a kept one's
+  (`made_at` and signature aside): `Reversals::later` answers that entry. One whose body differs is kept as a further
+  statement about the segment, moving nothing (no input, no effect, no value), as `T-020-27` keeps a differing late statement:
+  the same stated entry, about the order, segment and transaction. So a provider that contradicts itself is on the log
+  (`REQ-AUD-2`, `REQ-AUD-5`), and a kept `unknown` shadows no later final delivery, which is kept beside it. The status
+  answer takes the same path. `invariants.rs:477` is untouched and passes with seeds 1, 105 and 11 to 15: the silent runs'
+  late answers have the status answer's body. Where a run gives a differing late statement the check will count two
+  results; telling that from a second result needs the entry's kind, which a stated result entry doesn't carry apart from its
+  body, so that is a change of the check to propose (not made here).
+- Tests: `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not`,
+  `kept_unknown_statement_does_not_shadow_a_later_final_delivery` (core-orch), `status_answer_and_a_later_statement_of_another_body_are_both_kept_and_move_nothing`
+  (assembly); `status_answer_is_never_a_second_result_statement_for_its_segment` stays (same body).
+
+| Rule switched off | Red |
+|---|---|
+| the same body is the result held (bytes compared instead) | `late_statement_of_another_body_is_kept_beside_the_result_held_and_of_the_same_body_is_not` |
+| a differing body is kept beside the first (first wins) | `kept_unknown_statement_does_not_shadow_a_later_final_delivery` |
+
+
+## T-020-55: Core's own answers to policy's questions, and a regulator's read of the trail
+
+Finding 4 of `M3`'s milestone review of 2026-11-24, as the milestone reviewer read `T-021-16` and `T-021-17` (issue
+`#308`). Branch `f-020/t-020-55-core-sources`, from m3's `adb73186`. Three parts, each in commits of its own. `DEC-20`
+paths: `components/core-authz/` (a new module, `core_sources`, and `stuck/`), `contracts/core-internal` (folded into
+the unreleased 1.0.0) and `components/core-orch/` (`stuck/party.rs`), each waiting for the owner's click at the release
+into `main`; `components/core-audit/` (`measures/trail.rs`), Core's crate. `F-024` files: the assembly and its tests.
+
+### (1) Core answers its own sources; the assembly supplies only the deployment's registers
+
+- **The shape** (`core-authz/src/core_sources/`). `CoreSources<L, E, R>` implements policy's `Sources`. It answers
+  `Requester`, `OrderOrigin`, `OrderParties`, `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`,
+  `Declarations`, `Kept` and `KeptAbout`, and `order_record`, itself, over Core's log (`LogEntries`, read without a copy)
+  and evidence store (`KeptBytes`, a statement's bytes borne out against its commitment). The deployment implements
+  `DeploymentRegisters` for what is its own: `ActsFor`, `AgentScope`, `Permissions`, `Account`, `Holder`, `Reaches`,
+  `MeetsBelowOperator`, `OfOperator`, `Verifier`, `Provider`, `Consent` and `HoldingAccount`. Core asks it only through
+  `Registered`, which only `CoreSources` builds, and only for a source `is_the_deployments` names; that match names
+  every source, so a new one is placed by whoever adds it. No answer is a permit: each is an input the fixed rules and
+  the deployment's policy rule over.
+- **Readings, each the assembly's `Records` before this row.**
+  - An order's record: the one a filing handed over before the log holds the order (`OpenedOrders`, which core-orch's
+    `FiledOrders` port forwards to, `withdrawn` dropping it), else the log's `order_opened`, else its acceptance (a
+    linked order, which intake never opened). `OrderParties`: the order's acceptance, else that record.
+  - `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`, `Kept`, `KeptAbout`: the log, read as `Records` read it.
+  - `Declarations`: since the review of `8f7ddefd` (below), the advertisement the log's key register accepted last for
+    the reserve, where the log holds its stated entry. At `8f7ddefd` it read the latest stated advertisement whose
+    claimed key its maker's grant named, which failed open.
+- **The differential, before anything moved** (`1657cc7c`). The assembly's engine went on answering from `Records`,
+  and `Compared` asked `CoreSources` beside it on every input, recording each disagreement
+  (`RUTENT_SOURCES_DIFF`, `RUTENT_SOURCES_COUNT`). `tests/sources_compared.rs` ran the seeded steps (seeds 11 to 15,
+  restarts among them) and asserted none. Over the whole `rutent-scenarios` crate it first found two classes, both
+  where Core's answer was a refusal's (missing) and `Records`' a yes, so failing closed, and both fixed before the
+  move:
+  1. `Declarations` (15 answers, the automatic-deposit filings): a reserve's first advertisement is held stated, not
+     verified, since the log records the maker's publisher only from it; requiring verified refused it. Now trusted
+     as the log first trusts it (above).
+  2. A waiting filed order after a reopen (`Requester`, `order_record`, `deposit_waits`): the log holds no
+     `order_opened` or acceptance of it, and `OpenedOrders` starts empty. The assembly's reopen hands each record
+     arrivals rebuilt from the log (`Arrivals::record`) to `OpenedOrders` again, as `Records` was refilled.
+  Then: 772 answers compared across the crate (`Requester` 417, `OrderParties` 284, `Declarations` 15, `Kept` 15,
+  `KeptAbout` 15, `order_record` 12, `OrderOrigin` 10, `Showing` 3, `SegmentProvider` 1), none disagreeing, every test
+  green. No scenario asks `SegmentOrder` or `Statement`; the first named test asks both over a run order.
+- **The move** (`303517f2`). The engine asks `CoreSources`; `Records`, its order and declaration maps and every copy
+  into them (at intake, on a linked order's start, on a reopen, at advertising and relisting) are gone, and the
+  differential with them. The assembly's `Deployed` holds the registers and the verifier stand-in;
+  `Core::sources()` hands out `CoreSources`, `Core::verifier_is` sets the stand-in.
+- **`HoldingAccount` from the deployment's register.** `Registers::holding_accounts` (node to provider), written where
+  the operator installs a node's wallet (`install_wallet`) and carried across a reopen in `Carried` as the
+  deployment's own configuration; the host's `Holdings`, which Core carries beside the platform, is never read for
+  it.
+- **Tests.** `policy's log backed answers are core's and the assembly supplies only the deployment's registers`
+  [`REQ-AUZ-5`] (`assembly_policy.rs`): an order opened, accepted and run; Core answers its requester, origin, parties,
+  a segment's order and provider, a statement's maker, its keeping about the order, the origin reserve's two
+  declarations and the order's record; with the deployment's registers emptied and its verifier saying yes to
+  anything, every one of those answers stands and the register's own (`ActsFor`) goes. `holding account answer reads
+  the deployment's register not holdings carried across a reopen` [`REQ-AUZ-4`, `NFR-6`] (`assembly_real_wallet.rs`):
+  the wallet named before and after a reopen; the register naming another holder, or none, moves the answer though the
+  carried holdings still name the wallet, and the hand-on through the wallet is then not permitted. core-authz's unit
+  tests (`core_sources/tests.rs`): the deployment is asked only its own sources, and a deployment saying yes to all of
+  them moves none of Core's; an unreadable log, an unreadable store or a held register gives not known.
+- **Red first.** The differential was red before its fixes (17 disagreements, above). The two named tests were written
+  after `CoreSources` existed, against the API the move gives, so they first ran green; each is held by its rule-offs
+  below (R1, R6, R7).
+
+### (2) A value resting at its route's first node; `holder_of_the_order` once
+
+- **The disagreement.** `resting_node` names the start of a part's first unsettled segment; the row
+  `stuck-decide-held-at-is-a-held-node` asked for a segment ending at that node. A route handed on starts at an inner
+  node with no withdrawal (`check_start`), so a stuck part of a linked order whose value rests at its route's first
+  node, where no segment of the order's routes ends, was refused an honest permit at append. A route chosen otherwise
+  starts at an outer node, where `resting_node` names nothing, so only a route handed on meets it.
+- **The fix** (`2212ee40`). The row takes a segment starting or ending at `held_at`; its `at` field still holds it to
+  the one node the value rests at. README row and CHANGELOG line in core-internal's unreleased 1.0.0; admitted case
+  `--a-wallet-held-at-its-routes-first-node` (`world--sdh`'s history with `ord-1` handed on from `ord-0`, each part
+  starting at an inner node, `p3` a single deposit from `ledger-start`; the hand-on by `start-wallet`).
+- **`holder_of_the_order`, written once**: public in core-internal's `standing.rs`. The row, the narrowed party rule,
+  policy's R-MOVER check (core-authz's `involves_holder` is gone) and core-orch's party port call it. Policy's copy
+  required `Outcome::Observed`, the others didn't; the one definition keeps the guard, which changes nothing on a
+  checked history, since `What::allows` holds every kind it reads (acceptance, input, arrival, holding withdrawal) to
+  `observed` (R10 below: no test goes red, as expected of a second guard).
+- **Test.** `value resting at the route's first node is held at it by the log` [`REQ-AUZ-4`] (core-authz
+  `stuck/tests.rs`, through the admitting log): `resting_node` names `ledger-start`; the register's wallet there moves
+  the hand-on, the entry records `held_at: ledger-start` and the log admits it; the wallet of another node is refused.
+  Its first run failed on the test's own world (a chosen route must start with a withdrawal, a test artefact: the world
+  is now a route handed on); the row's fix was already in, so its red is R9's.
+
+### (3) A regulator's read of the trail, through Core
+
+- **The entry point** (`29ccf3bc`). core-audit's `measures::hand_trail(policy, &TrailRequest {request, reader,
+  permission, at}, history)` builds the read check of the trail, asks policy's read check through `read_trail`, and
+  on a read policy allowed and the log shows recorded hands over `read_trail`'s trail: the entries and their receipts
+  up to that record, each statement by commitment alone. Every other reader gets `Handed::Withheld`, whatever policy's
+  reason, and whether the read was refused, not known, or unrecorded: no class, no receipt, nothing of the log. The
+  assembly's `Core::read_trail(reader, permission)` calls it at Core's clock under a fresh request id; the transport in
+  front of it is the deployment's (`F-030`).
+- **Tests** (`assembly_policy.rs`). `regulator holding the read permission is handed the trail and the read is
+  recorded` [`REQ-AUD-12`]: granted by the operator's login, the regulator is handed the log whole, ending in its read's
+  record (permitted, its reader, permission and `Trail`), the read adding that one entry, and no `bytes` or `salt` in it.
+  `caller without the read permission is handed nothing of the trail` [`REQ-AUD-12`, `REQ-AUZ-7`]: a regulator naming no
+  permission or one not granted, another regulator naming the grant, the customer's login, a refusing deployment, and
+  the regulator after revocation: each `Withheld`, each read recorded refused. Both passed at their first run, the entry
+  point written with them; R11 is their red.
+- `F-022`'s note on `REQ-AUD-12` now names the entry point.
+
+### Defaults, reversible, each failing closed
+
+1. An order's record is the handed-over filing's, else the log's `order_opened`, else its acceptance; its parties are
+   its acceptance's first. Where they could differ, the 772 compared answers never did.
+2. A reserve's declarations come only from the advertisement the log's key register accepted last for it, whose
+   stated entry the log holds; none accepted, or one offering no reserve, declares nothing (the review of `8f7ddefd`).
+3. A log, a store or the order register that can't be read now gives not known; the deployment's registers held
+   mutably elsewhere give not known too.
+4. `Holder`, `Provider` and `Consent` are the deployment's (its delegations, its providers' answers, a person's
+   consents), answered nothing in the assembly as before.
+5. The deployment's register of holding accounts goes on across a reopen; its other registers are still set again on
+   each Core put together (`T-020-46`'s default).
+6. Every reader not handed the trail is told `Withheld` alone, a not-known or unrecorded read as a refused one.
+7. The differential lives in history (`1657cc7c`), not in the tree: it needed the old answers, which the move removes.
+
+### Gaps, with owners
+
+1. ~~The first-trust arm of `Declarations` checks no signature.~~ It failed open (the review of `8f7ddefd`); closed by
+   reading the register's acceptance (below). A durable log record of an acceptance stays unbuilt: the register is
+   rebuilt from the log's own records on every opening, so none is needed for v0.
+2. A production assembly implements `DeploymentRegisters`, `LogEntries` and `KeptBytes`, forwards `FiledOrders` to
+   `OpenedOrders`, and hands each waiting filing's rebuilt record over again on a reopen, as the scenario assembly does.
+   Owner: `F-030`.
+3. The trail is handed whole, no window or page; a regulator's transport, and naming the regulator, are the
+   deployment's. Owners: `F-030`, `F-033`.
+
+### Rule-off
+
+Each rule switched off alone from `303517f2` by `scratchpad/t-020-55/ruleoff.py`, its tests run through the lock, the
+file restored from its text and touched (with `contracts/src/lib.rs`).
+
+| Rule switched off | Tests that went red |
+|---|---|
+| R1: a Core source (`Requester`) asked of the deployment | `the_deployment_is_asked_only_its_own_registers`, `an_unreadable_log_or_store_gives_not_known` (core-authz); `policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deployments_registers`, `authorisation_given_in_a_role_the_fixed_rule_refuses_is_refused_beside_the_engine`, `question_about_a_person_on_the_orders_shortlist_reaches_the_engine_and_its_log` (`assembly_policy`) |
+| R2: an unreadable log or store answers nothing, not not-known | `an_unreadable_log_or_store_gives_not_known` |
+| R3: an advertisement read only where verified (no first trust) | `a_filing_on_an_automatic_deposit_starts_under_the_real_policy` (`assembly_arrivals`), `policys_log_backed_answers_are_cores_and_the_assembly_supplies_only_the_deployments_registers` |
+| R4: any advertisement read, trusted or not | none: no test holds an advertisement the log doesn't trust (gap 1) |
+| R5: a filing's handed-over record not read | `an_unreadable_log_or_store_gives_not_known`; `a_filing_on_an_automatic_deposit_starts_under_the_real_policy`; `deposit_waits`' three (`a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance`, `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens`, `a_waiting_deposit_past_its_lifetime_is_ended_and_nothing_moved`) |
+| R6: the register of holding accounts not read (nothing for every node) | `holding_account_answer_reads_the_deployments_register_not_holdings_carried_across_a_reopen` and seven more of `assembly_real_wallet` (`stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet` among them) |
+| R7: the register of holding accounts not kept across a reopen | `holding_account_answer_reads_the_deployments_register_not_holdings_carried_across_a_reopen`, `holding_account_whose_module_restarted_is_re_landed_from_the_log_before_a_release`, `holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log` |
+| R8: a waiting filing's record not handed to Core's sources on a reopen | `a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens` |
+| R9: the row takes only a segment ending at `held_at` | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` (contracts), `value_resting_at_the_routes_first_node_is_held_at_it_by_the_log` (core-authz) |
+| R10: `holder_of_the_order` counts entries of any outcome | none: a second guard, every kind it reads is `observed` by `What::allows` |
+| R11: a refused trail read handed something | `caller_without_the_read_permission_is_handed_nothing_of_the_trail` |
+
+### Local checks
+
+Through the lock, `contracts/src/lib.rs` touched first, at the notes' commit: `cargo fmt --all -- --check`; `cargo clippy
+--workspace --all-targets -- -D warnings`; `cargo test` of `rutent-contracts` (225 pass), `rutent-core-authz` (160),
+`rutent-core-audit` (146), `rutent-core-orch` (330) and `rutent-scenarios` (471, every binary, the policy-touching
+ones among them: `assembly_policy`, `assembly_wiring`, `stuck`, `stuck_mover`, `assembly_real_wallet`, `reopened`,
+`audit_scenarios`, `bulk_measures`); the doc check (`RUSTDOCFLAGS="-D warnings"`); `plan-check --strict` (0 findings)
+and `tag-check --strict` (2384 tests, 0 findings). No provider's answer changed, so the role suite wasn't run apart.
+The full suite runs in CI.
+
+### T-020-55, the review of `8f7ddefd` (PR `#313`, comment 7173496820)
+
+- **The blocker: `Declarations` failed open.** Every advertisement enters the log as a stated entry attributed
+  unverified, and the log's key register (`core-audit/src/log/keys.rs`, `Register::join`) then accepts it or drops it.
+  Core trusted any such entry whose claimed key its maker's grant named, skipping every rule the register applies
+  (the signature, `validate_statement`'s maker = provider, deployment and version, newer than the last accepted, the
+  skew, `validate_successor`), and took the latest in log order. The reviewer's probes: a forged copy of
+  `sim-reserve-a`'s advertisement (garbage signature, declarations flipped, made in 2030) turned the operator's
+  authorisation for the user from refused to permitted; `sim-reserve-b`'s advertisement naming `sim-reserve-a`
+  flipped `sim-reserve-a`'s declarations. The 772-answer differential couldn't see it: every scenario's advertisements
+  are honest, as R4's green said.
+- **The fix, no contract change.** The register keeps each accepted advertisement's commitment
+  (`Accepted::commitment`), and `AuditLog::accepted_advertisement(provider)` exposes the one it accepted last: that
+  commitment and the reserve declaration it makes. core-authz's `AcceptedAdvertisements` (in place of `KeptBytes`)
+  reads it, and `CoreSources` takes the declaration only where the log holds a stated advertisement under that
+  commitment. None accepted, or one offering no reserve: missing, so the decision resting on it is refused; a log that
+  can't be read: not known. No fallback to the grant-key reading, and no read of the evidence store. The assembly's
+  `LogRead` answers both of Core's reads; `StoreRead` is gone, and `serde_json` is a dev-dependency of core-authz again.
+- **Tests** (`assembly_policy.rs`, each written before the fix and seen red at `8f7ddefd`).
+  `forged advertisement under a granted key changes no declaration` [`REQ-AUZ-9`, `REQ-CAT-6`] (red: `Yes, Yes` for
+  `No, No`) and `another provider's advertisement naming the reserve changes no declaration` [`REQ-AUZ-9`,
+  `REQ-CAT-6`] (the other reserve's signature copied, then signed anew validly with its own advertising key; red the
+  same), each also holding the operator's authorisation for the user refused. `old advertisement replayed after a newer
+  accepted one changes nothing` [`REQ-AUZ-9`, `REQ-CAT-6`]: the reserve advertises anew, validly, its declarations
+  flipped, and Core reads them; its older advertisement replayed changes nothing. Red at `8f7ddefd` on its first
+  assertion (the old reading didn't read the newer advertisement), not the replay's, which R13 and R14 hold.
+  `Core::append_advertisement` is their hook: a stated advertisement appended as `Core::advertise` appends one, with
+  no catalogue join.
+- **The two sources no scenario asked, directly.** `segment order answer is the log's plan for every segment`
+  [`REQ-AUZ-7`] and `statement answer is the log's maker for every statement` [`REQ-AUD-5`]: over a run order, every
+  segment of every `route_chosen` is its order's and no other's, and every commitment its first stated entry's maker's
+  party's and no other's; an unknown segment or commitment is nothing. Both passed at once (the code is `Records'`
+  moved), as a check of the move rather than a rule's red.
+- **Re-checked the same way.** `Kept` and `KeptAbout` ask only whether the log names a statement under a commitment
+  about the order, which is what the store keeps; `Showing` requires a verified result; `Statement` gives the party the
+  log attributed. None trusts a claim the log didn't make.
+- **Rule-off** (`scratchpad/t-020-55/ruleoff2.py`, from `207f3a47`, each alone, restored and touched):
+
+| Rule switched off | Tests that went red |
+|---|---|
+| R4: the register takes an advertisement with a bad signature or made past the skew (the probe's two defects) | `forged_advertisement_under_a_granted_key_changes_no_declaration`; core-audit's `a_dropped_or_crossed_key_never_signs_again`, `an_advertisement_orchestration_signed_names_no_key_of_the_provider` |
+| R4, as `8f7ddefd` read it (any stated advertisement under a granted key) | the three advertisement tests, at `8f7ddefd` before the fix |
+| R12: the register takes an advertisement another maker made (`validate_statement`, `validate_successor` off) | core-audit's four key-register tests; no scenario test, since the register's publisher check still refuses `sim-reserve-b`'s advertisement as `sim-reserve-a`'s |
+| R13: the register takes an advertisement no newer than the one it accepted | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing`; core-audit's three |
+| R14: Core reads the register's first accepted advertisement, not its last | `old_advertisement_replayed_after_a_newer_accepted_one_changes_nothing` |
+| R15: the accepted advertisement read though the log holds no stated entry under it | `an_unreadable_log_or_store_gives_not_known` (core-authz) |
+| R16: a reserve with no accepted advertisement reads as declaring | `the_deployment_is_asked_only_its_own_registers` (core-authz, its assertion added after the first run of this rule-off, which turned nothing red) |
+| RP (the reviewer's): a permitted trail read handed `Withheld` | `regulator_holding_the_read_permission_is_handed_the_trail_and_the_read_is_recorded` |
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first): fmt; workspace clippy `-D warnings`;
+  `rutent-core-authz` (160 pass) and `rutent-core-audit` (146); the policy scenario binaries (`assembly_policy`,
+  `assembly_wiring`, `stuck`, `stuck_mover`, `assembly_real_wallet`, `reopened`, `audit_scenarios`, `bulk_measures`,
+  `assembly_arrivals`, `deposit_waits`, `authz_scenarios`, `execution`, `deposit_destination`, `execution_routes`: 160
+  pass); the doc check; `plan-check --strict` (0 findings), `tag-check --strict` (2389 tests, 0 findings); the
+  contract guard against `origin/develop` (no violations). No contract or core-orch file changed in this round.

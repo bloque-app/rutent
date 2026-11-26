@@ -43,6 +43,12 @@
     holder the order involves by the log's other entries or its decide step records `held_at`. Five admission cases
     (four of the new row, `--at` on a world with two inner nodes on the order's route; one confirmation on a mover held
     at a node); two earlier ones on an untied mover are now refused on `party`.
+  - `T-020-55` (the milestone reviewer's Low and Info on `T-021-16`): `stuck-decide-held-at-is-a-held-node` takes a
+    route's segment starting at `held_at` as well as one ending there, so a value resting at its route's first node,
+    where `resting_node` places it, is held there and not refused an honest permit; admitted case
+    `--a-wallet-held-at-its-routes-first-node`. `holder_of_the_order`, public, is the one reading of a holder the order
+    involves, which the row, the party rule, policy and orchestration's port each call; it counts only entries held as
+    `observed`, as every kind it reads is.
   - `order_opened`, an order as intake opened it, the one piece of Core's state the log held no summary of
     (`T-020-46`).
   - `order_opened.inputs` (`T-020-46`): the salted commitment of the operator's statement of an order's inputs, a new

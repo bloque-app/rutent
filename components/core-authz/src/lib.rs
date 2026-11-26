@@ -8,6 +8,7 @@
 //! the fixed rules and the deployment's policy, and every policy call is built on it, each in its row's module;
 //! [`engine::Unbuilt`] is the engine with no policy service and no sources, which permits nothing.
 
+pub mod core_sources;
 pub mod cpl;
 pub mod engine;
 pub mod funds;

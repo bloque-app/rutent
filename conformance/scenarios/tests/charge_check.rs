@@ -534,8 +534,10 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order runs");
-    let (_, receipt, _) = core.report_price(&order, &ran).expect("reported");
+    core.run(&order).expect("the order runs");
+    let (_, receipt) = core
+        .price_reported(&order)
+        .expect("Core reported the price when the order completed");
     let prices = |core: &Core| {
         core.verified_whats()
             .iter()
@@ -549,9 +551,10 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
     // Later: a price built afresh would be another entry, at another time.
     core.clock.advance(60);
-    let again = core.report_price(&order, &ran);
+    core.run(&order).expect("runs again");
+    let again = core.price_reported(&order);
     assert!(
-        matches!(&again, Ok((_, r, _)) if *r == receipt),
+        matches!(&again, Some((_, r)) if *r == receipt),
         "the price the log took answers again: {again:?}"
     );
     assert_eq!(prices(&core), 1, "one price for the order");

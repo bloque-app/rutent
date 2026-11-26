@@ -1,26 +1,25 @@
 //! Policy in the assembly (`T-024-02`): `CMP-CORE-AUTHZ`'s engine, its fixed rules first, over the deployment's
-//! policy, with each input a decision needs answered from a real record ([`Records`]), every policy call reaching it
+//! policy, with each input a decision needs answered by Core's own sources (`rutent_core_authz::core_sources`, `T-020-55`)
+//! from Core's log and evidence store, beside the deployment's registers ([`Deployed`]), every policy call reaching it
 //! through [`PolicySide`].
 //!
-//! **Where each source is answered from** (`F-021`'s notes):
+//! **Where each source is answered from** (`F-021`'s notes; `T-020-55` moved every log-backed answer into Core, so the
+//! assembly supplies only what is the deployment's):
 //!
-//! | Source | Record |
-//! |---|---|
-//! | `ActsFor`, `Permissions` | the deployment's registers ([`Registers`]), which `F-030` keeps in production; `ActsFor` binds each login's party, kind and role (`T-021-14`) |
-//! | `Account`, `Holder` | the account's reserve's register of accounts, the deployment's in the assembly ([`Registers::accounts`]); no delegation is registered |
-//! | `Requester`, `OrderOrigin` | intake's record of the order (`Intake::record`), copied once the order opens |
-//! | `OrderParties` | the order's acceptance, as the log holds it; before it, intake's record of the order |
-//! | `SegmentOrder` | the plan that lists the segment: the order's `route_chosen` input, as the log holds it |
-//! | `SegmentProvider` | the effect that moved value on the segment, as the log holds it |
-//! | `Showing` | the stated entry of a provider's result under the showing's commitment, about its order, segment and transaction, received no later than the acceptance is decided |
-//! | `Statement` | the stated entry naming the commitment: its maker's party, as the log attributed it |
-//! | `Declarations` | the reserve's advertisement, as the assembly listed it in the log: its reserve declaration |
-//! | `Verifier` | the verifier stand-in ([`Verifier`]): by default reached and silent, a missing input, so a decision that needs a judgement is refused; a scenario sets it out of reach, or to yes or no (`T-024-07`) |
-//! | `Provider` | nothing yet: a missing input, so a decision that needs a provider's answer is refused |
-//! | `Consent` | nothing yet: no register of a person's consents, so a question on the person's own authority is refused as missing its input (`T-021-07`) |
+//! | Source | Answered by | Record |
+//! |---|---|---|
+//! | `Requester`, `OrderOrigin`, `OrderParties`, `SegmentOrder`, `SegmentProvider`, `Statement`, `Showing`, `Declarations`, `Kept`, `KeptAbout` | Core (`CoreSources`) | Core's log and its key register ([`LogRead`]), and the records a filing hands over before the log holds its order (`OpenedOrders`) |
+//! | `ActsFor`, `Permissions` | the deployment ([`Deployed`]) | its registers ([`Registers`]), which `F-030` keeps in production; `ActsFor` binds each login's party, kind and role (`T-021-14`) |
+//! | `AgentScope`, `Reaches`, `MeetsBelowOperator`, `OfOperator` | the deployment | the same registers: agents' scopes, and the chains of `ActsFor` links |
+//! | `Account`, `Holder` | the deployment | the account's reserve's register of accounts, the deployment's in the assembly ([`Registers::accounts`]); no delegation is registered |
+//! | `HoldingAccount` | the deployment | its register of holding accounts ([`Registers::holding_accounts`]), set where the operator installs a node's wallet and kept across a reopen as the deployment's own configuration, never read from the host's holdings Core carries across it |
+//! | `Verifier` | the deployment | the verifier stand-in ([`Verifier`]): by default reached and silent, a missing input, so a decision that needs a judgement is refused; a scenario sets it out of reach, or to yes or no (`T-024-07`) |
+//! | `Provider` | the deployment | nothing yet: a missing input, so a decision that needs a provider's answer is refused |
+//! | `Consent` | the deployment | nothing yet: no register of a person's consents, so a question on the person's own authority is refused as missing its input (`T-021-07`) |
 //!
 //! **Policy's one handle.** The engine holds the log's policy handle and appends every decision there; [`PolicySide`]
-//! only forwards to the engine, and orchestration holds the general handle alone.
+//! only forwards to the engine, and orchestration holds the general handle alone. Core's sources read the log through
+//! a shared borrow, and append nothing.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -33,21 +32,20 @@ use rutent_contracts::core_internal::calls::{
 use rutent_contracts::core_internal::{
     Action, Actor, ActorKind, Authorisation, Charge, ChargeAnswer, Decision, DecisionRequest,
     Entry, PermissionChange, PersonAnswer, PersonQuestion, ReadAnswer, ReadCheck, RefusalClass,
-    Role, SessionAnswer, SessionRequest, What,
+    Role, SessionAnswer, SessionRequest,
 };
-use rutent_contracts::provider_role::ReserveDeclaration;
 use rutent_contracts::router_api::Id;
-use rutent_contracts::state_machine::Observed;
+use rutent_core_authz::core_sources::{DeploymentRegisters, Registered};
 use rutent_core_authz::engine::{self as authz, Engine, Input, Need, Reply, Ruling, Said, Source};
 use rutent_core_authz::parties::Scope;
-use rutent_core_authz::roles::{AUTOMATIC_DEPOSIT, NO_USER_WITHDRAWAL, Permission};
-use rutent_core_orch::intake::OrderRecord;
+use rutent_core_authz::roles::Permission;
 
 use super::CoreLog;
 use crate::PolicyHandle;
 
 /// The deployment's registers, which policy reads and `F-030` keeps in production: who each actor acts for, which
-/// actor holds which permission, and which party holds each account at its reserve.
+/// actor holds which permission, which party holds each account at its reserve, and whose wallet holds each public
+/// node's holding account.
 #[derive(Debug, Clone, Default)]
 pub struct Registers {
     /// Each actor, by its `acts`, the party it acts for and the kind of actor it is (`T-021-05`).
@@ -60,6 +58,10 @@ pub struct Registers {
     pub permissions: Vec<(String, Permission)>,
     /// Each account, by reference, and the party that holds it.
     pub accounts: BTreeMap<String, String>,
+    /// The register of holding accounts (`REQ-CAT-23`, `T-020-55`): each public inner node, by its identifier, and the
+    /// provider whose wallet holds its account, as the operator installed it. The deployment's own configuration, kept
+    /// across a reopen as the deployment keeps it, never read from the host's holdings Core carries across one.
+    pub holding_accounts: BTreeMap<String, String>,
 }
 
 impl Registers {
@@ -173,25 +175,6 @@ impl Registers {
     }
 }
 
-/// What policy's sources read: the log, intake's records of orders, the reserves' declarations and the
-/// deployment's registers.
-#[derive(Clone)]
-pub struct Records {
-    /// The log.
-    pub(crate) log: Rc<RefCell<CoreLog>>,
-    /// Intake's record of each order, copied once the order opens.
-    pub(crate) orders: Rc<RefCell<BTreeMap<String, OrderRecord>>>,
-    /// Each reserve's declaration, from its advertisement as the assembly listed it in the log.
-    pub(crate) declarations: Rc<RefCell<BTreeMap<String, ReserveDeclaration>>>,
-    /// The deployment's registers.
-    pub(crate) registers: Rc<RefCell<Registers>>,
-    /// What the verifier stand-in does when policy asks it for a judgement (`T-024-07`).
-    pub(crate) verifier: Rc<std::cell::Cell<Verifier>>,
-    /// The operator's holding accounts, Core's own (`T-020-33`): which wallet holds each public node's account, which
-    /// a stuck order's decision whose mover the log ties to nothing asks (`Source::HoldingAccount`, `T-021-16`).
-    pub(crate) holdings: Rc<RefCell<rutent_prov::holding::wallet::Holdings>>,
-}
-
 /// What the verifier stand-in does when policy asks it for a judgement: it is reached and says nothing (the default,
 /// as the assembly had it: a missing input), can't be reached, or says yes or no (`T-024-07`, `AC-17`). The production
 /// verifier is `F-053`'s; this stands in for the role only (`DEC-16`).
@@ -218,175 +201,32 @@ fn said(yes: bool) -> Reply<Said> {
     Reply::Given(if yes { Said::Yes } else { Said::No })
 }
 
-impl Records {
+/// The deployment's registers, as Core's sources ask them (`T-020-55`): only the sources that are the deployment's own
+/// reach here, through `rutent_core_authz::core_sources::Registered`, which only Core's sources build.
+#[derive(Clone, Default)]
+pub struct Deployed {
+    /// The deployment's registers.
+    pub(crate) registers: Rc<RefCell<Registers>>,
+    /// What the verifier stand-in does when policy asks it for a judgement (`T-024-07`).
+    pub(crate) verifier: Rc<std::cell::Cell<Verifier>>,
+}
+
+impl Deployed {
     /// Sets what the verifier stand-in does from now on (`T-024-07`).
     pub fn verifier_is(&self, verifier: Verifier) {
         self.verifier.set(verifier);
     }
-
-    /// Each verified entry's `what`, oldest first.
-    fn verified(&self) -> Vec<What> {
-        self.log
-            .borrow()
-            .entries()
-            .iter()
-            .filter_map(|(_, e)| match e {
-                Entry::Verified(v) => Some(v.what.clone()),
-                Entry::Stated(_) => None,
-            })
-            .collect()
-    }
-
-    fn order_parties(&self, order: &Id, party: &Id) -> Reply<Said> {
-        let parties = self.verified().into_iter().find_map(|w| match w {
-            What::Acceptance {
-                order: o, parties, ..
-            } if &o == order => Some(parties),
-            _ => None,
-        });
-        // Before the acceptance, the parties intake recorded when it opened the order: Core asks about a person while
-        // it routes, which is before the order is accepted (`T-024-12`).
-        let parties = parties.or_else(|| {
-            self.orders
-                .borrow()
-                .get(order.as_str())
-                .map(|record| record.parties.clone())
-        });
-        match parties {
-            // Its requester, beneficiary or payer, as the log's `customer-read-is-of-its-own-order` holds it: the
-            // reserve a settlement account is at is none of them.
-            Some(p) => said(&p.requester == party || &p.beneficiary == party || &p.payer == party),
-            None => Reply::Missing,
-        }
-    }
-
-    fn segment_order(&self, segment: &Id, order: &Id) -> Reply<Said> {
-        let of = self.verified().into_iter().find_map(|w| match w {
-            What::Input { input } => match &input.observed {
-                Observed::RouteChosen { parts, .. } => parts
-                    .iter()
-                    .flat_map(|p| &p.segments)
-                    .any(|s| s.segment_id.as_str() == segment.as_str())
-                    .then(|| input.subject.order.as_str().to_owned()),
-                _ => None,
-            },
-            _ => None,
-        });
-        match of {
-            Some(o) => said(o == order.as_str()),
-            None => Reply::Missing,
-        }
-    }
-
-    fn segment_provider(&self, order: &Id, segment: &Id, provider: &Id) -> Reply<Said> {
-        let moved = self.verified().into_iter().find_map(|w| match w {
-            What::Effect {
-                action:
-                    Action::MoveValue {
-                        order: o,
-                        segment: s,
-                        provider: p,
-                        ..
-                    },
-                ..
-            } if &o == order && &s == segment => Some(p),
-            _ => None,
-        });
-        match moved {
-            Some(p) => said(&p == provider),
-            None => Reply::Missing,
-        }
-    }
-
-    fn statement(
-        &self,
-        commitment: &rutent_contracts::module_interface::Digest,
-        party: &Id,
-    ) -> Reply<Said> {
-        let maker = self
-            .log
-            .borrow()
-            .entries()
-            .iter()
-            .find_map(|(_, e)| match e {
-                Entry::Stated(s) if &s.commitment == commitment => {
-                    Some(s.attribution.maker().party.clone())
-                }
-                _ => None,
-            });
-        match maker {
-            Some(m) => said(&m == party),
-            None => Reply::Missing,
-        }
-    }
-
-    /// Whether the evidence store keeps a statement under `commitment`, about `order`, or, unless `itself`, about no
-    /// order: the log's stated entries name each statement Core kept by its commitment (`Evidence::keep`, `T-022-03`).
-    fn kept(
-        &self,
-        commitment: &rutent_contracts::module_interface::Digest,
-        order: &Id,
-        itself: bool,
-    ) -> Reply<Said> {
-        said(self.log.borrow().entries().iter().any(|(_, e)| match e {
-            Entry::Stated(s) => {
-                let about = s.about.as_ref().and_then(|a| a.order.as_ref());
-                &s.commitment == commitment
-                    && match about {
-                        Some(o) => o == order,
-                        None => !itself,
-                    }
-            }
-            Entry::Verified(_) => false,
-        }))
-    }
-
-    /// Whether the log holds `showing` of `segment` of `order`: a provider's result, verified, stated under the
-    /// showing's commitment about that order, segment and transaction, and received no later than `decided_at`.
-    fn showing(
-        &self,
-        order: &Id,
-        segment: &Id,
-        showing: &rutent_contracts::core_internal::ShowingNamed,
-        decided_at: &rutent_contracts::router_api::Timestamp,
-    ) -> Reply<Said> {
-        said(self.log.borrow().entries().iter().any(|(_, e)| match e {
-            Entry::Stated(s) => {
-                let about = s.about.as_ref();
-                s.what.statement.as_str() == rutent_contracts::provider_role::RESULT_SHAPE
-                    && matches!(
-                        s.attribution,
-                        rutent_contracts::core_internal::Attribution::Verified { .. }
-                    )
-                    && s.commitment == showing.commitment
-                    && about.and_then(|a| a.order.as_ref()) == Some(order)
-                    && about.and_then(|a| a.segment.as_ref()) == Some(segment)
-                    && about.and_then(|a| a.transaction.as_ref()) == Some(&showing.transaction)
-                    && s.received_at.unix_nanos() <= decided_at.unix_nanos()
-            }
-            Entry::Verified(_) => false,
-        }))
-    }
-
-    fn declared(&self, reserve: &Id, declaration: &Id) -> Reply<Said> {
-        let declarations = self.declarations.borrow();
-        let Some(d) = declarations.get(reserve.as_str()) else {
-            return Reply::Missing;
-        };
-        match declaration.as_str() {
-            NO_USER_WITHDRAWAL => said(!d.can_require_user_initiated_withdrawal),
-            AUTOMATIC_DEPOSIT => said(d.starts_routes_on_automatic_deposits),
-            // A reserve that published made each declaration either way: one it didn't make is a no.
-            _ => said(false),
-        }
-    }
 }
 
-impl authz::Sources for Records {
-    fn supply(&mut self, need: &Need) -> Reply<Said> {
-        let input = &need.input;
-        let registers = self.registers.borrow().clone();
-        match &need.from {
+impl DeploymentRegisters for Deployed {
+    fn registered(&mut self, asked: &Registered<'_>) -> Reply<Said> {
+        let input = asked.input();
+        // Out of reach where the registers are held mutably elsewhere at the moment, so policy is never stopped on a
+        // borrow.
+        let Ok(registers) = self.registers.try_borrow() else {
+            return Reply::Unreachable;
+        };
+        match asked.source() {
             Source::ActsFor {
                 acts,
                 party,
@@ -412,65 +252,75 @@ impl authz::Sources for Records {
             },
             // No delegation is registered: a holder names no delegate.
             Source::Holder { .. } => said(false),
-            Source::Requester(order) => match self.orders.borrow().get(order.as_str()) {
-                Some(record) => said(&record.parties.requester == input),
-                None => Reply::Missing,
-            },
-            Source::OrderOrigin(order) => match self.orders.borrow().get(order.as_str()) {
-                Some(record) => said(&record.origin_reserve == input),
-                None => Reply::Missing,
-            },
-            Source::OrderParties(order) => self.order_parties(order, input),
-            Source::SegmentOrder(segment) => self.segment_order(segment, input),
-            Source::SegmentProvider { order, segment } => {
-                self.segment_provider(order, segment, input)
-            }
-            Source::Statement(commitment) => self.statement(commitment, input),
-            Source::Showing {
-                order,
-                segment,
-                showing,
-                decided_at,
-            } => self.showing(order, segment, showing, decided_at),
-            Source::Declarations(reserve) => self.declared(reserve, input),
-            Source::Kept(commitment) => self.kept(commitment, input, false),
-            Source::KeptAbout(commitment) => self.kept(commitment, input, true),
             Source::Reaches { from, to } => said(registers.reaches(from, to)),
             Source::MeetsBelowOperator { from, with } => {
                 said(registers.meet_below(from, with, &crate::kit::operator().party))
             }
             // The deployment's operator is the kit's: Core signs in its name.
             Source::OfOperator => said(registers.reaches(input, &crate::kit::operator().party)),
-            // No verifier's judgement or provider's answer is a source in M3's assembly yet, and no register of a
-            // person's consents (`T-021-07`): a question on the person's own authority is refused.
             Source::Verifier(_) => match self.verifier.get() {
                 Verifier::Silent => Reply::Missing,
                 Verifier::Unreachable => Reply::Unreachable,
                 Verifier::Yes => said(true),
                 Verifier::No => said(false),
             },
+            // No provider's answer is a source in M3's assembly yet, and no register of a person's consents
+            // (`T-021-07`): a question on the person's own authority is refused.
             Source::Provider(_) | Source::Consent { .. } => Reply::Missing,
-            // The wallet holding the node's account, by Core's own register of them (`T-021-16`): yes for it, no for
-            // another provider, nothing for a node with no account; out of reach where the register is held mutably
-            // elsewhere at the moment, so policy is never stopped on a borrow.
-            Source::HoldingAccount { node } => match self.holdings.try_borrow() {
-                Ok(holdings) => match holdings.account(node) {
-                    Some(account) => said(account.provider() == input.as_str()),
-                    None => Reply::Missing,
-                },
-                Err(_) => Reply::Unreachable,
+            // The wallet holding the node's account, by the deployment's register of holding accounts (`T-020-55`): yes
+            // for it, no for another provider, nothing for a node with no account.
+            Source::HoldingAccount { node } => match registers.holding_accounts.get(node) {
+                Some(provider) => said(provider == input.as_str()),
+                None => Reply::Missing,
             },
-        }
-    }
-
-    /// The parties of an order its filing handed over (`FiledOrders::opened`), before its acceptance is in the log.
-    fn order_record(&mut self, order: &Id) -> Reply<rutent_contracts::core_internal::Parties> {
-        match self.orders.borrow().get(order.as_str()) {
-            Some(record) => Reply::Given(record.parties.clone()),
-            None => Reply::Missing,
+            // Core's own: Core's sources answer them, and never ask here.
+            _ => Reply::Missing,
         }
     }
 }
+
+/// Core's log, as Core's own sources read it (`T-020-55`): not known where it is held mutably elsewhere at the moment.
+#[derive(Clone)]
+pub struct LogRead(pub(crate) Rc<RefCell<CoreLog>>);
+
+impl rutent_core_authz::core_sources::LogEntries for LogRead {
+    fn read<T>(
+        &mut self,
+        read: impl FnOnce(&[(rutent_contracts::core_internal::Receipt, Entry)]) -> T,
+    ) -> Result<T, rutent_core_authz::funds::ReadFailure> {
+        let log = self
+            .0
+            .try_borrow()
+            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(read(log.entries()))
+    }
+}
+
+/// Core's log's key register, as Core's own sources read it (`T-020-55`, the review of `8f7ddefd`): the advertisement
+/// it accepted last for a provider, not known where the log is held mutably elsewhere at the moment.
+impl rutent_core_authz::core_sources::AcceptedAdvertisements for LogRead {
+    fn accepted(
+        &mut self,
+        provider: &Id,
+    ) -> Result<
+        Option<rutent_core_authz::core_sources::AcceptedAdvertisement>,
+        rutent_core_authz::funds::ReadFailure,
+    > {
+        let log = self
+            .0
+            .try_borrow()
+            .map_err(|_| rutent_core_authz::funds::ReadFailure::Unavailable)?;
+        Ok(log.accepted_advertisement(provider.as_str()).map(|a| {
+            rutent_core_authz::core_sources::AcceptedAdvertisement {
+                commitment: a.commitment,
+                declaration: a.declaration,
+            }
+        }))
+    }
+}
+
+/// Core's own sources, as the assembly puts them together (`T-020-55`).
+pub type CoreSources = rutent_core_authz::core_sources::CoreSources<LogRead, LogRead, Deployed>;
 
 /// The deployment's own policy: it needs nothing beyond the fixed rules, and permits what they let through, unless
 /// a scenario sets it to refuse.
@@ -521,12 +371,13 @@ impl authz::Policy for Deployment {
 }
 
 /// The policy engine as the assembly builds it.
-pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, Records>;
+pub type PolicyEngine = Engine<PolicyHandle<CoreLog>, Deployment, CoreSources>;
 
 /// Policy, as the other parts reach it: the engine, for every policy call (decisions, authorisations, sessions, reads,
 /// charges, a stuck order's steps and a move's outcome, and questions about people, `T-021-07`'s, the last). Each call
 /// forwards to the engine, which decides it through its one consultation, its fixed rules first and then the
-/// deployment's policy ([`Deployment`], which a scenario may set to refuse), over the records ([`Records`]), and
+/// deployment's policy ([`Deployment`], which a scenario may set to refuse), over Core's own sources and the
+/// deployment's registers ([`CoreSources`], [`Deployed`]), and
 /// records it on policy's handle before it answers. Nothing is answered beside the engine any more.
 #[derive(Clone)]
 pub struct PolicySide {
@@ -534,15 +385,15 @@ pub struct PolicySide {
 }
 
 impl PolicySide {
-    /// Policy over `engine`. The engine holds the records it reads and the deployment's policy itself; `records` and
+    /// Policy over `engine`. The engine holds the sources it reads and the deployment's policy itself; `sources` and
     /// `deployment` are the ones it was built with, taken so the assembly's wiring names them, and nothing else
     /// answers from them.
     pub fn new(
         engine: Rc<RefCell<PolicyEngine>>,
-        records: Records,
+        sources: CoreSources,
         deployment: Deployment,
     ) -> Self {
-        let _ = (records, deployment);
+        let _ = (sources, deployment);
         Self { engine }
     }
 

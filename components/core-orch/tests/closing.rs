@@ -416,6 +416,8 @@ struct Part<'a> {
     settled: RefCell<BTreeSet<usize>>,
     /// The party each provider's result states for, where it isn't the provider itself.
     states_for: BTreeMap<String, String>,
+    /// The transactions of the reversals Core carried out for the order (`T-020-47`).
+    reversals: Vec<Id>,
 }
 
 impl<'a> Part<'a> {
@@ -458,7 +460,14 @@ impl<'a> Part<'a> {
             bound: RefCell::default(),
             settled: RefCell::default(),
             states_for: BTreeMap::new(),
+            reversals: Vec::new(),
         }
+    }
+
+    /// The part, after Core carried out the reversal under `transaction` for it.
+    fn after_reversal(mut self, transaction: &str) -> Self {
+        self.reversals.push(id(transaction));
+        self
     }
 
     /// Each result stated for its provider's publisher by `catalogue`, as the segments state it: the operator's
@@ -737,6 +746,7 @@ impl<'a> Part<'a> {
             operator: &operator,
             at: &at,
             kept: &[],
+            reversals: &self.reversals,
         })
     }
 }
@@ -3423,4 +3433,103 @@ fn second_order_on_a_shared_final_movement_waits_while_the_first_keeps_it() {
         closing.evidences("polygon", "poly-batch"),
         Some(("ord-1", "p1-s3"))
     );
+}
+
+/// A private node's publisher's record, listing the segment of the order and a reversal Core carried out there.
+struct Listing(Statement<rutent_contracts::provider_role::InnerSegments>);
+
+impl Books for Listing {
+    fn recorded(&self, _: &str, _: &[Id]) -> Option<Recorded> {
+        Some(Recorded {
+            segments: vec![RecordedSegment {
+                asset_in: "COP".into(),
+                amount_in: W.0.into(),
+                asset_out: "COP".into(),
+                amount_out: W.1.into(),
+                fee: "100000".into(),
+            }],
+            records: vec![self.0.clone()],
+        })
+    }
+}
+
+/// The record `Listing` holds: `transactions`, each a segment of the node.
+fn listing_of(transactions: &[&str]) -> Listing {
+    let key = "A".repeat(43);
+    let segments: Vec<Value> = transactions
+        .iter()
+        .map(|tx| {
+            json!({
+                "transaction": tx, "asset_in": "COP", "amount_in": W.0,
+                "asset_out": "COP", "amount_out": W.1, "fee": "100000",
+            })
+        })
+        .collect();
+    Listing(
+        serde_json::from_value(json!({
+            "deployment": { "name": "test", "operator_key": key },
+            "protocol_version": "2.0.1",
+            "shape": rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE,
+            "maker": "reserve-bank-co",
+            "made_at": "2026-11-10T09:00:00Z",
+            "signature": { "scheme": "ed25519", "key": key, "value": format!("{}A", "s".repeat(85)) },
+            "statement": {
+                "node": "ledger-in", "publisher": "bank-co", "standing": "publishers_word",
+                "segments": segments,
+            },
+        }))
+        .expect("a record"),
+    )
+}
+
+/// A private node's publisher books the reversal Core carried out there, so its record lists it among the order's
+/// own: the record is read, kept and cited, where one listing a transaction the order never ran is not
+/// (`REQ-ORD-41`, `T-020-47`).
+// verifies: REQ-ORD-41
+#[test]
+fn private_node_record_listing_a_reversal_is_read() {
+    let route = route(None);
+    let (catalogue, nets, _) = fixture_world();
+    let log = Log::default();
+    let w = withdrawal("tx-w", json!([piece(3, "book-w", "reserve-bank-co")]));
+    let kept = |books: &Listing, reversals: &[&str]| {
+        let mut part = Part::new(
+            "ord-1",
+            &route,
+            end("polygon", "acct-9", ("USDC", 6), D.1),
+            &log,
+        );
+        for reversal in reversals {
+            part = part.after_reversal(reversal);
+        }
+        let mut closing = Closing::new();
+        let mut grading = Evidenced {
+            catalogue: &catalogue,
+            records: &nets,
+            books,
+            closing: &mut closing,
+        };
+        part.with(
+            0,
+            "reserve-bank-co",
+            "tx-w",
+            &w,
+            (W.1, W.1),
+            &no_fee(),
+            &receipt(0),
+            |settled| grading.statements(settled),
+        )
+    };
+    let record = listing_of(&["tx-w", "tx-reversal"]);
+    assert_eq!(
+        kept(&record, &["tx-reversal"]).len(),
+        1,
+        "the reversal Core ran is the order's own: its record is kept"
+    );
+    assert!(
+        kept(&record, &[]).is_empty(),
+        "a transaction the order never ran isn't"
+    );
+    let strangers = listing_of(&["tx-w", "tx-someone-elses"]);
+    assert!(kept(&strangers, &["tx-reversal"]).is_empty());
 }
