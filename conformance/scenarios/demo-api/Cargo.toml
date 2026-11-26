@@ -1,0 +1,65 @@
+[package]
+name = "rutent-demo-api"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "The rutent demo's synthetic network over HTTP, with a page that draws it and a database of its transitions"
+
+# A workspace of its own, with its own Cargo.lock (conformance/demo/README.md, "Why the API is a workspace of its
+# own"). Its database client brings tokio, whose features would change edges in the root lock's entries the contracts
+# crate reaches (contract-guard); here they don't touch the root lock. It sits under conformance/scenarios/ because
+# it is the assembly's, which may import every crate of ours (DEC-2, tools/boundary-check), and nothing in the root
+# workspace imports it. tools/licence-check reads its lock.
+[workspace]
+
+[lints.rust]
+missing_docs = "deny"
+
+[[bin]]
+name = "rutent-demo-api"
+path = "src/main.rs"
+
+[dependencies]
+rutent-scenarios = { path = ".." }
+rutent-conformance = { path = "../..", features = ["signing"] }
+rutent-contracts = { path = "../../../contracts" }
+rutent-core-audit = { path = "../../../components/core-audit" }
+rutent-core-authz = { path = "../../../components/core-authz" }
+rutent-core-orch = { path = "../../../components/core-orch", features = ["test-support"] }
+rutent-prov = { path = "../../../components/prov" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+# The transitions database: PostgreSQL, over TLS by rustls on ring's primitives as `rutent-prov`'s proxy does, so
+# no OpenSSL.
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1.12", features = ["std"] }
+
+# The same optimised module runtime as the root workspace's dev profile (a profile is the workspace root's, so this
+# workspace states its own): unoptimised, Cranelift takes seconds per module and Core admits eighteen at start.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+[profile.dev.package.gimli]
+opt-level = 3
+[profile.dev.package.object]
+opt-level = 3
+[profile.dev.package.wasmtime]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-core]
+opt-level = 3

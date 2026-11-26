@@ -19,10 +19,10 @@
 # When the owner adopts it, the dependency enters Cargo.lock and its line needs a
 # real version and a decision.
 #
-# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/ or components/,
-# found by walking those trees (a `target` directory is skipped). One record serves them all. A package locked at
-# the same name and version in several locks has one line; the same name at different versions has one line per
-# version.
+# The check reads every Cargo.lock in the repository: the root one, and each one under experiments/, components/
+# or conformance/, found by walking those trees (a `target` directory is skipped). One record serves them all. A
+# package locked at the same name and version in several locks has one line; the same name at different versions
+# has one line per version.
 #
 # Workspace members have no `source` in Cargo.lock, so they have no line here. In an experiment's lock, or a
 # component's own, every package without a `source` is a member.
@@ -84,10 +84,12 @@ cfg-if 1.0.4 MIT OR Apache-2.0 permitted licence-permissive-standing
 cfg-if 1.0.5 MIT OR Apache-2.0 permitted licence-permissive-standing
 cfg_aliases 0.2.2 MIT permitted licence-permissive-standing
 chacha20 0.10.2 MIT OR Apache-2.0 permitted licence-permissive-standing
+cmov 0.5.4 Apache-2.0 OR MIT permitted licence-permissive-standing
 cobs 0.3.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 compare 0.0.6 MIT/Apache-2.0 permitted licence-permissive-standing
 concurrent-queue 2.5.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 const-oid 0.9.6 Apache-2.0 OR MIT permitted licence-permissive-standing
+const-oid 0.10.3 Apache-2.0 OR MIT permitted licence-permissive-standing
 constant_time_eq 0.4.2 CC0-1.0 OR MIT-0 OR Apache-2.0 permitted licence-permissive-standing
 convert_case 0.7.1 MIT permitted licence-permissive-standing
 core_detect 1.0.0 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -130,11 +132,13 @@ crossbeam-utils 0.8.21 MIT OR Apache-2.0 permitted licence-permissive-standing
 crypto-bigint 0.5.5 Apache-2.0 OR MIT permitted licence-permissive-standing
 crypto-common 0.1.7 MIT OR Apache-2.0 permitted licence-permissive-standing
 crypto-common 0.2.2 MIT OR Apache-2.0 permitted licence-permissive-standing
+ctutils 0.4.8 Apache-2.0 OR MIT permitted licence-permissive-standing
 curve25519-dalek 4.1.3 BSD-3-Clause permitted licence-permissive-standing
 curve25519-dalek-derive 0.1.1 MIT/Apache-2.0 permitted licence-permissive-standing
 dashmap 6.2.1 MIT permitted licence-permissive-standing
 data-encoding 2.11.1 MIT permitted licence-permissive-standing
 der 0.7.10 Apache-2.0 OR MIT permitted licence-permissive-standing
+der_derive 0.7.3 Apache-2.0 OR MIT permitted licence-permissive-standing
 deranged 0.5.8 MIT OR Apache-2.0 permitted licence-permissive-standing
 deranged 0.5.9 MIT OR Apache-2.0 permitted licence-permissive-standing
 derivative 2.2.0 MIT/Apache-2.0 permitted licence-permissive-standing
@@ -158,6 +162,7 @@ errno 0.3.14 MIT OR Apache-2.0 permitted licence-permissive-standing
 event-listener 5.4.2 Apache-2.0 OR MIT permitted licence-permissive-standing
 event-listener-strategy 0.5.4 Apache-2.0 OR MIT permitted licence-permissive-standing
 fallible-iterator 0.3.0 MIT OR Apache-2.0 permitted licence-permissive-standing
+fallible-iterator 0.2.0 MIT/Apache-2.0 permitted licence-permissive-standing
 fancy-regex 0.19.2 MIT permitted licence-permissive-standing
 fastrand 2.4.1 Apache-2.0 OR MIT permitted licence-permissive-standing
 fastrand 2.5.0 Apache-2.0 OR MIT permitted licence-permissive-standing
@@ -165,6 +170,7 @@ fiat-crypto 0.2.9 MIT OR Apache-2.0 OR BSD-1-Clause permitted licence-permissive
 find-msvc-tools 0.1.15 MIT OR Apache-2.0 permitted licence-permissive-standing
 find-msvc-tools 0.1.9 MIT OR Apache-2.0 permitted licence-permissive-standing
 fjall 3.1.13 MIT OR Apache-2.0 permitted licence-permissive-standing
+flagset 0.4.7 Apache-2.0 permitted licence-permissive-standing
 fluent-uri 0.4.1 MIT permitted licence-permissive-standing
 flume 0.12.0 Apache-2.0/MIT permitted licence-permissive-standing
 fnv 1.0.7 Apache-2.0 OR MIT permitted licence-permissive-standing
@@ -195,8 +201,10 @@ heck 0.5.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 hermit-abi 0.5.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 hex 0.4.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 hmac 0.12.1 MIT OR Apache-2.0 permitted licence-permissive-standing
+hmac 0.13.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 httparse 1.10.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 hybrid-array 0.4.13 MIT OR Apache-2.0 permitted licence-permissive-standing
+hybrid-array 0.4.15 MIT OR Apache-2.0 permitted licence-permissive-standing
 id-arena 2.3.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 impl-trait-for-tuples 0.2.3 Apache-2.0/MIT permitted licence-permissive-standing
 indexmap 2.14.0 Apache-2.0 OR MIT permitted licence-permissive-standing
@@ -216,6 +224,7 @@ leb128fmt 0.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 libc 0.2.189 MIT OR Apache-2.0 permitted licence-permissive-standing
 libc 0.2.191 MIT OR Apache-2.0 permitted licence-permissive-standing
 libm 0.2.16 MIT permitted licence-permissive-standing
+libredox 0.1.25 MIT permitted licence-permissive-standing
 linux-raw-sys 0.11.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 linux-raw-sys 0.12.1 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 lock_api 0.4.14 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -225,11 +234,13 @@ lru-slab 0.1.3 MIT OR Apache-2.0 OR Zlib permitted licence-permissive-standing
 lsm-tree 3.1.10 MIT OR Apache-2.0 permitted licence-permissive-standing
 lz4_flex 0.13.1 MIT permitted licence-permissive-standing
 mach2 0.6.0 BSD-2-Clause OR MIT OR Apache-2.0 permitted licence-permissive-standing
+md-5 0.11.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 memchr 2.8.2 Unlicense OR MIT permitted licence-permissive-standing
 memchr 2.8.3 Unlicense OR MIT permitted licence-permissive-standing
 memfd 0.6.6 MIT OR Apache-2.0 permitted licence-permissive-standing
 memoffset 0.9.1 MIT permitted licence-permissive-standing
 micromap 0.3.0 MIT permitted licence-permissive-standing
+mio 1.2.5 MIT permitted licence-permissive-standing
 multiversion_no_op 1.0.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 num 0.4.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 num-bigint 0.4.8 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -241,6 +252,8 @@ num-integer 0.1.47 MIT OR Apache-2.0 permitted licence-permissive-standing
 num-iter 0.1.46 MIT OR Apache-2.0 permitted licence-permissive-standing
 num-rational 0.4.2 MIT OR Apache-2.0 permitted licence-permissive-standing
 num-traits 0.2.19 MIT OR Apache-2.0 permitted licence-permissive-standing
+objc2-core-foundation 0.3.2 Zlib OR Apache-2.0 OR MIT permitted licence-permissive-standing
+objc2-system-configuration 0.3.2 Zlib OR Apache-2.0 OR MIT permitted licence-permissive-standing
 object 0.36.7 Apache-2.0 OR MIT permitted licence-permissive-standing
 object 0.39.1 Apache-2.0 OR MIT permitted licence-permissive-standing
 once_cell 1.21.4 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -251,6 +264,8 @@ parking_lot_core 0.9.12 MIT OR Apache-2.0 permitted licence-permissive-standing
 paste 1.0.15 MIT OR Apache-2.0 permitted licence-permissive-standing
 pem 3.0.6 MIT permitted licence-permissive-standing
 percent-encoding 2.3.2 MIT OR Apache-2.0 permitted licence-permissive-standing
+phf 0.13.1 MIT permitted licence-permissive-standing
+phf_shared 0.13.1 MIT permitted licence-permissive-standing
 picosimd 0.9.6 MIT OR Apache-2.0 permitted licence-permissive-standing
 pin-project-lite 0.2.17 Apache-2.0 OR MIT permitted licence-permissive-standing
 piper 0.2.5 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -265,6 +280,9 @@ polkavm-linker 0.38.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 polkavm-linux-raw 0.38.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 polling 3.11.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 postcard 1.1.3 MIT OR Apache-2.0 permitted licence-permissive-standing
+postgres 0.19.14 MIT OR Apache-2.0 permitted licence-permissive-standing
+postgres-protocol 0.6.12 MIT OR Apache-2.0 permitted licence-permissive-standing
+postgres-types 0.2.14 MIT OR Apache-2.0 permitted licence-permissive-standing
 powerfmt 0.2.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 ppv-lite86 0.2.21 MIT OR Apache-2.0 permitted licence-permissive-standing
 prettyplease 0.2.37 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -334,11 +352,13 @@ serde_derive 1.0.229 MIT OR Apache-2.0 permitted licence-permissive-standing
 serde_json 1.0.154 MIT OR Apache-2.0 permitted licence-permissive-standing
 sfa 1.0.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 sha2 0.10.9 MIT OR Apache-2.0 permitted licence-permissive-standing
+sha2 0.11.2 MIT OR Apache-2.0 permitted licence-permissive-standing
 sha3 0.11.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 shlex 2.0.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 signal-hook-registry 1.4.8 MIT OR Apache-2.0 permitted licence-permissive-standing
 signature 2.2.0 Apache-2.0 OR MIT permitted licence-permissive-standing
 simdutf8 0.1.5 MIT OR Apache-2.0 permitted licence-permissive-standing
+siphasher 1.0.4 MIT OR Apache-2.0 permitted licence-permissive-standing
 slab 0.4.12 MIT permitted licence-permissive-standing
 slice-group-by 0.3.1 MIT permitted licence-permissive-standing
 smallvec 1.15.2 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -352,6 +372,7 @@ starknet-crypto 0.6.2 MIT OR Apache-2.0 permitted licence-permissive-standing
 starknet-crypto-codegen 0.3.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 starknet-curve 0.4.2 MIT OR Apache-2.0 permitted licence-permissive-standing
 starknet-ff 0.3.7 MIT OR Apache-2.0 permitted licence-permissive-standing
+stringprep 0.1.5 MIT/Apache-2.0 permitted licence-permissive-standing
 strum 0.28.0 MIT permitted licence-permissive-standing
 strum_macros 0.28.0 MIT permitted licence-permissive-standing
 stwo 2.2.0 Apache-2.0 permitted licence-permissive-standing
@@ -374,7 +395,14 @@ thiserror-impl 2.0.21 MIT OR Apache-2.0 permitted licence-permissive-standing
 time 0.3.55 MIT OR Apache-2.0 permitted licence-permissive-standing
 time-core 0.1.9 MIT OR Apache-2.0 permitted licence-permissive-standing
 tinyvec 1.13.3 Zlib OR Apache-2.0 OR MIT permitted licence-permissive-standing
+tls_codec 0.4.2 Apache-2.0 OR MIT permitted licence-permissive-standing
+tls_codec_derive 0.4.2 Apache-2.0 OR MIT permitted licence-permissive-standing
 tokio 1.54.0 MIT permitted licence-permissive-standing
+tokio 1.54.1 MIT permitted licence-permissive-standing
+tokio-postgres 0.7.18 MIT OR Apache-2.0 permitted licence-permissive-standing
+tokio-postgres-rustls 0.13.0 MIT permitted licence-permissive-standing
+tokio-rustls 0.26.6 MIT OR Apache-2.0 permitted licence-permissive-standing
+tokio-util 0.7.20 MIT permitted licence-permissive-standing
 toml_datetime 1.1.1+spec-1.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 toml_datetime 1.1.3+spec-1.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
 toml_edit 0.25.12+spec-1.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -388,10 +416,13 @@ tracing-subscriber 0.3.23 MIT permitted licence-permissive-standing
 twox-hash 2.1.5 MIT permitted licence-permissive-standing
 typenum 1.20.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 unarray 0.1.4 MIT OR Apache-2.0 permitted licence-permissive-standing
+unicode-bidi 0.3.18 MIT OR Apache-2.0 permitted licence-permissive-standing
 unicode-general-category 1.1.0 Apache-2.0 permitted licence-permissive-standing
 unicode-ident 1.0.24 (MIT OR Apache-2.0) AND Unicode-3.0 permitted licence-permissive-standing
 unicode-ident 1.0.26 (MIT OR Apache-2.0) AND Unicode-3.0 permitted licence-permissive-standing
 unicode-ident 1.0.27 (MIT OR Apache-2.0) AND Unicode-3.0 permitted licence-permissive-standing
+unicode-normalization 0.1.26 (MIT OR Apache-2.0) AND Unicode-3.0 permitted licence-permissive-standing
+unicode-properties 0.1.5 (MIT OR Apache-2.0) AND Unicode-3.0 permitted licence-permissive-standing
 unicode-segmentation 1.13.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 unicode-width 0.2.3 MIT OR Apache-2.0 permitted licence-permissive-standing
 untrusted 0.9.0 ISC permitted licence-permissive-standing
@@ -427,7 +458,9 @@ vos-wire 0.1.0 AGPL-3.0-or-later permitted DEC-6,counsel-licences
 vsimd 0.8.0 MIT permitted licence-permissive-standing
 wait-timeout 0.2.1 MIT/Apache-2.0 permitted licence-permissive-standing
 wasi 0.11.1+wasi-snapshot-preview1 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
+wasi 0.14.7+wasi-0.2.4 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-permissive-standing
 wasip2 1.0.4+wasi-0.2.12 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-permissive-standing
+wasite 1.0.2 Apache-2.0 OR BSL-1.0 OR MIT permitted licence-permissive-standing
 wasm-bindgen 0.2.126 MIT OR Apache-2.0 permitted licence-permissive-standing
 wasm-bindgen 0.2.130 MIT OR Apache-2.0 permitted licence-permissive-standing
 wasm-bindgen-macro 0.2.126 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -471,7 +504,9 @@ wasmtime-internal-wit-bindgen 48.0.8 Apache-2.0 WITH LLVM-exception permitted li
 wasmtime-internal-wit-bindgen 48.0.9 Apache-2.0 WITH LLVM-exception permitted licence-llvm-exception
 wast 262.0.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wat 1.262.0 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
+web-sys 0.3.107 MIT OR Apache-2.0 permitted licence-permissive-standing
 web-time 1.1.0 MIT OR Apache-2.0 permitted licence-permissive-standing
+whoami 2.1.3 Apache-2.0 OR BSL-1.0 OR MIT permitted licence-permissive-standing
 winapi-util 0.1.11 Unlicense OR MIT permitted licence-permissive-standing
 windows-link 0.2.1 MIT OR Apache-2.0 permitted licence-permissive-standing
 windows-sys 0.52.0 MIT OR Apache-2.0 permitted licence-permissive-standing
@@ -497,6 +532,7 @@ wit-component 0.254.2 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permit
 wit-component 0.258.3 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wit-parser 0.254.2 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
 wit-parser 0.258.3 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT permitted licence-llvm-exception
+x509-cert 0.2.5 Apache-2.0 OR MIT permitted licence-permissive-standing
 xxhash-rust 0.8.19 BSL-1.0 permitted licence-permissive-standing
 yasna 0.5.2 MIT OR Apache-2.0 permitted licence-permissive-standing
 zerocopy 0.8.52 BSD-2-Clause OR Apache-2.0 OR MIT permitted licence-permissive-standing

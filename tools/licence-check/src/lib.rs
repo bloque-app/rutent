@@ -1,7 +1,7 @@
 //! Licence record check (REQ-MOD-5, T-001-04).
 //!
-//! The check reads every `Cargo.lock` in the repository (the root one, and each one under `experiments/` or `components/`,
-//! found by walking those trees and skipping `target` directories), the record `licences/RECORD` and the root manifest's
+//! The check reads every `Cargo.lock` in the repository (the root one, and each one under `experiments/`, `components/`
+//! or `conformance/`, found by walking those trees and skipping `target` directories), the record `licences/RECORD` and the root manifest's
 //! workspace members as text. It fails on a locked external package that the record does not list at its locked
 //! version, and on one whose recorded decision is still `pending`; each violation names the lockfile it came from.
 //! In the root lock a package is external unless it is a workspace member without a `source`, so a path
@@ -157,8 +157,9 @@ fn check_one(lock: &LockFile, entries: &[Entry], found: &mut Vec<Violation>) -> 
 }
 
 /// The trees whose own `Cargo.lock`s the check reads beside the root one: the experiments, and the packages of
-/// `components/` that are workspaces of their own, such as the VOS program's (`T-010-05`).
-pub const LOCK_DIRS: [&str; 2] = ["experiments", "components"];
+/// `components/` and `conformance/` that are workspaces of their own, such as the VOS program's (`T-010-05`) and the
+/// demo API's (`conformance/scenarios/demo-api`).
+pub const LOCK_DIRS: [&str; 3] = ["experiments", "components", "conformance"];
 
 /// The paths of every `Cargo.lock` under [`LOCK_DIRS`], relative to `root`, sorted. See [`find_locks`].
 pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {

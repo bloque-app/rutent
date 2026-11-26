@@ -74,16 +74,16 @@ pub fn write(
 }
 
 /// A copy of the history at `to` with one figure changed in one record: what someone holding the file and the
-/// operator's full access could write. The record changed is the first that carries an `amount` of
-/// `crate::AMOUNT`; its index is handed back.
-pub fn tamper(history: &[Vec<u8>], to: &Path) -> std::io::Result<Option<usize>> {
+/// operator's full access could write. The record changed is the first that carries an `amount` of `amount`, which
+/// becomes ten times it; its index is handed back.
+pub fn tamper(history: &[Vec<u8>], to: &Path, amount: &str) -> std::io::Result<Option<usize>> {
     let mut out = history.to_vec();
     let mut changed = None;
     for (n, record) in out.iter_mut().enumerate() {
         let Ok(mut value) = serde_json::from_slice::<Value>(record) else {
             continue;
         };
-        if rewrite_amount(&mut value) {
+        if rewrite_amount(&mut value, amount) {
             *record = serde_json::to_vec(&value).expect("JSON");
             changed = Some(n);
             break;
@@ -93,20 +93,17 @@ pub fn tamper(history: &[Vec<u8>], to: &Path) -> std::io::Result<Option<usize>> 
     Ok(changed)
 }
 
-/// Changes the first `amount` of `crate::AMOUNT` in `value` to ten times it.
-fn rewrite_amount(value: &mut Value) -> bool {
+/// Changes the first `amount` of `amount` in `value` to ten times it.
+fn rewrite_amount(value: &mut Value, amount: &str) -> bool {
     match value {
         Value::Object(map) => {
-            if map.get("amount").and_then(Value::as_str) == Some(crate::AMOUNT) {
-                map.insert(
-                    "amount".to_owned(),
-                    Value::from(format!("{}0", crate::AMOUNT)),
-                );
+            if map.get("amount").and_then(Value::as_str) == Some(amount) {
+                map.insert("amount".to_owned(), Value::from(format!("{amount}0")));
                 return true;
             }
-            map.values_mut().any(rewrite_amount)
+            map.values_mut().any(|v| rewrite_amount(v, amount))
         }
-        Value::Array(items) => items.iter_mut().any(rewrite_amount),
+        Value::Array(items) => items.iter_mut().any(|v| rewrite_amount(v, amount)),
         _ => false,
     }
 }
@@ -153,7 +150,7 @@ pub fn arguments(handed: &Handed, history: &Path, evidence: bool) -> Vec<String>
 pub fn binary() -> Result<PathBuf, String> {
     let here = std::env::current_exe().map_err(|e| format!("this binary's path: {e}"))?;
     let mut dir = here.parent().ok_or("this binary has no directory")?;
-    // Run from cargo's copy under `deps/` (`from_deps`): the profile's directory is the one above it.
+    // Run from cargo's copy under `deps/` (`relaunch::from_deps`): the profile's directory is the one above it.
     if dir.file_name().is_some_and(|n| n == "deps") {
         dir = dir.parent().ok_or("deps/ has no parent")?;
     }
@@ -163,14 +160,24 @@ pub fn binary() -> Result<PathBuf, String> {
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build = Command::new(cargo);
-    build.args([
-        "build",
-        "--quiet",
-        "-p",
-        "rutent-core-audit",
-        "--bin",
-        "audit-check",
-    ]);
+    // In the repository's own workspace and into this binary's build directory, whichever workspace this binary
+    // was built in: `rutent-demo-api` is a workspace of its own.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|d| d.join("rust-toolchain.toml").is_file())
+        .ok_or("the repository's root, above this package")?;
+    let target = dir.parent().ok_or("the build directory")?;
+    build
+        .args(["build", "--quiet", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .args([
+            "-p",
+            "rutent-core-audit",
+            "--bin",
+            "audit-check",
+            "--target-dir",
+        ])
+        .arg(target);
     if !cfg!(debug_assertions) {
         build.arg("--release");
     }

@@ -236,6 +236,18 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Test, purpose-built store
         run: cargo test -p rutent-stm --features rutent-stm/purpose-built-store
+      # The demo API (`conformance/scenarios/demo-api`) is a workspace of its own, with its own lock, so the steps
+      # above never see it. Its smoke test starts the server with Core left lazy: no providers, no database.
+      - name: Format, demo API
+        run: cargo fmt --manifest-path conformance/scenarios/demo-api/Cargo.toml -- --check
+      - name: Lint, demo API
+        run: cargo clippy --locked --manifest-path conformance/scenarios/demo-api/Cargo.toml --all-targets -- -D warnings
+      - name: Documentation check, demo API
+        run: cargo doc --locked --manifest-path conformance/scenarios/demo-api/Cargo.toml --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Test, demo API
+        run: cargo test --locked --manifest-path conformance/scenarios/demo-api/Cargo.toml
 
   # T-013-05 (B-11, G-04, REQ-MDL-2, THR-18, ADR-0014): the machine code of every stand-in part, made again on a CPU of
   # another vendor than the one that made the reference, from the very binaries the `ci` job built, must have the
