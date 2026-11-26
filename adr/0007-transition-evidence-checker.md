@@ -100,9 +100,9 @@ This amendment was first written on 2026-11-25 with the reader as a Wasm module 
   separate service that reads a Substrate chain. It embeds the `smoldot-light` 2.1 light client, from the
   `bloque-app/smoldot` fork at `67ad6c37`. On start it checks the genesis hash, the metadata's transaction surface,
   the pallet, the registered keys and the asset decimals, and on any failure it declares itself refusing. It reads
-  through a cursor gated on finality, and one instance is active per key set, fenced by a lease. Its core stream
-  (Aledgent's `F-038`) runs under the operator's CA over mTLS, and a sequencer checks the feeder's signature on every
-  input and fences stale epochs.
+  through a cursor gated on finality, and one instance is active per key set, fenced by a lease. settle reaches the
+  core only through ingress; ingress's link to the core (F-038) runs over mTLS under the operator's CA, and a sequencer
+  checks ingress's signature on every input and fences stale epochs.
 
 ### Options considered
 
@@ -131,14 +131,26 @@ machine decide.
 - **The link.** Core reaches each reader host over mTLS under the operator's CA. Core's client certificate and the
   host's server certificate are both the operator's. Each answer is a statement in the contracts' envelope, made by
   the reader and signed with the reader's own key. The reader host signs it, so the reader's child process never holds
-  the key. Core checks the certificate the host presented and the answer's signature against the identity the
-  catalogue holds for that reader, and checks that the answer names the question and request Core sent, before it
-  reads anything in it. An answer that fails any check is refused, and Core reads it as unreadable.
+  the key. Core checks the host's certificate against the operator's CA and the host's subject name in the listing,
+  and the answer's signature against the reader's statement key in the listing. Transport identity alone is not
+  authorisation, so both are checked. The listing never pins the host's leaf certificate, so rotating it under the
+  same CA and name needs no catalogue change. Core also checks that the answer names the question and the request
+  Core sent, and that it arrived by its deadline on Core's own clock, before it reads anything in it. An answer that
+  fails any check is refused, and Core reads it as unreadable.
+- **Why no sequencer.** Aledgent's link puts a sequencer in front of its core to fence stale epochs. A reader's link
+  needs none, on three conditions, each held by Core:
+  - **(a) Only Core asks.** A reader's answer is never fetched inside `CMP-STM`'s replicas. It enters the state
+    machine only through what Core records: the `evidence` entry, with `read_by`.
+  - **(b) The request id is random.** Core draws each request id at random, never from a counter, so a host can't
+    compute an answer before the question is asked.
+  - **(c) Core's clock decides the deadline.** An answer's deadline is checked against Core's clock, never the
+    host's.
 - **Listing.** A public network is listed by a catalogue change that policy decides (`REQ-AUZ-1`), held to the
   operator. The change names:
   - the network, and its identity: a genesis hash, or a chain id;
   - the reader's endpoint: the host setting that says where its reader host is, and the reader's name on it;
-  - the reader's identity: the host's certificate and the reader's statement key;
+  - the reader's identity: the operator's CA, the host's subject name (its SAN) and the reader's statement key, never
+    the host's leaf certificate;
   - the reader's version;
   - the network's trust rule.
   The listing is appended before it applies, with its result after it, and Core rebuilds it from the log on reopening.
@@ -155,20 +167,24 @@ machine decide.
   The listing's change is `core-internal`'s, folded into its unreleased 1.0.0.
 - **Trust rule, per network.** The reader applies its network's rule before it answers. An answer it can't stand
   behind is unreadable, never a guess.
-  - **Substrate:** an embedded light client, with `aledgent-settle` as the reference. It checks the genesis hash and
-    the metadata it relies on before it answers anything, and it answers only on finalised state.
+  - **Substrate:** an embedded light client, with `aledgent-settle` as a design reference. Its trust is anchored on a
+    pinned genesis and a checkpoint (a `lightSyncState`) in a chain spec pinned by SHA-256. It checks the genesis hash
+    and the metadata it relies on before it answers anything, and it answers only on state its relay chain has
+    finalised. A lying peer can stall it, but can't forge finalised state.
   - **EVM:** at least two agreeing answers from a preset pool of RPC endpoints. The pool is named in the listing. Two
     answers that disagree, or fewer than two answers, give unreadable.
 - **Egress, outside the reader.** A reader's child process has no network route of its own. Its one channel is to the
   reader host. Every connection or request it makes goes through the host's egress, which reaches only the
-  destinations the reader declares: its RPC pool's endpoints, or its light client's bootnodes and the peers its
-  network's protocol reaches. The host refuses every other destination, checking redirects and altered resolution
+  destinations the reader declares. For an RPC pool these are the pool's endpoints, by name. A light client's peers
+  are discovered, so its rule is per protocol and port, not per address: the network's p2p ports and `wss`, with a cap
+  on its connections. The host refuses every other destination, checking redirects and altered resolution
   as `CMP-PROV`'s egress layer does, and records each call with destination, reader, version and request
   (`REQ-MDL-7`, `REQ-MDL-8` applied to readers). A reader's own code is not trusted to keep to its list. An RPC key,
   where a node needs one, is resolved by name by the host and never reaches the reader's process (`REQ-MDL-6` applied
   to readers).
 - **Unreadable.** Anything that keeps Core from a good answer is unreadable: a reader host unreachable, a refused
-  certificate or signature, an answer to another question or past its deadline, a malformed answer, a trust rule not
+  certificate or signature, an answer to another question or request, an answer past its deadline by Core's clock, a
+  malformed answer, a trust rule not
   met, or a network that failed its start-up check. Unreadable never crashes Core, and it never becomes a
   confirmation.
 - **Versioning.** Each answer names the reader and its version, and Core holds that version to the listing's. Each
@@ -212,14 +228,20 @@ machine decide.
   - Core's adapter, the start-up check, the network that doesn't start, and the reader named in each `evidence` entry
     (`T-020-60`).
   `T-024-10` and `T-025-05` wait on all four.
-- **`M4`'s real readers** are `F-031`'s per-network tasks. Kreivo's reader reuses or follows `aledgent-settle`'s light
-  client (`T-031-02`). The EVM reader's two-of-a-pool rule has no precedent and is new work (`T-031-03`).
+- **`M4`'s real readers** are `F-031`'s per-network tasks. Kreivo's reader follows `aledgent-settle`'s light client as
+  a design reference only, in a crate of its own outside the root lock, since `smoldot-light` is copyleft (`T-031-02`;
+  the owner's item `smoldot-licence`). TLS for the reader host and Core's client is `rustls` on `ring`, already
+  permitted. The EVM reader's two-of-a-pool rule has no precedent and is new work (`T-031-03`).
 - **Revisit** if upstream VOS designs an extension host that a Raft space can reach. This ADR would then weigh a
   reader as one.
 - **Residuals, stated.**
   - A reader is the operator's code, so a reader that lies is the operator's fault, as the holding wallet's balance is
     the operator's module's word (`REQ-AUD-15`). The trust rules bound one lying RPC node, not a lying reader.
-  - A light client's peers are discovered, not listed one by one. Its egress allows them by its network's protocol,
-    a wider list than an RPC pool's. `F-031`'s Kreivo task says how that list is bounded.
+  - The reader host's signature proves that this reader host relayed an answer, not that this reader's code produced
+    it. A compromised host can sign for every reader it runs. This is accepted because the host is the operator's
+    own, as the reader is.
+  - A light client's peers are discovered, not listed one by one, so its egress is allowed by protocol and port, with
+    a cap on connections: a wider rule than an RPC pool's names. A lying peer can stall the client but can't forge
+    finalised state. `F-031`'s Kreivo task (`T-031-02`) sets the rule and the client's JSON-RPC limits.
 - **The cost.** Each read of a public record crosses the network to the reader host, and each pass asks each question
   once. No target is set before `M4`. `F-033` measures it with the rest of the platform.

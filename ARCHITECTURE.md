@@ -116,8 +116,10 @@ what makes allocating `REQ-AUD-*`, `REQ-AUZ-*` and the cross-cutting slice of `R
   never by a provider module checking itself (ADR-0007).
   Core reads each public network through `PublicRecords`, its own seam. An adapter serves it over mTLS, asking that
   network's reader service three questions (`network_rules`, `movement_status`, `movement_of`, the `reader` contract).
-  Each answer is signed with the reader's key, and Core checks the signature and the reader's identity against the
-  catalogue before it reads the answer. A public network is listed by a catalogue change that policy decides, naming
+  Each answer is signed with the reader's key. Before it reads the answer, Core checks the host's certificate against
+  the operator's CA and the host's listed name (never a pinned leaf certificate), the signature against the reader's
+  listed key, the random request id it drew, and the deadline on its own clock. Only Core asks, and a reader's answer
+  enters the state machine only through the `evidence` entry Core records, so the link needs no sequencer. A public network is listed by a catalogue change that policy decides, naming
   the network's identity, the reader's endpoint, identity and version, and the trust rule: a light client for a
   Substrate network, at least two agreeing answers from a preset RPC pool for an EVM network. At start-up Core checks
   each listed reader, and a network whose reader is unreachable or fails the check doesn't start and isn't listed.
