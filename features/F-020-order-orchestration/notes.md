@@ -8889,7 +8889,8 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
      (`T-024-07`) accepts through the fleet, and `Core::accept_release` (the operator's wallet) writes its own decided
      effect; Core's decided `accept` (`ReleaseChange::Accept`) is built and tested in core-orch, not yet the scenarios'
      caller. Routed to `T-020-61`.
-  7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; `T-020-62` carries that check.
+  7. **`Arrivals.refilings` aren't rebuilt** (the reviewer's T-020-52 Low): not taken here; built by `T-020-62`, merged
+     beside this row's deposit wait in `arrival/reopen.rs` (`origin/m3` at `bc8651af`, no conflict).
 - **Merged** `origin/m3` at `f0c66ab4` (the plan follow-up: `T-020-63`, `Reversals.later` in `T-020-61`), PLAN only, no
   conflict.
 - **Tests** (the row's fourteen, each written first and run red on an assertion through its rule-off below):
