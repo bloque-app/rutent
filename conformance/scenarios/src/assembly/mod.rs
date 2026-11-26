@@ -640,8 +640,9 @@ pub struct Core {
     kept_through: Option<Box<KeptThrough>>,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
-    /// The quotes reserves hold, which an acceptance may redeem (`T-020-15`); which order redeemed which is rebuilt
-    /// from the log whenever Core is put together on a disk (`Holds::recorded`).
+    /// The quotes reserves hold, which an acceptance may redeem (`T-020-15`); which order redeemed which is read from
+    /// the log whenever Core is put together on a disk (`Holds::recorded`), and a reopened Core keeps each hold again
+    /// from the log (`Holds::reopened`, `T-020-57`).
     holds: rutent_core_orch::quote::Holds,
     readings: grading::Readings,
     issued: Issued,
@@ -1869,91 +1870,6 @@ impl Core {
         &mut self.holds
     }
 
-    /// Core's holds lost and rebuilt from the log, as a restart leaves them (`Holds::recorded`): which order redeemed
-    /// which hold is what the log's acceptances say; and each hold the log holds is kept again, as the deployment keeps
-    /// them across a restart (`F-030`): its statement read back from the evidence store behind its entry's commitment,
-    /// and held to the decision record its entry's quote names, which Core signed and the log names by digest
-    /// (`Holds::hold`). A hold whose bytes or record can't be read back is held no more.
-    pub fn holds_rebuilt_from_log(&mut self) {
-        let entries = self.log.borrow().entries().to_vec();
-        let mut holds = rutent_core_orch::quote::Holds::recorded(&entries);
-        for (receipt, entry) in &entries {
-            let Entry::Stated(stated) = entry else {
-                continue;
-            };
-            if stated.what.statement.as_str() != rutent_contracts::provider_role::HOLD_SHAPE {
-                continue;
-            }
-            let Some(hold) = rutent_contracts::core_internal::calls::KeptStatements::kept(
-                &mut self.kept,
-                &stated.commitment,
-            )
-            .ok()
-            .flatten()
-            .and_then(|kept| rutent_core_audit::log::kept::from_base64url(kept.bytes.as_str()))
-            .and_then(|bytes| {
-                serde_json::from_slice::<
-                    rutent_contracts::provider_role::Statement<
-                        rutent_contracts::provider_role::Hold,
-                    >,
-                >(&bytes)
-                .ok()
-            }) else {
-                continue;
-            };
-            let named = &hold.statement.record;
-            let Some(id) = Id::new(named.id.as_str()) else {
-                continue;
-            };
-            let Some(order) = entries.iter().find_map(|(_, e)| match e {
-                Entry::Verified(VerifiedEntry {
-                    what:
-                        What::DecisionRecord {
-                            decision_record,
-                            order,
-                            ..
-                        },
-                    ..
-                }) if decision_record == &id => Some(order.clone()),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let Ok(record) = self.record_of(&order, &id) else {
-                continue;
-            };
-            let Some(digest) = self.verified_whats().into_iter().find_map(|w| match w {
-                What::DecisionRecord {
-                    decision_record,
-                    record,
-                    ..
-                } if decision_record == id => Some(record),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let Some(until) =
-                rutent_contracts::router_api::Timestamp::new(hold.statement.valid_until.as_str())
-            else {
-                continue;
-            };
-            let _ = holds.hold(
-                rutent_core_orch::quote::Signed {
-                    hold: &hold,
-                    stated,
-                    receipt,
-                },
-                rutent_core_orch::quote::RecordedAs {
-                    id: &id,
-                    digest: &digest,
-                },
-                record,
-                until,
-            );
-        }
-        self.holds = holds;
-    }
-
     /// From now on, the evidence store's read answers what `through` makes of what it kept under each commitment,
     /// for every statement Core holds to what the store keeps (a provider's terms, a reserve's hold): how a scenario
     /// shows Core keeping nothing that rests on other bytes than its entry names (`REQ-AUD-2`). `None` reads it as kept
@@ -2628,7 +2544,7 @@ mod tests {
             .unwrap();
         let order = Core::order_of(&told).unwrap();
         let Told::Exists {
-            status: Status::Quoted { quote, digest },
+            status: Status::Quoted { quote, digest, .. },
             ..
         } = core.quote(&customer, &order).unwrap()
         else {

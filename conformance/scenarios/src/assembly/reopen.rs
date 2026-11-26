@@ -6,6 +6,8 @@
 //! starts):
 //!
 //! - the transactions it asked under ([`Issued::recorded`]);
+//! - the holds reserves gave of its quotes, each kept again from the log and the evidence store (`Holds::reopened`,
+//!   `T-020-57`);
 //! - intake's orders and acceptances ([`Intake::reopened`]), and policy's sources of the orders' parties from them;
 //! - the segments ([`Segments::reopened`]): the orders followed, the effects acted on, each segment handed over and
 //!   its outcome, and the value in flight held in [`Exposures`];
@@ -205,6 +207,16 @@ impl Core {
         let history: Vec<(Receipt, Entry)> = self.log.borrow().entries().to_vec();
         // The decision records Core signed, from the evidence store, never from memory.
         self.signer.records = self.records_in_the_store(&history);
+        // The quotes reserves hold, kept again by Core from the log and what the evidence store keeps behind each
+        // hold, and which order redeemed which (`T-020-57`).
+        self.holds = {
+            let mut reading = Reading {
+                signed: &self.signer.records,
+                entries: &history,
+                kept: &mut self.kept,
+            };
+            rutent_core_orch::quote::Holds::reopened(&history, &mut reading)
+        };
         self.issued = Issued::recorded(&history);
         // The executed prices reported, so each order's is reported once (`REQ-QTE-7`).
         self.reported = rutent_core_orch::quote::Prices::recorded(&history);

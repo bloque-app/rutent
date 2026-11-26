@@ -37,11 +37,13 @@ impl Clock for Fixed {
 #[derive(Default)]
 struct Account {
     calls: Vec<String>,
+    /// Whether the next node has a holding account too.
+    next_held: bool,
 }
 
 impl Landings for Account {
     fn holds(&self, node: &str) -> bool {
-        node == HELD
+        node == HELD || (self.next_held && node == NEXT)
     }
 
     fn land(&mut self, node: &str, asset: &str, order: &str, amount: &Amount) -> Landed {
@@ -267,6 +269,7 @@ fn reversal_out_of_a_held_node_lands_the_value_there_again() {
     segments.note_reversed(
         &Id::new(LINKED).expect("an id"),
         &Id::new("seg-transfer").expect("an id"),
+        &Amount::new(AMOUNT).expect("an amount"),
     );
     take(
         &mut segments,
@@ -378,8 +381,199 @@ fn reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing() {
     segments.note_reversed(
         &Id::new(LINKED).expect("an id"),
         &Id::new("seg-transfer").expect("an id"),
+        &Amount::new(AMOUNT).expect("an amount"),
     );
     let mut account = Account::default();
     assert_eq!(segments.land_settled(&mut account), 0);
     assert!(account.calls.is_empty(), "{:?}", account.calls);
+}
+
+/// The linked order's first move out of the held node fails, and its reversal completes on a confirmation that less
+/// came back than the move took in: what is landed again is what the confirmation says came back, so less returned
+/// attributes less; and a confirmation of more than the move took in lands what it took in, never more (`INV-1`,
+/// `T-020-57`).
+// verifies: INV-1
+#[test]
+fn value_landed_again_is_what_the_wallet_confirms_came_back() {
+    for (back, landed) in [("900", "900"), (AMOUNT, AMOUNT), ("1100", AMOUNT)] {
+        let clock = Fixed(Cell::new(1_795_000_000));
+        let mut segments = first_move_failed(&clock);
+        segments.note_reversed(
+            &Id::new(LINKED).expect("an id"),
+            &Id::new("seg-transfer").expect("an id"),
+            &Amount::new(back).expect("an amount"),
+        );
+        take(
+            &mut segments,
+            &input(
+                4,
+                Some("seg-transfer"),
+                Observed::ReversalCompleted {
+                    evidence: id("ev-back"),
+                },
+            ),
+        );
+        let mut account = Account::default();
+        assert_eq!(segments.land_settled(&mut account), 1, "confirmed {back}");
+        assert_eq!(
+            account.calls,
+            [format!("land {HELD} COP {LINKED} {landed}")],
+            "confirmed {back}"
+        );
+        assert_eq!(
+            segments
+                .resting_totals()
+                .get(&(HELD.to_owned(), LINKED.to_owned())),
+            Some(&Amount::new(landed).expect("an amount")),
+            "confirmed {back}"
+        );
+    }
+}
+
+/// The linked order's first move out of the held node settles at the next node, where it is landed, and is then
+/// proven undone, as the state machine lets a starting segment be: its value left the next node, whose landing is
+/// released, and is back at the held node for the linked order, where it is landed again, each once (`INV-1`,
+/// `T-020-57`, the milestone reviewer's check of `T-020-56`).
+// verifies: INV-1
+#[test]
+fn linked_orders_settled_then_reversed_first_move_is_returned_to_its_node() {
+    let clock = Fixed(Cell::new(1_795_000_000));
+    let mut segments = Segments::new();
+    let chosen = input(
+        1,
+        None,
+        Observed::RouteChosen {
+            decision_record: id("dr-linked"),
+            parts: vec![PartPlan {
+                part_id: id(PART),
+                segments: route("seg-transfer", "seg-deposit"),
+            }],
+            handed_on_from: Some(id(FIRST)),
+        },
+    );
+    let order = Stm::open(&chosen).expect("the linked order opens at the held node");
+    segments.orders.insert(
+        LINKED.into(),
+        Tracked {
+            order,
+            since: clock.now(),
+        },
+    );
+    take(
+        &mut segments,
+        &input(2, Some("seg-transfer"), Observed::ProviderBound {}),
+    );
+    take(
+        &mut segments,
+        &input(
+            3,
+            Some("seg-transfer"),
+            Observed::SegmentSettled {
+                evidence: id("ev-moved"),
+            },
+        ),
+    );
+    segments.flights.insert(
+        (LINKED.into(), "seg-transfer".into()),
+        flight(
+            "seg-transfer",
+            SegmentOutcome::Settled {
+                amount_out: Amount::new(AMOUNT).expect("an amount"),
+                evidence: Id::new("ev-moved").expect("an id"),
+            },
+        ),
+    );
+    let mut account = Account {
+        next_held: true,
+        ..Account::default()
+    };
+    assert_eq!(segments.land_settled(&mut account), 1);
+    assert_eq!(
+        account.calls,
+        [format!("land {NEXT} COP {LINKED} {AMOUNT}")],
+        "landed where it settled"
+    );
+
+    // The starting segment is proven undone: the value is back at the held node.
+    segments.note_reversed(
+        &Id::new(LINKED).expect("an id"),
+        &Id::new("seg-transfer").expect("an id"),
+        &Amount::new(AMOUNT).expect("an amount"),
+    );
+    take(
+        &mut segments,
+        &input(
+            4,
+            Some("seg-transfer"),
+            Observed::ReversalCompleted {
+                evidence: id("ev-back"),
+            },
+        ),
+    );
+    segments.land_settled(&mut account);
+    segments.land_settled(&mut account);
+    let mut calls = account.calls.clone();
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            format!("land {HELD} COP {LINKED} {AMOUNT}"),
+            format!("land {NEXT} COP {LINKED} {AMOUNT}"),
+            format!("release {NEXT} COP {LINKED} {AMOUNT}"),
+        ],
+        "released where it left, landed again where it is back, each once"
+    );
+    let totals = segments.resting_totals();
+    assert_eq!(
+        totals.get(&(HELD.to_owned(), LINKED.to_owned())),
+        Some(&Amount::new(AMOUNT).expect("an amount"))
+    );
+    assert!(!totals.contains_key(&(NEXT.to_owned(), LINKED.to_owned())));
+}
+
+/// A completion whose confirmation says nothing came back, or whose amount can't be read (`Reversals::complete` keeps
+/// it as zero), lands nothing again: the order Core follows reads the move as reversed, but what the move took in never
+/// stands in for the confirmation, and a reopened Core reads the same (`INV-1`, `T-020-57`'s review, L2). Neither judge
+/// lets such a confirmation complete a reversal today (`NotInFull`), so this drives the landing directly.
+// verifies: INV-1
+#[test]
+fn return_confirmed_at_nothing_lands_nothing_again() {
+    let clock = Fixed(Cell::new(1_795_000_000));
+    let mut segments = first_move_failed(&clock);
+    segments.note_reversed(
+        &Id::new(LINKED).expect("an id"),
+        &Id::new("seg-transfer").expect("an id"),
+        &Amount::zero(),
+    );
+    take(
+        &mut segments,
+        &input(
+            4,
+            Some("seg-transfer"),
+            Observed::ReversalCompleted {
+                evidence: id("ev-back"),
+            },
+        ),
+    );
+    let mut account = Account::default();
+    assert_eq!(segments.land_settled(&mut account), 0);
+    segments.land_settled(&mut account);
+    assert!(account.calls.is_empty(), "{:?}", account.calls);
+    assert!(
+        !segments
+            .resting_totals()
+            .contains_key(&(HELD.to_owned(), LINKED.to_owned())),
+        "nothing rests there for it"
+    );
+    let mut restarted = Account::default();
+    assert_eq!(segments.reconcile_landings(&mut restarted), 0);
+    assert!(restarted.calls.is_empty(), "{:?}", restarted.calls);
+    assert_eq!(
+        segments.returned_amount(
+            &Id::new(LINKED).expect("an id"),
+            &Id::new("seg-transfer").expect("an id")
+        ),
+        Some(&Amount::zero()),
+        "and nothing is evidenced for a recalculation to move"
+    );
 }

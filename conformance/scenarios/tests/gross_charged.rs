@@ -87,7 +87,7 @@ fn stated(core: &mut Core, reserve: &str) -> Vec<InnerSegment> {
 fn ran(core: &mut Core, session: &Id, reserve: &str, name: &str) -> (Id, Quote, Vec<Ran>) {
     let (order, told) = quoted(core, within(name, session, AMOUNT, reserve, OTHER));
     let Told::Exists {
-        status: Status::Quoted { digest, quote },
+        status: Status::Quoted { digest, quote, .. },
         ..
     } = told
     else {
