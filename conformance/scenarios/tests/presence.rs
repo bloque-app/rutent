@@ -70,6 +70,8 @@ fn demand(acting: &Actor) -> Run {
         for scope in [
             Scope::OpenSession,
             Scope::Authorise,
+            // Told the order's status at each call, which intake asks policy's read check for (`T-020-52`).
+            Scope::CheckRead,
             Scope::Charge(Work::Request),
             Scope::Charge(Work::FanOut),
         ] {

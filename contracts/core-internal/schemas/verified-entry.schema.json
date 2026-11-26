@@ -1112,7 +1112,8 @@
       "required": [
         "call",
         "arrival",
-        "order"
+        "order",
+        "decision"
       ],
       "properties": {
         "call": {
@@ -1125,6 +1126,10 @@
         "order": {
           "description": "The order it is filed against.",
           "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "decision": {
+          "description": "The receipt of policy's permitted decide of refile_arrival it rests on (T-020-52): about this arrival and order, asked by who.",
+          "$ref": "urn:rutent:core-internal:receipt"
         }
       }
     },
@@ -1392,7 +1397,8 @@
             "refused_by_policy",
             "over_bound",
             "malformed_request",
-            "destination_owner_changed"
+            "destination_owner_changed",
+            "missing_input"
           ]
         }
       }

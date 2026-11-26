@@ -1,0 +1,22 @@
+{
+  "request": "req-100",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "refile_arrival",
+    "arrival": {
+      "log": "log-main",
+      "index": 141,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+      }
+    },
+    "order": "ord-1"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -57,8 +57,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::AppendFailure;
 use rutent_contracts::core_internal::{
-    About, Actor, ArrivalMatch, Count, Destination, Entry, OrderRefusalClass, Parties, Receipt,
-    Role, What,
+    About, Action, Actor, Answer, ArrivalMatch, Count, DecisionRequest, Destination, Entry,
+    OrderRefusalClass, Parties, Receipt, Role, What,
 };
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
@@ -344,13 +344,24 @@ fn key(receipt: &Receipt) -> String {
     serde_json::to_string(receipt).unwrap_or_default()
 }
 
+/// A key for the refiling of an arrival by a filer: the arrival and the actor, whole, so no other actor reuses it.
+fn refiling_key(arrival: &Receipt, filer: &Actor) -> String {
+    format!(
+        "{}|{}",
+        key(arrival),
+        serde_json::to_string(filer).unwrap_or_default()
+    )
+}
+
 /// Whether `filer` may file at all: the deployment's operator (its party the operator's), or a reserve, and in either
-/// case an actor the register of actors says acts for the party it states (`REQ-ORD-13`,
-/// `REQ-ORD-23`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
+/// case an actor the register of actors says acts for the party it states, as the kind and in the role it states, which
+/// policy's register binds (`REQ-ORD-13`, `REQ-ORD-23`, `T-020-52`). Asked before anything about an arrival is looked up, so a stranger learns nothing of a receipt.
 fn listed_filer(desk: &mut Desk<'_, '_>, filer: &Actor) -> bool {
     let role = (filer.role == Role::Operator && filer.party == desk.operator.party)
         || filer.role == Role::Provider;
-    role && desk.actors.acts_for(&filer.acts, &filer.party, filer.kind)
+    role && desk
+        .actors
+        .acts_for(&filer.acts, &filer.party, filer.kind, filer.role)
 }
 
 /// Whether a listed filer may file at `reserve`: the operator anywhere, a reserve only where it is the reserve.
@@ -791,15 +802,40 @@ impl Arrivals {
         let (Some(order), ArrivalMatch::Differs) = (&recorded.order, recorded.matched) else {
             return Err(ArrivalError::NoSuchArrival);
         };
-        let refiled = match self.refilings.get_mut(&key(arrival)) {
+        // A refiling built is reused only by the filer it was built for and policy permitted: another filer is asked of
+        // policy on its own, never told an arrival was filed anew on a permit that wasn't its own (`T-020-52`).
+        let built = refiling_key(arrival, filer);
+        let refiled = match self.refilings.get_mut(&built) {
             Some(refiled) => refiled,
             None => {
+                // Policy decides the refiling first, as it decides any action (`T-020-52`): the entry cites its
+                // permit. A refusal, or no answer, records no refiling, and the same call again asks again.
+                let request = DecisionRequest {
+                    request: desk.parts.fresh.id(),
+                    caller: filer.clone(),
+                    action: Action::RefileArrival {
+                        arrival: arrival.clone(),
+                        order: order.clone(),
+                        filer: filer.clone(),
+                    },
+                    at: journal::now(desk.parts.clock)?,
+                };
+                let decision = desk.decisions.decide(&request)?;
+                let Some(permit) = decision.permit() else {
+                    return Err(match decision.outcome {
+                        Answer::NotKnown { .. } => ArrivalError::Log(AppendFailure::Unavailable),
+                        _ => ArrivalError::Refused {
+                            class: OrderRefusalClass::RefusedByPolicy,
+                        },
+                    });
+                };
                 let what = What::Refiling {
                     arrival: arrival.clone(),
                     order: order.clone(),
+                    decision: permit.receipt().clone(),
                 };
                 let entry = journal::build(desk.parts.clock, filer, what)?;
-                self.refilings.entry(key(arrival)).or_insert(Refiled {
+                self.refilings.entry(built).or_insert(Refiled {
                     entry,
                     receipt: None,
                 })
@@ -1015,7 +1051,7 @@ impl Arrivals {
             // One that ended is told how, to its customer alone.
             return match self.ended.iter().find(|r| &r.order == order) {
                 Some(run)
-                    if desk.actors.acts_for(&by.acts, &by.party, by.kind)
+                    if desk.actors.acts_for(&by.acts, &by.party, by.kind, by.role)
                         && by.role == Role::Customer
                         && by.party == run.record().parties.requester =>
                 {
