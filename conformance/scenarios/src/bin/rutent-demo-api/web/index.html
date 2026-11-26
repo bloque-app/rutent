@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rutent · a funds router on a synthetic network</title>
+<link rel="stylesheet" href="/style.css">
+<!-- Cytoscape.js (MIT licence, https://js.cytoscape.org), pinned. The browser fetches it; the server makes no
+     outbound call. -->
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <strong>rutent</strong>
+    <span>a funds router with an authenticated log, on a synthetic network</span>
+  </div>
+  <div class="status" id="status">connecting…</div>
+  <nav class="acts">
+    <button data-act="1" title="Pesos in Colombia to dollars in the US, one exchange failing">Act 1 · failure &amp; recovery</button>
+    <button data-act="2" title="One request, two objectives, two routes">Act 2 · two objectives</button>
+    <button data-act="3" title="A stuck order, handed on by two people">Act 3 · stuck &amp; handed on</button>
+    <button data-act="4" title="Write the folder an outside checker gets and run audit-check">Epilogue · check the log</button>
+    <button data-act="all" class="primary">Play all</button>
+    <button id="reset" class="quiet" title="Drop Core and put a new one together (about a minute)">Reset Core</button>
+    <label class="pace">pace <input id="pace" type="range" min="0" max="2000" step="100" value="700"></label>
+  </nav>
+</header>
+<p class="banner">Every provider here is simulated: nothing holds or moves real value. Each runs as a real Wasm module
+  on rutent's module platform, signs for real, and every step lands in the log below.</p>
+<main>
+  <section class="graph-pane">
+    <div class="pane-head">
+      <h2>The network</h2>
+      <span class="hint">Nodes are where value rests; each edge is a tuple a provider serves (from → to). Loops are
+        exchanges; parallel edges are rival providers.</span>
+    </div>
+    <div id="graph"></div>
+    <div id="graph-busy" hidden>Core is working…</div>
+    <div class="legend">
+      <span><i class="n outer"></i>outer node (bank rail, chain addresses)</span>
+      <span><i class="n private"></i>private node (one publisher's ledger)</span>
+      <span><i class="n public"></i>public node (shared chain)</span>
+      <span><i class="e chosen"></i>chosen route</span>
+      <span><i class="e cand"></i>other candidates</span>
+      <span><i class="e settled"></i>settled</span>
+      <span><i class="e failed"></i>failed / refused</span>
+    </div>
+  </section>
+  <aside>
+    <section class="story-pane">
+      <div class="pane-head"><h2>What's happening</h2><button id="clear-story" class="quiet small">clear</button></div>
+      <ol id="story"></ol>
+    </section>
+    <section class="route-pane">
+      <div class="pane-head"><h2>Route &amp; candidates</h2><span class="hint" id="route-title">no quote yet</span></div>
+      <div id="route"></div>
+    </section>
+    <section class="try-pane">
+      <details>
+        <summary><h2>Try it yourself</h2></summary>
+        <form id="quote-form">
+          <label>from <select name="from"></select></label>
+          <label>to <select name="to"></select></label>
+          <label>amount <input name="amount" value="50000.00" size="10"></label>
+          <label>objective <select name="objective">
+            <option value="lowest_total_cost">lowest total cost</option>
+            <option value="fastest_settlement">fastest settlement</option>
+          </select></label>
+          <button type="submit">Quote</button>
+          <button type="button" id="try-accept" disabled>Accept</button>
+          <button type="button" id="try-run" disabled>Run</button>
+        </form>
+        <form id="fault-form">
+          <label>script <select name="provider"></select></label>
+          <label>to <select name="kind">
+            <option value="fail">fail</option>
+            <option value="refuse">refuse</option>
+          </select></label>
+          <label>its next <select name="operation">
+            <option value="">operation</option>
+            <option value="withdrawal">withdrawal</option>
+            <option value="conversion">conversion</option>
+            <option value="transfer">transfer</option>
+            <option value="deposit">deposit</option>
+          </select></label>
+          <button type="submit">Script fault</button>
+        </form>
+      </details>
+    </section>
+  </aside>
+</main>
+<section class="log-pane">
+  <div class="pane-head">
+    <h2>The log, live</h2>
+    <span class="hint"><b class="k verified">verified</b> Core's own record of a call between its parts ·
+      <b class="k stated">stated</b> a party's signed statement, kept as signed</span>
+    <input id="log-filter" placeholder="filter: order, provider, shape…">
+    <label class="small"><input type="checkbox" id="log-follow" checked> follow</label>
+  </div>
+  <div id="log"><table><thead><tr><th>#</th><th>kind</th><th>what</th><th>by</th><th>order</th><th>provider</th><th>signature</th></tr></thead><tbody></tbody></table></div>
+</section>
+<section class="log-pane">
+  <div class="pane-head">
+    <h2>The network's transitions</h2>
+    <span class="hint">every request an adapter made of an outer piece (its book, a chain, a publisher's ledger, a bank's
+      rail) and how it came out, as the API recorded it in its database: <b id="world-store">…</b> · run <code id="world-run">…</code></span>
+    <input id="world-filter" placeholder="filter: order, provider, outcome…">
+    <label class="small"><input type="checkbox" id="world-dry"> dry runs</label>
+  </div>
+  <div id="world" class="log"><table><thead><tr><th>#</th><th>piece</th><th>kind</th><th>provider</th><th>from → to</th><th>amount</th><th>order</th><th>outcome</th><th>Core's clock</th></tr></thead><tbody></tbody></table></div>
+</section>
+<script src="/app.js"></script>
+</body>
+</html>

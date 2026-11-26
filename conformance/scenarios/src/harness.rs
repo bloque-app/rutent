@@ -609,6 +609,13 @@ pub struct Run {
     pub kept: Vec<rutent_contracts::core_internal::KeptStatement>,
 }
 
+/// Every statement `core`'s evidence store has kept so far, in the order it kept them, with each one's commitment,
+/// salt and bytes: what [`Run::read`] reads into [`Run::kept`], read while Core keeps running. The demo's API hands
+/// them to an outside checker mid-run (`conformance/demo/README.md`).
+pub fn kept_of(core: &Core) -> Vec<rutent_contracts::core_internal::KeptStatement> {
+    kept_statements(&core.disk).1
+}
+
 /// The statements `disk`'s shelf holds, in the order they were kept: parsed, and as kept.
 fn kept_statements(
     disk: &crate::assembly::durable::Disk,

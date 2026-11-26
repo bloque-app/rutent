@@ -1,0 +1,6 @@
+# What the demo API's image leaves out of the build context (conformance/demo/Dockerfile).
+target
+**/target
+.git
+.claude
+experiments

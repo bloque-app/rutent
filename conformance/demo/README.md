@@ -21,14 +21,129 @@ takes about a minute, most of it the platform admitting eighteen modules.
 The program exits 0 when the whole story ran as told, ending with the outside check passing on the real log and
 failing on the tampered copy.
 
+## In a browser: `rutent-demo-api`
+
+The same network, served over HTTP with a page that draws it and replays the three acts and the epilogue through the
+API, one call at a time:
+
+```sh
+cargo run -p rutent-scenarios --bin rutent-demo-api
+```
+
+Then open <http://127.0.0.1:7040/>. Core is put together before the server answers (about a minute after the first
+build, as for the demo). The page shows:
+
+- **The network as a graph.** Each node is a vertex, drawn by its kind; each tuple a provider serves is a directed
+  edge labelled with the provider, what it does and the assets it moves. An exchange is a loop on its node; two
+  bridges between the same chains are two parallel edges. The graph comes from `GET /network`, derived from the
+  providers' own shapes like `network.dot`.
+- **The route a quote chose**, in blue on the graph, with every other candidate the router weighed dashed, and a list
+  of all of them with why each was dropped; hover one to see it on the graph. As segments run, each edge turns green
+  (settled) or red (failed or refused).
+- **What's happening**: each act's steps, each one an API call with its status, a summary of what it answered and the
+  full response.
+- **The log, live**: every entry as the demo's timeline shows it, appended as Core writes it.
+- **Buttons** for act 1, act 2, act 3 and the epilogue, or all four in order, and a form to quote, accept and run an
+  order of your own and to script a provider's fault.
+
+| Option | What it does |
+|---|---|
+| `--addr HOST:PORT` | Where it listens. The default is `127.0.0.1:7040`, this machine only |
+| `--seed N` | The run's seed, as for the demo. The default is 1 |
+| `--out DIR` | Where `POST /audit` writes the folder an outside checker gets. The default is `rutent-demo-api/` in cargo's target directory |
+| `--lazy` | Puts Core together on the first call that needs it, not at start. The smoke test uses it |
+| `--database-url URL` | The transitions database, `postgres://…`; `DATABASE_URL` sets it too. Without one, transitions are kept in memory |
+| `--database-ca FILE` | A PEM bundle of the certificate authorities the database's certificate is checked against; `DATABASE_CA_FILE` sets it too. With it the connection is TLS, without it plain |
+| `--warm-up` | Builds what Core needs, puts Core together once, and exits. The container image runs it when it is built |
+
+Replaying act 1 after an order has run through `sim-andina-cop` puts Core together again first (`POST /reset`, about
+a minute): a second order through the same private reserve gets no evidence for its reversal, the known M3 finding
+above. An act that stops offers to reset Core and replay it.
+
+### The endpoints
+
+Amounts are strings in the asset's smallest unit (`"5000000"` is 50,000.00). Everything answers JSON; a refusal is a
+4xx with `{"error": …}`.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /network` | The nodes (`id`, `kind`) and the edges (`provider`, `does`, `from`, `to`, assets, fee, declared seconds), the outer nodes an order can start and end at, and the hop limit. Needs no Core |
+| `GET /status` | Whether Core is up, its seed, the log's length, the orders and their states, the providers that ran a segment |
+| `POST /reset` | Drops Core and puts a new one together; `{"seed": N}` changes the seed |
+| `POST /quotes` | `{"from", "to", "amount", "objective"}`, two outer nodes and `lowest_total_cost` or `fastest_settlement`: opens an order and has it quoted. The reserves at each end are read from the graph. Answers the chosen route, every candidate with its drop reason, the quote and its digest; 422 with the candidates when there is no route |
+| `POST /orders/{id}/accept` | The customer accepts the quote, on its digest |
+| `POST /orders/{id}/run` | Runs the order's route: the accepted one, else a recalculated one waiting, else a linked order's once handed on. Each segment, how it ended, what it gave out and its receipt |
+| `POST /orders/{id}/reversal` | Records the reversal the failed segment owes, and asks for it |
+| `POST /orders/{id}/recalculate` | Routes again from where the value is shown back; the new route runs on the next `run` |
+| `GET /orders/{id}` | Its state, its route, and the executed price once Core reported it |
+| `POST /faults` | `{"kind": "fail" \| "refuse", "provider", "operation"?}` scripts a provider's next operation (of that kind, where given); `{"kind": "refuse_start", "nth": N}` has the platform refuse to start the Nth segment from now |
+| `POST /holding` | Installs the operator's plain wallet as `sim-polygon`'s holding account |
+| `POST /orders/{id}/stuck` | No route is left: the order is stuck where its value rests |
+| `POST /orders/{id}/linked` | The customer accepts a linked order from where the value rests to the order's destination |
+| `POST /orders/{id}/decide` | `{"by": "alice"}`: an operator decides to hand the value on, citing a provider's kept statement |
+| `POST /orders/{id}/move` | `{"by": "bob"}`: another operator carries it out, and the value is handed on; the one who decided is refused (403) |
+| `POST /notices` | Core signs and sends its notices |
+| `POST /audit` | An hour later by Core's clock, a checkpoint; the folder of the epilogue written to `--out`, and `audit-check` run over it three times. Answers each run's exit code and output. It can be called again later in the run |
+| `GET /log?since=N` | The log's entries from the Nth on, each as one timeline line and its fields, and `next` for the following call |
+| `GET /world/transitions?since=N&run=R&limit=L` | The network's transitions from the database, from the Nth on, the current run's unless `run` names another |
+| `POST /world/transitions` | `{"source": "…", "transitions": [{"piece", "kind", "outcome", "provider"?, "order_id"?, …, "detail"?}]}`: an adapter or an outer piece outside the process records what it did. Kept under the current run, in order |
+| `GET /world/runs` | The runs the database holds, newest first, with how many transitions each has |
+| `GET /health` | 200 when the server and its database answer, 503 when the database doesn't or a write to it failed |
+
+The server holds no real value and makes no outbound network call other than to its database; the page loads
+Cytoscape.js (MIT licence) from `cdn.jsdelivr.net`, pinned to one version. It is one thread, as Core is: requests are
+answered one at a time, so a reset holds the others for its minute, and every viewer shares one Core. By default it
+listens on the loopback address, and it has no authentication.
+
+### The transitions database
+
+Every transition of the network is recorded, with its outcome: each request an adapter (a provider's module) makes
+of an outer piece, and how it came out. The pieces are each provider's book (`book`), and the networks movements
+are made on: the public chains (`chain`), the publishers' ledgers (`ledger`) and the outer rails, a bank's or a
+chain's addresses (`rail`). A row names the run, its place in it, the piece and what was asked (withdrawal, deposit, transfer, conversion,
+reversal, a dry run of one, or a movement), the provider, the nodes, assets and amounts, the order and segment it
+served where the API knows them, the outcome (answered, failed, refused; recorded or refused for a movement), Core's
+clock and the request itself. `rutent-demo-api/schema.sql` is the schema; the server applies it at start.
+
+Everything reaches the database through the API, by one path (`Api::record`):
+
+- The simulated network runs in the server's process, so the API reads what its world received after each call and
+  records it before it answers. The simulator isn't changed for it: the world already keeps every request an
+  adapter sent an outer piece, in order.
+- An adapter or an outer piece outside the process sends the same through `POST /world/transitions`. Nothing in the
+  schema or the endpoint knows the simulator, so a real adapter on `test` can use them as they are.
+
+A run is one Core, from its start (or a `POST /reset`) until the next; the database keeps every run. The database
+is the demo's world, not Core's: Core's log, its evidence and its state are still in the server's memory, and a
+restarted server starts a new Core and a new run. Core surviving a restart is its host contract's (ADR-0002) and the
+VOS adapter's, not this database's. The page shows the current run's transitions under the log, as they are kept.
+
+### In a container
+
+```sh
+docker build -f conformance/demo/Dockerfile -t rutent-demo-api .
+docker run --rm -p 7040:7040 -e DATABASE_URL='postgres://user@host:5432/db' rutent-demo-api
+```
+
+The image is one stage, built from the repository's root: the assembly checks the platform's executables and the
+providers' modules against the sources beside its build, so the image keeps the toolchain, the sources and the
+build (several gigabytes; it is a test image). Building it runs `--warm-up`, so a container answers about a minute
+after it starts, while Core admits the eighteen modules. It listens on port 7040 on every interface, checks its
+health with `GET /health`, and trusts Amazon RDS's certificate authorities for the database's TLS
+(`DATABASE_CA_FILE=/etc/rutent/rds-ca.pem`, fetched from AWS when the image is built). The server has no
+authentication: on `test` it belongs behind private-only access.
+
 ## Why it is a binary of `rutent-scenarios`
 
 The demo reuses the scenario assembly: Core's three crates put together with the policy engine, the log, the evidence
 store and the module platform. The workspace's boundary check (`DEC-2`, `tools/boundary-check`) lets no crate depend
-on `rutent-scenarios`, so the demo can't be a package of its own without changing that rule. It is a binary target
-inside that package (`conformance/scenarios/src/bin/rutent-demo/`). Outside it, the demo adds two things to M3's
-code and changes nothing there: the network's simulated providers, as new arms of `rutent_conformance::sim::shape_of`,
-and `Core::set_max_hops`, a setter beside `set_operator_fee`.
+on `rutent-scenarios`, so the demo can't be a package of its own without changing that rule. It is two binary
+targets inside that package, `rutent-demo` and `rutent-demo-api` (`conformance/scenarios/src/bin/`), which share the
+network, the orders, the timeline and the outside check through `src/bin/demo-common/`, a folder each includes as a
+module of its own and not part of the library. Outside them, the demo adds three things to M3's code and changes
+nothing there: the network's simulated providers, as new arms of `rutent_conformance::sim::shape_of`,
+`Core::set_max_hops`, a setter beside `set_operator_fee`, and `harness::kept_of`, which reads the statements the
+evidence store kept without ending Core, so the API can hand the checker its folder mid-run.
 
 ## The network
 
@@ -193,7 +308,8 @@ check the whole history, and a rewrite shows up.
 
 What isn't there yet, so the demo doesn't show it:
 
-- **A server.** Core runs inside this program. The production assembly, with its HTTP interface, is `F-030` (`M4`).
+- **A server.** Core runs inside this program, and `rutent-demo-api` only serves it to a browser on the same
+  machine. The production assembly, with its HTTP interface, is `F-030` (`M4`).
 - **Restarts.** Core's own records are in memory. The log and the evidence store could be reopened, but the demo
   doesn't restart.
 - **The credential proxy.** No simulated provider needs a secret, so none is resolved.
