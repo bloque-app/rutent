@@ -4866,11 +4866,22 @@ pub static RELATIONS: [Relation; 120] = [
                 return Match::NotTarget;
             };
             let order = recalculated.subject.order.as_str();
-            let ended = i
-                .subject
-                .segment
-                .as_ref()
-                .and_then(|s| planned_end(order, s.as_str(), h));
+            // A route handed on whose first move was reversed, on the word of the reserve at its from-node (the
+            // holding account, `reserve_at_from`): the value is evidenced back where that move took it from, by the
+            // `reversal_completed` this log took, and nowhere else; a reversal owed or refused evidences nothing
+            // (`REQ-ORD-2`, `REQ-ORD-43`, `T-020-57`).
+            let reversed_back = matches!(i.observed, Observed::ReversalCompleted { .. })
+                && i.subject
+                    .segment
+                    .as_ref()
+                    .is_some_and(|s| handed_on_first_move(order, s.as_str(), h));
+            let ended = i.subject.segment.as_ref().and_then(|s| {
+                if reversed_back {
+                    planned_start(order, s.as_str(), h)
+                } else {
+                    planned_end(order, s.as_str(), h)
+                }
+            });
             // The part's latest settled segment: its end is where the value is evidenced now. An earlier one's end
             // the value has left.
             let latest = position(t, h).is_some_and(|at| {
@@ -4883,7 +4894,7 @@ pub static RELATIONS: [Relation; 120] = [
                 })
             });
             judge(
-                matches!(i.observed, Observed::SegmentSettled { .. })
+                (matches!(i.observed, Observed::SegmentSettled { .. }) || reversed_back)
                     && i.subject.order.as_str() == order
                     && latest,
                 &[
@@ -6507,6 +6518,70 @@ fn result_failed(effect: &VerifiedEntry, history: &History) -> bool {
 
 /// Where `segment` of `order` ends, by the first plan in `history` that lists it: a `route_chosen`, a
 /// `route_recalculated` or a `destination_changed`.
+/// The endpoint `segment` of `order` starts from, by its plans in `history`.
+fn planned_start<'a>(
+    order: &str,
+    segment: &str,
+    history: &'a History,
+) -> Option<&'a crate::state_machine::Endpoint> {
+    history.iter().find_map(|(_, e)| {
+        let i = verified(e).and_then(input)?;
+        if i.subject.order.as_str() != order {
+            return None;
+        }
+        let plan: alloc::vec::Vec<&crate::state_machine::SegmentPlan> = match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts.iter().flat_map(|p| &p.segments).collect(),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+            _ => return None,
+        };
+        plan.into_iter()
+            .find(|s| s.segment_id.as_str() == segment)
+            .map(|s| &s.from)
+    })
+}
+
+/// Whether `segment` of `order` is a route handed on's first move: the order's `route_chosen` names `handed_on_from`,
+/// the segment starts at an inner node no segment of the order's plans delivered to, and is no withdrawal, so its
+/// value came from the holding account at that node (`REQ-ORD-16`, `REQ-ORD-43`, `T-020-57`).
+fn handed_on_first_move(order: &str, segment: &str, history: &History) -> bool {
+    let inputs = || {
+        history
+            .iter()
+            .filter_map(|(_, e)| verified(e).and_then(input))
+            .filter(|i| i.subject.order.as_str() == order)
+    };
+    let handed_on = inputs().any(|i| {
+        matches!(
+            &i.observed,
+            Observed::RouteChosen {
+                handed_on_from: Some(_),
+                ..
+            }
+        )
+    });
+    let plans: alloc::vec::Vec<&crate::state_machine::SegmentPlan> = inputs()
+        .flat_map(|i| match &i.observed {
+            Observed::RouteChosen { parts, .. } => parts
+                .iter()
+                .flat_map(|p| p.segments.iter())
+                .collect::<alloc::vec::Vec<_>>(),
+            Observed::RouteRecalculated { segments, .. }
+            | Observed::DestinationChanged { segments, .. } => segments.iter().collect(),
+            _ => alloc::vec::Vec::new(),
+        })
+        .collect();
+    let Some(this) = plans.iter().find(|s| s.segment_id.as_str() == segment) else {
+        return false;
+    };
+    handed_on
+        && this.kind != crate::state_machine::OperationKind::Withdrawal
+        && matches!(this.from.node, crate::provider_role::NodeRef::Inner(_))
+        && !plans
+            .iter()
+            .any(|s| s.segment_id.as_str() != segment && s.to == this.from)
+}
+
 fn planned_end<'a>(
     order: &str,
     segment: &str,

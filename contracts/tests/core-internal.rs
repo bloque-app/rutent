@@ -5203,3 +5203,20 @@ fn failed_providers_own_word_does_not_complete_its_reversal_on_a_handed_on_route
     );
     assert_case_refused("reversal-rests-on-its-evidence--a-handed-on-route-with-no-holding-record");
 }
+
+/// A route handed on whose first move was reversed is recalculated from where that move took the value, on the
+/// `reversal_completed` this log took (the holding account's word): admitted. From that node while the reversal is
+/// still owed, or from another node, nothing evidences the value there, and the recalculation is refused (`REQ-ORD-2`, `INV-4`, `T-020-57`).
+// verifies: REQ-ORD-2, INV-4
+#[test]
+fn recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused() {
+    assert_case(
+        "recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move",
+    );
+    assert_case_refused(
+        "recalculation-starts-from-evidenced-value--a-handed-on-routes-first-move-still-owed",
+    );
+    assert_case_refused(
+        "recalculation-starts-from-evidenced-value--a-handed-on-routes-reversal-from-another-node",
+    );
+}

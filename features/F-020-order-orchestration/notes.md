@@ -8836,3 +8836,37 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
 | Rule switched off | Red |
 |---|---|
 | the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
+
+### T-020-57, round 3: a handed-on route recalculated from its reversed first move (the lead's authorisation)
+
+`origin/m3` (`e7418a53`, `T-020-48` and the plan follow-up) merged in; the two conflicts (core-internal's changelog
+totals, these notes) kept both sides, the totals recounted from the files. `T-020-48` removed the assembly's
+`land_settled`: the scenarios land on `tick`, and the stuck order is ticked after its run so the wallet holds its value.
+
+- **Gap 4 closed, both sides** (a `DEC-20` path, folded into the unreleased core-internal 1.0.0).
+  - *The log* (`recalculation-starts-from-evidenced-value`): beside the part's latest `segment_settled`, the
+    `reversal_completed` of a route handed on's first move (`handed_on_first_move`: the order's `route_chosen` names
+    `handed_on_from`, the segment starts at an inner node no segment of its plans delivered to, no withdrawal)
+    evidences the value back at that move's `from` (`planned_start`), and the new route starts there. The log took that
+    input only on the holding account's word (round 2's `reserve_at_from`); a reversal still owed or refused is no
+    `reversal_completed`, so it evidences nothing.
+  - *Core* (`recalc::rule::evidenced_in`, used by `Recalculations::recalculate` and its staleness check): for an order
+    handed on whose part's first segment is `ReversalComplete` (no withdrawal, from an inner node, the part open), the
+    value is evidenced at that segment's `from`, and the amount the new route moves is `Segments::returned_amount`,
+    what the confirmation said came back, capped at what the move took in; with none kept, nothing is recalculated
+    (`NoSettledEnd`, fail closed). `evidenced(part)` is unchanged for every other caller.
+  - Fixtures: admitted `recalculation-starts-from-evidenced-value--a-handed-on-routes-reversed-first-move`; refused
+    `--a-handed-on-routes-first-move-still-owed` (`missing`) and `--a-handed-on-routes-reversal-from-another-node`
+    (`node`) (script `gen_fixtures2.py`). README and changelog updated; 789 admission cases, `RELATIONS` 120.
+- **Tests.** New: `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` [`REQ-ORD-2`, `INV-4`].
+  Un-ignored and green: `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens`, through the
+  assembly: the reversal completes on the wallet's word, the value is landed again, the part is recalculated from the
+  node (the reversed move retired), Core reopens, the new route runs, and the wallet's landing is released once.
+- **Gaps** now: 2 (`F-016`'s credit visibility) and 3 (`F-020`'s quote re-routed after a reopen) stand; 1 and 4 closed.
+- **Rule-offs, round 3** (script `ruleoff3.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | the log takes a handed-on route's `reversal_completed` as evidence (`reversed_back` false) | `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` (the admitted case refused), `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (the log refuses Core's recalculation) |
+  | Core evidences a handed-on route's reversed first move (`evidenced_in` falls back to `evidenced`) | `returned_value_retired_…_after_core_reopens` (`NotNow(NoSettledEnd)`) |
+  | `Segments::rebuild_returns` (round 1's missing rule-off) | `returned_value_retired_…_after_core_reopens`: after the reopen the wallet's landing is never released ("released once the value left the node") |

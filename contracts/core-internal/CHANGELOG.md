@@ -105,10 +105,19 @@
     none. No shape changes. Three admission cases: `--a-handed-on-routes-holding-account-confirms-its-first-move`
     (admitted), `--a-handed-on-routes-failed-providers-own-word` (`whose`), `--a-handed-on-route-with-no-holding-record`
     (`reserve`). (REQ-ORD-3, THR-13, REQ-ORD-43, T-020-57)
+  - `T-020-57`, round 3 (the lead's authorisation, a `DEC-20` path folded into this unreleased version): a route handed
+    on whose first move was reversed can be recalculated. `recalculation-starts-from-evidenced-value` took only the
+    part's latest `segment_settled`, and such a route has no settled segment before its first move, so its part could
+    only be declared stuck. Now the `reversal_completed` of a route handed on's first move (one starting at an inner
+    node no segment of the order's plans delivered to, no withdrawal), which this log took only on the holding
+    account's word (`reserve_at_from`), evidences the value back at that move's `from`, and the recalculation starts
+    there; a reversal still owed or refused evidences nothing. No shape changes. Three admission cases:
+    `--a-handed-on-routes-reversed-first-move` (admitted), `--a-handed-on-routes-first-move-still-owed` (`missing`),
+    `--a-handed-on-routes-reversal-from-another-node` (`node`). (REQ-ORD-2, INV-4, REQ-ORD-43, T-020-57)
 
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s, `T-020-51`'s, `T-020-52`'s,
-  `T-020-48`'s and `T-020-57`'s rounds, merged beside it: thirty schemas, 191 valid fixtures and 191 invalid, 786
+  `T-020-48`'s and `T-020-57`'s rounds, merged beside it: thirty schemas, 191 valid fixtures and 191 invalid, 789
   admission cases and 58 attribution cases (counted from the files); 120
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the

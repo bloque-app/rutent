@@ -1389,6 +1389,7 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
     core.run(&order).expect("the order runs");
+    assert_eq!(core.tick().landed, 1, "the schedule lands the value");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
     Stuck {
@@ -1491,7 +1492,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
             ),
             "{credit:?}: {answer:?}"
         );
-        stuck.core.land_settled();
+        stuck.core.tick();
         assert!(
             !wallet_holds_at_least(
                 &mut stuck.core,
@@ -1522,7 +1523,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
                 if *order == linked.order && *s == segment && whose.as_str() == wallet.provider)),
         "the log takes the evidence as the wallet's"
     );
-    stuck.core.land_settled();
+    stuck.core.tick();
     assert!(
         wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
         "landed again in the wallet for the linked order, as the wallet says"
@@ -1531,7 +1532,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         !wallet_holds(&mut stuck.core, &wallet, stuck.order.as_str(), "ask-first"),
         "nothing for the order it was handed on from"
     );
-    stuck.core.land_settled();
+    stuck.core.tick();
     assert_eq!(
         stuck.core.holdings().attributions(),
         [(
@@ -1551,14 +1552,8 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
 /// the wallet's confirmation it rests on, so when the new route's first move takes the value out of the node, the
 /// wallet's landing of it is released, once, as a Core that ran on would release it: the wallet holds nothing more
 /// for the linked order (`NFR-6`, `INV-1`, `T-020-57`).
-///
-/// Ignored until a handed-on route whose first move was reversed can be recalculated: Core's `recalc::rule::evidenced`
-/// and core-internal's `recalculation-starts-from-evidenced-value` both evidence a part's value only at the end of a
-/// settled segment of it, and such a route has none, so the recalculation answers `NotNow(NoSettledEnd)` (`F-020`'s
-/// notes, `T-020-57`'s gap 4). Everything before it runs.
 // verifies: NFR-6, INV-1
 #[test]
-#[ignore = "a handed-on route reversed at its first move has no settled segment to recalculate from (T-020-57's gap 4)"]
 fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     use rutent_core_orch::recalc::Recalculation;
     use rutent_core_orch::reversal::Confirmation;
@@ -1576,7 +1571,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .confirm_reversal(&linked.order, &segment)
         .expect("the wallet is asked");
     assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
-    stuck.core.land_settled();
+    stuck.core.tick();
     assert!(
         wallet_holds(&mut stuck.core, &wallet, linked.order.as_str(), "ask-back"),
         "landed again for the linked order"
@@ -1619,8 +1614,8 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .core
         .run_recalculated(&linked.order, &recalculated)
         .expect("the recalculated route runs");
-    stuck.core.land_settled();
-    stuck.core.land_settled();
+    stuck.core.tick();
+    stuck.core.tick();
     assert!(
         !wallet_holds_at_least(
             &mut stuck.core,

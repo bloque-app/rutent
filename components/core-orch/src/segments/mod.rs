@@ -1530,6 +1530,15 @@ impl Segments {
         self.orders.get(order.as_str()).map(|t| &t.order)
     }
 
+    /// What a completed reversal of `segment` of `order` brought back to the held node a route handed on's first move
+    /// left: the confirmed amount, never more than the move took in, as `Segments::note_reversed` kept it or a
+    /// reopened Core rebuilt it from the log (`T-020-57`). `None` for any other segment: nothing is evidenced on it.
+    pub fn returned_amount(&self, order: &Id, segment: &Id) -> Option<&Amount> {
+        self.returned
+            .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
+            .map(|(_, _, amount)| amount)
+    }
+
     /// What `segment` of `order` gave out by its result that counted, net of its charge as its tuple reports it,
     /// once it settled: what is evidenced at its end, and what the segment after it moves (`REQ-ORD-21`,
     /// `T-020-10`).
