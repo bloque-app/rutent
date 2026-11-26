@@ -113,6 +113,8 @@ pub fn new_terms(
     if new.order != current.order || new.order.as_str() != order.order_id.as_str() {
         return Err(Refused::OtherOrder);
     }
+    // The stated role is a narrowing pre-gate, held again here as a rule of the terms; policy decides the terms after
+    // it, in `authorise` (`T-020-62`).
     if new.given_by.role != Role::Customer || new.given_by.party != *requester {
         return Err(Refused::NotTheCustomer);
     }

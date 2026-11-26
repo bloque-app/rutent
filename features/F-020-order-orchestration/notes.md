@@ -8258,6 +8258,106 @@ Rule-off (`scratchpad/t-020-52/ruleoff3.py`, each alone, restored, `contracts/sr
 
 Round 2's table claimed each of the three fields turned the tests red; the arrival's didn't until `--arrival`.
 
+## T-020-62: intake's errors and refusals held to an agent's read scope, and refilings rebuilt on reopening
+
+The milestone reviewer's check of `T-020-52` at `6e4dd5bf`. Edits `components/core-orch/` (`intake/`, `arrival/`, doc
+lines in `hand_on/` and `reversal/`), the tests beside it, and `conformance/scenarios/tests/assembly_intake.rs`.
+
+### Design
+
+- **Every error about an existing order goes through the read check for an agent.** `told_error` now takes the order as an
+  `Option`. `Conflicting` and the repeat of a refused request are mapped as before. `NoSuchOrder`, `NotTheRequester`,
+  `ReadRefused` and `Fresh` are returned as they are: they show no order's state (the register of actors answered the
+  first two before any order was looked at). Every other error, `Hold`, `Unofferable`, `Routing`, `Log`, `Refused`,
+  `NotNow`, `NotTheQuoteShown` and `OtherActor`, is asked of `read_order` for an agent, and a refused agent is told
+  `ReadRefused`, what a refused reader is told. A person's own login is returned the error without a check, as the
+  requester it is.
+- **A refused request's class is held to the repeat's rule.** `read` returns `ReadRefused` for an agent where the request
+  was refused with no order (`Told::Refused`), as its repeat (`Conflicting { order: None }`) does. There is no order for
+  policy to be asked about, so no check is recorded. A person is told the class as ever. `Intake::told` gives `None`, as
+  for any refused read.
+- **Refilings rebuilt on reopening.** `Arrivals::reopened` reads each `Refiling` of the log into `refilings`, under the
+  arrival and the filer whole (`refiling_key`), with its receipt, for an arrival it rebuilt against the order the arrival
+  names. The same filer's refiling after a restart returns the receipt it made: no second `Refiling`, no second decision.
+  Another filer's is its own: policy decides it and it is appended once.
+- **The Lows.**
+  - *Pre-gates on the stated role.* Read at each. `hand_on/mod.rs` `authorise` (the stated role narrows; `authorise`
+    decides). The customer's hand-on gate rests on the linked order's acceptance, which policy permitted and the log holds
+    (`acceptance_of`). The operator's rests on policy's `resolve_stuck` effect (`done_hand_on`). `hand_on/rule.rs`
+    `new_terms` is a rule of the terms before policy's `authorise`. Each has a line of doc saying policy decides after it.
+    `reversal/mod.rs` `party_of`: the customer's acceptance rests on policy's permitted `accept_fault` decision, which
+    Core finds in its own history. **The operator's does not: it is its own `accept_fault` command that Core records in its
+    name, and no policy decision follows the gate.** The doc says so; see gap 1.
+  - *Per-filer refiling doc.* The doc of `refile` says the same refiling is the same filer's, whole.
+  - *Existence probe.* Noted in `told_error`'s doc: an unscoped agent gets `ReadRefused` for its own party's existing order
+    and `NoSuchOrder` for a missing one, which reaches only its own party's ids, Core's fresh draws.
+  - *Test depth.* `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept` beside the open-and-quote
+    test, over the real policy engine.
+- **Tests** (the first three written first and seen red on an assertion):
+  - `agent_not_scoped_to_read_learns_nothing_from_an_accepts_or_quotes_error` [`REQ-AUZ-8`, `REQ-AUZ-7`]
+    (`intake_reads.rs`): a hold not redeemed, a log failure at accept and one at quote; the person and a scoped agent are
+    told the error, an unscoped one `ReadRefused`. Red before: `left: Err(Hold(NoSuchHold))`.
+  - `refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does` [`REQ-AUZ-8`, `REQ-AUZ-7`]
+    (`intake_reads.rs`). Red before: the first answer was `Ok(Refused { class: MalformedRequest })`.
+  - `refiling_after_a_restart_is_not_filed_twice` [`NFR-6`, `REQ-AUZ-1`] (`arrival.rs`). Red before: a second `Refiling`
+    (receipt 27 for 25).
+  - `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept` [`REQ-AUZ-8`]
+    (`assembly_intake.rs`). It passed before the fix too, as the status told after an accept was already read: it is the
+    coverage the reviewer asked for, and it goes red under rule-off 4.
+
+### Defaults, reversible, each failing closed
+
+1. An agent is told `ReadRefused` for a refused request's class **whatever its scope**, as the repeat is. Alternative: ask
+   policy of the party's request and tell a scoped agent the class; there is no order to read, so no read shape to ask it
+   with.
+2. A `Log` failure at accept or quote is told an agent its party didn't scope as `ReadRefused`, so it can't tell a retry
+   from a refusal. The order stands as the log holds it, and the person is told the failure.
+3. A failure of the log on opening (no order yet) is told as it is: it shows no order.
+4. `NotNow`, `NotTheQuoteShown` and `OtherActor` are checked for every caller, as before this row (the first patch dropped
+   them for persons, which the reviewer found: a held or ended order told a person `NotNow` with no check recorded). The
+   new check, for `Hold`, `Unofferable`, `Routing`, `Log` and `Refused`, covers agents only: `kept_for` holds a person to
+   the order's requester in the customer's role, which is all `REQ-AUZ-7` and `REQ-AUZ-8` allow, and policy's check allows
+   exactly that party. The doc of `told_error` says so.
+5. A refiling is rebuilt only for an arrival Core rebuilt (a notice its store still keeps); otherwise it is asked of policy
+   afresh, as a new refiling.
+
+### Gaps, with owners
+
+1. *The operator's `accept_fault` command is not decided by policy.* It is one of core-internal's commands that need no
+   decision, and moves no value, but it settles who bears a failed segment's loss. Review round 1 made Core ask the register
+   of actors (`Actors::acts_for`, a new parameter of `Reversals::accept_fault`) for the operator's login, as the customer's
+   path and `listed_filer` do: a login not listed for the operator's party, stating its party and role, accepts nothing and
+   nothing is appended (`dispute_over_a_fault_makes_the_order_stuck`'s unlisted-login assertion). Making it a
+   policy-decided action needs a contract round: left as a gap for `T-025-05`'s review list.
+2. *The held gate in the assembly's `restart_orders`* is `T-020-61`'s, not touched.
+3. *The refile restart window, accepted.* A restart between policy's `RefileArrival` decision and the `Refiling` append
+   gives two decisions and one `Refiling`; nothing moves. Review round 1, Low.
+4. *A reopen test of the whole assembly for the refiling* is not added; the unit test reopens `Arrivals` over the log as
+   `T-020-51`'s do.
+
+### Rule-off
+
+Each rule switched off alone, the file restored from its own text, `contracts/src/lib.rs` touched before each run;
+`rutent-core-orch`'s `intake_reads` and `arrival`, and `rutent-scenarios`' `assembly_intake`:
+
+| Rule switched off | Tests that went red |
+|---|---|
+| other errors are asked of the read check for an agent (round 0 patch, the three arms gone with it) | `agent_not_scoped_to_read_learns_nothing_from_an_accepts_or_quotes_error`; `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` |
+| a refused request's class is told to an agent | `refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does` |
+| refilings are not rebuilt on reopening | `refiling_after_a_restart_is_not_filed_twice` |
+| `NotNow`, `NotTheQuoteShown` and `OtherActor` checked for every caller (review round 1) | `a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_check_is_recorded` |
+| the register check of the operator's `accept_fault` login (review round 1) | `dispute_over_a_fault_makes_the_order_stuck` (the unlisted login) |
+| accept tells the status with no read check | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept`; `a_reader_policy_refuses_is_told_no_status_by_any_call_and_the_check_is_recorded`; `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; `intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_orders_state_after`; `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged` |
+
+The doc lines at the pre-gates have no rule to switch off.
+
+### Local checks
+
+`cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test -p rutent-core-orch`
+(24 binaries) and `-p rutent-core-authz --lib` (162); `-p rutent-scenarios --test assembly_intake --test assembly_arrivals
+--test reopened`; `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features rutent-conformance/signing`;
+`plan-check --strict` and `tag-check --strict`: all green.
+
 ## T-020-56: terms, holds and the landing after a linked order's reversal, end to end
 
 Branch `f-020/t-020-56-terms-holds`, from `28972690` (m3-next's batch holding `T-020-47`). `T-020-47`'s parts 2 and 4a,

@@ -12,7 +12,7 @@ mod snapshot_support;
 
 use intake_support::*;
 use rounds_support::customer;
-use rutent_contracts::core_internal::{Entry, ReadCheck, Reads as Read, What};
+use rutent_contracts::core_internal::{Actor, Entry, ReadCheck, Reads as Read, What};
 use rutent_contracts::module_interface::Digest;
 use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_core_orch::intake::{Intake, IntakeError, Resolution, Status, Told, Wait};
@@ -553,5 +553,141 @@ fn a_held_orders_status_read_hands_no_record_to_policys_sources() {
         "no record of a held order reached the deployment: {:?}",
         env.reads.filed
     );
+    assert_admitted(&env);
+}
+
+/// An agent its party didn't scope to read is told `ReadRefused` by every error of an accept or a quote about an
+/// existing order, not only the four the first fix mapped: a hold that isn't redeemed (`Hold`, which would tell it the
+/// order stands quoted) and a log that couldn't be written (`Log`) alike. A reader policy lets read is told them as
+/// before, and what the call did stands (`T-020-62`; the milestone reviewer's check of `T-020-52`).
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn agent_not_scoped_to_read_learns_nothing_from_an_accepts_or_quotes_error() {
+    /// What each call's error is told to `agent`, on an order the person opened and quoted, its party's scope for
+    /// reading set as `scoped` says.
+    fn told_by(scoped: bool, call: &str, by: &Actor) -> Result<Told, IntakeError> {
+        let mut env = Env::new();
+        let mut sim = env.sim();
+        if !scoped {
+            env.reads.scoped.clear();
+        }
+        let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+        let told = match call {
+            "hold" => env.with(&mut sim, |intake, desk| {
+                intake.accept_holding(
+                    desk,
+                    &order,
+                    by,
+                    &digest,
+                    None,
+                    Some(&id("hold-nobody-made")),
+                )
+            }),
+            "accept" => {
+                env.book.borrow_mut().fail_next = Some("acceptance");
+                env.accept(&mut sim, &order, by, &digest)
+            }
+            _ => {
+                env.book.borrow_mut().fail_next = Some("shown");
+                env.quote_by(&mut sim, by, &order)
+            }
+        };
+        assert!(env.acceptances().is_empty(), "{call}: nothing was accepted");
+        assert_admitted(&env);
+        told
+    }
+    for call in ["hold", "accept", "quote"] {
+        // The person, and an agent its party scoped, are told the error as ever.
+        for by in [customer(), agent()] {
+            assert!(
+                matches!(
+                    told_by(true, call, &by),
+                    Err(IntakeError::Hold(_) | IntakeError::Log(_))
+                ),
+                "{call}: {by:?} is told the error"
+            );
+        }
+        // An agent it didn't, no more than a refused reader: a hold not redeemed would tell it the order stands quoted.
+        assert_eq!(
+            told_by(false, call, &agent()),
+            Err(IntakeError::ReadRefused),
+            "{call}"
+        );
+        // The person, whom the agent's scope doesn't bind, is told as ever.
+        assert!(
+            matches!(
+                told_by(false, call, &customer()),
+                Err(IntakeError::Hold(_) | IntakeError::Log(_))
+            ),
+            "{call}"
+        );
+    }
+}
+
+/// A refused request's class is a status of the party's request, not the caller's own to know: an agent is told
+/// `ReadRefused` by the first answer exactly as by its repeat, whatever its scope, and the person who asked is told the
+/// class as before (`T-020-62`; the milestone reviewer's check of `T-020-52`).
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    env.reads.scoped.clear();
+    let mut malformed = order_request("client-req-bad", agent());
+    malformed.parties.requester = id("someone-else");
+    let first = env.open(&mut sim, &malformed);
+    // Another request under the same identifier, which names no order to an agent: what the repeat answers.
+    let mut other = malformed.clone();
+    other.route = route("999");
+    let repeat = env.open(&mut sim, &other);
+    assert_eq!(repeat, Err(IntakeError::ReadRefused), "the repeat");
+    assert_eq!(
+        first, repeat,
+        "the first answer tells no more than the repeat"
+    );
+    assert_eq!(env.told(&agent(), "client-req-bad"), None);
+    // The person who made the request is told its class.
+    let mut theirs = malformed.clone();
+    theirs.caller = customer();
+    assert!(matches!(
+        env.open(&mut sim, &theirs),
+        Ok(Told::Refused { .. })
+    ));
+    assert_admitted(&env);
+}
+
+/// A person is checked for the errors that show an order's state, as ever: on a held order, or an ended one, with policy
+/// refusing every read, the person's `NotNow` is a `ReadRefused`, and each check is recorded (`T-020-62`; the reviewer's
+/// check of the first patch, which dropped it).
+// verifies: REQ-AUZ-8, REQ-AUD-12
+#[test]
+fn a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_check_is_recorded() {
+    // An order that ended: policy refuses the acceptance, then every read.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.policy.answer = rutent_contracts::core_internal::Answer::Refuse {
+        class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+    };
+    env.accept(&mut sim, &order, &customer(), &digest)
+        .expect("told it ended");
+    assert_eq!(
+        env.quote_by(&mut sim, &customer(), &order),
+        Err(IntakeError::NotNow),
+        "allowed to read, the person is told it is not now"
+    );
+    env.reads.refuse_all = true;
+    let checks = recorded_reads(&env).len();
+    assert_eq!(
+        env.quote_by(&mut sim, &customer(), &order),
+        Err(IntakeError::ReadRefused),
+        "refused to read, the person is told no more"
+    );
+    assert_eq!(
+        recorded_reads(&env).len(),
+        checks + 1,
+        "the check is recorded"
+    );
+    assert!(!recorded_reads(&env).last().unwrap().1, "refused");
     assert_admitted(&env);
 }

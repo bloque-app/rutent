@@ -1,7 +1,7 @@
 //! Licence record check (REQ-MOD-5, T-001-04).
 //!
-//! The check reads every `Cargo.lock` in the repository (the root one, and each one under `experiments/` or `components/`,
-//! found by walking those trees and skipping `target` directories), the record `licences/RECORD` and the root manifest's
+//! The check reads every `Cargo.lock` in the repository (the root one, and each one anywhere below it, as listed by
+//! `git ls-files --cached --others --exclude-standard`: the set git would ship, so an ignored build artefact is not read), the record `licences/RECORD` and the root manifest's
 //! workspace members as text. It fails on a locked external package that the record does not list at its locked
 //! version, and on one whose recorded decision is still `pending`; each violation names the lockfile it came from.
 //! In the root lock a package is external unless it is a workspace member without a `source`, so a path
@@ -10,6 +10,17 @@
 //! all the locks: a package locked at the same name and version in several of them needs one line, and a name
 //! at several versions needs one line per version. Lines marked `not-adopted` never fail the check. The
 //! record's format is explained in its own header.
+//!
+//! Beyond the record, the check holds each copyleft or source-available permission to the lockfiles it names
+//! (`@holds` lines), refuses any such licence in a lock outside [`COPYLEFT_ROOTS`] whatever the record says, and
+//! reads each artifact rutent builds from `cargo metadata` ([`check_artifacts`], T-001-06).
+
+mod artifact;
+mod json;
+mod spdx;
+
+pub use artifact::{ArtifactInput, ArtifactReason, ArtifactViolation, check_artifacts};
+pub use spdx::is_permissive;
 
 use std::fmt;
 use std::fs;
@@ -22,6 +33,16 @@ pub enum Reason {
     Unrecorded,
     /// The record has a line for it, with its decision still pending.
     Pending,
+    /// A package outside the permissive licence set is locked in a lock the record's permission does not name.
+    NotHeld,
+    /// A package outside the permissive licence set is locked in a lock that may never hold one, whatever the
+    /// record says: the root lock, or any lock outside [`COPYLEFT_ROOTS`].
+    RefusedLock,
+    /// A permitted package outside the permissive licence set has no `@holds` line naming its lockfiles. The
+    /// violation names `licences/RECORD` as its lockfile.
+    HoldsNothing,
+    /// A `@holds` line names a lock that may never hold such a package. The violation names that lock.
+    HoldsRefused,
 }
 
 /// One locked dependency that fails the check.
@@ -50,6 +71,26 @@ impl fmt::Display for Violation {
                 "{}: {} {}: decision pending",
                 self.lockfile, self.package, self.version
             ),
+            Reason::NotHeld => write!(
+                f,
+                "{}: {} {}: not a permissive licence, and the record's permission does not name this lockfile",
+                self.lockfile, self.package, self.version
+            ),
+            Reason::RefusedLock => write!(
+                f,
+                "{}: {} {}: not a permissive licence, and this lockfile may hold only permissive packages",
+                self.lockfile, self.package, self.version
+            ),
+            Reason::HoldsNothing => write!(
+                f,
+                "{}: {} {}: permitted outside the permissive licences but no `@holds` line names its lockfiles",
+                self.lockfile, self.package, self.version
+            ),
+            Reason::HoldsRefused => write!(
+                f,
+                "{}: {} {}: a `@holds` line names this lockfile, which may hold only permissive packages",
+                self.lockfile, self.package, self.version
+            ),
         }
     }
 }
@@ -61,10 +102,62 @@ enum Decision {
 }
 
 #[derive(Debug)]
-struct Entry {
+pub(crate) struct Entry {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) licence: String,
+    decision: Decision,
+}
+
+/// A `@holds` line: the lockfiles a package outside the permissive set may be locked in.
+#[derive(Debug)]
+struct Holds {
     name: String,
     version: String,
-    decision: Decision,
+    lockfiles: Vec<String>,
+}
+
+/// An `@artifact` line: an artifact rutent builds, in one lock, with its licence.
+#[derive(Debug)]
+pub(crate) struct ArtifactLine {
+    pub(crate) lockfile: String,
+    pub(crate) name: String,
+    pub(crate) licence: String,
+}
+
+/// An `@exception` line: the core crates an artifact of one lock may hold beside a non-permissive package.
+#[derive(Debug)]
+pub(crate) struct Exception {
+    pub(crate) lockfile: String,
+    pub(crate) artifact: String,
+    pub(crate) core_crates: Vec<String>,
+}
+
+/// The parsed record.
+#[derive(Debug, Default)]
+pub(crate) struct Record {
+    pub(crate) entries: Vec<Entry>,
+    holds: Vec<Holds>,
+    pub(crate) artifacts: Vec<ArtifactLine>,
+    /// The crates of rutent's own core (`@core` lines).
+    pub(crate) cores: Vec<String>,
+    /// The root-workspace crates that are not core (`@noncore` lines).
+    pub(crate) noncores: Vec<String>,
+    pub(crate) exceptions: Vec<Exception>,
+}
+
+/// The lockfile trees that may hold a package outside the permissive set, when a `@holds` line names the lock: the
+/// VOS program and its client, and the experiment's VOS adapter. Every other lock, the root one included, refuses
+/// such a package whatever the record says. Every crate of rutent's own core stays MIT; a crate that must inherit a
+/// copyleft or source-available licence is its own separately licensed crate behind the runtime-host seam.
+pub const COPYLEFT_ROOTS: [&str; 2] = [
+    "components/stm/vos-program/",
+    "experiments/2026-11-06-runtime-host/vos-adapter/",
+];
+
+/// Whether a lock may never hold a package outside the permissive set.
+fn refuses_copyleft(lockfile: &str) -> bool {
+    !COPYLEFT_ROOTS.iter().any(|r| lockfile.starts_with(r))
 }
 
 /// A package as `Cargo.lock` locks it.
@@ -115,15 +208,59 @@ pub fn check(lock: &str, record: &str, members: &[Member]) -> Result<Vec<Violati
 ///
 /// Returns the failing dependencies, each naming its lockfile, or an error if any text is malformed.
 pub fn check_locks(locks: &[LockFile], record: &str) -> Result<Vec<Violation>, String> {
-    let entries = parse_record(record)?;
+    let record = parse_record(record)?;
     let mut found = Vec::new();
+    check_holds(&record, &mut found)?;
     for lock in locks {
-        check_one(lock, &entries, &mut found)?;
+        check_one(lock, &record, &mut found)?;
     }
     Ok(found)
 }
 
-fn check_one(lock: &LockFile, entries: &[Entry], found: &mut Vec<Violation>) -> Result<(), String> {
+/// Each permitted package outside the permissive set names the lockfiles it holds in, and none of them refuses it.
+fn check_holds(record: &Record, found: &mut Vec<Violation>) -> Result<(), String> {
+    for h in &record.holds {
+        let known = record
+            .entries
+            .iter()
+            .any(|e| e.name == h.name && e.version == h.version);
+        if !known {
+            return Err(format!(
+                "licences/RECORD: `@holds` for {} {} has no package line",
+                h.name, h.version
+            ));
+        }
+        for lockfile in h.lockfiles.iter().filter(|l| refuses_copyleft(l)) {
+            found.push(Violation {
+                lockfile: lockfile.clone(),
+                package: h.name.clone(),
+                version: h.version.clone(),
+                reason: Reason::HoldsRefused,
+            });
+        }
+    }
+    for e in &record.entries {
+        if e.decision == Decision::Permitted
+            && e.version != "not-adopted"
+            && !is_permissive(&e.licence)
+            && !record
+                .holds
+                .iter()
+                .any(|h| h.name == e.name && h.version == e.version)
+        {
+            found.push(Violation {
+                lockfile: "licences/RECORD".to_string(),
+                package: e.name.clone(),
+                version: e.version.clone(),
+                reason: Reason::HoldsNothing,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_one(lock: &LockFile, record: &Record, found: &mut Vec<Violation>) -> Result<(), String> {
+    let entries = &record.entries;
     let locked = parse_lock(&lock.text).map_err(|e| format!("{}: {e}", lock.path))?;
     for pkg in locked {
         let is_member = !pkg.has_source
@@ -150,28 +287,116 @@ fn check_one(lock: &LockFile, entries: &[Entry], found: &mut Vec<Violation>) -> 
                 version: pkg.version,
                 reason: Reason::Pending,
             }),
-            Some(_) => {}
+            Some(e) => {
+                if is_permissive(&e.licence) {
+                    continue;
+                }
+                let held = record.holds.iter().any(|h| {
+                    h.name == e.name && h.version == e.version && h.lockfiles.contains(&lock.path)
+                });
+                let reason = if refuses_copyleft(&lock.path) {
+                    Reason::RefusedLock
+                } else if held {
+                    continue;
+                } else {
+                    Reason::NotHeld
+                };
+                found.push(Violation {
+                    lockfile: lock.path.clone(),
+                    package: pkg.name,
+                    version: pkg.version,
+                    reason,
+                });
+            }
         }
     }
     Ok(())
 }
 
-/// The trees whose own `Cargo.lock`s the check reads beside the root one: the experiments, and the packages of
-/// `components/` that are workspaces of their own, such as the VOS program's (`T-010-05`).
-pub const LOCK_DIRS: [&str; 2] = ["experiments", "components"];
-
-/// The paths of every `Cargo.lock` under [`LOCK_DIRS`], relative to `root`, sorted. See [`find_locks`].
+/// The paths of every `Cargo.lock` of the repository at `root`, except the root's own, relative to `root`,
+/// sorted: the set git would ship, which is what `git ls-files --cached --others --exclude-standard` lists, so a
+/// lock in a new place is read, and a lock that `.gitignore` ignores (a build artefact) is not.
+///
+/// The check fails closed: it is an error if git cannot be run, if a listed lock is a symbolic link, or if the
+/// listing holds a nested git repository (git lists it as a directory, and its locks would otherwise go unread), or
+/// if the index holds a submodule (mode 160000), which `git ls-files --stage` shows.
 pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
+    let out = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cannot run git to list the repository's locks: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-files failed in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing =
+        String::from_utf8(out.stdout).map_err(|_| "git ls-files is not UTF-8".to_string())?;
+    reject_gitlinks(root)?;
     let mut all = Vec::new();
-    for dir in LOCK_DIRS {
-        all.extend(find_locks(root, dir)?);
+    for path in listing.split('\0').filter(|p| !p.is_empty()) {
+        if path.ends_with('/') {
+            return Err(format!(
+                "{path} is a nested git repository; the licence check cannot read its locks"
+            ));
+        }
+        if path.rsplit('/').next() != Some("Cargo.lock") || path == "Cargo.lock" {
+            continue;
+        }
+        let meta = fs::symlink_metadata(root.join(path))
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "{path} is a symbolic link; the licence check reads real files only"
+            ));
+        }
+        all.push(path.to_string());
     }
     all.sort();
+    all.dedup();
     Ok(all)
 }
 
-/// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` is not
-/// entered. A symbolic link that is a `Cargo.lock` or a directory is an error, since the check would otherwise
+/// Fails if the index holds a gitlink (mode 160000, a submodule): its locks are in another repository, and the
+/// listing shows it as a plain path, so they would go unread.
+fn reject_gitlinks(root: &Path) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--stage"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cannot run git to list the repository's index: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-files --stage failed in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let text =
+        String::from_utf8(out.stdout).map_err(|_| "git ls-files is not UTF-8".to_string())?;
+    for entry in text.split('\0').filter(|e| !e.is_empty()) {
+        if let Some((meta, path)) = entry.split_once('\t')
+            && meta.split(' ').next() == Some("160000")
+        {
+            return Err(format!(
+                "{path} is a git submodule; the licence check cannot read its locks"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The paths of every `Cargo.lock` under `dir`, relative to `root`, sorted. A directory named `target` or `.git` is
+/// not entered. A symbolic link that is a `Cargo.lock` or a directory is an error, since the check would otherwise
 /// pass over it silently. A missing `dir` has none.
 pub fn find_locks(root: &Path, dir: &str) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
@@ -197,7 +422,7 @@ fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
         let entry = entry.map_err(read)?;
         let kind = entry.file_type().map_err(read)?;
         let path = entry.path();
-        let is_target = entry.file_name() == "target";
+        let is_target = entry.file_name() == "target" || entry.file_name() == ".git";
         if kind.is_symlink() {
             if is_target && path.is_dir() {
                 continue;
@@ -273,16 +498,21 @@ fn quoted(line: &str, key: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
-/// The lines of the record. Each line is `name version licence... decision reference`.
+/// The lines of the record. Each package line is `name version licence... decision reference`; the lines that
+/// start with `@` are directives (`@holds`, `@artifact`, `@core`, `@exception`, explained in the record's header).
 /// A second line for the same name and version is an error: the decision it would give is ambiguous.
-fn parse_record(record: &str) -> Result<Vec<Entry>, String> {
-    let mut entries: Vec<Entry> = Vec::new();
+fn parse_record(record: &str) -> Result<Record, String> {
+    let mut out = Record::default();
     for (n, raw) in record.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields[0].starts_with('@') {
+            directive(&fields, n + 1, &mut out)?;
+            continue;
+        }
         if fields.len() < 5 {
             return Err(format!(
                 "licences/RECORD line {}: expected name, version, licence, decision and reference",
@@ -301,7 +531,8 @@ fn parse_record(record: &str) -> Result<Vec<Entry>, String> {
         };
         let name = fields[0];
         let version = fields[1];
-        if entries
+        if out
+            .entries
             .iter()
             .any(|e| e.name == name && e.version == version)
         {
@@ -310,13 +541,80 @@ fn parse_record(record: &str) -> Result<Vec<Entry>, String> {
                 n + 1
             ));
         }
-        entries.push(Entry {
+        out.entries.push(Entry {
             name: name.to_string(),
             version: version.to_string(),
+            licence: fields[2..fields.len() - 2].join(" "),
             decision,
         });
     }
-    Ok(entries)
+    Ok(out)
+}
+
+/// One `@` line of the record.
+fn directive(fields: &[&str], line: usize, out: &mut Record) -> Result<(), String> {
+    let bad = |what: &str| format!("licences/RECORD line {line}: {what}");
+    let list = |s: &str| -> Vec<String> { s.split(',').map(str::to_string).collect() };
+    match (fields[0], fields.len()) {
+        ("@holds", 4) => {
+            if out
+                .holds
+                .iter()
+                .any(|h| h.name == fields[1] && h.version == fields[2])
+            {
+                return Err(bad(&format!(
+                    "duplicate `@holds` for {} {}",
+                    fields[1], fields[2]
+                )));
+            }
+            out.holds.push(Holds {
+                name: fields[1].to_string(),
+                version: fields[2].to_string(),
+                lockfiles: list(fields[3]),
+            });
+        }
+        ("@holds", _) => {
+            return Err(bad(
+                "`@holds` takes a name, a version and comma-separated lockfiles",
+            ));
+        }
+        ("@artifact", n) if n >= 4 => {
+            if out
+                .artifacts
+                .iter()
+                .any(|a| a.lockfile == fields[1] && a.name == fields[2])
+            {
+                return Err(bad(&format!(
+                    "duplicate `@artifact` for {} in {}",
+                    fields[2], fields[1]
+                )));
+            }
+            out.artifacts.push(ArtifactLine {
+                lockfile: fields[1].to_string(),
+                name: fields[2].to_string(),
+                licence: fields[3..].join(" "),
+            });
+        }
+        ("@artifact", _) => {
+            return Err(bad("`@artifact` takes a lockfile, a name and a licence"));
+        }
+        ("@core", 2) => out.cores.push(fields[1].to_string()),
+        ("@core", _) => return Err(bad("`@core` takes one crate name")),
+        ("@noncore", n) if n >= 3 => out.noncores.push(fields[1].to_string()),
+        ("@noncore", _) => return Err(bad("`@noncore` takes a crate name and a reason")),
+        ("@exception", 5) => out.exceptions.push(Exception {
+            lockfile: fields[2].to_string(),
+            artifact: fields[3].to_string(),
+            core_crates: list(fields[4]),
+        }),
+        ("@exception", _) => {
+            return Err(bad(
+                "`@exception` takes a reference, a lockfile, an artifact and comma-separated core crates",
+            ));
+        }
+        (other, _) => return Err(bad(&format!("unknown directive `{other}`"))),
+    }
+    Ok(())
 }
 
 /// The workspace member paths listed in a root manifest's `[workspace]` `members` array.
