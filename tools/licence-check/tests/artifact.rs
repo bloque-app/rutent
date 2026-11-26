@@ -554,7 +554,7 @@ fn the_locks_the_tool_reads_are_the_locks_git_lists() {
         .map(str::to_string)
         .collect();
     listed.sort();
-    let mut read = rutent_licence_check::find_all_locks(&root).expect("walk");
+    let mut read = rutent_licence_check::find_all_locks(&root).expect("listing");
     read.push("Cargo.lock".to_string());
     read.sort();
     assert_eq!(

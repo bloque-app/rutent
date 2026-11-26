@@ -1,7 +1,7 @@
 //! Licence record check (REQ-MOD-5, T-001-04).
 //!
-//! The check reads every `Cargo.lock` in the repository (the root one, and each one anywhere below it, found by walking
-//! the whole tree and skipping `target` and `.git` directories), the record `licences/RECORD` and the root manifest's
+//! The check reads every `Cargo.lock` in the repository (the root one, and each one anywhere below it, as listed by
+//! `git ls-files --cached --others --exclude-standard`: the set git would ship, so an ignored build artefact is not read), the record `licences/RECORD` and the root manifest's
 //! workspace members as text. It fails on a locked external package that the record does not list at its locked
 //! version, and on one whose recorded decision is still `pending`; each violation names the lockfile it came from.
 //! In the root lock a package is external unless it is a workspace member without a `source`, so a path
@@ -313,11 +313,54 @@ fn check_one(lock: &LockFile, record: &Record, found: &mut Vec<Violation>) -> Re
     Ok(())
 }
 
-/// The paths of every `Cargo.lock` below `root`, except the root's own, relative to `root`, sorted: the whole
-/// repository is walked, so a lock in a new place is never missed. See [`find_locks`].
+/// The paths of every `Cargo.lock` of the repository at `root`, except the root's own, relative to `root`,
+/// sorted: the set git would ship, which is what `git ls-files --cached --others --exclude-standard` lists, so a
+/// lock in a new place is read, and a lock that `.gitignore` ignores (a build artefact) is not.
+///
+/// The check fails closed: it is an error if git cannot be run, if a listed lock is a symbolic link, or if the
+/// listing holds a nested git repository (git lists it as a directory, and its locks would otherwise go unread).
 pub fn find_all_locks(root: &Path) -> Result<Vec<String>, String> {
-    let mut all = find_locks(root, "")?;
-    all.retain(|p| p != "Cargo.lock");
+    let out = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("cannot run git to list the repository's locks: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-files failed in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing =
+        String::from_utf8(out.stdout).map_err(|_| "git ls-files is not UTF-8".to_string())?;
+    let mut all = Vec::new();
+    for path in listing.split('\0').filter(|p| !p.is_empty()) {
+        if path.ends_with('/') {
+            return Err(format!(
+                "{path} is a nested git repository; the licence check cannot read its locks"
+            ));
+        }
+        if path.rsplit('/').next() != Some("Cargo.lock") || path == "Cargo.lock" {
+            continue;
+        }
+        let meta = fs::symlink_metadata(root.join(path))
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "{path} is a symbolic link; the licence check reads real files only"
+            ));
+        }
+        all.push(path.to_string());
+    }
+    all.sort();
+    all.dedup();
     Ok(all)
 }
 
