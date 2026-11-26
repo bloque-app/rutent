@@ -594,7 +594,9 @@ impl Intake {
     ///
     /// An unscoped agent probing its own party's order identifiers is told `ReadRefused` of an order that exists and
     /// `NoSuchOrder` of one that doesn't ([`Intake::kept_for`]); that reaches only its own party's identifiers, which are
-    /// Core's fresh draws, so it is a probe of nothing an agent could guess (`T-020-62`).
+    /// Core's fresh draws, so it is a probe of nothing an agent could guess (`T-020-62`). Its timing differs too: the call runs before it
+    /// answers `ReadRefused`, where a missing id answers at once; that falls under the timing residual the owner accepted
+    /// for v0 (`cat5-timing-residual`).
     fn told_error(
         &self,
         desk: &mut Desk<'_, '_>,
@@ -615,8 +617,18 @@ impl Intake {
             | IntakeError::NotTheRequester
             | IntakeError::ReadRefused
             | IntakeError::Fresh => return error,
-            // The other errors are asked of an agent, whose party's scope for reading can lack. A person's own login is
-            // the requester's, whom policy lets read (`REQ-AUZ-8`), and no check of it is recorded for them.
+            // These three show an order's state, and are checked for every caller, as they always were (`T-020-52`).
+            IntakeError::NotNow | IntakeError::NotTheQuoteShown | IntakeError::OtherActor => {
+                match order {
+                    Some(order) => Some(order),
+                    None => return error,
+                }
+            }
+            // The rest are asked of an agent only, whose party's scope for reading can lack. A person's login is held by
+            // `kept_for` to the order's requester in the customer's role, which is all `REQ-AUZ-7` and `REQ-AUZ-8` let
+            // read, and policy's check allows exactly that party: a check would withhold nothing from it, and `accept_inner`
+            // answers a held order `NotNow` before any of these arise. (The success path asks anyway: the status is told.)
+            // `T-020-62`.
             _ if caller.kind != ActorKind::Agent => return error,
             _ => match order {
                 Some(order) => Some(order),

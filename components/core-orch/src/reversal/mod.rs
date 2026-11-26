@@ -96,6 +96,7 @@ use rutent_contracts::state_machine::{
 use rutent_prov::catalogue::{Catalogue, Observation, OwedError};
 use rutent_stm::Stm;
 
+use crate::intake::Actors;
 use crate::rounds::{Fresh, Issued, OperatorKey, Providers};
 use crate::segments::{Segments, StatusError};
 use crate::snapshot::{Clock, Exposures, OrchestrationLog};
@@ -1374,6 +1375,7 @@ impl Reversals {
     pub fn accept_fault(
         &mut self,
         parts: &mut Parts<'_>,
+        actors: &mut dyn Actors,
         at: At<'_>,
         accepting: Accepting<'_>,
     ) -> Result<Carrier, ReversalError> {
@@ -1385,6 +1387,14 @@ impl Reversals {
             Accepting::Customer { by } | Accepting::Operator { by } => by,
         };
         if requester.as_ref() != Some(&by.party) && by.party != parts.operator.party {
+            return Err(ReversalError::NotTheParty);
+        }
+        // The operator's act is its own command, which policy doesn't decide: the register of actors is the check that
+        // binds the login to the party and role it states, as it does for the customer's path (policy's `requester`) and
+        // the arrival filing's `listed_filer` (`T-020-62`).
+        if matches!(accepting, Accepting::Operator { .. })
+            && !actors.acts_for(&by.acts, &by.party, by.kind, by.role)
+        {
             return Err(ReversalError::NotTheParty);
         }
         let owed = parts

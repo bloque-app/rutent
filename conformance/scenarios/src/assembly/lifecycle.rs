@@ -705,9 +705,11 @@ impl Core {
                 .decide(&request)
                 .map_err(|_| StepError::NotNow("policy decides"))?;
         }
+        let registers = std::rc::Rc::clone(&self.deployed.registers);
         let done = self.asking(order, |reversals, parts, _| {
             reversals.accept_fault(
                 parts,
+                &mut super::Acting(registers),
                 At {
                     order,
                     part: &part,

@@ -8314,19 +8314,26 @@ lines in `hand_on/` and `reversal/`), the tests beside it, and `conformance/scen
 2. A `Log` failure at accept or quote is told an agent its party didn't scope as `ReadRefused`, so it can't tell a retry
    from a refusal. The order stands as the log holds it, and the person is told the failure.
 3. A failure of the log on opening (no order yet) is told as it is: it shows no order.
-4. Only an agent's errors are checked. A person's own login is the requester and no check is recorded for them; the four
-   errors mapped before are still checked for everyone, as they were.
+4. `NotNow`, `NotTheQuoteShown` and `OtherActor` are checked for every caller, as before this row (the first patch dropped
+   them for persons, which the reviewer found: a held or ended order told a person `NotNow` with no check recorded). The
+   new check, for `Hold`, `Unofferable`, `Routing`, `Log` and `Refused`, covers agents only: `kept_for` holds a person to
+   the order's requester in the customer's role, which is all `REQ-AUZ-7` and `REQ-AUZ-8` allow, and policy's check allows
+   exactly that party. The doc of `told_error` says so.
 5. A refiling is rebuilt only for an arrival Core rebuilt (a notice its store still keeps); otherwise it is asked of policy
    afresh, as a new refiling.
 
 ### Gaps, with owners
 
-1. *The operator's `accept_fault` command is a gate that policy does not follow* (`reversal/mod.rs`, `party_of` then the
-   `Accepting::Operator` command). Core records the operator's command in its name on the stated role and party alone. Not
-   changed here (it would be a contract and a policy action). Owner: the lead, as a row of its own if the operator's
-   commands are to be decided by policy.
+1. *The operator's `accept_fault` command is not decided by policy.* It is one of core-internal's commands that need no
+   decision, and moves no value, but it settles who bears a failed segment's loss. Review round 1 made Core ask the register
+   of actors (`Actors::acts_for`, a new parameter of `Reversals::accept_fault`) for the operator's login, as the customer's
+   path and `listed_filer` do: a login not listed for the operator's party, stating its party and role, accepts nothing and
+   nothing is appended (`dispute_over_a_fault_makes_the_order_stuck`'s unlisted-login assertion). Making it a
+   policy-decided action needs a contract round: left as a gap for `T-025-05`'s review list.
 2. *The held gate in the assembly's `restart_orders`* is `T-020-61`'s, not touched.
-3. *A reopen test of the whole assembly for the refiling* is not added; the unit test reopens `Arrivals` over the log as
+3. *The refile restart window, accepted.* A restart between policy's `RefileArrival` decision and the `Refiling` append
+   gives two decisions and one `Refiling`; nothing moves. Review round 1, Low.
+4. *A reopen test of the whole assembly for the refiling* is not added; the unit test reopens `Arrivals` over the log as
    `T-020-51`'s do.
 
 ### Rule-off
@@ -8336,9 +8343,11 @@ Each rule switched off alone, the file restored from its own text, `contracts/sr
 
 | Rule switched off | Tests that went red |
 |---|---|
-| other errors are asked of the read check for an agent (the arm returns the error as it is; the `NotNow`, `NotTheQuoteShown` and `OtherActor` arms fall in with it) | `agent_not_scoped_to_read_learns_nothing_from_an_accepts_or_quotes_error`; `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` |
+| other errors are asked of the read check for an agent (round 0 patch, the three arms gone with it) | `agent_not_scoped_to_read_learns_nothing_from_an_accepts_or_quotes_error`; `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` |
 | a refused request's class is told to an agent | `refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does` |
 | refilings are not rebuilt on reopening | `refiling_after_a_restart_is_not_filed_twice` |
+| `NotNow`, `NotTheQuoteShown` and `OtherActor` checked for every caller (review round 1) | `a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_check_is_recorded` |
+| the register check of the operator's `accept_fault` login (review round 1) | `dispute_over_a_fault_makes_the_order_stuck` (the unlisted login) |
 | accept tells the status with no read check | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept`; `a_reader_policy_refuses_is_told_no_status_by_any_call_and_the_check_is_recorded`; `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; `intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_orders_state_after`; `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged` |
 
 The doc lines at the pre-gates have no rule to switch off.

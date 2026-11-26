@@ -655,3 +655,39 @@ fn refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does()
     ));
     assert_admitted(&env);
 }
+
+/// A person is checked for the errors that show an order's state, as ever: on a held order, or an ended one, with policy
+/// refusing every read, the person's `NotNow` is a `ReadRefused`, and each check is recorded (`T-020-62`; the reviewer's
+/// check of the first patch, which dropped it).
+// verifies: REQ-AUZ-8, REQ-AUD-12
+#[test]
+fn a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_check_is_recorded() {
+    // An order that ended: policy refuses the acceptance, then every read.
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let (order, digest) = env.quoted(&mut sim, &order_request("client-req-1", customer()));
+    env.policy.answer = rutent_contracts::core_internal::Answer::Refuse {
+        class: rutent_contracts::core_internal::RefusalClass::NotPermitted,
+    };
+    env.accept(&mut sim, &order, &customer(), &digest)
+        .expect("told it ended");
+    assert_eq!(
+        env.quote_by(&mut sim, &customer(), &order),
+        Err(IntakeError::NotNow),
+        "allowed to read, the person is told it is not now"
+    );
+    env.reads.refuse_all = true;
+    let checks = recorded_reads(&env).len();
+    assert_eq!(
+        env.quote_by(&mut sim, &customer(), &order),
+        Err(IntakeError::ReadRefused),
+        "refused to read, the person is told no more"
+    );
+    assert_eq!(
+        recorded_reads(&env).len(),
+        checks + 1,
+        "the check is recorded"
+    );
+    assert!(!recorded_reads(&env).last().unwrap().1, "refused");
+    assert_admitted(&env);
+}
