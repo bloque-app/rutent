@@ -9047,8 +9047,7 @@ gap is fixed now), below.
 
 - **`Action::ReadNodeRecord {order, segment, node, provider, transaction}`** (`read_node_record`), folded into core-internal's
   unreleased 1.0.0 with a valid and an invalid fixture, a schema definition, a CHANGELOG entry (`Ignorable: no`), a README
-  line and `action_transactions` counting its transaction (a late status is never asked under it). No new relation: 120
-  relations, 132 schema rules.
+  line and `action_transactions` counting its transaction (a late status is never asked under it). No new relation, one schema rule more.
 - **core-authz.** `Permission::ReadNodeRecord`, held to the operator alone (`roles`: `operator_holds`, no
   `CarryOnward` for Core), `Scope::ReadNodeRecord`, the entry-point scan's `handle` row naming the action. Tests:
   `a_private_nodes_record_is_read_by_the_operator_alone` (REQ-AUZ-1, REQ-ORD-41), and the sweeps' counts moved (26

@@ -8,8 +8,8 @@
     provider (provider-role's `inner_segments_query`) while a segment that passes the node is graded: a decided action,
     taken as an effect under a fresh transaction it names, appended before the question is put. Its transaction counts among
     those `status-is-asked-under-a-fresh-transaction` reads an entry as naming, so a late status is never asked under it. No
-    relation of its own: 120 relations, as before. Fixtures: valid `decision-request-to-read-a-private-nodes-record`; invalid
-    `decision-request-to-read-a-private-nodes-record-without-its-node` (132 schema rules). Ignorable: no, it is a decided
+    relation of its own, so the relation count is unmoved. Fixtures: valid `decision-request-to-read-a-private-nodes-record`; invalid
+    `decision-request-to-read-a-private-nodes-record-without-its-node` (one schema rule more). Ignorable: no, it is a decided
     action a reader that ignored would carry out undecided.
   - `T-020-48` (finding 4): `Difference::PairNotBuilt {order, segment, why}` (`pair_not_built`; `why`: `PairNotBuilt`,
     `no_sent_report {segment}`, `no_flight`, `not_an_amount`, `refused`), a segment's pair of reports that was never built, so
