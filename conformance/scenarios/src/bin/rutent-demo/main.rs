@@ -81,15 +81,50 @@ const PUBLIC_NODE: &str = "sim-chain-b";
 /// The public nodes of the network, on the operator's list: where anyone can see what moved.
 const PUBLIC_NODES: &[&str] = &["sim-join-chain", PUBLIC_NODE];
 
-/// Every edge of the network: the provider, the node it takes value from, the node it gives it to, and the asset.
+/// Every edge of the network: the provider, the node it takes value from, the node it gives it to, and what it does.
+/// A reserve serves both ways, a withdrawal from its outer network and a deposit back (`kit::reserve_prices`).
 const EDGES: &[(&str, &str, &str, &str)] = &[
-    (PESO_RESERVE, "sim-join-in-bank", "sim-join-ledger", "COP"),
+    (
+        PESO_RESERVE,
+        "sim-join-in-bank",
+        "sim-join-ledger",
+        "withdrawal · COP",
+    ),
+    (
+        PESO_RESERVE,
+        "sim-join-ledger",
+        "sim-join-in-bank",
+        "deposit · COP",
+    ),
     (EXCHANGE, "sim-join-ledger", "sim-join-ledger", "COP → USD"),
     (RAMP, "sim-join-ledger", "sim-join-chain", "USD"),
-    (DOLLAR_RESERVE, "sim-join-chain", "sim-join-out-bank", "USD"),
-    (CHAIN_IN, "sim-chain-a", "sim-chain-ledger", "USDC"),
+    (
+        DOLLAR_RESERVE,
+        "sim-join-chain",
+        "sim-join-out-bank",
+        "deposit · USD",
+    ),
+    (
+        DOLLAR_RESERVE,
+        "sim-join-out-bank",
+        "sim-join-chain",
+        "withdrawal · USD",
+    ),
+    (
+        CHAIN_IN,
+        "sim-chain-a",
+        "sim-chain-ledger",
+        "withdrawal · USDC",
+    ),
+    (
+        CHAIN_IN,
+        "sim-chain-ledger",
+        "sim-chain-a",
+        "deposit · USDC",
+    ),
     (CHAIN_RAMP, "sim-chain-ledger", PUBLIC_NODE, "USDC"),
-    (CHAIN_OUT, PUBLIC_NODE, "sim-chain-e", "USDC"),
+    (CHAIN_OUT, PUBLIC_NODE, "sim-chain-e", "deposit · USDC"),
+    (CHAIN_OUT, "sim-chain-e", PUBLIC_NODE, "withdrawal · USDC"),
 ];
 
 /// The network as a Graphviz graph: each node a vertex, shaped and coloured by its kind (outer, private, public),
@@ -458,7 +493,7 @@ impl Demo {
         let graph = network_dot();
         std::fs::create_dir_all(&self.out).map_err(|e| e.to_string())?;
         std::fs::write(self.out.join("network.dot"), graph).map_err(|e| e.to_string())?;
-        self.t.detail("The network is a graph: each node a place value rests, each provider an edge between two.");
+        self.t.detail("The network is a graph: each node a vertex, each provider tuple a directed edge (a reserve has two).");
         self.t.detail("It is written as network.dot (Graphviz) in the output folder; conformance/demo/network.svg draws it.");
         let session = self
             .core()

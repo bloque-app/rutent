@@ -30,6 +30,10 @@ inside that package (`conformance/scenarios/src/bin/rutent-demo/`), made only of
 
 ## What each act shows
 
+The graph above is the network. Each act's order takes one path through it, drawn here as a lane:
+
+![The paths the demo's orders take](orders.svg)
+
 The demo prints a timeline as it goes. Each act ends with the log entries it added, one line each: its place in the
 log, whether Core *verified* it (Core's own record of a call between its parts, or of what the platform did) or a
 party *stated* it (a provider's signed statement, kept as signed), what it is, and who.
@@ -44,13 +48,14 @@ rutent moves value between **nodes**, and there are three kinds:
 | **Private node** | A ledger held by one publisher, which only that publisher's providers work inside | Only that publisher. Inside it, rutent can rely only on the publisher's word, and the log labels it that way | `sim-join-ledger` (sim-join-publisher's), `sim-chain-ledger` (sim-chain-publisher's) |
 | **Public node** | A shared ledger on the operator's list, like a public blockchain | Anyone, so Core checks the movements there itself | `sim-join-chain`, `sim-chain-b` |
 
-The network is a graph: the nodes are its vertices, and each provider is a directed edge from the node it takes
-value from to the node it gives it to. An exchange is an edge from a node to itself, since it changes the asset and
-not the place.
+The network is a graph: the nodes are its vertices, and each provider tuple is a directed edge from the node it takes
+value from to the node it gives it to. A reserve has two edges, its withdrawal from its outer network and its deposit
+back. A ramp has one. An exchange is an edge from a node to itself, since it changes the asset and not the place.
 
 ![The demo's network as a graph](network.svg)
 
-A single order follows one path through this graph. The graph is what the router searches. Every provider that
+This network has two connected components: no provider joins the peso and dollar side to the USDC side. A
+single order follows one path through this graph, and the graph is what the router searches. Every provider that
 joins adds an edge, often between nodes that already have one, so the same order can have several paths, and the
 router picks one for the order's objective (lowest total cost here). The demo writes this graph next to the log as
 `network.dot`, in Graphviz form.
