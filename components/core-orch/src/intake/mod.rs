@@ -469,6 +469,20 @@ impl Kept {
     }
 }
 
+/// The prefix of the name intake gives a refused request's record for its read (`T-020-64`). `Id` allows no character
+/// outside the order-id space for a key beyond it, so no order's identifier is let begin with it instead: every order
+/// Core opens, by intake or by the arrival filing, draws its identifier through [`draw_order`].
+pub(crate) const REQUEST_NAME: &str = "request-";
+
+/// A fresh identifier for an order: one that doesn't begin with [`REQUEST_NAME`], so a refused request's record can never
+/// take an order's name in the deployment's map. A source that draws only such names gives none, and the call is
+/// refused as an identifier Core used before is.
+pub(crate) fn draw_order(fresh: &mut dyn crate::rounds::Fresh) -> Option<Id> {
+    (0..16)
+        .map(|_| fresh.id())
+        .find(|id| !id.as_str().starts_with(REQUEST_NAME))
+}
+
 /// A request identifier, under the party that requested it: one party's identifiers say nothing of another's.
 type Key = (String, String);
 
@@ -557,10 +571,11 @@ impl Intake {
             .requests
             .get(&key(&caller.party, request))
             .ok_or(IntakeError::ReadRefused)?;
-        let named =
-            Id::new(format!("request-{}", request.as_str())).ok_or(IntakeError::ReadRefused)?;
+        let named = Id::new(format!("{REQUEST_NAME}{}", request.as_str()))
+            .ok_or(IntakeError::ReadRefused)?;
         // Never a name an order of intake's already has: the record handed over would overwrite that order's, and its
-        // withdrawal would drop it. An agent is refused instead, failing closed (`T-020-64`).
+        // withdrawal would drop it. No order is drawn a name beginning [`REQUEST_NAME`] ([`draw_order`]), so this is a
+        // second line that cannot be reached; an agent is refused, failing closed (`T-020-64`).
         if self.orders.contains_key(named.as_str()) {
             return Err(IntakeError::ReadRefused);
         }
@@ -1541,7 +1556,7 @@ fn opened(desk: &mut Desk<'_, '_>, request: OrderRequest) -> Result<Kept, Intake
         refused(desk, &mut kept, class)?;
         return Ok(kept);
     }
-    let order = desk.parts.fresh.id();
+    let order = draw_order(&mut *desk.parts.fresh).ok_or(IntakeError::Fresh)?;
     kept.request = request;
     kept.order = Some(order.clone());
     // The order as opened, the log's one record of it before its acceptance, for a Core that reopens to read its open

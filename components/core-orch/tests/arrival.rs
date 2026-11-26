@@ -1121,6 +1121,47 @@ fn refiling_after_a_restart_is_not_filed_twice() {
     assert_admitted(&env);
 }
 
+/// The arrival filing draws its order's identifier from the same source, and never one a refused request's record could
+/// take (`request-` and a caller's suffix): a source whose every other draw begins so still opens the order under another
+/// name, and one that only does opens none (`T-020-64`).
+// verifies: REQ-AUZ-8, NFR-6
+#[test]
+fn a_filed_order_is_never_drawn_a_name_a_refused_requests_record_could_take() {
+    for always in [false, true] {
+        let mut env = crate::env();
+        let mut providers = Reserve::new(&env);
+        let mut arrivals = Arrivals::new();
+        let deposited = match arrive(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &mut Open::default(),
+            &report(1000, 0),
+        )
+        .unwrap()
+        {
+            Arrived::NoOrder { arrival } => arrival,
+            other => panic!("{other:?}"),
+        };
+        env.ids.alternate = !always;
+        env.ids.always = always;
+        let filed = file(
+            &mut env,
+            &mut providers,
+            &mut arrivals,
+            &filing(reserve_filer(), &deposited),
+        );
+        if always {
+            assert_eq!(filed, Err(ArrivalError::Fresh));
+        } else {
+            let Ok(Filed::Started { order, .. }) = filed else {
+                panic!("{filed:?}");
+            };
+            assert!(!order.as_str().starts_with("request-"), "{order:?}");
+        }
+    }
+}
+
 // REQ-ORD-13, REQ-ORD-15 -------------------------------------------------------------------------------------------
 
 /// An order filed on an automatic deposit, by the reserve that declared it or by the operator, is accepted on that

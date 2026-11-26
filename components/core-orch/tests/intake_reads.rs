@@ -770,29 +770,33 @@ fn refused_requests_read_leaves_no_record_behind() {
     assert_admitted(&env);
 }
 
-/// A refused request whose pseudo-name an order of intake's already bears never overwrites that order's record or
-/// drops it: the agent is refused the read (`ReadRefused`), and the order's record stays as it was (`T-020-64`).
+/// No order's identifier can begin as a refused request's record's name does, so no filed order's record is ever
+/// overwritten or dropped by one: a source whose every other draw begins `request-` still gives orders names that don't,
+/// and one that gives only such names gives no order (`T-020-64`, the second review of `ca787c83`).
 // verifies: REQ-AUZ-8, NFR-6
 #[test]
-fn refused_requests_read_never_takes_the_name_of_an_order() {
+fn no_order_is_drawn_a_name_a_refused_requests_record_could_take() {
     let mut env = Env::new();
     let mut sim = env.sim();
-    // Core draws an order identifier that starts as a refused request's pseudo-name would.
-    env.ids.next = vec![id("request-client-req-bad")];
-    let order = order_of(
-        &env.open(&mut sim, &order_request("client-req-1", customer()))
+    env.ids.alternate = true;
+    for n in 0..5 {
+        let order = order_of(
+            &env.open(
+                &mut sim,
+                &order_request(&format!("client-req-{n}"), customer()),
+            )
             .expect("opens"),
-    );
-    assert_eq!(order.as_str(), "request-client-req-bad");
-    let record = env.reads.filed.get(order.as_str()).cloned();
-    assert!(record.is_some(), "the order's record is handed over");
-    let mut refused = order_request("client-req-bad", agent());
-    refused.session = id("session-nobody-opened");
-    assert_eq!(env.open(&mut sim, &refused), Err(IntakeError::ReadRefused));
+        );
+        assert!(
+            !order.as_str().starts_with("request-"),
+            "{order:?} could be a refused request's name"
+        );
+    }
+    // A source that draws only such names opens nothing.
+    env.ids.always = true;
     assert_eq!(
-        env.reads.filed.get(order.as_str()).cloned(),
-        record,
-        "the order's record stays as it was"
+        env.open(&mut sim, &order_request("client-req-x", customer())),
+        Err(IntakeError::Fresh)
     );
     assert_admitted(&env);
 }

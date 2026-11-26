@@ -1235,10 +1235,19 @@ pub fn call_of(what: &What) -> &'static str {
 pub struct Drawing {
     pub ids: Ids,
     pub next: Vec<Id>,
+    /// Every other draw begins as a refused request's record's name does: a source that could collide with it.
+    pub alternate: bool,
+    /// Every draw does.
+    pub always: bool,
+    drawn: usize,
 }
 
 impl rutent_core_orch::rounds::Fresh for Drawing {
     fn id(&mut self) -> Id {
+        self.drawn += 1;
+        if self.always || (self.alternate && self.drawn % 2 == 1) {
+            return id(&format!("request-{}", self.ids.id().as_str()));
+        }
         if self.next.is_empty() {
             self.ids.id()
         } else {

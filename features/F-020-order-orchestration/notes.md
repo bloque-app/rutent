@@ -8386,6 +8386,15 @@ request's class, so an agent its party scoped to read couldn't tell a malformed 
   the map holds orders alone. Tests: `refused_requests_read_never_takes_the_name_of_an_order` and
   `refused_requests_read_leaves_no_record_behind` (25 refused requests and repeats, the map unchanged). Rule-off: guard off
   turns the first red; withdrawal off turns the second red.
+- **Second review round (the structural close).** `Id` allows no character outside the order-id space (`A-Z a-z 0-9 . _ : -`),
+  so the pseudo-record can't take a key outside it. Instead no order is drawn a name beginning `request-`: every order Core
+  opens, by intake's `opened` or the arrival filing's `open_run`, draws through `draw_order` (up to 16 draws, none beginning
+  `request-`, else `Fresh`), so the pseudo-record's key and an order's can never be equal. The guard in `read_request` stays as
+  a second line that can't be reached. Tests: `no_order_is_drawn_a_name_a_refused_requests_record_could_take`
+  (`intake_reads.rs`, a source whose every other draw begins so, and one whose every draw does) and
+  `a_filed_order_is_never_drawn_a_name_a_refused_requests_record_could_take` (`arrival.rs`, the same through the arrival
+  filing). Rule-off: `draw_order` accepting any name turns both red. The previous round's guard test is gone, its setup
+  now unreachable by construction.
 - **Test** `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` [`REQ-AUZ-8`, `REQ-AUZ-7`]
   (`intake_reads.rs`): written with the fix in place, so red was shown by the rule-off below, which is `T-020-62`'s code.
 - **Rule-off** (`intake_reads`):
