@@ -30,6 +30,8 @@ fn scratch(name: &str) -> PathBuf {
 fn undocumented_public_element_fails_the_check() {
     let scratch = scratch("undocumented");
     let out = doc_check(&fixture(), &scratch.join("target"));
+    // cargo writes a Cargo.lock beside the fixture; it is ignored by git, but leave nothing behind.
+    let _ = std::fs::remove_file(fixture().join("Cargo.lock"));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),

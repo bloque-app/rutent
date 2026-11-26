@@ -1041,6 +1041,86 @@ fn arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is
     assert_admitted(&env);
 }
 
+/// A refiling the log holds is rebuilt when Core reopens: the same filer filing the same arrival anew after a restart is
+/// told the refiling it made, and appends neither a second `Refiling` nor a second decision; another filer's refiling
+/// is its own, asked of policy and appended once (`T-020-62`; the milestone reviewer's check of `T-020-52`).
+// verifies: NFR-6, REQ-AUZ-1
+#[test]
+fn refiling_after_a_restart_is_not_filed_twice() {
+    let mut env = crate::env();
+    let mut providers = Reserve::new(&env);
+    let order = explicit_order(&mut env, &mut providers);
+    let mut arrivals = Arrivals::new();
+    let first = match arrive(
+        &mut env,
+        &mut providers,
+        &mut arrivals,
+        &mut Open(vec![open_order(&order)]),
+        &report(600, 0),
+    )
+    .unwrap()
+    {
+        Arrived::Held { arrival, .. } => arrival,
+        other => panic!("{other:?}"),
+    };
+    let refiled = refile(&mut env, &mut providers, &mut arrivals, &operator(), &first).unwrap();
+    let count = |env: &Env| {
+        let book = env.book.borrow();
+        let whats = book.verified();
+        (
+            whats
+                .iter()
+                .filter(|w| matches!(w, What::Refiling { .. }))
+                .count(),
+            whats
+                .iter()
+                .filter(|w| matches!(w, What::Decide { request, .. }
+                    if matches!(request.action, rutent_contracts::core_internal::Action::RefileArrival { .. })))
+                .count(),
+        )
+    };
+    assert_eq!(count(&env), (1, 1));
+
+    // Core stops and opens again over its log.
+    let history = env.history();
+    let mut reopened = reopened_over(&mut env, &mut providers, &history);
+    let len = env.len();
+    assert_eq!(
+        refile(&mut env, &mut providers, &mut reopened, &operator(), &first),
+        Ok(refiled),
+        "the same filer is told the refiling it made"
+    );
+    assert_eq!(env.len(), len, "nothing is appended");
+    assert_eq!(
+        count(&env),
+        (1, 1),
+        "no second refiling, no second decision"
+    );
+
+    // The reserve, which never refiled it, has its own refiling decided and appended once.
+    let by_reserve = refile(
+        &mut env,
+        &mut providers,
+        &mut reopened,
+        &reserve_filer(),
+        &first,
+    )
+    .unwrap();
+    assert_eq!(count(&env), (2, 2));
+    assert_eq!(
+        refile(
+            &mut env,
+            &mut providers,
+            &mut reopened,
+            &reserve_filer(),
+            &first
+        ),
+        Ok(by_reserve)
+    );
+    assert_eq!(count(&env), (2, 2));
+    assert_admitted(&env);
+}
+
 // REQ-ORD-13, REQ-ORD-15 -------------------------------------------------------------------------------------------
 
 /// An order filed on an automatic deposit, by the reserve that declared it or by the operator, is accepted on that
