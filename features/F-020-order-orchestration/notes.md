@@ -8376,8 +8376,9 @@ request's class, so an agent its party scoped to read couldn't tell a malformed 
   `refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does`. (2) `quote` and `accept` never see a
   `Told::Refused`; were one to, an agent is told `ReadRefused`. (3) The identifier `request-<id>` could collide with an
   order's only if Core's fresh draws made one the same; the record is the deployment's to keep as it keeps any filed order's.
-- **Gap.** The assembly's real policy engine isn't run on a scoped agent's refused request in a scenario (the double in
-  `intake_support` and policy's `Requester` source answer the same rule); owner: whoever next touches `assembly_intake.rs`.
+- **Scenario over the real policy engine** (closes the gap): `agent_its_party_scoped_to_read_is_told_its_refused_requests_class_over_the_real_policy`
+  (`assembly_intake.rs`): scoped, the agent is told the class and the check is recorded allowed; unscoped, `ReadRefused` and the
+  check is recorded refused; a person's isn't checked. Red with the scoped arm switched off.
 - **Test** `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` [`REQ-AUZ-8`, `REQ-AUZ-7`]
   (`intake_reads.rs`): written with the fix in place, so red was shown by the rule-off below, which is `T-020-62`'s code.
 - **Rule-off** (`intake_reads`):
