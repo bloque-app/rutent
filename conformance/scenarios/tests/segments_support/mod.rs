@@ -483,6 +483,18 @@ impl Log for General {
     }
 }
 
+/// The log's history, as a confirmation reads it (`T-020-49`): each entry with the receipt this log gave it.
+impl rutent_core_orch::segments::lifecycle::Journal for General {
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        let log = self.0.borrow();
+        log.entries
+            .iter()
+            .enumerate()
+            .map(|(at, (entry, _))| (receipt_of(&log.attributed, at, entry), entry.clone()))
+            .collect()
+    }
+}
+
 // The evidence store ------------------------------------------------------------------------------------------------
 
 /// The evidence store's stand-in: each statement's bytes, by the place they were kept at. A clone shares them, so a

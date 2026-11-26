@@ -43,6 +43,14 @@ use super::{Segments, journal, key, now};
 use crate::rounds::Fresh;
 use crate::snapshot::Clock;
 
+/// Core's log, as orchestration both appends to it and reads it: every entry it holds now, each with its receipt, in
+/// log order. A confirmation reads the restrictions it takes again from the same log its effect is appended to, so no
+/// caller can hand it another history, or none (`T-020-49`, L5 of #337's review); the settings' reopening reads it too.
+pub trait Journal: Log {
+    /// Every entry the log holds now, with its receipt, in log order.
+    fn history(&self) -> Vec<(Receipt, Entry)>;
+}
+
 /// A release waiting for its fresh acceptance, as the platform holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
@@ -395,9 +403,6 @@ pub struct ReleaseAsked<'a> {
     pub caller: &'a Actor,
     /// Core, which writes the effect and its result.
     pub core: &'a Actor,
-    /// Core's log, as it holds every entry now: a confirmation re-takes the provider's restrictive lifecycle effects
-    /// it holds done before the provider's releases come back into force (`T-020-49`). Only a confirmation reads it.
-    pub history: &'a [(Receipt, Entry)],
 }
 
 /// What a lifecycle action came to on the platform.
@@ -518,15 +523,18 @@ const RESTRICTIVE: [CatalogueChange; 5] = [
     CatalogueChange::RollBack,
 ];
 
-/// Each restrictive lifecycle effect `history` holds done for `provider`, in log order, as the log holds it (its
-/// action, permit and receipt), with who its decision's request names as its caller (where the log holds that
-/// decision). A revocation or a declaration a later done `reinstate` of the same version undid is left out.
+/// Each restrictive lifecycle effect `history` holds for `provider` whose result isn't `failed`, in log order, as the log
+/// holds it (its action, permit and receipt), with who its decision's request names as its caller (where the log holds
+/// that decision). An effect with no result is taken: it was permitted and recorded to take effect, and whether the
+/// platform took it before its result could be appended, or before Core and the platform stopped together, is not known,
+/// so it fails closed (M1 of #337's review). No platform action puts a version back in force (`reinstate` has none), so
+/// nothing here undoes a restriction (L3).
 fn restrictions(history: &[(Receipt, Entry)], provider: &Id) -> Vec<(Effect, Option<Id>)> {
-    let done = |receipt: &Receipt| {
+    let failed = |receipt: &Receipt| {
         history.iter().any(|(_, e)| {
             matches!(e, Entry::Verified(VerifiedEntry {
                 what: What::Result { effect },
-                outcome: Outcome::Done {},
+                outcome: Outcome::Failed {},
                 ..
             }) if effect == receipt)
         })
@@ -552,20 +560,12 @@ fn restrictions(history: &[(Receipt, Entry)], provider: &Id) -> Vec<(Effect, Opt
         let Action::ChangeCatalogue {
             change,
             provider: p,
-            version,
             ..
         } = action
         else {
             continue;
         };
-        if p != provider || !done(receipt) {
-            continue;
-        }
-        if *change == CatalogueChange::Reinstate {
-            found.retain(|(e, _)| {
-                !matches!(&e.action, Action::ChangeCatalogue { change: c, version: v, .. }
-                    if v == version && matches!(c, CatalogueChange::RevokeRelease | CatalogueChange::DeclareExploited))
-            });
+        if p != provider || failed(receipt) {
             continue;
         }
         if RESTRICTIVE.contains(change) {
@@ -728,7 +728,7 @@ impl Segments {
     /// refused. An effect is marked acted on only once the platform took it.
     pub fn change_release(
         &mut self,
-        log: &mut dyn Log,
+        log: &mut dyn Journal,
         decisions: &mut dyn Decisions,
         releases: &mut dyn Releases,
         clock: &dyn Clock,
@@ -752,7 +752,8 @@ impl Segments {
         // have lost a restriction it took but couldn't write: each restriction Core's log holds done for the provider is
         // taken again first, so it holds after the crash (gap 3 of `T-020-49`'s first build).
         if matches!(asked.change, ReleaseChange::Confirm { .. }) {
-            for (restriction, by) in restrictions(asked.history, asked.provider) {
+            let history = log.history();
+            for (restriction, by) in restrictions(&history, asked.provider) {
                 let by = by.unwrap_or_else(|| request.caller.acts.clone());
                 retake_restriction(releases, &restriction, &by, clock)?;
             }

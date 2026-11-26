@@ -9041,9 +9041,9 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   5. *Confirm.* core-internal 1.0.0 (folded): `CatalogueChange::ConfirmReleases` (`confirm_releases`, `CONFIRM_RELEASES`)
      with `Action::ChangeCatalogue.versions` (at least one, each once, exactly for it), so a permit to confirm one set of
      versions confirms no other; `Permission::Change(ConfirmReleases)` is held to the deployment operator by `core-authz`'s
-     generic catalogue arm, beside `T-021-15`'s. The platform answers `awaiting_confirmation(provider)` and writes an
-     `Opened` entry when it opens and rewrites its record; on an unclean opening, a provider whose `confirmed` decision is
-     after the last `Opened` is not held again. The assembly's operator command (`Core::change_release`) is its caller.
+     generic catalogue arm, beside `T-021-15`'s. The platform answers `awaiting_confirmation(provider)`; a platform
+     dropped with its record whole while some providers still wait writes `ClosedHolding { held }`, so the next opening
+     holds those alone (review round 1's H1 replaced the first build's `Opened` marker). The assembly's operator command (`Core::change_release`) is its caller.
   6. *Contract, also folded:* `OperatorSetting::Cadence.provider` (a provider's own status cadence, for `status_asks`
      alone, `STATUS_ASKS_JOB`), and `Cadence.seconds` a safe integer (zero: every tick, as the defaults are).
   7. *T-020-55 check.* core-audit's `Register::accepted` answers nothing for a provider none of whose grants stands (from
@@ -9056,16 +9056,18 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
      deposit wait. `Core::relist` leaves `set_setting` effects to `Settings::reopened`. The operator's login holds every
      setting's permission and the six lifecycle changes.
 - **Defaults** (reversible, each failing closed).
-  1. The deposit wait's ceiling is thirty days (`DEPOSIT_WAIT_CEILING_SECONDS`); a wait above it is refused before policy is
-     asked, nothing recorded.
+  1. The deposit wait's ceiling is thirty days (`DEPOSIT_WAIT_CEILING_SECONDS`); a wait above it is refused after policy
+     is asked (its decision records the attempt), no effect recorded, and never taken on reopening.
   2. A setting of the whole deployment names the caller's party as the change's `provider` (the deployment operator's,
      which policy holds the login to).
-  3. A setting whose result the log didn't take is in force until Core reopens, and gone after (only `done` effects are
-     replayed); the command answers `Append`.
+  3. A setting whose result the log didn't take stays in force across a restart: the reopened Core reads every
+     `set_setting` effect without a `failed` result and appends the missing `done` (`Settings::reopen`); the command
+     answers `Append`.
   4. A restriction the platform took unrecorded is `done` in Core's log (it is in force), answered `TakenUnrecorded`.
   5. A permitted caller is told what isn't there (`NothingStaged`, `NothingToDo`, `NotWhatItNames`); a refused one only
      `NotPermitted`.
-  6. A record with no `Opened` entry (written before this row) holds every provider on an unclean opening, as before.
+  6. A platform record that doesn't end with `Closed` or `ClosedHolding` (a crash, or a record that failed) holds every
+     provider on its opening, as before this row.
   7. The deployment's catalogue defaults at an advertisement's join stay the kit's (`kit::join`: a statement floor on each
      tuple, the public nodes the tuples reach listed); the operator's floors and nodes are set on top through the command
      and reapplied after the relisting on reopening.
@@ -9085,14 +9087,14 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   3. **Closed in this row (the lead, after the first build): a restriction the platform couldn't record holds after a
      crash.** Before a confirmation takes effect (the only way a provider's releases come back into force after the
      platform's unclean end), `Segments::change_release` takes again each restrictive lifecycle effect Core's log holds done
-     for the provider, in log order: `revoke`, `withdraw`, `declare_exploited`, `mark_stale` and `roll_back`, less a
-     revocation or declaration a later done `reinstate` undid (`retake_restriction`, `pub(crate)`). A roll back or a
+     for the provider, in log order: `revoke`, `withdraw`, `declare_exploited`, `mark_stale` and `roll_back`
+     (`retake_restriction`, `pub(crate)`; round 1 takes those with no result too, and drops the `reinstate` path). A roll back or a
      withdrawal is taken again only where that version is staged, or waits, again. One the platform holds already
      (`AlreadyMarked`, `NoSuchVersion`, `TakenUnrecorded`) needs nothing; any other refusal answers
      `ReleaseRefused::Unrestored` and nothing is confirmed (fail closed). The re-taking writes no entry (the log holds each
      effect done) and runs on the effect the log holds, by its decision's caller. The held versions are compared with the
-     permit's before the re-taking and may only narrow after it. `ReleaseAsked.history` carries Core's log to it; the
-     assembly hands its log's entries. Test `restriction the platform could not record before a crash still holds after
+     permit's before the re-taking and may only narrow after it. It reads Core's log through the `Journal` it appends to
+     (round 1's L5). Test `restriction the platform could not record before a crash still holds after
      core reopens` (core-orch `tests/lifecycle.rs`, a platform whose record breaks and which crashes), written first and
      seen red (the confirmation ran with the version no longer exploited). It runs on the confirmation, not on Core's own
      reopening: a platform that didn't restart holds its in-memory restrictions, and one that did holds every provider
@@ -9218,3 +9220,55 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   stopped it. Run crate by crate under the pinned 1.98.0 with a 2 GB watch, `rustdoc` on core-orch reached 2.6 GB and the
   watch stopped it, so no crate's doc was run to the end locally. The first build's workspace doc run (under `stable`, the
   same 1.98.0) had passed with `-D warnings` before the gap round, whose changes add no doc link.
+
+### T-020-49, review round 1 (#337, CHANGES at `af306ff4`)
+
+Merged `origin/m3` at `eb66381e` (`T-020-57`) first: the conflicts were core-internal's CHANGELOG totals (both sides'
+rounds named, recounted from the files: 193 valid, 195 invalid, 789 admission, 58 attribution, 120 relations) and this
+file (both sections kept; `T-020-57`'s round 3 and review round 1 moved back under its own section). `T-020-57`'s private
+helper in `holding.rs` (`change_release`, the wallet's logged accept and revoke) took the name of this row's command, so it
+is `log_wallet_release_change` now. `DEC-20` paths: `components/prov/src/module/platform.rs` (H1), `components/core-authz/`
+(L1). `F-024` files: the assembly (`mod.rs`, `holding.rs`, `releases.rs`), `lib.rs` (`Journal` for its handle) and the
+scenario tests.
+
+- **H1, a restriction came back after a second unclean end.** The first build's `Opened` marker let an opening skip a
+  provider confirmed since, though the same run could take a restriction afterwards and fail to record it. Now a platform
+  dropped with its record whole writes `ClosedHolding { held }` (the providers still unconfirmed) or `Closed` (none); only
+  an opening on one of those skips anyone, holding exactly `held`. A crash, or a record that failed (it takes no write after
+  a failure, so no close follows one), holds every provider. `Opened` and `confirmed_since_opened` are gone. Test
+  `unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_end` (the reviewer's case, red at
+  `af306ff4` by the review's probe); `providers_confirmed_before_a_restart_are_not_held_again_after_it` ends on a
+  failed record now, since a whole drop holds only the unconfirmed.
+- **M1, a restriction with no result.** The re-taking takes every restrictive effect whose result isn't `failed`, one with
+  no result among them (it fails closed). Test `restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation`.
+- **M2, a setting with no result.** Completed on reopening, so it reads the same before and after a restart (#143's
+  blocker (b)): `Settings::reopened` takes every `set_setting` effect without a `failed` result, and `Settings::reopen`
+  (the assembly's reopen calls it) appends the missing `done` once. Undoing it live would need each target's earlier value
+  and can't undo a crash between the effect and the result; completing it is consistent in both orders. Test
+  `setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_result_is_completed` (result refused, then
+  reopened twice; result taken, then reopened; a `failed` result).
+- **L1.** Scan rule 4 also finds a function of core-orch visible outside it that reaches one of the crate's carriers
+  (`CARRIERS`: `carry_out_roll_back`, `carry_promotion`, `carry_out_release_change`, `retake_restriction`) and asks no
+  decision (`.decide(..)`); planted public wrappers, by plain and by module path, are found, a crate-visible one and a
+  decided path are not. In `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path`.
+- **L2.** `Core::advertise` (after `kit::join`) and `Core::install_wallet` re-apply the operator's catalogue settings
+  (`reapply_catalogue_settings`). Test `operators_catalogue_settings_stand_after_the_deployments_own_listing`
+  (`assembly_real_wallet.rs`).
+- **L3.** The re-taking's `reinstate` path is gone: no platform action reinstates a version, and the plan names none.
+- **L4.** `Arrivals::set_deposit_wait` is `pub(crate)` and never takes a wait above the ceiling; `with_deposit_wait` is
+  gone, and core-orch's arrival tests decide their wait through `Settings::set` (`short_waits(&mut env)`), so a reopened
+  Core reads it from the log; `Settings::set` asks policy before the cap; `Settings::reopened` refuses a wait above it.
+  In `deposit_wait_above_its_ceiling_is_refused`.
+- **L5.** `ReleaseAsked.history` is gone. `Segments::change_release` takes its log as `segments::lifecycle::Journal`, the
+  handle that appends and reads the log's history, and a confirmation reads the restrictions from it; the assembly's
+  `GeneralHandle` and the test logs implement it.
+
+| Rule switched off | Red |
+|---|---|
+| any unclean end holds every provider (it held none) | `unrecorded_restriction_after_a_confirmation_is_held_after_a_second_unclean_end` |
+| a restriction with no result is taken again (done only) | `restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation` |
+| a setting with no result stands (done only) | `setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_result_is_completed` |
+| a deposit wait above its ceiling is not rebuilt | `deposit_wait_above_its_ceiling_is_refused` |
+| scan rule 4 finds a public wrapper of a carrier | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
+| the wallet's install re-applies the operator's settings | `operators_catalogue_settings_stand_after_the_deployments_own_listing` |
+| a confirmation reads its history from the log (an empty one read) | `restriction_the_platform_could_not_record_before_a_crash_still_holds_after_core_reopens` |

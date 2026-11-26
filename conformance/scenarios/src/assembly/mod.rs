@@ -1081,9 +1081,17 @@ impl Core {
             core.relist()?;
             // Core's own state, rebuilt from the log (`T-020-46`), the proven starts of `T-020-26` among it.
             core.rebuild_from_log();
-            // The operator's settings, rebuilt from the log and put back where they are read (`T-020-49`).
-            core.settings =
-                rutent_core_orch::settings::Settings::reopened(core.log.borrow().entries());
+            // The operator's settings, rebuilt from the log, a setting's missing result completed, and put back where they
+            // are read (`T-020-49`).
+            let (settings, completed) = rutent_core_orch::settings::Settings::reopen(
+                &mut core.general,
+                &core.clock,
+                &kit::core(),
+            );
+            completed.map_err(|e| {
+                AssemblyError::Listing(format!("a setting's result wasn't completed: {e:?}"))
+            })?;
+            core.settings = settings;
             core.bounds = core.settings.bounds(&core.base_bounds);
             core.settings
                 .apply(&mut rutent_core_orch::settings::Targets {
@@ -1798,10 +1806,21 @@ impl Core {
             .general
             .append(&entry)
             .map_err(|e| listing("the advertisement", e))?;
-        // Into Core's catalogue once the log holds it, at the time the log received it.
+        // Into Core's catalogue once the log holds it, at the time the log received it; the deployment's defaults the join
+        // sets (a floor on each tuple, the public nodes listed) give way to the operator's settings (L2 of #337's review).
         let at = self.time_of_stated(&receipt);
         kit::join(&mut self.catalogue, installed, at);
+        self.reapply_catalogue_settings();
         Ok(())
+    }
+
+    /// Puts the operator's catalogue settings back after the deployment's own listing touched the catalogue: each
+    /// evidence floor, and each public node listed or taken off, as `Settings` holds them (`T-020-49`).
+    pub(crate) fn reapply_catalogue_settings(&mut self) {
+        self.settings.apply(&mut rutent_core_orch::settings::Targets {
+            catalogue: Some(&mut self.catalogue),
+            ..rutent_core_orch::settings::Targets::default()
+        });
     }
 
     /// A test hook (`T-020-55`, the review of `8f7ddefd`): `bytes` appended as an advertisement's stated entry, kept and

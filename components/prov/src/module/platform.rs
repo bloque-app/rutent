@@ -48,8 +48,8 @@ use crate::module::limits::{
 };
 use crate::module::output;
 use crate::module::record::{
-    AcceptedEntry, CarriedEntry, DecisionEntry, DecisionKindEntry, Entry, MarkEntry, MemoryRecord,
-    Record, ReleasesEntry,
+    AcceptedEntry, CarriedEntry, DecisionEntry, Entry, MarkEntry, MemoryRecord, Record,
+    ReleasesEntry,
 };
 use crate::module::types::{
     AdmissionRefusal, Admitted, Endpoint, Envelope, Events, Handled, LimitEvent, LookupEvent,
@@ -649,37 +649,33 @@ impl<W: World> Platform<W> {
                 .and_then(|entry| platform.read_back(entry))
                 .map_err(|e| format!("the platform's record, entry {}: {e}", n + 1))?;
         }
-        // A record that doesn't end with the platform's clean close can't vouch for a decision the platform took and
-        // couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`), but
-        // one the operator confirmed since the record was last opened, which it holds no more (`T-020-49`).
-        let closed = lines
-            .last()
-            .is_none_or(|line| matches!(Entry::read(line), Ok(Entry::Closed)));
-        if !closed {
-            let confirmed = confirmed_since_opened(&lines);
-            platform.unconfirmed = platform
-                .lifecycle
-                .providers()
-                .filter(|p| {
-                    platform
-                        .lifecycle
-                        .in_force(p)
-                        .or_else(|| platform.lifecycle.staged(p))
-                        .is_some()
-                        && !confirmed.contains(*p)
-                })
-                .map(str::to_owned)
-                .collect();
-        }
+        // A record that doesn't end with one of the platform's whole closes can't vouch for a decision the platform took
+        // and couldn't write: every provider with a release in force or staged waits for the operator (`T-013-11`).
+        // One that ends with a whole close while some providers still waited holds those again, and only those: the
+        // operator's confirmations of the others stand, since the platform wrote every decision it took after them
+        // (`T-020-49`). A record with no entry holds nothing.
+        let held_again: Option<BTreeSet<String>> = match lines.last().map(|line| Entry::read(line)) {
+            None | Some(Ok(Entry::Closed)) => Some(BTreeSet::new()),
+            Some(Ok(Entry::ClosedHolding { held })) => Some(held.into_iter().collect()),
+            Some(_) => None,
+        };
+        platform.unconfirmed = platform
+            .lifecycle
+            .providers()
+            .filter(|p| {
+                platform
+                    .lifecycle
+                    .in_force(p)
+                    .or_else(|| platform.lifecycle.staged(p))
+                    .is_some()
+                    && held_again.as_ref().is_none_or(|held| held.contains(*p))
+            })
+            .map(str::to_owned)
+            .collect();
         platform.free_spent();
-        let mut lines = platform
+        let lines = platform
             .held()
             .map_err(|e| format!("the platform's record can't be written: {e}"))?;
-        lines.push(
-            Entry::Opened
-                .line()
-                .map_err(|e| format!("the platform's record can't be written: {e}"))?,
-        );
         platform
             .record
             .replace(&lines)
@@ -752,7 +748,7 @@ impl<W: World> Platform<W> {
                 }
             }
             Entry::Releases(release) => self.restore_releases(&release)?,
-            Entry::Closed | Entry::Opened => {}
+            Entry::Closed | Entry::ClosedHolding { .. } => {}
             Entry::Ended { transaction } => {
                 self.carried.remove(&transaction);
                 self.lifecycle.spend(&transaction);
@@ -2504,34 +2500,20 @@ fn placeholder_signature() -> String {
     format!("{}A", "s".repeat(85))
 }
 
-/// The providers a `confirmed` decision was written for after the record's last [`Entry::Opened`], the run that ended
-/// last: the operator's word on each was given since its last unclean end (`T-020-49`). Nothing on a record with no
-/// opening written, whose decisions can't be told apart by run (it fails closed: every provider is held).
-fn confirmed_since_opened(lines: &[String]) -> BTreeSet<String> {
-    let Some(opened) = lines
-        .iter()
-        .rposition(|line| matches!(Entry::read(line), Ok(Entry::Opened)))
-    else {
-        return BTreeSet::new();
-    };
-    lines[opened + 1..]
-        .iter()
-        .filter_map(|line| match Entry::read(line) {
-            Ok(Entry::Decided { decisions, .. }) => Some(decisions),
-            _ => None,
-        })
-        .flatten()
-        .filter(|d| d.kind == DecisionKindEntry::Confirmed)
-        .map(|d| d.provider)
-        .collect()
-}
-
 impl<W: World> Drop for Platform<W> {
     fn drop(&mut self) {
-        // A record this platform could write to the end, and whose releases nothing waits on, ends whole: the next
-        // opening knows every decision this one took (`T-013-11`).
-        if self.unconfirmed.is_empty() && !self.record_failed {
-            let _ = self.write(&Entry::Closed);
+        // A record this platform could write to the end ends whole: the next opening knows every decision this one took
+        // (`T-013-11`), and holds again only the providers that still wait for the operator's word (`T-020-49`). One
+        // whose write failed takes no more, so it ends with neither, and the next opening holds every provider.
+        if !self.record_failed {
+            let close = if self.unconfirmed.is_empty() {
+                Entry::Closed
+            } else {
+                Entry::ClosedHolding {
+                    held: self.unconfirmed.iter().cloned().collect(),
+                }
+            };
+            let _ = self.write(&close);
         }
         // Every provider's process is killed and reaped as its slot drops.
         self.providers.clear();

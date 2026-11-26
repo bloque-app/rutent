@@ -23,9 +23,11 @@
 //!    `Effect` it carries out among its parameters, whose entry the log admitted only on a permit.
 //! 4. **Lifecycle actions through the decided path.** In `core-orch`, a function that carries out one of a release's
 //!    lifecycle actions on the platform (`accept`, `withdraw`, `revoke`, `declare_exploited`, `mark_stale`,
-//!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl: so no
-//!    caller outside `core-orch` reaches one but through the decided path, which asks policy, records the effect and
-//!    carries it out (`F-025`'s note on `carry_out_roll_back`, `T-020-49`).
+//!    `promote`, `roll_back`, `confirm`) is visible in the crate at most, or a method of a port's trait impl; and one
+//!    visible outside the crate that reaches one of the crate's carriers ([`CARRIERS`]: `carry_out_roll_back` and its
+//!    siblings) asks policy a decision itself: so no caller outside `core-orch` reaches one but through the decided
+//!    path, which asks policy, records the effect and carries it out (`F-025`'s note on `carry_out_roll_back`,
+//!    `T-020-49`, L1 of #337's review).
 //!
 //! The names the rules watch can't be renamed out of their sight: no `use .. as`, no type alias of a watched type, no
 //! import of a watched enum's variants (`use Answer::*`, `use Answer::Permit`). Nor can a file be mounted from
@@ -405,7 +407,22 @@ struct Context {
     takes_permit: bool,
     carries_out: Vec<String>,
     records_effect: usize,
+    /// The crate's own lifecycle carriers it reaches (rule 4's [`CARRIERS`]).
+    reaches_carrier: Vec<String>,
+    /// Whether it asks policy a decision (`.decide(..)`).
+    decides: bool,
 }
+
+/// core-orch's own functions that carry a lifecycle action out on the effect they are handed, each visible in the crate
+/// alone (rule 4, `T-020-49`): a function visible outside the crate reaches one only where it asks policy itself, as the
+/// decided paths (`Segments::promote`, `roll_back`, `change_release`) do, so no public wrapper carries a lifecycle
+/// action out on an effect it was handed (L1 of #337's review).
+pub(super) const CARRIERS: &[&str] = &[
+    "carry_out_roll_back",
+    "carry_promotion",
+    "carry_out_release_change",
+    "retake_restriction",
+];
 
 struct Visitor<'a> {
     krate: Crate,
@@ -568,6 +585,13 @@ impl Visitor<'_> {
             } else if context.exposed && is_a_lifecycle_action(call) {
                 found.push(format!(
                     "carries out `{call}` from a public function, outside the decided path"
+                ));
+            }
+        }
+        if self.krate == Crate::Orch && context.exposed && !context.decides {
+            for carrier in &context.reaches_carrier {
+                found.push(format!(
+                    "reaches `{carrier}` from a public function that asks no decision"
                 ));
             }
         }
@@ -741,6 +765,13 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
 
     fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
         self.written(&expr.path);
+        // A carrier of the crate's own, called or taken as a value, by any path (rule 4).
+        if let Some(last) = expr.path.segments.last() {
+            let name = last.ident.to_string();
+            if CARRIERS.contains(&name.as_str()) && !self.stack.is_empty() {
+                self.context().reaches_carrier.push(name);
+            }
+        }
         // `Platform::handle`, called or taken as a value to call later.
         if expr.path.segments.len() > 1
             && let Some(last) = expr.path.segments.last()
@@ -754,6 +785,9 @@ impl<'ast> Visit<'ast> for Visitor<'_> {
         let method = expr.method.to_string();
         if method == "permit" {
             self.context().takes_permit = true;
+        }
+        if method == "decide" {
+            self.context().decides = true;
         }
         self.carry_out(&method);
         visit::visit_expr_method_call(self, expr);
@@ -1376,6 +1410,33 @@ pub(super) fn lifecycle_actions_are_reached_only_through_the_decided_path() {
             format!("fn carry(m: &mut M, effect: &Effect) {{ m.{name}(effect, \"p\"); }}"),
             format!(
                 "impl Port for Platform {{ fn {name}(&mut self, effect: &Effect) {{ Platform::{name}(self, \"p\"); }} }}"
+            ),
+        ] {
+            assert_eq!(orch(&kept), Vec::<String>::new(), "{kept}");
+        }
+    }
+    // A public wrapper of a carrier is found unless it asks policy itself (L1 of #337's review); a crate-visible one isn't.
+    for carrier in CARRIERS {
+        assert_eq!(
+            orch(&format!(
+                "pub fn wrap(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }}"
+            )),
+            [format!(
+                "wrap: reaches `{carrier}` from a public function that asks no decision"
+            )]
+        );
+        assert_eq!(
+            orch(&format!(
+                "impl S {{ pub fn wrap(&mut self, effect: &Effect) {{ super::lifecycle::{carrier}(&mut self.m, effect); }} }}"
+            )),
+            [format!(
+                "wrap: reaches `{carrier}` from a public function that asks no decision"
+            )]
+        );
+        for kept in [
+            format!("pub(crate) fn wrap(m: &mut M, effect: &Effect) {{ {carrier}(m, effect); }}"),
+            format!(
+                "pub fn decided(&mut self, d: &mut dyn Decisions, r: &DecisionRequest) {{ let x = d.decide(r); {carrier}(self.m, x); }}"
             ),
         ] {
             assert_eq!(orch(&kept), Vec::<String>::new(), "{kept}");

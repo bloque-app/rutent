@@ -16,7 +16,7 @@ use rutent_contracts::provider_role::{Operation, PublicKey, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_core_orch::rounds::Fresh;
 use rutent_core_orch::segments::lifecycle::{
-    Changed, ReleaseAsked, ReleaseChange, ReleaseRefused, Releases, Waiting,
+    Changed, Journal, ReleaseAsked, ReleaseChange, ReleaseRefused, Releases, Waiting,
 };
 use rutent_core_orch::segments::roll_back::{RollBackAsked, RollBackRefused, RollsBack};
 use rutent_core_orch::segments::{Answered, Modules, PromoteRefused, Promotion, Segments};
@@ -68,13 +68,27 @@ impl Fresh for Ids {
     }
 }
 
+/// A log that keeps what it is handed; refusing every append from the `n`th on, where set.
 #[derive(Default)]
-struct KeptLog(Vec<Entry>);
+struct KeptLog(Vec<Entry>, Option<usize>);
 
 impl Log for KeptLog {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
+        if self.1.is_some_and(|n| self.0.len() >= n) {
+            return Err(AppendFailure::Unavailable);
+        }
         self.0.push(entry.entry().clone());
         Ok(receipt(self.0.len() - 1))
+    }
+}
+
+impl Journal for KeptLog {
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.0
+            .iter()
+            .enumerate()
+            .map(|(n, e)| (receipt(n), e.clone()))
+            .collect()
     }
 }
 
@@ -304,7 +318,6 @@ fn ask(action: &str, platform: &mut Platform, policy: &mut Answering, log: &mut 
         change,
         caller: &caller,
         core: &core,
-        history: &[],
     };
     let text = |r: Result<String, String>| match r {
         Ok(_) => "carried out".to_owned(),
@@ -472,7 +485,6 @@ fn operator_confirms_a_providers_releases_only_on_a_permitted_decision() {
                     change: ReleaseChange::Confirm { versions },
                     caller: &caller,
                     core: &core,
-                    history: &[],
                 },
             )
         };
@@ -583,7 +595,6 @@ fn a_restriction_the_platform_took_unrecorded_is_recorded_done() {
             change: ReleaseChange::DeclareExploited { version: &version },
             caller: &caller,
             core: &core,
-            history: &[],
         },
     );
     assert_eq!(changed, Ok(Changed::TakenUnrecorded));
@@ -728,7 +739,6 @@ fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_co
             },
             caller: &caller,
             core: &core,
-            history: &[],
         },
     );
     assert_eq!(taken, Ok(Changed::TakenUnrecorded));
@@ -736,13 +746,7 @@ fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_co
     assert!(!platform.exploited.contains("2.2.0"), "the crash lost it");
     assert_eq!(platform.held(&provider), Some(Crashing::wanted()));
 
-    // Core reopens on its log: its segments are new, its history the log's entries.
-    let history: Vec<(Receipt, Entry)> = log
-        .0
-        .iter()
-        .enumerate()
-        .map(|(n, e)| (receipt(n), e.clone()))
-        .collect();
+    // Core reopens on its log: its segments are new, and the confirmation reads its history from the log itself.
     let before = log.0.len();
     let held: Vec<Id> = Crashing::wanted().iter().map(|v| id(v)).collect();
     let confirmed = Segments::new().change_release(
@@ -756,7 +760,6 @@ fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_co
             change: ReleaseChange::Confirm { versions: &held },
             caller: &caller,
             core: &core,
-            history: &history,
         },
     );
     assert_eq!(confirmed, Ok(Changed::Confirmed));
@@ -775,4 +778,63 @@ fn restriction_the_platform_could_not_record_before_a_crash_still_holds_after_co
         before + 2,
         "the confirmation's effect and result, and nothing else"
     );
+}
+
+/// A restriction whose result the log didn't take is taken again before a confirmation (`T-020-49`, M1 of #337's
+/// review): the declaration's effect is appended and the platform takes it (in memory only, its record broken), but the
+/// log takes no result; Core and the platform stop. The effect has no `failed` result, so the reopened Core's
+/// confirmation takes it again first, and the version stays exploited.
+// verifies: REQ-MDL-20, NFR-6
+#[test]
+fn restriction_whose_result_the_log_did_not_take_is_taken_again_before_a_confirmation() {
+    let (provider, caller, core) = (id("bridge-pay"), operator(), core());
+    let mut platform = Crashing {
+        broken: true,
+        recorded: BTreeSet::new(),
+        exploited: BTreeSet::new(),
+        held: None,
+        calls: Vec::new(),
+    };
+    let mut policy = Answering::with(Answer::Permit {});
+    let mut log = KeptLog(Vec::new(), Some(1));
+    let exploited = id("2.2.0");
+    let declared = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::DeclareExploited { version: &exploited },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert!(matches!(declared, Err(ReleaseRefused::Append(_))), "{declared:?}");
+    assert_eq!(log.0.len(), 1, "the effect, and no result");
+    platform.crash();
+    assert!(!platform.exploited.contains("2.2.0"));
+
+    log.1 = None;
+    let held: Vec<Id> = Crashing::wanted().iter().map(|v| id(v)).collect();
+    let confirmed = Segments::new().change_release(
+        &mut log,
+        &mut policy,
+        &mut platform,
+        &clock(),
+        &mut Ids::default(),
+        &ReleaseAsked {
+            provider: &provider,
+            change: ReleaseChange::Confirm { versions: &held },
+            caller: &caller,
+            core: &core,
+        },
+    );
+    assert_eq!(confirmed, Ok(Changed::Confirmed));
+    assert_eq!(
+        platform.calls,
+        ["declare_exploited 2.2.0", "declare_exploited 2.2.0", "confirm"]
+    );
+    assert!(platform.exploited.contains("2.2.0"), "it still holds");
 }

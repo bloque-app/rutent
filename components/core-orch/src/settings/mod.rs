@@ -7,12 +7,12 @@
 //! among them), a protocol version's cutover date and the deposit wait. It asks policy for core-internal's `set_setting`
 //! change (`T-020-45`), which `core-authz` holds to a permission of its own for each kind, by the deployment operator's
 //! login (`T-021-15`); on a permit it appends the effect before it applies the setting and its result after. Nothing is
-//! applied on a refusal, and nothing is asked of policy for a value Core refuses outright (a deposit wait above
-//! [`DEPOSIT_WAIT_CEILING_SECONDS`]).
+//! applied on a refusal; a permitted deposit wait above [`DEPOSIT_WAIT_CEILING_SECONDS`] takes no effect.
 //!
-//! **The log is the record.** A reopened Core rebuilds every setting from the effects the log holds with a `done`
-//! result, in the log's order, the later of two for one thing standing ([`Settings::reopened`]); nothing else holds a
-//! setting across a restart. An effect with no result, or a `failed` one, sets nothing.
+//! **The log is the record.** A reopened Core rebuilds every setting from the `set_setting` effects the log holds whose
+//! result isn't `failed`, in the log's order, the later of two for one thing standing ([`Settings::reopened`]); nothing
+//! else holds a setting across a restart. An effect with no result was applied when it was set, so it stands after the
+//! restart as before, and [`Settings::reopen`] appends its missing `done` result.
 //!
 //! **Who reads them.** The router's bounds are the deployment's own (its hop and part limits, its policy version, its
 //! exclusions) overlaid with the operator's fee, slippage limits and ceilings ([`Settings::bounds`]); the catalogue takes
@@ -38,6 +38,7 @@ use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey as Catalogu
 use crate::arrival::Arrivals;
 use crate::rounds::Fresh;
 use crate::schedule::{Cadences, Job};
+use crate::segments::lifecycle::Journal;
 use crate::segments::journal;
 use crate::snapshot::Clock;
 
@@ -84,7 +85,8 @@ pub struct SettingAsked<'a> {
 /// Why a setting wasn't set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingRefused {
-    /// A deposit wait above [`DEPOSIT_WAIT_CEILING_SECONDS`]: refused before policy is asked, nothing recorded.
+    /// A deposit wait above [`DEPOSIT_WAIT_CEILING_SECONDS`]: policy is asked first (its decision records the attempt),
+    /// and, permitted, no effect is recorded.
     AboveCeiling {
         /// The ceiling, in whole seconds.
         ceiling: u64,
@@ -92,7 +94,7 @@ pub enum SettingRefused {
     /// Policy didn't permit it: no effect was recorded, and nothing changed.
     NotPermitted(Answer),
     /// The log refused or failed an append: before the effect's receipt nothing changed; after it, the setting is in
-    /// force now and a reopened Core, finding no `done` result, doesn't hold it.
+    /// force now, and a reopened Core holds it too and completes its result ([`Settings::reopen`]).
     Append(AppendFailure),
 }
 
@@ -141,14 +143,17 @@ impl Settings {
     }
 
     /// The settings rebuilt from `history`, the log's own entries, as a Core that reopens reads them: each `set_setting`
-    /// effect with a `done` result, in the log's order.
+    /// effect whose result isn't `failed`, in the log's order. An effect with no result was applied when it was set (the
+    /// result is appended after the setting takes effect), so it stands after a restart as it stood before
+    /// ([`Settings::reopen`] appends its missing result; M2 of #337's review). A deposit wait above its ceiling, which no
+    /// command sets, is never taken.
     pub fn reopened(history: &[(Receipt, Entry)]) -> Self {
-        let done: std::collections::BTreeSet<String> = history
+        let failed: std::collections::BTreeSet<String> = history
             .iter()
             .filter_map(|(_, entry)| match entry {
                 Entry::Verified(VerifiedEntry {
                     what: What::Result { effect },
-                    outcome: Outcome::Done {},
+                    outcome: Outcome::Failed {},
                     ..
                 }) => Some(receipt_key(effect)),
                 _ => None,
@@ -169,12 +174,74 @@ impl Settings {
                     },
                 ..
             }) = entry
-                && done.contains(&receipt_key(receipt))
+                && !failed.contains(&receipt_key(receipt))
+                && !above_ceiling(setting)
             {
                 settings.take(setting);
             }
         }
         settings
+    }
+
+    /// The settings rebuilt from Core's log, as [`Settings::reopened`] reads them, with the `done` result appended, by
+    /// `core`, for each `set_setting` effect the log holds no result of: the setting was in force when Core stopped, so
+    /// its result completes the log, and every later reopening reads it the same (M2 of #337's review).
+    ///
+    /// # Errors
+    ///
+    /// The log's, appending a missing result; the settings are rebuilt the same whatever it answers.
+    pub fn reopen(
+        log: &mut dyn Journal,
+        clock: &dyn Clock,
+        core: &Actor,
+    ) -> (Self, Result<usize, AppendFailure>) {
+        let history = log.history();
+        let settings = Settings::reopened(&history);
+        let resulted: std::collections::BTreeSet<String> = history
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what: What::Result { effect },
+                    ..
+                }) => Some(receipt_key(effect)),
+                _ => None,
+            })
+            .collect();
+        let unfinished: Vec<Receipt> = history
+            .iter()
+            .filter_map(|(receipt, entry)| match entry {
+                Entry::Verified(VerifiedEntry {
+                    what:
+                        What::Effect {
+                            action:
+                                Action::ChangeCatalogue {
+                                    change: CatalogueChange::SetSetting,
+                                    ..
+                                },
+                            ..
+                        },
+                    ..
+                }) if !resulted.contains(&receipt_key(receipt)) => Some(receipt.clone()),
+                _ => None,
+            })
+            .collect();
+        let completed = (|| {
+            for effect in &unfinished {
+                journal::append(
+                    log,
+                    journal::verified(
+                        core,
+                        What::Result {
+                            effect: effect.clone(),
+                        },
+                        &now(clock)?,
+                        Outcome::Done {},
+                    ),
+                )?;
+            }
+            Ok(unfinished.len())
+        })();
+        (settings, completed)
     }
 
     /// Sets `asked.setting`, as policy decides, by the decision's caller: Core asks the decision itself, records the
@@ -193,13 +260,6 @@ impl Settings {
         targets: &mut Targets<'_>,
         asked: &SettingAsked<'_>,
     ) -> Result<Receipt, SettingRefused> {
-        if let OperatorSetting::DepositWait { seconds } = asked.setting
-            && seconds.get() > DEPOSIT_WAIT_CEILING_SECONDS
-        {
-            return Err(SettingRefused::AboveCeiling {
-                ceiling: DEPOSIT_WAIT_CEILING_SECONDS,
-            });
-        }
         // A setting about a provider names it; one about the whole deployment names the operator's party, whose login
         // asks.
         let provider = asked
@@ -229,6 +289,13 @@ impl Settings {
         let Some(permit) = decision.permit() else {
             return Err(SettingRefused::NotPermitted(decision.outcome));
         };
+        // Policy first, so a refused caller's attempt is recorded whatever it asked (L4 of #337's review); a permitted
+        // deposit wait above its ceiling takes no effect.
+        if above_ceiling(asked.setting) {
+            return Err(SettingRefused::AboveCeiling {
+                ceiling: DEPOSIT_WAIT_CEILING_SECONDS,
+            });
+        }
         let receipt = journal::append(
             log,
             journal::verified(
@@ -479,6 +546,11 @@ fn list(catalogue: &mut Catalogue, node: &str, listed: bool) {
     } else {
         catalogue.remove_public_node(node);
     }
+}
+
+/// Whether `setting` is a deposit wait above its ceiling, which no command sets and no reopening takes.
+fn above_ceiling(setting: &OperatorSetting) -> bool {
+    matches!(setting, OperatorSetting::DepositWait { seconds } if seconds.get() > DEPOSIT_WAIT_CEILING_SECONDS)
 }
 
 fn receipt_key(receipt: &Receipt) -> String {

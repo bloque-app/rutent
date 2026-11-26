@@ -61,6 +61,12 @@ struct KeptLog {
     refuse_from: Option<usize>,
 }
 
+impl rutent_core_orch::segments::lifecycle::Journal for KeptLog {
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        self.entries.clone()
+    }
+}
+
 impl Log for KeptLog {
     fn append(&mut self, entry: &GeneralEntry) -> Result<Receipt, AppendFailure> {
         if self.refuse_from.is_some_and(|n| self.entries.len() >= n) {
@@ -180,8 +186,7 @@ fn set(
 /// An operator's setting takes effect only on a permitted decision (`REQ-AUZ-6`, `REQ-AUZ-1`): a refused or unknown
 /// decision sets nothing and records no effect; a permitted one is asked of policy as `set_setting` naming the setting,
 /// recorded as an effect before it applies and its result after, and reaches what reads it (the router's bounds, the
-/// schedule's cadences). A reopened Core rebuilds every setting from the log, the later of two for one thing standing;
-/// an effect with no result, or a failed one, sets nothing.
+/// schedule's cadences). A reopened Core rebuilds every setting from the log, the later of two for one thing standing.
 // verifies: REQ-AUZ-6, REQ-AUZ-1
 #[test]
 fn operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_from_the_log() {
@@ -271,28 +276,61 @@ fn operator_setting_takes_effect_only_on_a_permitted_decision_and_is_rebuilt_fro
     });
     assert_eq!(fresh.of(Job::HoldingCheck), 60);
 
-    // An effect the log took with no result after it sets nothing on reopening.
+}
+
+/// A setting whose result the log didn't take stands after a restart as it stood before it, and its result is completed
+/// (`T-020-49`, M2 of #337's review): set live, the effect appended and applied, its result refused; the reopened Core
+/// reads the effect, holds the setting, and appends the missing `done` result once, so every later reopening reads the
+/// same, and appends nothing more. In the other order, a log that took the result and a reopening read the same. A
+/// setting whose result is `failed` is not taken.
+// verifies: REQ-AUZ-6, NFR-6
+#[test]
+fn setting_whose_result_the_log_did_not_take_stands_after_a_restart_and_its_result_is_completed() {
+    let mut policy = Answering::with(Answer::Permit {});
     let mut cut = KeptLog {
         refuse_from: Some(1),
         ..KeptLog::default()
     };
-    let mut unfinished = Settings::new();
+    let mut live = Settings::new();
     assert!(matches!(
-        set(
-            &mut unfinished,
-            &mut cut,
-            &mut policy,
-            &mut Targets::default(),
-            &fee("5"),
-        ),
+        set(&mut live, &mut cut, &mut policy, &mut Targets::default(), &fee("5")),
         Err(SettingRefused::Append(_))
     ));
     assert_eq!(cut.entries.len(), 1, "the effect, and no result");
-    assert_eq!(Settings::reopened(&cut.entries), Settings::new());
+    assert_eq!(live.bounds(&bounds()).operator_fee.flat.as_str(), "5", "in force live");
+
+    // Reopened: the same setting, and its result completed once.
+    cut.refuse_from = None;
+    let (reopened, completed) = Settings::reopen(&mut cut, &clock(), &core());
+    assert_eq!(completed, Ok(1));
+    assert_eq!(reopened, live, "it stands after the restart as before it");
+    assert!(matches!(
+        cut.entries.last(),
+        Some((_, Entry::Verified(v))) if matches!(v.what, What::Result { .. }) && v.outcome == Outcome::Done {}
+    ));
+    let (again, completed) = Settings::reopen(&mut cut, &clock(), &core());
+    assert_eq!(completed, Ok(0), "nothing more to complete");
+    assert_eq!(again, live);
+
+    // The other order: the result taken first, then the reopening; it reads the same.
+    let mut whole = KeptLog::default();
+    let mut set_whole = Settings::new();
+    set(&mut set_whole, &mut whole, &mut policy, &mut Targets::default(), &fee("5")).unwrap();
+    let (reopened, completed) = Settings::reopen(&mut whole, &clock(), &core());
+    assert_eq!((reopened, completed), (set_whole, Ok(0)));
+
+    // A failed result sets nothing.
+    let mut failed = whole.entries.clone();
+    let Some((_, Entry::Verified(result))) = failed.last_mut() else {
+        panic!("a result")
+    };
+    result.outcome = Outcome::Failed {};
+    assert_eq!(Settings::reopened(&failed), Settings::new());
 }
 
-/// A deposit wait above its ceiling (`DEPOSIT_WAIT_CEILING_SECONDS`, thirty days) is refused before policy is asked,
-/// nothing recorded and nothing applied; one at the ceiling is set (`REQ-AUZ-6`).
+/// A deposit wait above its ceiling (`DEPOSIT_WAIT_CEILING_SECONDS`, thirty days) is refused after policy is asked, so
+/// the attempt is policy's decision, with no effect recorded and nothing applied; one at the ceiling is set; a log
+/// holding one above it, which no command writes, sets nothing on reopening (`REQ-AUZ-6`, L4 of #337's review).
 // verifies: REQ-AUZ-6
 #[test]
 fn deposit_wait_above_its_ceiling_is_refused() {
@@ -315,8 +353,8 @@ fn deposit_wait_above_its_ceiling_is_refused() {
             ceiling: DEPOSIT_WAIT_CEILING_SECONDS
         })
     );
-    assert!(policy.asked.is_empty(), "policy isn't asked");
-    assert!(log.entries.is_empty(), "nothing recorded");
+    assert_eq!(policy.asked.len(), 1, "policy is asked first: the attempt is its decision");
+    assert!(log.entries.is_empty(), "no effect recorded");
     assert_eq!(settings.deposit_wait(), None);
     assert_eq!(DEFAULT_DEPOSIT_WAIT_SECONDS, 86_400);
     set(
@@ -334,6 +372,22 @@ fn deposit_wait_above_its_ceiling_is_refused() {
         settings.deposit_wait().map(Count::get),
         Some(DEPOSIT_WAIT_CEILING_SECONDS)
     );
+    // A recorded effect above the ceiling is not rebuilt.
+    let mut forged = log.entries.clone();
+    let Some((_, Entry::Verified(effect))) = forged.iter_mut().find(|(_, e)| {
+        matches!(e, Entry::Verified(v) if matches!(v.what, What::Effect { .. }))
+    }) else {
+        panic!("an effect")
+    };
+    let What::Effect {
+        action: Action::ChangeCatalogue { setting, .. },
+        ..
+    } = &mut effect.what
+    else {
+        panic!("a setting's effect")
+    };
+    *setting = Some(Box::new(deposit_wait(DEPOSIT_WAIT_CEILING_SECONDS + 1)));
+    assert_eq!(Settings::reopened(&forged).deposit_wait(), None);
 }
 
 /// A public node's setting the operator sets through policy takes effect on its node's segments (`REQ-AUZ-6`,
