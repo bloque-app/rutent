@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:person-answer",
+  "title": "Answer to a question about a person",
+  "description": "Policy's answer to a question about a person, appended to the log before it is given: allowed, refused, or past the bound, where the order counts as having no route left (REQ-CPL-5, REQ-ORD-28).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "outcome",
+    "receipt"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request it answers.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "receipt": {
+      "description": "The receipt of its entry in the log.",
+      "$ref": "urn:rutent:core-internal:receipt"
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "description": "The answer.",
+      "type": "object",
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "enum": [
+            "allowed",
+            "refused",
+            "past_bound",
+            "not_known"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "allowed"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_allowed"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_refused"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "past_bound"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_past_bound"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "answer"
+            ],
+            "properties": {
+              "answer": {
+                "const": "not_known"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/outcome_not_known"
+          }
+        }
+      ]
+    },
+    "outcome_allowed": {
+      "description": "It may be asked.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "const": "allowed"
+        }
+      }
+    },
+    "outcome_refused": {
+      "description": "It may not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "class"
+      ],
+      "properties": {
+        "answer": {
+          "const": "refused"
+        },
+        "class": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/refusal_class"
+        }
+      }
+    },
+    "outcome_past_bound": {
+      "description": "The set asked about the order would pass its bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "bound"
+      ],
+      "properties": {
+        "answer": {
+          "const": "past_bound"
+        },
+        "bound": {
+          "description": "The bound.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/safe_integer"
+        }
+      }
+    },
+    "outcome_not_known": {
+      "description": "Policy couldn't decide, so it isn't asked.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "cause"
+      ],
+      "properties": {
+        "answer": {
+          "const": "not_known"
+        },
+        "cause": {
+          "$ref": "urn:rutent:core-internal:common#/$defs/not_known_cause"
+        }
+      }
+    }
+  }
+}

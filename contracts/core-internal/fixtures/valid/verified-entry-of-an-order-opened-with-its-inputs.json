@@ -1,0 +1,73 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "order_opened",
+    "order": "ord-26",
+    "request": "req-26",
+    "caller": {
+      "party": "cust-1",
+      "acts": "cust-1-login",
+      "role": "customer",
+      "kind": "person"
+    },
+    "parties": {
+      "requester": "cust-1",
+      "beneficiary": "cust-1",
+      "payer": "cust-1"
+    },
+    "origin_reserve": "bank-co",
+    "session": "sess-26",
+    "destination": {
+      "reserve": "eu-bank",
+      "node": {
+        "network": "sepa"
+      },
+      "account": "acct-eu-1"
+    },
+    "route": {
+      "request_id": "rr-26",
+      "round": {
+        "kind": "shortlist"
+      },
+      "from": {
+        "node": {
+          "network": "co-ach"
+        },
+        "asset": {
+          "id": "COP",
+          "decimals": 2
+        }
+      },
+      "to": {
+        "node": {
+          "network": "sepa"
+        },
+        "asset": {
+          "id": "EUR",
+          "decimals": 2
+        }
+      },
+      "amount": "1000000",
+      "objective": {
+        "kind": "lowest_total_cost"
+      }
+    },
+    "inputs": {
+      "algorithm": "sha-256",
+      "value": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    }
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

@@ -1,0 +1,14 @@
+# The VOS host server's wire (T-024-02): one JSON request per line, one JSON answer per line, carrying the host
+# contract's calls and answers between rutent-scenarios-vos and rutent-stm-vos-serve. A member of the client's
+# workspace (../../client). Plain serde over the contract's types, linking nothing of VOS, so it is MIT, like rutent.
+[package]
+name = "rutent-stm-vos-wire"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+workspace = "../../client"
+
+[dependencies]
+rutent-contracts = { path = "../../../../../contracts" }
+serde = { version = "1", features = ["derive"] }

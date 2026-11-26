@@ -220,7 +220,13 @@ impl Catalogue {
         canonicalize(received).map_err(JoinRefusal::NoSigningInput)?;
         statement.check_shape().map_err(JoinRefusal::WrongShape)?;
         statement
-            .check_context(&deployment, &protocol_version)
+            // Judged at the caller's clock `at`, never the maker's own `made_at`, so a statement can't be dated back past a
+            // cutover (provider-role 4.0.0; one version in force here). A clock past year 9999 can't be written, and voids it.
+            .check_context(
+                &deployment,
+                &rutent_contracts::provider_role::ProtocolVersions::only(protocol_version.as_str()),
+                &at.rfc3339().ok_or(JoinRefusal::BadTime)?,
+            )
             .map_err(JoinRefusal::WrongContext)?;
         let ad = &statement.statement;
         if ad.declarations.tracking.is_empty() {

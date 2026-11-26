@@ -1,0 +1,17 @@
+{
+  "request": "req-103",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "set_slippage",
+    "provider": "fx-desk",
+    "tuple": "usdc-cop",
+    "version": "1.0.0"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -1,0 +1,15 @@
+{
+  "request": "req-403",
+  "reader": {
+    "party": "acme-treasury",
+    "acts": "agent-7",
+    "role": "customer",
+    "kind": "agent"
+  },
+  "reads": {
+    "kind": "filed_order",
+    "order": "ord-19",
+    "requester": "acme-treasury"
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

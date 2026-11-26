@@ -1,0 +1,711 @@
+//! Sessions and reads: the session register the catalogue reads, and who may read which order or segment.
+//!
+//! Declared by `T-020-01`; `T-021-02` owns it, and only its owning row edits it (`PLAN.md` §4.4).
+//!
+//! # Sessions
+//!
+//! A session speaks for one account, and the catalogue's balance checks happen only inside one (`REQ-CAT-3`). The
+//! engine opens it only for the account's holder or its delegate, and only for a bounded time: the fixed rule refuses
+//! a session asked by anyone else before the deployment's policy is asked, and the deployment's policy still decides
+//! the rest. The holder the request names must hold the account, which the account's record says
+//! (`Source::Account`), whoever asks, so no party opens a session on another's account by naming itself, or an
+//! accomplice, its holder. A delegate is another party that holder names as its delegate on that account, an input
+//! asked of the holder (`Source::Holder`). Each is an input like any other, so one that can't be reached gives not
+//! known and one that says nothing a refusal (`REQ-AUZ-5`).
+//!
+//! The bound is measured from Core's own [`Clock`], never from the moment the request states: a session must end
+//! after Core's now and no more than [`LONGEST_SESSION_SECS`] after it, or it is refused. An open session ends when
+//! it was asked to, and its id is its request's. An id already issued opens no other session: the catalogue holds one
+//! session per id, so a second would take the first one's place. These two rules read the clock and what the engine
+//! opened, so, like the permissions' below, they run before the consultation.
+//!
+//! The engine keeps every session it opened in its [`Register`], which hands them to the catalogue
+//! ([`Register::open_in`]). The catalogue holds only which account each speaks for and when it ends, and answers no
+//! balance check in one that has ended (`F-012`'s notes).
+//!
+//! # The register across a restart
+//!
+//! The log is the register's only durable record (`T-021-17`, `NFR-6`). Each session opened, grant and revocation
+//! reaches the register only once its permitted decision is in the log, and an engine opened again over the log
+//! rebuilds the register from those decisions ([`Engine::reopen`], [`registered_in`], read on policy's handle
+//! through [`crate::funds::Recorded::registered`]), so a revoked grant stays revoked, a grant given before the restart
+//! is in force after it, a revoked id is never granted again, and a session's id opens no other session. A log that
+//! can't be read leaves the register an input the engine doesn't have: every read by a permission, grant, revocation,
+//! session and acceptance of fault is refused as a missing input, never permitted (`REQ-AUZ-5`); a read resting on no
+//! permission rests on nothing the register holds, and is decided as ever. An engine starts so, unread, until it is
+//! first reopened over its log, so one put together and never reopened refuses rather than starting from an empty
+//! register; one reopened over an empty log holds an empty register, read.
+//!
+//! # Reads
+//!
+//! Each read is decided and recorded, allowed or refused (`REQ-AUZ-7`, `REQ-AUD-12`). The fixed rule holds a read to
+//! what the log admits of a permitted one (core-internal's read rules and its relation rows), so policy never answers
+//! a read the log would refuse:
+//!
+//! - a customer reads only an order, its state and age, or a segment of it, whose requester, beneficiary or payer it
+//!   is, which the order's record says (`Source::OrderParties`), and never the trail;
+//! - a customer reads a filed order's status (`Reads::FiledOrder`), an order whose acceptance the log doesn't hold
+//!   yet, only where its party is the filed request's requester the read names and the order's record says that
+//!   party is its requester (`Source::Requester`: intake's own record of the filed request, since the log holds none
+//!   of the order's parties, `T-021-16`); the read's word alone is never enough. A record that says nothing refuses
+//!   (`not_permitted`, as an order that isn't the reader's), and one out of reach leaves it not known, which a read
+//!   answers as refused. An agent reads one only within the scope its party set for reading (`Scope::CheckRead`,
+//!   `T-021-05`'s rule), and each read is recorded, allowed or refused;
+//! - the operator reads an order's state and age, and a filed order's status, without a permission, through a login
+//!   the deployment's register of permissions lists for it (`Permission::ReadOrderState`, asked by the login's
+//!   `acts`, `REQ-ORD-5`);
+//! - a segment is read only as one of the order the read names, which the segment's record says
+//!   (`Source::SegmentOrder`), so a permission over an order covers that order's segments and no other's;
+//! - a provider reads only a segment it names itself the provider of, which the segment's record says
+//!   (`Source::SegmentProvider`), and never an order, its state, a filed order's or the trail;
+//! - a regulator's or a checker's read names its permission, and only theirs may: a read naming one is held to the
+//!   grant's grantee, its party, login and role all, not to its party alone (`T-021-14`);
+//! - a customer and a provider read who the deployment's checker is ([`CHECKER`], `REQ-AUD-10`), and any party a
+//!   kept statement the evidence store's record says is its own (`Source::Statement`, `REQ-AUD-5`); any other
+//!   resource only a regulator or a checker reads, by a permission;
+//! - no other read rests on a permission: the operator's, a verifier's and Core's own parts' are refused but for their
+//!   own evidence and the operator's read of an order's state.
+//!
+//! A read naming a permission is held to the register: the permission was granted, through
+//! [`Reads::grant_permission`], to the reader itself, its party, login and role, its scope covers what the read is
+//! of, and it hasn't been revoked. A grant never reuses a permission's id the engine granted before, in force or
+//! revoked (`T-021-14`): the log counts an id revoked for good once any revocation of it is permitted, and revokes
+//! every grant sharing it, so a reused id would be a grant permitted that nothing reads by. That rule reads what the engine itself decided, which a fixed rule, a plain function of the request,
+//! can't hold, so it is asked first, beside the fixed rules: its refusal is the answer and the deployment's policy
+//! isn't asked. A revocation is held to it the same way: only a grant made can be revoked, the one whose permission,
+//! grantee and scope it names, and it revokes that grant alone. Who may grant or
+//! revoke one is `T-021-03`'s rule's, as `T-021-14` gave it: an operator's login the register lists for the one
+//! permission the call is, the deployment operator's by the register (`roles`, "Granting and revoking a read").
+//!
+//! A read is allowed or refused and nothing else, so one policy can't decide is refused as not permitted. Each is
+//! recorded: a read the log won't take as allowed, which a record that said yes wrongly would bring, is recorded and
+//! answered as refused.
+
+use rutent_contracts::core_internal::calls::{AppendFailure, PolicyLog, Reads, Sessions};
+use rutent_contracts::core_internal::{
+    Action, Answer, Decision, DecisionRequest, Entry, Opened, Outcome, PermissionChange,
+    ReadAnswer, ReadCheck, Reads as Read, RefusalClass, Role, SessionAnswer, SessionOutcome,
+    SessionRequest, VerifiedEntry, What, covers,
+};
+use rutent_contracts::router_api::{Id, Timestamp};
+use rutent_prov::catalogue::{Catalogue, Instant};
+
+use crate::engine::{
+    Asked, Engine, Input, Need, Policy, Reply, Ruling, Said, Source, Sources, read_outcome,
+    session_outcome,
+};
+use crate::funds::Recorded;
+
+/// The one resource of the deployment read without a permission: who its checker is, which `REQ-AUD-10` names to
+/// customers and providers. Any other resource rests on a permission.
+pub const CHECKER: &str = "checker";
+
+/// The longest a session may last, in seconds, from Core's now when it is asked for to when it ends. A session asked
+/// to last longer is refused, whoever asks (`REQ-CAT-3`: checks happen only inside a session, and a session that
+/// never ends would bound nothing).
+pub const LONGEST_SESSION_SECS: u64 = 15 * 60;
+
+/// A session the engine opened: the account it speaks for, its holder, and when it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSession {
+    /// The session's id, its request's.
+    pub session: Id,
+    /// The account it speaks for, by reference.
+    pub account: Id,
+    /// The account's holder.
+    pub holder: Id,
+    /// When it ends, by Core's clock.
+    pub expires_at: Timestamp,
+}
+
+impl OpenSession {
+    /// Hands the session to the catalogue's register, which holds which account it speaks for until it ends. The
+    /// end is taken down to the whole second, so the catalogue never holds a session past its end.
+    pub fn open_in(&self, catalogue: &mut Catalogue) {
+        catalogue.open_session(
+            self.session.as_str(),
+            self.account.as_str(),
+            instant(&self.expires_at),
+        );
+    }
+}
+
+/// `at` on the catalogue's clock: whole seconds since the epoch, rounded down.
+pub fn instant(at: &Timestamp) -> Instant {
+    Instant(u64::try_from(at.unix_nanos().div_euclid(1_000_000_000)).unwrap_or(0))
+}
+
+/// What the engine opened, granted and revoked: the sessions it opened and the read permissions in force.
+#[derive(Debug)]
+pub struct Register {
+    pub(crate) sessions: Vec<OpenSession>,
+    pub(crate) grants: Vec<PermissionChange>,
+    /// The revocations permitted, each of the one grant it names: its permission, grantee and scope (`T-021-14`).
+    pub(crate) revoked: Vec<PermissionChange>,
+    /// Whether the register is unread: the engine was never reopened over its log ([`Engine::reopen`]), or was reopened
+    /// over a log it couldn't read its register from. Then what the register would answer is an input the engine
+    /// doesn't have, and every call resting on it is refused as missing (`T-021-17`). An engine starts unread, so one
+    /// put together over a log and never reopened refuses, never permits; one reopened over an empty log holds an
+    /// empty register, read.
+    pub(crate) unread: bool,
+    /// Core's clock, which bounds each session from the moment it is asked for.
+    pub(crate) clock: Box<dyn Clock>,
+}
+
+impl Default for Register {
+    fn default() -> Self {
+        Register {
+            sessions: Vec::new(),
+            grants: Vec::new(),
+            revoked: Vec::new(),
+            unread: true,
+            clock: Box::new(SystemClock),
+        }
+    }
+}
+
+/// What a log holds of the engine's register (`T-021-17`): the sessions it opened, the read permissions it granted
+/// and the revocations it permitted, each from a verified decision entry of its own whose outcome is `permitted`, in
+/// log order, each once. What [`registered_in`] reads, and what [`Engine::reopen`] rebuilds the register from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Registered {
+    /// The sessions opened: each permitted `open_session` entry's request, with the session it opened.
+    pub sessions: Vec<OpenSession>,
+    /// The read permissions granted: each permitted `grant_permission` entry's grant.
+    pub grants: Vec<PermissionChange>,
+    /// The revocations permitted: each permitted `revoke_permission` entry's revocation.
+    pub revoked: Vec<PermissionChange>,
+}
+
+/// The register `entries` hold: each verified entry whose outcome is `permitted` of an `open_session` that opened a
+/// session, a `grant_permission` or a `revoke_permission`, in their order, each kept once as the engine that wrote it
+/// kept it (a grant once per request, a revocation once per grant it names). The one definition every
+/// [`crate::funds::Recorded`] reads the register by (`T-021-17`). A decision refused or not known left nothing in the
+/// register, and leaves nothing here.
+pub fn registered_in<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Registered {
+    let mut registered = Registered::default();
+    for entry in entries {
+        let Entry::Verified(VerifiedEntry {
+            what,
+            outcome: Outcome::Permitted {},
+            ..
+        }) = entry
+        else {
+            continue;
+        };
+        match what {
+            What::OpenSession {
+                request,
+                opened: Some(opened),
+            } => {
+                let session = OpenSession {
+                    session: opened.session.clone(),
+                    account: request.account.clone(),
+                    holder: request.holder.clone(),
+                    expires_at: opened.expires_at.clone(),
+                };
+                if !registered.sessions.contains(&session) {
+                    registered.sessions.push(session);
+                }
+            }
+            What::GrantPermission { change, .. } if !registered.grants.contains(change) => {
+                registered.grants.push(change.clone());
+            }
+            What::RevokePermission { change, .. }
+                if !registered.revoked.iter().any(|r| same_grant(r, change)) =>
+            {
+                registered.revoked.push(change.clone());
+            }
+            _ => {}
+        }
+    }
+    registered
+}
+
+/// Core's own clock (`F-012`'s notes): the time a session's bound is measured from, never a time its request states.
+/// The engine reads the host's, [`SystemClock`], unless it is handed another ([`Engine::set_clock`]); a test hands it
+/// one it sets.
+pub trait Clock: std::fmt::Debug {
+    /// The moment now, since the Unix epoch.
+    fn now(&self) -> std::time::Duration;
+}
+
+/// The host's clock, read through the standard library.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> std::time::Duration {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+    }
+}
+
+/// A clock stopped at one moment, for tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Stopped(pub(crate) std::time::Duration);
+
+#[cfg(test)]
+impl Stopped {
+    /// Stopped at `at`.
+    pub(crate) fn at(at: &Timestamp) -> Box<dyn Clock> {
+        let nanos = u64::try_from(at.unix_nanos()).unwrap();
+        Box::new(Stopped(std::time::Duration::from_nanos(nanos)))
+    }
+}
+
+#[cfg(test)]
+impl Clock for Stopped {
+    fn now(&self) -> std::time::Duration {
+        self.0
+    }
+}
+
+impl Register {
+    /// Every session opened, oldest first.
+    pub fn sessions(&self) -> &[OpenSession] {
+        &self.sessions
+    }
+
+    /// Hands every session opened to the catalogue's register.
+    pub fn open_in(&self, catalogue: &mut Catalogue) {
+        for session in &self.sessions {
+            session.open_in(catalogue);
+        }
+    }
+
+    /// Whether `request` would open, under an id already issued, a session other than the one issued: for another
+    /// account, holder or end. The catalogue holds one session per id, so a second would take the first one's place
+    /// and speak for an account its holder never opened it on. The same request again opens the same session.
+    fn reissues(&self, request: &SessionRequest) -> bool {
+        self.sessions.iter().any(|s| {
+            s.session == request.request
+                && (s.account != request.account
+                    || s.holder != request.holder
+                    || s.expires_at != request.until)
+        })
+    }
+
+    /// Whether `request` asks a session that ends after Core's now, and no more than [`LONGEST_SESSION_SECS`] after
+    /// it. The time the request states is never read: a request can state any moment.
+    fn bounded(&self, request: &SessionRequest) -> bool {
+        let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
+        let until = request.until.unix_nanos();
+        let longest = i128::from(LONGEST_SESSION_SECS) * 1_000_000_000;
+        until > now && until - now <= longest
+    }
+
+    /// Why a customer's acceptance of fault is refused, where it is: it names a session this engine didn't open, one
+    /// of another party's, or one no longer open, by Core's clock and at the moment the acceptance is decided
+    /// (`reversal-carrier-rests-on-its-acceptance`: a session still open when it was decided, the order's requester's).
+    /// The time the request states is read only against the session's end, as the log reads it; whether the session is
+    /// open now is Core's clock's. Any other action passes.
+    pub(crate) fn refuses_acceptance(&self, request: &DecisionRequest) -> Option<RefusalClass> {
+        let Action::AcceptFault { session, .. } = &request.action else {
+            return None;
+        };
+        // An unread register can't say whether the session is open: an input the engine doesn't have.
+        if self.unread {
+            return Some(RefusalClass::MissingInput);
+        }
+        let now = i128::try_from(self.clock.now().as_nanos()).unwrap_or(i128::MAX);
+        let open = self.sessions.iter().any(|s| {
+            &s.session == session
+                && s.holder == request.caller.party
+                && s.expires_at.unix_nanos() >= request.at.unix_nanos()
+                && s.expires_at.unix_nanos() > now
+        });
+        (!open).then_some(RefusalClass::NotPermitted)
+    }
+
+    /// Whether the grant `change` names, its permission to its grantee over its scope, was granted: a revocation
+    /// revokes that grant and no other (`T-021-14`).
+    fn granted(&self, change: &PermissionChange) -> bool {
+        self.grants.iter().any(|g| same_grant(g, change))
+    }
+
+    /// Whether `change` would grant a permission's id the engine granted before, to anyone, in force or revoked, other
+    /// than by the same request again while it is in force (`T-021-14`).
+    fn reuses(&self, change: &PermissionChange) -> bool {
+        self.grants
+            .iter()
+            .any(|g| g.permission == change.permission && g != change)
+            || self
+                .revoked
+                .iter()
+                .any(|r| r.permission == change.permission)
+    }
+
+    /// Whether the grant `grant` names was revoked.
+    fn revoked(&self, grant: &PermissionChange) -> bool {
+        self.revoked.iter().any(|r| same_grant(r, grant))
+    }
+
+    /// Why a read naming a permission is refused, where it is: no grant of it in force names the reader, its party,
+    /// its login and its role, over a scope covering what it reads (core-internal's rows
+    /// `permitted-read-rests-on-its-grant` and `permitted-read-is-not-revoked`, which hold the grantee's party alone:
+    /// policy holds the whole grantee, so another login of the grantee's party, or the grantee's own login in another
+    /// role, reads nothing by it, `T-021-14`).
+    fn refuses(&self, check: &ReadCheck) -> Option<RefusalClass> {
+        let permission = check.permission.as_ref()?;
+        if self.unread {
+            return Some(RefusalClass::MissingInput);
+        }
+        let granted = self.grants.iter().any(|g| {
+            &g.permission == permission
+                && g.grantee.party == check.reader.party
+                && g.grantee.acts == check.reader.acts
+                && g.grantee.role == check.reader.role
+                && covers(&g.scope, &check.reads)
+                && !self.revoked(g)
+        });
+        (!granted).then_some(RefusalClass::NotPermitted)
+    }
+}
+
+/// Whether `a` and `b` name one grant: one permission, to one grantee, over one scope.
+fn same_grant(a: &PermissionChange, b: &PermissionChange) -> bool {
+    a.permission == b.permission && a.grantee == b.grantee && a.scope == b.scope
+}
+
+/// The fixed rule's refusal of `asked`, where it needs no input to refuse.
+fn refused_outright(asked: Asked<'_>) -> Option<RefusalClass> {
+    let refused = match asked {
+        Asked::CheckRead(c) => read_needs(c).is_none(),
+        _ => false,
+    };
+    refused.then_some(RefusalClass::NotPermitted)
+}
+
+/// The inputs a read needs, all of which must say yes, or `None` where no rule lets its reader make it. A read is
+/// refused unless a line here lets it through:
+///
+/// - a regulator or a checker reads only by a permission, whatever it reads;
+/// - a customer reads an order, its state and age, or a segment of it, the order's record naming it a party, and
+///   never the trail;
+/// - a customer reads a filed order's status, its acceptance not logged yet, where its party is the filed request's
+///   requester the read names and the order's record says so (`Source::Requester`, `T-021-16`); an agent only within
+///   its party's scope for reading;
+/// - the operator reads an order's state and age, and a filed order's status, without a permission, the register
+///   listing its login for that (`REQ-ORD-5`);
+/// - a provider reads a segment it names itself the provider of, the segment's record saying so, and never an order,
+///   its state, a filed order's or the trail;
+/// - a customer and a provider read who the deployment's checker is (`REQ-AUD-10`), and no other resource;
+/// - any party reads, without a permission, a kept statement the evidence store's record says is its own
+///   (`REQ-AUD-5`);
+/// - any other read is a regulator's or a checker's, by a permission the register holds it to; a segment read as one
+///   of its order. No other role reads by a permission.
+///
+/// So the operator reads nothing but an order's state and age and its own evidence without a permission, and a
+/// verifier and Core's own parts nothing but their own evidence.
+fn read_needs(c: &ReadCheck) -> Option<Vec<Need>> {
+    let party = &c.reader.party;
+    let party_of = |order: &Id| Need {
+        input: party.clone(),
+        from: Source::OrderParties(order.clone()),
+    };
+    // A segment is read as one of the order the read names, which the segment's record must say.
+    let segment_of = |order: &Id, segment: &Id| Need {
+        input: order.clone(),
+        from: Source::SegmentOrder(segment.clone()),
+    };
+    let permitted = c.permission.is_some();
+    let needs = match (c.reader.role, &c.reads) {
+        (Role::Regulator | Role::Checker, _) if !permitted => return None,
+        (Role::Customer, Read::Trail {})
+        | (Role::Provider, Read::Trail {} | Read::Order { .. } | Read::OrderState { .. }) => {
+            return None;
+        }
+        // A filed order's status, its acceptance not logged yet, so the log's record of its parties can't say
+        // (`T-020-45`, `T-021-16`): read by the filed request's requester only, the read naming the reader's party
+        // and the order's record saying that party is its requester (`Source::Requester`, intake's own record of the
+        // filed request), never the read's word alone (the review of `f4a125c9`). An agent of the requester's is held
+        // to the scope its party set for reading by `T-021-05`'s rule, before this one.
+        (Role::Customer, Read::FiledOrder { order, requester }) if requester == party => {
+            vec![Need {
+                input: party.clone(),
+                from: Source::Requester(order.clone()),
+            }]
+        }
+        // The operator reads an order's state and age, and a filed order's status, without a permission, through a
+        // login the register lists for it (`REQ-ORD-5`); anything else it reads rests on a permission.
+        (Role::Operator, Read::OrderState { .. } | Read::FiledOrder { .. }) if !permitted => {
+            vec![Need {
+                input: c.reader.acts.clone(),
+                from: Source::Permissions {
+                    party: party.clone(),
+                    permission: crate::roles::Permission::ReadOrderState,
+                },
+            }]
+        }
+        (Role::Customer, Read::OrderState { order }) => vec![party_of(order)],
+        (Role::Provider, Read::Segment { provider, .. }) if provider != party => return None,
+        (Role::Customer, Read::Order { order }) => vec![party_of(order)],
+        (Role::Customer, Read::Segment { order, segment, .. }) => {
+            vec![party_of(order), segment_of(order, segment)]
+        }
+        // The record of the effect that moved value on the segment names both its order and its provider.
+        (Role::Provider, Read::Segment { order, segment, .. }) => vec![Need {
+            input: party.clone(),
+            from: Source::SegmentProvider {
+                order: order.clone(),
+                segment: segment.clone(),
+            },
+        }],
+        (Role::Customer | Role::Provider, Read::Resource { resource })
+            if resource.as_str() == CHECKER =>
+        {
+            Vec::new()
+        }
+        (_, Read::Evidence { commitment }) if !permitted => vec![Need {
+            input: party.clone(),
+            from: Source::Statement(commitment.clone()),
+        }],
+        // Only a regulator or a checker reads by a permission (`T-021-14`): a grant is theirs alone, and the register
+        // of grants holds the read to the grantee's own login and role.
+        (Role::Regulator | Role::Checker, Read::Segment { order, segment, .. }) if permitted => {
+            vec![segment_of(order, segment)]
+        }
+        (Role::Regulator | Role::Checker, _) if permitted => Vec::new(),
+        _ => return None,
+    };
+    Some(needs)
+}
+
+/// The inputs the fixed rule needs for `asked`, all of which must say yes: for a session, the account's record that
+/// the named holder holds it, and, for a delegate, the holder's word that the requester is its delegate; for a read,
+/// those [`read_needs`] names.
+fn needs_of(asked: Asked<'_>) -> Vec<Need> {
+    match asked {
+        Asked::OpenSession(r) => {
+            let mut needs = vec![Need {
+                input: r.holder.clone(),
+                from: Source::Account(r.account.clone()),
+            }];
+            if r.requester.party != r.holder {
+                needs.push(Need {
+                    input: r.requester.party.clone(),
+                    from: Source::Holder {
+                        account: r.account.clone(),
+                        holder: r.holder.clone(),
+                    },
+                });
+            }
+            needs
+        }
+        Asked::CheckRead(c) => read_needs(c).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// What the fixed rule needs for `asked`: nothing for a call that isn't a session or a read, or that it refuses
+/// outright.
+pub(crate) fn needs(asked: Asked<'_>) -> Reply<Vec<Need>> {
+    if refused_outright(asked).is_some() {
+        return Reply::Given(Vec::new());
+    }
+    Reply::Given(needs_of(asked))
+}
+
+/// The fixed rule's ruling: a session only for a party the account's record says holds it, or a delegate that holder
+/// names; a read only of what the log admits its reader may read. Every
+/// other call passes. Each input it needs must say yes: a no refuses, and one not given is missing.
+pub(crate) fn rule(asked: Asked<'_>, inputs: &[Input]) -> Reply<Ruling> {
+    if let Some(class) = refused_outright(asked) {
+        return Reply::Given(Ruling::Refuse(class));
+    }
+    for need in needs_of(asked) {
+        match inputs.iter().find(|i| i.need == need) {
+            Some(Input {
+                said: Said::Yes, ..
+            }) => {}
+            Some(_) => return Reply::Given(Ruling::Refuse(RefusalClass::NotPermitted)),
+            None => return Reply::Missing,
+        }
+    }
+    Reply::Given(Ruling::Permit)
+}
+
+impl<L: Recorded, P, S> Engine<L, P, S> {
+    /// Rebuilds the register from the log, in place of what it held, as an engine opened again over the log after a
+    /// restart must (`T-021-17`): the sessions it opened, the grants and the revocations are what the log holds as
+    /// permitted ([`Recorded::registered`], [`registered_in`]), so the engine judges each grant, revocation, read by
+    /// a permission and session as the engine that ran on would. A log that can't be read leaves the register an
+    /// input the engine doesn't have: every read by a permission, grant, revocation and session is refused as a
+    /// missing input, never permitted, until a later reopening reads it, an acceptance of fault included. An engine
+    /// starts unread, so it answers none of them until it is reopened over its log; over an empty log it reopens to
+    /// an empty register, read. Its clock stays as it is.
+    pub fn reopen(&mut self) {
+        let register = &mut self.register;
+        match self.log.registered() {
+            Ok(Registered {
+                sessions,
+                grants,
+                revoked,
+            }) => {
+                register.sessions = sessions;
+                register.grants = grants;
+                register.revoked = revoked;
+                register.unread = false;
+            }
+            Err(_) => {
+                register.sessions.clear();
+                register.grants.clear();
+                register.revoked.clear();
+                register.unread = true;
+            }
+        }
+    }
+}
+
+impl<L, P, S> Engine<L, P, S> {
+    /// What the engine opened, granted and revoked.
+    pub fn register(&self) -> &Register {
+        &self.register
+    }
+
+    /// Hands the engine Core's clock, in place of the host's.
+    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
+        self.register.clock = clock;
+    }
+}
+
+/// A session only for the account's holder or its delegate, bounded in time, decided and recorded before it is
+/// answered; an open one is kept in the register the catalogue reads.
+impl<L: PolicyLog, P: Policy, S: Sources> Sessions for Engine<L, P, S> {
+    fn open_session(&mut self, request: &SessionRequest) -> Result<SessionAnswer, AppendFailure> {
+        request.check().map_err(AppendFailure::Refused)?;
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.reissues(request) || !self.register.bounded(request) {
+            Answer::Refuse {
+                class: RefusalClass::NotPermitted,
+            }
+        } else {
+            self.consult(Asked::OpenSession(request))
+        };
+        let outcome = session_outcome(
+            answer,
+            Opened {
+                session: request.request.clone(),
+                expires_at: request.until.clone(),
+            },
+        );
+        let opened = match &outcome {
+            SessionOutcome::Opened {
+                session,
+                expires_at,
+            } => Some(Opened {
+                session: session.clone(),
+                expires_at: expires_at.clone(),
+            }),
+            SessionOutcome::Refused { .. } | SessionOutcome::NotKnown { .. } => None,
+        };
+        let what = What::OpenSession {
+            request: request.clone(),
+            opened: opened.clone(),
+        };
+        let receipt = self.record(&request.requester, what, &request.at, outcome.outcome())?;
+        if let Some(opened) = opened {
+            let session = OpenSession {
+                session: opened.session,
+                account: request.account.clone(),
+                holder: request.holder.clone(),
+                expires_at: opened.expires_at,
+            };
+            if !self.register.sessions.contains(&session) {
+                self.register.sessions.push(session);
+            }
+        }
+        Ok(SessionAnswer {
+            request: request.request.clone(),
+            outcome,
+            receipt,
+        })
+    }
+}
+
+/// Each read decided and recorded, allowed or refused; a read permission granted or revoked through policy, and
+/// kept in the register a read naming it is held to.
+impl<L: PolicyLog, P: Policy, S: Sources> Reads for Engine<L, P, S> {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        let answer = match self.register.refuses(check) {
+            Some(class) => Answer::Refuse { class },
+            None => self.consult(Asked::CheckRead(check)),
+        };
+        let mut outcome = read_outcome(answer);
+        let what = || What::CheckRead {
+            check: check.clone(),
+        };
+        let receipt = match self.record(&check.reader, what(), &check.at, outcome.outcome()) {
+            // The log won't take the read as allowed, so it is recorded, and answered, as refused: every read is.
+            Err(AppendFailure::Refused(_)) if matches!(answer, Answer::Permit {}) => {
+                outcome = read_outcome(Answer::Refuse {
+                    class: RefusalClass::NotPermitted,
+                });
+                self.record(&check.reader, what(), &check.at, outcome.outcome())?
+            }
+            recorded => recorded?,
+        };
+        Ok(ReadAnswer {
+            request: check.request.clone(),
+            outcome,
+            receipt,
+        })
+    }
+
+    fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        change.check().map_err(AppendFailure::Refused)?;
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.reuses(change) {
+            Answer::Refuse {
+                class: RefusalClass::NotPermitted,
+            }
+        } else {
+            self.consult(Asked::GrantPermission(change))
+        };
+        let what = |decision| What::GrantPermission {
+            change: change.clone(),
+            decision,
+        };
+        let decision = self.answer(&change.request, &change.by, what, &change.at, answer)?;
+        if matches!(answer, Answer::Permit {}) && !self.register.grants.contains(change) {
+            self.register.grants.push(change.clone());
+        }
+        Ok(decision)
+    }
+
+    fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        change.check().map_err(AppendFailure::Refused)?;
+        let answer = if self.register.unread {
+            Answer::Refuse {
+                class: RefusalClass::MissingInput,
+            }
+        } else if self.register.granted(change) {
+            self.consult(Asked::RevokePermission(change))
+        } else {
+            Answer::Refuse {
+                class: RefusalClass::NotPermitted,
+            }
+        };
+        let what = |decision| What::RevokePermission {
+            change: change.clone(),
+            decision,
+        };
+        let decision = self.answer(&change.request, &change.by, what, &change.at, answer)?;
+        if matches!(answer, Answer::Permit {}) && !self.register.revoked(change) {
+            self.register.revoked.push(change.clone());
+        }
+        Ok(decision)
+    }
+}
+
+#[cfg(test)]
+mod tests;

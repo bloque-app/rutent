@@ -13,6 +13,9 @@ workspace = true
 # with an allocator: the crate then needs only `core` and `alloc` (DEC-26, REQ-OPS-3).
 default = ["std"]
 std = ["serde/std", "serde_json/std"]
+# The contract's own tests switch one shape rule off at a time (`core_internal::without_rule`), to see that each invalid
+# fixture breaks only the rule it names (`T-020-45`). Nothing shipped turns it on.
+rule-switches = ["std"]
 
 [dependencies]
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
@@ -20,3 +23,4 @@ serde_json = { version = "1.0.154", default-features = false, features = ["alloc
 
 [dev-dependencies]
 jsonschema = { version = "0.60.2", default-features = false }
+rutent-contracts = { path = ".", features = ["rule-switches"] }

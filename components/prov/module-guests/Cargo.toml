@@ -4,7 +4,7 @@
 # the platform. `build.sh` builds it.
 [workspace]
 resolver = "3"
-members = ["tool", "rust", "role"]
+members = ["tool", "rust", "role", "sim"]
 
 [workspace.package]
 edition = "2024"

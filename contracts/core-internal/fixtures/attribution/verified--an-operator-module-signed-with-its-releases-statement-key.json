@@ -1,0 +1,152 @@
+{
+  "claim": {
+    "kind": "stated",
+    "attribution": {
+      "signature": "unverified",
+      "claimed_by": {
+        "party": "operator",
+        "acts": "wallet-module",
+        "role": "provider",
+        "kind": "component"
+      }
+    },
+    "what": {
+      "statement": "urn:rutent:provider-role:result"
+    },
+    "when": {
+      "at": "2026-11-06T15:04:05Z",
+      "source": "party_stated"
+    },
+    "received_at": "2026-11-06T15:04:06Z",
+    "outcome": {
+      "status": "stated"
+    },
+    "signed_with": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    },
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "about": {
+      "order": "ord-17",
+      "segment": "seg-3",
+      "transaction": "tx-005"
+    }
+  },
+  "kept": {
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "bytes": "eyJkZXBsb3ltZW50Ijp7Im5hbWUiOiJydXRlbnQtdGVzdCIsIm9wZXJhdG9yX2tleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEifSwicHJvdG9jb2xfdmVyc2lvbiI6IjIuMC4xIiwic2hhcGUiOiJ1cm46cnV0ZW50OnByb3ZpZGVyLXJvbGU6cmVzdWx0IiwibWFrZXIiOiJ3YWxsZXQtbW9kdWxlIiwibWFkZV9hdCI6IjIwMjYtMTEtMDZUMTU6MDQ6MDVaIiwic2lnbmF0dXJlIjp7InNjaGVtZSI6ImVkMjU1MTkiLCJrZXkiOiJQVDRfUUVGQ1EwUkZSa2RJU1VwTFRFMU9UMUJSVWxOVVZWWlhXRmxhVzF3IiwidmFsdWUiOiJCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QWhJaU1rSlNZbktDa3FLeXd0TGk4d01USXpORFUyTnpnNU9qczhQVDRfUUVGQ1EwUkZSZyJ9LCJzdGF0ZW1lbnQiOnsia2luZCI6ImJhbGFuY2VfdmVyaWZpY2F0aW9uIiwidHJhbnNhY3Rpb24iOiJ0eC0wMDUiLCJvdXRjb21lIjp7InN0YXR1cyI6ImFuc3dlcmVkIiwic3VmZmljaWVudCI6dHJ1ZX19fQ"
+  },
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "keys": [],
+  "signature": true,
+  "expect": "verified",
+  "publishers": [
+    {
+      "maker": "wallet-module",
+      "party": "operator"
+    },
+    {
+      "maker": "rutent-operator",
+      "party": "operator"
+    }
+  ],
+  "history": [
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 20,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "1414141414141414141414141414141414141414141414141414141414141414"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "effect",
+          "action": {
+            "kind": "change_catalogue",
+            "change": "accept_module",
+            "provider": "wallet-module",
+            "version": "1.0.0",
+            "statement_key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+          },
+          "decision": {
+            "request": "req-m20",
+            "decision": "dec-m20",
+            "answer": "permit",
+            "receipt": {
+              "log": "log-main",
+              "index": 19,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "1313131313131313131313131313131313131313131313131313131313131313"
+              }
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-06T15:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "to_take_effect"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 120,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "7878787878787878787878787878787878787878787878787878787878787878"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 20,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "1414141414141414141414141414141414141414141414141414141414141414"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-06T15:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
+    }
+  ],
+  "operator": "rutent-operator"
+}

@@ -13,12 +13,47 @@ pub struct TestCase {
     pub line: usize,
     /// The function name.
     pub name: String,
+    /// The inline `mod` blocks around the test, outermost first (`["tests"]` for a `mod tests { ... }`). Read
+    /// from the braces line by line, so a brace in a string or comment can only make a test read as not run.
+    pub module: Vec<String>,
     /// The words after `verifies:`, or `None` when no such comment sits above the test.
     pub tag: Option<Vec<String>>,
 }
 
+/// The text of a line's code (strings and comments already cut, see [`code_of`]) after its leading attributes
+/// (`#[..]`, balanced on the line); the whole line when it opens
+/// with none, and an empty text when an attribute runs on past the line's end.
+fn after_attributes(line: &str) -> &str {
+    let mut rest = line.trim_start();
+    while rest.starts_with("#[") {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (at, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(at + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match end {
+            Some(end) => rest = rest[end..].trim_start(),
+            None => return "",
+        }
+    }
+    rest
+}
+
+/// A line of attributes alone, or a doc comment: what may stand between a tag and its test. A line that holds
+/// code after its attributes (`#[test] fn a() {}`) is a test or an item of its own, and ends the search.
 fn is_attribute(line: &str) -> bool {
-    line.starts_with("#[") || line.starts_with("///")
+    line.starts_with("///")
+        || (line.starts_with("#[") && after_attributes(&code_of(line)).trim().is_empty())
 }
 
 /// The words of a `// verifies:` comment block ending just above line index `at`, attributes and doc comments
@@ -74,32 +109,122 @@ fn is_test_attribute(line: &str) -> bool {
         .any(|name| path == *name || path.ends_with(&format!("::{name}")))
 }
 
-/// Finds the tests in one source file: lines that start a test attribute.
+/// A line with its string and char literals and its `//` comment cut out, so only real braces are left.
+fn code_of(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => break,
+            '"' => {
+                while let Some(d) = chars.next() {
+                    match d {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '\'' => {
+                // A char literal ('{', '\\n') closes within a few characters; a lifetime ('a) does not.
+                let rest: String = chars.clone().take(4).collect();
+                if let Some(end) = rest.find('\'') {
+                    for _ in 0..=rest[..end].chars().count() {
+                        chars.next();
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The name of the module that the code before a `{` opens inline (`mod tests`, `pub(crate) mod a`), if it does.
+fn mod_opened_by(code: &str) -> Option<String> {
+    let mut words = after_attributes(code).split_whitespace().peekable();
+    let mut first = words.next()?;
+    if first.starts_with("pub") {
+        first = words.next()?;
+    }
+    if first != "mod" {
+        return None;
+    }
+    let name = words.next()?;
+    (words.next().is_none() && !name.is_empty() && !name.contains([';', '(', ')']))
+        .then(|| name.to_string())
+}
+
+/// The name of the function a test attribute at `at` in `code` belongs to: the first `fn` after it, on the rest of
+/// that line or on the lines below.
+fn function_after(code: &str, at: usize, below: &[&str]) -> String {
+    let name_in = |text: &str| {
+        let mut from = 0;
+        while let Some(found) = text[from..].find("fn ") {
+            let start = from + found;
+            from = start + 3;
+            if text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let name: String = text[start + 3..]
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+        None
+    };
+    name_in(&code[at..])
+        .or_else(|| below.iter().find_map(|l| name_in(l.trim())))
+        .unwrap_or_default()
+}
+
+/// Finds the tests in one source file: every test attribute in code (not in a string or a `//` comment), wherever
+/// it stands on its line. The modules around a test are read from the braces as the text is walked, so a test on
+/// the line that opens its module (`mod t { #[test] fn x() {} }`) is in that module.
 pub fn scan_tests(file: &str, text: &str) -> Vec<TestCase> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
+    // One entry per open brace: the module it opens, or `None` for any other block.
+    let mut open: Vec<Option<String>> = Vec::new();
+    // The code since the last `{`, `}` or `;`, across lines, which says what the next `{` opens.
+    let mut segment = String::new();
     for (i, line) in lines.iter().enumerate() {
-        if !is_test_attribute(line.trim()) {
-            continue;
+        let code = code_of(line);
+        for (at, c) in code.char_indices() {
+            match c {
+                '{' => {
+                    open.push(mod_opened_by(&segment));
+                    segment.clear();
+                }
+                '}' => {
+                    open.pop();
+                    segment.clear();
+                }
+                ';' => segment.clear(),
+                '#' if is_test_attribute(&code[at..]) => {
+                    out.push(TestCase {
+                        file: file.to_string(),
+                        line: i + 1,
+                        name: function_after(&code, at, &lines[i + 1..]),
+                        module: open.iter().flatten().cloned().collect(),
+                        tag: tag_above(&lines, i),
+                    });
+                    segment.push(c);
+                }
+                _ => segment.push(c),
+            }
         }
-        let name = lines[i..]
-            .iter()
-            .find_map(|l| {
-                let l = l.trim();
-                let at = l.find("fn ")?;
-                let name: String = l[at + 3..]
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                (!name.is_empty()).then_some(name)
-            })
-            .unwrap_or_default();
-        out.push(TestCase {
-            file: file.to_string(),
-            line: i + 1,
-            name,
-            tag: tag_above(&lines, i),
-        });
+        segment.push('\n');
     }
     out
 }

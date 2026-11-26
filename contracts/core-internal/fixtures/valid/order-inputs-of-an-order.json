@@ -1,0 +1,7 @@
+{
+  "order": "ord-26",
+  "inputs": {
+    "payer.bank_account": "acct-1",
+    "beneficiary.bank_account": "acct-eu-1"
+  }
+}

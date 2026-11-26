@@ -3,7 +3,9 @@
 //!
 //! A result's `amount_in` is what left the segment's origin, the provider's charge included, whether its tuple
 //! reports gross or net: `reporting` says only whether `amount_out` includes the charge. Its fee is in the asset
-//! the segment takes in, in the origin unit, as the router counts it.
+//! the segment takes in, in the origin unit, as the router counts it. Where a segment keeps its asset and its tuple
+//! reports gross, what it delivers is its `amount_out` less its charge, the fee restated in the out unit
+//! ([`less_the_charge`]).
 
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::cmp::Ordering;
@@ -146,6 +148,73 @@ pub fn check_amounts(
         }))
 }
 
+/// A fee restated in the unit of the asset a segment gives out: the operation's out asset, at `out_decimals`. A fee is
+/// stated in the origin unit (`origin_decimals`), the unit the segment takes in. Where the out unit is finer, the fee
+/// is multiplied out exactly; where it is coarser, it is divided and rounded up, so a charge is never counted below
+/// what was charged. `None` where the fee isn't a whole number in canonical decimal text.
+///
+/// For a segment that keeps its asset (a withdrawal, a deposit or a transfer) whose two ends count it in different
+/// decimals, this is the unit "less the charge" is stated in: see [`less_the_charge`].
+pub fn charge_in_out_unit(fee: &str, origin_decimals: u8, out_decimals: u8) -> Option<String> {
+    let fee = whole(fee)?;
+    if fee == "0" {
+        return Some("0".to_owned());
+    }
+    if out_decimals >= origin_decimals {
+        let mut out = fee.to_owned();
+        out.extend(core::iter::repeat_n(
+            '0',
+            usize::from(out_decimals - origin_decimals),
+        ));
+        return Some(out);
+    }
+    let drop = usize::from(origin_decimals - out_decimals);
+    if fee.len() <= drop {
+        // Below one whole out unit, and not zero: it rounds up to one.
+        return Some("1".to_owned());
+    }
+    let (kept, dropped) = fee.split_at(fee.len() - drop);
+    if dropped.bytes().all(|b| b == b'0') {
+        Some(kept.to_owned())
+    } else {
+        Some(add_one(kept))
+    }
+}
+
+/// What a segment that keeps its asset delivers, under a tuple that reports `gross` (`REQ-CAT-11`): the
+/// `amount_out` it states, which includes its charge, less that charge, the fee restated in the operation's out unit
+/// ([`charge_in_out_unit`]). Both are then in the out unit, so the subtraction is of like units whatever decimals the
+/// two ends count in. `None` where the charge is above `amount_out`, or a figure isn't a whole number in canonical
+/// decimal text. Under `net`, what it delivers is the `amount_out` it states, with no subtraction. A conversion's
+/// output isn't reduced: its fee is in its `from` asset, which it doesn't give out.
+pub fn less_the_charge(
+    amount_out: &str,
+    fee: &str,
+    origin_decimals: u8,
+    out_decimals: u8,
+) -> Option<String> {
+    subtract(
+        whole(amount_out)?,
+        &charge_in_out_unit(fee, origin_decimals, out_decimals)?,
+    )
+}
+
+/// `a + 1` in canonical decimal text.
+fn add_one(a: &str) -> String {
+    let mut digits: Vec<u8> = a.bytes().collect();
+    for d in digits.iter_mut().rev() {
+        if *d == b'9' {
+            *d = b'0';
+        } else {
+            *d += 1;
+            return String::from_utf8(digits).expect("ASCII digits");
+        }
+    }
+    let mut out = String::from("1");
+    out.push_str(core::str::from_utf8(&digits).expect("ASCII digits"));
+    out
+}
+
 /// Pairs a value-moving operation with its result's stated amounts. `Ok(None)` for an operation that moves no
 /// value; `Ok(Some((segment, None)))` for a result that states no amounts, such as a failure or a refusal.
 #[allow(clippy::type_complexity)]
@@ -280,7 +349,9 @@ fn subtract(a: &str, b: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AmountMismatch, check_amounts, subtract, whole};
+    use super::{
+        AmountMismatch, charge_in_out_unit, check_amounts, less_the_charge, subtract, whole,
+    };
     use crate::provider_role::{Operation, ResultBody, Terms};
     use alloc::{format, vec};
 
@@ -333,6 +404,32 @@ mod tests {
             subtract(&format!("1{}", "0".repeat(77)), "1").as_deref(),
             Some("9".repeat(77).as_str())
         );
+    }
+
+    // verifies: REQ-CAT-11, INV-1
+    #[test]
+    fn less_the_charge_is_stated_in_the_out_unit() {
+        // One unit: a plain subtraction.
+        assert_eq!(
+            less_the_charge("244508252", "1000000", 6, 6).as_deref(),
+            Some("243508252")
+        );
+        // A finer out unit: the fee is multiplied out exactly. 1.00 out of 2-decimal origin units, 0.01 fee.
+        assert_eq!(charge_in_out_unit("1", 2, 6).as_deref(), Some("10000"));
+        assert_eq!(
+            less_the_charge("1000000", "1", 2, 6).as_deref(),
+            Some("990000")
+        );
+        // A coarser out unit: divided and rounded up, never below the charge. 0.015 at 6 decimals is 2 at 2.
+        assert_eq!(charge_in_out_unit("15000", 6, 2).as_deref(), Some("2"));
+        assert_eq!(charge_in_out_unit("10000", 6, 2).as_deref(), Some("1"));
+        assert_eq!(charge_in_out_unit("1", 6, 2).as_deref(), Some("1"));
+        assert_eq!(charge_in_out_unit("999999", 6, 2).as_deref(), Some("100"));
+        assert_eq!(charge_in_out_unit("0", 6, 2).as_deref(), Some("0"));
+        assert_eq!(less_the_charge("100", "15000", 6, 2).as_deref(), Some("98"));
+        // A charge above what it states it gave out is no amount delivered.
+        assert_eq!(less_the_charge("1", "15000", 6, 2), None);
+        assert_eq!(less_the_charge("100", "01", 6, 2), None);
     }
 
     // verifies: INV-1

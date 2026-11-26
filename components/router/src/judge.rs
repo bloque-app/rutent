@@ -3,20 +3,25 @@
 //! First, a path cut short at an operation that can't be followed: its net beyond its price's levels, its tuple
 //! with no price, its price's fee above what reaches it, or nothing delivered short of the destination
 //! (router-api 3.0.0). Such a path's last part needn't reach the destination, which only these four reasons
-//! allow, so they come before every other. Then excluded by
+//! allow, so they come before every other. Then a deposit at a reserve that batches payouts, which ends no
+//! route (`batched_payout`, `T-020-43`); excluded by
 //! policy; a void statement; a figure past its validity (`REQ-QTE-4`); a refused dry run; a
 //! judgement of no; an operation outside its band or its price's levels, judged on what enters it after the fees
 //! before it, in its own unit (`REQ-QTE-12`); over a ceiling, counting what its operations produce and the
-//! exposure already in flight (`REQ-ORD-8`); arriving with nothing (`REQ-QTE-13`); below the floor; a rate cycle
-//! implying free profit (ADR-0006); and, in a choice round, an operation no answer confirmed.
+//! exposure already in flight (`REQ-ORD-8`); arriving with nothing (`REQ-QTE-13`); below the floor, after the
+//! operator's fee (`REQ-ORD-27`); a rate cycle
+//! implying free profit (ADR-0006); and, in a choice round, an operation no answer confirmed: `quote_voided` where its
+//! provider's usable quote for its tuple, at another amount, lists `amount_changes` (`REQ-QTE-1`, `T-020-06`), and
+//! `unconfirmed` otherwise.
 
 use num_bigint::BigUint;
-use rutent_contracts::provider_role::{Denomination, JudgementAnswer};
+use rutent_contracts::provider_role::{Denomination, JudgementAnswer, VoidedBy};
 use rutent_contracts::router_api::{
     CeilingScope, DropReason, Endpoint, Figure, FigureValue, Id, Operation,
 };
 
 use crate::price::{deepest, whole};
+use crate::quote::received_of;
 use crate::search::{Cut, Path, Search, refuses};
 
 fn amount_of(text: &str) -> BigUint {
@@ -57,6 +62,18 @@ impl Search<'_> {
                 });
             }
             None => {}
+        }
+        // A route ends on no reserve that batches payouts: one movement evidences one order's close, so Core
+        // could never close an order on it (`REQ-ORD-33`, `T-020-43`). Its part's last operation is its deposit.
+        if path
+            .segments
+            .last()
+            .is_some_and(|&s| self.segments[s].batches_payouts())
+        {
+            return Some(DropReason::BatchedPayout {
+                part: 0,
+                operation: last,
+            });
         }
         let operations: Vec<&Operation> = path.steps.iter().map(|s| &s.operation).collect();
         let cited: Vec<&Figure> = operations
@@ -110,8 +127,11 @@ impl Search<'_> {
         if arrives == BigUint::ZERO {
             return Some(DropReason::NoPositiveOutcome {});
         }
+        // The floor is the least the customer accepts at the destination (`REQ-ORD-27`), so it is judged on what
+        // is left after the operator's fee, taken there as the price shown takes it. Ranking stays on what
+        // arrives before it.
         if let Some(floor) = &self.request.floor
-            && arrives < amount_of(floor.as_str())
+            && received_of(&self.bounds.operator_fee, &arrives) < amount_of(floor.as_str())
         {
             return Some(DropReason::BelowFloor {});
         }
@@ -121,6 +141,14 @@ impl Search<'_> {
         if self.is_choice()
             && let Some(o) = path.steps.iter().position(|s| !s.confirmed)
         {
+            // Unconfirmed because its provider was asked at another amount, by a quote that amount voids: the
+            // candidate is dropped for that quote, which its operation cites (`REQ-QTE-1`).
+            if let Some(quote) = self.voided_quote(&path.steps[o].operation) {
+                return Some(DropReason::QuoteVoided {
+                    figure: quote.figure_id.clone(),
+                    condition: VoidedBy::AmountChanges,
+                });
+            }
             return Some(DropReason::Unconfirmed {
                 part: 0,
                 operation: index(o),

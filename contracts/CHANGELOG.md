@@ -35,3 +35,52 @@ directory (see `README.md`).
   changelog's entry, not every contract's bump; a change to a package's name, version, source or checksum still needs
   every bump. (DEC-4, DEC-20, T-010-02)
 - Wasmtime 48.0.8 in `rutent-prov` turns on the `serde` and `allocator-api2` features of crates the contracts reach, which adds dependency edges to `bumpalo`, `hashbrown`, `referencing` and `smallvec` in the root `Cargo.lock`. No contract changed. (DEC-27, T-013-01)
+- A sixth contract, `core-internal`, the interfaces between Core's three parts: a line in `CONTRACTS`, `pub mod
+  core_internal` in `src/lib.rs`, and the sixth row of this README's table. Its own changelog opens at 1.0.0, and it
+  refers to the provider-role, module-interface and state-machine shapes it carries; no other contract changed.
+  (DEC-2, DEC-4, DEC-20, T-020-01)
+- The guard follows references: a contract whose schemas name another's URNs needs a major bump when that one's
+  major moves, since its shapes change through the reference though none of its paths do. (DEC-4, DEC-20, T-020-01)
+- The guard also follows Rust uses: a contract whose module uses another's (`crate::<module>`, re-exports included)
+  needs a major bump when that one's major moves, and a changelog heading that isn't a version is refused even when
+  its contract is untouched (the review of `T-020-01`). (DEC-4, DEC-20, T-020-01)
+- The guard expands a use's braces at every depth and reads `super::` from the file's own module, so the host's
+  `use super::...` counts as a use of the state machine's module (the round-3 review's low 6). (DEC-4, DEC-20,
+  T-020-01)
+- core-internal's next round, folded into its unreleased 1.0.0 (`T-020-21`): a notice's summary, a public end's
+  mismatch and its raise, the checkpoint and checkpoint-opening schemas, a decline of an outcome report on its own
+  call, an arrival's earlier arrival, an operation that ended with no answer, the holding account's record's node
+  and label, a late status asked as a decided action, a stuck part's evidence, a charge no formula covers, and rows
+  for a decision's caller, a statement's role and an arrival answer's question; router-api's `Operation::stated_out`
+  documents its `None`, folded into its unreleased 4.0.0. Each contract's changelog names the changes. (DEC-4,
+  DEC-20, T-020-21)
+- core-internal's `outcome-confirmation-cites-verified-evidence` accepts, for a hand-on, a statement about the linked
+  order the decision named through the transaction of the effect's own withdrawal, and holds a report to the holding
+  account's own maker, so the holding account's own answer can be the evidence of a hand-on's outcome; folded into the unreleased 1.0.0 (`T-020-26`). (DEC-4, DEC-20, T-020-26)
+- core-internal's round after `T-020-20`, folded into its unreleased 1.0.0 (`T-020-30`): a stuck resolution's
+  evidence entry required, a report pair's tuple terms, a measure record's role, a replay's list of receipts, a
+  deliver's report on its provider's own word, and a verifier's grant of a class. Its changelog names each. No file
+  shared by the contracts changed. (DEC-4, DEC-20, T-020-30)
+- core-internal's round after `T-020-30`, folded into its unreleased 1.0.0 (`T-020-36`): a publisher's record of a
+  node's segments verified about an order through its segments' transactions, the record naming its node and held to
+  that node's publisher and to one per node, a late status naming its fresh transaction, and a route handed on started on the
+  holding account the hand-on named, whoever runs its first move. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-36)
+- core-internal's round after `T-020-36`, folded into its unreleased 1.0.0 (`T-020-38`): each report of a pair names
+  its own segment, the received one the route's next after the sent one, each by the provider the log moved its
+  segment with. Its changelog names each. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-38)
+- The contract round for the owner's answers of 2026-11-18 (`T-020-39`): core-internal's roll back, a confirmer's
+  evidence from a party to the order, an erasure overriding its citations, an acceptance given on a deposit and the
+  rule on a statement received after its grants' revocation, folded into its unreleased 1.0.0; provider-role's
+  deposit payouts, folded into its unreleased 3.1.0; router-api's `batched_payout`, folded into its unreleased 4.0.0.
+  Each contract's changelog names the changes. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-39)
+- core-internal's quote awaiting its customer (`T-020-41`): `shown` gains an optional `awaiting` and a notice's summary may be of a waiting order (`NoticeOf::Waiting`), folded into its
+  unreleased 1.0.0. Its changelog names the change. No file shared by the contracts changed. (DEC-4, DEC-20, T-020-41)
+- The contract round for `M3`'s milestone review of 2026-11-24 (`T-020-45`): provider-role's unreleased 3.1.0 becomes
+  4.0.0 (finding 9), with the protocol versions in force and their cutover dates in `check_context`, a status question
+  and a hold request of their own, terms handed back with a result and an arrival notice's automatic-deposit
+  destination; module-interface 5.0.0 follows it (its operation kinds are provider-role's); router-api's and
+  core-internal's unreleased majors take the rest, each changelog naming its changes. Shared files: the guard's new
+  rule, that each new entry of provider-role's changelog from 4.0.0 on says whether a party may ignore the change
+  (`REQ-PRT-2`), stated in this README; and `Cargo.toml`'s `rule-switches` feature, the crate a dev-dependency of
+  itself with it, so `tests/core-internal.rs` reads each invalid fixture with its one rule switched off, which adds one
+  dependency edge to the root `Cargo.lock` and moves no package. (DEC-4, DEC-20, REQ-PRT-2, T-020-45)

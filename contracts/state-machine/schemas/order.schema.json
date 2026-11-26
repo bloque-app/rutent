@@ -172,6 +172,19 @@
           "description": "The inner node where the part's last failed final deposit left its value: where the destination reserve lives (REQ-ORD-43). Each failed final deposit overwrites it, destination_changed clears it, and a recalculation keeps it (the published update rule). While the part's last segment is a failed deposit it is that deposit's from node, which the Rust types check. Never an outer node: value never sits outside the book.",
           "$ref": "urn:rutent:provider-role:advertisement#/$defs/inner_node"
         },
+        "waiting_since": {
+          "description": "When the part began waiting for the customer: the recorded_at of the input that made it wait, as an RFC 3339 date-time. Present exactly while the part is waiting_for_customer, for whatever cause; the published update rule keeps it while the part goes on waiting. The wait's age is a reader's clock less this (AC-12): the state machine reads no clock (REQ-STM-5). The pattern states the shape for validators that treat format as an annotation only.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+        },
+        "resolved_to": {
+          "description": "Where a stuck part's resolution delivered its value, when the part ended so (REQ-AUZ-4): the order's destination, and the part is complete (or failed after, its starting segment proven undone), or its origin, and the part ended without completing. Present only on a part its resolution ended, so a part complete with segments not settled says why.",
+          "enum": [
+            "destination",
+            "origin"
+          ]
+        },
         "destination": {
           "description": "The part's destination (INV-10): its route's last deposit, that is the destination reserve (provider), the outer node it deposits to and the asset with its decimals. Set when the route is chosen, kept by every recalculation, replaced only by the customer's accepted destination_changed. That the route ends with a deposit at it can't be stated here; the Rust types check it.",
           "type": "object",
@@ -224,6 +237,66 @@
                 "linked_order"
               ]
             }
+          }
+        },
+        {
+          "description": "A waiting part says since when, and only a waiting part does.",
+          "if": {
+            "properties": {
+              "state": {
+                "const": "waiting_for_customer"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "required": [
+              "waiting_since"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "waiting_since"
+              ]
+            }
+          }
+        },
+        {
+          "description": "A part resolved to its destination is complete, or failed after; one resolved to its origin ended without completing.",
+          "if": {
+            "required": [
+              "resolved_to"
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "resolved_to": {
+                    "const": "destination"
+                  },
+                  "state": {
+                    "enum": [
+                      "complete",
+                      "failed"
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "resolved_to": {
+                    "const": "origin"
+                  },
+                  "state": {
+                    "const": "ended_without_completing"
+                  }
+                }
+              }
+            ]
           }
         }
       ]

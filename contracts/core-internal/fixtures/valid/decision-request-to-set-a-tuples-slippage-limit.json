@@ -1,0 +1,38 @@
+{
+  "request": "req-102",
+  "caller": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "action": {
+    "kind": "change_catalogue",
+    "change": "set_setting",
+    "provider": "fx-desk",
+    "setting": {
+      "setting": "slippage_limit",
+      "limit": {
+        "tuple": {
+          "provider": "fx-desk",
+          "from": {
+            "node": "bank-ledger",
+            "asset": {
+              "id": "COP",
+              "decimals": 2
+            }
+          },
+          "to": {
+            "node": "bank-ledger",
+            "asset": {
+              "id": "USD",
+              "decimals": 2
+            }
+          }
+        },
+        "max_bps": 50
+      }
+    }
+  },
+  "at": "2026-11-10T09:00:00Z"
+}

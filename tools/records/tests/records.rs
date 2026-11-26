@@ -354,6 +354,116 @@ fn untagged_attribute_path_tests_are_reported() {
 
 // verifies: DEC-21
 #[test]
+fn test_whose_attribute_follows_other_code_on_its_line_is_found_and_needs_its_tag() {
+    // Each of these is one test with no tag, whatever stands before its attribute on the line.
+    for (source, name) in [
+        ("mod t { #[test] fn inside() {} }", "inside"),
+        (
+            "#[allow(dead_code)] #[test] fn after_attr() {}",
+            "after_attr",
+        ),
+        ("#[test] fn bare() {}", "bare"),
+        ("#[tokio::test] async fn runs() {}", "runs"),
+        ("#[cfg(test)] mod t { #[test] fn nested() {} }", "nested"),
+        ("fn helper() {} #[test] fn after_code() {}", "after_code"),
+    ] {
+        let found = tag_findings(&[source]);
+        assert_eq!(found.len(), 1, "{source}: {found:?}");
+        assert!(found[0].starts_with("untagged-test"), "{source}: {found:?}");
+        assert!(found[0].contains(name), "{source}: {found:?}");
+    }
+    // Two tests on a line are two tests; a tag above the line tags only the first of two lines' tests when it is
+    // not directly above the second.
+    let two = tag_findings(&["#[test] fn first() {} #[test] fn second() {}"]);
+    assert_eq!(two.len(), 2, "{two:?}");
+    let sequence = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[test] fn tagged() {}",
+        "#[test] fn untagged() {}",
+    ]);
+    assert_eq!(sequence.len(), 1, "{sequence:?}");
+    assert!(sequence[0].contains("untagged"), "{sequence:?}");
+    // A tag above a line of attributes tags the test that ends it, and a tagged same-line test passes.
+    let tagged = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[allow(dead_code)] #[test] fn fine() {}",
+    ]);
+    assert!(tagged.is_empty(), "{tagged:?}");
+    // An attribute line with a trailing comment, or a `]` inside a string, is still an attribute line.
+    let through = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[allow(dead_code)] // why",
+        "#[test]",
+        "fn a() {}",
+    ]);
+    assert!(through.is_empty(), "{through:?}");
+    let bracket = tag_findings(&[
+        "// verifies: REQ-MOD-1",
+        "#[should_panic(expected = \"a]b\")]",
+        "#[test]",
+        "fn b() {}",
+    ]);
+    assert!(bracket.is_empty(), "{bracket:?}");
+    // The module of a test on the line that opens its module is that module.
+    let modules = |source: &str| scan_tests("a.rs", source).remove(0).module;
+    assert_eq!(modules("mod t { #[test] fn x() {} }"), ["t"]);
+    assert_eq!(
+        modules("#[cfg(test)] mod tests { #[test] fn x() {} }"),
+        ["tests"]
+    );
+    assert_eq!(modules("mod a { mod b { #[test] fn x() {} } }"), ["a", "b"]);
+    assert_eq!(
+        modules("mod a {\n    fn f() {}\n}\n#[test] fn x() {}"),
+        Vec::<String>::new()
+    );
+    // Nothing that is not a test is counted: a literal, a comment, another attribute, a function named for one.
+    let not_tests = tag_findings(&[
+        "fn f() { let s = \"#[test] fn x() {}\"; }",
+        "// #[test] fn commented() {}",
+        "/// #[test] fn documented() {}",
+        "#[derive(Debug)] struct S;",
+        "#[cfg(test)] mod t { fn helper() {} }",
+        "#[tests_helper] fn h() {}",
+        "#![cfg(test)]",
+    ]);
+    assert!(not_tests.is_empty(), "{not_tests:?}");
+}
+
+// verifies: DEC-21
+#[test]
+fn tests_of_an_excluded_crate_still_need_their_tags() {
+    let dir = std::env::temp_dir().join(format!("rutent-records-excluded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |path: &str, text: &str| {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\"]\nexclude = [\"fixtures/f\"]\n",
+    );
+    write("a/Cargo.toml", "[package]\nname = \"a\"\n");
+    write("fixtures/f/Cargo.toml", "[package]\nname = \"f\"\n");
+    write("fixtures/f/tests/t.rs", "#[test]\nfn lonely() {}\n");
+    let mut tests = Vec::new();
+    for path in find_rust_files(&dir).expect("sources are readable") {
+        let text = std::fs::read_to_string(&path).expect("source is readable");
+        let name = path.strip_prefix(&dir).unwrap().display().to_string();
+        tests.extend(scan_tests(&name, &text));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    let found: Vec<String> = check_tests(&tests, &defined(""))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("fixtures/f/tests/t.rs"), "{found:?}");
+    assert!(found[0].contains("lonely"), "{found:?}");
+}
+
+// verifies: DEC-21
+#[test]
 fn malformed_task_id_is_reported() {
     let text = plan(
         &[

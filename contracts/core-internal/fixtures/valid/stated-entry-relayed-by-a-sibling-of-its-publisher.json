@@ -1,0 +1,37 @@
+{
+  "kind": "stated",
+  "attribution": {
+    "signature": "unverified",
+    "claimed_by": {
+      "party": "acme-co",
+      "acts": "acme-co",
+      "role": "provider",
+      "kind": "component"
+    }
+  },
+  "what": {
+    "statement": "urn:rutent:provider-role:result"
+  },
+  "when": {
+    "at": "2026-11-06T15:04:05Z",
+    "source": "party_stated"
+  },
+  "received_at": "2026-11-06T15:04:09Z",
+  "outcome": {
+    "status": "stated"
+  },
+  "signed_with": {
+    "scheme": "ed25519",
+    "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+  },
+  "commitment": {
+    "algorithm": "sha-256",
+    "value": "8787878787878787878787878787878787878787878787878787878787878787"
+  },
+  "relayed_by": {
+    "party": "acme-co",
+    "acts": "acme-relay",
+    "role": "provider",
+    "kind": "component"
+  }
+}

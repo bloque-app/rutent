@@ -46,10 +46,29 @@ fn deposit_answer(
     order: &str,
     amount: &str,
 ) -> ResultBody {
+    deposit_under(
+        s,
+        provider,
+        &format!("tx-{order}-{amount}-{node}-{asset}"),
+        (node, asset),
+        order,
+        amount,
+    )
+}
+
+/// What the wallet of `provider` answers to a deposit under `transaction`.
+fn deposit_under(
+    s: &mut Signed,
+    provider: &str,
+    transaction: &str,
+    (node, asset): (&str, &str),
+    order: &str,
+    amount: &str,
+) -> ResultBody {
     use rutent_prov::holding::wallet::Operator as _;
     let statement = TestOperator.statement(operation(json!({
         "kind": "deposit",
-        "transaction": format!("tx-{order}-{amount}"),
+        "transaction": transaction,
         "provider": provider,
         "origin": node,
         "destination": { "network": provider },
@@ -311,8 +330,8 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
     let reading = read(&mut s, &mut holdings, "polygon");
     assert_eq!((reading.balance, reading.held.len()), (100, 1));
 
-    // Nor does it release what an order doesn't hold, asked directly: the order holds 100, and 101 is refused, as
-    // is any amount for an order that holds nothing.
+    // Nor does it release what an order doesn't hold, asked directly: the order holds 100, and 101 is refused. An
+    // order the wallet has no record of is not refused but not known (`T-016-05`).
     use rutent_prov::holding::wallet::Operator as _;
     for (order, amount) in [("o-1", "101"), ("o-9", "1")] {
         let statement = TestOperator.statement(operation(json!({
@@ -332,12 +351,18 @@ fn wallet_refuses_another_asset_or_node_and_a_bad_amount_and_holds_nothing_for_t
         let ResultBody::Withdrawal(result) = result.statement else {
             panic!("not a withdrawal's result");
         };
+        let expected_refused = order == "o-1";
         assert!(
-            matches!(result.outcome, ReserveMovementOutcome::Refused(_)),
-            "{order}"
+            if expected_refused {
+                matches!(result.outcome, ReserveMovementOutcome::Refused(_))
+            } else {
+                matches!(result.outcome, ReserveMovementOutcome::Unknown(_))
+            },
+            "{order}: {:?}",
+            result.outcome
         );
     }
-    // The refusals changed nothing in the wallet: what o-1 landed can still all be released.
+    // The answers changed nothing in the wallet: what o-1 landed can still all be released.
     holdings
         .release(
             &mut s.platform,
@@ -599,7 +624,8 @@ fn wallet_whose_first_operation_was_refused_is_not_fixed_to_its_node_and_asset()
     use rutent_prov::holding::wallet::Operator as _;
     let mut s = Signed::new();
     run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
-    // A release of what nothing holds, at another node and in another asset: refused, and it must fix nothing.
+    // A release of what nothing holds, at another node and in another asset: the wallet has no record of the order
+    // (not known, `T-016-05`), and it must fix nothing.
     let statement = TestOperator.statement(operation(json!({
         "kind": "withdrawal",
         "transaction": "tx-first",
@@ -617,7 +643,7 @@ fn wallet_whose_first_operation_was_refused_is_not_fixed_to_its_node_and_asset()
     let ResultBody::Withdrawal(result) = result.statement else {
         panic!("not a withdrawal's result");
     };
-    assert!(matches!(result.outcome, ReserveMovementOutcome::Refused(_)));
+    assert!(matches!(result.outcome, ReserveMovementOutcome::Unknown(_)));
     // The wallet's first real operation is still free to name the node and asset it is for.
     let ResultBody::Deposit(result) =
         deposit_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", "o-1", "10")
@@ -836,5 +862,230 @@ fn value_between_segments_rests_only_in_a_nodes_holding_account() {
     assert!(
         refused_landings > 20,
         "only {refused_landings} refused landings"
+    );
+}
+
+/// What the wallet of `provider` answers to a withdrawal of `amount` of `asset` for `order` at `node`, asked
+/// directly of the wallet, so the host's own record doesn't answer first.
+fn withdrawal_answer(
+    s: &mut Signed,
+    provider: &str,
+    node: &str,
+    asset: &str,
+    order: &str,
+    amount: &str,
+) -> ReserveMovementOutcome {
+    use rutent_prov::holding::wallet::Operator as _;
+    let statement = TestOperator.statement(operation(json!({
+        "kind": "withdrawal",
+        "transaction": format!("wd-{order}-{amount}"),
+        "provider": provider,
+        "origin": { "network": provider },
+        "destination": node,
+        "asset": asset,
+        "amount": amount,
+        "dry_run": false,
+        "inputs": { "order": order },
+    })));
+    match s.platform.handle(provider, &statement) {
+        Handled::Answered(result) => match result.statement {
+            ResultBody::Withdrawal(r) => r.outcome,
+            other => panic!("not a withdrawal's result: {other:?}"),
+        },
+        Handled::Refused(why) => panic!("the platform refused the withdrawal: {why:?}"),
+    }
+}
+
+// verifies: REQ-ORD-43
+#[test]
+fn release_the_wallet_holds_no_record_of_is_not_known_never_refused() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    for (order, amount) in [("o-1", "100"), ("o-2", "50")] {
+        holdings
+            .land(
+                &mut s.platform,
+                &TestOperator,
+                "polygon",
+                "USDC",
+                order,
+                amount,
+            )
+            .expect("lands");
+    }
+    // The wallet's word attributes every order it holds.
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 100));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 101));
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-2", 50));
+
+    // The wallet's process restarts: its record is gone. A release is no refusal: the wallet doesn't know the order,
+    // and says so, so that Core lands what the log holds before it releases.
+    assert!(s.platform.restart(POLYGON_WALLET));
+    for order in ["o-1", "o-3"] {
+        assert!(
+            matches!(
+                withdrawal_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", order, "10"),
+                ReserveMovementOutcome::Unknown(_)
+            ),
+            "{order}: a release with no record behind it was not answered not known"
+        );
+    }
+    assert_eq!(
+        holdings.release(
+            &mut s.platform,
+            &TestOperator,
+            "polygon",
+            "USDC",
+            "o-1",
+            "10"
+        ),
+        Err(WalletError::NotKnown),
+    );
+    // Its attribution is empty as well, so the shortfall shows to whoever asks per order.
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 100));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-2", 50));
+
+    // Landed again from the log, the order is known: a release above what it holds is then refused, a release within
+    // it goes through, and the order the log put back is the only one the wallet holds.
+    deposit_under(
+        &mut s,
+        POLYGON_WALLET,
+        "re-land-o-1",
+        ("polygon", "USDC"),
+        "o-1",
+        "100",
+    );
+    assert!(matches!(
+        withdrawal_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", "o-1", "101"),
+        ReserveMovementOutcome::Refused(_)
+    ));
+    assert!(matches!(
+        withdrawal_answer(&mut s, POLYGON_WALLET, "polygon", "USDC", "o-1", "40"),
+        ReserveMovementOutcome::Succeeded(_)
+    ));
+    assert!(covers(&mut s, POLYGON_WALLET, "USDC", "o-1", 60));
+    assert!(!covers(&mut s, POLYGON_WALLET, "USDC", "o-2", 1));
+}
+
+/// The wallet's own answer for each order it holds attributes that order's value: asked per order
+/// (`balance_verification`, a search over the amount), it says it holds what the host attributes to the order, no more,
+/// and the account's balance is the sum of those. After its module restarts, it attributes nothing to either order,
+/// which is what a reopened Core reads before it lands anything again (`INV-1`, `REQ-CAT-23`, `T-020-46`).
+// verifies: INV-1, REQ-CAT-23
+#[test]
+fn wallets_balance_answer_attributes_every_order_it_holds() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    let held = [("o-1", 100u128), ("o-2", 50u128)];
+    for (order, amount) in held {
+        holdings
+            .land(
+                &mut s.platform,
+                &TestOperator,
+                "polygon",
+                "USDC",
+                order,
+                &amount.to_string(),
+            )
+            .expect("lands");
+    }
+    for (order, amount) in held {
+        assert_eq!(
+            holdings
+                .held_by_wallet(
+                    &mut s.platform,
+                    &TestOperator,
+                    "polygon",
+                    order,
+                    1_000,
+                    &format!("ask-{order}"),
+                )
+                .expect("the wallet answers"),
+            amount,
+            "{order}: the wallet attributes the order's value"
+        );
+    }
+    let reading = read(&mut s, &mut holdings, "polygon");
+    assert_eq!(reading.balance, held.iter().map(|(_, a)| a).sum::<u128>());
+    assert!(s.platform.restart(POLYGON_WALLET));
+    for (order, _) in held {
+        assert_eq!(
+            holdings
+                .held_by_wallet(
+                    &mut s.platform,
+                    &TestOperator,
+                    "polygon",
+                    order,
+                    1_000,
+                    &format!("again-{order}"),
+                )
+                .expect("the wallet answers"),
+            0,
+            "{order}: its record went with the module"
+        );
+    }
+}
+
+/// The transaction a restore goes under is derived, never drawn (`T-020-46`): the same for an order at a node while the
+/// wallet's module runs in one process, so a retry is a repeat, and another once the module restarted, so a restore
+/// after a restart never goes under one an earlier process took, whatever Core process asks. Nothing of it is in the
+/// log, and a Core that reopened draws no fresh identifier for it.
+// verifies: INV-1, REQ-ORD-43
+#[test]
+fn restore_transaction_is_new_for_each_process_of_the_wallets_module() {
+    let mut s = Signed::new();
+    run_wallet(&mut s, POLYGON_WALLET, "1.0.0");
+    let mut holdings = Holdings::default();
+    holdings
+        .register(
+            &mut s.catalogue,
+            &s.platform,
+            "polygon",
+            POLYGON_WALLET,
+            "USDC",
+        )
+        .expect("registered");
+    let first = holdings
+        .restore_transaction(&s.platform, "polygon", "o-1")
+        .expect("the module runs");
+    assert_eq!(
+        holdings.restore_transaction(&s.platform, "polygon", "o-1"),
+        Some(first.clone()),
+        "the same in the same process"
+    );
+    assert_ne!(
+        holdings.restore_transaction(&s.platform, "polygon", "o-2"),
+        Some(first.clone()),
+        "another order's is its own"
+    );
+    assert!(s.platform.restart(POLYGON_WALLET));
+    let after = holdings
+        .restore_transaction(&s.platform, "polygon", "o-1")
+        .expect("the module runs again");
+    assert_ne!(after, first, "a new process, a new transaction");
+    assert!(
+        holdings
+            .restore_transaction(&s.platform, "no-such-node", "o-1")
+            .is_none()
     );
 }

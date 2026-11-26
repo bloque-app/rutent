@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:router-api:held-quote",
+  "title": "Held quote",
+  "description": "A quote a reserve holds for a new route before it starts (REQ-QTE-15): a choice round's decision record, whose chosen candidate is the quote, and the validity stated for the hold. It stays a quote until each segment starts and binds no provider. The record chose a candidate, and the validity is at or after its snapshot was taken, checked by the contract's Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record",
+    "valid_until"
+  ],
+  "properties": {
+    "record": {
+      "description": "The record the quote is from.",
+      "$ref": "urn:rutent:router-api:decision-record#/$defs/decision_record"
+    },
+    "valid_until": {
+      "description": "The hold's stated validity.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

@@ -51,6 +51,15 @@ pub struct Signed {
 
 impl Signed {
     pub fn new() -> Self {
+        Self::on(
+            Box::new(rutent_prov::module::record::MemoryRecord::new()),
+            TestWorld::default(),
+        )
+    }
+
+    /// The platform opened on `record` over `world`, as a platform restarted on its record is (`T-013-10`), and
+    /// the catalogue as [`Signed::new`] makes it. No release runs until one is admitted.
+    pub fn on(record: Box<dyn rutent_prov::module::record::Record>, world: TestWorld) -> Self {
         let mut catalogue = Catalogue::new();
         catalogue.add_public_node("polygon").expect("a public node");
         for (i, ad) in [reserve(), ramp()].iter().enumerate() {
@@ -64,18 +73,22 @@ impl Signed {
                 .expect("a grant");
             join_made_at(&mut catalogue, ad, ADVERTISED_AT, AT).expect("the advertisement joins");
         }
-        let mut platform = Platform::new(
+        let mut platform = Platform::open(
             paths(),
-            TestWorld::default(),
+            world,
             types::Envelope {
                 deployment: deployment(),
                 protocol_version: VERSION.to_owned(),
             },
+            record,
         )
         .expect("a platform");
         platform.set_output_limit(4096);
         // Upgrades run at once here; the lifecycle's tests stage their own.
         platform.set_staging(None);
+        // Starting a process is the machine's work, which a stepped clock can't move: on a loaded machine it can pass
+        // the 10 s a production start is given, and no test here is about start-up time (`T-013-08`).
+        platform.set_start_deadline(std::time::Duration::from_secs(120));
         // The platform signs each result with the provider's statements key, which the world holds: these tests'
         // keys, for every provider they admit.
         platform.world.derive_statement_keys(statements_key);

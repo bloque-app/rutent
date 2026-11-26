@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::envelope::{OPERATION_SHAPE, StatementShape};
 use super::outcome::Direction;
+use super::stated::{HeldFor, HeldRecord};
 use super::types::OuterNode;
 
 /// One operation, by kind (`REQ-CAT-9`).
@@ -32,6 +33,12 @@ pub enum Operation {
     ReversalConfirmation(ReversalConfirmationRequest),
     /// The operator's question to a holding account's module: its balance at a node (`REQ-AUD-15`).
     HoldingBalance(HoldingBalance),
+    /// The operator's question to a provider that declares `status_query` tracking of where a transaction it was
+    /// handed stands (`REQ-ORD-1`, `REQ-CAT-16`; 4.0.0).
+    StatusQuery(StatusQuery),
+    /// The operator's request that a reserve hold the quote a choice round chose before its route starts
+    /// (`REQ-QTE-15`; 4.0.0).
+    Hold(HoldRequest),
 }
 
 impl StatementShape for Operation {
@@ -222,4 +229,45 @@ pub struct ReversalConfirmationRequest {
     pub asset: String,
     /// The amount that should be back, in full.
     pub amount: String,
+}
+
+/// A question to a provider of where a transaction it was handed stands, late (`REQ-ORD-1`, `REQ-CAT-16`; finding 4
+/// of `M3`'s milestone review, 4.0.0). Asked only of a provider whose declarations list `status_query` tracking, under
+/// a transaction of its own, never the one asked about, and never a dry run: it changes nothing, and what the provider
+/// answers is its statement about `about`, which moves nothing either. The provider answers with a
+/// [`StatusQueryResult`](super::StatusQueryResult) naming both transactions
+/// ([`check_status_answer`](super::check_status_answer)).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusQuery {
+    /// This question's own transaction identifier: its answer names it (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The provider asked.
+    pub provider: String,
+    /// The transaction asked about: one the provider was handed an operation under.
+    pub about: String,
+}
+
+/// The operator's request that a reserve hold a quote for a new route before it starts (`REQ-QTE-15`; finding 4 of
+/// `M3`'s milestone review, 4.0.0): the choice round's decision record by its id and digest, the candidate it chose,
+/// the order or session the hold is for, and the validity asked, at most the earliest validity among the figures the
+/// candidate cites. The reserve answers with its own signed [`Hold`](super::Hold) of exactly these, under this
+/// request's transaction, which is the hold's own; or refuses ([`check_hold_answer`](super::check_hold_answer)). Never
+/// a dry run, and it moves nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldRequest {
+    /// The hold's own transaction: its answer and the hold it carries name it.
+    pub transaction: String,
+    /// The reserve asked: the one that starts each part of the route.
+    pub provider: String,
+    /// The choice round's decision record whose chosen candidate is the quote to hold.
+    pub record: HeldRecord,
+    /// The candidate to hold: the record's chosen one.
+    pub candidate: String,
+    /// The order or session the hold is for.
+    #[serde(rename = "for")]
+    pub held_for: HeldFor,
+    /// The validity asked: the hold holds no longer.
+    pub valid_until: String,
 }

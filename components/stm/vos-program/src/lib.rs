@@ -1,5 +1,5 @@
-//! `CMP-STM` as a VOS program (`T-010-05`, `DEC-26`): one actor holding both the journal and the state machine,
-//! which is `rutent-stm`'s [`Stm`], built `no_std` with `default-features = false`. The program is `EXP-1`'s
+//! `CMP-STM` as a VOS program (`T-010-05`, `DEC-26`): one actor holding both the journal and the state machine, which
+//! is `rutent-stm`'s [`Stm`](rutent_stm::Stm), built `no_std` with `default-features = false`. The program is `EXP-1`'s
 //! re-score program (`T-007-03`) with the probe replaced by the library.
 //!
 //! This package links `vos-sdk` and is AGPL-3.0-or-later, as are the binaries built from it
@@ -783,13 +783,13 @@ impl Rutent {
         }
     }
 
-    /// One chunk of an open import: the snapshot stream's entries from place `at`, each one JSON line, which must
-    /// be the import's next. Each entry is checked as `StreamCheck` checks it, against what the import took
-    /// before it. A chunk that fails is refused whole: the handler returns its error, which fails the step, so VOS
-    /// keeps none of the chunk's writes, and the import can go on from `at`. The end entry closes the import,
-    /// leaving the host halted. The step takes entries only while its writes, the archive rows sealed in it
-    /// included, stay under [`STEP_BUDGET`] (VOS caps a step's writes at 256 KiB): it may take fewer than it was
-    /// given, and the `next` it returns is where the client resumes. It always takes at least one.
+    /// One chunk of an open import: the snapshot stream's entries from place `at`, each one JSON line, which must be
+    /// the import's next. Each entry is checked as `StreamCheck` checks it, against what the import took before it. A
+    /// chunk that fails is refused whole: the handler returns its error, which fails the step, so VOS keeps none of the
+    /// chunk's writes, and the import can go on from `at`. The end entry closes the import, leaving the host halted.
+    /// The step takes entries only while its writes, the archive rows sealed in it included, stay under
+    /// [`STEP_BUDGET`](rutent_stm::archive::STEP_BUDGET) (VOS caps a step's writes at 256 KiB): it may take fewer than
+    /// it was given, and the `next` it returns is where the client resumes. It always takes at least one.
     #[msg(gas = 100_000_000)]
     pub async fn import_chunk(
         &mut self,

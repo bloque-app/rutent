@@ -7,10 +7,13 @@ use alloc::{boxed::Box, format, string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use super::envelope::{
-    ContextMismatch, Deployment, JUDGEMENT_SHAPE, RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE,
-    ShapeMismatch, Statement, StatementShape,
+    ContextMismatch, Deployment, JUDGEMENT_SHAPE, ProtocolVersions, RESULT_SHAPE,
+    REVERSAL_CONFIRMATION_SHAPE, ShapeMismatch, Statement, StatementShape,
 };
+use super::operation::Operation;
+use super::stated::{Hold, TupleTerms};
 use super::types::{EvidenceGrade, SafeInteger};
+use super::validate::made_after;
 
 /// A provider's result for one operation, by the operation's kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +37,52 @@ pub enum ResultBody {
     ReversalConfirmation(ReversalConfirmationResult),
     /// A holding account's balance.
     HoldingBalance(HoldingBalanceResult),
+    /// A provider's answer to a status question (4.0.0).
+    StatusQuery(StatusQueryResult),
+    /// A reserve's answer to a hold request (4.0.0).
+    Hold(HoldResult),
+}
+
+impl ResultBody {
+    /// The transaction the result answers: every result's but a judgement's, which names none (`REQ-CPL-4`).
+    pub fn transaction(&self) -> Option<&str> {
+        match self {
+            Self::Withdrawal(r) | Self::Deposit(r) => Some(&r.transaction),
+            Self::Transfer(r) => Some(&r.transaction),
+            Self::Conversion(r) => Some(&r.transaction),
+            Self::BalanceVerification(r) => Some(&r.transaction),
+            Self::Judgement(_) => None,
+            Self::Reversal(r) => Some(&r.transaction),
+            Self::ReversalConfirmation(r) => Some(&r.transaction),
+            Self::HoldingBalance(r) => Some(&r.transaction),
+            Self::StatusQuery(r) => Some(&r.transaction),
+            Self::Hold(r) => Some(&r.transaction),
+        }
+    }
+
+    /// The provider's signed terms the result hands back, if it carries any (4.0.0): a withdrawal's, deposit's,
+    /// transfer's or conversion's dry-run answer's.
+    pub fn terms(&self) -> Option<&Statement<TupleTerms>> {
+        match self {
+            Self::Withdrawal(ReserveMovementResult {
+                outcome: ReserveMovementOutcome::DryRunAccepted(a),
+                ..
+            })
+            | Self::Deposit(ReserveMovementResult {
+                outcome: ReserveMovementOutcome::DryRunAccepted(a),
+                ..
+            }) => a.terms.as_deref(),
+            Self::Transfer(TransferResult {
+                outcome: TransferOutcome::DryRunAccepted(q),
+                ..
+            }) => q.terms.as_deref(),
+            Self::Conversion(ConversionResult {
+                outcome: ConversionOutcome::DryRunAccepted(q),
+                ..
+            }) => q.terms.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 impl StatementShape for ResultBody {
@@ -48,7 +97,15 @@ impl StatementShape for ResultBody {
                 outcome: ReversalConfirmationOutcome::Confirmed(confirmed),
                 ..
             }) => confirmed.confirmation.check_shape(),
-            _ => Ok(()),
+            Self::StatusQuery(StatusQueryResult {
+                outcome: StatusOutcome::Answered(answered),
+                ..
+            }) => answered.result.check_shape(),
+            Self::Hold(HoldResult {
+                outcome: HoldOutcome::Held(held),
+                ..
+            }) => held.hold.check_shape(),
+            _ => self.terms().map_or(Ok(()), Statement::check_shape),
         }
     }
 
@@ -56,21 +113,34 @@ impl StatementShape for ResultBody {
         &self,
         maker: &str,
         deployment: &Deployment,
-        protocol_version: &str,
+        versions: &ProtocolVersions,
+        at: &str,
     ) -> Result<(), ContextMismatch> {
         match self {
             Self::Judgement(JudgementResult {
                 outcome: JudgementOutcome::Judged(judged),
             }) => judged
                 .judgement
-                .check_as_nested(maker, deployment, protocol_version),
+                .check_as_nested(maker, deployment, versions, at),
             Self::ReversalConfirmation(ReversalConfirmationResult {
                 outcome: ReversalConfirmationOutcome::Confirmed(confirmed),
                 ..
             }) => confirmed
                 .confirmation
-                .check_as_nested(maker, deployment, protocol_version),
-            _ => Ok(()),
+                .check_as_nested(maker, deployment, versions, at),
+            Self::StatusQuery(StatusQueryResult {
+                outcome: StatusOutcome::Answered(answered),
+                ..
+            }) => answered
+                .result
+                .check_as_nested(maker, deployment, versions, at),
+            Self::Hold(HoldResult {
+                outcome: HoldOutcome::Held(held),
+                ..
+            }) => held.hold.check_as_nested(maker, deployment, versions, at),
+            _ => self.terms().map_or(Ok(()), |terms| {
+                terms.check_as_nested(maker, deployment, versions, at)
+            }),
         }
     }
 }
@@ -342,6 +412,24 @@ pub struct ConversionSettlement {
 pub struct Failure {
     /// The evidence for the failure: at least one piece.
     pub evidence: Vec<EvidencePiece>,
+    /// Whose fault the provider shows the failure was, where it shows one: the customer's or the operator's. Until
+    /// the party it names accepts it, the provider carries the reversal (`REQ-ORD-11`). Absent where it shows none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fault: Option<Fault>,
+}
+
+/// Whose fault a provider shows a failure was (`REQ-ORD-11`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// The customer's.
+    Customer,
+    /// The operator's.
+    Operator,
 }
 
 /// Outcome unknown. It carries nothing, and is left only on a later result with stated evidence.
@@ -417,6 +505,15 @@ pub struct ReserveDryRunAnswer {
     pub voided_by: Vec<VoidedBy>,
     /// The declared settlement time, in seconds from segment start.
     pub settlement_seconds: SafeInteger,
+    /// The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (finding 4
+    /// of `M3`'s milestone review, 4.0.0), so a reader holds them stated before the segment starts (`REQ-QTE-6`). Made
+    /// by the result's maker, as a nested statement. Absent where it hands back none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terms: Option<Box<Statement<TupleTerms>>>,
 }
 
 /// Which amount a quote or operation fixes (`REQ-QTE-1`).
@@ -463,6 +560,15 @@ pub struct TransferQuote {
     pub voided_by: Vec<VoidedBy>,
     /// The declared settlement time, in seconds from segment start.
     pub settlement_seconds: SafeInteger,
+    /// The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (finding 4
+    /// of `M3`'s milestone review, 4.0.0), so a reader holds them stated before the segment starts (`REQ-QTE-6`). Made
+    /// by the result's maker, as a nested statement. Absent where it hands back none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terms: Option<Box<Statement<TupleTerms>>>,
 }
 
 /// An exchange's detailed quote, signed by the provider (`REQ-CAT-9`, `REQ-QTE-1`, `REQ-QTE-3`).
@@ -487,6 +593,15 @@ pub struct ConversionQuote {
     pub voided_by: Vec<VoidedBy>,
     /// The declared settlement time, in seconds from segment start.
     pub settlement_seconds: SafeInteger,
+    /// The provider's own signed terms for the tuple the dry run asked about, handed back with its answer (finding 4
+    /// of `M3`'s milestone review, 4.0.0), so a reader holds them stated before the segment starts (`REQ-QTE-6`). Made
+    /// by the result's maker, as a nested statement. Absent where it hands back none.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terms: Option<Box<Statement<TupleTerms>>>,
 }
 
 /// A rate's slippage regime (`REQ-QTE-1`, `REQ-QTE-9`, `REQ-QTE-10`).
@@ -600,6 +715,14 @@ pub struct Fee {
     pub asset: String,
     /// The amount, in the origin unit (a conversion's `from` unit).
     pub amount: String,
+    /// Whether the provider bills it separately, outside the amounts it reports (`REQ-AUD-11`, since 3.1.0). Absent
+    /// where it doesn't say: a fee record then says nothing either way.
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub billed_separately: Option<bool>,
 }
 
 /// One piece of evidence for an outcome, graded, naming whose it is (`REQ-ORD-33`, `REQ-ORD-39`).
@@ -612,4 +735,178 @@ pub struct EvidencePiece {
     pub reference: String,
     /// Whose evidence it is.
     pub by: String,
+}
+
+/// A provider's answer to a status question (`REQ-ORD-1`; 4.0.0): the question's own transaction, the transaction
+/// asked about, and where it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusQueryResult {
+    /// The transaction this answers: the question's own (`REQ-ORD-1`).
+    pub transaction: String,
+    /// The transaction asked about.
+    pub about: String,
+    /// Where it stands.
+    pub outcome: StatusOutcome,
+}
+
+/// Where a transaction asked about stands, by `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StatusOutcome {
+    /// The provider's own result for the transaction asked about, whole: what it answers of the operation it was
+    /// handed under it, as it would have answered it then.
+    Answered(StatusAnswered),
+    /// The provider knows no outcome of it yet, or no such transaction. It says nothing else.
+    NotKnown(NoDetail),
+    /// The provider refused, with its class (`REQ-CAT-18`).
+    Refused(Refused),
+}
+
+/// A status answered, carried whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusAnswered {
+    /// The provider's own enveloped result for the transaction asked about, made by the answer's maker. Never a
+    /// status answer or a hold of its own.
+    pub result: Box<Statement<ResultBody>>,
+}
+
+/// A reserve's answer to a hold request (`REQ-QTE-15`; 4.0.0): the request's transaction, which is the hold's own,
+/// and the hold or a refusal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldResult {
+    /// The transaction this answers: the request's, the hold's own id.
+    pub transaction: String,
+    /// The hold, or a refusal.
+    pub outcome: HoldOutcome,
+}
+
+/// A hold request's outcome, by `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum HoldOutcome {
+    /// The reserve's own signed hold, whole.
+    Held(Held),
+    /// The reserve refused, with its class (`REQ-CAT-18`): nothing is held.
+    Refused(Refused),
+}
+
+/// A hold, carried whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Held {
+    /// The reserve's own enveloped hold, made by the answer's maker.
+    pub hold: Box<Statement<Hold>>,
+}
+
+/// How a status answer differs from the question it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusMismatch {
+    /// It names another question's transaction.
+    AnswersAnotherQuestion,
+    /// It is about another transaction than the one asked about.
+    AboutAnotherTransaction,
+    /// The result it carries answers another transaction than the one asked about.
+    CarriesAnotherTransactionsResult,
+    /// The result it carries is a status answer or a hold, not a result of the transaction's own operation.
+    CarriesNoOperationsResult,
+    /// It was made by another provider than the one asked (the review of `1bb5f4cb`, as `check_answer`'s
+    /// `OfAnotherReserve`).
+    AnsweredByAnotherProvider,
+    /// The question isn't a status question, or the answer isn't a status answer.
+    NotAStatusQuestion,
+}
+
+/// Holds a status answer to the question it answers (`REQ-ORD-1`): both signed statements, so the answer is the
+/// provider asked's own; the question's transaction, the transaction asked about, and, where it answers, a result of
+/// that transaction's own operation. The carried result's maker and context are the answer's
+/// ([`Statement::check_context`]).
+pub fn check_status_answer(
+    question: &Statement<Operation>,
+    answer: &Statement<ResultBody>,
+) -> Result<(), Vec<StatusMismatch>> {
+    let (Operation::StatusQuery(asked), ResultBody::StatusQuery(answered)) =
+        (&question.statement, &answer.statement)
+    else {
+        return Err(alloc::vec![StatusMismatch::NotAStatusQuestion]);
+    };
+    let mut out = Vec::new();
+    if answer.maker != asked.provider {
+        out.push(StatusMismatch::AnsweredByAnotherProvider);
+    }
+    if answered.transaction != asked.transaction {
+        out.push(StatusMismatch::AnswersAnotherQuestion);
+    }
+    if answered.about != asked.about {
+        out.push(StatusMismatch::AboutAnotherTransaction);
+    }
+    if let StatusOutcome::Answered(carried) = &answered.outcome {
+        let result = &carried.result.statement;
+        if matches!(result, ResultBody::StatusQuery(_) | ResultBody::Hold(_)) {
+            out.push(StatusMismatch::CarriesNoOperationsResult);
+        } else if result.transaction() != Some(asked.about.as_str()) {
+            out.push(StatusMismatch::CarriesAnotherTransactionsResult);
+        }
+    }
+    if out.is_empty() { Ok(()) } else { Err(out) }
+}
+
+/// How a hold answer differs from the request it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldMismatch {
+    /// It names another request's transaction, or carries a hold under another.
+    AnswersAnotherRequest,
+    /// The hold it carries is of another record, candidate, order or session than the one asked.
+    HoldsAnotherQuote,
+    /// The hold it carries holds past the validity asked, or names a validity that can't be ordered.
+    PastTheValidityAsked,
+    /// It was made by another reserve than the one asked (the review of `1bb5f4cb`, as `check_answer`'s
+    /// `OfAnotherReserve`).
+    OfAnotherReserve,
+    /// The request isn't a hold request, or the answer isn't a hold answer.
+    NotAHoldRequest,
+}
+
+/// Holds a reserve's answer to the hold request it answers (`REQ-QTE-15`): both signed statements, so the answer is
+/// the reserve asked's own; its transaction, and, where it holds, a hold under that transaction of exactly the record,
+/// candidate and order or session asked, valid no later than asked. The hold's maker and context are the answer's
+/// ([`Statement::check_context`]).
+pub fn check_hold_answer(
+    request: &Statement<Operation>,
+    answer: &Statement<ResultBody>,
+) -> Result<(), Vec<HoldMismatch>> {
+    let (Operation::Hold(asked), ResultBody::Hold(answered)) =
+        (&request.statement, &answer.statement)
+    else {
+        return Err(alloc::vec![HoldMismatch::NotAHoldRequest]);
+    };
+    let mut out = Vec::new();
+    if answer.maker != asked.provider {
+        out.push(HoldMismatch::OfAnotherReserve);
+    }
+    let held = match &answered.outcome {
+        HoldOutcome::Held(held) => Some(&held.hold.statement),
+        HoldOutcome::Refused(_) => None,
+    };
+    if answered.transaction != asked.transaction
+        || held.is_some_and(|h| h.transaction != asked.transaction)
+    {
+        out.push(HoldMismatch::AnswersAnotherRequest);
+    }
+    if let Some(hold) = held {
+        if hold.record != asked.record
+            || hold.candidate != asked.candidate
+            || hold.held_for != asked.held_for
+        {
+            out.push(HoldMismatch::HoldsAnotherQuote);
+        }
+        if hold.valid_until != asked.valid_until
+            && !made_after(&asked.valid_until, &hold.valid_until)
+        {
+            out.push(HoldMismatch::PastTheValidityAsked);
+        }
+    }
+    if out.is_empty() { Ok(()) } else { Err(out) }
 }

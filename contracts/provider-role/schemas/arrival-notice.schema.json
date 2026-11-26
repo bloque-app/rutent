@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:provider-role:arrival-notice",
+  "title": "Arrival notice",
+  "description": "A reserve's own signed notice that value arrived at one of its accounts (REQ-ORD-14, REQ-ORD-23): the transaction the reserve gives the credit, its per-credit reference, the outer node it arrived at, the asset with the unit it is counted in, the amount, and the account and the party that holds it. Every notice of one credit names that one transaction, whenever signed, so a reader knows two notices of one credit as one and by it. It may name where an automatic deposit of the credit goes, as the reserve set it from its customer's parameters (destination, 4.0.0). A notice answering the operator's question of what arrived travels inside the reserve's answer (urn:rutent:provider-role:arrival-answer), unchanged.",
+  "$ref": "urn:rutent:provider-role:statement-envelope",
+  "properties": {
+    "shape": {
+      "const": "urn:rutent:provider-role:arrival-notice"
+    },
+    "statement": {
+      "$ref": "#/$defs/notice"
+    }
+  },
+  "$defs": {
+    "notice": {
+      "description": "The notice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transaction",
+        "node",
+        "asset",
+        "amount",
+        "account",
+        "holder"
+      ],
+      "properties": {
+        "transaction": {
+          "description": "The transaction the reserve gives this one credit: its per-credit reference, the same in every notice of the credit, whenever signed (REQ-ORD-23). The deposit is known by it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The reserve's outer node the value arrived at, by its network: the node belongs to the notice's maker.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "asset": {
+          "description": "The asset, and the unit the amount is counted in (REQ-CAT-11).",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "amount": {
+          "description": "How much arrived, in the asset's unit.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/positive_amount"
+        },
+        "account": {
+          "description": "The account at the reserve the value reached.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "holder": {
+          "description": "The party that holds the account.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "destination": {
+          "$ref": "#/$defs/destination"
+        }
+      }
+    },
+    "destination": {
+      "description": "Where an automatic deposit of this credit goes, as the reserve sets it from its customer's parameters (REQ-ORD-13, REQ-AUZ-9; 4.0.0): the reserve, its outer node, the account and the asset it is delivered in, and who set the parameters for whom. Absent, the reserve names none and the deposit goes to its holder.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reserve",
+        "node",
+        "account",
+        "asset",
+        "set_by",
+        "set_for"
+      ],
+      "properties": {
+        "reserve": {
+          "description": "The reserve the deposit is delivered at.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The reserve's outer node it is delivered to.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/outer_node"
+        },
+        "account": {
+          "description": "The account or address there, by reference.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "asset": {
+          "description": "The asset it is delivered in, and the unit it is counted in.",
+          "$ref": "urn:rutent:provider-role:advertisement#/$defs/denomination"
+        },
+        "set_by": {
+          "description": "Who set the parameters the destination comes from: the customer, or the agent or person acting for it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "set_for": {
+          "description": "Whose parameters they are: the customer the deposit is for.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        }
+      }
+    }
+  }
+}

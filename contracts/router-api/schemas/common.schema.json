@@ -46,10 +46,14 @@
       }
     },
     "call_kind": {
-      "description": "The kind of a cross-module call: a provider-role operation kind, as urn:rutent:provider-role:operation names it and as the module interface's declaration and call records use it (REQ-MDL-21), but never holding_balance, the operator's own question to a holding, which no module may call for. Not the typed operation's kind: a call asks a module for one provider-role operation.",
+      "description": "The kind of a cross-module call: a provider-role operation kind, as urn:rutent:provider-role:operation names it and as the module interface's declaration and call records use it (REQ-MDL-21), but never one of the operator's own questions, which no module may call for: holding_balance, a holding's balance; status_query, a status question; and hold, a hold request (provider-role 4.0.0). Not the typed operation's kind: a call asks a module for one provider-role operation.",
       "$ref": "urn:rutent:provider-role:operation#/$defs/operation/properties/kind",
       "not": {
-        "const": "holding_balance"
+        "enum": [
+          "holding_balance",
+          "status_query",
+          "hold"
+        ]
       }
     },
     "declared_call": {

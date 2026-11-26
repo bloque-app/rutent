@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:session-request",
+  "title": "Session request",
+  "description": "A request for a session that speaks for one account, which the catalogue's balance checks read (REQ-CAT-3). That it ends after it is asked for is checked by the Rust types.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "account",
+    "holder",
+    "requester",
+    "until",
+    "at"
+  ],
+  "properties": {
+    "request": {
+      "description": "The request's id, which its answer names.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "account": {
+      "description": "The account, by reference.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "holder": {
+      "description": "The party that holds the account.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+    },
+    "requester": {
+      "description": "Who asks: the holder or its delegate.",
+      "$ref": "urn:rutent:core-internal:common#/$defs/actor"
+    },
+    "until": {
+      "description": "When the session is to end, by Core's clock.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    },
+    "at": {
+      "description": "When, by Core's clock, the one it passes as at.",
+      "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+    }
+  }
+}

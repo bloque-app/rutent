@@ -92,7 +92,8 @@
       ],
       "deposit_failed_at": {
         "network": "ledger-in"
-      }
+      },
+      "waiting_since": "2026-11-06T10:00:00Z"
     }
   ]
 }

@@ -21,6 +21,7 @@
         "request",
         "snapshot",
         "bounds",
+        "ranking",
         "candidates"
       ],
       "properties": {
@@ -36,6 +37,12 @@
         },
         "bounds": {
           "$ref": "urn:rutent:router-api:policy-bounds"
+        },
+        "ranking": {
+          "description": "What the ranking compared (REQ-QTE-11, REQ-AUD-4): before_operator_fee, the providers' amounts and declared times before the operator's fee in the bounds. Ranking net of that fee would be a new value.",
+          "enum": [
+            "before_operator_fee"
+          ]
         },
         "candidates": {
           "description": "Every candidate considered, each with an id unique in the record.",

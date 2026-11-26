@@ -1,0 +1,20 @@
+{
+  "raise": "raise-7",
+  "difference": {
+    "kind": "holding_not_comparable",
+    "account": "hold-7",
+    "word": "checked",
+    "reason": "sum_past_the_bound"
+  },
+  "cites": [
+    {
+      "log": "log-main",
+      "index": 70,
+      "entry": {
+        "algorithm": "sha-256",
+        "value": "7171717171717171717171717171717171717171717171717171717171717171"
+      }
+    }
+  ],
+  "at": "2026-11-10T09:00:00Z"
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rutent:core-internal:entry",
+  "title": "Log entry",
+  "description": "An entry of the log: a party's statement, or what rutent itself did or saw (REQ-AUD-1, REQ-AUD-2). Its kind chooses between the two shapes, which share no form.",
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "stated",
+        "verified"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "stated"
+          }
+        }
+      },
+      "then": {
+        "$ref": "urn:rutent:core-internal:stated-entry"
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "verified"
+          }
+        }
+      },
+      "then": {
+        "$ref": "urn:rutent:core-internal:verified-entry"
+      }
+    }
+  ]
+}

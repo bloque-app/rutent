@@ -1,0 +1,21 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "operator",
+    "acts": "op-login-2",
+    "role": "operator",
+    "kind": "person"
+  },
+  "what": {
+    "call": "command",
+    "command": "appoint_checker",
+    "subject": "checker-org-1"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "done"
+  }
+}

@@ -230,6 +230,12 @@ pub enum OperationKind {
     ReversalConfirmation,
     /// A holding account's balance, asked by the operator (`REQ-AUD-15`).
     HoldingBalance,
+    /// A status question about a transaction the module was handed (`REQ-ORD-1`; provider-role 4.0.0): a module whose
+    /// `handles` lists it answers where a transaction stands, moving nothing.
+    StatusQuery,
+    /// A hold request: a reserve's module whose `handles` lists it answers with its signed hold of a quote
+    /// (`REQ-QTE-15`; provider-role 4.0.0), moving nothing.
+    Hold,
 }
 
 impl OperationKind {
@@ -245,6 +251,8 @@ impl OperationKind {
             Operation::Reversal(_) => Self::Reversal,
             Operation::ReversalConfirmation(_) => Self::ReversalConfirmation,
             Operation::HoldingBalance(_) => Self::HoldingBalance,
+            Operation::StatusQuery(_) => Self::StatusQuery,
+            Operation::Hold(_) => Self::Hold,
         }
     }
 }
@@ -673,6 +681,8 @@ impl CrossModuleCall {
             Operation::Reversal(o) => &o.provider,
             Operation::ReversalConfirmation(o) => &o.provider,
             Operation::HoldingBalance(o) => &o.provider,
+            Operation::StatusQuery(o) => &o.provider,
+            Operation::Hold(o) => &o.provider,
         }
     }
 
@@ -688,6 +698,8 @@ impl CrossModuleCall {
             Operation::Reversal(o) => Some(&o.transaction),
             Operation::ReversalConfirmation(o) => Some(&o.transaction),
             Operation::HoldingBalance(o) => Some(&o.transaction),
+            Operation::StatusQuery(o) => Some(&o.transaction),
+            Operation::Hold(o) => Some(&o.transaction),
         }
     }
 }

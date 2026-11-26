@@ -1,0 +1,34 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "rutent",
+    "acts": "core-orch",
+    "role": "core",
+    "kind": "component"
+  },
+  "what": {
+    "call": "part_evidence",
+    "evidence": "ev-0071",
+    "order": "ord-1",
+    "part": "p3",
+    "grade": 2,
+    "whose": "bank-co",
+    "rests_on": [
+      {
+        "log": "log-main",
+        "index": 330,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+        }
+      }
+    ]
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

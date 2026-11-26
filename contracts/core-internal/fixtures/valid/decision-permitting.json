@@ -1,0 +1,15 @@
+{
+  "request": "req-100",
+  "decision": "dec-100",
+  "outcome": {
+    "answer": "permit"
+  },
+  "receipt": {
+    "log": "log-main",
+    "index": 42,
+    "entry": {
+      "algorithm": "sha-256",
+      "value": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b"
+    }
+  }
+}

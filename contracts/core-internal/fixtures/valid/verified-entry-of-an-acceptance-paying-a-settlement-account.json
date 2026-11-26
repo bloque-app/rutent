@@ -1,0 +1,50 @@
+{
+  "kind": "verified",
+  "who": {
+    "party": "cust-1",
+    "acts": "cust-1",
+    "role": "customer",
+    "kind": "person"
+  },
+  "what": {
+    "call": "acceptance",
+    "acceptance": "acc-0004",
+    "order": "ord-27",
+    "request": "client-req-12",
+    "quote": {
+      "algorithm": "sha-256",
+      "value": "9595959595959595959595959595959595959595959595959595959595959595"
+    },
+    "authorisation": "auth-27",
+    "basis": "given",
+    "parties": {
+      "requester": "cust-1",
+      "beneficiary": "payroll-acct-ref-1",
+      "settlement_account_at": "bank-co",
+      "payer": "cust-1"
+    },
+    "origin_reserve": "us-bank",
+    "yeses": [
+      {
+        "part": "p1",
+        "origin_reserve": "us-bank",
+        "reserve_yes": {
+          "log": "log-main",
+          "index": 85,
+          "entry": {
+            "algorithm": "sha-256",
+            "value": "8686868686868686868686868686868686868686868686868686868686868686"
+          }
+        }
+      }
+    ],
+    "session": "sess-300"
+  },
+  "when": {
+    "at": "2026-11-10T09:00:00Z",
+    "source": "core_clock"
+  },
+  "outcome": {
+    "status": "observed"
+  }
+}

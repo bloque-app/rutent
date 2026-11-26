@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:rutent:router-api:policy-bounds",
   "title": "Policy bounds",
-  "description": "What the operator allows the router (REQ-QTE-11, REQ-ORD-8, ADR-0006): the hop limit, the most parts a split may have, the providers and tuples never chosen, and the ceilings on value in flight, under a named policy version (REQ-AUD-4); and the deployment and protocol version every statement in the snapshot is judged against: a statement that names another is void here (REQ-PRT-1). At most one ceiling per provider or publisher and asset, an asset being its id and decimals, checked by the contract's Rust types.",
+  "description": "What the operator allows the router (REQ-QTE-11, REQ-ORD-8, ADR-0006): the hop limit, the most parts a split may have, the providers and tuples never chosen, and the ceilings on value in flight, the operator's own fee and the slippage it sets per tuple, under a named policy version (REQ-AUD-4); and the deployment and protocol version every statement in the snapshot is judged against: a statement that names another is void here (REQ-PRT-1). At most one ceiling per provider or publisher and asset, an asset being its id and decimals, checked by the contract's Rust types. At most one slippage limit per tuple, and an operator's fee whose proportion is at most one, are checked by the Rust types too; so is the rule against a snapshot that every exchange tuple settling within three days has a slippage limit.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,9 @@
     "excluded_providers",
     "excluded_tuples",
     "provider_ceilings",
-    "publisher_ceilings"
+    "publisher_ceilings",
+    "operator_fee",
+    "slippage_limits"
   ],
   "properties": {
     "deployment": {
@@ -94,6 +96,33 @@
           },
           "amount": {
             "$ref": "urn:rutent:provider-role:common#/$defs/amount"
+          }
+        }
+      }
+    },
+    "operator_fee": {
+      "description": "The operator's own fee (REQ-QTE-2, REQ-QTE-5), taken at the destination, in the request's to unit, from what the providers' terms deliver there: flat + ceil(a * numerator / denominator) on that amount a, capped by its maximum where it gives one and never raised to it. Its proportion is at most one. The floor is judged on what is left after it (REQ-ORD-27); ranking compares the providers' amounts before it (the decision record's ranking).",
+      "$ref": "urn:rutent:router-api:catalogue-snapshot#/$defs/fee_formula"
+    },
+    "slippage_limits": {
+      "description": "The slippage the operator sets per tuple (REQ-QTE-9): the most an exchange's rate may move against the customer on a segment settling within three days (259,200 seconds from segment start, inclusive). Every exchange tuple of the snapshot routed under these bounds that declares settling within three days, by its price or a fresh quote, has one. Empty if no such tuple is routed.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tuple",
+          "max_bps"
+        ],
+        "properties": {
+          "tuple": {
+            "$ref": "#/$defs/tuple_key"
+          },
+          "max_bps": {
+            "description": "The largest move of the rate against the customer, in basis points.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
           }
         }
       }

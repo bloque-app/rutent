@@ -1,7 +1,7 @@
 //! Checked atoms: the router API's identifiers, versions, amounts and lists, each as strict as the schema atom
 //! it mirrors.
 
-use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::cmp::Ordering;
 use core::fmt;
 
@@ -260,6 +260,71 @@ impl Amount {
         digits.reverse();
         Amount::new(String::from_utf8(digits).expect("ASCII digits"))
     }
+
+    /// The difference, or `None` if `other` is larger.
+    pub fn checked_sub(&self, other: &Amount) -> Option<Amount> {
+        if other > self {
+            return None;
+        }
+        let (a, b) = (self.0.as_bytes(), other.0.as_bytes());
+        let mut digits = Vec::with_capacity(a.len());
+        let mut borrow = 0;
+        for i in 0..a.len() {
+            let digit = |s: &[u8]| s.len().checked_sub(i + 1).map_or(0, |j| s[j] - b'0');
+            let (x, y) = (digit(a), digit(b) + borrow);
+            let (d, next) = if x >= y { (x - y, 0) } else { (x + 10 - y, 1) };
+            digits.push(b'0' + d);
+            borrow = next;
+        }
+        while digits.len() > 1 && digits.last() == Some(&b'0') {
+            digits.pop();
+        }
+        digits.reverse();
+        Amount::new(String::from_utf8(digits).expect("ASCII digits"))
+    }
+}
+
+/// The decimal digits of a whole number, least significant first, with no leading zeros.
+fn little_endian(text: &str) -> Vec<u8> {
+    text.bytes().rev().map(|b| b - b'0').collect()
+}
+
+/// `a × b` exactly, in little-endian decimal digits with no leading zeros, by long multiplication: a product of
+/// two amounts has up to 156 digits, past an amount's 78, so it isn't one.
+fn product(a: &Amount, b: &Amount) -> Vec<u8> {
+    let (a, b) = (little_endian(a.as_str()), little_endian(b.as_str()));
+    let mut out = vec![0u32; a.len() + b.len()];
+    for (i, &x) in a.iter().enumerate() {
+        for (j, &y) in b.iter().enumerate() {
+            out[i + j] += u32::from(x) * u32::from(y);
+        }
+    }
+    let mut carry = 0;
+    let mut digits: Vec<u8> = out
+        .into_iter()
+        .map(|d| {
+            let total = d + carry;
+            carry = total / 10;
+            (total % 10) as u8
+        })
+        .collect();
+    while carry > 0 {
+        digits.push((carry % 10) as u8);
+        carry /= 10;
+    }
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    digits
+}
+
+/// `a × b` against `c × d`, exactly, with no division (`DEC-5`): what the contract needs to judge a fee formula's
+/// `ceil(a × n / d) ≤ k`, which for a whole `k` and `d > 0` holds exactly when `a × n ≤ k × d`.
+pub(super) fn compare_products(a: &Amount, b: &Amount, c: &Amount, d: &Amount) -> Ordering {
+    let (left, right) = (product(a, b), product(c, d));
+    left.len()
+        .cmp(&right.len())
+        .then_with(|| left.iter().rev().cmp(right.iter().rev()))
 }
 
 impl PartialOrd for Amount {
@@ -439,9 +504,10 @@ where
 mod tests {
     use super::{
         Amount, Decimal, Distinct, Id, NonEmpty, PositiveAmount, ProtocolVersion, Timestamp,
-        Version,
+        Version, compare_products,
     };
-    use alloc::vec;
+    use alloc::{format, vec};
+    use core::cmp::Ordering;
 
     // verifies: DEC-4
     #[test]
@@ -494,5 +560,37 @@ mod tests {
         assert_eq!(a(&"9".repeat(78)).checked_add(&a("1")), None);
         assert!(a("9") < a("10"));
         assert!(a("600") > a("500"));
+        assert_eq!(a("1000").checked_sub(&a("1")), Some(a("999")));
+        assert_eq!(a("1000").checked_sub(&a("1000")), Some(a("0")));
+        assert_eq!(a("5").checked_sub(&a("6")), None);
+    }
+
+    // verifies: REQ-QTE-5, DEC-5
+    #[test]
+    fn products_compare_exactly_past_an_amounts_digits() {
+        let a = |s: &str| Amount::new(s).unwrap();
+        let nines = a(&"9".repeat(78));
+        assert_eq!(
+            compare_products(&a("12"), &a("12"), &a("16"), &a("9")),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_products(&a("0"), &a("7"), &a("0"), &a("1")),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_products(&a("13"), &a("12"), &a("16"), &a("9")),
+            Ordering::Greater
+        );
+        // (10^78 − 1)^2 against (10^78 − 1) × (10^78 − 2): one more, 156 digits each.
+        let less = a(&format!("{}8", "9".repeat(77)));
+        assert_eq!(
+            compare_products(&nines, &nines, &nines, &less),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_products(&nines, &less, &less, &nines),
+            Ordering::Equal
+        );
     }
 }

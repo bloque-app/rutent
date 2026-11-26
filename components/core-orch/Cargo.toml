@@ -8,9 +8,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Lets the test kit make a `stuck::Stated` of its own; never enabled by a build of the assembly.
+test-support = []
+
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-router = { path = "../router" }
 rutent-stm = { path = "../stm" }
 rutent-prov = { path = "../prov" }
 rutent-evidence = { path = "../evidence" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+ed25519-dalek = "2.2.0"
+jsonschema = { version = "0.60.2", default-features = false }
+proptest = "1.12.0"

@@ -26,6 +26,10 @@ rutent has no schedules, series or mandates (R132). An integrator running charge
 
 rutent notifies every change of an order's state (`REQ-ORD-20`). Notices are authenticated, safe to receive twice or out of order, and you can always ask for the current state. Act on them, not on polling.
 
+- Each notice is signed for you alone. Take it only once its signature checks against the deployment's notice key, and once it names this deployment and you as its receiver.
+- Each notice of an order carries the order's whole state after a change, with a sequence number. Keep the highest sequence you hold, and ignore any notice with a lower or equal one.
+- A late or lost notice below the one you hold changes nothing: the later one already carries the whole state. A lost latest notice shows in no sequence, so whenever you must be sure before acting, ask for the current state.
+
 ## When the final deposit fails
 
 The order isn't rolled back (R139, R140). rutent first tries another route to the same destination. If none is left, it waits for your customer to choose another destination, or to accept a new order that starts from where the value sits. Plan for asking your customer.

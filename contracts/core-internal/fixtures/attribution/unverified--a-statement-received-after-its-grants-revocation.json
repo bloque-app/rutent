@@ -1,0 +1,234 @@
+{
+  "claim": {
+    "kind": "stated",
+    "attribution": {
+      "signature": "unverified",
+      "claimed_by": {
+        "party": "acme-co",
+        "acts": "acme-co",
+        "role": "provider",
+        "kind": "component"
+      }
+    },
+    "what": {
+      "statement": "urn:rutent:provider-role:result"
+    },
+    "when": {
+      "at": "2026-11-06T15:04:05Z",
+      "source": "party_stated"
+    },
+    "received_at": "2026-11-06T16:00:05Z",
+    "outcome": {
+      "status": "stated"
+    },
+    "signed_with": {
+      "scheme": "ed25519",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+    },
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "about": {
+      "order": "ord-17",
+      "segment": "seg-3",
+      "transaction": "tx-005"
+    }
+  },
+  "kept": {
+    "commitment": {
+      "algorithm": "sha-256",
+      "value": "463a5eb8f1be0c64c7990824bb7936b1ef526d5524177af4c6083664f41785fe"
+    },
+    "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "bytes": "eyJkZXBsb3ltZW50Ijp7Im5hbWUiOiJydXRlbnQtdGVzdCIsIm9wZXJhdG9yX2tleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEifSwicHJvdG9jb2xfdmVyc2lvbiI6IjIuMC4xIiwic2hhcGUiOiJ1cm46cnV0ZW50OnByb3ZpZGVyLXJvbGU6cmVzdWx0IiwibWFrZXIiOiJhY21lLWNvIiwibWFkZV9hdCI6IjIwMjYtMTEtMDZUMTU6MDQ6MDVaIiwic2lnbmF0dXJlIjp7InNjaGVtZSI6ImVkMjU1MTkiLCJrZXkiOiJQVDRfUUVGQ1EwUkZSa2RJU1VwTFRFMU9UMUJSVWxOVVZWWlhXRmxhVzF3IiwidmFsdWUiOiJCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QWhJaU1rSlNZbktDa3FLeXd0TGk4d01USXpORFUyTnpnNU9qczhQVDRfUUVGQ1EwUkZSZyJ9LCJzdGF0ZW1lbnQiOnsia2luZCI6ImJhbGFuY2VfdmVyaWZpY2F0aW9uIiwidHJhbnNhY3Rpb24iOiJ0eC0wMDUiLCJvdXRjb21lIjp7InN0YXR1cyI6ImFuc3dlcmVkIiwic3VmZmljaWVudCI6dHJ1ZX19fQ"
+  },
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "keys": [
+    {
+      "maker": "acme-co",
+      "key": "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w",
+      "at": "2026-11-06T15:04:05Z"
+    }
+  ],
+  "signature": true,
+  "expect": "unverified",
+  "history": [
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 1,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0000000000000000000000000000000000000000000000000000000000000001"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "effect",
+          "action": {
+            "kind": "change_catalogue",
+            "provider": "acme-co",
+            "change": "grant",
+            "tuple": "usd-cop",
+            "advertising_keys": [
+              "PT4_QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1w"
+            ]
+          },
+          "decision": {
+            "request": "req-100",
+            "decision": "dec-100",
+            "answer": "permit",
+            "receipt": {
+              "log": "log-main",
+              "index": 42,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b"
+              }
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-05T00:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "to_take_effect"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 101,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0000000000000000000000000000000000000000000000000000000000000065"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 1,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-05T00:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 2,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "effect",
+          "action": {
+            "kind": "change_catalogue",
+            "provider": "acme-co",
+            "change": "revoke_grant",
+            "tuple": "usd-cop"
+          },
+          "decision": {
+            "request": "req-100",
+            "decision": "dec-100",
+            "answer": "permit",
+            "receipt": {
+              "log": "log-main",
+              "index": 42,
+              "entry": {
+                "algorithm": "sha-256",
+                "value": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b"
+              }
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-06T16:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "to_take_effect"
+        }
+      }
+    },
+    {
+      "receipt": {
+        "log": "log-main",
+        "index": 102,
+        "entry": {
+          "algorithm": "sha-256",
+          "value": "0000000000000000000000000000000000000000000000000000000000000066"
+        }
+      },
+      "entry": {
+        "kind": "verified",
+        "who": {
+          "party": "rutent",
+          "acts": "core-orch",
+          "role": "core",
+          "kind": "component"
+        },
+        "what": {
+          "call": "result",
+          "effect": {
+            "log": "log-main",
+            "index": 2,
+            "entry": {
+              "algorithm": "sha-256",
+              "value": "0000000000000000000000000000000000000000000000000000000000000002"
+            }
+          }
+        },
+        "when": {
+          "at": "2026-11-06T16:00:00Z",
+          "source": "core_clock"
+        },
+        "outcome": {
+          "status": "done"
+        }
+      }
+    }
+  ]
+}

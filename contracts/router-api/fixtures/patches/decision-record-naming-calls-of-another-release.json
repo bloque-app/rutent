@@ -5,6 +5,11 @@
       "op": "replace",
       "path": "/statement/snapshot/figures/4/origin/module_version",
       "value": "2.0.0"
+    },
+    {
+      "op": "replace",
+      "path": "/signature/value",
+      "value": "SEfV1StbIUq3MHfPwFo1ct-wJ52VcthlXm7dyY0jJOj2Vv7Ar3mbUsUOXOQOhe7fhVB7s8GtBzA2_Q2JozUyDA"
     }
   ]
 }
