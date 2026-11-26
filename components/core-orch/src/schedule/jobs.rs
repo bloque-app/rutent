@@ -209,8 +209,6 @@ pub trait Ports {
     fn actors(&self) -> Actors;
     /// The orders Core started, each as it holds it, by order.
     fn started(&self) -> &BTreeMap<String, Started>;
-    /// The route `order` runs on now where a recalculation gave it another: its record and its one part's segments.
-    fn recalculated(&self, order: &Id) -> Option<(DecisionRecord, Vec<Id>)>;
     /// The log's entries, each with its receipt, as the log holds them now.
     fn history(&self) -> Vec<(Receipt, Entry)>;
     /// The decision record `id` of `order` as Core's key signed it, held to the digest the log names it by.
@@ -304,6 +302,42 @@ fn segments_of(ports: &dyn Ports, order: &Id) -> Vec<Id> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The route `order`'s part `first` runs on now, as Core's own record holds it, which a reopened Core rebuilds from its
+/// log (`Segments::routes_ran`, the round-2 review of `T-020-48`, its B4): the last recalculated route of the part, its
+/// record held through the decision records Core's key signed, and its segments those of the part's current route as Core
+/// follows it after the ones that had settled before the recalculation, one for each operation of the record's route;
+/// the first route where none was recalculated. `None` where a recalculated route's record isn't held, or its segments
+/// aren't the route's (fails closed: the round says so).
+fn current_route(
+    ports: &dyn Ports,
+    order: &Id,
+    started: &Started,
+    first: &Placed,
+) -> Option<(DecisionRecord, Vec<Id>)> {
+    let last = ports
+        .segments()
+        .routes_ran(order)
+        .and_then(|(_, later)| later.iter().rev().find(|r| r.part == first.part).cloned());
+    let Some(last) = last else {
+        return Some((started.record.clone(), first.segments.clone()));
+    };
+    let record = ports.decision_record(order, &last.record)?;
+    // The part's current route is what had settled before the recalculation, then the new route's segments.
+    let operations = record.chosen()?.parts.first().operations.len();
+    let segments = ports
+        .segments()
+        .order(order)?
+        .parts
+        .iter()
+        .find(|p| p.part_id.as_str() == first.part.as_str())?
+        .segments
+        .iter()
+        .skip(last.settled_before)
+        .map(|s| id(s.segment_id.as_str()))
+        .collect::<Option<Vec<_>>>()?;
+    (segments.len() == operations).then_some((record, segments))
 }
 
 /// The receipt of the log's `decision_record` entry for `record`.
@@ -946,10 +980,15 @@ impl Duties for Jobs<'_> {
             let Some(first) = started.first() else {
                 continue;
             };
-            let (record, segments) = self
-                .ports
-                .recalculated(&order)
-                .unwrap_or_else(|| (started.record.clone(), first.segments.clone()));
+            let Some((record, segments)) = current_route(&*self.ports, &order, started, &first)
+            else {
+                // Fails closed: a route Core can't name now is answered, never timed on another route.
+                watched.push(Watched {
+                    order,
+                    found: Err("the current route's record isn't held".to_owned()),
+                });
+                continue;
+            };
             let mut found = Err("the stuck orders weren't lent".to_owned());
             self.ports.with_stuck(&mut |stuck, parts, _, channel| {
                 found = stuck
@@ -1120,9 +1159,6 @@ mod tests {
         }
         fn started(&self) -> &BTreeMap<String, Started> {
             &self.started
-        }
-        fn recalculated(&self, _: &Id) -> Option<(DecisionRecord, Vec<Id>)> {
-            None
         }
         fn history(&self) -> Vec<(Receipt, Entry)> {
             Vec::new()

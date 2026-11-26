@@ -752,3 +752,69 @@ fn provider_silent_past_twice_its_p99_makes_the_order_stuck_and_a_late_delivery_
         "the provider's books grew only by its own deposit"
     );
 }
+
+/// An order on a second route whose deposit was left unknown: the reserve refused the first route's deposit, Core
+/// recalculated, and the reserve left the second route's deposit unknown.
+fn on_a_second_route_left_unknown() -> (Core, rutent_contracts::router_api::Id) {
+    let (mut core, session) = core_with("AC-40", &[RESERVE]);
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Refuse));
+    core.world()
+        .script_for(RESERVE, "deposit", Behaviour::act(Act::Unknown));
+    let (order, _) = run(
+        &mut core,
+        within("req-second-unknown", &session, AMOUNT, RESERVE, OTHER),
+    );
+    let Recalculation::Recalculated(second) = core.recalculate(&order).expect("tried") else {
+        panic!("a second route");
+    };
+    let ran = core
+        .run_recalculated(&order, &second)
+        .expect("the second route runs");
+    assert!(
+        segments_of(&[ran])
+            .iter()
+            .any(|s| matches!(s.outcome, SegmentOutcome::Unknown(_))),
+        "the second route's deposit is left unknown"
+    );
+    (core, order)
+}
+
+/// Core's tick times the route an order runs on now, which Core rebuilds from its log (`Segments::routes_ran`): an
+/// order on a recalculated route whose deposit was left unknown is declared stuck past its time by the tick alone,
+/// whether Core ran on or was reopened in between; a reopened Core that timed the first route instead would leave it
+/// untimed (`INV-3`, `AC-5`; the round-2 review of `T-020-48`, its B4).
+// verifies: INV-3, AC-5
+#[test]
+fn recalculated_route_is_watched_after_a_restart() {
+    let (mut core, order) = on_a_second_route_left_unknown();
+    core.clock.advance(7 * 86_400);
+    let round = core.tick();
+    assert_eq!(
+        state(&mut core, &order),
+        OrderState::Stuck,
+        "without a restart: {:?}",
+        round.watched
+    );
+
+    let scenario = Scenario::new("failure", "AC-40", given(&[RESERVE]));
+    let (core, order) = on_a_second_route_left_unknown();
+    let mut core = scenario.reopen(core, 1, &mut Reference);
+    assert_eq!(state(&mut core, &order), OrderState::FirstSegmentSettled);
+    core.clock.advance(7 * 86_400);
+    let round = core.tick();
+    assert!(
+        round
+            .watched
+            .iter()
+            .any(|w| w.order == order
+                && matches!(w.found, Ok(rutent_core_orch::stuck::Watch::Stuck(_)))),
+        "the reopened Core's tick timed the recalculated route: {:?}",
+        round.watched
+    );
+    assert_eq!(
+        state(&mut core, &order),
+        OrderState::Stuck,
+        "after a restart"
+    );
+}

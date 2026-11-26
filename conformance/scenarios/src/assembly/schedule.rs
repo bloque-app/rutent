@@ -218,10 +218,6 @@ impl Ports for Due<'_> {
         &self.0.started
     }
 
-    fn recalculated(&self, order: &Id) -> Option<(DecisionRecord, Vec<Id>)> {
-        self.0.life.routes.get(order.as_str()).cloned()
-    }
-
     fn history(&self) -> Vec<(Receipt, Entry)> {
         self.0.log.borrow().entries().to_vec()
     }

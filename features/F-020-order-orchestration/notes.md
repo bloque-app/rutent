@@ -8654,3 +8654,27 @@ one conflict was this file, both sections kept). `DEC-20` paths: `components/cor
 | a handed-on statement kept again | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule` |
 | the status answer at the stand-in's fixed time | `segment_its_provider_says_failed_is_reported_to_the_stuck_mover_through_the_schedule`, `segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_schedule` |
 | a holding-not-read raise may cite another account's check (the row's three fields) | `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+
+### T-020-48, round 3 (the round-2 review of #316, its B4)
+
+Branch `f-020/t-020-48-core-tick`, `origin/m3` (`6e4dd5bf`, `T-020-52`) merged first: the conflicts were the relation,
+schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema rules) and this file (both sections kept).
+`DEC-20` path: `components/core-orch/` (`schedule/jobs.rs`). `F-024` files: the assembly's `schedule.rs` and `tests/failure.rs`.
+
+- **B4: the watch times the route Core's own record names.** `Ports::recalculated` is gone: it was answered from the
+  assembly's `life.routes`, which every reopened assembly starts empty, so a reopened Core timed an order's first route
+  and never its recalculated one, and the order was never declared stuck (fails open, `INV-3`, `AC-5`). `jobs::current_route`
+  reads the last route recalculated for the part from `Segments::routes_ran` (rebuilt from the log), its record through
+  `Ports::decision_record`, and its segments from the part's current route as Core follows it, after the ones that had
+  settled before the recalculation, one for each operation of the record's route. Fails closed: a recalculated route
+  whose record isn't held, or whose segments aren't the route's, is answered in the round (`Watched` with why), never
+  timed on another route. Test `recalculated_route_is_watched_after_a_restart` (`tests/failure.rs`), written first and seen
+  red (after the reopen the round watched nothing and the order stayed `FirstSegmentSettled`).
+- **Not taken here (the reviewer's call):** gap 3, Core's own order run (`follow`, `run`, `recalculate`, the linked runs and
+  hand-ons, the stuck commands, the rebuild of `started` and the current route), becomes a row of its own, with
+  `Ports::started` and `Ports::decision_record`, which stay for it, and the review's L6 (the decision record's digest check,
+  still the assembly's `record_of`). Owner: the lead's new row. The assembly's `life.routes` stays only for its own run.
+
+| Rule switched off | Red |
+|---|---|
+| the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
