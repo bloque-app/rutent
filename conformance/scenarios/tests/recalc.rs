@@ -176,6 +176,8 @@ impl Recalc {
             fresh: &mut core.ids,
             issued: &mut core.issued,
             segments: &mut core.segments,
+            kept: &mut segments_support::KeepsNothing,
+            recorded: &segments_support::ReadsNothing,
         };
         let done = self.recalculations.recalculate::<RouteFinder>(
             &mut parts,

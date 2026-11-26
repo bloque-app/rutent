@@ -629,10 +629,26 @@ pub struct ReserveDeclaration {
     pub can_require_user_initiated_withdrawal: bool,
     /// Whether the reserve starts routes on automatic deposits (`REQ-ORD-13`).
     pub starts_routes_on_automatic_deposits: bool,
+    /// Whether the reserve answers the operator's hold requests (`Operation::Hold`), holding a chosen quote for a new
+    /// route before it starts (`REQ-QTE-15`; 4.0.0). Absent, it answers none, and the operator asks it for none
+    /// ([`ReserveDeclaration::answers_hold_requests`]).
+    #[serde(
+        default,
+        deserialize_with = "crate::provider_role::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub answers_hold_requests: Option<bool>,
     /// The party the declaration is attributable to.
     pub maker: String,
     /// The provider version in which this declaration was made; a version that changes it declares again.
     pub declared_in_version: String,
+}
+
+impl ReserveDeclaration {
+    /// Whether the reserve answers hold requests: only where it says so, and never where it says nothing (`REQ-QTE-15`).
+    pub fn answers_hold_requests(&self) -> bool {
+        self.answers_hold_requests == Some(true)
+    }
 }
 
 /// Deserialises an optional field that, when present, holds a value: `null` is refused, as the schemas refuse it.

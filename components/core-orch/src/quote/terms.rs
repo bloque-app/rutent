@@ -25,9 +25,9 @@ use crate::snapshot::Clock;
 /// A provider's terms bind it for a segment from the segment's start: the last stated at or before it, never one
 /// stated later. Before the segment starts nothing binds, and the route's total is a quote.
 ///
-/// It is kept in memory, keyed by the tuple's provider and ends; keeping it across a restart is the deployment's
-/// (`F-030`), as with the rounds' `Issued`. Which module hands a provider's signed terms to [`Terms::state`] is not
-/// built: no part of Core receives them yet.
+/// It is kept in memory, keyed by the tuple's provider and ends; a Core that reopens reads them back from the log
+/// (`T-020-46`). A provider's signed terms reach it from the provider's answer to Core's own dry run, which the
+/// platform's signer signs for that tuple alone, and intake takes them ([`TakesTerms`], `T-020-56`).
 #[derive(Debug, Clone, Default)]
 pub struct Terms {
     history: BTreeMap<String, Vec<StatedTerms>>,
@@ -172,7 +172,8 @@ impl Terms {
     /// commitment, which only the kept bytes answer for). The same terms taken again are kept once
     /// (`Terms::state`).
     ///
-    /// Nothing in Core hands a provider's terms to this call yet: no module delivers them (`T-020-14`'s notes).
+    /// Intake hands it the terms a provider gave back in its answer to Core's own dry run ([`TakesTerms`],
+    /// `T-020-56`).
     pub fn take(&mut self, desk: TermsDesk<'_>, bytes: &[u8]) -> Result<Taken, TakeError> {
         let statement: Statement<TupleTerms> =
             serde_json::from_slice(bytes).map_err(|_| TakeError::Unreadable)?;
@@ -252,6 +253,87 @@ impl Terms {
             }
         }
     }
+}
+
+/// Where a provider's signed terms are taken for the segments that start after them (`REQ-QTE-6`, `T-020-56`): the
+/// segments hold them ([`crate::segments::Segments::take_terms`]), and intake hands them the terms each of Core's own
+/// dry runs handed back ([`crate::rounds::Routed::terms`]).
+pub trait TakesTerms {
+    /// Takes `bytes`, a provider's signed terms as they arrived ([`Terms::take`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Terms::take`].
+    fn take_terms(&mut self, desk: TermsDesk<'_>, bytes: &[u8]) -> Result<Taken, TakeError>;
+}
+
+impl TakesTerms for Terms {
+    fn take_terms(&mut self, desk: TermsDesk<'_>, bytes: &[u8]) -> Result<Taken, TakeError> {
+        self.take(desk, bytes)
+    }
+}
+
+/// Takes each of `terms`, a provider's own terms one of Core's dry runs handed back (`crate::rounds::Routed::terms`),
+/// through `taker`, for the segments that start after them (`REQ-QTE-6`, `T-020-56`): presented by the provider that
+/// made them, which the platform handed them from. A log or store that can't take them now is an error, and the same
+/// call again takes them once (`Terms::take` keeps the same terms once); terms that aren't kept otherwise (not terms,
+/// unattributed, refused, not what the store keeps) are left out, failing closed: the price, or terms stated before,
+/// binds the segment instead. Intake, a filing and a recalculation each take their routing's terms through it.
+pub(crate) fn take_handed_back(
+    taker: &mut dyn TakesTerms,
+    desk: HandedBack<'_>,
+    terms: &[Vec<u8>],
+) -> Result<(), AppendFailure> {
+    let HandedBack {
+        evidence,
+        log,
+        kept,
+        recorded,
+        clock,
+        catalogue,
+    } = desk;
+    for bytes in terms {
+        let maker = serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| {
+                v["maker"]
+                    .as_str()
+                    .and_then(rutent_contracts::router_api::Id::new)
+            });
+        let Some(maker) = maker else {
+            continue;
+        };
+        let presented_by = crate::relay::presenter(
+            catalogue,
+            &maker,
+            rutent_contracts::core_internal::Role::Provider,
+        );
+        let terms_desk = TermsDesk {
+            evidence: &mut *evidence,
+            log: &mut *log,
+            kept: &mut *kept,
+            recorded,
+            clock,
+            catalogue,
+            presented_by: &presented_by,
+        };
+        if let Err(TakeError::Append(AppendFailure::Unavailable)) =
+            taker.take_terms(terms_desk, bytes)
+        {
+            return Err(AppendFailure::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+/// What taking the terms a routing handed back reaches: [`TermsDesk`] but who presented them, which is each one's maker.
+pub(crate) struct HandedBack<'a> {
+    pub evidence: &'a mut dyn Evidence,
+    pub log: &'a mut dyn Log,
+    pub kept: &'a mut dyn KeptStatements,
+    pub recorded: &'a dyn Recorded,
+    pub clock: &'a dyn Clock,
+    pub catalogue: &'a Catalogue,
 }
 
 /// The bytes base64url text without padding writes, or `None` where it isn't such text.

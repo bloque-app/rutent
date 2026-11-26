@@ -8,6 +8,11 @@
 //! segment out of the node settles or the segment that brought the value is reversed (`REQ-AUD-15`: the account's
 //! attribution is what the node holds, and `INV-5`'s per-order guard reads it). A release is asked as a landing is.
 //!
+//! **A reversal back into a held node lands the value again** (`INV-1`, `T-020-56`). The one reversal out of a held
+//! node the state machine lets happen is a linked order's first move, which a hand-on started there: the hand-on took
+//! the value out of the first order's attribution, and the move's reversal brings it back, now the linked order's. Its
+//! landing is owed then, for the linked order, and released once the value leaves again.
+//!
 //! **The wallet is asked once for a segment.** The landing is called by the assembly after each entry point that can
 //! settle a segment ([`Segments::land_settled`](super::Segments::land_settled)), like the measure writer, and nothing
 //! of a segment, its outcome, its entries or what it moved depends on it: a value that couldn't be placed leaves the
@@ -209,9 +214,14 @@ impl Landing {
         }
     }
 
-    /// The segment's reversal completed: its value is back where it came from.
-    pub(super) fn reverse(&mut self, at: At) {
-        self.reversed.insert(at);
+    /// The segment's reversal completed: its value is back where it came from. Where that is the held node the
+    /// segment left, a linked order's first move out of it (`back_at_node`, `T-020-56`), the value rests there again and
+    /// is owed a landing, as one that settled there is; otherwise what the segment landed at the node it brought the
+    /// value to is released.
+    pub(super) fn reverse(&mut self, at: At, back_at_node: bool) {
+        if !back_at_node {
+            self.reversed.insert(at);
+        }
     }
 
     pub(super) fn unconfirmed(&self) -> usize {
@@ -373,11 +383,11 @@ mod tests {
         let mut reversed = Landing::default();
         assert!(reversed.landed(at(), Landed::Placed));
         assert_eq!(reversed.owes(&at(), false), Owes::Nothing, "resting");
-        reversed.reverse(at());
+        reversed.reverse(at(), false);
         assert_eq!(reversed.owes(&at(), false), Owes::Release, "reversed");
 
         let mut never = Landing::default();
-        never.reverse(at());
+        never.reverse(at(), false);
         assert_eq!(
             never.owes(&at(), false),
             Owes::Nothing,

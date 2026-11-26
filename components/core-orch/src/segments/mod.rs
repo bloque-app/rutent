@@ -90,6 +90,8 @@ mod measured;
 mod pairs;
 mod ports;
 mod reopen;
+#[cfg(test)]
+mod returned;
 pub mod roll_back;
 mod sign;
 
@@ -710,6 +712,10 @@ pub struct Segments {
     pairing: pairs::Pairing,
     /// The value landed in holding accounts, by segment (`T-020-33`).
     landing: landing::Landing,
+    /// The value a reversal brought back to the held node a linked order's first move left, by that move's segment: the
+    /// node, the asset and what the move took in, kept when the reversal completes, so what is landed for it there is
+    /// released once the value leaves again, also after a recalculation retired the segment (`INV-1`, `T-020-56`).
+    returned: BTreeMap<(String, String), (String, String, Amount)>,
     /// The segments a reopened Core holds as handed over whose operation it couldn't read back, with their effects'
     /// receipts: never handed over again, and in motion (`T-020-46`, `INV-8`).
     unread: BTreeMap<(String, String), Receipt>,
@@ -732,6 +738,10 @@ pub struct Recalculated {
     /// How many of the part's segments had settled when it was recalculated.
     pub settled_before: usize,
 }
+
+/// A value a segment left at an inner node ([`Segments::values_at_nodes`]): the segment, by order and segment, the
+/// node, the asset, the amount and where it stands there.
+type ValueAtNode = ((String, String), String, String, Amount, AtNode);
 
 /// Where a settled segment's value stands at the inner node it settled at ([`Segments::settled_at_node`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -893,27 +903,16 @@ impl Segments {
     /// outcome, its entries or what it moved depends on this call. The assembly calls it after each of its entry
     /// points that can settle a segment.
     pub fn land_settled(&mut self, landings: &mut dyn Landings) -> usize {
-        // Each segment that settled at a node a holding account holds, with what the segment out of that node did.
+        // Each segment that left value at a node a holding account holds, with what became of it there: one that
+        // settled there, and a linked order's first move out of it that was reversed back into it (`T-020-56`).
         let mut at_nodes = Vec::new();
-        for ((order, segment), flight) in &self.flights {
-            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
-                continue;
-            };
-            let Some((node, asset, at)) = self.settled_at_node(order, segment) else {
-                continue;
-            };
+        for (key, node, asset, amount, at) in self.values_at_nodes() {
             // A part a resolution or a hand-on ended took its value with it: the move that did accounts for it at
             // the node, so nothing is landed or released for it here.
             if !landings.holds(&node) || at == AtNode::LeftByResolution {
                 continue;
             }
-            at_nodes.push((
-                (order.clone(), segment.clone()),
-                node,
-                asset,
-                amount_out.clone(),
-                at == AtNode::MovedOn,
-            ));
+            at_nodes.push((key, node, asset, amount, at == AtNode::MovedOn));
         }
         let owed: Vec<_> = at_nodes
             .into_iter()
@@ -981,17 +980,15 @@ impl Segments {
     /// segment's value that still rests there, no later segment having moved it on (`T-020-46`). What a holding
     /// account there is to hold for the order, and what a restore of it asks for.
     pub fn resting_totals(&self) -> BTreeMap<(String, String), Amount> {
+        let values = self.values_at_nodes();
         let mut resting: Vec<((String, String), &Amount)> = Vec::new();
-        for ((order, segment), flight) in &self.flights {
-            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
-                continue;
-            };
+        for ((order, _), node, _, amount, at) in &values {
             // Through the predicate the landings read: only a value still resting there counts, never a retired
             // segment's, a reversed one's, or a part's a resolution or a hand-on took away (`INV-1`, `INV-8`).
-            let Some((node, _, AtNode::Rests)) = self.settled_at_node(order, segment) else {
+            if *at != AtNode::Rests {
                 continue;
-            };
-            resting.push(((node, order.clone()), amount_out));
+            }
+            resting.push(((node.clone(), order.clone()), amount));
         }
         landing::totals(resting)
     }
@@ -1004,25 +1001,13 @@ impl Segments {
     /// placed.
     pub fn reconcile_landings(&mut self, landings: &mut dyn Landings) -> usize {
         let mut found = Vec::new();
-        for ((order, segment), flight) in &self.flights {
-            let Some(SegmentOutcome::Settled { amount_out, .. }) = &flight.outcome else {
-                continue;
-            };
-            let Some((node, asset, at)) = self.settled_at_node(order, segment) else {
-                continue;
-            };
-            if !landings.holds(&node) || amount_out.is_zero() {
+        for (key, node, asset, amount, at) in self.values_at_nodes() {
+            if !landings.holds(&node) || amount.is_zero() {
                 continue;
             }
             // Gone from the node, whether a later segment, a reversal or a resolution took it: read as passed, never
             // restored, so a reopened Core attributes nothing a Core that ran on wouldn't (`INV-1`, `INV-8`).
-            found.push((
-                (order.clone(), segment.clone()),
-                node,
-                asset,
-                amount_out.clone(),
-                at != AtNode::Rests,
-            ));
+            found.push((key, node, asset, amount, at != AtNode::Rests));
         }
         landing::reconcile(&mut self.landing, landings, found)
     }
@@ -1071,6 +1056,122 @@ impl Segments {
         ))
     }
 
+    /// Every value the segments left at an inner node, with where it stands there: each segment that settled at one,
+    /// its `amount_out` ([`Segments::settled_at_node`]), and each linked order's first move out of a held node that
+    /// was reversed back into it, what that move took in ([`Segments::returned_to_node`], `T-020-56`). The one reading
+    /// the landings, the restore and the totals share, so a Core that reopens lands, restores and counts what a Core
+    /// that ran on would.
+    fn values_at_nodes(&self) -> Vec<ValueAtNode> {
+        let mut values = Vec::new();
+        for ((order, segment), flight) in &self.flights {
+            let key = (order.clone(), segment.clone());
+            match &flight.outcome {
+                Some(SegmentOutcome::Settled { amount_out, .. }) => {
+                    if let Some((node, asset, at)) = self.settled_at_node(order, segment) {
+                        values.push((key, node, asset, amount_out.clone(), at));
+                    }
+                }
+                _ => {
+                    if let Some((node, asset, amount, at)) = self.returned_to_node(order, segment) {
+                        values.push((key, node, asset, amount, at));
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    /// The value a reversal brought back to the inner node `segment` of `order` left, where it stands there: the one
+    /// reachable reversal out of a held node, a linked order's first move out of the node its value was handed on at
+    /// (`INV-1`, `T-020-56`). The value is the linked order's now, whose first move it was: it rests at the node for that
+    /// order, unless its part was ended by a resolution or a hand-on, which accounts for it, or, the move retired by a
+    /// recalculation, the route after it moved the value on (its first move settled, or was itself reversed back). Read
+    /// from what the reversal's completion kept, or, for a move still current, from the order Core follows (a Core that
+    /// reopened keeps nothing of a retired one, and restores nothing of it: nothing is landed blind). `None` for any
+    /// other segment: a settled one ([`Segments::settled_at_node`]), one not reversed, and the move of an order that
+    /// wasn't handed on, whose value the segment that brought it to the node still holds there.
+    fn returned_to_node(
+        &self,
+        order: &str,
+        segment: &str,
+    ) -> Option<(String, String, Amount, AtNode)> {
+        let tracked = self.orders.get(order)?;
+        tracked.order.handed_on_from.as_ref()?;
+        let order_id = Id::new(order)?;
+        let part = tracked.order.parts.iter().find(|part| {
+            part.segments
+                .first()
+                .is_some_and(|first| first.segment_id.as_str() == segment)
+                || part.retired_segments.iter().any(|r| r.as_str() == segment)
+        })?;
+        let current = part
+            .segments
+            .first()
+            .filter(|first| first.segment_id.as_str() == segment);
+        let (node, asset, amount) = match (
+            self.returned.get(&(order.to_owned(), segment.to_owned())),
+            current,
+        ) {
+            (Some(kept), _) => kept.clone(),
+            (None, Some(first)) if first.state == stm::SegmentState::ReversalComplete => {
+                self.returned_value(order, segment)?
+            }
+            _ => return None,
+        };
+        let left =
+            Id::new(part.part_id.as_str()).is_some_and(|p| self.ended_by_resolution(&order_id, &p));
+        let stands = if left {
+            AtNode::LeftByResolution
+        } else if current.is_some() {
+            AtNode::Rests
+        } else {
+            // Retired: the route after it took the value on, once its first move settled or was reversed back itself.
+            let moved_on = part.segments.first().is_some_and(|first| {
+                let next = (order.to_owned(), first.segment_id.as_str().to_owned());
+                self.flights
+                    .get(&next)
+                    .is_some_and(|f| matches!(f.outcome, Some(SegmentOutcome::Settled { .. })))
+                    || self.returned.contains_key(&next)
+                    || first.state == stm::SegmentState::ReversalComplete
+            });
+            if moved_on {
+                AtNode::MovedOn
+            } else {
+                AtNode::Rests
+            }
+        };
+        Some((node, asset, amount, stands))
+    }
+
+    /// What a reversal of `segment` of `order` brings back to a held node: where the segment is the first move of a
+    /// linked order's part, out of an inner node, the node, the asset and what the move took in (Core writes every
+    /// operation `exact_in`); `None` for any other.
+    fn returned_value(&self, order: &str, segment: &str) -> Option<(String, String, Amount)> {
+        let tracked = self.orders.get(order)?;
+        tracked.order.handed_on_from.as_ref()?;
+        let first = tracked.order.parts.iter().find_map(|part| {
+            part.segments
+                .first()
+                .filter(|f| f.segment_id.as_str() == segment)
+        })?;
+        let rutent_contracts::provider_role::NodeRef::Inner(node) = &first.from.node else {
+            return None;
+        };
+        let flight = self.flights.get(&(order.to_owned(), segment.to_owned()))?;
+        let taken_in = match &flight.statement.statement {
+            ProviderOperation::Withdrawal(o) => &o.amount,
+            ProviderOperation::Deposit(o) => &o.amount,
+            ProviderOperation::Transfer(o) => &o.amount,
+            ProviderOperation::Conversion(o) => &o.amount,
+            _ => return None,
+        };
+        Some((
+            node.as_str().to_owned(),
+            first.from.asset.id.as_str().to_owned(),
+            Amount::new(taken_in.clone())?,
+        ))
+    }
+
     /// Notes that Core carried out a reversal of `order` under `transaction`: the record a private node's publisher
     /// keeps may list it, and a record that does is read, never skipped for it (`REQ-ORD-41`, `T-020-47`).
     pub(crate) fn note_reversal_ran(&mut self, order: &Id, transaction: &Id) {
@@ -1091,10 +1192,17 @@ impl Segments {
     }
 
     /// A completed reversal of `segment` of `order`: its value is back where it came from, so what its landing holds
-    /// at the node is released by the next [`Segments::land_settled`] (`REQ-AUD-15`, `T-020-33`).
+    /// at the node is released by the next [`Segments::land_settled`] (`REQ-AUD-15`, `T-020-33`). Where it came from is
+    /// a held node, out of which the segment was a linked order's first move, the value is back there for the linked
+    /// order, and the next [`Segments::land_settled`] lands it again in the node's holding account for that order
+    /// (`INV-1`, `T-020-56`).
     pub(crate) fn note_reversed(&mut self, order: &Id, segment: &Id) {
-        self.landing
-            .reverse((order.as_str().to_owned(), segment.as_str().to_owned()));
+        let at = (order.as_str().to_owned(), segment.as_str().to_owned());
+        let returned = self.returned_value(order.as_str(), segment.as_str());
+        self.landing.reverse(at.clone(), returned.is_some());
+        if let Some(value) = returned {
+            self.returned.insert(at, value);
+        }
     }
 
     /// Whether the value of `segment` of `order` is landed in a holding account, and not yet released, by
