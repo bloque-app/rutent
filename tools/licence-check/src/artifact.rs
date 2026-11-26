@@ -40,7 +40,7 @@ pub enum ArtifactReason {
     Unrecorded,
     /// The record's licence for it differs from the one its manifest declares.
     LicenceMismatch,
-    /// Its manifest gives a `license-file` and no `license`, and the file cannot be read or has no SPDX header.
+    /// Its manifest gives a `license-file` and no `license`, and the file cannot be read, or has no SPDX header or more than one distinct one.
     LicenceFileUnread,
     /// Its graph holds a crate of rutent's core and a package outside the permissive set, with no exception.
     CoreWithCopyleft,
@@ -310,23 +310,32 @@ fn canon(licence: &str) -> String {
         .join(" ")
 }
 
-/// The text of the SPDX header of a licence file: the expression after `SPDX-License-Identifier:` in its first
-/// lines, without a comment closer.
+/// The text of the SPDX header of a licence file: the expression after `SPDX-License-Identifier:`, without a comment
+/// closer. A file with no header, or with more than one distinct header, has none (it fails closed).
 fn spdx_header(text: &str) -> Option<String> {
-    text.lines().take(30).find_map(|line| {
-        let rest = line.split_once("SPDX-License-Identifier:")?.1;
-        let rest = rest
-            .trim()
-            .trim_end_matches("*/")
-            .trim_end_matches("-->")
-            .trim();
-        (!rest.is_empty()).then(|| rest.to_string())
-    })
+    let mut found: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some((_, rest)) = line.split_once("SPDX-License-Identifier:") {
+            let rest = rest
+                .trim()
+                .trim_end_matches("*/")
+                .trim_end_matches("-->")
+                .trim();
+            if rest.is_empty() {
+                return None;
+            }
+            if !found.iter().any(|f| canon(f) == canon(rest)) {
+                found.push(rest.to_string());
+            }
+        }
+    }
+    (found.len() == 1).then(|| found.remove(0))
 }
 
 /// As [`check_artifacts`], reading a manifest's `license-file` through `read` (given the file's path, absolute or
-/// as the metadata gives it): an artifact with a `license-file` and no `license` is compared by the file's SPDX
-/// header, and fails with [`ArtifactReason::LicenceFileUnread`] when `read` gives nothing or the header is missing.
+/// as the metadata gives it): a package (artifact or dependency) with a `license-file` and no `license` is compared by
+/// the file's SPDX header, and fails with [`ArtifactReason::LicenceFileUnread`] when `read` gives nothing or the file
+/// has no header, or more than one distinct one.
 pub fn check_artifacts_with(
     inputs: &[ArtifactInput],
     record: &str,
@@ -338,10 +347,9 @@ pub fn check_artifacts_with(
     for input in inputs {
         let mut meta = parse_meta(&input.metadata, &input.lockfile)
             .map_err(|e| format!("{}: {e}", input.lockfile))?;
-        // A member that gives a `license-file` and no `license` is read by the file's SPDX header, or fails.
+        // A package that gives a `license-file` and no `license` is read by the file's SPDX header, or fails.
         let mut unread = Vec::new();
-        for id in meta.members.clone() {
-            let p = meta.pkgs.get_mut(&id).expect("members are packages");
+        for p in meta.pkgs.values_mut() {
             if p.license.is_some() {
                 continue;
             }

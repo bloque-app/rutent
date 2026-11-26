@@ -187,8 +187,17 @@ fn metadata_in(
 /// Runs the artifact check, adding a root lock whose members are the record's `@core` and `@noncore` crates when no
 /// input is the root lock (the check needs one); the violations of that added root are dropped.
 fn check_with_root(
+    inputs: Vec<ArtifactInput>,
+    record: &str,
+) -> Result<Vec<ArtifactViolation>, String> {
+    check_with_root_files(inputs, record, &|_| None)
+}
+
+/// As [`check_with_root`], reading licence files through `read`.
+fn check_with_root_files(
     mut inputs: Vec<ArtifactInput>,
     record: &str,
+    read: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Vec<ArtifactViolation>, String> {
     let added = !inputs.iter().any(|i| i.lockfile == "Cargo.lock");
     if added {
@@ -217,7 +226,7 @@ fn check_with_root(
             metadata: metadata_in("", &pkgs, &names, &[]),
         });
     }
-    let mut got = check_artifacts(&inputs, record)?;
+    let mut got = check_artifacts_with(&inputs, record, read)?;
     if added {
         got.retain(|v| v.lockfile != "Cargo.lock");
     }
@@ -726,5 +735,93 @@ fn core_lists_check_without_the_root_lock_is_an_error() {
     assert!(
         matches!(&got, Err(e) if e.contains("root lock")),
         "no root lock must be an error, got {got:?}"
+    );
+}
+
+/// A `cargo metadata` text with a path package `host` (MIT) that depends on the registry package `dep`, which gives
+/// no `license` and the `license_file` `LICENSE`.
+fn dep_with_licence_file_metadata() -> String {
+    "{\"packages\":[\
+{\"id\":\"host 0.0.0\",\"name\":\"host\",\"version\":\"0.0.0\",\"license\":\"MIT\",\"source\":null,\"manifest_path\":\"/repo/tools/x/host/Cargo.toml\"},\
+{\"id\":\"dep 1.0.0\",\"name\":\"dep\",\"version\":\"1.0.0\",\"license\":null,\"license_file\":\"LICENSE\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"manifest_path\":\"/reg/dep-1.0.0/Cargo.toml\"}],\
+\"workspace_root\":\"/repo/tools/x\",\"workspace_members\":[\"host 0.0.0\"],\"resolve\":{\"nodes\":[\
+{\"id\":\"host 0.0.0\",\"deps\":[{\"pkg\":\"dep 1.0.0\",\"name\":\"dep\",\"dep_kinds\":[{\"kind\":null,\"target\":null}]}]},\
+{\"id\":\"dep 1.0.0\",\"deps\":[]}],\"root\":null}}"
+        .to_string()
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn dependency_with_only_a_licence_file_is_checked_or_fails_closed() {
+    let record = "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n\
+                  dep 1.0.0 MIT permitted licence-permissive-standing\n";
+    let run = |files: &'static [(&str, &str)]| {
+        let read = move |p: &str| {
+            files
+                .iter()
+                .find(|(f, _)| *f == p)
+                .map(|(_, t)| (*t).to_string())
+        };
+        check_with_root_files(
+            vec![ArtifactInput {
+                lockfile: "tools/x/Cargo.lock".into(),
+                metadata: dep_with_licence_file_metadata(),
+            }],
+            record,
+            &read,
+        )
+        .expect("fixture parses")
+        .into_iter()
+        .map(|v| (v.artifact, v.reason))
+        .collect::<Vec<_>>()
+    };
+    let ok: &'static [(&str, &str)] =
+        &[("/reg/dep-1.0.0/LICENSE", "# SPDX-License-Identifier: MIT\n")];
+    assert_eq!(run(ok), vec![]);
+    // The header says another licence than the record: a mismatch, for a dependency.
+    let other: &'static [(&str, &str)] = &[(
+        "/reg/dep-1.0.0/LICENSE",
+        "SPDX-License-Identifier: AGPL-3.0-or-later\n",
+    )];
+    assert_eq!(
+        run(other),
+        vec![("dep".to_string(), ArtifactReason::LicenceMismatch)]
+    );
+    // No file or no header: the record is not trusted unchecked.
+    assert_eq!(
+        run(&[]),
+        vec![("dep".to_string(), ArtifactReason::LicenceFileUnread)]
+    );
+}
+
+// verifies: REQ-MOD-5
+#[test]
+fn licence_file_with_two_distinct_headers_fails_closed() {
+    let record = "@core rutent-stm\n@artifact tools/x/Cargo.lock host MIT\n\
+                  dep 1.0.0 MIT permitted licence-permissive-standing\n";
+    let run = |text: &'static str| {
+        let read = move |_: &str| Some(text.to_string());
+        check_with_root_files(
+            vec![ArtifactInput {
+                lockfile: "tools/x/Cargo.lock".into(),
+                metadata: dep_with_licence_file_metadata(),
+            }],
+            record,
+            &read,
+        )
+        .expect("fixture parses")
+        .into_iter()
+        .map(|v| v.reason)
+        .collect::<Vec<_>>()
+    };
+    // The first header is the recorded one; a second, different one must not be skipped.
+    assert_eq!(
+        run("SPDX-License-Identifier: MIT\n...\nSPDX-License-Identifier: AGPL-3.0-or-later\n"),
+        vec![ArtifactReason::LicenceFileUnread]
+    );
+    // The same header twice (any spelling of a `/`) is one header.
+    assert_eq!(
+        run("SPDX-License-Identifier: MIT\n...\nSPDX-License-Identifier:   MIT\n"),
+        vec![]
     );
 }
