@@ -9137,7 +9137,7 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   maker. The core-authz counts move by the one change (`T-021-12`'s way): 26 decided actions, 90 callers, 36
   permissions, 39 calls, 12 + 9 changes and settings.
 - **Rule-off table** (each alone, its test run through the lock, the file restored from git; script `ruleoff.py` in the
-  row's scratch folder; every red an assertion, no build failure).
+  row's scratch folder; every red an assertion, no build failure; every rule run again after review round 1).
 
   | Rule switched off | Red |
   |---|---|
@@ -9148,11 +9148,11 @@ and `components/prov/src/module/platform.rs` with `record.rs` (the partial confi
   | the platform carries out a decided `mark_stale` | `segment_on_a_version_marked_stale_through_policy_moves_to_the_newest` |
   | policy is asked before the platform's releases are read | `refused_caller_is_told_the_same_whether_or_not_anything_is_staged_and_its_attempt_is_recorded` |
   | a confirmation names the held versions | `operator_confirms_a_providers_releases_only_on_a_permitted_decision` |
-  | a provider confirmed since the last opening is not held | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
+  | a whole close holds only the unconfirmed (round 1: `ClosedHolding`, in place of `Opened`) | `providers_confirmed_before_a_restart_are_not_held_again_after_it` |
   | a listed public node reaches the catalogue | `public_node_setting_set_by_the_operator_takes_effect_on_its_nodes_segments` |
   | scan rule 4 (a public lifecycle carrier) | `roll_back_and_its_siblings_are_reached_only_through_core_orchs_decided_path` |
   | `Arrivals::reopened` reads the decided deposit wait | `deposit_wait_set_by_the_operator_bounds_a_wait_and_survives_a_restart` |
-  | the deposit wait's ceiling | `deposit_wait_above_its_ceiling_is_refused` |
+  | the deposit wait's ceiling (asked after policy since round 1) | `deposit_wait_above_its_ceiling_is_refused` |
   | a restriction taken unrecorded is `done` | `a_restriction_the_platform_took_unrecorded_is_recorded_done` |
   | a revoked provider's advertisement is not accepted | `revoked_providers_advertisement_declares_nothing` |
   | `Statement` answers a verified maker only | `statement_answer_names_only_a_verified_entrys_maker` |
