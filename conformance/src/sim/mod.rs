@@ -370,6 +370,8 @@ pub const GROSS_FEE: u128 = 5_000;
 ///   declares thirty seconds to settle (Core prices a plain reserve at sixty) and declares a public record.
 /// - `sim-reserve-slow` declares four days to settle ([`SLOW_SECONDS`]).
 /// - `sim-reserve-charging` charges 7 on each movement beyond what it quoted.
+/// - `sim-reserve-holding` declares that it answers the operator's hold requests, and holds the quote asked
+///   (provider-role 4.0.0, `REQ-QTE-15`, `T-020-56`).
 /// - `sim-reserve-dear` charges 6 000 000 on each movement, quoted.
 /// - `sim-reserve-gross` charges [`GROSS_FEE`] on each movement, quoted, and reports gross (`T-024-13`): it states
 ///   giving out what it took in, its charge within it, so what arrives is that less the charge.
@@ -573,6 +575,10 @@ pub fn shape_of(provider: &str) -> Shape {
             extra_charge: 7,
             ..Shape::default()
         },
+        "sim-reserve-holding" => Shape {
+            holds: true,
+            ..Shape::default()
+        },
         "sim-reserve-dear" => Shape {
             fee: 6_000_000,
             ..Shape::default()
@@ -686,6 +692,11 @@ pub struct Behaviour {
     /// of it says so (`REQ-ORD-1`, `T-020-47`). Only a ramp's transfer can be driven so; another's outcome is its
     /// own.
     pub unknown_then_fails: bool,
+    /// On a dry run it accepts, the terms it hands back for the tuple asked: its own statement, nested in its answer,
+    /// which the platform signs with its key (provider-role 4.0.0, `REQ-QTE-6`, `T-020-56`), stating this fee formula.
+    /// A reserve's or a ramp's tuple alone, whose two ends hold one asset: an exchange's sets a rate, whose slippage
+    /// regime the stand-in doesn't state. Nothing on a real operation, a refusal or another question.
+    pub terms: Option<rutent_contracts::provider_role::FeeFormula>,
 }
 
 impl Behaviour {
@@ -759,6 +770,22 @@ impl Behaviour {
         Self {
             act: Act::Fail,
             fault: Some(fault),
+            ..Self::default()
+        }
+    }
+
+    /// Handing back, on each dry run it accepts, its terms for the tuple asked: a fee of at most `maximum`, with no
+    /// flat or proportional part (`T-020-56`).
+    pub fn stating_terms_of_at_most(maximum: &str) -> Self {
+        Self {
+            terms: Some(rutent_contracts::provider_role::FeeFormula {
+                flat: "0".to_owned(),
+                proportional: rutent_contracts::provider_role::Proportion {
+                    numerator: "0".to_owned(),
+                    denominator: "1".to_owned(),
+                },
+                maximum: Some(maximum.to_owned()),
+            }),
             ..Self::default()
         }
     }
@@ -959,6 +986,28 @@ impl Simulated {
                 movements: Vec::new(),
             };
         }
+        // A hold request moves nothing: a reserve that declares it answers them holds the quote asked, its own hold of
+        // exactly the request's transaction, record, candidate and whom it is for, until the validity asked, nested in
+        // its answer for the platform to sign; any other refuses it (`REQ-QTE-15`, `T-020-56`).
+        if let Operation::Hold(h) = &operation.statement {
+            let body = match self.hold(operation, h) {
+                Some(hold) => serde_json::json!({
+                    "kind": "hold",
+                    "transaction": h.transaction,
+                    "outcome": { "status": "held", "hold": hold },
+                }),
+                None => serde_json::to_value(refusal_to(
+                    &operation.statement,
+                    crate::role::stand_in::RefusalClass::Final,
+                ))
+                .expect("a result serialises"),
+            };
+            return Answer {
+                body: serde_json::to_vec(&body).expect("a result serialises"),
+                entry: None,
+                movements: Vec::new(),
+            };
+        }
         let before = self.provider.state();
         let mut credited = false;
         if behaviour.reversal_credited
@@ -1024,6 +1073,9 @@ impl Simulated {
             deliver(&mut body, behaviour.delivery);
         }
         show_fault(&mut body, behaviour.fault);
+        if let Some(fee) = &behaviour.terms {
+            self.hand_back_terms(operation, &mut body, fee);
+        }
         // A repeat that changed nothing sends no movement again: a network that reorged the first would take it
         // as a new one in another block.
         let mut movements = if behaviour.unrecorded || !changed {
@@ -1080,6 +1132,125 @@ impl Simulated {
             entry,
             movements,
         }
+    }
+}
+
+impl Simulated {
+    /// The statement envelope a stand-in nests in its answer in its own name, of `shape`, about `statement`: in its
+    /// deployment and protocol version, made when the operation was, with a placeholder signature under its statements
+    /// key, which the platform replaces with the provider's own (`T-014-05`).
+    fn nested(&self, operation: &Statement<Operation>, shape: &str, statement: Value) -> Value {
+        let advertised = self.provider.advertisement().into_statement().statement;
+        let key = advertised
+            .keys
+            .iter()
+            .find(|k| k.purpose == rutent_contracts::provider_role::KeyPurpose::Statements)
+            .map(|k| k.public_key.as_str().to_owned())
+            .unwrap_or_default();
+        serde_json::json!({
+            "deployment": self.context.deployment,
+            "protocol_version": self.context.protocol_version,
+            "shape": shape,
+            "maker": self.spec.provider,
+            "made_at": operation.made_at,
+            "signature": {
+                "scheme": "ed25519",
+                "key": key,
+                "value": crate::role::placeholder_signature(),
+            },
+            "statement": statement,
+        })
+    }
+
+    /// The reserve's hold of what `request` asks, where it declares that it answers hold requests and is the reserve
+    /// asked; `None` otherwise.
+    fn hold(
+        &self,
+        operation: &Statement<Operation>,
+        request: &rutent_contracts::provider_role::HoldRequest,
+    ) -> Option<Value> {
+        let answers = self.spec.role == Role::Reserve
+            && shape_of(&self.spec.provider).holds
+            && request.provider == self.spec.provider;
+        answers.then(|| {
+            self.nested(
+                operation,
+                rutent_contracts::provider_role::HOLD_SHAPE,
+                serde_json::json!({
+                    "transaction": request.transaction,
+                    "record": request.record,
+                    "candidate": request.candidate,
+                    "for": request.held_for,
+                    "valid_until": request.valid_until,
+                }),
+            )
+        })
+    }
+
+    /// Nests in `body`, its answer to `operation`, its terms for the tuple asked, stating `fee`, where `operation` is a
+    /// dry run it accepted of a tuple it advertises whose ends hold one asset (`T-020-56`).
+    fn hand_back_terms(
+        &self,
+        operation: &Statement<Operation>,
+        body: &mut Value,
+        fee: &rutent_contracts::provider_role::FeeFormula,
+    ) {
+        if body["outcome"]["status"] != "dry_run_accepted" {
+            return;
+        }
+        let Some(tuple) = self.tuple_asked(&operation.statement) else {
+            return;
+        };
+        let terms = self.nested(
+            operation,
+            rutent_contracts::provider_role::TERMS_SHAPE,
+            serde_json::json!({ "tuple": tuple, "fee": fee }),
+        );
+        body["outcome"]["terms"] = terms;
+    }
+
+    /// The tuple a dry run asks about, as terms name it: the provider, and each end's node with its asset in its unit
+    /// there, as the provider advertises it. A reserve's withdrawal or deposit, or a ramp's transfer; `None` for any
+    /// other operation, a real one, or a tuple it doesn't advertise.
+    fn tuple_asked(&self, operation: &Operation) -> Option<Value> {
+        use rutent_contracts::provider_role::NodeRef;
+        let advertised = self.provider.advertisement().into_statement().statement;
+        let end = |node: Value, asset: &str, decimals: u8| serde_json::json!({ "node": node, "asset": { "id": asset, "decimals": decimals } });
+        let (origin, destination, asset) = match operation {
+            Operation::Withdrawal(o) if o.dry_run => (
+                NodeRef::Outer(o.origin.clone()),
+                NodeRef::Inner(o.destination.clone()),
+                &o.asset,
+            ),
+            Operation::Deposit(o) if o.dry_run => (
+                NodeRef::Inner(o.origin.clone()),
+                NodeRef::Outer(o.destination.clone()),
+                &o.asset,
+            ),
+            Operation::Transfer(o) if o.dry_run => {
+                let tuple = advertised.offers.ramp.as_ref()?.tuples.iter().find(|t| {
+                    t.origin == o.origin && t.destination == o.destination && t.asset == o.asset
+                })?;
+                return Some(serde_json::json!({
+                    "provider": self.spec.provider,
+                    "from": end(o.origin.clone().into(), &o.asset, tuple.decimals.origin),
+                    "to": end(o.destination.clone().into(), &o.asset, tuple.decimals.destination),
+                }));
+            }
+            _ => return None,
+        };
+        let tuple = advertised
+            .offers
+            .reserve
+            .as_ref()?
+            .tuples
+            .iter()
+            .find(|t| t.origin == origin && t.destination == destination && &t.asset == asset)?;
+        Some(serde_json::json!({
+            "provider": self.spec.provider,
+            "from": end(serde_json::to_value(&origin).ok()?, asset, tuple.decimals.origin),
+            "to": end(serde_json::to_value(&destination).ok()?, asset, tuple.decimals.destination),
+        }))
     }
 }
 

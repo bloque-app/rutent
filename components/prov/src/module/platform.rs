@@ -2446,12 +2446,15 @@ fn is_an_answer(handled: &Handled) -> bool {
         .is_some_and(|status| !matches!(status.as_str(), "refused" | "unknown" | "not_known"))
 }
 
-/// The kinds that only ask: they move nothing, so asking one again, under the same transaction, is no repeat.
-const READ_ONLY_KINDS: [&str; 4] = [
+/// The kinds that only ask: they move nothing, so asking one again, under the same transaction, is no repeat. A hold
+/// request among them (`T-020-56`'s review, finding 2): a held quote binds no provider and moves nothing, so the
+/// platform keeps no carried record of it, which no evidence window would ever free.
+const READ_ONLY_KINDS: [&str; 5] = [
     "balance_verification",
     "judgement",
     "holding_balance",
     "status_query",
+    "hold",
 ];
 
 /// The transaction an operation is a repeat under, if the platform carries out one operation of it only once: one

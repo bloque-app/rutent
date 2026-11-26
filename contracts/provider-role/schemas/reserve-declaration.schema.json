@@ -20,6 +20,10 @@
       "description": "Whether the reserve starts routes on automatic deposits (REQ-ORD-13).",
       "type": "boolean"
     },
+    "answers_hold_requests": {
+      "description": "Whether the reserve answers the operator's hold requests (`hold`), holding a chosen quote for a new route before it starts (REQ-QTE-15, provider-role 4.0.0). Absent, it answers none, and the operator asks it for none.",
+      "type": "boolean"
+    },
     "maker": {
       "description": "The party the declaration is attributable to: the maker of the advertisement statement it sits in, which the Rust validation checks.",
       "$ref": "urn:rutent:provider-role:common#/$defs/identifier"

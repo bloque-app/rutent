@@ -7697,6 +7697,153 @@ The Low of `M3`'s milestone review of 2026-11-24. It supersedes `R-DIGEST` (`F-0
   there with its caller in Core; the one read with no caller (`Evidence::fetch`) is named out of `v0` with its reason.
 
 
+## T-020-52: intake's status reads held to an agent's read scope, and the role bound in core-orch's register check
+
+Branch `f-020/t-020-52-intake-read-scope`, from `adb73186` (`T-021-16`'s filed reads, `T-021-17`, `T-020-46`,
+`T-020-51`). Finding 6 of `M3`'s milestone review (issue #275), the role binding `T-021-14`'s review left, a held order
+in `record` and `start`, and `T-021-17`'s leftover. Edits `components/core-orch/` (`intake/`, `arrival/`, their tests)
+and the assembly (`conformance/scenarios/src/assembly/mod.rs`). `contracts/` is untouched.
+
+- **The read check** (`intake/mod.rs`, `Intake::read`). Every status intake tells goes through it: `open`, `quote`,
+  `accept` (and `accept_holding`) and `told`. Intake calls policy's `check_read` with `ReadCheck { reader: <the caller as
+  authentication established it>, reads, permission: None }`, `reads` being `Reads::FiledOrder { order, requester }` until
+  the order's acceptance is in the log and `Reads::OrderState { order }` from then on (`Kept::acceptance_logged`: the
+  acceptance appended, told or not, and kept past the order's end, so an order policy refused after its acceptance is
+  read as the log's order and one the log refused the acceptance of is still a filed order). The requester is the
+  requester of intake's own record of the filed request (`Kept::request.parties.requester`), never the caller's:
+  `kept_for` and `open` hold the caller to that party first, and the record is handed to the deployment before it is
+  asked (`StatusReads::filed`, the same record `Intake::record` gives), so policy's `Requester` source answers from it
+  (`T-021-16`, round 4). The status is told only on `ReadOutcome::Allowed`.
+- **What a refused reader is told** (`T-023-01`'s `CurrentError::Refused`, alone). `IntakeError::ReadRefused`, a unit
+  variant: no class, no state, no order identifier where the call was an `open`. What the call did stands (the order
+  opened, the quote shown, the acceptance recorded); the same call again asks again. `told` answers `None`, as for a
+  request that isn't the caller's. A check that couldn't be made or recorded is `IntakeError::Log`, nothing told.
+- **The port.** `Desk::reads: &mut dyn StatusReads` (policy's `Reads` plus `filed(&OrderRecord)`); the assembly's
+  `Reading` is policy's engine and the `Records::orders` map its `Requester`, `OrderOrigin` and `OrderParties` sources
+  read (the same map `FiledOrders::opened` fills for a filed order). `Intake::told` takes the desk, not only the register
+  of actors.
+- **The role in core-orch's register check.** `Actors::acts_for(acts, party, kind, role)`, answered by the assembly from
+  `Registers::acts_in` (policy's `ActsFor`, which binds party, kind and role). Intake's `open` and `speaks_for`, the
+  arrival filing's `listed_filer`, `has_a_listed_login` and `customer_accepts`, and the ended-order read of
+  `Arrivals::accept` pass the actor's stated role. `refile` asks it through `listed_filer`, as before, but the register
+  now answers for the role: a login of the operator's party the register lists as a customer, or of a reserve's, stating
+  the operator's or the provider's role is no filer, and nothing is written (`REQ-AUZ-4`).
+- **A held order.** `Intake::record` and `Intake::start` answer nothing for an order a reopened Core holds
+  (`T-020-46`: its inputs statement unreadable or another order's), so policy's sources hold no record of it and the
+  assembly follows no start of it; `request_of`, `quote` and `accept` already did.
+- **Tests** (each written against the old code and seen red on an assertion or on a missing rule, then green):
+  - `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake` [`REQ-AUZ-8`, `REQ-AUZ-7`] and
+    `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded` [`REQ-AUZ-8`, `REQ-ORD-5`,
+    `REQ-AUD-12`] (`conformance/scenarios/tests/assembly_intake.rs`, over the real policy engine, the agent listed and
+    scoped in the deployment's registers: the unscoped agent's `open` and `quote` are `ReadRefused`, the order opened all
+    the same, each check recorded refused and naming the requester intake's record holds; the scoped agent is told at
+    each call and the checks are recorded allowed, the filed order's and then the order's state);
+  - `arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused` [`REQ-AUZ-4`]
+    (`components/core-orch/tests/arrival.rs`), and the same in the assembly's register in `assembly_arrivals.rs`'s refiling
+    test;
+  - `held_order_accepted_before_a_restart_never_starts_after_it` [`NFR-6`, `REQ-AUD-6`]
+    (`components/core-orch/tests/intake_reads.rs`);
+  - `held_order_whose_waiting_quote_is_rebuilt_is_not_accepted` [`NFR-6`] (the accept-side test, see gap 1);
+  - beside them, over a double of the deployment's read policy, `intake_reads_a_filed_orders_status_until_the_acceptance_is_logged_and_the_orders_state_after`,
+    `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged`,
+    `a_reader_policy_refuses_is_told_no_status_by_any_call_and_the_check_is_recorded`,
+    `status_is_told_only_when_policy_allows_it` and `status_is_not_told_where_policy_cannot_be_asked`.
+- **Effects on other tests, not rules relaxed.** Each status told is now checked and recorded, so the repeat tests that
+  compared the log's length around a repeated request count the log without policy's recorded reads
+  (`Env::len_but_reads`); `presence.rs`'s agent is scoped for `CheckRead`, as every agent that is told a status must be.
+- **Defaults** (reversible, each failing closed):
+  1. A caller refused the read is told `ReadRefused` and nothing else, though what its call did stands: an unscoped agent
+     that accepts a quote is told it may not read the status, and the acceptance is recorded. Alternative: ask the read
+     before acting, which would refuse an agent a call its scope allows.
+  2. Every caller is read through the same call, the customer's own login and an agent alike (as the brief says):
+     each status told is one recorded read.
+  3. `refile` asks the register of actors for the role the filer states (policy's `ActsFor`), not a recorded policy
+     decision of its own: no decision shape exists for a refiling.
+  4. A held order has no record for policy's sources: a read of one is refused, not allowed from a stale record.
+- **Gaps, with owners.**
+  1. *The accept-side guard of a held order is unreachable by any caller today.* A reopened intake rebuilds no quote
+     (`offered` is `None`; status `OutcomeToCome`), so an acceptance is refused as `NotNow` before the held check, and
+     switching the held check off turns no test red. `T-020-51` rebuilds waiting quotes in `Arrivals`, not in
+     `Intake`; no row rebuilds intake's. The test pins the observable result (nothing recorded, refused, quote refused
+     too) and the guard stays as the second line. Owner: whoever rebuilds intake's quotes after a reopening (`T-020-46`'s
+     follow-up, or `T-024-21`).
+  2. Closed in round 2 (below): `missing_input`, and a refiling policy decides.
+- **Rule-off** (`scratchpad/t-020-52/ruleoff.py`, each rule switched off alone, the file restored from its own text and
+  touched, `contracts/src/lib.rs` touched before each run; `rutent-core-orch`'s `intake_reads`, `intake` and `arrival`, and
+  `rutent-scenarios`' `assembly_intake`, `assembly_arrivals` and `presence`):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | no read check asked (every status told as before) | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake`; `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; the five double-backed tests in `intake_reads.rs` that ask a check (`intake_reads_a_filed_orders_status_…`, `order_ended_is_read_as_the_state_…`, `a_reader_policy_refuses_…`, `status_is_told_only_when_policy_allows_it`, `status_is_not_told_where_policy_cannot_be_asked`) |
+  | the order's state never read (always a filed order's) | `agent_scoped_to_read_is_told_its_partys_order_status_and_the_check_is_recorded`; `intake_reads_a_filed_orders_status_…`; `order_ended_is_read_as_the_state_…` |
+  | a refused read tells the status all the same | `agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake`; `a_reader_policy_refuses_…`; `status_is_told_only_when_policy_allows_it` |
+  | intake's record isn't handed over before the check | 59 tests (every status told is refused, the deployment holding no record of the requester), the two named read tests among them |
+  | an order ended after its acceptance is read as a filed order's (`logged` not kept at the end) | `order_ended_is_read_as_the_state_of_the_log_only_once_its_acceptance_is_logged` |
+  | the assembly's register ignores the role (`acts_as` for `acts_in`) | `the_operators_login_files_a_differing_arrival_anew_on_the_real_log` (the login listed in the customer's role stating the operator's) |
+  | core-orch's register double answers every role as the customer's | 47 arrival and intake tests, `arrival_refiled_by_a_login_stating_a_role_its_party_does_not_hold_is_refused` among them |
+  | a held order has a record | `held_order_accepted_before_a_restart_never_starts_after_it` |
+  | a held order starts | `held_order_accepted_before_a_restart_never_starts_after_it` |
+  | a held order is accepted (the guard in `Intake::accept`) | none: gap 1, the guard is unreachable |
+
+  One rule has no rule-off: the requester the read names is the caller's party or the record's. `kept_for` and `open` hold
+  the caller to the requester's party first, so the two are the same party for every caller that reaches the check; the
+  record is what the deployment is asked to confirm, by the check above that hands it over.
+
+### T-020-52, round 2 (the lead's authorisation: gaps 1 and 3 closed, a `DEC-20` path folded into core-internal's unreleased 1.0.0)
+
+- **`missing_input`.** `OrderRefusalClass::MissingInput` (`missing_input`) beside `refused_by_policy`; core-orch's
+  `SessionRegister::unread()` (the assembly's `Held` reads core-authz's `Register::is_unread()`, a narrow public
+  accessor); one shared check, `intake::session_refusal`, which intake's `open` and the arrival filing both ask: a
+  session held and open is no refusal, a register unread is `missing_input`, any other is `refused_by_policy`, as before.
+  A refused authorisation's `missing_input` (`RefusalClass`) still reads `refused_by_policy` in `class::refused`: not
+  this row's. Tests: `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input` (`intake_reads.rs`)
+  and the unread case of the arrival filing's refusal test (`arrival.rs`); the contract's valid fixture
+  `verified-entry-of-a-refusal-for-an-input-policy-could-not-read`.
+- **A refiling is a decided action.** Contract: `Action::RefileArrival {arrival, order, filer}` (`refile_arrival`,
+  decided, never an effect: `effect_action` refuses it), `refiling.decision` (a required receipt, the `decide` it rests
+  on), and the row `refiling-rests-on-policys-permit` (`REQ-ORD-23`, `REQ-AUZ-1`): the cited entry is a `decide` of
+  `refile_arrival` naming the refiling's arrival, order and filer (`action`), permitted (`yes`), asked by the actor that
+  files (`filer`). Schemas (`common`, `verified-entry`), README (the row), changelog, a valid and an invalid fixture
+  for the request, an invalid one for the entry without its decision, five admission cases; every refiling in the 454
+  admission cases that held one now rests on a decision of its own inserted before it (the receipts of the rest
+  untouched; script `migrate_refiling.py` in the row's scratch folder). 118 relations. No wider change was needed: the
+  `refiling` row cites a decision as `reversal_carrier` cites `accepted_with`.
+- **Policy** (`core-authz`). `Permission::RefileArrival` and `Scope::RefileArrival` (an agent's scope for it, beside
+  T-021-15's). The rule (`roles/mod.rs`): the filer the request names is its caller; the deployment operator's login
+  (`of_operator_holds`: the register lists it for the permission and its party is the operator's), or a reserve acting
+  for itself where it is the order's origin reserve (`Source::OrderOrigin`, which the assembly answers from intake's and
+  the filing's records); nobody else, Core's own actors and the user included. The assembly lists the operator's login
+  for the permission.
+- **Core.** `Desk::decisions: &mut dyn Decisions`; `Arrivals::refile` asks policy for `refile_arrival` once, before the
+  entry is built, and the entry cites the permit's receipt. A refusal is `ArrivalError::Refused {refused_by_policy}`, not
+  known is a log failure to retry; no refiling is appended (policy's refusal is its own record, which the log holds).
+  A refiling already built is appended as built: the same call again is the same refiling and asks nothing.
+- **Tests.** Contracts: `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`,
+  `an_order_refused_for_an_input_policy_could_not_read_is_told_its_class` (with the relation's five cases and the
+  fixtures). Core-authz: `arrival_is_refiled_by_the_operators_listed_login_or_the_reserve_it_came_to`,
+  `arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused` [`REQ-ORD-23`, `REQ-AUZ-1`], and the permission in
+  the sweeps (`each_permission_alone_allows_only_its_own_action`, the engine's every-action tests). Core-orch:
+  `arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is_appended`. The assembly's refiling test
+  files through the real engine: a login of the operator's the register lists in its role but not for the permission is
+  refused, no refiling appended and policy's refusal recorded, then the operator's login files.
+- **Gap 2 stays** (the `Intake::accept` guard of a held order is a named second guard, unreachable while a reopened
+  intake has no offered quote): unchanged, see round 1.
+- **Defaults** (reversible, each failing closed): (1) a reserve files only where it is the order's origin reserve, as the
+  assembly's order records say it; (2) the operator's permission is one for every arrival, not one per reserve; (3)
+  policy not knowing is a retry, never a refiling.
+- **Round 2's rule-off** (`scratchpad/t-020-52/ruleoff2.py`, each rule alone, the file restored from its own text and touched,
+  `contracts/src/lib.rs` touched first; core-orch's `intake_reads` and `arrival`, the assembly's `assembly_arrivals`,
+  core-authz's lib, and the contracts' `core-internal`):
+
+  | Rule switched off | Tests that went red |
+  |---|---|
+  | an unread register is refused as `missing_input` | `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input`; `automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived` (the filing's unread case) |
+  | `refile` holds to policy's answer (refusal and not known ignored, the entry cites the answer's receipt) | `arrival_refiled_by_a_login_policy_does_not_let_file_is_refused_and_nothing_is_appended`; `the_operators_login_files_a_differing_arrival_anew_on_the_real_log` |
+  | any reserve refiles (no origin need) | `arrival_refiled_by_a_login_whose_party_may_not_refile_is_refused` |
+  | the operator's login need not be the operator's (`of_operator_holds` for `operator_holds`) | the same |
+  | the filer need not be the caller | the same (the operator's login naming another filer) |
+  | the relation's decision need not be permitted | `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`; `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` |
+  | the relation's decision need not name this arrival, order and filer (any one of the three) | the same two |
 ## T-020-47: Core's own callers in the run (parts 1, 3, 5 and the second half of 4)
 
 Branch `f-020/t-020-47-run-steps`, from `d5ba4053`. Edits `components/core-orch/` (`closing/`, `segments/`, `reversal/`,
@@ -8072,6 +8219,218 @@ The full suite runs in CI.
   `assembly_arrivals`, `deposit_waits`, `authz_scenarios`, `execution`, `deposit_destination`, `execution_routes`: 160
   pass); the doc check; `plan-check --strict` (0 findings), `tag-check --strict` (2389 tests, 0 findings); the
   contract guard against `origin/develop` (no violations). No contract or core-orch file changed in this round.
+
+### T-020-52, round 3 (the review of `96d161a0`, PR #319)
+
+`origin/m3` (`6dfe7f71`: `T-020-47`, `T-020-55`) merged first; both notes sections kept. `T-020-55`'s `core_sources` answers
+`Requester` and `OrderOrigin` from `OpenedOrders`, else the log's `order_opened`, so the assembly's `Reading::filed` now hands
+intake's record to `OpenedOrders::opened` (the `Records::orders` map is gone), as the arrival filing does. The merge brought one
+refiling into the admission cases (`stuck-decide-held-at-is-a-held-node--a-wallet-held-at-its-routes-first-node`), migrated like
+the rest; 775 admission cases.
+
+- **1. A built refiling is the filer's own.** `Arrivals::refilings` is keyed by the arrival and the filer
+  (`refiling_key`): another actor is asked of policy on its own, never told the arrival was filed anew on a permit that
+  wasn't its. Test `a_built_refiling_is_reused_only_by_the_filer_it_was_built_for` (the reviewer's probe, turned into a
+  refused case, then the operator's own call carries its entry on with no second question).
+- **2. Errors that show an order are read first.** `Intake::told_error` asks the read check before `NotNow`,
+  `NotTheQuoteShown`, `OtherActor` or `Conflicting { order: Some(_) }` reaches the caller, so a refused reader gets
+  `ReadRefused` alike whatever the order's state. A `Conflicting { order: None }` (a request refused before an order
+  existed) has no order to ask about: an agent is told `ReadRefused` (default: fail closed, a scoped agent loses that
+  detail); a person is told as before. Test `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` (both
+  probes, and the ended-order quote, which the person is still told is `NotNow`). Each such error now records one read.
+- **3. A held order hands no record.** `read_order` doesn't call `StatusReads::filed` for a held order; policy reads its
+  requester from the log's `order_opened`. Test `a_held_orders_status_read_hands_no_record_to_policys_sources`.
+- **4. `--arrival`.** An admission case whose decision is for another arrival of the same order, refused on `action`; the
+  README row and the contracts test name it.
+- **5. `unread` first.** `session_refusal` asks `unread()` before `held()`; the test double keeps its sessions while
+  unread, so a register that answers stale sessions can't let a request through.
+
+Rule-off (`scratchpad/t-020-52/ruleoff3.py`, each alone, restored, `contracts/src/lib.rs` touched first):
+
+| Rule switched off | Tests that went red |
+|---|---|
+| a built refiling keyed by the arrival alone | `a_built_refiling_is_reused_only_by_the_filer_it_was_built_for` |
+| errors showing an order's state asked of the read check | `a_refused_agent_is_told_no_order_state_or_identifier_by_an_error` |
+| an agent told `ReadRefused` for a conflict with no order | the same |
+| a held order's record handed to the deployment | `a_held_orders_status_read_hands_no_record_to_policys_sources` |
+| `held` asked before `unread` | `request_in_a_session_of_an_unread_register_is_refused_for_its_missing_input`; `automatic_deposit_is_filed_once_by_its_reserve_or_the_operator_for_what_arrived` |
+| the relation's decision need not name this arrival | `a_refiling_rests_on_policys_permitted_decision_to_file_the_arrival_anew`; `every_relation_of_the_citation_table_holds_and_breaks_as_its_cases_say` (`--arrival`) |
+
+Round 2's table claimed each of the three fields turned the tests red; the arrival's didn't until `--arrival`.
+
+## T-020-56: terms, holds and the landing after a linked order's reversal, end to end
+
+Branch `f-020/t-020-56-terms-holds`, from `28972690` (m3-next's batch holding `T-020-47`). `T-020-47`'s parts 2 and 4a,
+finding 4 of `M3`'s milestone review. Edits `components/core-orch/` (`intake/`, `rounds/`, `quote/`, `segments/`,
+`arrival/filing.rs`), `components/prov/src/proxy/signing.rs` and `components/prov/src/catalogue/declaration.rs`,
+`contracts/provider-role/` and its Rust (`contracts/src/provider_role/types.rs`), and the simulated providers and the
+assembly (`F-024` files: `conformance/src/sim/mod.rs`, `conformance/src/role/stand_in.rs`,
+`conformance/scenarios/src/sim/fleet.rs`, `conformance/scenarios/src/assembly/`, and the scenarios `charge_check.rs`,
+`holds.rs`). `DEC-20` paths: `contracts/` and `components/prov/src/proxy/`.
+
+- **Design.**
+  1. *The signer* (`proxy/signing.rs`). Two nested shapes are signed in the provider's name besides a judgement, a
+     confirmation and a status answer's result: **terms** (`TERMS_SHAPE`) only in answer to a withdrawal's, deposit's,
+     transfer's or conversion's **dry run** at the provider asked, whose tuple names that provider and the operation's own
+     two ends (node and asset id; a conversion's node twice with its `from` and `to` assets); and a **hold**
+     (`HOLD_SHAPE`) only in answer to a **hold request** at the reserve asked, of the request's own transaction, record,
+     candidate and `for`, valid no later than asked (read as times). Neither in answer to anything else, a status
+     question included (`about` set). Anything else stays `NestedNotAsked`; a shape no result nests stays
+     `NestedOfAnotherShape`.
+  2. *provider-role 4.0.0* (unreleased, folded). `ReserveDeclaration.answers_hold_requests: Option<bool>`, read as false
+     where absent (`ReserveDeclaration::answers_hold_requests`); schema, one valid and one invalid fixture, the README's
+     two places, and a changelog entry marked **`Ignorable: yes`**: a reader that ignores it asks no reserve for a hold
+     and shows every quote unheld, as before the major, so it loses a hold, never a protection (`T-020-45` (4)'s rule).
+     The catalogue's `DeclarationRecord` carries it, compared within a version like the other two answers.
+  3. *Terms reach Core.* The rounds collect, from each of Core's own answers the round kept and its snapshot didn't
+     refuse, the terms its dry-run answer carries, made by the provider asked, for the very tuple asked
+     (`Routed::terms`, `terms_handed_back`). Intake (`Intake::quote`) and a filing (`Filing::route`) take each through
+     the desk's new `terms: &mut dyn TakesTerms` (`quote::TakesTerms`, implemented by `Segments`, which calls
+     `Segments::take_terms`) with the new `recorded` read of the log, before the quote is shown and so before any
+     segment starts (`REQ-QTE-6`). `Terms::take` holds them to what the evidence store keeps, as before.
+  4. *Holds reach Core* (`intake/hold.rs`). After the quote is shown, intake asks the reserve each part starts at, the
+     origin reserve, to hold it, **only where its latest declaration says it answers hold requests**: the operator's
+     `hold` under a fresh transaction (`rounds::fresh_transaction`), naming the choice round's record by id and the
+     digest the log names it by, the chosen candidate, `for: session` (the session the yes was asked in), and a
+     validity as long as the quote's figures (their earliest expiry; `HOLD_SECONDS` where none). Signed, appended about the order and the
+     transaction before it is sent, its answer appended after (`rounds::ask_alone`). The answer is held to the request
+     with `check_hold_answer` (both signed statements); the hold it carries is taken by `Holds::take` with the record and
+     its digest. (Review round 1: the validity asked is the figures' earliest expiry.) The quote shown keeps the hold's transaction (`Offered.hold`), and `accept_holding` redeems it where the
+     caller names no other hold.
+  5. *The simulated providers state both.* `Behaviour.terms` (`Behaviour::stating_terms_of_at_most`): on a dry run it
+     accepts of a reserve's or ramp's tuple, the stand-in nests its terms (placeholder signature, the platform signs).
+     `Shape.holds` (the reserve `sim-reserve-holding`): its declaration says it answers hold requests and it holds the
+     quote asked; any other refuses a hold. Every simulated module's `handles` lists `hold` (`fleet::KINDS`): Core's own
+     gate is the declaration.
+  6. *The landing after a linked order's reversal* (`segments/`). `Segments::note_reversed` now asks
+     `returned_value`: where the reversed segment is the first move of a linked order's part (`handed_on_from`) out of
+     an inner node, the value is back there, the linked order's now, and `Landing::reverse(at, back_at_node)` marks it
+     owed a landing rather than a release; `returned` keeps its node, asset and amount (what the move took in). One
+     reading, `values_at_nodes` (settled segments through `settled_at_node`, reversed returns through
+     `returned_to_node`), now feeds `land_settled`, `resting_totals` and `reconcile_landings`. A returned value rests at
+     the node until a resolution or hand-on ends its part, or, the move retired by a recalculation, the new route's first
+     move settles or is itself reversed back; then it is released.
+  7. *The assembly.* `state_terms`, `state_terms_read_by` and `state_hold` are gone: no scenario calls `take_terms` or
+     `Holds::take`. `with_desk` hands the desk the log's read (`LogNow`) and the segments as `TakesTerms`;
+     `read_kept_through` has the store's read answer otherwise (what `charge_check`'s kept-statement tests need);
+     `holds_taken` lists the holds' entries; `holds_rebuilt_from_log` keeps each hold again from its kept bytes and the
+     record Core signed (the deployment's keeping, `F-030`).
+- **Tests.** Named: `terms_a_module_stated_before_its_segment_started_bind_its_charge` (`charge_check.rs`),
+  `hold_a_reserve_gave_in_its_answer_is_redeemed_on_acceptance` and `reserve_declaring_no_hold_requests_is_asked_for_none`
+  (`holds.rs`), `reversal_out_of_a_held_node_lands_the_value_there_again` (`segments/returned.rs`). Beside them:
+  `terms_nested_in_a_dry_run_answer_are_signed_only_for_the_tuple_asked`,
+  `hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked` (the signer),
+  `reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing`. Reworked onto the providers' answers, names
+  kept: `charge_check.rs`'s four terms tests and `holds.rs`'s two.
+- **Histories the log refused, sorted.** None: every scenario's log is the assembly's real one, which admits each entry
+  as it is appended (the hold request and its answer about the order and the hold's transaction, the hold's own entry
+  about its transaction alone, the terms' entries about nothing). No Core bug.
+- **Defaults** (reversible, each failing closed):
+  - Core asks a hold only of the origin reserve, only where every part starts at it and its latest declaration says it
+    answers hold requests; `for` is the session the yes was asked in (it tells the reserve nothing it wasn't told,
+    unlike the order's id); the validity asked is the earliest expiry of the quote's figures (review round 1;
+    `HOLD_SECONDS`, 300 s, where they name none), and none is asked where that is already past.
+  - Any failure of the hold step (a refusal, an answer that fails `check_hold_answer`, a log or store that can't take
+    it, a hold `Holds::take` refuses) leaves the quote shown unheld, with no error: a held quote binds no provider.
+  - An acceptance naming no hold redeems the one Core took of the quote shown, and a refused redemption (past its
+    validity, say) refuses the acceptance, as a named hold does (`IntakeError::Hold`); the order stays quoted.
+  - Terms are taken from Core's own answers only, kept by the round and not refused by its snapshot, made by the
+    provider asked, for the tuple asked; terms Core doesn't keep are left out (the price or earlier terms bind), and only
+    a log that can't take them now is an error, retried.
+  - The simulated providers state terms only where a scenario queues it on a dry run (`Behaviour.terms`), and only the
+    reserve `sim-reserve-holding` holds quotes: every other scenario's log is as it was.
+  - A returned value is the linked order's, for what the reversed move took in (Core writes every operation
+    `exact_in`), and rests at the node until the part's resolution, or the new route's first move settling or being
+    reversed back itself.
+- **Gaps, with owners.**
+  1. **Moved to `T-020-57` (the lead's new row): the reversal's completion.** The landing is wired: `note_reversed`
+     lands the value back at the held node for the linked order, and `values_at_nodes` reads it for the landing, the
+     totals and the restore. What no history reaches yet is the `reversal_completed` itself: `Reversals::confirm` asks
+     the origin reserve, and a route handed on has none (`origin_of` answers `NoOriginReserve`), so the named test feeds
+     the state machine's inputs to the segments directly. Who confirms (the reviewer's reading: the node's
+     holding-account wallet), and landing the amount the completion confirms rather than what the move took in (the
+     review's finding 4), are `T-020-57`'s.
+  2. **Moved to `T-020-57`:** a reopened Core keeps nothing of a return a recalculation since retired (`returned` is in
+     memory), and restores nothing of it; rebuilt from the log once gap 1's completion is recorded.
+  3. Closed in the review round below: a recalculation takes the terms its rounds handed back.
+  4. Closed for the rounds in the review round below (a direct unit test of `terms_handed_back`). Intake's
+     `check_hold_answer` call stays a layer behind the signer and `Holds::hold`, reached only by a reserve answering past
+     the signer. Owner: `F-024`.
+  5. A retired segment's landing is never released, but a segment that settled, and so landed, is never retired (the
+     state machine retires only from the first unsettled segment, `rules.rs`), so the only value a retired segment
+     leaves at a node is a reversed return, which this row handles: the case is unreachable (the review's gap 5).
+  6. The exchange's terms: the stand-in states terms for a reserve's and a ramp's tuple, not an exchange's, whose
+     slippage regime it doesn't state. Owner: `F-024`.
+- **Rule-off table** (each switched off alone from `4c88f7b9`'s tree, its tests run through the lock, the file restored
+  with `git checkout`; script `ruleoff.py` in the row's scratch folder; none hung).
+
+  | Rule switched off | Red |
+  |---|---|
+  | signer: terms only in answer to a dry run | `terms_nested_in_a_dry_run_answer_are_signed_only_for_the_tuple_asked` |
+  | signer: terms of the dry run's own two ends | the same |
+  | signer: a hold valid no later than asked | `hold_nested_in_a_hold_answer_is_signed_only_for_the_quote_asked` |
+  | signer: a hold of the record asked | the same |
+  | signer: neither in answer to a status question (`about` unset) | none: a status question is never a dry run nor a hold request, so the kind check refuses first; a second layer |
+  | intake takes the terms its dry runs handed back | `terms_a_module_stated_before_its_segment_started_bind_its_charge` |
+  | the rounds hand back the terms of Core's own answers | the same |
+  | a hold is asked only where the reserve declares it | `reserve_declaring_no_hold_requests_is_asked_for_none` |
+  | the acceptance redeems the hold Core took | `hold_a_reserve_gave_in_its_answer_is_redeemed_on_acceptance`, `the_acceptance_an_assembled_core_records_names_the_redeemed_holds_receipt`, `a_hold_is_redeemed_by_one_order_only_also_after_a_restart` |
+  | the holding stand-in declares that it answers hold requests | those three and `reserve_declaring_no_hold_requests_is_asked_for_none` |
+  | a reversal back into a held node is owed a landing (`Landing::reverse`) | `reversal_out_of_a_held_node_lands_the_value_there_again` |
+  | a retired return moves on once the new route's first move settles | the same |
+  | a reopened Core reads a current return from the order it follows | the same |
+  | a returned value only for a linked order (`returned_value` alone) | none: `returned_to_node` holds the same line |
+  | the same, both reads | `reversal_of_a_move_that_is_not_a_linked_orders_first_lands_nothing` |
+  | the rounds' tuple check of handed-back terms | see review round 1 |
+  | intake's `check_hold_answer` | not switched off: gap 4 (`F-024`) |
+- **Local checks** (through the lock, at `4c88f7b9` with this note, `contracts/src/lib.rs` touched, the plain wallet built
+  privately): `cargo fmt --all -- --check`; workspace clippy `-D warnings`; `cargo test -p` `rutent-contracts`,
+  `rutent-prov`, `rutent-core-authz --lib`, `rutent-core-orch`, `rutent-conformance`, `rutent-prov --test role_suite`,
+  `sim_providers` and `invariants` with seeds 11 to 15, and the whole of `rutent-scenarios` (59 binaries, 482 tests);
+  the doc check; plan-check and tag-check `--strict` (0 findings, 2402 tests tagged). Contract guard against
+  `origin/develop` (`fb883e01`): "1977 changed path(s) … no violations".
+
+### T-020-56, review round 1 (PR #314, `66612e8d`, comment 7175918242)
+
+- **The signer's other dry runs** (finding 1, should-fix). `terms_nested_in_a_conversions_transfers_or_deposits_dry_run_answer_are_signed_only_for_its_tuple`:
+  a conversion's terms signed at its node from the asset it takes in to the one it gives out, and refused with the rate
+  reversed or at another node; a transfer's and a deposit's signed for their own ends, refused with them swapped (the
+  reviewer's probe, kept, with the two other arms). Swapping the conversion's ends in `asks_terms` turns it red.
+- **A recalculation's terms** (gap 3, should-fix). `recalc::Parts` gains `kept` and `recorded`, and `recalculate` takes
+  `routed.terms` through `quote::take_handed_back`, the one helper intake, a filing and a recalculation now share
+  (`Segments` as `TakesTerms`). Test `terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments`
+  (`charge_check.rs`): quoted on terms of 100, the deposit refused, recalculated on the reserve's terms of 3; the new
+  deposit's 7 is raised, citing the terms the recalculation took. The assembly's `recalculate` hands the two reads
+  over (`LogNow`, the store's read, `read_kept_through` included); the kit's two constructors read nothing
+  (`KeepsNothing`, `ReadsNothing`), where no terms are handed back.
+- **The rounds' own tuple check** (gap 4, should-fix). `terms_handed_back_are_only_those_of_the_tuple_asked_in_an_answer_kept`
+  (`rounds/mod.rs`'s tests, the reviewer's probe, kept): other decimals, another node asked, terms for another node,
+  another provider, not Core's, unrecorded and refused hand back nothing; the honest answer, twice, hands back one.
+- **A hold request only asks** (finding 2, low). `hold` joins the platform's `READ_ONLY_KINDS`: no `carrying` entry and no
+  carried record under the hold's transaction, which no evidence window would free. A repeat under the same transaction
+  runs the module again, which Core never sends (every hold request is under a fresh transaction). No test: the
+  platform's tests have no module that answers a hold (`F-024`'s stand-ins do, through the scenarios, whose holds pass
+  as before).
+- **Core's hold lasts as long as its quote** (finding 3, low). `validity` asks until the earliest expiry of the figures
+  the candidate cites, to the whole second below; `HOLD_SECONDS` (300) is only for figures that name no expiry. Still
+  refused where that is already past. Test `hold_core_takes_lasts_as_long_as_its_quotes_figures` (`holds.rs`): the hold
+  is held to that second, and ten minutes on (past 300 s) the acceptance still redeems it.
+- **Defaults changed:** the validity asked (above); a hold request carried nothing.
+
+| Rule switched off | Red |
+|---|---|
+| signer: a conversion's own ends (`from` and `to` swapped) | `terms_nested_in_a_conversions_transfers_or_deposits_dry_run_answer_are_signed_only_for_its_tuple` |
+| a recalculation takes its rounds' terms | `terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments` |
+| the rounds' tuple check (`if !asked { continue; }`) | `terms_handed_back_are_only_those_of_the_tuple_asked_in_an_answer_kept` |
+| the hold asked until the figures' expiry (300 s again) | `hold_core_takes_lasts_as_long_as_its_quotes_figures` |
+
+Rule-offs from `e1f022b4`'s tree (script `ruleoff2.py` in the row's scratch folder; a baseline run of `holds` first, green).
+Local checks (through the lock, `contracts/src/lib.rs` touched, the plain wallet built privately): fmt, workspace clippy
+`-D warnings`; `cargo test -p` `rutent-prov` (435), `rutent-core-orch` (339), `rutent-core-authz --lib` (157),
+`rutent-conformance` (121), the role suite (2), `sim_providers` and `invariants` with seeds 11 to 15 (25), and the
+scenarios `holds`, `charge_check`, `landing`, `recalc`, `failure`, `reversing`, `hand_on`, `assembly_real_wallet`,
+`stuck_hand_on` (125); the doc check; plan-check and tag-check `--strict` (0 findings, 2406 tests tagged); the contract
+guard against `origin/develop` (`fb883e01`): "1977 changed path(s) … no violations".
 
 ## T-020-48: Core's own schedule, `tick` (finding 4 of the milestone review of 2026-11-24)
 

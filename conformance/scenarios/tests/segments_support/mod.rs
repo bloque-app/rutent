@@ -2811,3 +2811,25 @@ pub fn release_change(
 pub mod handing;
 pub mod rerouting;
 pub mod resolving;
+
+/// The evidence store's read as a recalculation's terms are held to it here: it keeps nothing, so no terms are kept,
+/// and none are handed back in the kit (`T-020-56`).
+pub struct KeepsNothing;
+
+impl KeptStatements for KeepsNothing {
+    fn kept(
+        &mut self,
+        _: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Option<rutent_contracts::core_internal::KeptStatement>, AppendFailure> {
+        Ok(None)
+    }
+}
+
+/// The log's recorded entries as a recalculation reads them back here: none (`T-020-56`).
+pub struct ReadsNothing;
+
+impl rutent_core_orch::quote::Recorded for ReadsNothing {
+    fn entry(&self, _: &Receipt) -> Option<Entry> {
+        None
+    }
+}

@@ -25,6 +25,9 @@ pub struct DeclarationRecord {
     pub can_require_user_initiated_withdrawal: bool,
     /// Whether the reserve starts routes on automatic deposits.
     pub starts_routes_on_automatic_deposits: bool,
+    /// Whether the reserve answers hold requests: only where its declaration says so (provider-role 4.0.0,
+    /// `REQ-QTE-15`, `T-020-56`).
+    pub answers_hold_requests: bool,
     /// When the catalogue recorded it.
     pub recorded_at: Instant,
 }
@@ -35,10 +38,12 @@ impl DeclarationRecord {
             &self.maker,
             self.can_require_user_initiated_withdrawal,
             self.starts_routes_on_automatic_deposits,
+            self.answers_hold_requests,
         ) == (
             &other.maker,
             other.can_require_user_initiated_withdrawal,
             other.starts_routes_on_automatic_deposits,
+            other.answers_hold_requests,
         )
     }
 }
@@ -105,6 +110,7 @@ impl DeclarationLog {
             maker: d.maker.clone(),
             can_require_user_initiated_withdrawal: d.can_require_user_initiated_withdrawal,
             starts_routes_on_automatic_deposits: d.starts_routes_on_automatic_deposits,
+            answers_hold_requests: d.answers_hold_requests(),
             recorded_at: at,
         };
         let of_provider = || self.records.iter().filter(|r| r.provider == ad.provider);

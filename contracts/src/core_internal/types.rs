@@ -630,6 +630,18 @@ pub enum Action {
         /// The provider that failed it, asked to reverse.
         provider: Id,
     },
+    /// Filing an arrival anew against the order it differed from (`REQ-ORD-23`), a decided action like any other
+    /// (`T-020-52`): the deployment's operator, or the reserve the arrival came to, files it, and policy decides that
+    /// before the `refiling` entry is recorded, which cites the permit. It takes no effect: the refiling moves
+    /// nothing. The filer is the caller that asks, named so a permit can't be read as another's.
+    RefileArrival {
+        /// The receipt of the arrival's entry.
+        arrival: Receipt,
+        /// The order it is filed against.
+        order: Id,
+        /// Who files it anew: the request's caller.
+        filer: Actor,
+    },
     /// Asking a segment's provider where the segment stands, late, once it failed or fell silent (`REQ-ORD-1`, `AC-5`'s
     /// late delivery): a decided action, taken as an effect under a fresh transaction of its order, which it names,
     /// and appended before the question is sent, so a late status is traceable from the log (`T-020-36`). What the
@@ -2173,6 +2185,10 @@ pub enum OrderRefusalClass {
     MalformedRequest,
     /// The destination's owner changed since it was resolved: the order waits for the customer (`REQ-ORD-24`).
     DestinationOwnerChanged,
+    /// An input the decision rests on couldn't be read, so nothing is decided on it: policy's register of sessions
+    /// unread, as policy itself answers `missing_input` (`REQ-AUZ-5`, `T-021-17`, `T-020-52`). The same request may
+    /// get an answer once the register is read.
+    MissingInput,
 }
 
 /// One part's yes on an acceptance: the part, its origin reserve, and the receipt of that reserve's stated yes to
@@ -2462,6 +2478,9 @@ pub enum What {
         arrival: Receipt,
         /// The order it is filed against.
         order: Id,
+        /// The receipt of policy's permitted `decide` of `refile_arrival` it rests on (`T-020-52`): about this
+        /// arrival and order, asked by `who`.
+        decision: Receipt,
     },
     /// An item the platform or the proxy reported, at its place in the drain that took it, so two identical
     /// events of one drain are two entries and a retried append of one is still one (`REQ-MDL-8`).

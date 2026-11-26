@@ -68,11 +68,11 @@ use std::time::Duration;
 
 use rutent_conformance::role::SuiteContext;
 use rutent_conformance::sim::Spec;
-use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log};
+use rutent_contracts::core_internal::calls::{AppendFailure, GeneralEntry, Log, Reads};
 use rutent_contracts::core_internal::{
-    Action, Actor, ActorKind, Authorisation, CatalogueChange, DecisionRequest, Entry, Outcome,
-    Receipt, RefusalClass, Role, RouteEnd, SessionOutcome, SessionRequest, TimeSource,
-    VerifiedEntry, VerifiedKind, What, When,
+    Action, Actor, ActorKind, Authorisation, CatalogueChange, Decision, DecisionRequest, Entry,
+    Outcome, PermissionChange, ReadAnswer, ReadCheck, Receipt, RefusalClass, Role, RouteEnd,
+    SessionOutcome, SessionRequest, TimeSource, VerifiedEntry, VerifiedKind, What, When,
 };
 use rutent_contracts::provider_role::{
     ADVERTISEMENT_SHAPE, JudgementOutcome, JudgementResult, Operation, ResultBody, Statement,
@@ -86,7 +86,7 @@ use rutent_core_authz::roles::Permission;
 use rutent_core_authz::session::LONGEST_SESSION_SECS;
 use rutent_core_orch::intake::{
     Actors, DESTINATION_INPUT, Desk, Destinations, HeldSession, Intake, IntakeError, OrderRecord,
-    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, Told,
+    OrderRequest, Quote, Resolution, SessionRegister, Status as IntakeStatus, StatusReads, Told,
 };
 use rutent_core_orch::rounds::{Fresh, Issued, OperatorKey, Parts as Rounds, Providers};
 use rutent_core_orch::segments::{
@@ -242,6 +242,32 @@ pub struct Signer {
     /// Each decision record Core signed, by its id: the envelope as signed, its bytes, and nothing read from them
     /// until they are held to the log's digest.
     records: BTreeMap<String, Vec<u8>>,
+    /// The ids of `records`, in the order they were signed: what a scenario that takes the first or the last record
+    /// means, since the ids are drawn and order by chance of what else Core drew.
+    signed: Vec<String>,
+}
+
+impl Signer {
+    /// The records, in the order they were signed; any the order doesn't name (carried over a restart) after, by id.
+    fn in_order(&self) -> Vec<(&String, &Vec<u8>)> {
+        let mut named: Vec<(&String, &Vec<u8>)> = self
+            .signed
+            .iter()
+            .filter_map(|id| self.records.get_key_value(id))
+            .collect();
+        for (id, bytes) in &self.records {
+            if !self.signed.contains(id) {
+                named.push((id, bytes));
+            }
+        }
+        named
+    }
+
+    /// The first record signed, to change.
+    fn first_mut(&mut self) -> Option<&mut Vec<u8>> {
+        let first = self.in_order().first().map(|(id, _)| (*id).clone())?;
+        self.records.get_mut(&first)
+    }
 }
 
 impl OperatorKey for Signer {
@@ -257,8 +283,10 @@ impl OperatorKey for Signer {
         {
             value["signature"]["value"] = rutent_conformance::signing::base64url(&signature).into();
             let recorded = serde_json::to_vec(&value).unwrap_or_default();
-            self.records
-                .insert(record.record_id().as_str().to_owned(), recorded);
+            let id = record.record_id().as_str().to_owned();
+            if self.records.insert(id.clone(), recorded).is_none() {
+                self.signed.push(id);
+            }
         }
         Some(signature)
     }
@@ -437,12 +465,75 @@ impl Modules for Running<'_> {
     }
 }
 
-/// The register of actors, as intake reads it: the deployment's, the one policy reads.
+/// How the evidence store's read is made to answer otherwise than it kept: given what it kept under a commitment, what
+/// it answers instead ([`Core::read_kept_through`]).
+pub type KeptThrough = dyn FnMut(
+    Option<rutent_contracts::core_internal::KeptStatement>,
+) -> Option<rutent_contracts::core_internal::KeptStatement>;
+
+/// The log's own read of the evidence store, as intake reads it: what it kept, or what a scenario has it answer.
+struct Reading<'a> {
+    kept: &'a mut LogsRead,
+    through: Option<&'a mut KeptThrough>,
+}
+
+impl rutent_contracts::core_internal::calls::KeptStatements for Reading<'_> {
+    fn kept(
+        &mut self,
+        commitment: &rutent_contracts::module_interface::Digest,
+    ) -> Result<Option<rutent_contracts::core_internal::KeptStatement>, AppendFailure> {
+        let found = self.kept.kept(commitment)?;
+        Ok(match self.through.as_deref_mut() {
+            Some(through) => through(found),
+            None => found,
+        })
+    }
+}
+
+/// The log's own record of an entry a call appended, read back from the log as it stands after the call.
+pub(crate) struct LogNow<'a>(pub(crate) &'a RefCell<CoreLog>);
+
+impl rutent_core_orch::quote::Recorded for LogNow<'_> {
+    fn entry(&self, receipt: &Receipt) -> Option<Entry> {
+        rutent_core_orch::quote::Recorded::entry(&charges::Log(self.0.borrow().entries()), receipt)
+    }
+}
+
+/// The register of actors, as intake reads it: the deployment's, the one policy reads, which binds the party, the kind
+/// and the role the actor states (`T-021-14`, `T-020-52`).
 struct Acting(Rc<RefCell<Registers>>);
 
 impl Actors for Acting {
-    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind) -> bool {
-        self.0.borrow().acts_as(acts, party, kind) == Some(true)
+    fn acts_for(&mut self, acts: &Id, party: &Id, kind: ActorKind, role: Role) -> bool {
+        self.0.borrow().acts_in(acts, party, kind, role) == Some(true)
+    }
+}
+
+/// Policy's read check, as intake asks it before it tells an order's status, and where intake hands over its own
+/// record of the filed request first, for policy's `Requester` source to answer from (`T-020-52`).
+struct StatusReading {
+    policy: PolicySide,
+    orders: rutent_core_authz::core_sources::OpenedOrders,
+}
+
+impl Reads for StatusReading {
+    fn check_read(&mut self, check: &ReadCheck) -> Result<ReadAnswer, AppendFailure> {
+        self.policy.check_read(check)
+    }
+
+    fn grant_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.grant_permission(change)
+    }
+
+    fn revoke_permission(&mut self, change: &PermissionChange) -> Result<Decision, AppendFailure> {
+        self.policy.revoke_permission(change)
+    }
+}
+
+impl StatusReads for StatusReading {
+    fn filed(&mut self, record: &OrderRecord) {
+        self.orders
+            .opened(&record.order, &record.parties, &record.origin_reserve);
     }
 }
 
@@ -450,6 +541,10 @@ impl Actors for Acting {
 struct Held(Rc<RefCell<PolicyEngine>>);
 
 impl SessionRegister for Held {
+    fn unread(&mut self) -> bool {
+        self.0.borrow().register().is_unread()
+    }
+
     fn held(&mut self, session: &Id) -> Option<HeldSession> {
         self.0
             .borrow()
@@ -540,6 +635,9 @@ pub struct Core {
     wire: charges::Wire,
     /// The log's own read of the evidence store: what the terms a provider stated are compared with.
     kept: LogsRead,
+    /// How a scenario has the evidence store's read answer otherwise than it kept ([`Core::read_kept_through`]): what
+    /// a statement is held to before Core keeps it, shown failing closed.
+    kept_through: Option<Box<KeptThrough>>,
     /// What the grading took across orders, kept as long as the segments (`T-020-09`).
     closing: rutent_core_orch::closing::Closing,
     /// The quotes reserves hold, which an acceptance may redeem (`T-020-15`); which order redeemed which is rebuilt
@@ -791,6 +889,8 @@ impl Core {
             // The operator's login files automatic deposits for the reserves that declared them (`REQ-ORD-13`,
             // `T-020-04`).
             r.permit(&kit::operator_login(), Permission::ActForUser);
+            // The operator's login files an arrival anew where policy decides it (`REQ-ORD-23`, `T-020-52`).
+            r.permit(&kit::operator_login(), Permission::RefileArrival);
             r.accounts.insert(
                 context.account.clone(),
                 kit::customer().party.as_str().to_owned(),
@@ -896,6 +996,7 @@ impl Core {
             notice_signer: charges::NoticeSigner::assembly(),
             wire: charges::Wire::default(),
             kept,
+            kept_through: None,
             closing: rutent_core_orch::closing::Closing::new(),
             holds: rutent_core_orch::quote::Holds::new(),
             readings: grading::Readings::default(),
@@ -908,6 +1009,7 @@ impl Core {
             signer: Signer {
                 key: RealKey::assembly(),
                 records: BTreeMap::new(),
+                signed: Vec::new(),
             },
             fresh: carried_fresh.unwrap_or_else(|| Seeded::new(config.seed)),
             bounds: kit::bounds_for(&context, &config.providers),
@@ -961,12 +1063,12 @@ impl Core {
         Ok(core)
     }
 
-    /// Every decision record Core signed, by its id.
+    /// Every decision record Core signed, in the order it signed them.
     pub fn decision_records(&self) -> Vec<DecisionRecord> {
         self.signer
-            .records
-            .values()
-            .filter_map(|bytes| record_in(bytes))
+            .in_order()
+            .into_iter()
+            .filter_map(|(_, bytes)| record_in(bytes))
             .collect()
     }
 
@@ -974,8 +1076,8 @@ impl Core {
     /// a record (`T-024-22`: a scan that read only the records that parse would miss one that doesn't).
     pub fn decision_record_bytes(&self) -> Vec<(String, Vec<u8>)> {
         self.signer
-            .records
-            .iter()
+            .in_order()
+            .into_iter()
             .map(|(id, bytes)| (id.clone(), bytes.clone()))
             .collect()
     }
@@ -983,7 +1085,7 @@ impl Core {
     /// A control for the check that every record Core signed is read (`T-024-22`): rewrites the first record kept with
     /// its `candidates` set to a string, so it no longer reads back as a record. False if Core kept none.
     pub fn corrupt_decision_record(&mut self) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        let Some(bytes) = self.signer.first_mut() else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -1005,7 +1107,21 @@ impl Core {
     /// rest itself, so a customer's figure can't be put there from outside; this puts it there from inside. False if
     /// Core kept no record, or the record has no text there, or reads back as no record with the figure in it.
     pub fn leak_into_decision_record(&mut self, leak: &str, at: &str) -> bool {
-        let Some(bytes) = self.signer.records.values_mut().next() else {
+        // The first record signed that has text at `at`: a refining round's record has fields the first round's hasn't.
+        let Some(id) = self
+            .signer
+            .in_order()
+            .into_iter()
+            .find(|(_, bytes)| {
+                serde_json::from_slice::<serde_json::Value>(bytes)
+                    .ok()
+                    .is_some_and(|v| v["statement"].pointer(at).is_some_and(|f| f.is_string()))
+            })
+            .map(|(id, _)| id.clone())
+        else {
+            return false;
+        };
+        let Some(bytes) = self.signer.records.get_mut(&id) else {
             return false;
         };
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -1051,6 +1167,20 @@ impl Core {
     /// The log.
     pub fn log(&self) -> std::cell::Ref<'_, CoreLog> {
         self.log.borrow()
+    }
+
+    /// The bytes the evidence store keeps behind `commitment`, as the log's own read finds them: what a stated entry
+    /// rests on, read back by a scenario.
+    pub fn kept_bytes(
+        &mut self,
+        commitment: &rutent_contracts::module_interface::Digest,
+    ) -> Option<Vec<u8>> {
+        let kept = rutent_contracts::core_internal::calls::KeptStatements::kept(
+            &mut self.kept,
+            commitment,
+        )
+        .ok()??;
+        rutent_core_audit::log::kept::from_base64url(kept.bytes.as_str())
     }
 
     /// The evidence store, bound to the log.
@@ -1666,18 +1796,33 @@ impl Core {
         let mut acting = Acting(Rc::clone(&self.deployed.registers));
         let mut held = Held(Rc::clone(self.policy.engine()));
         let mut authorisations = self.policy.clone();
+        let mut decisions = self.policy.clone();
+        let mut reads = StatusReading {
+            policy: self.policy.clone(),
+            orders: self.sources.opened_orders(),
+        };
+        let log = Rc::clone(&self.log);
+        let recorded = LogNow(&log);
+        let mut kept = Reading {
+            kept: &mut self.kept,
+            through: self.kept_through.as_deref_mut(),
+        };
         let mut desk = Desk {
             parts: &mut parts,
             destinations: &mut owners,
             authorisations: &mut authorisations,
+            decisions: &mut decisions,
             actors: &mut acting,
             sessions: &mut held,
+            reads: &mut reads,
             bounds: &self.bounds,
             prices: &self.prices,
             core: &core,
             operator: &operator,
             holds: &mut self.holds,
-            kept: &mut self.kept,
+            kept: &mut kept,
+            recorded: &recorded,
+            terms: &mut self.segments,
         };
         call(&mut self.intake, &mut desk)
     }
@@ -1724,61 +1869,116 @@ impl Core {
         &mut self.holds
     }
 
-    /// Core's holds lost and rebuilt from the log, as a restart leaves them (`Holds::recorded`): no quote is held, and
-    /// which order redeemed which hold is what the log's acceptances say.
+    /// Core's holds lost and rebuilt from the log, as a restart leaves them (`Holds::recorded`): which order redeemed
+    /// which hold is what the log's acceptances say; and each hold the log holds is kept again, as the deployment keeps
+    /// them across a restart (`F-030`): its statement read back from the evidence store behind its entry's commitment,
+    /// and held to the decision record its entry's quote names, which Core signed and the log names by digest
+    /// (`Holds::hold`). A hold whose bytes or record can't be read back is held no more.
     pub fn holds_rebuilt_from_log(&mut self) {
-        self.holds = rutent_core_orch::quote::Holds::recorded(self.log.borrow().entries());
-    }
-
-    /// Takes a reserve's signed hold, `bytes` as they arrived, of the quote `record` chose (recorded in the log as
-    /// `recorded_id` and `recorded_digest`), held until `valid_until` (`Holds::take`): kept, appended as a stated
-    /// entry about its own transaction and held for an acceptance to name. It answers the receipt of the hold's entry.
-    /// Nothing delivers a reserve's hold to Core yet; a scenario hands it here (`T-020-15`).
-    ///
-    /// # Errors
-    ///
-    /// If the bytes aren't a hold, the log refused them, or the hold isn't kept.
-    pub fn state_hold(
-        &mut self,
-        bytes: &[u8],
-        recorded_id: &Id,
-        recorded_digest: &rutent_contracts::module_interface::Digest,
-        record: DecisionRecord,
-        valid_until: rutent_contracts::router_api::Timestamp,
-    ) -> Result<Receipt, rutent_core_orch::quote::TakeHoldError> {
-        // The log's own record of the entry the call appended is read back from the log as it stands after.
-        struct Now<'a>(&'a RefCell<CoreLog>);
-        impl rutent_core_orch::quote::Recorded for Now<'_> {
-            fn entry(&self, receipt: &Receipt) -> Option<Entry> {
-                rutent_core_orch::quote::Recorded::entry(
-                    &charges::Log(self.0.borrow().entries()),
-                    receipt,
-                )
+        let entries = self.log.borrow().entries().to_vec();
+        let mut holds = rutent_core_orch::quote::Holds::recorded(&entries);
+        for (receipt, entry) in &entries {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str() != rutent_contracts::provider_role::HOLD_SHAPE {
+                continue;
             }
-        }
-        let log = Rc::clone(&self.log);
-        let recorded = Now(&log);
-        let presented_by = handed_over_by(&self.catalogue, bytes);
-        let desk = rutent_core_orch::quote::HoldDesk {
-            evidence: &mut self.keeper,
-            log: &mut self.general,
-            recorded: &recorded,
-            clock: &self.clock,
-            catalogue: &self.catalogue,
-            presented_by: &presented_by,
-        };
-        self.holds
-            .take(
-                desk,
-                bytes,
+            let Some(hold) = rutent_contracts::core_internal::calls::KeptStatements::kept(
+                &mut self.kept,
+                &stated.commitment,
+            )
+            .ok()
+            .flatten()
+            .and_then(|kept| rutent_core_audit::log::kept::from_base64url(kept.bytes.as_str()))
+            .and_then(|bytes| {
+                serde_json::from_slice::<
+                    rutent_contracts::provider_role::Statement<
+                        rutent_contracts::provider_role::Hold,
+                    >,
+                >(&bytes)
+                .ok()
+            }) else {
+                continue;
+            };
+            let named = &hold.statement.record;
+            let Some(id) = Id::new(named.id.as_str()) else {
+                continue;
+            };
+            let Some(order) = entries.iter().find_map(|(_, e)| match e {
+                Entry::Verified(VerifiedEntry {
+                    what:
+                        What::DecisionRecord {
+                            decision_record,
+                            order,
+                            ..
+                        },
+                    ..
+                }) if decision_record == &id => Some(order.clone()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Ok(record) = self.record_of(&order, &id) else {
+                continue;
+            };
+            let Some(digest) = self.verified_whats().into_iter().find_map(|w| match w {
+                What::DecisionRecord {
+                    decision_record,
+                    record,
+                    ..
+                } if decision_record == id => Some(record),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let Some(until) =
+                rutent_contracts::router_api::Timestamp::new(hold.statement.valid_until.as_str())
+            else {
+                continue;
+            };
+            let _ = holds.hold(
+                rutent_core_orch::quote::Signed {
+                    hold: &hold,
+                    stated,
+                    receipt,
+                },
                 rutent_core_orch::quote::RecordedAs {
-                    id: recorded_id,
-                    digest: recorded_digest,
+                    id: &id,
+                    digest: &digest,
                 },
                 record,
-                valid_until,
-            )
-            .map(|held| held.hold.clone())
+                until,
+            );
+        }
+        self.holds = holds;
+    }
+
+    /// From now on, the evidence store's read answers what `through` makes of what it kept under each commitment,
+    /// for every statement Core holds to what the store keeps (a provider's terms, a reserve's hold): how a scenario
+    /// shows Core keeping nothing that rests on other bytes than its entry names (`REQ-AUD-2`). `None` reads it as kept
+    /// again.
+    pub fn read_kept_through(&mut self, through: Option<Box<KeptThrough>>) {
+        self.kept_through = through;
+    }
+
+    /// The holds Core took of the quotes it showed, by the transaction of each hold's stated entry, in the log's order
+    /// (`T-020-56`).
+    pub fn holds_taken(&self) -> Vec<(Id, Receipt)> {
+        self.log
+            .borrow()
+            .entries()
+            .iter()
+            .filter_map(|(receipt, entry)| match entry {
+                Entry::Stated(stated)
+                    if stated.what.statement.as_str()
+                        == rutent_contracts::provider_role::HOLD_SHAPE =>
+                {
+                    Some((stated.about.as_ref()?.transaction.clone()?, receipt.clone()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// [`Core::accept`], naming `hold`, the transaction of a reserve's hold of the quote shown (`T-020-15`).

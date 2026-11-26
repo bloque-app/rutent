@@ -47,7 +47,7 @@ mod rule;
 use std::collections::BTreeMap;
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Charges, Evidence, GeneralEntry, Log, PersonQuestions,
+    AppendFailure, Charges, Evidence, GeneralEntry, KeptStatements, Log, PersonQuestions,
 };
 use rutent_contracts::core_internal::{
     Actor, Authorisation, Entry, Outcome, Receipt, RouteEnd, TimeSource, VerifiedEntry,
@@ -64,6 +64,7 @@ use rutent_contracts::state_machine::{
 use rutent_prov::catalogue::Catalogue;
 use rutent_stm::Stm;
 
+use crate::quote::Recorded as LogRecorded;
 use crate::rounds::{
     self, Fresh, History, Issued, Offer, OperatorKey, Providers, Recorded, Routed, Routing,
     RoutingError,
@@ -115,6 +116,12 @@ pub struct Parts<'a> {
     pub issued: &'a mut Issued,
     /// The segments Core handed over, and the orders it follows.
     pub segments: &'a mut Segments,
+    /// The log's own read of what the evidence store kept under a commitment: what a provider's terms are held to
+    /// before they are kept (`T-020-56`).
+    pub kept: &'a mut dyn KeptStatements,
+    /// The log's recorded entries, read back by receipt: a provider's terms, read back as the log attributed them once
+    /// appended (`T-020-56`).
+    pub recorded: &'a dyn LogRecorded,
 }
 
 /// One recalculation to try.
@@ -446,6 +453,21 @@ impl Recalculations {
             )
             .map_err(RecalcError::Routing)?
         };
+        // The terms the providers handed back in the new route's rounds, stated before any of its segments starts, bind
+        // the segments that do (`REQ-QTE-6`, `T-020-56`'s review, gap 3).
+        crate::quote::take_handed_back(
+            &mut *parts.segments,
+            crate::quote::HandedBack {
+                evidence: &mut *parts.evidence,
+                log: &mut *parts.log,
+                kept: &mut *parts.kept,
+                recorded: parts.recorded,
+                clock: parts.clock,
+                catalogue: parts.catalogue,
+            },
+            &routed.terms,
+        )
+        .map_err(|failure| RecalcError::Routing(RoutingError::Log(failure)))?;
         let Routed {
             shortlist,
             mut choices,

@@ -189,6 +189,12 @@ impl Core {
             fleet: &mut self.fleet,
             clock: &self.clock,
         };
+        let log = std::rc::Rc::clone(&self.log);
+        let recorded = super::LogNow(&log);
+        let mut kept = super::Reading {
+            kept: &mut self.kept,
+            through: self.kept_through.as_deref_mut(),
+        };
         let mut parts = recalc::Parts {
             catalogue: &mut self.catalogue,
             clock: &self.clock,
@@ -203,6 +209,8 @@ impl Core {
             fresh: &mut self.fresh,
             issued: &mut self.issued,
             segments: &mut self.segments,
+            kept: &mut kept,
+            recorded: &recorded,
         };
         let history = self
             .life

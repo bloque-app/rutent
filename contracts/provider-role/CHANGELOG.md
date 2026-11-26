@@ -7,6 +7,14 @@
   fields. Every bullet below, 3.1.0's included, is part of this major; `VERSION` is `4.0.0`, and module-interface
   (5.0.0) and router-api (its unreleased 4.0.0) move with it. Fixtures keep naming protocol 2.0.1, as every major
   since 2.0.1 has, so a bump leaves them standing. Ignorable: no. (DEC-4, DEC-20, REQ-PRT-1, REQ-PRT-4, T-020-45)
+- A reserve may declare that it answers hold requests (`T-020-56`, finding 4 of `M3`'s milestone review; `T-020-47`'s
+  gap 1): `ReserveDeclaration.answers_hold_requests`, optional, read as `false` where absent
+  (`ReserveDeclaration::answers_hold_requests`). Nothing in an advertisement or a declaration said which reserves answer
+  the operator's `hold` request, so a reader could only ask every reserve at every quote. The operator asks a reserve
+  for a hold only where its declaration says it answers them. A reader that ignores the field asks no reserve for a
+  hold, and every quote is shown unheld, as before this major: it loses a hold, never a protection. One valid fixture,
+  `advertisement-reserve-answering-hold-requests`; one invalid, `advertisement-reserve-declaring-hold-requests-as-null`
+  (an optional field is never `null`). Ignorable: yes. (DEC-4, DEC-20, REQ-QTE-15, REQ-PRT-2, T-020-56)
 - A reader takes statements under the protocol versions in force (finding 11, `REQ-PRT-4`): `check_context(deployment,
   versions, at)` takes `ProtocolVersions`, the current version and each older one still in force with its `Cutover`,
   the date from which a statement under it is void, in place of one exact version. A statement under the current

@@ -18,7 +18,8 @@
     account's own last check where it has one: row `raise-of-a-holding-not-read-cites-its-accounts-check` (fields
     `account`, `node`, `provider`). Fixtures: valid `raise-of-a-holding-account-not-read`, `--citing-its-last-check`;
     invalid `raise-of-a-holding-not-read-naming-a-balance`, `--for-a-reason-it-has-no-name-for`; admission
-    `--its-accounts-check`, `--never-read`, `--missing`, `--account`, `--node`, `--provider`. 119 relations.
+    `--its-accounts-check`, `--never-read`, `--missing`, `--account`, `--node`, `--provider`. 120 relations, with
+    `T-020-52`'s merged beside it.
   - `F-025`'s L7: row `automatic-deposit-takes-a-firm-quote`, an `automatic_deposit` acceptance's quote is no `shown`
     without a firm rate or awaiting its customer.
   - R-AWAITING: `arrival.holder` (optional), and row `waiting-quote-is-for-its-arrivals-holder`, a `shown` with
@@ -83,9 +84,20 @@
     their rule (the raises', now named whole); the log's handling of provider-role's statements, which provider-role's
     README no longer says, is here.
 
+  - `T-020-52` (the lead's authorisation, a `DEC-20` path folded into this unreleased version): `OrderRefusalClass::MissingInput`
+    (`missing_input`), the class an order is refused with where policy's register of sessions can't be read, as policy
+    answers it; and `Action::RefileArrival {arrival, order, filer}` (`refile_arrival`), a decided action that takes no
+    effect, with `refiling.decision`, the receipt of policy's permitted `decide` of it, which the new row
+    `refiling-rests-on-policys-permit` holds to the arrival, order and filer the refiling names, permitted, asked by the
+    refiling's own actor. One valid fixture each (`decision-request-to-refile-an-arrival`,
+    `verified-entry-of-a-refusal-for-an-input-policy-could-not-read`), an invalid one each
+    (`decision-request-to-refile-an-arrival-without-its-filer`, `verified-entry-of-a-refiling-without-its-decision`),
+    six admission cases, and every refiling in the admission cases now rests on a decision of its own. (REQ-ORD-23,
+    REQ-AUZ-1, REQ-AUZ-5, T-020-52)
+
   Valid fixtures for each new shape and setting, an invalid one per rule broken, and admission cases for each new
   row and field. With `T-020-44`'s, `T-020-50`'s, `T-020-46`'s (five rounds), `T-021-16`'s and `T-020-51`'s rounds, merged beside it:
-  thirty schemas, 189 valid fixtures and 189 invalid, 777 admission cases and 58 attribution cases (counted from the files); 119
+  thirty schemas, 191 valid fixtures and 191 invalid, 783 admission cases and 58 attribution cases (counted from the files); 120
   relations and 5 closing ones, three stated. (DEC-4, DEC-20, REQ-QTE-10, REQ-AUZ-7, REQ-AUZ-6, REQ-AUZ-8, THR-3, GUA-1, REQ-ORD-20, T-020-45)
 - The interfaces between `CMP-CORE-ORCH`, `CMP-CORE-AUTHZ` and `CMP-CORE-AUDIT`, settled as a sixth contract before the
   three parts are built side by side (`PLAN.md` §3, §4.4). From orchestration to policy: one decision call for every

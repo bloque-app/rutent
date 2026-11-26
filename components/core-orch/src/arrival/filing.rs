@@ -348,15 +348,13 @@ impl Arrivals {
         }
         // The reserve is asked about the holder's funds in this session: it must be the holder's, and open.
         let now = journal::now(desk.parts.clock)?;
-        let held = desk.sessions.held(&well.session).is_some_and(|held| {
-            held.holder == well.parties.requester && held.expires_at.unix_nanos() > now.unix_nanos()
-        });
-        if !held {
-            return Ok(Err(self.refuse_filing(
-                desk,
-                filing,
-                OrderRefusalClass::RefusedByPolicy,
-            )?));
+        if let Some(class) = crate::intake::session_refusal(
+            desk.sessions,
+            &well.session,
+            &well.parties.requester,
+            &now,
+        ) {
+            return Ok(Err(self.refuse_filing(desk, filing, class)?));
         }
         // The deposit goes to the destination its reserve names, or to its holder where it names none, and the
         // destination's owner is the beneficiary, who is the holder, either way.
@@ -654,7 +652,7 @@ impl Run {
     pub(super) fn has_a_listed_login(&self, desk: &mut Desk<'_, '_>) -> bool {
         self.logins
             .iter()
-            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party, l.kind))
+            .any(|(l, _)| desk.actors.acts_for(&l.acts, &l.party, l.kind, l.role))
     }
 
     /// The customer `by` accepts the route of the order waiting for it, the quote of digest `quote` (`REQ-QTE-10`):
@@ -672,7 +670,7 @@ impl Run {
     ) -> Result<Filed, ArrivalError> {
         if by.role != Role::Customer
             || by.party != self.filing.parties.requester
-            || !desk.actors.acts_for(&by.acts, &by.party, by.kind)
+            || !desk.actors.acts_for(&by.acts, &by.party, by.kind, by.role)
         {
             return Err(ArrivalError::NotTheFiler);
         }
@@ -1218,6 +1216,9 @@ impl Run {
             operator: desk.operator,
         };
         let routed = rounds::route::<R>(desk.parts, routing, &mut self.history)?;
+        // The terms the providers handed back, stated before any segment starts, held for the segments that do
+        // (`REQ-QTE-6`, `T-020-56`).
+        crate::intake::take_terms(desk, &routed.terms).map_err(|_| AppendFailure::Unavailable)?;
         let candidate = match &routed.offer {
             Offer::NotOffered(why) => return self.end(desk, not_offered(&routed, why)),
             Offer::Offered { candidate, .. } => candidate,

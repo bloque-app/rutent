@@ -13,7 +13,7 @@ use rutent_contracts::core_internal::{Entry, Raise, Receipt, VerifiedEntry, What
 use rutent_contracts::provider_role::PublicKey;
 use rutent_contracts::router_api::Id;
 use rutent_core_orch::notice::{About, Notice, NoticeKey, Receiver, Transport};
-use rutent_core_orch::quote::{Checked, Recorded, TakeError, Taken, TermsDesk};
+use rutent_core_orch::quote::{Checked, Recorded};
 use serde_json::Value;
 
 use super::Core;
@@ -175,61 +175,6 @@ impl Core {
     /// How many terms Core holds, across tuples.
     pub fn terms_held(&self) -> usize {
         self.segments.terms().len()
-    }
-
-    /// Takes a provider's signed terms, `bytes` as they arrived, for the segments that start after them
-    /// (`REQ-QTE-6`). Nothing delivers a provider's terms to Core yet; a scenario hands them here.
-    ///
-    /// # Errors
-    ///
-    /// If the bytes aren't terms, the log refused them, or what the evidence store kept isn't what was handed in.
-    pub fn state_terms(&mut self, bytes: &[u8]) -> Result<Taken, TakeError> {
-        self.take_terms_with(None, bytes)
-    }
-
-    /// [`Core::state_terms`], with the statement behind the entry's commitment read through `kept`: how a scenario
-    /// has the evidence store keep something else than the bytes it was handed.
-    ///
-    /// # Errors
-    ///
-    /// As [`Core::state_terms`].
-    pub fn state_terms_read_by(
-        &mut self,
-        kept: &mut dyn rutent_contracts::core_internal::calls::KeptStatements,
-        bytes: &[u8],
-    ) -> Result<Taken, TakeError> {
-        self.take_terms_with(Some(kept), bytes)
-    }
-
-    fn take_terms_with(
-        &mut self,
-        kept: Option<&mut dyn rutent_contracts::core_internal::calls::KeptStatements>,
-        bytes: &[u8],
-    ) -> Result<Taken, TakeError> {
-        let kept: &mut dyn rutent_contracts::core_internal::calls::KeptStatements = match kept {
-            Some(kept) => kept,
-            None => &mut self.kept,
-        };
-        // The log's own record of the entry the call appended is read back from the log as it stands after.
-        struct Now<'a>(&'a std::cell::RefCell<super::CoreLog>);
-        impl Recorded for Now<'_> {
-            fn entry(&self, receipt: &Receipt) -> Option<Entry> {
-                Log(self.0.borrow().entries()).entry(receipt)
-            }
-        }
-        let log = std::rc::Rc::clone(&self.log);
-        let recorded = Now(&log);
-        let presented_by = super::handed_over_by(&self.catalogue, bytes);
-        let desk = TermsDesk {
-            evidence: &mut self.keeper,
-            log: &mut self.general,
-            kept,
-            recorded: &recorded,
-            clock: &self.clock,
-            catalogue: &self.catalogue,
-            presented_by: &presented_by,
-        };
-        self.segments.take_terms(desk, bytes)
     }
 }
 
