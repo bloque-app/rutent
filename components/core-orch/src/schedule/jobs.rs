@@ -232,9 +232,6 @@ pub trait Ports {
     fn publisher_accounts(&self) -> Vec<PublisherAccount>;
     /// Hands `operation` to `module`, signed in the operator's name at Core's clock, through the platform.
     fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled;
-    /// The publishers' signed records of their private nodes' segments (`REQ-ORD-41`). The platform carries no
-    /// question for them yet, so the deployment reads them as the scenario world holds them (`T-020-58`).
-    fn publishers_records(&mut self) -> Vec<Published>;
     /// Runs the checkpointer's ticks due and publishes what they issue (`REQ-AUD-14`); how many it published.
     ///
     /// # Errors
@@ -909,8 +906,60 @@ impl Duties for Jobs<'_> {
         checked
     }
 
+    /// Each private node a started order's route passes, as Core's own records of the routes it runs name it, asked of
+    /// each provider of the node's publisher that declares it (`REQ-ORD-41`, `T-020-58`): a question under a fresh
+    /// transaction, handed to the platform through the deployment's port, and the answer taken as a record only as
+    /// `closing::publishers::taken` allows. The deployment carries each question and chooses neither node nor provider.
     fn read_publishers(&mut self) -> Vec<Published> {
-        self.ports.publishers_records()
+        let mut nodes = BTreeSet::new();
+        for started in self.ports.started().values() {
+            let Some(chosen) = started.record.chosen() else {
+                continue;
+            };
+            for operation in chosen.parts.iter().flat_map(|p| p.operations.iter()) {
+                for end in [&operation.from.node, &operation.to.node] {
+                    let name = match end {
+                        rutent_contracts::provider_role::NodeRef::Inner(id) => id.as_str(),
+                        rutent_contracts::provider_role::NodeRef::Outer(o) => o.network.as_str(),
+                    };
+                    if self
+                        .ports
+                        .catalogue()
+                        .publishers()
+                        .publisher_of_node(name)
+                        .is_some()
+                    {
+                        nodes.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        let mut published = Vec::new();
+        for node in nodes {
+            for provider in crate::closing::publishers::serving(self.ports.catalogue(), &node) {
+                let transaction = self.ports.fresh();
+                let asked =
+                    crate::closing::publishers::question(&provider, &node, transaction.as_str());
+                let Handled::Answered(answer) =
+                    self.ports.ask_as_operator(&provider, asked.clone())
+                else {
+                    continue;
+                };
+                let Ok(bytes) = serde_json::to_vec(&*answer) else {
+                    continue;
+                };
+                let at = self.ports.clock().now().floor();
+                if let Ok(record) =
+                    crate::closing::publishers::taken(self.ports.catalogue(), at, &asked, &bytes)
+                {
+                    published.push(Published {
+                        node: node.clone(),
+                        record,
+                    });
+                }
+            }
+        }
+        published
     }
 
     fn unknown_segments(&self) -> Vec<Unknown> {
@@ -1221,9 +1270,6 @@ mod tests {
         fn ask_as_operator(&mut self, module: &str, _: Operation) -> Handled {
             self.asked.push(module.to_owned());
             Handled::Refused(PlatformRefusal::Unavailable)
-        }
-        fn publishers_records(&mut self) -> Vec<Published> {
-            Vec::new()
         }
         fn run_checkpoints(&mut self) -> Result<usize, String> {
             Err("the checkpointer can't be reached".to_owned())

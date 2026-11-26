@@ -55,6 +55,7 @@ use std::collections::BTreeMap;
 
 mod price;
 mod public_end;
+pub mod publishers;
 
 pub use price::{PriceDesk, Reported, RouteRun, Unreported, report_logged_price, report_price};
 
@@ -78,7 +79,7 @@ use rutent_evidence::{
 };
 use rutent_prov::catalogue::{Catalogue, Category, Endpoint, TupleKey};
 
-use crate::segments::{Graded, Grading, RaiseDesk, Short, ToGrade, ToKeep};
+use crate::segments::{AskDesk, Graded, Grading, RaiseDesk, Short, ToGrade, ToKeep};
 use crate::snapshot::RouteRefusal;
 
 /// A segment's movement on a public network, as that network ties it to the segment's transaction.
@@ -156,6 +157,15 @@ pub trait Books {
     /// What the publisher of private node `node` recorded of the segments inside it that ran under `transactions`,
     /// in the order they ran; `None` where it recorded nothing.
     fn recorded(&self, node: &str, transactions: &[Id]) -> Option<Recorded>;
+
+    /// Hands the books what `provider`, a provider of `node`'s publisher, answered when Core asked it for its record of
+    /// the node, taken as one ([`publishers::taken`]): the record, or `None` where the answer wasn't a record of the
+    /// node, which leaves the books with nothing of that provider's. Core asks again each time it grades a segment, so
+    /// the books keep only the last answer for each provider and node and rebuild from the next asking after a restart
+    /// (`T-020-58`). Books that are given nothing (a fixed listing) ignore it.
+    fn took(&self, provider: &str, node: &str, record: Option<Statement<InnerSegments>>) {
+        let _ = (provider, node, record);
+    }
 }
 
 /// What grading kept of one settled segment, for the segments after it.
@@ -474,6 +484,10 @@ pub fn fees(settled: &ToGrade<'_>) -> Vec<Entry> {
 }
 
 impl Grading for Evidenced<'_> {
+    fn ask(&mut self, settled: &ToGrade<'_>, desk: &mut AskDesk<'_>) {
+        self.ask_publishers(settled, desk);
+    }
+
     fn statements(&mut self, settled: &ToGrade<'_>) -> Vec<ToKeep> {
         self.to_keep(settled)
     }
@@ -1111,6 +1125,47 @@ impl Evidenced<'_> {
             }
         }
         nodes
+    }
+
+    /// The private nodes this segment's closing reads the books of: the node a public segment enters, and the nodes
+    /// the value leaves for a public one, which the route Core runs names (`REQ-ORD-41`).
+    fn nodes_read(&self, settled: &ToGrade<'_>) -> Vec<String> {
+        let operations = settled.operations;
+        let Some(operation) = operations.get(settled.place) else {
+            return Vec::new();
+        };
+        let mut nodes = Vec::new();
+        if !is_final_deposit(settled)
+            && self.public(&operation.from.node)
+            && self.private(&operation.to.node)
+        {
+            nodes.push(node_name(&operation.to.node).to_owned());
+        }
+        if self.private(&operation.from.node)
+            && !self.private(&operation.to.node)
+            && self.public(&operation.to.node)
+        {
+            for (node, _) in self.run_nodes(settled, operations) {
+                if !nodes.contains(&node) {
+                    nodes.push(node);
+                }
+            }
+        }
+        nodes
+    }
+
+    /// Asks each provider of each private node this segment's closing reads for its record of the node, through the
+    /// platform, and hands the books what each answered taken as a record (`REQ-ORD-41`, `T-020-58`). The nodes are
+    /// Core's: the ones the route it runs passes. The deployment carries the question and chooses nothing.
+    fn ask_publishers(&mut self, settled: &ToGrade<'_>, desk: &mut AskDesk<'_>) {
+        for node in self.nodes_read(settled) {
+            for provider in publishers::serving(self.catalogue, &node) {
+                let record = desk.ask(&provider, &node).and_then(|(question, answer)| {
+                    publishers::taken(self.catalogue, desk.now(), &question.statement, &answer).ok()
+                });
+                self.books.took(&provider, &node, record);
+            }
+        }
     }
 
     /// The statements `settled`'s grading will cite, for the segments to append first (`T-020-32`): at a segment that

@@ -14,8 +14,9 @@
 //!    reading is taken through the platform (the account's module's `holding_balance` at a public node, its
 //!    publisher's signed word at a private node), never handed in, and goes to the log's checks; an account whose
 //!    module gives no balance is raised to the operator (`holding_not_read`);
-//! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`; read as the
-//!    scenario world holds them until `T-020-58` gives the platform a question for them);
+//! 4. the publishers' records of their private nodes' segments ([`Job::PublishersRecords`], `REQ-ORD-41`): each private
+//!    node the routes Core runs pass is asked of the providers of its publisher through the platform
+//!    (`inner_segments_query`, `T-020-58`), and an answer is taken only as a record of that node;
 //! 5. a status question again for each segment still unknown, at its provider's cadence ([`Job::StatusAsks`],
 //!    `REQ-ORD-1`); each followed order's part timed, a material change of a p99 raised and a part over its time
 //!    declared stuck ([`Job::Watch`], `REQ-ORD-29`, `REQ-ORD-6`, `AC-5`); and what Core kept of an answer handed to the

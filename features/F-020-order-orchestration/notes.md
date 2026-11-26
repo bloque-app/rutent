@@ -8679,3 +8679,115 @@ schema-rule and fixture counts (both sides' rows kept: 120 relations, 131 schema
 | Rule switched off | Red |
 |---|---|
 | the watch doesn't read `routes_ran` (the first route always) | `recalculated_route_is_watched_after_a_restart` |
+
+## T-020-58: a private node's record asked of its publisher (`REQ-ORD-41`; the review of `T-020-48`'s first build, its S3)
+
+Branch `f-020/t-020-58`, from `m3` (`e7418a53`), then `origin/m3` (`f0c66ab4`, plan-only: `T-020-63`) merged. `DEC-20` paths
+edited: `contracts/provider-role/` (folded into the unreleased 4.0.0: schemas, `operation.rs`, `outcome.rs`, README,
+CHANGELOG, fixtures), `contracts/module-interface/` and `contracts/router-api/` (one variant and one list entry each,
+below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/prov/src/module/platform.rs`
+(`READ_ONLY_KINDS`); `components/core-orch/` is not one. `F-024` files: `conformance/src/sim/mod.rs`,
+`conformance/src/role/{stand_in,suite}.rs`, `conformance/scenarios/src/sim/fleet.rs`,
+`conformance/scenarios/src/assembly/{grading,mod,schedule}.rs`, and the tests `publishers_record.rs`.
+
+### Design (T-020-58)
+
+- **The operation.** `Operation::InnerSegmentsQuery {transaction, provider, node}` (`inner_segments_query`), the operator's
+  question of a provider's record of `node`, under a transaction of its own, read-only and never a dry run. Its result,
+  `ResultBody::InnerSegmentsQuery {transaction, node, outcome}`, is `answered` (the provider's own `InnerSegments`, whole,
+  nested as a statement of the answer's maker), `not_known` or `refused`. `check_inner_segments_answer(question, answer)`
+  holds it to the question (`InnerSegmentsMismatch`: another provider, transaction, node, a record of another maker, or
+  not an answer to this kind of question). It takes the question, not its signed statement, so Core's tick, which hands the
+  assembly an operation to sign, needs no envelope to hold an answer. That the record is signed with a key its maker
+  lists, and the node and publisher are ones its maker declares, stay `check_inner_segments`'s. Fixtures: five valid,
+  eight invalid; the changelog entry says `Ignorable: no`.
+- **Where the other contracts follow.** `OperationKind::InnerSegmentsQuery` (module-interface 5.0.0, so a module can list it
+  in `handles`), barred from a declaration's `calls` (`DeclaredCallOfAnOperatorsQuestion`), and from router-api's `call_kind`
+  and its two checks, each with one invalid fixture. These are forced by the exhaustive matches the variant breaks and by
+  the rule that no module calls for an operator's question; `T-020-59` adds its three kinds to the same three lists, so
+  its edit is a one-line merge in each. The result schema now refers to `inner-segments`, so the schema lists of
+  `module-interface`'s test and of `prov`'s output check name it.
+- **The platform** carries it as it carries a question that moves nothing: `inner_segments_query` is among
+  `READ_ONLY_KINDS`, so it is handed through `Platform::handle` to a module whose release lists it (else `NotHandled`,
+  never run), under its own transaction, with no record and no repeat. `judge_call` refuses it however a module names it.
+- **The signer** (`proxy/signing.rs`) signs a record nested in an answer only to the question of that node, put to the
+  provider that answers (`asks_an_inner_segments_record`), and refuses an answer naming another question's
+  transaction or node (`AnswerOfAnotherQuestion`); a record nested in any other answer, a status answer included, is
+  `NestedNotAsked`, and an `inner_segments_query` result is not an operation's result a status answer may carry.
+- **Core asks, twice.** `closing::publishers` (`serving`, `question`, `taken`) is Core's. *Closing*: `Grading::ask`, called
+  by the segments before each grading (`keep_asked`), is `Evidenced::ask_publishers`: for each private node this segment's
+  closing reads (the node a public segment enters, the nodes the value leaves for a public one: the ones `to_keep` and
+  `replayed` read), each provider of the node's publisher whose accepted advertisement declares it is asked through
+  `AskDesk` (operator key, fresh transaction, Core's clock, the route record's bounds, `Modules::ask_for_record`), the
+  answer is taken only by `publishers::taken`, and `Books::took` hands the books the record or nothing. *The tick*:
+  `Job::PublishersRecords` derives the nodes from the routes of the orders Core started (`Ports::started`), asks the
+  same providers through the existing `Ports::ask_as_operator`, and takes the answers the same way. `Ports::publishers_records`
+  is gone: the assembly chooses no node and no provider, it only carries a question to the platform.
+- **`taken`** (`NotTaken`): the answer is to this question (`check_inner_segments_answer`), signed by the provider asked with
+  a key its advertisement lists and for this deployment and version (`Catalogue::verify_statement`), the record in it is
+  signed likewise, and it is held to its maker's accepted advertisement (`check_inner_segments`). Anything else leaves the
+  node with nothing recorded, so the replay says `NothingRecorded`, never the rest of a node passed off as all of it.
+- **The simulated publisher** (`Simulated::answer`) answers the question from its own books, nested for the platform to sign,
+  `not_known` where they hold no segment inside its node, a final refusal where it isn't the provider asked or serves in no
+  such node. `publishers_record` and the world read in `Readings` (`published_by`, `published_in`, `accepted`) are gone.
+  The planted fault `forge_record_of` now alters the answer between the platform and Core; `tamper_with_record_of(provider,
+  Tamper)` adds a record of another publisher's, of another node, signed with an unlisted key, and an answer altered after it
+  was signed.
+- **Nothing a restart loses.** Core relies on no held answer: closing asks again at each grading, and the record it cites
+  is a stated entry of the log (`T-020-32`). `Readings` keeps the last taken record for each provider and node only so
+  `Books::recorded` can read it within the grading, and is rebuilt by the next asking.
+
+### Defaults (T-020-58), reversible and fail closed
+
+1. A record that isn't taken leaves the node with nothing recorded (`NothingRecorded`); a provider's answer that isn't the
+   record of the node asked is never partly used.
+2. Core asks every provider of the publisher whose advertisement declares the node, at each grading of a segment that
+   reads it, and on each tick for each node of a started order's route: no cadence, no cache. Reversible by giving the
+   question a cadence (the schedule's cadences are `T-020-48`'s).
+3. Providers come in name order (the catalogue's), so a round's records are in that order, where the world read gave
+   install order; `Books::recorded` still reads them in install order.
+4. A question a module can't answer (a refusal, no answer, `NotHandled`) is no record, and no raise: the replay's
+   `NothingRecorded` is the record that it said nothing (recording is a SHOULD).
+
+### Gaps (T-020-58)
+
+1. **Production `Modules for Platform` doesn't ask** (`ask_for_record` keeps the trait's default, `NotHandled`): carrying it
+   out needs `Platform::handle`, which core-authz's entry-point scan lets a function call only with an `Effect` in hand,
+   and no core-internal action covers a read of a record (there is `ask_status` for a status question). Contract shape
+   missing, so not added here: an `Action` for the read of a private node's record (naming the node and the provider), a
+   permission beside `ask_status`'s, and the effect threaded to `AskDesk`. Until then only the assembly's `Modules`
+   carries it, as `Ports::ask_as_operator` already does the tick's. Owner: `T-020-52`'s policy round or `F-030`; add
+   to the form.
+2. No test fails when `serving` stops narrowing to the providers that declare the node: in the kit every provider of a
+   publisher that has a node declares it. Owner: a catalogue test with a publisher whose provider declares no node.
+3. The signer's two rules and the platform's read-only rule are tested at the platform; the assembly's `Tamper::Node` is
+   refused by the answer's own node check before `check_inner_segments`, so the declared-node rule is reached by
+   `Tamper::Publisher` only.
+4. `T-020-59` and `T-020-60` still add their kinds to the three call lists; no fold collision beyond those lines.
+
+### Rule-off table (T-020-58)
+
+Each switched off alone on the tree of the row's commit (script `ruleoff.py`, `ruleoff2.py` in the row's scratch folder, the
+file restored after each); the named test went red on an assertion each time, except the row marked.
+
+| Rule switched off | Red |
+|---|---|
+| closing asks no publisher (`Evidenced::ask`) | `private_node_record_is_asked_of_its_publisher_and_read_by_closing` (and four more of `publishers_record`) |
+| the tick asks no node of a started route | `private_node_record_is_asked_of_its_publisher_and_read_by_closing`, `publishers_records_are_read_through_the_platform_for_a_replay` |
+| an answer isn't held to its question | `answer_to_another_question_is_not_taken_as_a_private_node_record` |
+| the answer's signature isn't verified | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the record's signature isn't verified | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the record isn't held to its maker's advertisement | `a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record` |
+| the providers asked aren't narrowed to those declaring the node | none (gap 2) |
+| the signer signs a record for any question | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the signer signs an answer to another question | `record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked` |
+| the question counts as an operation carried out (`READ_ONLY_KINDS`) | `question_of_a_private_nodes_record_is_handed_to_a_module_that_handles_it_and_moves_nothing` |
+| a module may call for a record (`judge_call`) | `status_query_and_hold_are_refused_as_a_declared_call_and_as_a_kind_a_route_names` |
+| an answer isn't held to the node asked (contract) | `private_node_record_is_answered_by_the_providers_own_record_of_the_node_asked_about`, `every_valid_fixture_validates_and_every_invalid_one_is_rejected` |
+| a declaration may call for a record (module-interface) | `every_valid_fixture_validates_and_every_invalid_one_is_rejected` (module-interface) |
+| an operation may name a call for a record (router-api) | `every_invalid_fixture_is_rejected_by_the_rust_types_too` |
+
+The two named tests: `private_node_record_is_asked_of_its_publisher_and_read_by_closing` (`conformance/scenarios/tests/publishers_record.rs`)
+and `answer_to_another_question_is_not_taken_as_a_private_node_record` (`components/core-orch/src/closing/publishers.rs`). Both
+were written after the wiring in this build and seen red by switching off the rule each guards (first two rows above), not before
+it.

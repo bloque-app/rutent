@@ -141,8 +141,8 @@ pub use judge::{Counted, NotCounted, Quoted, Units, judge};
 pub use landing::{Landed, Landings};
 pub use pairs::{Unbuilt, UnbuiltPair};
 pub use ports::{
-    Answered, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short, ToGrade,
-    ToKeep, Uses,
+    Answered, AskDesk, Graded, Grading, Kept, Modules, NoProxy, ProvidersWord, RaiseDesk, Short,
+    ToGrade, ToKeep, Uses,
 };
 pub use reopen::Reopening;
 pub use sign::Unwritten;
@@ -3419,6 +3419,19 @@ impl Segments {
         // Asked every time the segment is graded, until it settles: a statement the grading couldn't read at one try
         // (a book empty then) is asked for again at the next, and one kept already is kept once. Only steps are cached;
         // an empty answer caches nothing, so the grading is never left holding "asked" for what it didn't have.
+        // The providers whose records the grading reads are asked first, in the operator's name, so what it reads is what
+        // they state now (`REQ-ORD-41`, `T-020-58`).
+        parts.grading.ask(
+            settled,
+            &mut AskDesk {
+                modules: &mut *parts.modules,
+                key: &mut *parts.operator_key,
+                fresh: &mut *parts.fresh,
+                clock: parts.clock,
+                bounds: &live.record.bounds,
+                operator: live.operator,
+            },
+        );
         let asked = parts.grading.statements(settled);
         for one in asked {
             if self

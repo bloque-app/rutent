@@ -297,3 +297,63 @@ fn status_question_about_a_segment_with_nothing_carried_out_in_it_is_refused() {
     );
     assert_eq!(s.platform.operations_run(RESERVE), run);
 }
+
+/// The operator's question of a private node's record, from `withdrawal`'s envelope.
+fn record_question(
+    provider: &str,
+    transaction: &str,
+    node: &str,
+) -> rutent_contracts::provider_role::Statement<rutent_contracts::provider_role::Operation> {
+    let mut value = serde_json::to_value(withdrawal(provider, 1)).expect("JSON");
+    value["statement"] = serde_json::json!({
+        "kind": "inner_segments_query", "transaction": transaction, "provider": provider, "node": node
+    });
+    serde_json::from_value(value).expect("a question of a node's record")
+}
+
+/// The question of a private node's record is handed, through `handle`, to a module whose release lists it, and moves
+/// nothing: no operation is carried out under its transaction, none is written to the record, and asking again under the
+/// same transaction is no repeat. A module that lists none is never run (`REQ-ORD-41`, `T-020-58`).
+// verifies: REQ-ORD-41
+#[test]
+fn question_of_a_private_nodes_record_is_handed_to_a_module_that_handles_it_and_moves_nothing() {
+    let record = MemoryRecord::new();
+    let mut s = Signed::on(Box::new(record.clone()), TestWorld::default());
+    admit(
+        &mut s,
+        RESERVE,
+        "1.0.0",
+        &["withdrawal", "inner_segments_query"],
+    );
+    let asked = record_question(RESERVE, "record-question-1", "conformance-ledger");
+    let run = s.platform.operations_run(RESERVE);
+    for _ in 0..2 {
+        let Handled::Answered(answer) = s.platform.handle(RESERVE, &asked) else {
+            panic!("the module was not asked");
+        };
+        let ResultBody::InnerSegmentsQuery(result) = &answer.statement else {
+            panic!(
+                "not an answer to the question of a record: {:?}",
+                answer.statement
+            );
+        };
+        assert_eq!(result.transaction, "record-question-1");
+        assert_eq!(answer.maker, RESERVE);
+    }
+    assert_eq!(
+        s.platform.operations_run(RESERVE),
+        run + 2,
+        "asked twice, run twice"
+    );
+    assert!(!s.platform.carries("record-question-1"));
+    assert_eq!(mentioning(&record, "record-question-1"), 0);
+
+    let mut other = Signed::new();
+    admit(&mut other, RESERVE, "1.0.0", &["withdrawal"]);
+    let run = other.platform.operations_run(RESERVE);
+    assert_eq!(
+        other.platform.handle(RESERVE, &asked),
+        Handled::Refused(PlatformRefusal::NotHandled)
+    );
+    assert_eq!(other.platform.operations_run(RESERVE), run);
+}

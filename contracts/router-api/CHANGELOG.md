@@ -11,6 +11,10 @@
   in force, at the snapshot's `taken_at`: what it took before. The six decision-record fixtures that name the router's
   version carry real signatures over their current text (the review's Low on stale signatures). (DEC-4, DEC-20,
   REQ-PRT-1, REQ-ORD-1, REQ-QTE-15, REQ-MDL-21, T-020-45)
+- `inner_segments_query`, provider-role 4.0.0's question of a private node's record (`T-020-58`, `REQ-ORD-41`), joins the
+  kinds no module may call for, in the schema's `call_kind` and in `Operation::check` and the calls figure's check, with
+  one invalid fixture, `operation-naming-a-call-for-an-inner-segments-query`. Ignorable: no. (DEC-4, DEC-20,
+  REQ-ORD-41, T-020-58)
 - A candidate dropped for a batched payout names its reason (item `shared-movement-reading`, `T-020-39`):
   `DropReason::BatchedPayout {part, operation}` (`batched_payout`), a part whose last operation, its deposit, is at a
   reserve tuple declaring provider-role's `payouts: batched`. `Candidate::check` holds it to its part's last operation

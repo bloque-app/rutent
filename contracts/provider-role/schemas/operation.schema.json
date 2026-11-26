@@ -14,7 +14,7 @@
   },
   "$defs": {
     "operation": {
-      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008); and the operator's own questions: a holding account's balance, a status question and a hold request (REQ-AUD-15, REQ-ORD-1, REQ-QTE-15).",
+      "description": "One operation, by kind: a reserve's withdrawal, deposit, balance verification and reversal confirmation, an exchange's conversion, a ramp's transfer, an exchange's or ramp's reversal, and a verifier's judgement (REQ-CAT-9, REQ-CAT-15, ADR-0008); and the operator's own questions: a holding account's balance, a status question, a hold request and the question of a private node's record (REQ-AUD-15, REQ-ORD-1, REQ-QTE-15, REQ-ORD-41).",
       "type": "object",
       "required": [
         "kind"
@@ -32,7 +32,8 @@
             "reversal_confirmation",
             "holding_balance",
             "status_query",
-            "hold"
+            "hold",
+            "inner_segments_query"
           ]
         }
       },
@@ -200,6 +201,21 @@
           },
           "then": {
             "$ref": "#/$defs/hold"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "inner_segments_query"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/inner_segments_query"
           }
         }
       ]
@@ -697,6 +713,34 @@
         "valid_until": {
           "description": "The validity asked, at most the earliest validity among the figures the candidate cites: the hold holds no longer.",
           "$ref": "urn:rutent:provider-role:common#/$defs/timestamp"
+        }
+      }
+    },
+    "inner_segments_query": {
+      "description": "The operator's question to a provider of a private node's publisher: its record of the segments that ran inside the node (REQ-ORD-41; 4.0.0). Asked under a transaction of its own, of a provider whose module handles inner_segments_query. Never a dry run: it changes nothing, and the answer moves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transaction",
+        "provider",
+        "node"
+      ],
+      "properties": {
+        "kind": {
+          "const": "inner_segments_query"
+        },
+        "transaction": {
+          "description": "This question's own transaction; its answer names it.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "provider": {
+          "description": "The provider asked.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
+        },
+        "node": {
+          "description": "The private node whose record is asked for.",
+          "$ref": "urn:rutent:provider-role:common#/$defs/identifier"
         }
       }
     }

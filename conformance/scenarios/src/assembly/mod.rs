@@ -50,6 +50,7 @@ pub mod checking;
 pub mod durable;
 mod erasure;
 mod grading;
+pub use grading::Tamper;
 pub mod holding;
 pub mod lifecycle;
 pub mod linked;
@@ -433,6 +434,30 @@ impl Modules for Running<'_> {
         let answered = Modules::status(self.platform, effect, provider, asking, about);
         self.readings.refresh(&self.platform.world);
         answered
+    }
+
+    fn ask_for_record(
+        &mut self,
+        provider: &Id,
+        question: &Statement<Operation>,
+    ) -> rutent_core_orch::segments::Answered {
+        use rutent_core_orch::segments::Answered;
+        self.platform.world.set_clock(self.clock.instant());
+        // The question moves nothing, and is no operation Core carries out: it is handed to the platform as any other
+        // question of the operator's is, and the answer comes back as the platform passed it on.
+        if let Operation::InnerSegmentsQuery(q) = &question.statement {
+            self.readings
+                .note_asked(provider.as_str(), &q.node, &q.transaction);
+        }
+        match Platform::handle(self.platform, provider.as_str(), question) {
+            Handled::Answered(result) => serde_json::to_vec(&*result).map_or(
+                Answered::Refused(
+                    rutent_contracts::module_interface::PlatformRefusal::OutcomeUnknown,
+                ),
+                |bytes| Answered::Bytes(self.readings.tampered(provider.as_str(), bytes)),
+            ),
+            Handled::Refused(refusal) => Answered::Refused(refusal),
+        }
     }
 
     fn take_events(&mut self) -> rutent_prov::module::types::Events {
@@ -1161,7 +1186,20 @@ impl Core {
     /// From now on, `provider`'s record of the segments inside its node is altered after it was signed, as a forger
     /// would: a fault the scenarios plant (`T-024-14`). Core's books refuse it, so the replay finds nothing recorded.
     pub fn forge_record_of(&mut self, provider: &str) {
-        self.readings.forge(provider);
+        self.readings.forge(provider, Tamper::Figure);
+    }
+
+    /// From now on, `provider`'s answer to the question of its record is altered as `how` says (`T-020-58`): Core takes
+    /// it only as a record of the node asked about, so the replay finds nothing recorded.
+    pub fn tamper_with_record_of(&mut self, provider: &str, how: Tamper) {
+        self.readings.forge(provider, how);
+    }
+
+    /// Every question of a private node's record Core put to a provider, as the platform carried it: the provider, the
+    /// node and the transaction, in the order put (`T-020-58`). The assembly chooses none: Core does, from the routes
+    /// it runs, when it closes a segment and on its tick.
+    pub fn publishers_asked(&self) -> Vec<(String, String, String)> {
+        self.readings.asked()
     }
 
     /// The log.
@@ -1216,6 +1254,7 @@ impl Core {
         transactions: &[Id],
     ) -> Option<Vec<rutent_evidence::replay::RecordedSegment>> {
         use rutent_core_orch::closing::Books;
+        // The books are what Core took of its providers' answers when it last asked them (`T-020-58`).
         self.readings.refresh(&self.fleet.platform.world);
         self.readings
             .recorded(node, transactions)

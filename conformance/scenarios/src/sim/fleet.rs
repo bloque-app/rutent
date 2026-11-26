@@ -35,8 +35,9 @@ use super::world::SimWorld;
 
 /// Every kind of operation a module may be handed: a simulated provider refuses what is outside its role itself,
 /// as the role asks. A hold request among them (`T-020-56`): only a reserve whose declaration says it answers them holds
-/// the quote asked, and Core asks no other.
-pub const KINDS: [&str; 10] = [
+/// the quote asked, and Core asks no other; and the question of a private node's record (`T-020-58`): only a provider
+/// that serves in the node answers it.
+pub const KINDS: [&str; 11] = [
     "withdrawal",
     "deposit",
     "transfer",
@@ -47,6 +48,7 @@ pub const KINDS: [&str; 10] = [
     "reversal_confirmation",
     "status_query",
     "hold",
+    "inner_segments_query",
 ];
 
 /// The clock the admissions are judged at: 2026-11-07T00:00:00Z.

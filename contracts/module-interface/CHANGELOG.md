@@ -11,6 +11,12 @@
   `validate_declaration` refuses it (`DeclaredCallOfAnOperatorsQuestion`), since each is the operator's own question,
   as `holding_balance` is. Two invalid fixtures, `declaration-call-of-status-query` and `declaration-call-of-hold`.
   (DEC-4, DEC-20, REQ-ORD-1, REQ-QTE-15, T-020-45)
+- `OperationKind` gains `InnerSegmentsQuery` (`inner_segments_query`), provider-role 4.0.0's question of a private
+  node's record (`T-020-58`, `REQ-ORD-41`): a module whose `handles` lists it is handed the operator's question and
+  answers with its record of the segments that ran inside the node, moving nothing. A new variant of an exhaustive
+  enum, in this unreleased major. A declaration's `calls` may not list it either (`DeclaredCallOfAnOperatorsQuestion`),
+  as it may not list `status_query` or `hold`. One invalid fixture, `declaration-call-of-inner-segments-query`.
+  Ignorable: no. (DEC-4, DEC-20, REQ-ORD-41, T-020-58)
 
 ## 4.0.0
 - Breaking: the refusal reasons `M2`'s tasks found missing, so no refusal stands in another's name. A cross-module

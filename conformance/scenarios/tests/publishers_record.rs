@@ -1,7 +1,7 @@
 //! The publishers' signed record of the segments inside their private nodes, read by the assembled Core's books
 //! (`T-024-14`, `REQ-ORD-41`, `REQ-ORD-3`, `AC-35`, `DEC-24`): each simulated provider that serves inside a private
-//! node states, as its publisher's word, the segments it ran there (`rutent_conformance::sim::publishers_record`), and
-//! the assembly's `Books` reads that statement, held to its maker's advertisement and its signature, where the kit's
+//! node states, as its publisher's word, the segments it ran there (`Simulated`'s answer to `inner_segments_query`), and
+//! Core asks it through the platform and its `Books` read that statement, held to its maker's advertisement and its signature, where the kit's
 //! books used to be rebuilt by hand. Over `T-024-04`'s providers that join one another's node.
 //!
 //! A route across two private nodes can't be run on the platform: the router joins two segments only where one ends at
@@ -141,7 +141,9 @@ fn publishers_emitted_record_is_read_by_the_assemblys_books() {
     assert_eq!(moved, (1_000_000 - RAMP_FEE).to_string());
 
     // Each provider that served in the node states its own record of it, for its publisher, as it signed it.
-    let records = published(&mut core, NODE);
+    let mut records = published(&mut core, NODE);
+    // Core asks the providers in name order, so the records come in that order: the route's order here.
+    records.sort_by_key(|r| [IN, EXCHANGE, QUICK].iter().position(|p| *p == r.maker));
     assert_eq!(
         records.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
         [IN, EXCHANGE, QUICK],
@@ -434,6 +436,105 @@ fn record_of_a_route_ending_inside_the_node_is_labelled_the_publishers_word() {
     assert_eq!(replay, Replay::PublishersWord);
 }
 
+/// Closing asks the node's publisher for its record, in the operator's name through the platform, and reads what the
+/// provider answered: no test asks, no tick is needed, and the assembly names no node and no provider (`REQ-ORD-41`,
+/// `T-020-58`). Core chooses them from the route it runs: the node the segments pass and the providers its publisher
+/// declares it for, and no other node, such as the other reserve's.
+// verifies: REQ-ORD-41
+#[test]
+fn private_node_record_is_asked_of_its_publisher_and_read_by_closing() {
+    let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+    assert!(
+        core.publishers_asked().is_empty(),
+        "nothing asked before an order runs"
+    );
+    let (order, segments) = joined(&mut core, &session);
+    // Asked while the order ran, from closing: no tick ran and no test asked.
+    let asked = core.publishers_asked();
+    assert!(
+        !asked.is_empty(),
+        "closing asked the publisher for its record"
+    );
+    // The nodes and providers are Core's: the one node the route passes, and the providers that serve in it.
+    for (provider, node, _) in &asked {
+        assert_eq!(node, NODE, "{provider} asked for another node's record");
+        assert!(
+            [IN, EXCHANGE, QUICK].contains(&provider.as_str()),
+            "{provider}"
+        );
+    }
+    for provider in [IN, EXCHANGE, QUICK] {
+        assert!(
+            asked.iter().any(|(p, ..)| p == provider),
+            "{provider} serves in the node and was asked"
+        );
+    }
+    // Each question under a transaction of its own, none a segment's.
+    let mut own: Vec<&str> = asked.iter().map(|(.., t)| t.as_str()).collect();
+    let questions = own.len();
+    own.sort_unstable();
+    own.dedup();
+    assert_eq!(own.len(), questions, "a transaction for each question");
+    for segment in &segments {
+        let tx = transaction(segment);
+        assert!(
+            !own.contains(&tx.as_str()),
+            "a question under a segment's transaction"
+        );
+    }
+    // What closing read is what the providers answered: the books hold their records, and the replay found them
+    // consistent with the exit.
+    let asked_for: Vec<Id> = segments[..3].iter().map(transaction).collect();
+    assert_eq!(core.books_for(NODE, &asked_for).map(|b| b.len()), Some(3));
+    let found = replays(&core, &order);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].2, ReplayFound::ConsistentWithTheExit {});
+    // The tick's job asks as well, over the nodes of the routes Core runs, and takes the same records.
+    let before = core.publishers_asked().len();
+    let round = core.tick();
+    assert!(core.publishers_asked().len() > before, "the tick asked too");
+    let mut makers: Vec<&str> = round
+        .published_in(NODE)
+        .iter()
+        .map(|r| r.maker.as_str())
+        .collect();
+    makers.sort_unstable();
+    assert_eq!(makers, [EXCHANGE, IN, QUICK]);
+    assert!(
+        core.publishers_asked()
+            .iter()
+            .all(|(_, node, _)| node == NODE),
+        "the tick asks no node a route of Core's doesn't pass"
+    );
+}
+
+/// A provider that answers the question with a record it can't stand behind is not taken as the node's record, however
+/// it errs: a record of another publisher's, of a node it doesn't declare, signed with a key it doesn't list, or altered
+/// after it was signed (`REQ-ORD-41`, `T-020-58`).
+// verifies: REQ-ORD-41
+#[test]
+fn a_record_its_maker_cannot_stand_behind_is_not_the_nodes_record() {
+    use rutent_scenarios::assembly::Tamper;
+    for how in [
+        Tamper::Figure,
+        Tamper::Publisher,
+        Tamper::Node,
+        Tamper::Key,
+        Tamper::Answer,
+    ] {
+        let (mut core, session) = core_over(&[IN, EXCHANGE, QUICK, OUT, RESERVE]);
+        core.tamper_with_record_of(IN, how);
+        let (order, segments) = joined(&mut core, &session);
+        let asked: Vec<Id> = segments[..3].iter().map(transaction).collect();
+        assert_eq!(core.books_for(NODE, &asked), None, "{how:?}");
+        let found = replays(&core, &order);
+        assert!(
+            found.len() == 1 && matches!(found[0].2, ReplayFound::NothingRecorded { .. }),
+            "{how:?}: {found:?}"
+        );
+    }
+}
+
 // verifies: REQ-ORD-41
 #[test]
 fn record_refused_for_one_provider_of_the_node_leaves_the_node_with_nothing_recorded() {
@@ -472,8 +573,8 @@ fn publishers_records_are_read_through_the_platform_for_a_replay() {
     let records = round.published_in(NODE);
     assert_eq!(
         records.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
-        [IN, EXCHANGE, QUICK],
-        "one record for each provider that served in the node"
+        [EXCHANGE, IN, QUICK],
+        "one record for each provider that served in the node, in name order, as Core asks them"
     );
     let books = core.books_for(NODE, &asked).expect("the node's books");
     let stated: usize = records.iter().map(|r| r.statement.segments.len()).sum();

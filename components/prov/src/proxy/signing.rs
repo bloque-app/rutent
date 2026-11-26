@@ -24,8 +24,8 @@
 use ed25519_dalek::{Signer, SigningKey};
 use rutent_contracts::module_interface::SecretValue;
 use rutent_contracts::provider_role::{
-    Deployment, HOLD_SHAPE, JUDGEMENT_SHAPE, Operation, PublicKey, RESULT_SHAPE,
-    REVERSAL_CONFIRMATION_SHAPE, ResultBody, Statement, TERMS_SHAPE, signing_input,
+    Deployment, HOLD_SHAPE, INNER_SEGMENTS_SHAPE, JUDGEMENT_SHAPE, Operation, PublicKey,
+    RESULT_SHAPE, REVERSAL_CONFIRMATION_SHAPE, ResultBody, Statement, TERMS_SHAPE, signing_input,
 };
 use rutent_contracts::router_api::Timestamp;
 use serde_json::Value;
@@ -101,6 +101,12 @@ pub fn sign_result(
     if let (Operation::StatusQuery(question), ResultBody::StatusQuery(answer)) =
         (answering.operation, &statement.statement)
         && (question.transaction != answer.transaction || question.about != answer.about)
+    {
+        return Err(SigningError::AnswerOfAnotherQuestion);
+    }
+    if let (Operation::InnerSegmentsQuery(question), ResultBody::InnerSegmentsQuery(answer)) =
+        (answering.operation, &statement.statement)
+        && (question.transaction != answer.transaction || question.node != answer.node)
     {
         return Err(SigningError::AnswerOfAnotherQuestion);
     }
@@ -188,6 +194,9 @@ impl<'a> Asked<'a> {
             // request (provider-role 4.0.0, `T-020-56`): each only in answer to its own question.
             TERMS_SHAPE => return self.asks_terms(body),
             HOLD_SHAPE => return self.asks_a_hold(body),
+            // A provider's record of a private node, in answer to the question of that node's record alone
+            // (provider-role 4.0.0, `T-020-58`).
+            INNER_SEGMENTS_SHAPE => return self.asks_an_inner_segments_record(body),
             _ => return Err(SigningError::NestedOfAnotherShape),
         };
         // In answer to a status question, a statement the provider's own result nests is judged against the operation
@@ -283,6 +292,24 @@ impl<'a> Asked<'a> {
         }
     }
 
+    /// Whether `body`, a record the provider nested, is its record of the private node the operation, a question of a
+    /// node's record, asks about, the provider asked being the one that answers. Never in answer to anything else, a
+    /// status question and a dry run included, so the platform signs no record a question didn't ask for, which could be
+    /// lifted out and presented as the publisher's word about another node (`REQ-ORD-41`).
+    fn asks_an_inner_segments_record(&self, body: &Value) -> Result<(), SigningError> {
+        let operation = &self.operation;
+        let asked = self.about.is_none()
+            && operation.get("kind").and_then(Value::as_str) == Some("inner_segments_query")
+            && operation.get("provider").and_then(Value::as_str) == Some(self.provider)
+            && operation.get("node").is_some()
+            && operation.get("node") == body.get("node");
+        if asked {
+            Ok(())
+        } else {
+            Err(SigningError::NestedNotAsked)
+        }
+    }
+
     /// Whether `body` is the result of the transaction the operation, a status question, asks about: of the kind of
     /// the operation the platform carried out under it, never a status answer or a hold, and, where the platform
     /// holds a final answer for it, the same.
@@ -297,6 +324,7 @@ impl<'a> Asked<'a> {
             && kind.is_some()
             && kind != Some("status_query")
             && kind != Some("hold")
+            && kind != Some("inner_segments_query")
             && about
                 .get("kind")
                 .and_then(Value::as_str)
@@ -1154,6 +1182,53 @@ mod tests {
         assert_eq!(
             super::sign_nested(&mut holder, &asked, &key, &declared),
             Err(SigningError::NestedNotAsked)
+        );
+    }
+
+    /// A provider's record of a private node, nested in its answer, is signed with its key only in answer to the question
+    /// of that node's record, put to it: not for another node, nor for another provider's question, nor in answer to any
+    /// other kind of question, a status question included (`REQ-ORD-41`, `T-020-58`).
+    // verifies: REQ-ORD-41
+    #[test]
+    fn record_nested_in_an_inner_segments_answer_is_signed_only_for_the_node_asked() {
+        let (private, declared, key) = keys([5u8; 32]);
+        let answered = fixture("result-inner-segments-query-answered-with-the-providers-record");
+        let asked = asking("operation-inner-segments-query", &[]);
+        let maker = "acme-internal-rail";
+        let signed = sign_as(&answered, maker, &asked, &private, &declared).expect("signed");
+        assert!(verifies(&signed, &key));
+        assert!(verifies(&signed["statement"]["outcome"]["record"], &key));
+        // A question of another node, or under another transaction, than the answer names.
+        for (field, value) in [("node", "acme-card-book"), ("transaction", "tx-inner-2")] {
+            let other = asking("operation-inner-segments-query", &[(field, value)]);
+            assert_eq!(
+                sign_as(&answered, maker, &other, &private, &declared).err(),
+                Some(SigningError::AnswerOfAnotherQuestion),
+                "{field}"
+            );
+        }
+        // A question put to another provider than the one that nests its record.
+        let elsewhere = asking(
+            "operation-inner-segments-query",
+            &[("provider", "other-co")],
+        );
+        assert_eq!(
+            sign_as(&answered, maker, &elsewhere, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        // The same record in answer to another kind of question, or to a status question about it.
+        let withdrawal = asking("operation-withdrawal-from-a-bank-reserve", &[]);
+        assert_eq!(
+            sign_as(&answered, maker, &withdrawal, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
+        );
+        let status = asking("operation-status-query", &[]);
+        let mut ours = answered.clone();
+        ours["maker"] = "acme-co".into();
+        ours["statement"]["outcome"]["record"]["maker"] = "acme-co".into();
+        assert_eq!(
+            sign_about(&ours, &status, &withdrawal, None, &private, &declared).err(),
+            Some(SigningError::NestedNotAsked)
         );
     }
 

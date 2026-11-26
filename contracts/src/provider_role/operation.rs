@@ -39,6 +39,9 @@ pub enum Operation {
     /// The operator's request that a reserve hold the quote a choice round chose before its route starts
     /// (`REQ-QTE-15`; 4.0.0).
     Hold(HoldRequest),
+    /// The operator's question to a private node's publisher's provider: its record of the segments that ran inside the
+    /// node (`REQ-ORD-41`; 4.0.0).
+    InnerSegmentsQuery(InnerSegmentsQuery),
 }
 
 impl StatementShape for Operation {
@@ -270,4 +273,23 @@ pub struct HoldRequest {
     pub held_for: HeldFor,
     /// The validity asked: the hold holds no longer.
     pub valid_until: String,
+}
+
+/// The operator's question to a provider of a private node's publisher: what it records of the segments that ran inside
+/// the node (`REQ-ORD-41`, `REQ-ORD-3`; `T-020-58`, 4.0.0). Until it, no operation asked a provider for its record, and
+/// the record `CMP-EVIDENCE`'s replay reads was a seam filled by the deployment. Asked of a provider whose module's
+/// `handles` lists `inner_segments_query`, under a transaction of its own, and never a dry run: it changes nothing, and
+/// the answer is a statement that moves nothing. The provider answers with an
+/// [`InnerSegmentsQueryResult`](super::InnerSegmentsQueryResult) naming this question's transaction and the node, carrying
+/// its own signed [`InnerSegments`](super::InnerSegments) of that node, or says it has none
+/// ([`check_inner_segments_answer`](super::check_inner_segments_answer)).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InnerSegmentsQuery {
+    /// This question's own transaction identifier: its answer names it.
+    pub transaction: String,
+    /// The provider asked.
+    pub provider: String,
+    /// The private node whose record is asked for.
+    pub node: String,
 }

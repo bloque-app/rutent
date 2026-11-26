@@ -143,11 +143,12 @@ impl Operation {
                 "an operation names no call for a holding balance",
             ));
         }
-        if self
-            .calls
-            .iter()
-            .any(|c| matches!(c.kind, CallKind::StatusQuery | CallKind::Hold))
-        {
+        if self.calls.iter().any(|c| {
+            matches!(
+                c.kind,
+                CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+            )
+        }) {
             return Err(Violation(
                 "an operation names no call for a status question or a hold",
             ));
@@ -763,9 +764,12 @@ impl CatalogueSnapshot {
                     ));
                 }
                 if calls.iter().any(|c| {
-                    c.kinds
-                        .iter()
-                        .any(|k| matches!(k, CallKind::StatusQuery | CallKind::Hold))
+                    c.kinds.iter().any(|k| {
+                        matches!(
+                            k,
+                            CallKind::StatusQuery | CallKind::Hold | CallKind::InnerSegmentsQuery
+                        )
+                    })
                 }) {
                     return Err(Violation(
                         "a calls figure declares no call for a status question or a hold",

@@ -30,7 +30,7 @@ use rutent_core_orch::notice::{Channel, NoticeKey, Notices, Transport};
 use rutent_core_orch::reversal::{Moving, Parts as ReversalParts, Reversals};
 use rutent_core_orch::rounds::Fresh as _;
 use rutent_core_orch::schedule::{
-    AccountRead, Actors, Job, Jobs, Ports, Published, PublisherAccount, Round, Started, StuckLent,
+    AccountRead, Actors, Job, Jobs, Ports, PublisherAccount, Round, Started, StuckLent,
 };
 use rutent_core_orch::segments::{Landings, NoProxy, Parts as SegmentParts, Segments};
 use rutent_core_orch::snapshot::Clock;
@@ -288,47 +288,34 @@ impl Ports for Due<'_> {
     }
 
     fn ask_as_operator(&mut self, module: &str, operation: Operation) -> Handled {
-        self.as_operator(|core, operator| {
-            core.fleet.platform.handle(
-                module,
-                &rutent_prov::holding::wallet::Operator::statement(operator, operation),
-            )
-        })
-        .unwrap_or(Handled::Refused(
-            rutent_contracts::module_interface::PlatformRefusal::Unavailable,
-        ))
-    }
-
-    fn publishers_records(&mut self) -> Vec<Published> {
-        // `T-020-58`: no operation asks a publisher for its record yet, so it is read as the scenario world holds it.
-        let core = &mut *self.0;
-        core.readings.refresh(&core.fleet.platform.world);
-        let mut nodes: Vec<String> = core
-            .installed
-            .iter()
-            .flat_map(|one| {
-                one.advertisement
-                    .statement()
-                    .statement
-                    .private_nodes
-                    .clone()
+        let question = match &operation {
+            Operation::InnerSegmentsQuery(q) => Some((q.node.clone(), q.transaction.clone())),
+            _ => None,
+        };
+        let handled = self
+            .as_operator(|core, operator| {
+                if let Some((node, transaction)) = &question {
+                    core.readings.note_asked(module, node, transaction);
+                }
+                core.fleet.platform.handle(
+                    module,
+                    &rutent_prov::holding::wallet::Operator::statement(operator, operation),
+                )
             })
-            .collect();
-        nodes.sort();
-        nodes.dedup();
-        nodes
-            .into_iter()
-            .flat_map(|node| {
-                core.readings
-                    .published_in(&node)
-                    .into_iter()
-                    .map(move |record| Published {
-                        node: node.clone(),
-                        record,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+            .unwrap_or(Handled::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::Unavailable,
+            ));
+        // The planted fault alters an answer to the question of a record on its way to Core.
+        match (handled, question) {
+            (Handled::Answered(result), Some(_)) => {
+                let bytes = serde_json::to_vec(&*result).ok();
+                let altered = bytes
+                    .map(|b| self.0.readings.tampered(module, b))
+                    .and_then(|b| serde_json::from_slice(&b).ok());
+                Handled::Answered(altered.map_or(result, Box::new))
+            }
+            (handled, _) => handled,
+        }
     }
 
     fn run_checkpoints(&mut self) -> Result<usize, String> {
