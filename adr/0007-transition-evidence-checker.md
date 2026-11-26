@@ -88,8 +88,8 @@ This amendment was first written on 2026-11-25 with the reader as a Wasm module 
   has extensions, but they are `cdylib`s loaded into the daemon's own process, they link `vos` (so AGPL-3.0), and only
   durable `Local` roots reach them, never a Raft or CRDT space. `CMP-STM`'s three-replica space is Raft. So a reader
   can't be a VOS host extension today. Aledgent builds its own extension in place of the default one: its services,
-  `aledgent-settle` among them, run apart from the core and reach it through a link of their own. rutent follows the
-  same pattern. In the owner's words (in chat, 2026-11-26), it mimics host extensions with "a queue over the storage
+  `aledgent-settle` among them, run apart from the core and reach it through a link of their own (in aledgent the writes are
+  authenticated commands to ingress, which signs each one into the core's log). rutent follows the same pattern. In the owner's words (in chat, 2026-11-26), it mimics host extensions with "a queue over the storage
   that can be read client-side, and … a way for 'extensions' to signed writing ops to the core". For a reader, Core's
   request is the queue item, and the reader's signed answer is the write. That answer reaches the state machine only
   as the `evidence` entry Core records.
