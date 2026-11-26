@@ -1355,7 +1355,6 @@ fn misplace_the_charge(operation: &Operation, result: &Value, movements: &mut [M
     }
 }
 
-/// `amount` less `bps` basis points of it, where it is a number.
 /// How long `sim-reserve-holding-briefly` holds a quote, at most, from when it was asked (`T-020-57`).
 pub const BRIEF_HOLD_SECONDS: u64 = 60;
 
@@ -1400,6 +1399,7 @@ fn later_by(time: &str, seconds: u64) -> Option<String> {
     ))
 }
 
+/// `amount` less `bps` basis points of it, where it is a number.
 fn short_of(amount: &str, bps: u16) -> Option<String> {
     let whole = amount.parse::<u128>().ok()?;
     Some((whole - whole * u128::from(bps.min(10_000)) / 10_000).to_string())

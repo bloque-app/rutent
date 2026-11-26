@@ -422,9 +422,10 @@ no module-interface change.
   provider's own state: the account's statement, `{"asset", "amount"}`. In the simulated world the world writes it
   (`Fleet::credit_wallet`), as it does a simulated reserve's credit (`Behaviour::reversal_credited`).
 - **Default, failing closed.** A deployment keeps no such statement for a plain wallet yet, so in production the wallet
-  confirms nothing and the reversal stays owed (and is declared stuck on its window, `T-020-47`). Gap, owner `F-016`:
-  how a plain wallet at a public node sees credits arrive at its account (a reading of its node, or the deployment
-  keeping the account's statement in the provider's state).
+  confirms nothing and the reversal stays owed (and is declared stuck on its window, `T-020-47`). Gap, owner
+  `T-020-60` (the reader adapter, the lead's routing of `T-020-57`'s review, M1): a reversal back into a held public
+  node is a movement on that node's network, which its reader confirms; `Fleet::credit_wallet` stands in for that
+  confirmation in the scenarios.
 - **Tests.** `wallet_confirms_a_reversed_segments_credit_only_in_full_from_its_statement` (native, rule-off below).
   The Wasm build answers through the assembly in `T-020-57`'s scenario, green since its round 2's contract change.
 

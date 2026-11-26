@@ -29,8 +29,8 @@
 //! - **The values reversals brought back to held nodes** (`T-020-57`, `INV-1`): each linked order's first move out
 //!   of a held node whose `reversal_completed` the log holds, what the confirmation its evidence rests on says came
 //!   back (read back from the evidence store), never more than the move took in, also once a recalculation retired the
-//!   move ([`Segments::rebuild_returns`]). One whose confirmation can't be read back is rebuilt as nothing: nothing is
-//!   landed or restored blind.
+//!   move ([`Segments::rebuild_returns`]). One whose confirmation can't be read back is rebuilt as nothing confirmed:
+//!   nothing is landed or restored blind.
 //!
 //! What a reopened Core doesn't hold, it fails closed on: a segment whose decision record, question or kept bytes it
 //! can't read back is never handed over again, and is held in flight where its operation can be read.
@@ -324,30 +324,28 @@ impl Segments {
             if !handed_on || plan.kind == stm::OperationKind::Withdrawal {
                 continue;
             }
-            let Some(back) =
-                confirmed_back(history, reading, evidence.as_str(), &plan.from.asset.id)
-            else {
-                continue;
-            };
+            // What the confirmation says came back, capped at what the move took in; a confirmation or an operation
+            // that can't be read back is kept as nothing confirmed, so the order's reading doesn't stand in for it and
+            // nothing is landed or restored blind (failing closed).
             let at = (order.as_str().to_owned(), segment.as_str().to_owned());
-            let Some(taken_in) = self
+            let back = confirmed_back(history, reading, evidence.as_str(), &plan.from.asset.id);
+            let taken_in = self
                 .flights
                 .get(&at)
-                .and_then(|f| moved_in(&f.statement.statement))
-            else {
-                continue;
+                .and_then(|f| moved_in(&f.statement.statement));
+            let amount = match (back, taken_in) {
+                (Some(back), Some(taken_in)) if back < taken_in => back,
+                (Some(_), Some(taken_in)) => taken_in,
+                _ => Amount::zero(),
             };
-            let amount = if back < taken_in { back } else { taken_in };
-            if !amount.is_zero() {
-                self.returned.insert(
-                    at,
-                    (
-                        node.as_str().to_owned(),
-                        plan.from.asset.id.as_str().to_owned(),
-                        amount,
-                    ),
-                );
-            }
+            self.returned.insert(
+                at,
+                (
+                    node.as_str().to_owned(),
+                    plan.from.asset.id.as_str().to_owned(),
+                    amount,
+                ),
+            );
         }
     }
 

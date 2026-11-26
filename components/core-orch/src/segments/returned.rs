@@ -530,3 +530,50 @@ fn linked_orders_settled_then_reversed_first_move_is_returned_to_its_node() {
     );
     assert!(!totals.contains_key(&(NEXT.to_owned(), LINKED.to_owned())));
 }
+
+/// A completion whose confirmation says nothing came back, or whose amount can't be read (`Reversals::complete` keeps
+/// it as zero), lands nothing again: the order Core follows reads the move as reversed, but what the move took in never
+/// stands in for the confirmation, and a reopened Core reads the same (`INV-1`, `T-020-57`'s review, L2). Neither judge
+/// lets such a confirmation complete a reversal today (`NotInFull`), so this drives the landing directly.
+// verifies: INV-1
+#[test]
+fn return_confirmed_at_nothing_lands_nothing_again() {
+    let clock = Fixed(Cell::new(1_795_000_000));
+    let mut segments = first_move_failed(&clock);
+    segments.note_reversed(
+        &Id::new(LINKED).expect("an id"),
+        &Id::new("seg-transfer").expect("an id"),
+        &Amount::zero(),
+    );
+    take(
+        &mut segments,
+        &input(
+            4,
+            Some("seg-transfer"),
+            Observed::ReversalCompleted {
+                evidence: id("ev-back"),
+            },
+        ),
+    );
+    let mut account = Account::default();
+    assert_eq!(segments.land_settled(&mut account), 0);
+    segments.land_settled(&mut account);
+    assert!(account.calls.is_empty(), "{:?}", account.calls);
+    assert!(
+        !segments
+            .resting_totals()
+            .contains_key(&(HELD.to_owned(), LINKED.to_owned())),
+        "nothing rests there for it"
+    );
+    let mut restarted = Account::default();
+    assert_eq!(segments.reconcile_landings(&mut restarted), 0);
+    assert!(restarted.calls.is_empty(), "{:?}", restarted.calls);
+    assert_eq!(
+        segments.returned_amount(
+            &Id::new(LINKED).expect("an id"),
+            &Id::new("seg-transfer").expect("an id")
+        ),
+        Some(&Amount::zero()),
+        "and nothing is evidenced for a recalculation to move"
+    );
+}

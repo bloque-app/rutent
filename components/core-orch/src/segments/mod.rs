@@ -1126,6 +1126,8 @@ impl Segments {
             self.returned.get(&(order.to_owned(), segment.to_owned())),
             current,
         ) {
+            // A return kept at nothing confirmed lands nothing, and the order's reading doesn't replace it.
+            (Some((_, _, amount)), _) if amount.is_zero() => return None,
             (Some(kept), _) => kept.clone(),
             (None, Some(first)) if first.state == stm::SegmentState::ReversalComplete => {
                 self.returned_value(order, segment)?
@@ -1224,9 +1226,9 @@ impl Segments {
             } else {
                 taken_in
             };
-            if !amount.is_zero() {
-                self.returned.insert(at, (node, asset, amount));
-            }
+            // Kept even where nothing is confirmed to have come back (zero, or an amount that couldn't be read), so the
+            // order's reading never stands in for the confirmation: that return lands nothing (failing closed).
+            self.returned.insert(at, (node, asset, amount));
         }
     }
 

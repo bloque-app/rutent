@@ -8870,3 +8870,36 @@ totals, these notes) kept both sides, the totals recounted from the files. `T-02
   | the log takes a handed-on route's `reversal_completed` as evidence (`reversed_back` false) | `recalculation_from_a_from_node_whose_reversal_is_not_completed_is_refused` (the admitted case refused), `returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens` (the log refuses Core's recalculation) |
   | Core evidences a handed-on route's reversed first move (`evidenced_in` falls back to `evidenced`) | `returned_value_retired_…_after_core_reopens` (`NotNow(NoSettledEnd)`) |
   | `Segments::rebuild_returns` (round 1's missing rule-off) | `returned_value_retired_…_after_core_reopens`: after the reopen the wallet's landing is never released ("released once the value left the node") |
+
+### T-020-57, review round 1 (#331, CHANGES at `045959ae`)
+
+`origin/m3` (`f0c66ab4`, the plan follow-up) merged in with no conflict.
+
+- **L1, one confirmer for Core and the log.** `Reversals::follow` keeps each linked order's holding record from the log
+  (`holders`: the node and `holder` of its verified `holding_withdrawal`), and `handed_on_holder` names that holder,
+  never the module the catalogue registers for the node now: the one party the log takes as the reserve there
+  (`reserve_at_from`). A holder that is a module the operator publishes with no release in force in the log isn't
+  asked: `ReversalError::HolderNotInForce(holder)`, and the reversal stays owed. Tests (`assembly_real_wallet.rs`):
+  `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` [`REQ-ORD-43`, `REQ-ORD-3`] (the
+  node registered to another module after the hand-on, `Core::register_node_holding`; the reversal completes on the
+  first wallet's word) and `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` [`REQ-ORD-3`]
+  (the wallet's release revoked after the hand-on, `Core::revoke_release`; the wallet is asked nothing). The
+  reviewer's residual stands as the log's: where Core records the failed provider as the holder, the log admits its
+  word graded a statement, as for a withdrawal's own reserve; Core records the holding account's own record only.
+- **L2, a zero or unreadable confirmed amount lands nothing.** `note_reversed` keeps the return even at zero, and
+  `returned_to_node` reads a kept zero as nothing landed, so `T-020-56`'s fallback (what the move took in) never stands
+  in for a confirmation; `rebuild_returns` keeps an unreadable confirmation or operation as zero too. Test
+  `return_confirmed_at_nothing_lands_nothing_again` [`INV-1`] (`segments/returned.rs`), driven directly, since the
+  judges refuse anything but the amount asked (`NotInFull`). The defaults' wording above now holds.
+- **L3.** `planned_end`'s and `short_of`'s doc comments moved back onto their functions.
+- **M1, routed to `T-020-60` (the reader adapter).** `Fleet::credit_wallet`, `Core::credit_wallet` and each scenario
+  call say they stand in for the network reader's confirmation, owned by `T-020-60`. **Gap 2 now reads:** the plain
+  wallet's credit record has no production source; in a deployment a reversal back into a held public node is a
+  movement on that node's network, which its reader confirms (`T-020-60`).
+- **Rule-offs, review round 1** (script `ruleoff4.py`):
+
+  | Rule switched off | Red |
+  |---|---|
+  | Core asks the holder the log names (the catalogue's current registration asked instead) | `reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again` (`HolderNotInForce("operator-wallet-2")`) |
+  | a holder with no release in force isn't asked | `holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed` (the wallet asked, answered `NotCompleted`) |
+  | a return kept at nothing lands nothing (the fallback stands in again) | `return_confirmed_at_nothing_lands_nothing_again` |

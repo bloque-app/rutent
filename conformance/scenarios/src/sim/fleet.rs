@@ -519,6 +519,10 @@ impl Fleet {
     /// statement, which the deployment keeps for the wallet among the provider's own state, holds it from then, and the
     /// wallet's outside part reads it when Core asks whether the credit came back (`T-020-57`). It is the world's, as a
     /// simulated reserve's credit is (`Behaviour::reversal_credited`): nothing of Core's writes it.
+    ///
+    /// It stands in for the network reader's confirmation, owned by `T-020-60` (the reader adapter): in a deployment a
+    /// reversal back into a held public node is a movement on that node's network, which its reader confirms; nothing
+    /// in production writes this record.
     pub fn credit_wallet(&mut self, provider: &str, segment: &str, asset: &str, amount: &str) {
         self.platform.world.seed_state(
             provider,

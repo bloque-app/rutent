@@ -1474,6 +1474,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
     // Nothing came back yet, then less than the move took in: neither is confirmed, and nothing is landed again.
     for credit in [None, Some("999999")] {
         if let Some(amount) = credit {
+            // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
             stuck
                 .core
                 .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", amount);
@@ -1506,6 +1507,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
     }
 
     // The account took the credit back, in full: the wallet confirms it, and the reversal completes on its word.
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
         .core
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
@@ -1563,6 +1565,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .core
         .owe_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
         .core
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
@@ -1630,5 +1633,82 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         stuck.core.holdings().attributions(),
         [(NODE.to_owned(), Vec::new())],
         "the account holds nothing for any order"
+    );
+}
+
+/// The operator registers another module as the node's holding account after the hand-on. Core still asks the holder
+/// the log names, the one whose `holding_withdrawal` started the linked order and the one party the log takes as the
+/// reserve there, so Core and the log never name different confirmers: the reversal completes on the first wallet's
+/// word, not the new module's (`REQ-ORD-43`, `REQ-ORD-3`, `T-020-57`'s review, L1).
+// verifies: REQ-ORD-43, REQ-ORD-3
+#[test]
+fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_again() {
+    use rutent_core_orch::reversal::Confirmation;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .register_node_holding(NODE, "operator-wallet-2")
+        .expect("the node is registered to another module");
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the holder the log names is asked");
+    let Confirmation::Completed(done) = answer else {
+        panic!("completed: {answer:?}")
+    };
+    assert_eq!(
+        done.whose.as_str(),
+        wallet.provider,
+        "on the word of the holder that started the order"
+    );
+}
+
+/// The holder the log names is a module the operator publishes whose release the log revoked after the hand-on: none
+/// of its statements would be attributed, so Core doesn't ask it, says why, and the reversal stays owed (`REQ-ORD-3`,
+/// `T-020-57`'s review, L1).
+// verifies: REQ-ORD-3
+#[test]
+fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .revoke_release(&wallet)
+        .expect("the release is revoked");
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    let asked = stuck.core.operations_received(&wallet.provider);
+    let refused = stuck.core.confirm_reversal(&linked.order, &segment);
+    assert!(
+        matches!(
+            &refused,
+            Err(StepError::Reversal(rutent_core_orch::reversal::ReversalError::HolderNotInForce(h)))
+                if h.as_str() == wallet.provider
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        stuck.core.operations_received(&wallet.provider),
+        asked,
+        "the wallet is asked nothing"
+    );
+    assert_eq!(
+        stuck
+            .core
+            .owe_reversal(&linked.order, &segment)
+            .expect("still owed")
+            .transaction,
+        owing.transaction
     );
 }

@@ -31,11 +31,13 @@
 //!   failing closed (`NoReserveAtNode`).
 //! - **On a route handed on** ([`Reversals::confirm`], `REQ-ORD-43`, `REQ-ORD-16`, `T-020-57`). A linked order's route
 //!   has no withdrawal: it starts from the holding account of the node the value was handed on at, which counts as its
-//!   origin reserve. Its first move's reversal is confirmed by that account, the module the operator registered for
-//!   the node, whose statements the log attributes by the key its accepted release names (it advertises nothing). The
-//!   value is back at the held node for the linked order, and what the confirmation says came back is landed there
-//!   again (`Segments::note_reversed`). A node whose account is a private node's publisher's interface names no
-//!   party: nothing is asked, and the reversal stays owed (`NoOriginReserve`).
+//!   origin reserve. Its first move's reversal is confirmed by that account: the `holder` of the order's
+//!   `holding_withdrawal` in the log, the one party the log takes as the reserve there, whatever module the node is
+//!   registered with since. A module the operator publishes advertises nothing, so its statements are attributed by
+//!   the key its accepted release names in the log; one with no release in force isn't asked
+//!   (`HolderNotInForce`). The value is back at the held node for the linked order, and what the confirmation says
+//!   came back is landed there again (`Segments::note_reversed`). With no holding record at the node, nothing is
+//!   asked, and the reversal stays owed (`NoOriginReserve`).
 //! - **A late status** ([`Reversals::ask_status`], `REQ-ORD-1`, `T-020-27`). Policy decides `ask_status`; Core records
 //!   the effect under a fresh transaction before the platform is asked where the segment's provider says it stands,
 //!   and keeps the answer as that provider's statement ([`Reversals::later`]). It moves nothing.
@@ -323,6 +325,10 @@ pub enum ReversalError {
     /// has no provider that delivered the value there other than the one that failed, or no holding account
     /// (`REQ-ORD-3`, `T-020-27`). Nothing is asked or recorded; the reversal stays owed and held.
     NoReserveAtNode,
+    /// The holding account that started a route handed on, the `holder` of the order's `holding_withdrawal` in the
+    /// log, is a module the operator publishes with no release in force in the log: none of its statements would be
+    /// attributed, so it isn't asked, and the reversal stays owed (`T-020-57`).
+    HolderNotInForce(Id),
     /// The state machine wouldn't take the input from the order as it stands: nothing is recorded.
     NotApplicable(stm::Outcome),
     /// A segment of a part that would end moves value: it is handed over with no final outcome.
@@ -539,6 +545,10 @@ pub struct Reversals {
     /// The statement keys the log names for each module the operator publishes ([`Reversals::follow`]): how a public
     /// node's holding account, which advertises nothing, is attributed its confirmation (`T-020-57`).
     release_keys: judge::ReleaseKeys,
+    /// Each linked order's holding record as the log holds it ([`Reversals::follow`]): the node and the `holder` of its
+    /// verified `holding_withdrawal`, the route's starting reserve, which is the one party the log takes as the reserve
+    /// at that node (core-internal's `reserve_at_from`, `T-020-57`).
+    holders: BTreeMap<String, (String, Id)>,
 }
 
 impl Reversals {
@@ -641,6 +651,23 @@ impl Reversals {
         }
         self.bound.insert(order.as_str().to_owned(), bound);
         self.faults.insert(order.as_str().to_owned(), faults);
+        // The holding record that started the order, if it was handed on: its node and holder, as the log took it.
+        if let Some((node, holder)) =
+            history
+                .iter()
+                .find_map(|(_, e)| match verified(e).map(|v| &v.what) {
+                    Some(What::HoldingWithdrawal {
+                        order: o,
+                        holder,
+                        node,
+                        ..
+                    }) if o == order => Some((node.as_str().to_owned(), holder.clone())),
+                    _ => None,
+                })
+        {
+            self.holders
+                .insert(order.as_str().to_owned(), (node, holder));
+        }
         // The modules the operator publishes whose release the log accepted, each with the statement keys its releases
         // in force name, as the log attributes their statements (`T-020-57`).
         self.release_keys.clear();
@@ -1231,8 +1258,21 @@ impl Reversals {
             return Ok(Confirmation::Completed(done.clone()));
         }
         let target = self.target(parts, at)?;
-        if target.confirmer.is_none() {
+        let Some(confirmer) = target.confirmer.as_ref() else {
             return Err(ReversalError::NoReserveAtNode);
+        };
+        // A module the operator publishes is heard only by a release of it in force in the log: with none, its word
+        // would be no one's, so it isn't asked, and the reversal stays owed, saying why (`T-020-57`).
+        if parts
+            .catalogue
+            .publishers()
+            .published_by_operator(confirmer.as_str())
+            && self
+                .release_keys
+                .get(confirmer.as_str())
+                .is_none_or(Vec::is_empty)
+        {
+            return Err(ReversalError::HolderNotInForce(confirmer.clone()));
         }
         let at_key = key(at.order, at.segment);
         // A completion built already is appended as built, its question spent.
@@ -1890,7 +1930,7 @@ impl Reversals {
         // A route handed on starts from the holding account where the value sits, which counts as its origin reserve
         // (`REQ-ORD-16`, `REQ-ORD-43`): the module the operator registered as the account of the node its first move
         // leaves (`T-020-57`).
-        let handed_on = handed_on_holder(parts.catalogue, followed, part);
+        let handed_on = handed_on_holder(&self.holders, at.order, followed, part);
         let origin = match origin_of(part) {
             Ok(origin) => origin,
             Err(none) => handed_on.clone().ok_or(none)?,
@@ -2442,24 +2482,26 @@ fn held_to_its_question(
 }
 
 /// The holding account a route handed on starts from: where `order` was handed on to (`handed_on_from`) and `part`'s
-/// first segment leaves an inner node, the module the operator registered as that node's holding account and
-/// publishes (`REQ-CAT-23`), the linked order's starting reserve under the hand-on rule (`REQ-ORD-16`, `REQ-ORD-43`).
-/// None for any other order or route, and for a node whose holding account is a private node's publisher's interface,
-/// which names no party: nothing is asked there, and the reversal stays owed (`T-020-57`, failing closed).
-fn handed_on_holder(catalogue: &Catalogue, order: &stm::Order, part: &stm::Part) -> Option<Id> {
+/// first segment leaves an inner node, the `holder` of the order's verified `holding_withdrawal` at that node, as
+/// [`Reversals::follow`] read it from the log: the linked order's starting reserve under the hand-on rule
+/// (`REQ-ORD-16`, `REQ-ORD-43`) and the one party the log takes as the reserve there (core-internal's
+/// `reserve_at_from`), so Core asks whom the log will hear, whatever holding module the node has since. None for any
+/// other order or route, or where the log holds no such record at that node: nothing is asked there, and the reversal
+/// stays owed (`T-020-57`, failing closed).
+fn handed_on_holder(
+    holders: &BTreeMap<String, (String, Id)>,
+    order_id: &Id,
+    order: &stm::Order,
+    part: &stm::Part,
+) -> Option<Id> {
     order.handed_on_from.as_ref()?;
     let first = part.segments.first()?;
     if first.kind == OperationKind::Withdrawal {
         return None;
     }
     let node = inner_node(first)?;
-    let holding = catalogue.nodes().holding(&node)?;
-    (holding.source == rutent_prov::catalogue::HoldingSource::Operator
-        && catalogue
-            .publishers()
-            .published_by_operator(&holding.reference))
-    .then(|| Id::new(holding.reference.as_str()))
-    .flatten()
+    let (at, holder) = holders.get(order_id.as_str())?;
+    (*at == node).then(|| holder.clone())
 }
 
 /// A part's origin reserve: the provider of its withdrawal, its first segment. A route handed on has no withdrawal

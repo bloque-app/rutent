@@ -6516,9 +6516,8 @@ fn result_failed(effect: &VerifiedEntry, history: &History) -> bool {
     })
 }
 
-/// Where `segment` of `order` ends, by the first plan in `history` that lists it: a `route_chosen`, a
+/// Where `segment` of `order` starts from, by the first plan in `history` that lists it: a `route_chosen`, a
 /// `route_recalculated` or a `destination_changed`.
-/// The endpoint `segment` of `order` starts from, by its plans in `history`.
 fn planned_start<'a>(
     order: &str,
     segment: &str,
@@ -6582,6 +6581,8 @@ fn handed_on_first_move(order: &str, segment: &str, history: &History) -> bool {
             .any(|s| s.segment_id.as_str() != segment && s.to == this.from)
 }
 
+/// Where `segment` of `order` ends, by the first plan in `history` that lists it: a `route_chosen`, a
+/// `route_recalculated` or a `destination_changed`.
 fn planned_end<'a>(
     order: &str,
     segment: &str,
