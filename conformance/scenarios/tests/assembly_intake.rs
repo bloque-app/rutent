@@ -246,6 +246,60 @@ fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_intake()
     );
 }
 
+/// An agent its party didn't scope for reading is told no order status through an accept either: the person opens and
+/// quotes, the agent (whom the party scoped to authorise, not to read) accepts, and is told `ReadRefused`, neither the
+/// order's state nor an error that shows it. The acceptance stands, and policy's read check is recorded, refused, of the
+/// order's state once the acceptance is in the log (`T-020-62`; `REQ-AUZ-8`).
+// verifies: REQ-AUZ-8
+#[test]
+fn agent_its_party_did_not_scope_to_read_learns_no_order_status_through_accept() {
+    let (mut core, session) = core_with_a_session();
+    let agent = the_customers_agent();
+    list_and_scope(&core, &agent, false);
+    let told = core
+        .request(base_request("req-accept-unscoped", AMOUNT, &session))
+        .expect("the person is told");
+    let order = Core::order_of(&told).expect("an order");
+    let Told::Exists {
+        status: Status::Quoted { digest, .. },
+        ..
+    } = core
+        .quote(&kit::customer(), &order)
+        .expect("the person is told the quote")
+    else {
+        panic!("a quote is shown");
+    };
+    let accepted = core.accept(&agent, &order, &digest);
+    assert!(
+        matches!(accepted, Err(StepError::Intake(IntakeError::ReadRefused))),
+        "{accepted:?}"
+    );
+    assert!(
+        core.verified_whats()
+            .iter()
+            .any(|w| matches!(w, What::Acceptance { order: o, .. } if o == &order)),
+        "the acceptance stands"
+    );
+    let reads = recorded_reads(&core);
+    let ours: Vec<_> = reads.iter().filter(|(c, _)| c.reader == agent).collect();
+    assert_eq!(ours.len(), 1, "{ours:?}");
+    assert!(!ours[0].1, "refused");
+    assert_eq!(
+        ours[0].0.reads,
+        Read::OrderState {
+            order: order.clone()
+        }
+    );
+    // The person is told the order as it stands.
+    assert!(matches!(
+        core.request(base_request("req-accept-unscoped", AMOUNT, &session)),
+        Ok(Told::Exists {
+            status: Status::Accepted { .. },
+            ..
+        })
+    ));
+}
+
 /// An agent its party scoped for reading is told its party's order status at each call and the check is recorded,
 /// allowed: a filed order's while the acceptance isn't in the log, the order's state once it is (`REQ-AUZ-8`,
 /// `REQ-ORD-5`, `REQ-AUD-12`).
