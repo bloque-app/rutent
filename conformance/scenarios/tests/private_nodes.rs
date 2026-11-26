@@ -972,13 +972,14 @@ fn route_across_two_private_nodes_closes_and_replays_each() {
     // What each replay read is its own publisher's record of the segments inside its node.
     let a = published(&mut core, NODE_A);
     let b = published(&mut core, NODE_B);
+    // In name order, as Core asks the providers of a node (`T-020-58`).
     assert_eq!(
         a.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
         [PAIR_IN, PAIR_RAMP_A]
     );
     assert_eq!(
         b.iter().map(|r| r.maker.as_str()).collect::<Vec<_>>(),
-        [PAIR_RAMP_B, PAIR_OUT]
+        [PAIR_OUT, PAIR_RAMP_B]
     );
     assert!(
         a.iter()
@@ -1195,9 +1196,13 @@ fn node_records(core: &Core, order: &Id) -> usize {
 #[test]
 fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
     let names = [IN, EXCHANGE, RAMP, OUT];
-    let (ran_on, ran_order, _) = run_across(&names, OUT, "sim-join-out-bank", |_| {});
+    let (mut ran_on, ran_order, _) = run_across(&names, OUT, "sim-join-out-bank", |_| {});
     let written = node_records(&ran_on, &ran_order);
     assert!(written > 0, "the replay keeps a publisher's record");
+    let ran_on_journals: std::collections::BTreeMap<&str, usize> = names
+        .iter()
+        .map(|p| (*p, ran_on.world().journal(p).len()))
+        .collect();
 
     let (mut core, session) = core_with("AC-35", &names);
     let order = accepted(
@@ -1223,9 +1228,11 @@ fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
         "written once, as the Core that ran on"
     );
     for provider in names {
+        // The operations carried out, as the provider's books hold them: Core's questions of a private node's record
+        // move nothing and are asked again at each grading (`T-020-58`), so they are no part of the count.
         assert_eq!(
-            core.operations_received(provider),
-            ran_on.operations_received(provider),
+            core.world().journal(provider).len(),
+            ran_on_journals[provider],
             "{provider} is asked what the Core that ran on asked it, nothing twice"
         );
     }

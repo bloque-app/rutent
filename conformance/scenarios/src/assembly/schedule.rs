@@ -75,6 +75,15 @@ impl Core {
             );
         }
         self.closed.took(&round.priced);
+        // The records the round took are the books closing reads (`T-020-58`): handed over as Core took them, no more.
+        for published in &round.published {
+            rutent_core_orch::closing::Books::took(
+                &self.readings,
+                &published.record.maker,
+                &published.node,
+                Some(published.record.clone()),
+            );
+        }
         let _ = self.feed();
         round
     }

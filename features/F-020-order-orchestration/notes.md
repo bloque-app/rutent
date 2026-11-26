@@ -8737,6 +8737,19 @@ below), `components/prov/src/proxy/` (`signing.rs`, `calls.rs`) and `components/
   is a stated entry of the log (`T-020-32`). `Readings` keeps the last taken record for each provider and node only so
   `Books::recorded` can read it within the grading, and is rebuilt by the next asking.
 
+- **The tick feeds the books.** `Core::tick` hands the records the round took to the same `Books::took` closing uses, so a
+  node Core read on a tick is read by a test's `books_for` as well; `books_for` itself asks nothing.
+- **Local checks** (through the lock, `contracts/src/lib.rs` touched first, a private plain wallet, `origin/m3` `f0c66ab4`
+  merged): `fmt --check` and `clippy --workspace --all-targets -D warnings` clean; contracts, prov, core-orch, core-authz
+  `--lib`, core-audit and conformance pass; the role suite 2; the whole `rutent-scenarios` package passes (56 binaries,
+  default seeds), `assembly` and `invariants` under seeds `11,12,13,14,15` (the CI step's list, together: the thresholds
+  count across seeds, so a single seed fails `answers >= 80` by design) 5 and 10; `sim_providers` 15, `private_nodes` 14,
+  `publishers_record` 7; the doc check clean; `plan-check --strict` 0 findings, `tag-check --strict` 2461 tests, 0
+  findings; the contract guard against `origin/develop`: no violations (against `m3` it fails on the fold, by design).
+  Three existing private-node tests moved: `private_nodes.rs`'s pair test reads the records in name order, its reopen test
+  counts the operations in the providers' books rather than every question they were asked, and `publishers_record.rs`'s
+  three tests sort the round's records by the route.
+
 ### Defaults (T-020-58), reversible and fail closed
 
 1. A record that isn't taken leaves the node with nothing recorded (`NothingRecorded`); a provider's answer that isn't the
