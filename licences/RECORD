@@ -579,9 +579,8 @@ vault not-adopted BUSL-1.1 permitted DEC-9,ADR-0004,vault-busl
 # and rutent-contracts.
 @exception stm-inside-agpl-program components/stm/vos-program/Cargo.lock rutent-stm-vos-program rutent-stm,rutent-contracts
 @exception stm-inside-agpl-program components/stm/vos-program/client/Cargo.lock rutent-stm-vos rutent-stm,rutent-contracts
-# PENDING the owner (item vos-serve-exception, on the decision form): the decision above names the program and the
-# client, not the client's host server rutent-stm-vos-serve (AGPL, in the client's lock), which embeds the same two
-# crates. It is listed here as a default until the owner rules; remove the line if the owner refuses.
+# The owner's decision vos-serve-exception (allow, 2026-11-26): the client's host server rutent-stm-vos-serve (AGPL,
+# in the client's lock) may embed the same two crates under the same exception.
 @exception vos-serve-exception components/stm/vos-program/client/Cargo.lock rutent-stm-vos-serve rutent-stm,rutent-contracts
 # The experiment's VOS adapter (EXP-1), which the owner permitted to link VOS's AGPL crates (DEC-6, counsel-licences).
 @exception DEC-6,counsel-licences experiments/2026-11-06-runtime-host/vos-adapter/adapter/Cargo.lock rutent-vos-adapter rutent-stm,rutent-contracts,rutent-conformance

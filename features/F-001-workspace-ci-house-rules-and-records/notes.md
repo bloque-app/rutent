@@ -95,7 +95,7 @@ Defaults taken (reversible, fail closed).
 
 - `COPYLEFT_ROOTS` names two trees, `components/stm/vos-program/` and the experiment's `experiments/2026-11-06-runtime-host/vos-adapter/`; any other lock refuses. The `@holds` lines name each lock where a package is locked today, not the whole tree, so a new lock needs a deliberate line.
 - A non-permissive package here means any licence outside the permissive set, not only GPL and AGPL, so a source-available crate beside a core crate fails too.
-- `rutent-stm-vos-serve` (AGPL, the client's host server) is listed as an exception under the pending owner item `vos-serve-exception`, because it embeds the same two crates and the check must pass on its lock. It stays marked pending in the record until the owner confirms or removes it.
+- `rutent-stm-vos-serve` (AGPL, the client's host server) is listed as an exception under the owner's decision `vos-serve-exception` (allowed, 2026-11-26), because it embeds the same two crates and the check must pass on its lock. It stays marked pending in the record until the owner confirms or removes it.
 - The experiment's artifacts that hold core crates beside VOS (`rutent-vos-adapter`, `rutent-vos-rt`, `rutent-vos-program`) carry exceptions under `DEC-6,counsel-licences`, the permission their manifests cite; they declare no `license` (the adapter and rt), so the record gives the adapter and rt `AGPL-3.0-or-later`, the licence of what they link.
 - The core list is `rutent-contracts`, `rutent-stm`, `rutent-core-audit`, `rutent-core-authz`, `rutent-core-orch`, `rutent-evidence`, `rutent-router`, `rutent-prov`, `rutent-conformance` and `rutent-scenarios`.
 - Dev dependencies are not part of an artifact.
