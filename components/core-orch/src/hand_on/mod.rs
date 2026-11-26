@@ -207,6 +207,8 @@ pub fn authorise(
     new: &Authorisation,
     recorded: &mut dyn FnMut() -> Vec<Entry>,
 ) -> Result<Decision, HandOnError> {
+    // The stated role and party are a narrowing pre-gate only: policy decides after it, in `authorisations.authorise`
+    // below, and binds the role itself (`T-020-62`).
     // The caller is the order's customer first, as the log's acceptance names it: policy can't be asked before the
     // gate holds the terms to a waiting part, so a caller that isn't the customer, of an order that exists or not, is
     // told one refusal, and only the customer is told more (`REQ-AUZ-7`).
@@ -1255,7 +1257,9 @@ impl HandOn {
         // names as holding the value.
         let reserve = match handing.basis {
             Basis::Customer => {
-                // The customer's own word: the order's requester, acting as its customer.
+                // The customer's own word: the order's requester, acting as its customer. A narrowing pre-gate on the
+                // stated role only: policy decided the linked order's acceptance this hand-on rests on, which the log holds
+                // (`acceptance_of`, `chosen-route-rests-on-its-orders-acceptance`), and decides nothing here (`T-020-62`).
                 if handing.by.role != Role::Customer || handing.by.party != *requester {
                     return Err(Refused::NotTheCustomer.into());
                 }
@@ -1276,6 +1280,8 @@ impl HandOn {
                     .ok_or(HandOnError::NotAHandedOnRoute)?
             }
             Basis::Resolution { effect } => {
+                // A narrowing pre-gate on the stated role only: policy decided the operator's `resolve_stuck` effect this
+                // hand-on rests on (`done_hand_on`), and the log holds it (`T-020-62`).
                 if handing.by.role != Role::Operator {
                     return Err(HandOnError::NotTheOperator);
                 }

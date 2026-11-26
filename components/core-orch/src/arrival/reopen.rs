@@ -19,6 +19,9 @@
 //!   customer's own, the one it accepts in, takes its place. The filer filing the deposit again under the same request is
 //!   told the wait as it stands and changes none of it.
 //!
+//! - **The refilings**: each `refiling` entry, under its arrival and the filer it names whole, so the same filer's
+//!   refiling after a restart is the one the log holds (`T-020-62`).
+//!
 //! What it doesn't rebuild: orders started or ended after the deposit was held (their deposit stays held, but a repeat of
 //! their filing is told `NotFileable` or that the deposit is held, not how it ended), a filing refused before an order
 //! opened (no arrival names an order, so the deposit is free and the same filing is evaluated afresh), a deposit its
@@ -106,6 +109,28 @@ impl Arrivals {
                 }
             }
             arrivals.note(recorded);
+        }
+        // The refilings the log holds, each by the arrival and the filer whole, as `refile` keys them: the same filer
+        // filing the same arrival anew again is told the refiling it made, and appends neither a second `Refiling` nor a
+        // second decision (`T-020-62`). A refiling is kept only for an arrival Core rebuilt, against the order that
+        // arrival names; one the log holds of an arrival it can't rebuild is dropped, and the filing is asked afresh.
+        for (receipt, v) in verified() {
+            let What::Refiling { arrival, order, .. } = &v.what else {
+                continue;
+            };
+            let rebuilt = arrivals
+                .recorded
+                .iter()
+                .any(|r| &r.receipt == arrival && r.order.as_ref() == Some(order));
+            if rebuilt {
+                arrivals
+                    .refilings
+                    .entry(super::refiling_key(arrival, &v.who))
+                    .or_insert(super::Refiled {
+                        entry: Entry::Verified(v.clone()),
+                        receipt: Some(receipt.clone()),
+                    });
+            }
         }
         // The deposits held by an order, and the orders still waiting for their customer.
         for (_, v) in verified() {
