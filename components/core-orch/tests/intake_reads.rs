@@ -691,3 +691,47 @@ fn a_person_is_told_no_order_state_by_an_error_policy_refuses_to_read_and_the_ch
     assert!(!recorded_reads(&env).last().unwrap().1, "refused");
     assert_admitted(&env);
 }
+
+/// An agent its party scoped to read is told why its request was refused, so it can correct it: the class, by the
+/// first answer, by its status and by a repeat that differs (`Conflicting` naming no order); policy's read check is
+/// asked of the request's party and recorded. One its party didn't scope is told `ReadRefused` by each (`T-020-64`;
+/// the milestone reviewer's check of `T-020-62`).
+// verifies: REQ-AUZ-8, REQ-AUZ-7
+#[test]
+fn agent_its_party_scoped_to_read_is_told_its_refused_requests_class() {
+    use rutent_contracts::core_internal::OrderRefusalClass;
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let mut refused = order_request("client-req-bad", agent());
+    refused.session = id("session-nobody-opened");
+    let class = Told::Refused {
+        class: OrderRefusalClass::RefusedByPolicy,
+    };
+    // Scoped: told the class.
+    assert_eq!(env.open(&mut sim, &refused), Ok(class.clone()));
+    assert_eq!(env.told(&agent(), "client-req-bad"), Some(class.clone()));
+    let mut other = refused.clone();
+    other.route = route("999");
+    assert_eq!(
+        env.open(&mut sim, &other),
+        Err(IntakeError::Conflicting { order: None }),
+        "a repeat that differs names no order, and a scoped agent is told so"
+    );
+    let reads = recorded_reads(&env);
+    assert_eq!(reads.len(), 3, "each answer is checked: {reads:?}");
+    assert!(
+        reads
+            .iter()
+            .all(|(c, allowed)| *allowed && c.reader == agent())
+    );
+    // Unscoped: told no more than a refused reader.
+    env.reads.scoped.clear();
+    assert_eq!(env.open(&mut sim, &refused), Err(IntakeError::ReadRefused));
+    assert_eq!(env.told(&agent(), "client-req-bad"), None);
+    assert_eq!(env.open(&mut sim, &other), Err(IntakeError::ReadRefused));
+    // The person who asked is told the class as ever.
+    let mut theirs = refused.clone();
+    theirs.caller = customer();
+    assert_eq!(env.open(&mut sim, &theirs), Ok(class));
+    assert_admitted(&env);
+}

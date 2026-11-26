@@ -503,7 +503,7 @@ impl Intake {
         if !kept.opening.is_empty() {
             return None;
         }
-        self.read(desk, caller, kept.told()).ok()
+        self.read(desk, caller, kept.told(), Some(request)).ok()
     }
 
     /// `told`, once policy lets `caller` read the order's status it names, which is asked of the order's record in
@@ -517,19 +517,62 @@ impl Intake {
         desk: &mut Desk<'_, '_>,
         caller: &Actor,
         told: Told,
+        request: Option<&Id>,
     ) -> Result<Told, IntakeError> {
         let Told::Exists { order, .. } = &told else {
-            // A refused request's class is a status of the party's request, not the caller's own to know: an agent is
-            // told what its repeat is told (`Conflicting { order: None }`), `ReadRefused`, whatever its scope, as no
-            // order exists for policy to be asked about (`T-020-62`).
-            return if caller.kind == ActorKind::Agent {
-                Err(IntakeError::ReadRefused)
-            } else {
-                Ok(told)
+            // A request refused with no order: a person is told its class as it is. An agent is told it where policy's
+            // read check lets it read the request's party's request, the scope an order's read uses, and
+            // [`IntakeError::ReadRefused`] where not, as its repeat is (`T-020-62`, `T-020-64`).
+            if caller.kind != ActorKind::Agent {
+                return Ok(told);
+            }
+            return match request {
+                Some(request) => self.read_request(desk, caller, request).map(|()| told),
+                None => Err(IntakeError::ReadRefused),
             };
         };
         self.read_order(desk, caller, order)?;
         Ok(told)
+    }
+
+    /// Asks policy whether `caller`, an agent, may read the status of its party's request `request`, refused with no
+    /// order: a refused request has no order but has a requester, so intake hands over its own record of the request
+    /// under an identifier of its own naming ("request-" and the request's), and the read is a filed order's of that
+    /// record by the requester the request states, which policy's `Requester` source confirms against the record: the
+    /// same scope an order's read uses (`T-020-64`). [`IntakeError::ReadRefused`] where it may not, or where intake
+    /// holds no such request; a check that couldn't be made is the log's failure, nothing told.
+    fn read_request(
+        &self,
+        desk: &mut Desk<'_, '_>,
+        caller: &Actor,
+        request: &Id,
+    ) -> Result<(), IntakeError> {
+        let kept = self
+            .requests
+            .get(&key(&caller.party, request))
+            .ok_or(IntakeError::ReadRefused)?;
+        let named =
+            Id::new(format!("request-{}", request.as_str())).ok_or(IntakeError::ReadRefused)?;
+        desk.reads.filed(&OrderRecord {
+            order: named.clone(),
+            request: request.clone(),
+            parties: kept.asked.parties.clone(),
+            origin_reserve: kept.asked.origin_reserve.clone(),
+        });
+        let answer = desk.reads.check_read(&ReadCheck {
+            request: desk.parts.fresh.id(),
+            reader: caller.clone(),
+            reads: Read::FiledOrder {
+                order: named,
+                requester: kept.asked.parties.requester.clone(),
+            },
+            permission: None,
+            at: record::now(desk.parts.clock)?,
+        })?;
+        match answer.outcome {
+            ReadOutcome::Allowed {} => Ok(()),
+            ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
+        }
     }
 
     /// Asks policy whether `caller` may read the status of `order`, as [`Intake::read`] does, recording the check.
@@ -606,13 +649,8 @@ impl Intake {
     ) -> IntakeError {
         let named = match &error {
             IntakeError::Conflicting { order: Some(named) } => Some(named),
-            IntakeError::Conflicting { order: None } => {
-                return if caller.kind == ActorKind::Agent {
-                    IntakeError::ReadRefused
-                } else {
-                    error
-                };
-            }
+            // Asked of an agent by `open`, which knows the request (`T-020-64`).
+            IntakeError::Conflicting { order: None } => return error,
             IntakeError::NoSuchOrder
             | IntakeError::NotTheRequester
             | IntakeError::ReadRefused
@@ -860,13 +898,24 @@ impl Intake {
         request: OrderRequest,
     ) -> Result<Told, IntakeError> {
         let caller = request.caller.clone();
+        let request_id = request.request.clone();
         let told = match self.open_inner(desk, request) {
             Ok(told) => told,
             Err(error) => {
+                // Another request under the identifier of one refused with no order names no order: an agent is told
+                // what the request's own status is told it, ReadRefused where its party didn't scope it (`T-020-64`).
+                if matches!(error, IntakeError::Conflicting { order: None })
+                    && caller.kind == ActorKind::Agent
+                {
+                    return Err(match self.read_request(desk, &caller, &request_id) {
+                        Ok(()) => error,
+                        Err(refused) => refused,
+                    });
+                }
                 return Err(self.told_error(desk, &caller, None, error));
             }
         };
-        self.read(desk, &caller, told)
+        self.read(desk, &caller, told, Some(&request_id))
     }
 
     fn open_inner(
@@ -923,7 +972,7 @@ impl Intake {
             Ok(told) => told,
             Err(error) => return Err(self.told_error(desk, caller, Some(order), error)),
         };
-        self.read(desk, caller, told)
+        self.read(desk, caller, told, None)
     }
 
     fn quote_inner<R: Router>(
@@ -1120,7 +1169,7 @@ impl Intake {
             Ok(told) => told,
             Err(error) => return Err(self.told_error(desk, by, Some(order), error)),
         };
-        self.read(desk, by, told)
+        self.read(desk, by, told, None)
     }
 
     fn accept_inner(

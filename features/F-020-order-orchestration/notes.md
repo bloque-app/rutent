@@ -8358,6 +8358,35 @@ The doc lines at the pre-gates have no rule to switch off.
 --test reopened`; `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features rutent-conformance/signing`;
 `plan-check --strict` and `tag-check --strict`: all green.
 
+## T-020-64: a scoped agent told why its request was refused
+
+The milestone reviewer's check of `T-020-62` (Medium): `read` answered `ReadRefused` to every agent for a refused
+request's class, so an agent its party scoped to read couldn't tell a malformed request from a permission problem. Edits
+`components/core-orch/src/intake/mod.rs`.
+
+- **Design.** A refused request has no order but has a requester. `Intake::read_request` hands intake's own record of the
+  request over under an identifier of its own naming (`request-` and the request's), as it does a filed order's, and asks
+  policy's read check as a filed order's read by the requester the request states: the scope an order's read uses
+  (an agent reads only within its party's scope, and policy's `Requester` source confirms the party against the record).
+  Allowed, a scoped agent is told the class (`open`'s first answer, `Intake::told`) and a differing repeat's
+  `Conflicting { order: None }`; refused, or intake holds no such request, `ReadRefused`, as `T-020-62` built. A person is
+  told as ever, with no check. No contract changed.
+- **Defaults** (reversible, each failing closed). (1) A request whose stated requester isn't the caller's party is refused
+  its read by policy's `Requester` source, so even a scoped agent is told `ReadRefused` of it: the "malformed" case in
+  `refused_requests_class_tells_an_unscoped_agent_no_more_than_its_repeat_does`. (2) `quote` and `accept` never see a
+  `Told::Refused`; were one to, an agent is told `ReadRefused`. (3) The identifier `request-<id>` could collide with an
+  order's only if Core's fresh draws made one the same; the record is the deployment's to keep as it keeps any filed order's.
+- **Gap.** The assembly's real policy engine isn't run on a scoped agent's refused request in a scenario (the double in
+  `intake_support` and policy's `Requester` source answer the same rule); owner: whoever next touches `assembly_intake.rs`.
+- **Test** `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` [`REQ-AUZ-8`, `REQ-AUZ-7`]
+  (`intake_reads.rs`): written with the fix in place, so red was shown by the rule-off below, which is `T-020-62`'s code.
+- **Rule-off** (`intake_reads`):
+
+  | Rule switched off | Test that went red |
+  |---|---|
+  | a scoped agent is told a refused request's class (the agent arm answers `ReadRefused` as `T-020-62` did) | `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` |
+  | a scoped agent is told a differing repeat's `Conflicting { order: None }` | `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` |
+
 ## T-020-56: terms, holds and the landing after a linked order's reversal, end to end
 
 Branch `f-020/t-020-56-terms-holds`, from `28972690` (m3-next's batch holding `T-020-47`). `T-020-47`'s parts 2 and 4a,
