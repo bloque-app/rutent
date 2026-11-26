@@ -735,3 +735,64 @@ fn agent_its_party_scoped_to_read_is_told_its_refused_requests_class() {
     assert_eq!(env.open(&mut sim, &theirs), Ok(class));
     assert_admitted(&env);
 }
+
+/// The record intake hands over for a refused request's read is withdrawn as soon as the check returns: the
+/// deployment's map of filed orders holds the orders alone, however many refused requests an agent makes under
+/// identifiers of its choosing (`T-020-64`, the review of `ca787c83`).
+// verifies: REQ-AUZ-8, NFR-6
+#[test]
+fn refused_requests_read_leaves_no_record_behind() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    let before = env.reads.filed.len();
+    for n in 0..25 {
+        let mut refused = order_request(&format!("client-req-bad-{n}"), agent());
+        refused.session = id("session-nobody-opened");
+        assert!(matches!(
+            env.open(&mut sim, &refused),
+            Ok(Told::Refused { .. })
+        ));
+        // A repeat that differs is asked as well.
+        refused.route = route("999");
+        assert!(matches!(
+            env.open(&mut sim, &refused),
+            Err(IntakeError::Conflicting { order: None })
+        ));
+    }
+    assert!(
+        env.reads
+            .asked
+            .iter()
+            .any(|(c, allowed)| *allowed && c.reader == agent()),
+        "the reads were asked"
+    );
+    assert_eq!(env.reads.filed.len(), before, "no record is left behind");
+    assert_admitted(&env);
+}
+
+/// A refused request whose pseudo-name an order of intake's already bears never overwrites that order's record or
+/// drops it: the agent is refused the read (`ReadRefused`), and the order's record stays as it was (`T-020-64`).
+// verifies: REQ-AUZ-8, NFR-6
+#[test]
+fn refused_requests_read_never_takes_the_name_of_an_order() {
+    let mut env = Env::new();
+    let mut sim = env.sim();
+    // Core draws an order identifier that starts as a refused request's pseudo-name would.
+    env.ids.next = vec![id("request-client-req-bad")];
+    let order = order_of(
+        &env.open(&mut sim, &order_request("client-req-1", customer()))
+            .expect("opens"),
+    );
+    assert_eq!(order.as_str(), "request-client-req-bad");
+    let record = env.reads.filed.get(order.as_str()).cloned();
+    assert!(record.is_some(), "the order's record is handed over");
+    let mut refused = order_request("client-req-bad", agent());
+    refused.session = id("session-nobody-opened");
+    assert_eq!(env.open(&mut sim, &refused), Err(IntakeError::ReadRefused));
+    assert_eq!(
+        env.reads.filed.get(order.as_str()).cloned(),
+        record,
+        "the order's record stays as it was"
+    );
+    assert_admitted(&env);
+}

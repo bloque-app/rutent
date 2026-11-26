@@ -8379,6 +8379,13 @@ request's class, so an agent its party scoped to read couldn't tell a malformed 
 - **Scenario over the real policy engine** (closes the gap): `agent_its_party_scoped_to_read_is_told_its_refused_requests_class_over_the_real_policy`
   (`assembly_intake.rs`): scoped, the agent is told the class and the check is recorded allowed; unscoped, `ReadRefused` and the
   check is recorded refused; a person's isn't checked. Red with the scoped arm switched off.
+- **Review round (the reviewer's Low: the pseudo-record).** (1) *Guard:* `read_request` refuses (`ReadRefused`) when intake
+  already holds an order of the name `request-<id>`; Core's fresh draws are the deployment's, so failing closed on intake's
+  own orders is the simpler guard than constraining them. (2) *Bound:* `StatusReads::withdrawn` is new, and the record is
+  withdrawn as soon as the check returns, whatever it answered (the assembly forwards it to `OpenedOrders::withdrawn`), so
+  the map holds orders alone. Tests: `refused_requests_read_never_takes_the_name_of_an_order` and
+  `refused_requests_read_leaves_no_record_behind` (25 refused requests and repeats, the map unchanged). Rule-off: guard off
+  turns the first red; withdrawal off turns the second red.
 - **Test** `agent_its_party_scoped_to_read_is_told_its_refused_requests_class` [`REQ-AUZ-8`, `REQ-AUZ-7`]
   (`intake_reads.rs`): written with the fix in place, so red was shown by the rule-off below, which is `T-020-62`'s code.
 - **Rule-off** (`intake_reads`):

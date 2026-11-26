@@ -149,6 +149,11 @@ pub trait StatusReads: ReadPort {
     /// policy's `Requester` source answers from it, never from the read's word (`T-021-16`'s round 4). It is the
     /// deployment's to keep, as it keeps a filed order's (`FiledOrders::opened`).
     fn filed(&mut self, record: &OrderRecord);
+
+    /// The record handed over by [`StatusReads::filed`] for `order` is dropped: intake hands over one for a request
+    /// refused with no order only for the read and withdraws it as soon as the check returns, so the deployment's map of
+    /// filed orders never grows with the identifiers callers choose (`T-020-64`).
+    fn withdrawn(&mut self, order: &Id);
 }
 
 /// An order request, as a person or an agent makes it (`REQ-OPS-5`).
@@ -540,7 +545,8 @@ impl Intake {
     /// under an identifier of its own naming ("request-" and the request's), and the read is a filed order's of that
     /// record by the requester the request states, which policy's `Requester` source confirms against the record: the
     /// same scope an order's read uses (`T-020-64`). [`IntakeError::ReadRefused`] where it may not, or where intake
-    /// holds no such request; a check that couldn't be made is the log's failure, nothing told.
+    /// holds no such request or already holds an order of the name; a check that couldn't be made is the log's failure,
+    /// nothing told. The record is withdrawn as soon as the check returns.
     fn read_request(
         &self,
         desk: &mut Desk<'_, '_>,
@@ -553,23 +559,31 @@ impl Intake {
             .ok_or(IntakeError::ReadRefused)?;
         let named =
             Id::new(format!("request-{}", request.as_str())).ok_or(IntakeError::ReadRefused)?;
+        // Never a name an order of intake's already has: the record handed over would overwrite that order's, and its
+        // withdrawal would drop it. An agent is refused instead, failing closed (`T-020-64`).
+        if self.orders.contains_key(named.as_str()) {
+            return Err(IntakeError::ReadRefused);
+        }
+        let at = record::now(desk.parts.clock)?;
         desk.reads.filed(&OrderRecord {
             order: named.clone(),
             request: request.clone(),
             parties: kept.asked.parties.clone(),
             origin_reserve: kept.asked.origin_reserve.clone(),
         });
-        let answer = desk.reads.check_read(&ReadCheck {
+        let checked = desk.reads.check_read(&ReadCheck {
             request: desk.parts.fresh.id(),
             reader: caller.clone(),
             reads: Read::FiledOrder {
-                order: named,
+                order: named.clone(),
                 requester: kept.asked.parties.requester.clone(),
             },
             permission: None,
-            at: record::now(desk.parts.clock)?,
-        })?;
-        match answer.outcome {
+            at,
+        });
+        // Withdrawn as soon as the check returns, whatever it answered.
+        desk.reads.withdrawn(&named);
+        match checked?.outcome {
             ReadOutcome::Allowed {} => Ok(()),
             ReadOutcome::Refused { .. } => Err(IntakeError::ReadRefused),
         }

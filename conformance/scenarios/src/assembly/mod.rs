@@ -535,6 +535,10 @@ impl StatusReads for StatusReading {
         self.orders
             .opened(&record.order, &record.parties, &record.origin_reserve);
     }
+
+    fn withdrawn(&mut self, order: &Id) {
+        self.orders.withdrawn(order);
+    }
 }
 
 /// Policy's session register, as intake reads it: the sessions the engine opened.
