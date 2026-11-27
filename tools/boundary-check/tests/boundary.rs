@@ -1,8 +1,8 @@
 //! Tests of the boundary check.
 
 use rutent_boundary_check::{
-    Graph, OUTER, READER_HOST, SourceFinding, Why, load, members, parse_manifest,
-    sources_naming_core_internal, violations,
+    Graph, OUTER, PROV_CONFINE, PROV_KEYS, READER_HOST, SourceFinding, Why, defined_in,
+    holds_its_reexports, load, members, parse_manifest, sources_naming_core_internal, violations,
 };
 use std::path::{Path, PathBuf};
 
@@ -340,6 +340,55 @@ fn only_the_scenario_assembly_may_import_core_crates() {
 
 /// A throwaway workspace with the four outer libraries, the conformance suites, the scenario
 /// assembly inside them, and the contracts crate, each with one source file.
+/// The admitted paths' files as the real crate writes them.
+const PROV_CONFINE_FILE: &str = "//! The jail.\n\
+    pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
+const PROV_KEYS_FILE: &str = "//! The keys.\n\
+    pub use crate::proxy::https::HttpsTransport;\n\
+    pub use crate::proxy::kv::{InvalidConfig, KvConfig, KvResolver, Server, Token};\n\
+    pub use crate::proxy::resolver::{ResolveError, Resolver};\n\
+    pub use crate::proxy::settings::{\n    Bucket, InvalidSettings, RoleSettings, StoreAddress, StoreScheme, kv_bucket,\n};\n\
+    pub use crate::proxy::transport::TransportError;\n";
+const PROV_ROOT: &str =
+    "//! A library.\npub mod confine;\npub mod keys;\npub mod module;\npub mod proxy;\n";
+/// The modules the admitted paths re-export from, each defining its items, as the real crate lays them out.
+const PROV_MODULES: [(&str, &str); 8] = [
+    (
+        "prov/src/module/mod.rs",
+        "//! The runtime.\npub mod sandbox;\n",
+    ),
+    (
+        "prov/src/module/sandbox.rs",
+        "//! The jail.\npub struct Limits {}\npub const PROVIDER_ADDRESS_SPACE: u64 = 1;\n\
+         pub enum Role { Provider }\npub fn confine(role: Role) {}\npub fn isolated() {}\n\
+         mod linux {\n    pub(super) fn confine() {}\n}\n",
+    ),
+    (
+        "prov/src/proxy/mod.rs",
+        "//! The proxy.\nmod calls;\npub(crate) mod https;\npub(crate) mod kv;\npub(crate) mod resolver;\n\
+         pub(crate) mod settings;\npub(crate) mod transport;\npub use calls::CredentialProxy;\n",
+    ),
+    ("prov/src/proxy/https.rs", "pub struct HttpsTransport {}\n"),
+    (
+        "prov/src/proxy/kv.rs",
+        "pub struct InvalidConfig(pub &'static str);\npub struct KvConfig {}\npub struct KvResolver<T> { t: T }\n\
+         pub enum Server { Vault }\npub struct Token(String);\n",
+    ),
+    (
+        "prov/src/proxy/resolver.rs",
+        "pub trait Resolver {}\npub enum ResolveError {}\n",
+    ),
+    (
+        "prov/src/proxy/settings.rs",
+        "pub struct Bucket<R> { r: R }\npub struct InvalidSettings(pub String);\npub struct RoleSettings {}\n\
+         pub struct StoreAddress {}\npub enum StoreScheme {}\npub fn kv_bucket<T: Clone>(t: T) {}\n",
+    ),
+    (
+        "prov/src/proxy/transport.rs",
+        "pub struct TransportError {}\n",
+    ),
+];
+
 struct Sources(PathBuf);
 
 impl Sources {
@@ -375,6 +424,14 @@ impl Sources {
             "contracts/src/core_internal/mod.rs",
             "//! core_internal names itself.\n",
         );
+        // The provider system's admitted paths, as the real crate declares them.
+        sources.write("prov/src/lib.rs", PROV_ROOT);
+        sources.write("prov/src/confine.rs", PROV_CONFINE_FILE);
+        sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+        for (file, text) in PROV_MODULES {
+            sources.write(file, text);
+        }
+        sources.write("prov/src/proxy/calls.rs", "pub struct CredentialProxy;\n");
         sources
     }
 
@@ -738,27 +795,27 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
             (
                 "components/reader-host/src/egress.rs",
                 1,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 2,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 3,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 4,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             (
                 "components/reader-host/src/egress.rs",
                 5,
-                Why::ReachesBeyondEgress,
+                Why::ReachesBeyondItsPaths,
             ),
             ("components/reader-host/src/egress.rs", 6, Why::Names),
         ],
@@ -773,6 +830,265 @@ fn reader_host_reaches_only_the_contracts_and_the_providers_egress_and_nothing_r
             .all(|deps| deps.iter().all(|d| d.name != READER_HOST)),
         "nothing of ours depends on the reader host"
     );
+}
+
+/// The reader host reaches the provider's jail and `T-014-01`'s key resolver too, each through a narrow public path of
+/// the provider system that re-exports just them (`rutent_prov::confine`, `rutent_prov::keys`), beside its egress layer
+/// (`T-015-04`'s part 7, `DEC-28`): those paths pass, and every other path into `module` or `proxy` is still refused,
+/// as is an admitted path's file that re-exports more than it is admitted with.
+// verifies: DEC-28, DEC-2, REQ-MDL-6, REQ-MDL-7
+#[test]
+fn reader_host_reaches_the_providers_jail_and_key_resolver_through_their_admitted_paths_only() {
+    let host = manifest(
+        READER_HOST,
+        "rutent-contracts = { path = \"../../contracts\" }\nrutent-prov = { path = \"../prov\" }",
+        "",
+    );
+    let sources = Sources::new("reader-host-paths");
+    sources.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n",
+            std::fs::read_to_string(sources.0.join("Cargo.toml"))
+                .unwrap()
+                .replace("members = [", "members = [\"components/reader-host\", ")
+        ),
+    );
+    sources.write("components/reader-host/Cargo.toml", &host);
+    sources.write(
+        "components/reader-host/src/lib.rs",
+        "use rutent_prov::confine::{Limits, Role, confine, isolated};\n\
+         use rutent_prov::keys::{Resolver, kv_bucket};\n\
+         use rutent_prov::egress::Egress;\n\
+         fn f(_: &dyn rutent_prov::keys::Resolver) -> rutent_prov::confine::Role { todo!() }\n",
+    );
+    assert_eq!(sources.findings(), vec![]);
+
+    // Everything else of `module` and `proxy`, named directly or by a longer name, a group or a glob.
+    sources.write(
+        "components/reader-host/src/jail.rs",
+        "use rutent_prov::module::sandbox::isolated;\n\
+         use rutent_prov::proxy::Resolver;\n\
+         use rutent_prov::proxy::CredentialProxy;\n\
+         use rutent_prov::module::platform::OperationClock;\n\
+         use rutent_prov::keystore::Resolver;\n\
+         use rutent_prov::confined::isolated;\n\
+         use rutent_prov::{confine, keys};\n\
+         use rutent_prov::*;\n",
+    );
+    let jail = "components/reader-host/src/jail.rs";
+    expect(
+        sources.findings(),
+        &(1..=8)
+            .map(|line| (jail, line, Why::ReachesBeyondItsPaths))
+            .collect::<Vec<_>>(),
+    );
+    sources.write(jail, "//! The jail.\n");
+
+    // The admitted paths' files hold their one re-export, or the path widens.
+    let confine = "pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n";
+    assert_eq!(sources.findings(), vec![]);
+    for widened in [
+        "pub use crate::proxy::{Resolver, CredentialProxy};\n",
+        "pub use crate::proxy::*;\n",
+        "pub use crate::proxy::{Resolver as R};\n",
+        "pub use crate::module::sandbox::{Limits, PROVIDER_ADDRESS_SPACE, Role, confine, isolated};\n",
+    ] {
+        sources.write("prov/src/keys.rs", widened);
+        expect(
+            sources.findings(),
+            &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+        );
+    }
+    sources.write("prov/src/keys.rs", "");
+    sources.write(
+        "prov/src/confine.rs",
+        &format!("{confine}pub mod platform {{}}\n"),
+    );
+    expect(
+        sources.findings(),
+        &[
+            ("prov/src/confine.rs", 1, Why::WidensAnAdmittedPath),
+            ("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath),
+        ],
+    );
+    sources.write("prov/src/confine.rs", PROV_CONFINE_FILE);
+    sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+    assert_eq!(sources.findings(), vec![]);
+
+    // The crate root mounts another file under an admitted name, by `#[path]` on its own line, on the same line, or
+    // through `cfg_attr`; or gives it an inline body; or leaves it out, or declares it twice; while the real file
+    // stays as a decoy. Each is refused.
+    sources.write("prov/src/confine_wide.rs", "pub use crate::module::*;\n");
+    // A `#[path]` is refused wherever it is, and the declaration it sits on is not plain: both lines are named.
+    let roots: [(&str, &[usize]); 6] = [
+        (
+            "#[path = \"confine_wide.rs\"]\npub mod confine;\npub mod keys;\n",
+            &[2, 3],
+        ),
+        (
+            "#[path = \"confine_wide.rs\"] pub mod confine;\npub mod keys;\n",
+            &[2],
+        ),
+        (
+            "#[cfg_attr(all(), path = \"confine_wide.rs\")]\npub mod confine;\npub mod keys;\n",
+            &[2, 3],
+        ),
+        (
+            "pub mod confine {\n    pub use crate::module::*;\n}\npub mod keys;\n",
+            &[2],
+        ),
+        ("pub mod keys;\n", &[1]),
+        ("pub mod confine;\nmod confine;\npub mod keys;\n", &[3]),
+    ];
+    for (root, lines) in roots {
+        sources.write(
+            "prov/src/lib.rs",
+            &format!("//! A library.\n{root}pub mod module;\npub mod proxy;\n"),
+        );
+        let expected: Vec<_> = lines
+            .iter()
+            .map(|line| ("prov/src/lib.rs", *line, Why::WidensAnAdmittedPath))
+            .collect();
+        expect(sources.findings(), &expected);
+    }
+    sources.write("prov/src/lib.rs", PROV_ROOT);
+    assert_eq!(sources.findings(), vec![]);
+
+    // A missing file fails closed, and so does a module directory beside the file.
+    std::fs::remove_file(sources.0.join("prov/src/keys.rs")).unwrap();
+    expect(
+        sources.findings(),
+        &[("prov/src/keys.rs", 1, Why::WidensAnAdmittedPath)],
+    );
+    sources.write("prov/src/keys.rs", PROV_KEYS_FILE);
+    sources.write("prov/src/confine/mod.rs", "pub use crate::module::*;\n");
+    expect(
+        sources.findings(),
+        &[("prov/src/confine", 1, Why::WidensAnAdmittedPath)],
+    );
+
+    // The real files hold, and the real workspace's sources are clean.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read =
+        |file: &str| std::fs::read_to_string(root.join("components/prov/src").join(file)).unwrap();
+    assert!(holds_its_reexports(&read("confine.rs"), PROV_CONFINE));
+    assert!(holds_its_reexports(&read("keys.rs"), PROV_KEYS));
+    assert_eq!(sources_naming_core_internal(&root).unwrap(), vec![]);
+}
+
+/// What an admitted path re-exports resolves, by file layout alone, to an item its source file defines (`T-015-04`'s
+/// review round 2, M1′): a `#[path]` anywhere under the provider system's `src/`, or a `[lib]` table in its manifest,
+/// moves a module and is refused; a module on the way declared other than plainly, or with a directory beside its file,
+/// is refused; and a re-exported name that its source file doesn't define itself (a further `pub use`, a glob, or a
+/// module of the same name riding on a value's path, as `pub use crate::proxy as PROVIDER_ADDRESS_SPACE;`) is refused.
+// verifies: DEC-28, DEC-2
+#[test]
+fn providers_admitted_paths_resolve_by_layout_to_the_items_their_files_define() {
+    let host = manifest(
+        READER_HOST,
+        "rutent-contracts = { path = \"../../contracts\" }\nrutent-prov = { path = \"../prov\" }",
+        "",
+    );
+    let sources = Sources::new("reader-host-resolve");
+    sources.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n",
+            std::fs::read_to_string(sources.0.join("Cargo.toml"))
+                .unwrap()
+                .replace("members = [", "members = [\"components/reader-host\", ")
+        ),
+    );
+    sources.write("components/reader-host/Cargo.toml", &host);
+    sources.write("components/reader-host/src/lib.rs", "//! The host.\n");
+    assert_eq!(sources.findings(), vec![]);
+    let sandbox = PROV_MODULES[1].1;
+    let refused = |what: &str, at: &str| {
+        let found = sources.findings();
+        assert!(
+            found
+                .iter()
+                .any(|(file, _, why)| file == at && *why == Why::WidensAnAdmittedPath),
+            "{what}: {found:?}"
+        );
+    };
+
+    // The reviewer's alias: a module of the same name as a value, beside it.
+    sources.write(
+        "prov/src/module/sandbox.rs",
+        &format!("{sandbox}pub use crate::proxy as PROVIDER_ADDRESS_SPACE;\n"),
+    );
+    refused("an alias riding on a value", "prov/src/module/sandbox.rs");
+    // A nested re-export: the name defined elsewhere and re-exported here.
+    sources.write(
+        "prov/src/module/sandbox.rs",
+        &sandbox.replace(
+            "pub fn isolated() {}\n",
+            "mod inner {\n    pub fn isolated() {}\n}\npub use inner::isolated;\n",
+        ),
+    );
+    refused("a nested re-export", "prov/src/module/sandbox.rs");
+    for widened in [
+        format!("{sandbox}pub mod kv_bucket {{}}\npub use crate::proxy::*;\n"),
+        format!("{sandbox}pub fn isolated() {{}}\n"),
+        sandbox.replace("pub const PROVIDER_ADDRESS_SPACE: u64 = 1;\n", ""),
+    ] {
+        sources.write("prov/src/module/sandbox.rs", &widened);
+        refused(
+            "a glob, a second definition or none",
+            "prov/src/module/sandbox.rs",
+        );
+    }
+    sources.write(
+        "prov/src/proxy/settings.rs",
+        &format!("{}pub mod kv_bucket {{}}\n", PROV_MODULES[6].1),
+    );
+    refused("a module beside a function", "prov/src/proxy/settings.rs");
+    sources.write("prov/src/proxy/settings.rs", PROV_MODULES[6].1);
+    sources.write("prov/src/module/sandbox.rs", sandbox);
+    assert_eq!(sources.findings(), vec![]);
+
+    // The module redirected under the admitted path's way, through its parent; a `#[path]` elsewhere in the package;
+    // a directory beside a module's file; the library's own path moved in the manifest.
+    sources.write("prov/src/module/sandbox_wide.rs", sandbox);
+    sources.write(
+        "prov/src/module/mod.rs",
+        "//! The runtime.\n#[path = \"sandbox_wide.rs\"]\npub mod sandbox;\n",
+    );
+    refused("a redirect in module/mod.rs", "prov/src/module/mod.rs");
+    sources.write("prov/src/module/mod.rs", PROV_MODULES[0].1);
+    sources.write(
+        "prov/src/catalogue.rs",
+        "#[path = \"elsewhere.rs\"]\nmod elsewhere;\n",
+    );
+    refused("a #[path] anywhere under src", "prov/src/catalogue.rs");
+    std::fs::remove_file(sources.0.join("prov/src/catalogue.rs")).unwrap();
+    sources.write("prov/src/proxy/kv/mod.rs", "pub struct KvResolver;\n");
+    refused("a directory beside a module's file", "prov/src/proxy/kv");
+    std::fs::remove_dir_all(sources.0.join("prov/src/proxy/kv")).unwrap();
+    let prov_manifest = std::fs::read_to_string(sources.0.join("prov/Cargo.toml")).unwrap();
+    sources.write(
+        "prov/Cargo.toml",
+        &format!("{prov_manifest}\n[lib]\npath = \"src/lib_wide.rs\"\n"),
+    );
+    refused("a [lib] table", "prov/Cargo.toml");
+    sources.write("prov/Cargo.toml", &prov_manifest);
+    assert_eq!(sources.findings(), vec![]);
+
+    // The real crate's items are each defined where its admitted paths re-export them from.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../components/prov/src");
+    for (module, items) in PROV_CONFINE.iter().chain(PROV_KEYS) {
+        let file = root.join(format!("{}.rs", module.replace("::", "/")));
+        let text = std::fs::read_to_string(&file).unwrap();
+        for item in *items {
+            assert!(
+                defined_in(&text, item),
+                "{item} is defined in {}",
+                file.display()
+            );
+        }
+    }
 }
 
 /// The scenario assembly's tests run the simulated networks' readers in the test harness (`T-024-25`), so the assembly

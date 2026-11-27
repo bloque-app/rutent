@@ -1,0 +1,30 @@
+[package]
+name = "rutent-reader-host"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The reader host (`T-015-04`, `DEC-28`, ADR-0007 as amended): `CMP-EVIDENCE`'s standalone part, one process that
+# serves several readers, each its own child process. A `DEC-20` path. It depends on the contracts and, for its egress
+# layer alone, on the provider system (`tools/boundary-check`'s `READER_HOST`).
+[dependencies]
+rutent-contracts = { path = "../../contracts" }
+rutent-prov = { path = "../prov" }
+# The link to Core: mTLS on rustls over ring's primitives, the same lines the provider system locks; no aws-lc, no
+# OpenSSL, no built-in root store (the operator's CA is the one anchor).
+rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
+# The answers' signing: Ed25519, as every statement in the contracts' envelope.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["zeroize"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+libc = "0.2"
+
+[dev-dependencies]
+rutent-conformance = { path = "../../conformance", features = ["signing"] }
+# Test-only certificates for the link's tests: the operator's CA, the host's server certificate and Core's client
+# certificate, generated in the test. ring, not aws-lc.
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
