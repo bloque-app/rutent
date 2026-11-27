@@ -1,0 +1,38 @@
+{
+  "deployment": {
+    "name": "rutent-test",
+    "operator_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  },
+  "protocol_version": "4.0.0",
+  "shape": "urn:rutent:reader:answer",
+  "maker": "kreivo-reader",
+  "made_at": "2026-11-27T10:00:01Z",
+  "signature": {
+    "scheme": "ed25519",
+    "key": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "value": "BwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QEFCQ0RFRg"
+  },
+  "statement": {
+    "request": "9f3c2a7be14d4c0e8a51d6b07e2f9c13",
+    "network": "kreivo",
+    "version": "0.1.0",
+    "asked": {
+      "question": "network_rules"
+    },
+    "answer": {
+      "answer": "network_rules",
+      "rules": {
+        "identity": {
+          "kind": "genesis_hash",
+          "hash": "0xc710a5f16adc17bcd212cff0aedcbf1c1212a043cdc0fb2dcba861efe5305b01"
+        },
+        "finality": {
+          "finality": "checkpoint"
+        },
+        "reorg": {
+          "reorg": "until_final"
+        }
+      }
+    }
+  }
+}

@@ -3354,6 +3354,7 @@ impl Segments {
             statement_key: None,
             setting: None,
             versions: Vec::new(),
+            public_network: None,
         };
         let request = DecisionRequest {
             request: fresh.id(),

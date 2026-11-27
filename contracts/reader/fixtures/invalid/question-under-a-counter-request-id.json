@@ -1,0 +1,10 @@
+{
+  "request": "00000000000000000000000000000007",
+  "reader": "kreivo-reader",
+  "network": "kreivo",
+  "deadline": "2026-11-27T10:00:05Z",
+  "asked": {
+    "question": "movement_status",
+    "movement": "0x4b1e0c9d7a2f3e8b6c5d4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d"
+  }
+}

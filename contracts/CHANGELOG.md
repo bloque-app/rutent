@@ -84,6 +84,11 @@ directory (see `README.md`).
   (`REQ-PRT-2`), stated in this README; and `Cargo.toml`'s `rule-switches` feature, the crate a dev-dependency of
   itself with it, so `tests/core-internal.rs` reads each invalid fixture with its one rule switched off, which adds one
   dependency edge to the root `Cargo.lock` and moves no package. (DEC-4, DEC-20, REQ-PRT-2, T-020-45)
+- The seventh contract, `reader` (`T-020-59`; `DEC-28`, ADR-0007 as amended): the protocol Core and a reader host speak
+  over mTLS, at 1.0.0 under the same rules. Shared files: `CONTRACTS` gains its line (`contracts/reader`,
+  `contracts/src/reader`), `src/lib.rs` exposes the `reader` module, and `README.md` lists seven contracts. core-internal's
+  listing of a public network names the reader's shapes, folded into its unreleased 1.0.0; its changelog names the
+  change. No dependency changed. (DEC-4, DEC-20, DEC-28, T-020-59)
 - The contract tests' rule switch is the crate's own (`T-020-54`, the boundary check): `rule_switch` holds the thread-local list of
   rules switched off and `without_rule`, built only with the `rule-switches` feature, so no contract names another to reach
   it; `core_internal::without_rule` stays as a re-export. Before it, router-api's checks named core-internal for it, which

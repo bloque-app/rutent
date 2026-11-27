@@ -2865,6 +2865,7 @@ pub fn release_change(
         statement_key,
         setting: None,
         versions: Vec::new(),
+        public_network: None,
     }
 }
 
