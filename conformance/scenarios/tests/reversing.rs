@@ -84,6 +84,101 @@ fn segment_state(core: &Core, order: &Id, segment: &Id) -> SegmentState {
         .state
 }
 
+/// A failed middle segment's reversal is Core's run's, on ticks alone (`T-020-61`, item 10; the review of #355, H1): on
+/// the tick after the exchange failed, Core records it owed and refuses to recalculate the part, its value in flight; on
+/// the next it asks the exchange, whose silence completes nothing; on the next it asks the origin reserve, whose word
+/// about its own publisher's provider completes nothing either; on the next it asks the exchange again, whose answer
+/// inside its publisher's node completes it; then the part is recalculated from the node the value is shown back at, and
+/// the recalculated route runs, and the order completes. No test calls a step: each is a tick of the deployment's timer.
+// verifies: REQ-ORD-3, REQ-ORD-30
+#[test]
+fn failed_segments_reversal_is_owed_asked_and_confirmed_by_cores_run() {
+    let (mut core, order, _, exchange) = exchange_failed("AC-4");
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::silent());
+    core.world().script(IN, Behaviour::crediting_a_reversal());
+
+    // Owed: its own step, and the recalculation refused while the reversal holds the value in flight (R12).
+    let round = core.tick();
+    let reversed = round.runs.reversed(&order);
+    assert_eq!(reversed.len(), 1, "{reversed:?}");
+    let owing = reversed[0].owed.clone().expect("owed");
+    assert_eq!(
+        (owing.provider.as_str(), owing.asset.as_str()),
+        (EXCHANGE, "COP")
+    );
+    assert!(reversed[0].asked.is_none() && reversed[0].confirmed.is_none());
+    assert!(
+        matches!(
+            round.runs.recalculated(&order),
+            Some(Ok(Recalculation::NotNow(NotRecalculable::InFlight {
+                state: SegmentState::FailedReversalOwed,
+                ..
+            })))
+        ),
+        "no route starts from a reversal owed: {:?}",
+        round.runs.recalculated(&order)
+    );
+
+    // Asked of the failed exchange, which says nothing.
+    let round = core.tick();
+    let reversed = round.runs.reversed(&order);
+    let asked = reversed[0].asked.clone().expect("asked").expect("asked");
+    assert!(asked.completed.is_none(), "{asked:?}");
+    assert!(reversed[0].confirmed.is_none());
+
+    // Confirmed with the origin reserve, whose word about its own publisher's provider completes nothing.
+    let round = core.tick();
+    let reversed = round.runs.reversed(&order);
+    assert!(reversed[0].asked.is_none());
+    assert!(
+        matches!(
+            reversed[0].confirmed,
+            Some(Ok(Confirmation::NotCompleted {
+                why: NotCounted::SamePublisher,
+                ..
+            }))
+        ),
+        "{reversed:?}"
+    );
+    assert_eq!(
+        segment_state(&core, &order, &exchange),
+        SegmentState::FailedReversalOwed
+    );
+
+    // Asked again, the exchange answers inside its publisher's node: complete, and the part waits for the next tick.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::default());
+    let round = core.tick();
+    let reversed = round.runs.reversed(&order);
+    assert!(reversed[0].completed(), "{reversed:?}");
+    assert!(round.runs.recalculated(&order).is_none());
+    assert_eq!(
+        segment_state(&core, &order, &exchange),
+        SegmentState::ReversalComplete
+    );
+    let asks = entries(&core)
+        .iter()
+        .filter(|v| {
+            matches!(&v.what, What::Effect { action: Action::AskReversal { order: o, .. }, .. } if o == &order)
+        })
+        .count();
+    assert_eq!(asks, 2, "asked twice, in turn with the confirmation");
+
+    // Recalculated from where the value is shown back, then run: the order completes on ticks alone.
+    let round = core.tick();
+    assert!(
+        matches!(
+            round.runs.recalculated(&order),
+            Some(Ok(Recalculation::Recalculated(_)))
+        ),
+        "{:?}",
+        round.runs.recalculated(&order)
+    );
+    core.tick();
+    assert_eq!(state(&mut core, &order), OrderState::Complete);
+}
+
 // verifies: AC-4
 #[test]
 fn true_undo_is_shown_back_at_the_origin_by_another_party() {
@@ -101,33 +196,14 @@ fn true_undo_is_shown_back_at_the_origin_by_another_party() {
         })
     );
     // The reversal is owed by the exchange, in the asset it took in and in full.
-    let owing = core.owe_reversal(&order, &exchange).expect("owed");
+    let owing = core.owed_reversal(&order, &exchange).expect("owed");
     assert_eq!(owing.provider.as_str(), EXCHANGE);
     assert_eq!(owing.asset, "COP");
 
-    // The exchange is of the reserve's own publisher, so the reserve's word that the credit arrived is its publisher's
-    // word about its own provider's work: it completes nothing.
-    core.world().script(IN, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
-    assert!(
-        matches!(
-            done,
-            Confirmation::NotCompleted {
-                why: NotCounted::SamePublisher,
-                ..
-            }
-        ),
-        "{done:?}"
-    );
-    assert_eq!(
-        segment_state(&core, &order, &exchange),
-        SegmentState::FailedReversalOwed
-    );
-    assert!(core.completed_reversal(&order, &exchange).is_none());
-
-    // The failed exchange is asked to reverse: its own word completes nothing, except inside the node its own publisher
-    // holds, where it is that publisher's, said so: the reserve's at its own node.
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    // Core's run asks the failed exchange to reverse on the tick after it recorded it owed: its own word completes
+    // nothing, except inside the node its own publisher holds, where it is that publisher's, said so: the reserve's at
+    // its own node. (The reserve's own word about its publisher's provider completes nothing: `publishers_binding`.)
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     let completed = asked.completed.expect("the node is its publisher's own");
     assert_eq!(completed.word, Word::Publishers(id("sim-join-publisher")));
     assert_eq!(
@@ -194,7 +270,7 @@ fn true_undo_is_shown_back_at_the_origin_by_another_party() {
 /// refusing every dry run: no route is left from where the value sits, and the order is stuck there.
 fn stuck_with_no_route(accepts: &'static str) -> (Core, Id, Id) {
     let (mut core, order, _, exchange) = exchange_failed(accepts);
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     assert!(
         asked.completed.is_some(),
         "the reversal completed: {asked:?}"

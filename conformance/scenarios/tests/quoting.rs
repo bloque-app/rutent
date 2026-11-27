@@ -163,7 +163,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
         assert_eq!(maximum.as_str(), "0");
         assert_eq!(provider.as_str(), CHARGING);
     }
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(charges_raised(&core), 2);
     // Recorded as raised and done, once each; run again, nothing more is raised.
     let raises = |core: &Core| {
         core.log()
@@ -171,13 +171,14 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .iter()
             .filter(|(_, e)| {
                 matches!(e, rutent_contracts::core_internal::Entry::Verified(v)
-                if matches!(v.what, What::Raise { .. }) && v.outcome == Outcome::Done {})
+                if matches!(&v.what, What::Raise { raise } if matches!(raise.difference, rutent_contracts::core_internal::Difference::Charge { .. }))
+                    && v.outcome == Outcome::Done {})
             })
             .count()
     };
     assert_eq!(raises(&core), 2);
     core.ran_on_tick(&order).expect("runs again");
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(charges_raised(&core), 2);
     assert_eq!(raises(&core), 2);
 
     // A reserve that charges what it quoted raises nothing.
@@ -210,5 +211,19 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .iter()
             .all(|s| matches!(honest.charge_checked(&order, s), Some(Checked::Within)))
     );
-    assert!(honest.raised().is_empty());
+    assert_eq!(charges_raised(&honest), 0);
+}
+
+/// How many charges were raised to the operator: a tick also runs the holding check (`T-020-61`), which raises the holders
+/// this world's register doesn't name (`T-020-63`), not charges.
+fn charges_raised(core: &Core) -> usize {
+    core.raised()
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.difference,
+                rutent_contracts::core_internal::Difference::Charge { .. }
+            )
+        })
+        .count()
 }

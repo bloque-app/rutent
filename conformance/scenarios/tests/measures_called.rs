@@ -428,7 +428,7 @@ fn completed_reversal_is_measured() {
     // The origin reserve says the credit arrived: the start is proven undone, by its own word.
     core.world()
         .script(RESERVE, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &withdrawal).expect("asked");
+    let done = core.confirm_undone(&order, &withdrawal).expect("asked");
     let Confirmation::Completed(completed) = done else {
         panic!("the start is proven undone: {done:?}");
     };
@@ -458,7 +458,7 @@ fn completed_reversal_is_measured() {
     };
     assert_eq!(report.providers[RESERVE].reversals, 1);
     // Asked again, the completed reversal is not measured twice.
-    let _ = core.confirm_reversal(&order, &withdrawal);
+    let _ = core.confirm_undone(&order, &withdrawal);
     assert_eq!(core.tick().measures, 0);
 }
 
@@ -477,7 +477,7 @@ fn reversal_completed_before_core_reopens_is_measured_once() {
     core.tick();
     core.world()
         .script(RESERVE, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &withdrawal).expect("asked");
+    let done = core.confirm_undone(&order, &withdrawal).expect("asked");
     let Confirmation::Completed(completed) = done else {
         panic!("the start is proven undone: {done:?}");
     };

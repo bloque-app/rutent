@@ -176,7 +176,7 @@ fn gross_charged_segment_hands_the_next_segment_what_arrives() {
         );
     }
     assert!(
-        core.raised().is_empty(),
+        charges_raised(&core).is_empty(),
         "the charge was within its formula"
     );
 }
@@ -431,7 +431,7 @@ fn charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core() {
             amount("5007")
         );
     }
-    let raised = core.raised();
+    let raised = charges_raised(&core);
     assert_eq!(raised.len(), 2, "both charges reached the operator");
     for raise in &raised {
         let Difference::Charge {
@@ -477,4 +477,13 @@ fn charge_above_the_formulas_maximum_on_a_gross_segment_is_flagged_by_core() {
     );
     // What arrives is the gross figure less the charge actually taken: 1 000 000 less 5 007.
     assert_eq!(handed_on(&segments[0]), amount("994993"));
+}
+
+/// The charges raised to the operator. Core's tick also runs its holding check, which raises the stand-in reserve's
+/// ledger node, a holder the scenario's register of holding accounts doesn't name (`T-020-63`): that is not a charge.
+fn charges_raised(core: &Core) -> Vec<rutent_contracts::core_internal::Raise> {
+    core.raised()
+        .into_iter()
+        .filter(|r| matches!(r.difference, Difference::Charge { .. }))
+        .collect()
 }

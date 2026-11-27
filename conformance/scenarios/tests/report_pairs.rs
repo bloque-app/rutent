@@ -78,11 +78,17 @@ fn pairs_of(core: &Core) -> Vec<(Receipt, ReportPair)> {
 }
 
 /// The differences raised to the operator.
+/// The differences raised but the holding check's: a tick runs every job (`T-020-61`), and the holding check raises the
+/// holders this world's register doesn't name (`T-020-63`), which are not a report pair's.
 fn raised(core: &Core) -> Vec<Difference> {
     entries(core)
         .into_iter()
         .filter_map(|v| match v.what {
-            What::Raise { raise, .. } => Some(raise.difference),
+            What::Raise { raise, .. }
+                if !matches!(raise.difference, Difference::HoldingNotRead { .. }) =>
+            {
+                Some(raise.difference)
+            }
             _ => None,
         })
         .collect()

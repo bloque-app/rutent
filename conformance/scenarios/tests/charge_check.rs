@@ -37,6 +37,10 @@ fn alone(provider: &str, accepts: &'static str) -> (Core, Id) {
         delivery: rutent_scenarios::assembly::machine::Delivery::Once,
     };
     let (mut core, _) = Scenario::new("charge-check", accepts, given).core(1, &mut Reference);
+    // Core's ticks run every job (`T-020-61`): the holding check raises the charging reserve's ledger node, a holder its
+    // catalogue lists and this world's register doesn't name (`T-020-63`), once a spell. That is not a charge: its first
+    // tick, before any order, spends it, and the charges are read apart from it ([`charges_raised`]).
+    core.tick();
     let session = core.open_session(&kit::customer()).expect("a session");
     (core, session)
 }
@@ -89,7 +93,10 @@ fn inbox_raises(core: &Core) -> Vec<Raise> {
     inbox
         .events()
         .filter_map(|about| match about {
-            About::Raise { raise } => Some(raise.clone()),
+            // The charge raises: a tick's other checks (a holding account's, say) raise of their own.
+            About::Raise { raise } if matches!(raise.difference, Difference::Charge { .. }) => {
+                Some(raise.clone())
+            }
             _ => None,
         })
         .collect()
@@ -159,7 +166,7 @@ fn charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segm
         raises
     };
     assert_eq!(
-        one_order(core.raised()),
+        one_order(charges_raised(&core)),
         one_order(raised.clone()),
         "the channel carried what the log holds"
     );
@@ -209,7 +216,10 @@ fn charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segm
 fn charge_within_the_formulas_maximum_raises_nothing() {
     let (mut core, session) = alone(kit::RESERVE, "AC-14");
     let order = ran(&mut core, &session, kit::RESERVE, "req-honest");
-    assert!(core.raised().is_empty(), "no raise reached the operator");
+    assert!(
+        charges_raised(&core).is_empty(),
+        "no raise reached the operator"
+    );
     assert!(raise_entries(&core).is_empty(), "nothing was recorded");
     let checked = core.charged_segments(&order);
     assert_eq!(checked.len(), 2, "both segments' charges were noted");
@@ -319,7 +329,10 @@ fn terms_a_module_stated_before_its_segment_started_bind_its_charge() {
         );
     }
     assert_eq!(core.terms_held(), 2);
-    assert!(core.raised().is_empty(), "within the terms that bound it");
+    assert!(
+        charges_raised(&core).is_empty(),
+        "within the terms that bound it"
+    );
     for segment in core.charged_segments(&within) {
         assert!(matches!(
             core.charge_checked(&within, &segment),
@@ -338,7 +351,7 @@ fn terms_a_module_stated_before_its_segment_started_bind_its_charge() {
         .map(|(r, _)| r)
         .collect();
     assert_eq!(receipts.len(), 2);
-    let raised = core.raised();
+    let raised = charges_raised(&core);
     assert_eq!(raised.len(), 2, "both of the order's charges are above 3");
     for raise in &raised {
         let Difference::Charge {
@@ -375,7 +388,10 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
         .script_for(CHARGING, "deposit", Behaviour::act(Act::Refuse));
     core.ran_on_tick(&order)
         .expect("the order runs to its refused deposit");
-    assert!(core.raised().is_empty(), "the withdrawal's 7 is within 100");
+    assert!(
+        charges_raised(&core).is_empty(),
+        "the withdrawal's 7 is within 100"
+    );
     let quoted = terms_entries(&core).len();
 
     core.clock.advance(60);
@@ -402,7 +418,7 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
     );
     core.ran_once_on_tick(&order)
         .expect("the recalculated part runs");
-    let raised = core.raised();
+    let raised = charges_raised(&core);
     assert_eq!(raised.len(), 1, "the new deposit's 7 is above 3");
     let Difference::Charge { terms, maximum, .. } = &raised[0].difference else {
         panic!("a charge difference");
@@ -419,7 +435,11 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
 fn terms_stated_after_a_segment_started_do_not_bind_it() {
     let (mut core, session) = alone(CHARGING, "AC-14");
     let first = ran(&mut core, &session, CHARGING, "req-first");
-    assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "held to the price: 7 is above 0"
+    );
 
     // The provider then hands back terms that allow 7, on the next order's quote. The segments that ran are not held
     // to them.
@@ -428,7 +448,11 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     let (second, digest) = quoted_at(&mut core, &session, CHARGING, "req-second");
     assert_eq!(terms_entries(&core).len(), 2, "stated on the quote");
     core.ran_on_tick(&first).expect("runs again");
-    assert_eq!(core.raised().len(), 2, "no raise is made or unmade by them");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "no raise is made or unmade by them"
+    );
     for (raise, _) in raise_entries(&core) {
         let Difference::Charge { terms, .. } = raise.difference else {
             panic!("a charge difference");
@@ -444,7 +468,7 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     core.accept(&kit::customer(), &second, &digest)
         .expect("accepted");
     core.ran_on_tick(&second).expect("the order runs");
-    assert_eq!(core.raised().len(), 2, "within the terms in force");
+    assert_eq!(charges_raised(&core).len(), 2, "within the terms in force");
     let segments = core.charged_segments(&second);
     assert_eq!(segments.len(), 2);
     for segment in &segments {
@@ -464,7 +488,7 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
         .skip(held)
         .map(|(r, _)| r)
         .collect();
-    let raised = core.raised();
+    let raised = charges_raised(&core);
     assert_eq!(raised.len(), 4, "the third order's two charges are above 3");
     for raise in raised.iter().filter(|r| match &r.difference {
         Difference::Charge { order, .. } => order == &third,
@@ -539,8 +563,7 @@ fn terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept(
     core.accept(&kit::customer(), &second, &digest)
         .expect("accepted");
     core.ran_on_tick(&second).expect("the order runs");
-    let flagged: Vec<_> = core
-        .raised()
+    let flagged: Vec<_> = charges_raised(&core)
         .into_iter()
         .filter(|r| matches!(&r.difference, Difference::Charge { order, .. } if order == &second))
         .collect();
@@ -557,17 +580,21 @@ fn terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept(
 fn each_segments_charge_is_checked_once_also_after_a_restart() {
     let (mut core, session) = alone(CHARGING, "AC-14");
     let order = ran(&mut core, &session, CHARGING, "req-charged");
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(charges_raised(&core).len(), 2);
 
     // Run again, as a caller retrying does: nothing more is raised.
     core.ran_on_tick(&order).expect("runs again");
-    assert_eq!(core.raised().len(), 2);
+    assert_eq!(charges_raised(&core).len(), 2);
     assert_eq!(raise_entries(&core).len(), 2);
 
     // The register of checked charges lost and rebuilt from the log: the raises it holds are not made again.
     core.charges_rebuilt_from_log();
     core.ran_on_tick(&order).expect("runs again");
-    assert_eq!(core.raised().len(), 2, "the operator is warned once");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "the operator is warned once"
+    );
     assert_eq!(raise_entries(&core).len(), 2, "and the log holds each once");
     let segment = core.charged_segments(&order)[0].clone();
     assert!(matches!(
@@ -672,7 +699,11 @@ fn terms_stated_before_core_reopens_bind_the_segments_after_it() {
     };
     let (mut core, session) = alone(CHARGING, "AC-14");
     ran(&mut core, &session, CHARGING, "req-first");
-    assert_eq!(core.raised().len(), 2, "held to the price: 7 is above 0");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "held to the price: 7 is above 0"
+    );
     // The provider hands back terms that allow 7 on a quote before Core stops, and none on the quote after it reopens.
     core.clock.advance(60);
     states_terms(&mut core, CHARGING, "100");
@@ -944,8 +975,9 @@ fn moves(w: &What) -> bool {
     )
 }
 
+/// A charge raise: a tick's other checks (a holding account's, say) raise of their own.
 fn raises(w: &What) -> bool {
-    matches!(w, What::Raise { .. })
+    matches!(w, What::Raise { raise } if matches!(raise.difference, Difference::Charge { .. }))
 }
 
 /// An order of `provider`, quoted and accepted, not yet run.
@@ -982,11 +1014,19 @@ fn a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_se
     // once: before the second segment was handed over, which the failed run never did.
     assert_eq!(places(&core, &raises).len(), 1, "the raise was recorded");
     assert_eq!(places(&core, &moves).len(), 1, "no second segment moved");
-    assert_eq!(core.raised().len(), 1, "and the operator was warned once");
+    assert_eq!(
+        charges_raised(&core).len(),
+        1,
+        "and the operator was warned once"
+    );
 
     // Run again: the part goes on, each charge raised once, the first before the second segment moved.
     core.ran_on_tick(&order).expect("the part goes on");
-    assert_eq!(core.raised().len(), 2, "one warning for each segment");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "one warning for each segment"
+    );
     let (raised, moved) = (places(&core, &raises), places(&core, &moves));
     assert_eq!((raised.len(), moved.len()), (2, 2));
     assert!(raised[0] < moved[1], "warned before the next segment moved");
@@ -1002,7 +1042,11 @@ fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
     assert!(core.ran_on_tick(&order).is_err());
     assert!(places(&core, &raises).is_empty(), "nothing recorded yet");
     assert_eq!(places(&core, &moves).len(), 1, "no second segment moved");
-    assert_eq!(core.raised().len(), 1, "the operator was warned, once");
+    assert_eq!(
+        charges_raised(&core).len(),
+        1,
+        "the operator was warned, once"
+    );
 
     // The next run records it before it hands the second segment over, and warns no one again.
     core.ran_on_tick(&order).expect("the part goes on");
@@ -1012,7 +1056,11 @@ fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
         raised[0] < moved[1],
         "recorded before the next segment moved"
     );
-    assert_eq!(core.raised().len(), 2, "one warning for each segment");
+    assert_eq!(
+        charges_raised(&core).len(),
+        2,
+        "one warning for each segment"
+    );
 }
 
 // verifies: REQ-QTE-6, REQ-AUD-2
@@ -1035,4 +1083,12 @@ fn terms_whose_kept_statement_names_another_commitment_are_not_kept() {
     states_terms(&mut core, CHARGING, "100");
     quoted_at(&mut core, &session, CHARGING, "req-third");
     assert_eq!(core.terms_held(), held + 2);
+}
+
+/// The charges raised to the operator: a tick's other checks (a holding account's, say) raise of their own.
+fn charges_raised(core: &Core) -> Vec<Raise> {
+    core.raised()
+        .into_iter()
+        .filter(|r| matches!(r.difference, Difference::Charge { .. }))
+        .collect()
 }

@@ -1300,7 +1300,7 @@ impl World {
             key: &mut self.key,
             providers: answering,
         };
-        self.reversals.confirm(&mut parts, &mut asking, at)
+        self.reversals.confirm_reversal(&mut parts, &mut asking, at)
     }
 
     /// `by` accepting the last showing of the exchange's fault for `p1-s2`, as the customer: policy's decision of its

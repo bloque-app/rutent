@@ -164,7 +164,7 @@ fn replay_cites_the_receipt_of_each_inner_segments_record_it_read() {
 fn failed_providers_own_answer_inside_a_node_the_log_binds_completes_its_reversal_as_its_publishers_word()
  {
     let (mut core, order, exchange) = exchange_failed("AC-4");
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     let completed = asked.completed.expect("the node is bound to its publisher");
     assert_eq!(completed.word, Word::Publishers(id(PUBLISHER)));
     let labelled: Vec<_> = entries(&core)
@@ -192,8 +192,13 @@ fn failed_providers_own_answer_inside_a_node_the_log_binds_completes_its_reversa
 #[test]
 fn reserves_confirmation_of_its_own_publishers_providers_reversal_stays_refused() {
     let (mut core, order, exchange) = exchange_failed("AC-4");
+    // Core's run asks the failed exchange first: silent, its ask completes nothing, and the confirmation is asked next.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::silent());
     core.world().script(IN, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
+    assert!(asked.completed.is_none(), "{asked:?}");
+    let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
             done,

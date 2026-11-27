@@ -132,6 +132,35 @@ pub type RecalculationsLent<'f> =
 pub type MoverLent<'f> =
     dyn FnMut(&mut Stuck, &mut StuckParts<'_>, &mut dyn StuckOrders, &mut Delivering<'_>) + 'f;
 
+/// The platform as a reversal reaches it: the modules a reversal asked of a failed provider is carried out through, and
+/// the providers' modules a reserve's confirmation question is handed to, exactly as Core signed it (`REQ-ORD-3`).
+pub trait ReversalPlatform {
+    /// The module platform, which carries out a decided reversal.
+    fn modules(&mut self) -> &mut dyn crate::segments::Modules;
+    /// The providers' modules, asked a question that moves nothing.
+    fn providers(&mut self) -> &mut dyn crate::rounds::Providers;
+}
+
+/// What a reversal step reaches besides the reversals' parts: the operator key a question is signed with, policy's one
+/// decision call, the platform, the stuck orders a dispute is declared through, and the register of actors that binds
+/// an operator's login to the party it states (`REQ-ORD-3`, `REQ-ORD-11`, `REQ-ORD-30`, `T-020-61` item 10).
+pub struct ReversalDesk<'a> {
+    /// The operator key.
+    pub key: &'a mut dyn crate::rounds::OperatorKey,
+    /// Policy's one decision call.
+    pub decisions: &'a mut dyn rutent_contracts::core_internal::calls::Decisions,
+    /// The platform.
+    pub platform: &'a mut dyn ReversalPlatform,
+    /// The stuck orders.
+    pub stuck: &'a mut Stuck,
+    /// The register of actors.
+    pub actors: &'a mut dyn crate::intake::Actors,
+}
+
+/// What a reversal step does with what the deployment lends: the reversals, what they reach, and the desk.
+pub type ReversalsLent<'f> =
+    dyn FnMut(&mut Reversals, &mut ReversalParts<'_>, &mut ReversalDesk<'_>) + 'f;
+
 /// The deployment's ports, as Core's jobs reach them: what only the deployment can answer, and Core's own parts as the
 /// deployment holds them, lent beside the ports they are reached with. No method decides anything: each reads, asks,
 /// or lends, and every rule is the job's ([`Jobs`]).
@@ -207,6 +236,9 @@ pub trait Ports {
         &mut self,
         with: &mut dyn FnMut(&mut Reversals, &mut ReversalParts<'_>, &mut Moving<'_>),
     );
+    /// Lends the reversals with what a reversal step reaches: the operator key, policy, the platform, the stuck orders
+    /// and the register of actors ([`ReversalDesk`]).
+    fn with_reversal_desk(&mut self, with: &mut ReversalsLent<'_>);
     /// Lends the stuck orders, with what they reach, policy and the operator's channel.
     fn with_stuck(&mut self, with: &mut StuckLent<'_>);
     /// Lends the segments with the register of holding accounts, asked through the platform.
@@ -1594,6 +1626,7 @@ mod tests {
             _: &mut dyn FnMut(&mut Reversals, &mut ReversalParts<'_>, &mut Moving<'_>),
         ) {
         }
+        fn with_reversal_desk(&mut self, _: &mut ReversalsLent<'_>) {}
         fn with_stuck(&mut self, _: &mut StuckLent<'_>) {}
         fn with_landings(&mut self, _: &mut dyn FnMut(&mut Segments, &mut dyn Landings)) {}
         fn with_audit(

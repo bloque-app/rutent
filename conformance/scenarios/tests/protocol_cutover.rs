@@ -183,7 +183,13 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
     core.set_cadence(rutent_core_orch::schedule::Job::StatusAsks, u64::MAX);
     core.set_cadence(rutent_core_orch::schedule::Job::StuckReports, u64::MAX);
     core.world().script(IN, Behaviour::crediting_a_reversal());
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    // Core's run asks the failed provider first, then the confirmation, in turn: the holdout answers nothing at first,
+    // so the reserve's confirmation is asked next.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::silent());
+    let silent = core.asked_on_tick(&order, &exchange).expect("asked");
+    assert!(silent.completed.is_none(), "{silent:?}");
+    let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
             done,
@@ -194,7 +200,10 @@ fn reversal_of_a_segment_begun_before_a_cutover_is_taken_when_a_holdouts_answer_
         ),
         "the holdout's confirmation is answered and judged, not refused for its version: {done:?}"
     );
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    // Asked again on the next tick, the holdout answers.
+    core.world()
+        .script_for(EXCHANGE, "reversal", Behaviour::default());
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     assert!(
         asked.completed.is_some(),
         "the failed provider's answer under the old version is taken: {asked:?}"

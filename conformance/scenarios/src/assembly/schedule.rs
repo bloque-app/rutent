@@ -79,11 +79,16 @@ impl Core {
         }
         self.closed.took(&round.priced);
         for part in &round.runs.parts {
+            // A reversal completed: what was told of the part's recalculation before it is superseded.
+            if part.reversed.iter().any(|r| r.completed()) {
+                self.recalculations_told.remove(part.order.as_str());
+            }
             if let Some(recalculated) = &part.recalculated {
                 self.recalculations_told
                     .insert(part.order.as_str().to_owned(), recalculated.clone());
             }
         }
+        self.told_reversals(&round);
         let _ = self.feed();
         round
     }
@@ -682,6 +687,44 @@ impl Ports for Due<'_> {
             operator: &operator,
         };
         with(&mut core.life.reversals, &mut parts, &mut moving);
+    }
+
+    fn with_reversal_desk(&mut self, with: &mut rutent_core_orch::schedule::ReversalsLent<'_>) {
+        let core = &mut *self.0;
+        let (core_actor, operator) = (kit::core(), kit::operator());
+        let readings = core.readings.clone();
+        readings.refresh(&core.fleet.platform.world);
+        let mut running = Running {
+            platform: &mut core.fleet.platform,
+            clock: &core.clock,
+            faults: &mut core.faults,
+            feed: &mut core.feed,
+            log: &core.log,
+            swap_to: core.swap_to.as_deref_mut(),
+            readings: &readings,
+        };
+        let mut decisions = core.policy.clone();
+        let mut actors = super::Acting(std::rc::Rc::clone(&core.deployed.registers));
+        let mut desk = rutent_core_orch::schedule::ReversalDesk {
+            key: &mut core.signer,
+            decisions: &mut decisions,
+            platform: &mut running,
+            stuck: &mut core.stuck,
+            actors: &mut actors,
+        };
+        let mut parts = ReversalParts {
+            clock: &core.clock,
+            catalogue: &mut core.catalogue,
+            log: &mut core.general,
+            evidence: &mut core.keeper,
+            fresh: &mut core.fresh,
+            issued: &core.issued,
+            segments: &mut core.segments,
+            exposures: &mut core.exposures,
+            core: &core_actor,
+            operator: &operator,
+        };
+        with(&mut core.life.reversals, &mut parts, &mut desk);
     }
 
     fn with_stuck(&mut self, with: &mut StuckLent<'_>) {

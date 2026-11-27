@@ -66,7 +66,7 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
         &mut core,
         within("req-ends", &session, AMOUNT, RESERVE, OTHER),
     );
-    core.end(&order)
+    core.end(&order, &kit::customer())
         .expect("an order ends before its first segment settles");
     assert_eq!(state(&mut core, &order), OrderState::EndedWithoutCompleting);
     assert_eq!(end_requests(&core, &order), 1);
@@ -105,7 +105,7 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
     ));
     let (before, log) = (state(&mut core, &order), core.log().entries().len());
     assert!(matches!(
-        core.end(&order),
+        core.end(&order, &kit::customer()),
         Err(StepError::Reversal(ReversalError::InMotion(_)))
     ));
     assert_eq!(
@@ -129,7 +129,7 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
     let log = core.log().entries().len();
     assert!(
         matches!(
-            core.end(&open),
+            core.end(&open, &kit::customer()),
             Err(StepError::Reversal(ReversalError::NotApplicable(_)))
         ),
         "no request ends an order past its first segment"
@@ -148,7 +148,7 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
         within("req-done", &session, AMOUNT, RESERVE, OTHER),
     );
     assert_eq!(state(&mut core, &done), OrderState::Complete);
-    assert!(core.end(&done).is_err());
+    assert!(core.end(&done, &kit::customer()).is_err());
     assert_eq!(state(&mut core, &done), OrderState::Complete);
 }
 
@@ -166,7 +166,7 @@ fn complete_order_whose_start_is_proven_undone_is_marked_failed_and_notified() {
     // The origin reserve says no credit arrived: nothing is proven, the order stays complete and nothing is recorded
     // as undone.
     let done = core
-        .confirm_reversal(&order, &withdrawal)
+        .confirm_undone(&order, &withdrawal)
         .expect("the reserve was asked");
     assert!(
         matches!(
@@ -192,7 +192,7 @@ fn complete_order_whose_start_is_proven_undone_is_marked_failed_and_notified() {
     core.world()
         .script(RESERVE, Behaviour::crediting_a_reversal());
     let done = core
-        .confirm_reversal(&order, &withdrawal)
+        .confirm_undone(&order, &withdrawal)
         .expect("the reserve was asked");
     let Confirmation::Completed(completed) = done else {
         panic!("the start is proven undone: {done:?}");

@@ -11,8 +11,8 @@
 //!   with its reversal owed, by the order Core follows (no deposit: a failed deposit leaves its value where it was),
 //!   is owed by its provider, for what it took in and in its asset, as Core signed it ([`Segments::sent`]). The
 //!   catalogue's list keeps it; silence, lost standing and expiry never discharge it, and only a completed reversal
-//!   does ([`Reversals::confirm`]).
-//! - **Complete only on another party's statement** ([`Reversals::confirm`], `REQ-ORD-3`, ADR-0008). Core asks the
+//!   does ([`Reversals::confirm_reversal`]).
+//! - **Complete only on another party's statement** ([`Reversals::confirm_reversal`], `REQ-ORD-3`, ADR-0008). Core asks the
 //!   origin reserve, the provider of the part's withdrawal, whether the credit arrived: a `reversal_confirmation`
 //!   question naming the reversed segment's transaction, the asset it left in and what it took in, under a fresh
 //!   transaction, signed with the operator key and appended about the order and segment before it is sent, its answer
@@ -23,13 +23,13 @@
 //!   is released, the owed reversal discharged, and the part's value is evidenced at the segment's start again, so it
 //!   can be recalculated (`T-020-10`). An answer that doesn't count is kept and completes nothing, and the next call
 //!   asks again.
-//! - **At a later inner node** ([`Reversals::confirm`], `REQ-ORD-3`, `DEC-24`, `T-020-27`). A segment starting at an
+//! - **At a later inner node** ([`Reversals::confirm_reversal`], `REQ-ORD-3`, `DEC-24`, `T-020-27`). A segment starting at an
 //!   inner node after the first is confirmed by the provider that delivered the value there, where it isn't the one
 //!   that failed and the node has a holding account, the reserve at the node `reversal-rests-on-its-evidence` reads; the confirmation counts as its word, graded signed by its maker. Inside
 //!   a private node the failed provider's own publisher holds, the publisher's word through [`Reversals::ask`] counts
 //!   as before, labelled. With no such party nothing is asked or recorded and the reversal stays owed and held,
 //!   failing closed (`NoReserveAtNode`).
-//! - **On a route handed on** ([`Reversals::confirm`], `REQ-ORD-43`, `REQ-ORD-16`, `T-020-57`). A linked order's route
+//! - **On a route handed on** ([`Reversals::confirm_reversal`], `REQ-ORD-43`, `REQ-ORD-16`, `T-020-57`). A linked order's route
 //!   has no withdrawal: it starts from the holding account of the node the value was handed on at, which counts as its
 //!   origin reserve. Its first move's reversal is confirmed by that account: the `holder` of the order's
 //!   `holding_withdrawal` in the log, the one party the log takes as the reserve there, whatever module the node is
@@ -59,7 +59,7 @@
 //!   names, declares the part stuck through [`Stuck::dispute`], so it is resolved in the stuck order's two steps.
 //! - **Ending** ([`Reversals::end`], `REQ-ORD-12`). An order ends without completing only until its first segment
 //!   settles, and never while a segment of a part that would end moves value: the `end_requested` input, once the
-//!   state machine takes it. After that, a part ends only when its start is proven undone ([`Reversals::confirm`] on
+//!   state machine takes it. After that, a part ends only when its start is proven undone ([`Reversals::confirm_reversal`] on
 //!   the part's withdrawal): the origin reserve's own word, labelled so, and the part, and so the order, is marked
 //!   failed (`REQ-STM-6`). A part still open is undone only once none of its value is in motion: no later segment
 //!   handed over without a final outcome, nor failed owing its reversal (`part-waits-for-value-in-motion`). The loss
@@ -79,6 +79,7 @@
 //! provider's reversal can't carry the label the log takes only on a statement, so it completes nothing. Each is named
 //! in `F-020`'s notes.
 
+pub mod command;
 mod journal;
 mod judge;
 
@@ -550,6 +551,9 @@ pub struct Reversals {
     /// verified `holding_withdrawal`, the route's starting reserve, which is the one party the log takes as the reserve
     /// at that node (core-internal's `reserve_at_from`, `T-020-57`).
     holders: BTreeMap<String, (String, Id)>,
+    /// The segments whose last step Core's run took on their reversal was its ask of the failed provider, not a
+    /// confirmation (`T-020-61`, item 10): the run asks and confirms in turn ([`Reversals::took_step`]).
+    asked_last: std::collections::BTreeSet<(String, String)>,
 }
 
 impl Reversals {
@@ -1291,6 +1295,35 @@ impl Reversals {
             .and_then(|r| r.owing.as_ref())
     }
 
+    /// Notes the step Core's run took on the reversal of `segment` of `order`: its ask of the failed provider where
+    /// `asked`, else a confirmation. Core's run asks and confirms in turn, so a confirmation that completes nothing is
+    /// followed by the provider asked again, and a re-asked reversal moves nothing twice: the provider's own rule.
+    pub fn took_step(&mut self, order: &Id, segment: &Id, asked: bool) {
+        if asked {
+            self.asked_last.insert(key(order, segment));
+        } else {
+            self.asked_last.remove(&key(order, segment));
+        }
+    }
+
+    /// Whether the last step Core's run took on the reversal of `segment` of `order` was its ask ([`Reversals::took_step`]).
+    pub fn asked_last(&self, order: &Id, segment: &Id) -> bool {
+        self.asked_last.contains(&key(order, segment))
+    }
+
+    /// The party the log's acceptance of `order` names as its requester, as Core followed it ([`Reversals::follow`]).
+    pub fn requester(&self, order: &Id) -> Option<&Id> {
+        self.requesters.get(order.as_str())
+    }
+
+    /// Whether Core's asking the failed provider of `segment` of `order` to reverse it stopped before its answer was
+    /// judged: the next [`Reversals::ask`] carries it on from where it stopped.
+    pub fn asking(&self, order: &Id, segment: &Id) -> bool {
+        self.reversals
+            .get(&key(order, segment))
+            .is_some_and(|r| r.asking.is_some())
+    }
+
     /// Who carries the reversal of `segment` of `order` (`REQ-ORD-11`, `REQ-ORD-30`).
     pub fn carrier(&self, order: &Id, segment: &Id) -> Option<&Carrier> {
         self.reversals.get(&key(order, segment)).map(|r| &r.carrier)
@@ -1348,7 +1381,7 @@ impl Reversals {
     /// Asks the origin reserve whether the credit of `at`'s reversal arrived, and completes the reversal on its answer
     /// where it counts (see the module's docs). `at` is a segment that owes its reversal, recorded owed first if it
     /// isn't yet, or the settled withdrawal of a complete part, whose undoing marks the part failed.
-    pub fn confirm(
+    pub fn confirm_reversal(
         &mut self,
         parts: &mut Parts<'_>,
         asking: &mut Asking<'_>,

@@ -16,15 +16,12 @@ use rutent_contracts::provider_role::{Operation, Statement};
 use rutent_contracts::router_api::{DecisionRecord, Id};
 use rutent_core_orch::notice::{About, Channel, Notice, NoticeError, Receiver};
 use rutent_core_orch::recalc::{Recalculation, Recalculations};
-use rutent_core_orch::reversal::{
-    self, Afterward, Asked, Asking as ReversalAsking, At, Confirmation, Moving as ReversalMoving,
-    Owing, Reversals,
-};
+use rutent_core_orch::reversal::{self, Afterward, Asked, Confirmation, Owing, Reversals};
 use rutent_core_orch::segments::StatusError;
 use rutent_core_orch::stuck::{NoRouteLeft, NoRouteRecorded, Watch, Watching};
 use serde_json::Value;
 
-use super::{Asking, Core, Running, StepError};
+use super::{Core, StepError};
 use crate::kit;
 
 /// Core's own records of what goes wrong with an order, kept beside the segments': the assembly holds them as the
@@ -37,6 +34,12 @@ pub struct Lifecycle {
     /// What Core's status question of each segment it left unknown came to, by order and segment (`T-020-47`).
     pub(super) status_asks:
         BTreeMap<(String, String), Result<rutent_core_orch::reversal::StatusAsked, String>>,
+    /// What Core's run's ask of each failed provider to reverse its segment came to, by order and segment, as a tick told
+    /// it and until it is read.
+    pub(super) asks_told: BTreeMap<(String, String), Result<Asked, reversal::ReversalError>>,
+    /// What Core's run's confirmation of each reversal came to, as a tick told it and until it is read.
+    pub(super) confirms_told:
+        BTreeMap<(String, String), Result<Confirmation, reversal::ReversalError>>,
 }
 
 impl Lifecycle {
@@ -320,165 +323,117 @@ impl Core {
     }
 
     // Reversals and endings ----------------------------------------------------------------------------------------
+    //
+    // A failed segment's reversal is owed, asked and confirmed by Core's run on its ticks, and the inbound commands and
+    // statements are handed to Core's entry points (`rutent_core_orch::reversal::command`, `T-020-61` item 10): what is
+    // here reads what Core holds, or what a tick told, and hands each command over the deployment's ports.
 
-    /// Runs `with` over Core's reversals, handed the parts they reach and, for a reversal asked of a failed provider,
-    /// the platform that carries it out: the providers' modules are the platform's, so no question goes to a provider
-    /// by `asking` here.
-    fn reversing<T>(
+    /// The reversal `segment` of `order` owes, as Core's run recorded it in the catalogue's list: on a tick since it
+    /// failed, else the next tick.
+    ///
+    /// # Errors
+    ///
+    /// Where Core's run recorded none.
+    pub fn owed_reversal(&mut self, order: &Id, segment: &Id) -> Result<Owing, StepError> {
+        if self.life.reversals.owing(order, segment).is_none() {
+            self.tick();
+        }
+        self.life
+            .reversals
+            .owing(order, segment)
+            .cloned()
+            .ok_or(StepError::NotNow("Core's run recorded the reversal owed"))
+    }
+
+    /// The failed provider of `segment` asked to reverse it by Core's run: the ask a tick since the last read told, else
+    /// the next tick's.
+    ///
+    /// # Errors
+    ///
+    /// As `Reversals::ask`, or where Core's run asked nothing.
+    pub fn asked_on_tick(&mut self, order: &Id, segment: &Id) -> Result<Asked, StepError> {
+        let at = (order.as_str().to_owned(), segment.as_str().to_owned());
+        // Recorded owed on one tick, asked on the next, confirmed from the one after: as many ticks as it takes.
+        for _ in 0..3 {
+            if self.life.asks_told.contains_key(&at) {
+                break;
+            }
+            self.tick();
+        }
+        self.life
+            .asks_told
+            .remove(&at)
+            .ok_or(StepError::NotNow("Core's run asked the failed provider"))?
+            .map_err(StepError::Reversal)
+    }
+
+    /// The confirmation of `segment`'s reversal Core's run asked of the origin reserve, or the node's holder: the one a
+    /// tick since the last read told, else the next tick's.
+    ///
+    /// # Errors
+    ///
+    /// As `Reversals::confirm_reversal`, or where Core's run asked nothing.
+    pub fn confirmed_on_tick(
         &mut self,
         order: &Id,
-        with: impl FnOnce(
-            &mut Reversals,
-            &mut reversal::Parts<'_>,
-            &mut ReversalAsking<'_>,
-            &mut ReversalMoving<'_>,
-        ) -> T,
-    ) -> Result<T, StepError> {
-        struct Nobody;
-        impl rutent_core_orch::rounds::Providers for Nobody {
-            fn ask(&mut self, _: &Id, _: &[u8]) -> Option<Vec<u8>> {
-                None
+        segment: &Id,
+    ) -> Result<Confirmation, StepError> {
+        let at = (order.as_str().to_owned(), segment.as_str().to_owned());
+        // Recorded owed on one tick, asked on the next, confirmed from the one after: as many ticks as it takes.
+        for _ in 0..3 {
+            if self.life.confirms_told.contains_key(&at) {
+                break;
+            }
+            self.tick();
+        }
+        self.life
+            .confirms_told
+            .remove(&at)
+            .ok_or(StepError::NotNow("Core's run asked for a confirmation"))?
+            .map_err(StepError::Reversal)
+    }
+
+    /// Keeps what a tick told of each failed segment's reversal, for [`Core::asked_on_tick`] and
+    /// [`Core::confirmed_on_tick`].
+    pub(super) fn told_reversals(&mut self, round: &rutent_core_orch::schedule::Round) {
+        for part in &round.runs.parts {
+            for reversed in &part.reversed {
+                let at = (
+                    part.order.as_str().to_owned(),
+                    reversed.segment.as_str().to_owned(),
+                );
+                if let Some(asked) = &reversed.asked {
+                    self.life.asks_told.insert(at.clone(), asked.clone());
+                }
+                if let Some(confirmed) = &reversed.confirmed {
+                    self.life.confirms_told.insert(at, confirmed.clone());
+                }
             }
         }
-        let (record, _) = self.current_route(order)?;
-        let entries = self.log.borrow().entries().to_vec();
-        self.life.reversals.follow(order, &entries);
-        let (core, operator) = (kit::core(), kit::operator());
-        let readings = self.readings.clone();
-        readings.refresh(&self.fleet.platform.world);
-        let bounds = record.bounds.clone();
-        let mut asked = ReversalAsking {
-            bounds: &bounds,
-            key: &mut self.signer,
-            providers: &mut Nobody,
-        };
-        let mut running = Running {
-            platform: &mut self.fleet.platform,
-            clock: &self.clock,
-            faults: &mut self.faults,
-            feed: &mut self.feed,
-            log: &self.log,
-            swap_to: self.swap_to.as_deref_mut(),
-            readings: &readings,
-        };
-        let mut decisions = self.policy.clone();
-        let mut moving = ReversalMoving {
-            decisions: &mut decisions,
-            modules: &mut running,
-        };
-        let mut parts = reversal::Parts {
-            clock: &self.clock,
-            catalogue: &mut self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-            core: &core,
-            operator: &operator,
-        };
-        Ok(with(
-            &mut self.life.reversals,
-            &mut parts,
-            &mut asked,
-            &mut moving,
-        ))
     }
 
-    /// Runs `with` over Core's reversals, handed the parts they reach and the providers' modules, which Core asks
-    /// whether a credit arrived.
-    fn asking<T>(
-        &mut self,
-        order: &Id,
-        with: impl FnOnce(&mut Reversals, &mut reversal::Parts<'_>, &mut ReversalAsking<'_>) -> T,
-    ) -> Result<T, StepError> {
-        let (record, _) = self.current_route(order)?;
-        let entries = self.log.borrow().entries().to_vec();
-        self.life.reversals.follow(order, &entries);
-        let (core, operator) = (kit::core(), kit::operator());
-        let mut asking = Asking {
-            fleet: &mut self.fleet,
-            clock: &self.clock,
-        };
-        let bounds = record.bounds.clone();
-        let mut asked = ReversalAsking {
-            bounds: &bounds,
-            key: &mut self.signer,
-            providers: &mut asking,
-        };
-        let mut parts = reversal::Parts {
-            clock: &self.clock,
-            catalogue: &mut self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-            core: &core,
-            operator: &operator,
-        };
-        Ok(with(&mut self.life.reversals, &mut parts, &mut asked))
-    }
-
-    /// Records the reversal `segment` of `order` owes, in the catalogue's list.
+    /// Hands Core's entry point the failed provider's showing that the failure of `segment` was not its own
+    /// (`rutent_core_orch::reversal::command::show_fault`, `REQ-ORD-11`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::owe`.
-    pub fn owe_reversal(&mut self, order: &Id, segment: &Id) -> Result<Owing, StepError> {
-        let part = self.part_of(order)?;
-        let done = self.asking(order, |reversals, parts, _| {
-            reversals.owe(
-                parts,
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
-    }
-
-    /// Hands Core the failed provider's showing that the failure of `segment` was not its own: its signed failed result
-    /// for the segment's own transaction, which names the customer's fault or the operator's (`REQ-ORD-11`,
-    /// `T-024-23`). Until the party it names accepts it, the provider carries the reversal.
-    ///
-    /// # Errors
-    ///
-    /// As `Reversals::show_fault`.
+    /// As the entry point.
     pub fn show_fault(
         &mut self,
         order: &Id,
         segment: &Id,
         bytes: &[u8],
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
-        let part = self.part_of(order)?;
-        let done = self.asking(order, |reversals, parts, _| {
-            reversals.show_fault(
-                parts,
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-                bytes,
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::show_fault(&mut self.ports(), order, segment, bytes)
+            .map_err(StepError::Reversal)
     }
 
-    /// The party the showing of `segment` names, `by`, accepting it: the operator by its command; the customer by
-    /// policy's decision of its `accept_fault` in `session`, which Core then reads from its own log
-    /// (`reversal-carrier-rests-on-its-acceptance`). It carries the reversal from then.
+    /// Hands Core's entry point the acceptance of `segment`'s showing by `by`, the customer in `session` or the
+    /// operator (`rutent_core_orch::reversal::command::accept_fault`).
     ///
     /// # Errors
     ///
-    /// If the showing isn't in the log, policy can't decide, or as `Reversals::accept_fault`.
+    /// As the entry point.
     pub fn accept_fault(
         &mut self,
         order: &Id,
@@ -486,118 +441,24 @@ impl Core {
         by: &Actor,
         session: &Id,
     ) -> Result<reversal::Carrier, StepError> {
-        use rutent_contracts::core_internal::calls::Decisions as _;
-        use rutent_contracts::core_internal::{Action, DecisionRequest, ShowingNamed};
-        let part = self.part_of(order)?;
-        if by.role == rutent_contracts::core_internal::Role::Customer {
-            let showing = self
-                .log
-                .borrow()
-                .entries()
-                .iter()
-                .rev()
-                .find_map(|(_, e)| match e {
-                    Entry::Stated(s)
-                        if s.what.statement.as_str()
-                            == rutent_contracts::provider_role::RESULT_SHAPE
-                            && s.about.as_ref().and_then(|a| a.segment.as_ref())
-                                == Some(segment) =>
-                    {
-                        Some(s.clone())
-                    }
-                    _ => None,
-                })
-                .ok_or(StepError::NotNow("a showing is in the log"))?;
-            let transaction = showing
-                .about
-                .as_ref()
-                .and_then(|a| a.transaction.clone())
-                .ok_or(StepError::NotNow("the showing names its transaction"))?;
-            let request = DecisionRequest {
-                request: kit::id(&format!(
-                    "accept-fault-{}-{}",
-                    segment.as_str(),
-                    self.log.borrow().entries().len()
-                )),
-                caller: by.clone(),
-                action: Action::AcceptFault {
-                    order: order.clone(),
-                    segment: segment.clone(),
-                    showing: ShowingNamed {
-                        transaction,
-                        commitment: showing.commitment,
-                    },
-                    session: session.clone(),
-                },
-                at: self.clock.timestamp(),
-            };
-            self.policy
-                .clone()
-                .decide(&request)
-                .map_err(|_| StepError::NotNow("policy decides"))?;
-        }
-        let registers = std::rc::Rc::clone(&self.deployed.registers);
-        let done = self.asking(order, |reversals, parts, _| {
-            reversals.accept_fault(
-                parts,
-                &mut super::Acting(registers),
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-                if by.role == rutent_contracts::core_internal::Role::Customer {
-                    reversal::Accepting::Customer { by }
-                } else {
-                    reversal::Accepting::Operator { by }
-                },
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::accept_fault(&mut self.ports(), order, segment, by, session)
+            .map_err(StepError::Reversal)
     }
 
-    /// The party the showing of `segment` names, `by`, disputing it: the part is declared stuck, in a dispute
-    /// (`REQ-ORD-11`), and the provider carries the reversal meanwhile.
+    /// Hands Core's entry point the dispute of `segment`'s showing by `by`
+    /// (`rutent_core_orch::reversal::command::dispute`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::dispute`.
+    /// As the entry point.
     pub fn dispute_fault(
         &mut self,
         order: &Id,
         segment: &Id,
         by: &Actor,
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
-        let part = self.part_of(order)?;
-        let (_, _) = self.current_route(order)?;
-        let entries = self.log.borrow().entries().to_vec();
-        self.life.reversals.follow(order, &entries);
-        let (core, operator) = (kit::core(), kit::operator());
-        let mut parts = reversal::Parts {
-            clock: &self.clock,
-            catalogue: &mut self.catalogue,
-            log: &mut self.general,
-            evidence: &mut self.keeper,
-            fresh: &mut self.fresh,
-            issued: &self.issued,
-            segments: &mut self.segments,
-            exposures: &mut self.exposures,
-            core: &core,
-            operator: &operator,
-        };
-        let done = self.life.reversals.dispute(
-            &mut parts,
-            &mut self.stuck,
-            At {
-                order,
-                part: &part,
-                segment,
-            },
-            by,
-        );
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::dispute(&mut self.ports(), order, segment, by)
+            .map_err(StepError::Reversal)
     }
 
     /// The provider's result Core kept for `segment` of `order`, as its bytes: the signed statement the evidence store
@@ -634,29 +495,6 @@ impl Core {
         self.life.reversals.carrier(order, segment).cloned()
     }
 
-    /// Asks the failed provider of `segment` to reverse it: its answer is its own word.
-    ///
-    /// # Errors
-    ///
-    /// As `Reversals::ask`.
-    pub fn ask_reversal(&mut self, order: &Id, segment: &Id) -> Result<Asked, StepError> {
-        let part = self.part_of(order)?;
-        let done = self.reversing(order, |reversals, parts, asking, moving| {
-            reversals.ask(
-                parts,
-                asking,
-                moving,
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
-    }
-
     /// Whether `segment` of `order` is a move whose outcome Core holds unknown.
     pub fn is_unknown(&self, order: &Id, segment: &Id) -> bool {
         self.segments.unknown_move(order, segment).is_some()
@@ -679,88 +517,61 @@ impl Core {
             .get(&(order.as_str().to_owned(), segment.as_str().to_owned()))
     }
 
-    /// Asks the origin reserve whether the credit of `segment`'s reversal arrived, and completes the reversal where
-    /// its answer counts.
+    /// Hands Core's entry point the question whether the start of the part `withdrawal` begins was undone, asked of its
+    /// origin reserve (`rutent_core_orch::reversal::command::confirm_undone`, `AC-8`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::confirm`.
-    pub fn confirm_reversal(
+    /// As the entry point.
+    pub fn confirm_undone(
         &mut self,
         order: &Id,
-        segment: &Id,
+        withdrawal: &Id,
     ) -> Result<Confirmation, StepError> {
-        let part = self.part_of(order)?;
-        let done = self.asking(order, |reversals, parts, asking| {
-            reversals.confirm(
-                parts,
-                asking,
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::confirm_undone(&mut self.ports(), order, withdrawal)
+            .map_err(StepError::Reversal)
     }
 
-    /// Ends `order` without completing, on its customer's request.
+    /// Hands Core's entry point `by`'s request to end `order` without completing
+    /// (`rutent_core_orch::reversal::command::end`, `REQ-ORD-12`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::end`.
+    /// As the entry point.
     pub fn end(
         &mut self,
         order: &Id,
+        by: &Actor,
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
-        let done = self.asking(order, |reversals, parts, _| reversals.end(parts, order))?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::end(&mut self.ports(), order, by).map_err(StepError::Reversal)
     }
 
-    /// Records that `order`, complete, was returned: `bytes`, its destination reserve's report.
+    /// Hands Core's entry point `bytes`, the destination reserve's report that `order`, complete, was returned
+    /// (`rutent_core_orch::reversal::command::returned`, `REQ-ORD-31`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::returned`.
+    /// As the entry point.
     pub fn returned(&mut self, order: &Id, bytes: &[u8]) -> Result<Afterward, StepError> {
-        let done = self.asking(order, |reversals, parts, _| {
-            reversals.returned(parts, order, bytes)
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        reversal::command::returned(&mut self.ports(), order, bytes).map_err(StepError::Reversal)
     }
 
-    /// Keeps `bytes`, a provider's result about `segment` arriving after its answer was taken, moving nothing.
+    /// Hands Core's entry point `bytes`, a provider's result about `segment` arriving after its answer was taken, with who
+    /// the deployment's transport says handed it over: the maker its envelope names
+    /// (`rutent_core_orch::reversal::command::report_late`).
     ///
     /// # Errors
     ///
-    /// As `Reversals::later`.
+    /// As the entry point.
     pub fn late_delivery(
         &mut self,
         order: &Id,
         segment: &Id,
         bytes: &[u8],
     ) -> Result<rutent_contracts::core_internal::Receipt, StepError> {
-        let part = self.part_of(order)?;
-        let done = self.asking(order, |reversals, parts, _| {
-            // A scenario hands over its provider's own late result: the maker its envelope names presents it.
-            let presented_by = super::handed_over_by(&*parts.catalogue, bytes);
-            reversals.later(
-                parts,
-                At {
-                    order,
-                    part: &part,
-                    segment,
-                },
-                bytes,
-                &presented_by,
-            )
-        })?;
-        self.feed()?;
-        done.map_err(StepError::Reversal)
+        let presented_by = super::handed_over_by(&self.catalogue, bytes);
+        reversal::command::report_late(&mut self.ports(), order, segment, bytes, &presented_by)
+            .map_err(StepError::Reversal)
     }
 
     /// What came after `order` ended, as `reader` may read it.

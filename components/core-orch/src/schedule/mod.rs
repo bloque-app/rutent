@@ -62,9 +62,10 @@ pub mod run;
 
 pub use jobs::{
     Actors, Jobs, MoverLent, NotConfirmed, Placed, Ports, PublicAccount, PublisherAccount,
-    RecalculationsLent, Started, StuckLent, confirm_reported_failure,
+    RecalculationsLent, ReversalDesk, ReversalPlatform, ReversalsLent, Started, StuckLent,
+    confirm_reported_failure,
 };
-pub use run::{HandedOnRan, PartRan, Runs, resume};
+pub use run::{HandedOnRan, PartRan, ReversalRan, Runs, resume};
 
 /// How often a segment left unknown is asked its status again until the operator or its provider says otherwise: a
 /// provider is not pressed (an hour).

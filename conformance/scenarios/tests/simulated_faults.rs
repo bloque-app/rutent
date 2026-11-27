@@ -190,7 +190,7 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
     let Failed {
         core, order, ramp, ..
     } = &mut failed;
-    core.owe_reversal(order, ramp).expect("owed");
+    core.owed_reversal(order, ramp).expect("owed");
     assert_eq!(
         core.reversal_carrier(order, ramp),
         Some(Carrier::Provider(id(QUICK)))
@@ -219,7 +219,7 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
         order,
         ramp,
     } = &mut failed;
-    core.owe_reversal(order, ramp).expect("owed");
+    core.owed_reversal(order, ramp).expect("owed");
     let shown = showing(core, order, ramp);
     core.show_fault(order, ramp, &shown).expect("shown");
     assert_eq!(
@@ -258,7 +258,7 @@ fn failed_segments_provider_carries_the_reversal_unless_it_shows_the_fault_was_t
         order,
         ramp,
     } = &mut failed;
-    core.owe_reversal(order, ramp).expect("owed");
+    core.owed_reversal(order, ramp).expect("owed");
     let shown = showing(core, order, ramp);
     core.show_fault(order, ramp, &shown).expect("shown");
     assert!(
@@ -285,7 +285,7 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
         let Failed {
             core, order, ramp, ..
         } = &mut failed;
-        core.owe_reversal(order, ramp).expect("owed");
+        core.owed_reversal(order, ramp).expect("owed");
         let shown = showing(core, order, ramp);
         core.show_fault(order, ramp, &shown).expect("shown");
         let (party, other) = match fault {
@@ -322,13 +322,15 @@ fn dispute_over_a_fault_makes_the_order_stuck() {
             matches!(
                 core.accept_fault(order, ramp, &party, &id("unused")),
                 Err(StepError::Reversal(
-                    ReversalError::NoShowing | ReversalError::NotAnAcceptance
+                    ReversalError::NoShowing
+                        | ReversalError::NotAnAcceptance
+                        | ReversalError::NotPermitted(_)
                 ))
             ),
-            "a disputed fault isn't accepted"
+            "a disputed fault isn't accepted: Core's entry point asks policy, which refuses it in a session not open"
         );
         // Its reversal still completes on the stuck part, and the order stays stuck.
-        let asked = core.ask_reversal(order, ramp).expect("asked");
+        let asked = core.asked_on_tick(order, ramp).expect("asked");
         assert!(asked.completed.is_some(), "{:?}", asked.why);
         assert_eq!(state(core, order), OrderState::Stuck);
         admitted(core);
@@ -360,9 +362,9 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
             core, order, ramp, ..
         } = &mut failed;
         let moves = effects(core);
-        core.owe_reversal(order, ramp).expect("owed");
+        core.owed_reversal(order, ramp).expect("owed");
         core.world().script_for(QUICK, "reversal", behaviour);
-        let asked = core.ask_reversal(order, ramp).expect("asked");
+        let asked = core.asked_on_tick(order, ramp).expect("asked");
         assert!(asked.completed.is_none(), "{name}: {asked:?}");
         assert_eq!(asked.why, Some(why), "{name}");
         assert_eq!(
@@ -395,11 +397,11 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
         assert_eq!(core.world().journal(OUT).len(), 0, "{name}");
         // Asked again, an unknown or short reversal is not completed by a second undo.
         if name != "refused" {
-            let again = core.ask_reversal(order, ramp).expect("asked again");
+            let again = core.asked_on_tick(order, ramp).expect("asked again");
             assert!(again.completed.is_none(), "{name}: {again:?}");
         } else {
             // A refusal moved nothing, so the same undo asked again is the one that happens, once.
-            let again = core.ask_reversal(order, ramp).expect("asked again");
+            let again = core.asked_on_tick(order, ramp).expect("asked again");
             assert!(again.completed.is_some(), "{name}: {again:?}");
         }
         assert_eq!(effects(core), moves, "{name}");
@@ -423,9 +425,9 @@ fn owed_reversal_refused_short_or_unknown_past_its_window_makes_its_order_stuck(
         let Failed {
             core, order, ramp, ..
         } = &mut failed;
-        core.owe_reversal(order, ramp).expect("owed");
+        core.owed_reversal(order, ramp).expect("owed");
         core.world().script_for(QUICK, "reversal", behaviour);
-        let asked = core.ask_reversal(order, ramp).expect("asked");
+        let asked = core.asked_on_tick(order, ramp).expect("asked");
         assert!(asked.completed.is_none(), "{name}: {asked:?}");
         // Inside its window nothing is declared.
         let early = core.watch(order).expect("watched");
@@ -461,10 +463,10 @@ fn owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick() {
     let Failed {
         core, order, ramp, ..
     } = &mut failed;
-    core.owe_reversal(order, ramp).expect("owed");
+    core.owed_reversal(order, ramp).expect("owed");
     core.world()
         .script_for(QUICK, "reversal", Behaviour::act(Act::Refuse));
-    let asked = core.ask_reversal(order, ramp).expect("asked");
+    let asked = core.asked_on_tick(order, ramp).expect("asked");
     assert!(asked.completed.is_none(), "the reversal stays owed");
     assert!(
         core.plant_unpriced_route(order),
@@ -472,6 +474,9 @@ fn owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick() {
     );
     // Inside twice the floor nothing is declared, however many ticks; it takes the schedule, not a call, to time it.
     core.clock.advance(2 * FLOOR_SECONDS - 120);
+    // Core's run asks the ramp again in turn with its confirmation (`T-020-61`, item 10): it keeps refusing.
+    core.world()
+        .script_for(QUICK, "reversal", Behaviour::act(Act::Refuse));
     let round = core.tick();
     assert!(
         round.watched.iter().all(|w| &w.order != order),
@@ -480,6 +485,8 @@ fn owed_reversal_at_a_never_settling_tuple_goes_stuck_on_cores_tick() {
     );
     assert_eq!(state(core, order), OrderState::FirstSegmentSettled);
     core.clock.advance(240);
+    core.world()
+        .script_for(QUICK, "reversal", Behaviour::act(Act::Refuse));
     let round = core.tick();
     let called = round
         .watched
@@ -1079,8 +1086,8 @@ fn reversals_core_carried_out_are_known_again_after_core_reopens() {
     let Failed {
         core, order, ramp, ..
     } = &mut failed;
-    core.owe_reversal(order, ramp).expect("owed");
-    core.ask_reversal(order, ramp).expect("asked");
+    core.owed_reversal(order, ramp).expect("owed");
+    core.asked_on_tick(order, ramp).expect("asked");
     let before = core.reversal_transactions(order);
     assert_eq!(before.len(), 1, "one reversal Core carried out");
     let order = order.clone();
@@ -1128,14 +1135,14 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
         publishers.publisher(DUO_IN),
         publishers.publisher(DUO_EXCHANGE)
     );
-    core.owe_reversal(&order, &exchange).expect("owed");
+    core.owed_reversal(&order, &exchange).expect("owed");
 
     // The exchange's own word that it undid the segment completes nothing: it is the failed provider's.
-    let asked = core.ask_reversal(&order, &exchange).expect("asked");
+    let asked = core.asked_on_tick(&order, &exchange).expect("asked");
     assert!(asked.completed.is_none());
     assert_eq!(asked.why, Some(NotCounted::FailedProvidersOwn));
     // The origin reserve says no credit arrived: nothing completes. Then it says one arrived short: nor that.
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
             done,
@@ -1153,7 +1160,7 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
             ..Behaviour::short_by(100)
         },
     );
-    let done = core.confirm_reversal(&order, &exchange).expect("asked");
+    let done = core.confirmed_on_tick(&order, &exchange).expect("asked");
     assert!(
         matches!(
             done,
@@ -1173,7 +1180,7 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
     core.world()
         .script(DUO_IN, Behaviour::crediting_a_reversal());
     let Confirmation::Completed(completed) =
-        core.confirm_reversal(&order, &exchange).expect("asked")
+        core.confirmed_on_tick(&order, &exchange).expect("asked")
     else {
         panic!("the origin reserve's word completes the reversal");
     };

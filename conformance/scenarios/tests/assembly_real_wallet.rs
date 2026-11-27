@@ -1920,7 +1920,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
     let wallet = stuck.wallet.clone();
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     assert_eq!(owing.provider.as_str(), RAMP_C, "owed by the failed ramp");
 
@@ -1934,7 +1934,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         }
         let answer = stuck
             .core
-            .confirm_reversal(&linked.order, &segment)
+            .confirmed_on_tick(&linked.order, &segment)
             .expect("the wallet is asked");
         assert!(
             matches!(
@@ -1966,7 +1966,7 @@ fn linked_orders_reversal_back_into_a_held_node_is_confirmed_by_the_nodes_wallet
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the wallet is asked");
     let Confirmation::Completed(done) = answer else {
         panic!("completed: {answer:?}")
@@ -2016,7 +2016,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     let wallet = stuck.wallet.clone();
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
@@ -2024,7 +2024,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the wallet is asked");
     assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
     stuck.core.tick();
@@ -2105,7 +2105,7 @@ fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_ag
         .expect("the node is registered to another module");
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     // The world's credit back into the account: it stands in for the network reader's confirmation (`T-020-60`).
     stuck
@@ -2113,7 +2113,7 @@ fn reversal_is_asked_of_the_holder_the_log_names_after_the_node_is_registered_ag
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the holder the log names is asked");
     let Confirmation::Completed(done) = answer else {
         panic!("completed: {answer:?}")
@@ -2139,10 +2139,10 @@ fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
         .expect("the release is revoked");
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     let asked = stuck.core.operations_received(&wallet.provider);
-    let refused = stuck.core.confirm_reversal(&linked.order, &segment);
+    let refused = stuck.core.confirmed_on_tick(&linked.order, &segment);
     assert!(
         matches!(
             &refused,
@@ -2159,7 +2159,7 @@ fn holder_with_no_release_in_force_is_not_asked_and_the_reversal_stays_owed() {
     assert_eq!(
         stuck
             .core
-            .owe_reversal(&linked.order, &segment)
+            .owed_reversal(&linked.order, &segment)
             .expect("still owed")
             .transaction,
         owing.transaction
@@ -2380,14 +2380,14 @@ fn return_landed_before_a_restart_is_not_landed_again_before_its_recalculation()
     let wallet = stuck.wallet.clone();
     let owing = stuck
         .core
-        .owe_reversal(&linked.order, &segment)
+        .owed_reversal(&linked.order, &segment)
         .expect("the reversal is owed");
     stuck
         .core
         .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
     let answer = stuck
         .core
-        .confirm_reversal(&linked.order, &segment)
+        .confirmed_on_tick(&linked.order, &segment)
         .expect("the wallet is asked");
     assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
     // The landing's tick, Core's run held off by the operator's cadence, so the restart falls before the recalculation.

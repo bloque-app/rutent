@@ -293,19 +293,47 @@ struct Asking<'a> {
 
 impl Providers for Asking<'_> {
     fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
-        let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
-        self.fleet.platform.world.set_clock(self.clock.instant());
-        // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
-        // signed statement, is what the rounds read. A refused judgement stays the result.
-        match self.fleet.platform.handle(provider.as_str(), &operation) {
-            Handled::Answered(result) => match result.statement {
-                ResultBody::Judgement(JudgementResult {
-                    outcome: JudgementOutcome::Judged(judged),
-                }) => serde_json::to_vec(&*judged.judgement).ok(),
-                _ => serde_json::to_vec(&*result).ok(),
-            },
-            Handled::Refused(_) => None,
-        }
+        ask_platform(&mut self.fleet.platform, self.clock, provider, question)
+    }
+}
+
+/// The platform as Core's reversals reach it: the modules a decided reversal is carried out through, and the providers'
+/// modules a confirmation question is handed to, both the platform's.
+impl rutent_core_orch::schedule::ReversalPlatform for Running<'_> {
+    fn modules(&mut self) -> &mut dyn Modules {
+        self
+    }
+
+    fn providers(&mut self) -> &mut dyn Providers {
+        self
+    }
+}
+
+impl Providers for Running<'_> {
+    fn ask(&mut self, provider: &Id, question: &[u8]) -> Option<Vec<u8>> {
+        ask_platform(self.platform, self.clock, provider, question)
+    }
+}
+
+/// Hands `question` to `provider`'s module on the platform, at Core's clock, and answers what came back.
+fn ask_platform(
+    platform: &mut Platform<SimWorld>,
+    clock: &SharedClock,
+    provider: &Id,
+    question: &[u8],
+) -> Option<Vec<u8>> {
+    let operation: Statement<Operation> = serde_json::from_slice(question).ok()?;
+    platform.world.set_clock(clock.instant());
+    // A verifier's module answers like any other (`T-024-18`), and the judgement its result carries inside, its own
+    // signed statement, is what the rounds read. A refused judgement stays the result.
+    match platform.handle(provider.as_str(), &operation) {
+        Handled::Answered(result) => match result.statement {
+            ResultBody::Judgement(JudgementResult {
+                outcome: JudgementOutcome::Judged(judged),
+            }) => serde_json::to_vec(&*judged.judgement).ok(),
+            _ => serde_json::to_vec(&*result).ok(),
+        },
+        Handled::Refused(_) => None,
     }
 }
 
