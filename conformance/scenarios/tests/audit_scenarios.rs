@@ -22,6 +22,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, base_request};
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 
 /// Core, put together, with a checkpointer over its log and what it published, as an outside checker received it.
 struct Watched {
@@ -79,7 +80,7 @@ impl Watched {
             self.core
                 .accept(&customer, &order, &digest)
                 .expect("accepted");
-            self.core.run(&order).expect("the order runs");
+            self.core.ran_on_tick(&order).expect("the order runs");
             let state = self
                 .core
                 .status(&customer, &order)

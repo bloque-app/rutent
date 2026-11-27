@@ -12,6 +12,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
+use rutent_scenarios::on_tick::OnTick;
 
 const SLOW: &str = "sim-reserve-slow";
 
@@ -78,8 +79,10 @@ fn segment_over_three_days_has_no_firm_rate_and_waits_for_acceptance() {
     else {
         panic!("quoted");
     };
-    core.run(&order)
-        .expect_err("an order not accepted has no route to run");
+    assert!(
+        matches!(core.ran_on_tick(&order), Ok(ran) if ran.is_empty()),
+        "an order not accepted has no route to run"
+    );
     assert!(core.world().journal(SLOW).is_empty(), "still nothing moved");
     let accepted = core
         .accept(&kit::customer(), &order, &digest)
@@ -137,7 +140,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
     // Core's own segments check what they settle (`T-020-14`): nothing here calls a check.
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
 
     // The provider quoted no charge and charged 7 on each movement, which only the movement tells.
     let segments = core.charged_segments(&order);
@@ -173,7 +176,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
             .count()
     };
     assert_eq!(raises(&core), 2);
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.raised().len(), 2);
     assert_eq!(raises(&core), 2);
 
@@ -199,7 +202,7 @@ fn charge_above_the_formulas_maximum_is_flagged() {
     honest
         .accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    honest.run(&order).expect("runs");
+    honest.ran_on_tick(&order).expect("runs");
     let segments = honest.charged_segments(&order);
     assert_eq!(segments.len(), 2);
     assert!(

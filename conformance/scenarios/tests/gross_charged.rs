@@ -27,6 +27,7 @@ use rutent_core_orch::quote::Checked;
 use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::json;
 
 const GROSS: &str = "sim-reserve-gross";
@@ -95,7 +96,7 @@ fn ran(core: &mut Core, session: &Id, reserve: &str, name: &str) -> (Id, Quote, 
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     (order, *quote, ran)
 }
 
@@ -323,7 +324,7 @@ fn final_deposit_that_reaches_the_network_at_its_stated_gross_figure_does_not_cl
             ..Behaviour::default()
         },
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     assert!(settled(&segments[0]));
     assert!(
@@ -380,7 +381,7 @@ fn withdrawal_that_reaches_the_network_at_what_arrived_is_no_public_record() {
             ..Behaviour::default()
         },
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     let first: Vec<_> = evidence_of(&core, &order)
         .into_iter()

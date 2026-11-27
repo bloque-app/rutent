@@ -16,6 +16,7 @@ use rutent_scenarios::assembly::policy::Verifier;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, base_request};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 
 /// Core put together with no order: the deployment's registers as the assembly lists them, and nothing run.
 fn bare(name: &'static str, accepts: &'static str) -> Core {
@@ -367,7 +368,7 @@ fn order_under_judgement(verifier: Verifier) -> Moved {
         panic!("a quote is shown");
     };
     core.accept(&customer, &order, &digest).expect("accepted");
-    let ran = core.run(&order);
+    let ran = core.ran_on_tick(&order);
     // Whether Core ran on, or stopped on the answer it was given, nothing may have moved without a permit: what is
     // checked is the record and the reserve's books.
     let _ = ran;

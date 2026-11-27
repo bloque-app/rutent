@@ -15,6 +15,7 @@ use rutent_core_orch::intake::{OrderRequest, Status, Told};
 use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome, Unbuilt};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 
 const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
@@ -48,7 +49,7 @@ fn ran_across(accepts: &'static str) -> (Core, Id, Vec<Accounted>) {
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };
@@ -232,7 +233,7 @@ fn pair_that_cant_be_built_leaves_the_segment_settled_and_the_part_running_to_it
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };
@@ -279,7 +280,7 @@ fn adjacent_segments_of_one_provider_make_no_pair_and_leave_nothing_unbuilt() {
             OTHER,
         ),
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };

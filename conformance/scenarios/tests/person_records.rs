@@ -16,6 +16,7 @@ use rutent_scenarios::assembly::Staged;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::{Given, Scenario, base_request};
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 use segments_support::*;
 use serde_json::{Value, json};
 
@@ -184,7 +185,7 @@ fn records_after_a_third_party_payment_hold_a_reference_at_most() {
     };
     core.accept(&customer, &order, &digest)
         .expect("the customer accepts");
-    let _ = core.run(&order);
+    let _ = core.ran_on_tick(&order);
 
     let entries: Vec<Value> = core
         .log()

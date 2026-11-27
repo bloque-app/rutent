@@ -13,6 +13,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged, context};
 use rutent_scenarios::harness::{Given, Scenario, Step};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 
 fn one_order(given: Given) -> (Core, Id) {
     let (core, orders) = Scenario::new("one order, run", "AC-28", given)
@@ -85,7 +86,7 @@ fn policy_the_log_core_and_the_world_read_one_clock() {
         panic!("{told:?}")
     };
     core.accept(&customer, &order, &digest).unwrap();
-    core.run(&order).unwrap();
+    core.ran_on_tick(&order).unwrap();
     let hour = |at: &str| at[..13].to_owned();
     let expected = hour(
         rutent_prov::catalogue::Instant(u64::try_from(later / 1_000_000_000).unwrap())

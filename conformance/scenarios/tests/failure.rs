@@ -12,12 +12,13 @@ use rutent_conformance::sim::{Act, Behaviour, Delivery};
 use rutent_contracts::core_internal::{Action, What};
 use rutent_contracts::router_api::DropReason;
 use rutent_contracts::state_machine::{Observed, OrderState, SegmentState};
-use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
+use rutent_core_orch::recalc::Recalculation;
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
+use rutent_scenarios::on_tick::OnTick;
 
 /// Whether `observed` is a wait at the customer's floor.
 fn is_floor_wait(observed: &Observed) -> bool {
@@ -90,7 +91,7 @@ fn settled_segment_below_the_floor_makes_the_order_wait_there() {
             "995000",
         ),
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert_eq!(segments.len(), 1, "only the withdrawal is handed over");
     assert!(matches!(
@@ -140,7 +141,7 @@ fn settled_segment_below_the_floor_makes_the_order_wait_there() {
 
     // Nothing more moves while it waits: run again, and the deposit is not handed over.
     let before = (handled(&core), effects(&core));
-    let _ = core.run(&order);
+    let _ = core.ran_on_tick(&order);
     assert_eq!((handled(&core), effects(&core)), before);
 
     // Above the floor, the same run goes on to the deposit, and the order completes.
@@ -178,7 +179,7 @@ fn recalculation_past_the_floor_makes_the_order_wait_visibly_with_its_age() {
             "995000",
         ),
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert!(matches!(
         segments[0].outcome,
@@ -188,7 +189,9 @@ fn recalculation_past_the_floor_makes_the_order_wait_visibly_with_its_age() {
     assert_eq!(state(&mut core, &order), OrderState::FirstSegmentSettled);
 
     core.reprice_deposits(RESERVE, flat_fee("10000"));
-    let done = core.recalculate(&order).expect("the recalculation ran");
+    let done = core
+        .recalculated_on_tick(&order)
+        .expect("the recalculation ran");
     let Recalculation::WaitsForCustomer { record } = &done else {
         panic!("a route past the floor makes the order wait: {done:?}");
     };
@@ -241,12 +244,17 @@ fn recalculation_past_the_floor_makes_the_order_wait_visibly_with_its_age() {
     );
 
     // While it waits, nothing is asked of anyone, nothing is recorded and no route starts.
-    let before = (handled(&core), core.log().entries().len());
-    assert_eq!(
-        core.recalculate(&order).expect("tried"),
-        Recalculation::NotNow(NotRecalculable::Held(OrderState::WaitingForCustomer))
+    // Core's run tries no recalculation of a part that waits for its customer.
+    // (The tick's own scheduled reads may ask the reserve of its balance: no move is handed to it.)
+    let before = effects(&core);
+    assert!(
+        !matches!(
+            core.recalculated_on_tick(&order),
+            Ok(Recalculation::Recalculated(_))
+        ),
+        "no route starts on its own"
     );
-    assert_eq!((handled(&core), core.log().entries().len()), before);
+    assert_eq!(effects(&core), before, "no move");
 
     // With the price as quoted, the same failure is recalculated and goes on: the floor is what made it wait.
     let (mut core, session) = core_with("AC-12", &[RESERVE]);
@@ -259,9 +267,10 @@ fn recalculation_past_the_floor_makes_the_order_wait_visibly_with_its_age() {
             "995000",
         ),
     );
-    core.run(&order).expect("the order ran");
+    core.ran_on_tick(&order).expect("the order ran");
     assert!(matches!(
-        core.recalculate(&order).expect("the recalculation ran"),
+        core.recalculated_on_tick(&order)
+            .expect("the recalculation ran"),
         Recalculation::Recalculated(_)
     ));
     assert_eq!(count_inputs(&core, &order, is_floor_wait), 0);
@@ -300,7 +309,9 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
     // Recalculation to the same destination comes first: the next deposit goes to the authorisation's own
     // destination, in its to asset, and settles, with no new yes asked of the customer.
     assert_eq!(acceptances(&core, &order), 1);
-    let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(recalculated) =
+        core.recalculated_on_tick(&order).expect("tried")
+    else {
         panic!("a route to the same destination was found");
     };
     assert_eq!(
@@ -309,7 +320,7 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
         "to the same destination: the same reserve, node and account"
     );
     let ran = core
-        .run_recalculated(&order, &recalculated)
+        .ran_once_on_tick(&order)
         .expect("the recalculated part runs");
     assert!(matches!(
         segments_of(&[ran])[0].outcome,
@@ -337,14 +348,13 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
     // The reserve refuses the dry run of any deposit from now on: no route to the destination is left.
     core.world()
         .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
-    let outcome = core.recalculate(&order).expect("tried");
+    let outcome = core.recalculated_on_tick(&order).expect("tried");
     assert!(
         matches!(outcome, Recalculation::NoRoute { .. }),
         "no route to the destination: {outcome:?}"
     );
-    let recorded = core
-        .record_no_route(&order, &outcome)
-        .expect("no route recorded");
+    // Core's run recorded it on the same tick (`REQ-ORD-28`, `T-020-61`).
+    let recorded = core.followed(&order).expect("followed").parts[0].clone();
     assert_eq!(
         acceptances(&core, &order),
         1,
@@ -380,16 +390,12 @@ fn refused_final_deposit_is_recalculated_first_and_then_waits_for_the_customer()
 
     let before = (handled(&core), core.log().entries().len());
     // Held where it waits, and, with no route found, routed no more until the customer chooses.
-    let again = core.recalculate(&order).expect("tried");
+    let again = core.recalculated_on_tick(&order);
     assert!(
-        matches!(
-            again,
-            Recalculation::NotNow(NotRecalculable::Held(OrderState::WaitingForCustomer))
-                | Recalculation::NoRouteLeft { .. }
-        ),
+        !matches!(again, Ok(Recalculation::Recalculated(_))),
         "no route starts on its own: {again:?}"
     );
-    let _ = core.run(&order);
+    let _ = core.ran_on_tick(&order);
     assert_eq!(
         (handled(&core), effects(&core)),
         (before.0, 2),
@@ -414,12 +420,13 @@ fn failed_final_deposit_waiting_for_its_customer_is_not_declared_stuck_past_its_
     assert!(matches!(segments[1].outcome, SegmentOutcome::Failed));
     core.world()
         .script_dry_run(RESERVE, "deposit", Behaviour::act(Act::Refuse));
-    let outcome = core.recalculate(&order).expect("tried");
+    let outcome = core.recalculated_on_tick(&order).expect("tried");
     assert!(
         matches!(outcome, Recalculation::NoRoute { .. }),
         "{outcome:?}"
     );
-    let recorded = core.record_no_route(&order, &outcome).expect("recorded");
+    // Core's run recorded it on the same tick (`REQ-ORD-28`, `T-020-61`).
+    let recorded = core.followed(&order).expect("followed").parts[0].clone();
     assert_eq!(recorded.state, OrderState::WaitingForCustomer);
     assert_eq!(
         core.followed(&order).expect("followed").parts[0].segments[1].state,
@@ -449,10 +456,10 @@ fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once()
         within("req-recalculated-price", &session, AMOUNT, RESERVE, OTHER),
     );
     assert!(core.price_reported(&order).is_none(), "not complete yet");
-    let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(_) = core.recalculated_on_tick(&order).expect("tried") else {
         panic!("a route to the same destination was found");
     };
-    core.run_recalculated(&order, &recalculated)
+    core.ran_once_on_tick(&order)
         .expect("the recalculated part runs");
     assert_eq!(state(&mut core, &order), OrderState::Complete);
     core.tick();
@@ -477,7 +484,7 @@ fn executed_price_of_an_order_completed_after_a_recalculation_is_reported_once()
             .count()
     };
     assert_eq!(prices(&core), 1);
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
     assert_eq!(prices(&core), 1, "once");
 }
@@ -498,11 +505,11 @@ fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
         within("req-three-routes", &session, AMOUNT, RESERVE, OTHER),
     );
     for _ in 0..2 {
-        let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried")
+        let Recalculation::Recalculated(_) = core.recalculated_on_tick(&order).expect("tried")
         else {
             panic!("a route to the same destination was found");
         };
-        core.run_recalculated(&order, &recalculated)
+        core.ran_once_on_tick(&order)
             .expect("the recalculated part runs");
     }
     assert_eq!(state(&mut core, &order), OrderState::Complete);
@@ -517,7 +524,7 @@ fn executed_price_of_an_order_completed_on_its_third_route_is_reported_once() {
         2,
         "the withdrawal and the deposit that settled"
     );
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.price_reported(&order), Some((digest, receipt)));
 }
 
@@ -538,18 +545,18 @@ fn executed_price_is_reported_correctly_after_core_reopens_mid_recalculation() {
         &mut core,
         within("req-reopened-routes", &session, AMOUNT, RESERVE, OTHER),
     );
-    let Recalculation::Recalculated(second) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(_) = core.recalculated_on_tick(&order).expect("tried") else {
         panic!("a second route");
     };
-    core.run_recalculated(&order, &second).expect("it runs");
+    core.ran_once_on_tick(&order).expect("it runs");
     assert!(core.price_reported(&order).is_none(), "not complete yet");
     assert_eq!(core.routes_ran(&order), 2);
     let mut core = scenario.reopen(core, 1, &mut Reference);
     assert_eq!(core.routes_ran(&order), 2, "rebuilt from the log");
-    let Recalculation::Recalculated(third) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(_) = core.recalculated_on_tick(&order).expect("tried") else {
         panic!("a third route");
     };
-    core.run_recalculated(&order, &third).expect("it runs");
+    core.ran_once_on_tick(&order).expect("it runs");
     assert_eq!(core.routes_ran(&order), 3);
     assert_eq!(state(&mut core, &order), OrderState::Complete);
     core.tick();
@@ -601,7 +608,7 @@ fn stuck_by_silence() -> (
     );
     core.world()
         .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = segments_of(&ran);
     assert!(matches!(
         segments[0].outcome,
@@ -690,11 +697,14 @@ fn stuck_by_silence() -> (
 
     // No new route starts: nothing is recalculated, nothing is handed over, nothing is asked of the provider.
     let before = (handled(&core), core.log().entries().len());
-    assert_eq!(
-        core.recalculate(&order).expect("tried"),
-        Recalculation::NotNow(NotRecalculable::Held(OrderState::Stuck))
+    assert!(
+        !matches!(
+            core.recalculated_on_tick(&order),
+            Ok(Recalculation::Recalculated(_))
+        ),
+        "a stuck part is recalculated by no one"
     );
-    let _ = core.run(&order);
+    let _ = core.ran_on_tick(&order);
     assert_eq!(handled(&core), before.0, "nothing is handed over");
     (core, order, deposit)
 }
@@ -765,11 +775,11 @@ fn on_a_second_route_left_unknown() -> (Core, rutent_contracts::router_api::Id) 
         &mut core,
         within("req-second-unknown", &session, AMOUNT, RESERVE, OTHER),
     );
-    let Recalculation::Recalculated(second) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(_) = core.recalculated_on_tick(&order).expect("tried") else {
         panic!("a second route");
     };
     let ran = core
-        .run_recalculated(&order, &second)
+        .ran_once_on_tick(&order)
         .expect("the second route runs");
     assert!(
         segments_of(&[ran])

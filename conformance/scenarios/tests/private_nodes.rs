@@ -23,6 +23,7 @@ use rutent_evidence::replay::{NodeRecord, RecordedSegment, Replay, RouteEnd, rep
 use rutent_prov::catalogue::LeftOutReason;
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{self, AMOUNT};
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::json;
 
 const IN: &str = "sim-join-in";
@@ -241,7 +242,7 @@ fn route_through_one_publishers_providers_and_private_node_is_expressed_and_run(
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let segments = accounted(&ran);
     assert_eq!(segments.len(), 4);
     let transactions: std::collections::BTreeSet<String> = segments
@@ -348,7 +349,7 @@ fn deposit_at_a_private_node_closes_on_the_movement_in_and_the_reserves_statemen
             "sim-join-out-silent-bank",
         ),
     );
-    let ran = silent.run(&order).expect("the order is taken up");
+    let ran = silent.ran_on_tick(&order).expect("the order is taken up");
     let [Ran::Refused { refused, .. }] = ran.as_slice() else {
         panic!("the route is refused before anything is handed over: {ran:?}");
     };
@@ -1349,7 +1350,7 @@ fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
     );
     core.refuse_log_appends(rutent_contracts::provider_role::INNER_SEGMENTS_SHAPE, 3);
     assert!(
-        core.run(&order).is_err(),
+        core.ran_on_tick(&order).is_err(),
         "the run stops on the record the log can't take"
     );
     assert_eq!(
@@ -1359,7 +1360,7 @@ fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
     );
     let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
         .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
-    core.run(&order).expect("the reopened Core goes on");
+    core.ran_on_tick(&order).expect("the reopened Core goes on");
     assert_eq!(
         node_records(&core, &order),
         written,
@@ -1375,7 +1376,7 @@ fn private_node_segment_record_queued_before_core_reopens_is_written_once() {
         );
     }
     assert_eq!(state(&mut core, &order), OrderState::Complete);
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(node_records(&core, &order), written);
 }
 
@@ -1395,7 +1396,7 @@ fn private_rail_closed_before_core_reopens_stays_closed() {
     // deployment's one, opens no other session.
     let session = kit::id(&rutent_scenarios::assembly::context().session);
     let second = accepted(&mut core, across("req-join-2", &session, OUT_PRIVATE, RAIL));
-    let _ = core.run(&second);
+    let _ = core.ran_on_tick(&second);
     assert_ne!(
         state(&mut core, &second),
         OrderState::Complete,

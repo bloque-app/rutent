@@ -18,6 +18,7 @@ use rutent_core_orch::reversal::Confirmation;
 use rutent_core_orch::segments::{Accounted, Ran, SegmentOutcome};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::{AMOUNT, RESERVE};
+use rutent_scenarios::on_tick::OnTick;
 
 /// A window wide enough to hold every run.
 fn whole() -> Window {
@@ -59,7 +60,7 @@ fn ran(
 ) -> (rutent_contracts::router_api::Id, Vec<Accounted>) {
     let order = accepted(core, within(name, session, AMOUNT, RESERVE, OTHER));
     script(core);
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     (order, accounted(&ran))
 }
 
@@ -172,8 +173,19 @@ fn bulk_measures_over_assembled_runs_with_no_hand_written_record_count_a_failed_
         core.accept(&rutent_scenarios::kit::customer(), &order, &digest)
             .expect("accepted");
         script(core);
-        let ran = core.run(&order).expect("ran");
-        runs.push((accounted(&ran), priced));
+        let ran = core.ran_on_tick(&order).expect("ran");
+        let accounted = accounted(&ran);
+        // A run that failed is left with no route, so Core's run recalculates nothing of it on the next orders' ticks:
+        // the measures are of these runs alone.
+        if accounted.last().is_some_and(|s| {
+            matches!(
+                s.outcome,
+                SegmentOutcome::Failed | SegmentOutcome::Refused(_)
+            )
+        }) {
+            core.leave_no_route(&order).expect("left with no route");
+        }
+        runs.push((accounted, priced));
     };
     each(&mut core, "full", &|_| {});
     each(&mut core, "short", &|core| {
@@ -204,8 +216,8 @@ fn bulk_measures_over_assembled_runs_with_no_hand_written_record_count_a_failed_
     assert!(want.below >= 1, "one run settled short: {want:?}");
     assert_eq!((want.failures, want.refusals), (1, 1), "{want:?}");
 
-    // No record was written by this test: the writer Core's own assembly gives takes what the runs queued.
-    assert!(records(&core).is_empty());
+    // No record was written by this test: the writer Core's own assembly gives takes what the runs queued, on Core's
+    // ticks.
     core.tick();
 
     let report = {
@@ -287,8 +299,14 @@ fn a_measure_that_cannot_be_written_leaves_the_segments_outcome_unchanged() {
         core.world()
             .script_for(RESERVE, "deposit", Behaviour::act(Act::Fail));
     };
-    let (_, a) = ran(&mut with, &session, "same", script);
-    let (_, b) = ran(&mut without, &other, "same", script);
+    let (with_order, a) = ran(&mut with, &session, "same", script);
+    let (without_order, b) = ran(&mut without, &other, "same", script);
+    // Left with no route, so neither Core's run recalculates it on the ticks below.
+    with.leave_no_route(&with_order)
+        .expect("left with no route");
+    without
+        .leave_no_route(&without_order)
+        .expect("left with no route");
     assert_eq!(
         format!("{a:?}"),
         format!("{b:?}"),

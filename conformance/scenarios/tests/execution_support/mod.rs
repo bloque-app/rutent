@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use rutent_scenarios::on_tick::OnTick;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -175,7 +176,7 @@ pub fn accepted(core: &mut Core, request: OrderRequest) -> Id {
 /// The order `request` opens, quoted, accepted and run.
 pub fn run(core: &mut Core, request: OrderRequest) -> (Id, Vec<Ran>) {
     let order = accepted(core, request);
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     (order, ran)
 }
 

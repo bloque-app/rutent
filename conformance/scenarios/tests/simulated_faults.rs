@@ -22,6 +22,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, StepError};
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 
 const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
@@ -372,11 +373,11 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
         assert!(core.completed_reversal(order, ramp).is_none(), "{name}");
         assert_eq!(state(core, order), OrderState::FirstSegmentSettled);
         assert!(
-            matches!(
-                core.recalculate(order).expect("tried"),
-                Recalculation::NotNow(_)
+            !matches!(
+                core.recalculated_on_tick(order),
+                Ok(Recalculation::Recalculated(_))
             ),
-            "{name}: no route starts from value in motion"
+            "{name}: no route starts from value in motion, nor from a reversal owed"
         );
         core.clock.advance(7 * 86_400);
         let _ = core.watch(order);
@@ -385,7 +386,7 @@ fn refused_unknown_and_short_reversals_each_leave_the_order_stuck_with_nothing_m
             OrderState::Stuck,
             "{name}: the owed reversal is over its window"
         );
-        let _ = core.run(order);
+        let _ = core.ran_on_tick(order);
         // Nothing moved twice: no move of value beyond the route's three, the withdrawal and the conversion were
         // asked once each, and no reserve was asked to pay out.
         assert_eq!(effects(core), moves, "{name}");
@@ -648,7 +649,7 @@ fn segment_left_unknown_is_asked_its_status_and_ends_failed_on_the_providers_ans
                 if s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(&ramp))
     }));
     // Asked once: a run again asks no more.
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(status_asks(&core), 1);
     // Core only keeps the answer, and moves nothing: the segment is unknown still. It ends failed on the provider's
     // answer through the stuck mover: the schedule reports it, another actor confirms it (`AC-6`, `T-020-48`).
@@ -856,7 +857,7 @@ fn segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_
     );
     core.world()
         .script_for(RESERVE, "deposit", Behaviour::late());
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let deposit = segments_of(&ran)[1].segment.clone();
     assert!(core.is_unknown(&order, &deposit));
     // The reserve's own word that the deposit settled, its answer to Core's status question, as Core kept it.
@@ -899,26 +900,30 @@ fn segment_its_provider_says_settled_is_reported_to_the_stuck_mover_through_the_
 #[test]
 fn unknown_segment_already_asked_is_not_asked_again_after_core_reopens() {
     let Failed {
-        core, order, ramp, ..
+        mut core,
+        order,
+        ramp,
+        ..
     } = ramp_left_unknown();
     assert_eq!(status_asks(&core), 1);
+    // The schedule's own question again is held off: what this shows is the run's own step after a reopen.
+    core.set_status_cadence(QUICK, u64::MAX);
     let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
     let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
     assert!(
         core.is_unknown(&order, &ramp),
         "the reopened Core still holds the move unknown"
     );
-    core.ask_unknown_statuses(&order)
-        .expect("the reopened Core takes it up");
+    // The reopened Core takes it up on its tick.
+    let round = core.tick();
     assert!(
-        core.status_asked(&order, &ramp).is_none(),
-        "no question was put again, nor refused: {:?}",
-        core.status_asked(&order, &ramp)
-    );
-    assert_eq!(
-        status_asks(&core),
-        1,
-        "asked once, not again by the Core that reopened"
+        round
+            .runs
+            .parts
+            .iter()
+            .all(|p| p.asked.is_empty() && p.carried_on.is_empty()),
+        "{:?}",
+        round.runs
     );
     admitted(&core);
 }
@@ -961,11 +966,17 @@ fn first_tick_after_a_restart_keeps_each_providers_ask_cadence() {
     assert!(core.tick().statuses.is_empty(), "599 seconds on, not yet");
     core.clock.advance(1);
     // Due again from the question the log holds, as the first tick would have asked it had the schedule forgotten. The
-    // question itself isn't put: a reopened Core holds no taken answer of an unknown segment (`NotAnswered`), a gap
-    // `T-020-61`'s resume closes, so it is tried again each tick until then; what this shows is that it is tried now.
+    // question is put: a reopened Core holds the unknown segment answered as the Core that ran on did (`T-020-61`), so it
+    // is asked once and then waits its cadence again, never pressed each tick.
     let round = core.tick();
     assert_eq!(round.statuses.len(), 1, "{:?}", round.statuses);
     assert_eq!(round.statuses[0].unknown.segment, ramp);
+    assert!(round.statuses[0].asked.is_ok(), "{:?}", round.statuses[0]);
+    assert!(
+        core.tick().statuses.is_empty(),
+        "not again before its cadence"
+    );
+    assert_eq!(status_asks(&core), 2);
     admitted(&core);
 }
 
@@ -1173,7 +1184,9 @@ fn value_undone_at_its_providers_cost_is_shown_back_by_another_party() {
         SegmentState::ReversalComplete
     );
     // The route is recalculated from there, to the same destination and asset, and runs to the end.
-    let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(recalculated) =
+        core.recalculated_on_tick(&order).expect("tried")
+    else {
         panic!("a route from where the value is shown back");
     };
     assert_eq!(recalculated.route.to_asset.id, "USD");
@@ -1383,9 +1396,9 @@ fn stuck_watch_notices_pairs_and_checkpoints_run_on_cores_schedule() {
     for job in [Job::Watch, Job::Notify, Job::WritePairs, Job::Checkpoints] {
         assert!(round.did(job), "{job:?} runs on Core's first tick");
     }
-    // The notices the run's changes call for went with the tick: none is left for a caller.
+    // The notices the run's changes call for went with the tick the run was on, and this one: none is left for a caller.
     assert!(
-        matches!(round.notified, Some(Ok(sent)) if sent > 0),
+        matches!(round.notified, Some(Ok(_))),
         "{:?}",
         round.notified
     );
@@ -1642,4 +1655,94 @@ fn public_node_cannot_be_unlisted_while_an_open_orders_route_names_it() {
     for node in nodes_of(&core, QUICK) {
         unlist_is_refused(&mut core, &node);
     }
+}
+
+/// A provider's answer to Core's status question, kept before Core reopens, saying the segment's move failed: the reopened
+/// Core rebuilds what it kept from the log and the evidence store (`Reversals::reopened`, `T-020-61` item 6), and once the
+/// part is stuck its tick reports that same kept answer to the stuck mover, citing the entry the log took before the
+/// restart, with no second stated entry of it.
+// verifies: NFR-6, REQ-ORD-29
+#[test]
+fn late_answer_kept_before_a_restart_is_reported_after_it() {
+    let Failed {
+        core, order, ramp, ..
+    } = ramp_left_unknown();
+    let answer = core
+        .status_asked(&order, &ramp)
+        .cloned()
+        .expect("Core asked")
+        .expect("the question was put")
+        .answer
+        .expect("the ramp answered");
+    let kept_of_the_ramp = |core: &Core| {
+        core.log()
+            .entries()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, rutent_contracts::core_internal::Entry::Stated(s)
+                    if s.about.as_ref().and_then(|a| a.segment.as_ref()) == Some(&ramp))
+            })
+            .count()
+    };
+    let kept_before = kept_of_the_ramp(&core);
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT]);
+    let mut core = Scenario::new("execution", "AC-5", given).reopen(core, 1, &mut Reference);
+    core.clock.advance(2 * kit::DECLARED + 5);
+    let round = core.tick();
+    assert_eq!(state(&mut core, &order), OrderState::Stuck);
+    let taken: Vec<_> = round.reported.iter().filter(|r| r.taken.is_ok()).collect();
+    assert_eq!(taken.len(), 1, "{:?}", round.reported);
+    assert_eq!(
+        taken[0].statement, answer,
+        "the report rests on the answer kept before the restart"
+    );
+    assert_eq!(
+        kept_of_the_ramp(&core),
+        kept_before,
+        "no second entry of it"
+    );
+    admitted(&core);
+}
+
+/// A deposit taken and never answered, its effect's result `unanswered` before Core and its platform restart: the
+/// restarted Core holds it answered, as the Core that ran on did, so its provider's late answer is taken after the restart,
+/// kept once and moving nothing, and never refused as not answered (`T-020-61`: #350's review, seed 117).
+// verifies: NFR-6, REQ-ORD-29
+#[test]
+fn late_answer_to_a_segment_left_unanswered_before_core_restarts_is_taken_after_it() {
+    let (mut core, session) = core_with("AC-5", &[IN, EXCHANGE, QUICK, OUT_UNTRACKED]);
+    core.world()
+        .script_for(OUT_UNTRACKED, "deposit", Behaviour::late());
+    // No repeat before the restart: the answer is the platform's to hand over after it.
+    core.set_status_cadence(OUT_UNTRACKED, u64::MAX);
+    let (order, ran) = run(&mut core, across_untracked("req-late-restart", &session));
+    let segments = segments_of(&ran);
+    assert!(
+        matches!(segments[3].outcome, SegmentOutcome::Unknown(_)),
+        "the deposit's outcome is not known: {segments:?}"
+    );
+    let segment = segments[3].segment.clone();
+    let given = execution_support::given(&[IN, EXCHANGE, QUICK, OUT_UNTRACKED]);
+    let mut core = Scenario::new("execution", "AC-5", given).restart(core, 1, &mut Reference);
+    assert!(
+        core.is_unknown(&order, &segment),
+        "held unknown after the restart"
+    );
+    let effects_before = effects(&core);
+    let late = core
+        .provider_again(&order, &segment)
+        .expect("the provider's answer, as it gave it late");
+    let kept = core
+        .late_delivery(&order, &segment, &late)
+        .expect("taken after the restart, not refused as not answered");
+    let again = core
+        .late_delivery(&order, &segment, &late)
+        .expect("the same answer again is the same entry");
+    assert_eq!(kept, again, "kept once");
+    assert_eq!(effects(&core), effects_before, "no value moves");
+    assert!(
+        core.is_unknown(&order, &segment),
+        "a late answer settles nothing"
+    );
+    admitted(&core);
 }

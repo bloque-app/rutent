@@ -24,6 +24,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, KeptThrough, Staged};
 use rutent_scenarios::harness::{Given, Scenario};
 use rutent_scenarios::kit;
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::json;
 
 const CHARGING: &str = "sim-reserve-charging";
@@ -55,7 +56,7 @@ fn ran(core: &mut Core, session: &Id, provider: &str, name: &str) -> Id {
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     order
 }
 
@@ -78,8 +79,12 @@ fn inbox_raises(core: &Core) -> Vec<Raise> {
     };
     let mut inbox = Inbox::new(operator, kit::id("rutent-scenarios"), core.notice_key());
     for sealed in core.operator_notices() {
+        // The order's own states reach the operator too, on Core's ticks: each is taken, and the raises read from the events.
         let taken = inbox.take(&Ed25519, &sealed).expect("the inbox takes it");
-        assert!(matches!(taken, Taken::Event | Taken::Repeat));
+        assert!(matches!(
+            taken,
+            Taken::Event | Taken::Repeat | Taken::Later | Taken::Earlier
+        ));
     }
     inbox
         .events()
@@ -96,11 +101,18 @@ fn raise_entries(core: &Core) -> Vec<(Raise, Outcome)> {
         .entries()
         .iter()
         .filter_map(|(_, e)| match e {
+            // The charge raises: a tick's other checks (a holding account's, say) raise of their own.
             Entry::Verified(VerifiedEntry {
                 what: What::Raise { raise },
                 outcome,
                 ..
-            }) => Some((raise.clone(), *outcome)),
+            }) if matches!(
+                raise.difference,
+                rutent_contracts::core_internal::Difference::Charge { .. }
+            ) =>
+            {
+                Some((raise.clone(), *outcome))
+            }
             _ => None,
         })
         .collect()
@@ -197,8 +209,7 @@ fn charge_above_the_formulas_maximum_is_raised_to_the_operator_by_cores_own_segm
 fn charge_within_the_formulas_maximum_raises_nothing() {
     let (mut core, session) = alone(kit::RESERVE, "AC-14");
     let order = ran(&mut core, &session, kit::RESERVE, "req-honest");
-    assert!(core.raised().is_empty(), "nothing reached the operator");
-    assert!(core.operator_notices().is_empty());
+    assert!(core.raised().is_empty(), "no raise reached the operator");
     assert!(raise_entries(&core).is_empty(), "nothing was recorded");
     let checked = core.charged_segments(&order);
     assert_eq!(checked.len(), 2, "both segments' charges were noted");
@@ -362,7 +373,7 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
         .expect("accepted");
     core.world()
         .script_for(CHARGING, "deposit", Behaviour::act(Act::Refuse));
-    core.run(&order)
+    core.ran_on_tick(&order)
         .expect("the order runs to its refused deposit");
     assert!(core.raised().is_empty(), "the withdrawal's 7 is within 100");
     let quoted = terms_entries(&core).len();
@@ -373,8 +384,9 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
         "deposit",
         Behaviour::stating_terms_of_at_most("3"),
     );
-    let Recalculation::Recalculated(recalculated) =
-        core.recalculate(&order).expect("the recalculation ran")
+    let Recalculation::Recalculated(_) = core
+        .recalculated_on_tick(&order)
+        .expect("the recalculation ran")
     else {
         panic!("a route to the same destination was found");
     };
@@ -388,7 +400,7 @@ fn terms_a_recalculations_dry_runs_handed_back_bind_the_recalculated_segments() 
         1,
         "the new deposit's terms, taken in the recalculation"
     );
-    core.run_recalculated(&order, &recalculated)
+    core.ran_once_on_tick(&order)
         .expect("the recalculated part runs");
     let raised = core.raised();
     assert_eq!(raised.len(), 1, "the new deposit's 7 is above 3");
@@ -415,7 +427,7 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     states_terms(&mut core, CHARGING, "100");
     let (second, digest) = quoted_at(&mut core, &session, CHARGING, "req-second");
     assert_eq!(terms_entries(&core).len(), 2, "stated on the quote");
-    core.run(&first).expect("runs again");
+    core.ran_on_tick(&first).expect("runs again");
     assert_eq!(core.raised().len(), 2, "no raise is made or unmade by them");
     for (raise, _) in raise_entries(&core) {
         let Difference::Charge { terms, .. } = raise.difference else {
@@ -431,7 +443,7 @@ fn terms_stated_after_a_segment_started_do_not_bind_it() {
     core.clock.advance(60);
     core.accept(&kit::customer(), &second, &digest)
         .expect("accepted");
-    core.run(&second).expect("the order runs");
+    core.ran_on_tick(&second).expect("the order runs");
     assert_eq!(core.raised().len(), 2, "within the terms in force");
     let segments = core.charged_segments(&second);
     assert_eq!(segments.len(), 2);
@@ -526,7 +538,7 @@ fn terms_whose_kept_statement_does_not_match_the_entrys_commitment_are_not_kept(
     core.clock.advance(60);
     core.accept(&kit::customer(), &second, &digest)
         .expect("accepted");
-    core.run(&second).expect("the order runs");
+    core.ran_on_tick(&second).expect("the order runs");
     let flagged: Vec<_> = core
         .raised()
         .into_iter()
@@ -548,13 +560,13 @@ fn each_segments_charge_is_checked_once_also_after_a_restart() {
     assert_eq!(core.raised().len(), 2);
 
     // Run again, as a caller retrying does: nothing more is raised.
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.raised().len(), 2);
     assert_eq!(raise_entries(&core).len(), 2);
 
     // The register of checked charges lost and rebuilt from the log: the raises it holds are not made again.
     core.charges_rebuilt_from_log();
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(core.raised().len(), 2, "the operator is warned once");
     assert_eq!(raise_entries(&core).len(), 2, "and the log holds each once");
     let segment = core.charged_segments(&order)[0].clone();
@@ -589,7 +601,7 @@ fn charge_raise_recorded_before_core_reopens_is_not_raised_again() {
         ),
         "the reopened Core holds the charge raised"
     );
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(
         raise_entries(&core).len(),
         2,
@@ -630,16 +642,19 @@ fn charge_raise_cut_short_before_core_reopens_is_raised_once() {
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    assert!(core.run(&order).is_err(), "the log couldn't take the raise");
+    assert!(
+        core.ran_on_tick(&order).is_err(),
+        "the log couldn't take the raise"
+    );
     assert_eq!(raise_entries(&core).len(), 0, "no raise reached the log");
     let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
-    core.run(&order).expect("the part goes on");
+    core.ran_on_tick(&order).expect("the part goes on");
     assert_eq!(
         raise_entries(&core).len(),
         2,
         "the settled segment's raise made after the reopening, once, and the second segment's"
     );
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     assert_eq!(raise_entries(&core).len(), 2);
 }
 
@@ -695,7 +710,7 @@ fn completed_unclosed(name: &str) -> (Core, Id) {
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     (core, order)
 }
 
@@ -786,7 +801,7 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     };
     core.accept(&kit::customer(), &order, &digest)
         .expect("accepted");
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.tick();
     let (_, receipt) = core
         .price_reported(&order)
@@ -804,7 +819,7 @@ fn executed_price_reported_through_the_assembly_before_core_reopens_is_not_repor
     let mut core = Scenario::new("charge-check", "AC-14", given()).reopen(core, 1, &mut Reference);
     // Later: a price built afresh would be another entry, at another time.
     core.clock.advance(60);
-    core.run(&order).expect("runs again");
+    core.ran_on_tick(&order).expect("runs again");
     core.tick();
     let again = core.price_reported(&order);
     assert!(
@@ -958,7 +973,10 @@ fn a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_se
     let order = accepted(&mut core, &session, CHARGING, "req-charged");
     // The first segment's raise is turned away on each of the three tries its settling makes.
     core.refuse_log_appends("raise", rutent_core_orch::segments::APPEND_TRIES);
-    assert!(core.run(&order).is_err(), "the log couldn't take the raise");
+    assert!(
+        core.ran_on_tick(&order).is_err(),
+        "the log couldn't take the raise"
+    );
 
     // The run still held the part's settled segment to its check, which recorded the raise the operator was told of
     // once: before the second segment was handed over, which the failed run never did.
@@ -967,7 +985,7 @@ fn a_raise_the_log_could_not_take_is_recorded_by_the_same_run_before_the_next_se
     assert_eq!(core.raised().len(), 1, "and the operator was warned once");
 
     // Run again: the part goes on, each charge raised once, the first before the second segment moved.
-    core.run(&order).expect("the part goes on");
+    core.ran_on_tick(&order).expect("the part goes on");
     assert_eq!(core.raised().len(), 2, "one warning for each segment");
     let (raised, moved) = (places(&core, &raises), places(&core, &moves));
     assert_eq!((raised.len(), moved.len()), (2, 2));
@@ -981,13 +999,13 @@ fn a_raise_retried_by_a_later_run_is_made_once_and_before_the_next_segment() {
     let order = accepted(&mut core, &session, CHARGING, "req-charged");
     // Turned away on every try the settling and the run's own re-check make: nothing of it is recorded.
     core.refuse_log_appends("raise", 2 * rutent_core_orch::segments::APPEND_TRIES);
-    assert!(core.run(&order).is_err());
+    assert!(core.ran_on_tick(&order).is_err());
     assert!(places(&core, &raises).is_empty(), "nothing recorded yet");
     assert_eq!(places(&core, &moves).len(), 1, "no second segment moved");
     assert_eq!(core.raised().len(), 1, "the operator was warned, once");
 
     // The next run records it before it hands the second segment over, and warns no one again.
-    core.run(&order).expect("the part goes on");
+    core.ran_on_tick(&order).expect("the part goes on");
     let (raised, moved) = (places(&core, &raises), places(&core, &moves));
     assert_eq!((raised.len(), moved.len()), (2, 2));
     assert!(

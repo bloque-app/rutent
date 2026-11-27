@@ -13,6 +13,7 @@
 
 mod execution_support;
 
+use rutent_scenarios::on_tick::OnTick;
 use std::collections::BTreeMap;
 
 use execution_support::*;
@@ -111,7 +112,7 @@ fn stuck_before_the_schedule_runs() -> Stuck {
     let order = accepted(&mut core, asked);
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
     Stuck {
@@ -188,7 +189,7 @@ fn value_that_passes_through_the_wallets_node_is_not_held_for_the_order() {
         "lowest_total_cost",
     );
     let order = accepted(&mut core, asked);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     assert_eq!(core.tick().landed, 0, "nothing rests at the node");
     assert_eq!(
         core.holdings().attributions(),
@@ -358,7 +359,7 @@ fn operator_decides(
     by: &str,
 ) -> (
     Actor,
-    Result<rutent_contracts::core_internal::Decision, StepError>,
+    Result<rutent_contracts::core_internal::Decision, rutent_core_orch::stuck::ResolveError>,
 ) {
     let (alice, bob) = (
         staff(&stuck.core, "desk-a", "alice"),
@@ -378,7 +379,7 @@ fn operator_decides(
     let evidence = evidence_about(&stuck.core, &stuck.order);
     let decision = stuck
         .core
-        .decide_stuck(&stuck.order, &alice, &resolution, &evidence);
+        .decide_stuck_in_core(&stuck.order, &alice, &resolution, &evidence);
     (bob, decision)
 }
 
@@ -526,7 +527,7 @@ fn hand_on_through_a_public_nodes_wallet_names_the_wallet_and_refuses_any_other_
         };
         let moved = stuck
             .core
-            .move_stuck(&stuck.order, &carries_out, &bob)
+            .move_stuck_in_core(&stuck.order, &carries_out, &bob)
             .expect("moved");
         assert!(
             matches!(
@@ -862,10 +863,10 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &carries_out, &bob)
+        .move_stuck_in_core(&stuck.order, &carries_out, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -891,7 +892,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     assert!(is_verified(&answered.1.attribution));
     let handed = stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     assert_eq!(node_name(&handed.at.node), NODE);
     let whats = stuck.core.verified_whats();
@@ -918,7 +919,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_through_the_real_plain_wallet(
     let moves_before = stuck.core.operations_received(&wallet.provider);
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -994,10 +995,10 @@ fn wallet_holds_in(
 fn handed_on_once(stuck: &mut Stuck, linked: &AcceptedLinked, bob: &Actor, decision: &Decided) {
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, decision, bob)
+        .move_stuck_in_core(&stuck.order, decision, bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1006,7 +1007,7 @@ fn handed_on_once(stuck: &mut Stuck, linked: &AcceptedLinked, bob: &Actor, decis
     };
     stuck
         .core
-        .hand_on(&stuck.order, &effect, bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     let withdrawals = stuck
         .core
@@ -1316,10 +1317,10 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &decided, &bob)
+        .move_stuck_in_core(&stuck.order, &decided, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1334,12 +1335,12 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
         },
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stuck.core.hand_on(&stuck.order, &effect, &bob)
+        stuck.core.handed_on_on_tick(&stuck.order)
     }));
     assert!(crashed.is_err(), "the crash stopped Core");
     stuck.core =
         Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
-    let bob = staff(&stuck.core, "desk-b", "bob");
+    let _bob = staff(&stuck.core, "desk-b", "bob");
     let handed_on = |o: &rutent_contracts::state_machine::Observed| {
         matches!(
             o,
@@ -1364,7 +1365,7 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     );
     stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("the hand-on, rebuilt from the log, completes");
     assert_eq!(
         inputs_of(&stuck.core, &stuck.order, handed_on),
@@ -1390,7 +1391,7 @@ fn pending_hand_on_is_rebuilt_from_the_log_through_the_assembly() {
     // move runs on it and settles.
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1443,15 +1444,13 @@ fn holdings_and_accepted_routes_of_a_reopened_order_are_rebuilt_from_the_log() {
         },
     );
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        stuck
-            .core
-            .run_linked(&stuck.order, &linked_order(&stuck), &linked)
+        stuck.core.ran_on_tick(&linked.order)
     }));
     assert!(crashed.is_err(), "the crash stopped Core");
     stuck.core = scenario().reopen(stuck.core, 1, &mut Reference);
     let ran = stuck
         .core
-        .run(&linked.order)
+        .ran_on_tick(&linked.order)
         .expect("the linked order runs on from the log");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1661,10 +1660,10 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     };
     let moved = stuck
         .core
-        .move_stuck(&stuck.order, &decided, &bob)
+        .move_stuck_in_core(&stuck.order, &decided, &bob)
         .expect("moved");
     let Moved::CarriedOut {
-        effect,
+        effect: _,
         resolved: Resolved::Done,
         ..
     } = moved
@@ -1684,7 +1683,7 @@ fn value_withdrawn_for_a_hand_on_is_not_landed_again_when_core_reopens_before_th
     );
     stuck
         .core
-        .hand_on(&stuck.order, &effect, &bob)
+        .handed_on_on_tick(&stuck.order)
         .expect("handed on");
     assert_eq!(attributed_at(&mut stuck.core, NODE), Vec::new());
 }
@@ -1791,7 +1790,7 @@ fn stuck_before_the_second_ramp() -> Stuck {
     let order = accepted(&mut core, asked);
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(2);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     assert_eq!(core.tick().landed, 1, "the schedule lands the value");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
@@ -1843,7 +1842,7 @@ fn linked_first_move_failed() -> (Stuck, LinkedOrder, AcceptedLinked, Id) {
     );
     let ran = stuck
         .core
-        .run_linked(&stuck.order, &asked, &linked)
+        .ran_on_tick(&linked.order)
         .expect("the linked order's route runs");
     let Some(Ran::Segments(done)) = ran.first() else {
         panic!("the linked order ran: {ran:?}")
@@ -1984,9 +1983,9 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     );
 
     // Recalculated from the node: the reversed move is retired, and the new route waits to run.
-    let recalculated = match stuck
+    let _recalculated = match stuck
         .core
-        .recalculate(&linked.order)
+        .recalculated_on_tick(&linked.order)
         .expect("the part is recalculated")
     {
         Recalculation::Recalculated(recalculated) => recalculated,
@@ -2018,7 +2017,7 @@ fn returned_value_retired_by_a_recalculation_is_rebuilt_after_core_reopens() {
     // The new route's first move takes the value out of the node: its landing is released, once.
     stuck
         .core
-        .run_recalculated(&linked.order, &recalculated)
+        .ran_once_on_tick(&linked.order)
         .expect("the recalculated route runs");
     stuck.core.tick();
     stuck.core.tick();
@@ -2228,5 +2227,166 @@ fn public_node_cannot_be_unlisted_while_a_segment_or_holding_rests_there() {
             }
         ),
         "no route through the unlisted node: {told:?}"
+    );
+}
+
+/// A stuck part handed on and its linked order, each on Core's own ticks (`T-020-61`, item 3): the operator decides the
+/// hand-on and another desk moves it through Core's entry points; the next tick hands the part on, on the wallet's own
+/// record of the withdrawal, and the one after registers the linked order's authorisation as its acceptance names it,
+/// builds what it runs on from the log, and runs it from the node. No test's call carries either out.
+// verifies: REQ-ORD-43
+#[test]
+fn linked_order_and_its_hand_on_run_on_cores_ticks() {
+    let mut stuck = stuck_at_the_public_node();
+    let wallet = stuck.wallet.clone();
+    stuck
+        .core
+        .accept_release(&wallet)
+        .expect("the release is accepted");
+    let linked = stuck
+        .core
+        .accept_linked(&linked_order(&stuck))
+        .expect("the linked order is accepted");
+    let (bob, decision) = operator_decides(&mut stuck, &linked, &wallet.provider);
+    let decision = decision.expect("asked");
+    let carries_out = Decided {
+        request: decision.request.clone(),
+        decision: decision.decision.clone(),
+    };
+    let moved = rutent_core_orch::stuck::move_stuck(
+        &mut stuck.core.ports(),
+        &stuck.order,
+        &carries_out,
+        &bob,
+    )
+    .expect("moved");
+    assert!(
+        matches!(
+            moved,
+            Moved::CarriedOut {
+                resolved: Resolved::Done,
+                ..
+            }
+        ),
+        "{moved:?}"
+    );
+    assert!(
+        stuck.core.started(&linked.order).is_none(),
+        "not started yet"
+    );
+    let round = stuck.core.tick();
+    let handed = round
+        .runs
+        .handed_on(&stuck.order)
+        .cloned()
+        .expect("the tick hands the part on")
+        .expect("handed on");
+    assert_eq!(node_name(&handed.at.node), NODE);
+    assert!(
+        stuck.core.verified_whats().iter().any(|w| matches!(
+            w,
+            What::HoldingWithdrawal { order, .. } if *order == linked.order
+        )),
+        "the holding account's record starts the linked order"
+    );
+    let round = stuck.core.tick();
+    assert!(
+        round.runs.started.contains(&linked.order),
+        "built from the log"
+    );
+    let ran = round
+        .runs
+        .ran(&linked.order)
+        .expect("the linked order runs");
+    let Some(Ran::Segments(done)) = ran.first() else {
+        panic!("the linked order ran: {ran:?}")
+    };
+    assert!(
+        matches!(done[0].outcome, SegmentOutcome::Settled { .. }),
+        "{done:?}"
+    );
+    // Both orders' records point to each other: the hand-on's input on the first, the route handed on from it on the second.
+    let inputs = stuck.core.inputs();
+    assert!(inputs.iter().any(|i| i.subject.order.as_str() == stuck.order.as_str()
+        && matches!(&i.observed, rutent_contracts::state_machine::Observed::HandedOn { linked_order, .. }
+            if linked_order.as_str() == linked.order.as_str())));
+    assert!(inputs.iter().any(|i| i.subject.order.as_str() == linked.order.as_str()
+        && matches!(&i.observed, rutent_contracts::state_machine::Observed::RouteChosen { handed_on_from: Some(from), .. }
+            if from.as_str() == stuck.order.as_str())));
+}
+
+/// A restart between a return's landing and its recalculation lands nothing twice (`T-020-61`, the review Lows of
+/// `T-020-57`): the reversal of the linked order's first move completes on the wallet's word and Core's tick lands the
+/// value again, its run held off for that tick; Core reopens, and the wallet holds exactly the value, once, before the
+/// part is recalculated and after; the recalculated route then takes it out of the node, and its landing is released once.
+// verifies: NFR-6, INV-4
+#[test]
+fn return_landed_before_a_restart_is_not_landed_again_before_its_recalculation() {
+    use rutent_core_orch::recalc::Recalculation;
+    use rutent_core_orch::reversal::Confirmation;
+    use rutent_core_orch::schedule::Job;
+    let (mut stuck, _, linked, segment) = linked_first_move_failed();
+    let wallet = stuck.wallet.clone();
+    let owing = stuck
+        .core
+        .owe_reversal(&linked.order, &segment)
+        .expect("the reversal is owed");
+    stuck
+        .core
+        .credit_wallet(&wallet.provider, owing.transaction.as_str(), "USDC", AMOUNT);
+    let answer = stuck
+        .core
+        .confirm_reversal(&linked.order, &segment)
+        .expect("the wallet is asked");
+    assert!(matches!(answer, Confirmation::Completed(_)), "{answer:?}");
+    // The landing's tick, Core's run held off by the operator's cadence, so the restart falls before the recalculation.
+    stuck.core.set_cadence(Job::Run, u64::MAX);
+    stuck.core.tick();
+    let exactly = |core: &mut Core, asking: &str| {
+        wallet_holds(
+            core,
+            &wallet,
+            linked.order.as_str(),
+            &format!("{asking}-once"),
+        ) && !wallet_holds_at_least(
+            core,
+            &wallet,
+            linked.order.as_str(),
+            &format!("{asking}-twice"),
+            &(2 * AMOUNT.parse::<u128>().unwrap()).to_string(),
+        )
+    };
+    assert!(exactly(&mut stuck.core, "ask-landed"), "landed again, once");
+    let names = [CHAIN_IN, RAMP_B, RAMP_C, OUT_C];
+    stuck.core =
+        Scenario::new("execution", "AC-6", given(&names)).reopen(stuck.core, 1, &mut Reference);
+    stuck.core.tick();
+    assert!(
+        exactly(&mut stuck.core, "ask-reopened"),
+        "a reopened Core lands nothing again"
+    );
+    // Core's run on again: the part is recalculated from the node, and the wallet still holds the value once.
+    stuck.core.set_cadence(Job::Run, 0);
+    assert!(
+        matches!(
+            stuck.core.recalculated_on_tick(&linked.order),
+            Ok(Recalculation::Recalculated(_))
+        ),
+        "recalculated after the restart"
+    );
+    assert!(
+        exactly(&mut stuck.core, "ask-recalculated"),
+        "nothing landed twice"
+    );
+    stuck
+        .core
+        .ran_once_on_tick(&linked.order)
+        .expect("the recalculated route runs");
+    stuck.core.tick();
+    stuck.core.tick();
+    assert_eq!(
+        stuck.core.holdings().attributions(),
+        [(NODE.to_owned(), Vec::new())],
+        "released once the value left the node: the account holds nothing for any order"
     );
 }

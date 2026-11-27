@@ -16,9 +16,10 @@ use rutent_contracts::router_api::Id;
 use rutent_contracts::state_machine::{self as stm, Observed, OrderState, StateMachine};
 use rutent_core_orch::notice::Receiver;
 use rutent_core_orch::reversal::{Confirmation, NotCounted, ReversalError, Word};
-use rutent_core_orch::segments::{SegmentOutcome, SegmentsError};
+use rutent_core_orch::segments::SegmentOutcome;
 use rutent_scenarios::assembly::{Core, StepError};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 use rutent_stm::Stm;
 use serde_json::json;
 
@@ -71,10 +72,8 @@ fn order_ends_without_completing_before_its_first_segment_settles_and_not_after(
     assert_eq!(end_requests(&core, &order), 1);
     let part = core.part_of(&order).expect("a part");
     assert!(
-        matches!(
-            core.run(&order),
-            Err(StepError::Segments(SegmentsError::Ended(p))) if p == part
-        ),
+        matches!(core.ran_on_tick(&order), Ok(ran) if ran.is_empty())
+            && !core.is_stuck(&order, &part),
         "no segment of an ended part is handed over"
     );
     assert_eq!(effects(&core), 0, "no value moved");
@@ -383,13 +382,13 @@ fn each_state_change_is_notified_to_the_user_and_the_operator() {
         &mut core,
         within("req-states", &session, AMOUNT, RESERVE, OTHER),
     );
-    let Ok(recalculated) = core.recalculate(&order) else {
+    let Ok(recalculated) = core.recalculated_on_tick(&order) else {
         panic!("recalculated")
     };
-    let rutent_core_orch::recalc::Recalculation::Recalculated(recalculated) = recalculated else {
+    let rutent_core_orch::recalc::Recalculation::Recalculated(_) = recalculated else {
         panic!("a route to the same destination: {recalculated:?}");
     };
-    core.run_recalculated(&order, &recalculated)
+    core.ran_once_on_tick(&order)
         .expect("the recalculated part runs");
     assert_eq!(state(&mut core, &order), OrderState::Complete);
 
@@ -413,8 +412,8 @@ fn each_state_change_is_notified_to_the_user_and_the_operator() {
 
     // The user is notified of each, and so is the operator: the same changes, in the order they happened, with the
     // order's state after each, counted from 1 in the log's order, none twice.
-    let sent = core.notify().expect("the notices read the log");
-    assert!(sent >= 2 * expected.len(), "sent {sent}");
+    // Core's ticks sent what the run's changes called for so far; what is left goes now.
+    core.notify().expect("the notices read the log");
     let to_user = core.notices_to(&Core::user_receiver(), &order);
     let to_operator = core.notices_to(&core.operator_receiver(), &order);
     assert_eq!(changes(&to_user), expected, "each change, to the user");

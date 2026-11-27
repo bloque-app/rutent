@@ -10646,3 +10646,158 @@ R3-1 is closed except for the hand-on take (R4-1).
   version read of `judge`/`attributable` (`confirmation_judge_reads_...` red).
 - **R4-1.** The mover's hand-on take (`Delivering::withdrawn`) reads `HandFlight.began` and has no holdout test: its route
   (a linked order handed on from a node) has no holdout fleet here. R4-2: `show_fault`, `after` as above.
+
+## T-020-61: Core's order run, in `core-orch` (#143's first agreed blocker)
+
+Branch `f-020/t-020-61`, from `m3-next` at `aea9488c` (m3 `ce68f7a2` with `T-024-21`, #350). Edits `components/core-orch/`
+(`schedule/`, `segments/`, `intake/`, `recalc/`, `hand_on/`, `stuck/`, `quote/terms.rs` for one port read, `reversal/` for one
+helper made crate-wide) and the `F-024` files the commit bodies name: the assembly (`conformance/scenarios/src/assembly/`), the
+harness, a new reader `conformance/scenarios/src/on_tick.rs`, and the scenario tests. No contract edited, no simulated provider,
+stand-in or prov file touched: no `DEC-20` path.
+
+### Design: where each piece of the run lives
+
+The plan's three readings hold throughout. **Core keeps no durable store beside the log**: everything below is rebuilt from the
+log and the evidence store the log already reads. **Every caller of v0 behaviour is Core's own**: the assembly defines none of
+`follow`, `run`, `run_live`, `recalculate`, `run_recalculated`, `run_linked`, `hand_on`, `decide_stuck`, `move_stuck` or
+`restart_orders`. **The assembly only wires ports and calls Core's entry points**, `tick` on a timer: the scenarios call `tick`
+(read through `on_tick::OnTick`, which reads a round and decides nothing) and the stuck commands' entry points over
+`Core::ports()`.
+
+- **`intake/` (`started.rs`): what an order runs on.** `Started` (moved here from `schedule::jobs`, re-exported there) is built on
+  the acceptance by intake's own accept path, once the log took the start (`carry_on` → `run_on`), and held in intake's record
+  of the order; `Intake::reopened` rebuilds it through the same reading of the log (`started_on`). Both read the decision record
+  from the evidence store and hold it to the digest the log's `decision_record` names it by (`held_record`, the review's L6): no
+  in-memory copy of a record is read. The authorisation is the one policy permitted (on an acceptance) or the one policy's register
+  holds in force for the acceptance's id (on a reopening, `Reopening::in_force`). Intake also holds what orders it didn't open run
+  on (`hold_started`: filed and linked orders), and the records of routes recalculated since (`hold_record`). The held gate
+  (`T-020-46`, `T-020-52`) is intake's: a held order runs on nothing.
+- **`schedule/` (`run.rs`): Core's order run, `Job::Run`, the first job of every tick.** `resume` builds what each order the log
+  started runs on where intake holds nothing yet (a reopened Core's filed and linked orders, any intake couldn't rebuild), and has
+  the segments follow it; the assembly calls it once as Core reopens and on an acceptance or a filing, and every tick calls it
+  first. Then each started order's parts, each on the route it runs on now (`Segments::routes_ran`'s last recalculated route,
+  its record intake's, else the first): a segment begun before a restart is carried on (item 8, below); a part with work left
+  (`Segments::work_left`) runs through `Segments::run_part`, then Core asks the status of each segment it left unknown (the step
+  `T-020-47` put after each run); a part with nothing left to run whose route failed is recalculated. One step of a part a tick:
+  a recalculated route runs on the next tick, and a hand-on recorded on a tick starts its linked order on the next.
+- **`segments/` (`carry_on.rs`): what the run asks of the segments.** `work_left`, `awaits_answer`, `carry_on` (item 8),
+  `ended_unsettled` and `guard_refused` (the recalculation's gate); `reopen.rs` rebuilds `answered` and the `bound` and `unknown`
+  input steps of every flight whose operation was handed over (seed 117, `T-020-63`'s gap 1).
+- **`recalc/`: recalculation, in Core.** `Recalculations` holds each order's history across its routings
+  (`recalculate_chained`), so the run chains each routing to the log's last record. Core's run recalculates only a part with nothing
+  left to run whose route failed (a segment Core holds ended unsettled, refused by policy among them, or refused by the guard,
+  or the state machine's next segment failed or reversed): a route recalculated and not yet run is never recalculated again;
+  and it refuses a part whose failed segment owes its reversal. Past the bound, or with no route offered, the run declares the part
+  stuck (`Stuck::no_route`, `REQ-ORD-28`).
+- **`hand_on/` (`withdrawn.rs`): hand-ons, in Core.** The run hands each stuck part on whose decided hand-on the mover carried
+  out and the holding account's own word proves (`HandOn::hand_on`, `prove_start`), from the mover's record or, for a reopened
+  Core, the log's (`withdrawn_in_the_log`, `accepted_in_the_log`, moved here from the assembly). The next tick registers the
+  linked order's authorisation with policy, as its acceptance names it, builds what it runs on and runs it.
+- **`stuck/` (`command.rs`): the operator's decided commands, as Core's entry points.** `decide_stuck` and `move_stuck` take
+  the deployment's ports and go through policy (`Stuck::decide`, `Stuck::carry_out` with the production mover); the part is the
+  order's as Core started it, never the caller's. `REQ-AUZ-4`'s one-actor rule is `Stuck`'s and policy's, unchanged.
+- **`Ports`** loses `started` and `decision_record` (`Ports::recalculated` named by the plan was never a member: the assembly's
+  recalculated routes were `Lifecycle::routes`, which goes too). It gains reads of the deployment's pieces (`kept`, the evidence
+  store's read; `in_force`, policy's register; `intake`, `arrivals`, `mover`, Core's parts to read as `segments` already is) and
+  lends Core's parts as `with_segments` does (`with_intake`, `with_authorisations`, `with_recalculations`, `with_hand_on`,
+  `with_mover`). None decides anything.
+- **`core-orch`'s own types are no versioned surface** (the milestone reviewer, 2026-11-26): the crate is at 0.0.0, and
+  `Status::Quoted.valid_until` (`T-020-57`) is core-orch's. The versioned surface is router-api; a quote answer there carrying the
+  validity would be a router-api change with its own changelog entry, which this row doesn't make.
+
+### Items and carry-overs, as built
+
+- **(1)** Intake's accept path builds and holds what the order runs on (`intake::started_on`, `Intake::started`); a reopened
+  Core rebuilds it from the log through the same reading. The record is read from the evidence store and held to the log's
+  digest at every build (L6): `decision_record_that_does_not_match_the_logs_digest_starts_nothing`.
+- **(2)** `Job::Run` runs each started part through `Segments::run_part` and asks the status of each segment it left unknown;
+  the same job resumes every started order with work left after a reopen: `accepted_order_runs_on_ticks_with_no_test_caller`
+  (the reviewer's probe: an accepted order, three ticks, no test's call), `started_order_resumes_after_a_restart`.
+- **(3)** Recalculation, the recalculated route's run, the hand-ons and the linked runs are Core's run, the current route read
+  from `Segments::routes_ran` with its record intake's: `failed_deposits_recalculated_route_runs_on_ticks`,
+  `linked_order_and_its_hand_on_run_on_cores_ticks`.
+- **(4)** `stuck::decide_stuck` and `stuck::move_stuck` are Core's entry points over the deployment's ports, through policy:
+  `stuck_command_is_a_core_entry_point`; every scenario that called the assembly's `decide_stuck` or `move_stuck` calls them
+  (through `on_tick::OnTick`, which hands the command over and decides nothing).
+- **(5)** A held order is held by Core's own resume (intake gives it nothing to run on, and `resume` builds nothing for it):
+  `held_order_accepted_before_a_restart_never_starts_after_core_reopens`,
+  `held_order_accepted_before_core_restarts_never_starts_after_the_run_resumes`.
+- **(6)** `Reversals::reopened` rebuilds `later` from the log's stated entries after each segment's first result, each with its
+  receipt, so a kept answer is reported after a restart and the same body again is that entry:
+  `late_answer_kept_before_a_restart_is_reported_after_it`. **Seed 117** and `T-020-63`'s gap 1: `segments::reopen` rebuilds
+  `answered` for every flight whose operation came to an outcome the log holds (an `unanswered` one included), and its
+  `bound` and `unknown` input steps, so a late answer and a status question after a restart are taken as before:
+  `late_answer_to_a_segment_left_unanswered_before_core_restarts_is_taken_after_it`; the reopened Core's status question is
+  put and then waits its cadence, never pressed each tick (`first_tick_after_a_restart_keeps_each_providers_ask_cadence`,
+  tightened). A late answer the platform's record can't mark stays with the platform (its record holds it, `T-020-63`'s gap 2,
+  closed in the platform), and is now taken after a restart rather than refused.
+- **(7)** A quote shown before Core reopened, its acceptance not in the log, is rebuilt at acceptance from the log while its
+  validity stands (`shown_in_the_log`): the same quote under the digest the `shown` entry named, on the record held to its
+  digest, each part's reserve yes and the reserve's hold as the log holds them; past its validity it is gone and the order is
+  quoted again (`T-020-46`'s default): `quote_held_before_a_restart_is_accepted_after_core_reopens_while_its_validity_stands`.
+- **(8)** A segment begun before Core stopped (its effect in the log, no result, no answer) is carried on by the reopened Core's
+  run (`Segments::carry_on`): its status asked at a provider that declares a status query, and, where that gives no result of
+  its transaction, its operation handed again under its own transaction through a decided `repeat_operation` effect. The
+  platform carries an operation out only under a transaction it never carried and refuses one it did (`DuplicateTransaction`,
+  `T-013-09`, held in its own record across its restart), so a move whose first carrying out never reached the platform is
+  carried out now, at any provider, and one that did is never carried out twice; where it carried it and got no answer, a
+  provider declaring a safe repeat has it run again (`T-020-63`). Otherwise it waits for the stuck check: Core writes no result
+  it has no answer for. `segment_begun_before_core_stopped_is_carried_on_after_it_reopens`; `T-024-21`'s marker
+  `stuck_until_t020_61` is empty, so every caught order of seeds 113 to 116 must complete.
+- **Lows of `T-020-57`'s review.** A restart between a return's landing and its recalculation lands nothing twice, to the
+  exact balance: `return_landed_before_a_restart_is_not_landed_again_before_its_recalculation`. A second recalculation of a
+  route not yet run is never asked by Core's run (held by the recalculation test's "recalculated once"); one from a segment
+  whose reversal is owed is refused by Core's run. The zero-rebuilt confirmation: see the gaps.
+- **L7** (#316's round 3): a route Core can't name now is never timed on another: the watch records the part left with no
+  route (`Stuck::no_route`) on the last route the log names for it, so a failed final deposit's part waits for its customer
+  and any other is stuck for the operator: `part_whose_current_route_core_cannot_name_is_left_no_route_on_its_tick`
+  (the record forgotten by a planted fault, `Core::forget_decision_record`).
+- **`accept_linked`** draws the linked order's id through intake's `draw_order` (now `pub`), which refuses `request-` names.
+- **L-f, books pruning**: already per segment in closing (`Evidenced::recorded` forgets an order's records at the nodes it
+  read once its segment settles and they are kept in the log); nothing more here. `T-020-60` replaces the books with one
+  answer per pass.
+- **`Ports::started`, `Ports::decision_record`** are gone; the assembly defines none of the plan's ten names.
+
+### Defaults taken (reversible, each failing closed)
+
+1. **Core's run is the last job of a tick.** What it does is the next tick's jobs' to land, close, check, time, notify and
+   checkpoint, as a deployment's run between two ticks was; a scenario's old `run(); tick()` is now `tick(); tick()`.
+2. **One step of a part a tick.** A part runs, or, with nothing left to run and its route failed, is recalculated; the new
+   route runs on the next tick; a hand-on recorded on a tick starts its linked order on the next. Each step's entries are in the
+   log before the next step reads it.
+3. **Item 8: the platform's record decides whether a move may be handed again.** Past the plan's two ways (a status question,
+   a safe repeat), an operation is handed again under its own transaction through a decided `repeat_operation` effect at any
+   provider: the platform carries it out only where its record never held the transaction and refuses one it did
+   (`DuplicateTransaction`). So the plan's "operation repeated at a provider that declares a safe repeat" is read as "at a
+   provider that declares it, or one the platform never handed it to". Alternative: hand again only at a safe-repeat provider,
+   which leaves the crash-before-effect orders of seeds 115 and 116 (the exchange, no safe repeat) stuck. A reopened segment
+   whose provider's answer or evidence is the log's, its grading cut short, is not carried on: it waits for the stuck check, as
+   before (`no_value_moves_twice_after_core_reopens`'s third case).
+4. **A linked order's authorisation is registered by Core's run**, as its acceptance names it (the first order's destination
+   and to asset, the holding account the value was withdrawn from as its origin, given by the acceptance's customer), on the
+   tick after the hand-on, where policy holds none in force for it; its inputs are the destination's account alone, as a
+   reopened Core rebuilds them (the scenario's own inputs for a linked route are not in the log).
+5. **A refused move is a failure the run recalculates from** (`SegmentOutcome::NotPermitted` counts as ended unsettled), as a
+   refused, failed or not-handed-over segment does; a move policy refused stays refused, never asked again on each tick.
+6. **A filed order's `Started` is built by Core's run from the log** (its filing's inputs), on the tick after the filing, not by
+   arrivals' own accept path, which this row doesn't edit. The order's segments follow it once Core's resume builds it.
+7. **The quote rebuilt after a reopen is rebuilt at acceptance**, not at `Intake::reopened` (which has no holds): its validity is
+   the record's figures' and its hold's; a lapsed one is gone, and its hold lapses with it.
+8. **Scenarios read the round** (`on_tick::OnTick`): a recalculation a tick tried is kept for the reader until it reads it
+   (`Core::take_recalculation`), so a test that ticked for a landing and then asks for the recalculation reads that tick's.
+
+### Gaps, with owners
+
+1. **The zero-rebuilt confirmation's stuck naming** (the review Low of `T-020-57`): a part whose reversed first move's
+   confirmation was rebuilt as zero is refused recalculation (`NoSettledEnd`) and left as it stands: the stuck watch times it on
+   its figures. No scenario reaches a zero confirmation (both judges refuse anything but the amount asked), so no test drives it;
+   owner: `T-020-60`, whose reader confirms the return.
+2. **A second recalculation is Core's run's rule, not `Recalculations::recalculate`'s**: a gate there refused the recalc unit
+   paths' own legitimate recalculations (a pending floor wait, the customer's choice recorded by hand, a move policy refused
+   with no flight kept), so it was taken out. A direct caller of `recalculate` may still recalculate a route not yet run; every
+   caller in a deployment is Core's run.
+3. **`accept_linked` stays the assembly's**: the linked order's acceptance (its routing, the quote shown and the customer's
+   acceptance entry) is written by the assembly, with its id now drawn through `draw_order`. Moving the linked acceptance into
+   Core is a row of its own (owner: `T-020-61`'s follow-up, or `F-030`'s customer surface).
+4. **The release acceptance in scenarios** (`T-020-49`'s gap 6) is unchanged: `accept_waiting_release` and the wallet's
+   `accept_release` still accept through the fleet; not this row's run.

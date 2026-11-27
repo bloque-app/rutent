@@ -19,6 +19,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Fault, Given, Scenario, base_request, plant};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 use serde_json::Value;
 
 /// The customer's agent, acting for the customer's party: a login of its own that the register lists as an agent.
@@ -98,7 +99,9 @@ fn demand(acting: &Actor) -> Run {
             kind: "withdrawal".to_owned(),
         },
     );
-    let ran = core.run(&order).expect("the order runs to the demand");
+    let ran = core
+        .ran_on_tick(&order)
+        .expect("the order runs to the demand");
     Run { core, order, ran }
 }
 

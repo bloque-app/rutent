@@ -17,6 +17,7 @@ use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, Step};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE, id};
+use rutent_scenarios::on_tick::OnTick;
 
 fn staff(core: &Core, desk: &str, login: &str) -> Actor {
     let actor = Actor {
@@ -100,7 +101,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
     let order = orders[0].clone();
     let part = core.first_part(&order).expect("a started order");
     core.faults.refuse_begin = Some(1);
-    core.run(&order).expect("the order runs");
+    core.ran_on_tick(&order).expect("the order runs");
     core.leave_no_route(&order).expect("the part is stuck");
     assert!(core.is_stuck(&order, &part));
 
@@ -142,7 +143,7 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
     };
     let evidence = evidence_about(&core, &order);
     let decision = core
-        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &alice, &resolution, &evidence)
         .expect("asked");
     assert_eq!(decision.outcome, Answer::Permit {}, "{decision:?}");
     let carries_out = Decided {
@@ -152,15 +153,13 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
     let handled = core.operations_received(RESERVE);
     // The log admits a hand-on's effect only for a linked order it holds an acceptance of: the move is refused at the
     // log, before the mover is asked, so no effect is recorded and nothing is handed to anyone.
-    let moved = core.move_stuck(&order, &carries_out, &bob);
+    let moved = core.move_stuck_in_core(&order, &carries_out, &bob);
     assert!(
         matches!(
             &moved,
-            Err(rutent_scenarios::assembly::StepError::Resolve(
-                rutent_core_orch::stuck::ResolveError::Append(
+            Err(rutent_core_orch::stuck::ResolveError::Append(
                     rutent_contracts::core_internal::calls::AppendFailure::Refused(why)
-                )
-            )) if why.0 == "a stuck order's value is handed on only to an order accepted in this log"
+                )) if why.0 == "a stuck order's value is handed on only to an order accepted in this log"
         ),
         "{moved:?}"
     );
@@ -171,19 +170,8 @@ fn stuck_order_of_the_assembled_core_is_handed_on_only_where_a_holding_account_h
         "the reserve is handed nothing"
     );
     assert!(core.is_stuck(&order, &part), "the part stays held");
-    let unknown = rutent_contracts::core_internal::Receipt {
-        log: id("log-1"),
-        index: rutent_contracts::provider_role::SafeInteger::try_from(0u64).unwrap(),
-        entry: serde_json::from_value(serde_json::json!({
-            "algorithm": "sha-256", "value": "00".repeat(32)
-        }))
-        .unwrap(),
-    };
     assert!(
-        matches!(
-            core.hand_on(&order, &unknown, &bob),
-            Err(rutent_scenarios::assembly::holding::HandingError::NotWithdrawn)
-        ),
+        core.handed_on_on_tick(&order).is_err(),
         "no withdrawal is done, so no hand-on is recorded"
     );
 }
@@ -202,7 +190,7 @@ fn the_assemblys_read_of_the_log_is_the_log_handle_itself() {
             .core(1, &mut Reference);
     let read = core.log_read();
     let before = read.entries().len();
-    core.run(&orders[0]).expect("the order runs");
+    core.ran_on_tick(&orders[0]).expect("the order runs");
     let after = read.entries().len();
     assert!(
         after > before,

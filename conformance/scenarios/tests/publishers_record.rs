@@ -25,6 +25,7 @@ use rutent_evidence::replay::{
 use rutent_evidence::{MovementId, PublicNetwork, Status};
 use rutent_scenarios::assembly::Core;
 use rutent_scenarios::kit::AMOUNT;
+use rutent_scenarios::on_tick::OnTick;
 
 const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
@@ -606,6 +607,9 @@ fn ticks_question_about_a_private_node_is_decided_and_recorded_and_a_denial_asks
         read_transactions(&core).len(),
         core.publishers_asked().len(),
     );
+    // The job ran on the tick the order ran on, before the run: it is due again past its cadence.
+    core.clock
+        .advance(rutent_core_orch::schedule::Job::PublishersRecords.default_seconds());
     let round = core.tick();
     let effects = read_transactions(&core);
     let asked = core.publishers_asked();
@@ -850,7 +854,7 @@ fn a_waiting_segments_record_survives_another_orders_read_of_the_same_node() {
             },
         )
         .expect("recorded");
-    core.run(&a).expect("A runs again");
+    core.ran_on_tick(&a).expect("A runs again");
     assert_eq!(
         state(&mut core, &a),
         rutent_contracts::state_machine::OrderState::Complete
@@ -926,14 +930,15 @@ fn a_restart_while_a_segment_waits_keeps_its_record_once() {
     assert!(kept > 0, "the record was kept while the deposit waits");
     let mut core = rutent_scenarios::harness::Scenario::new("execution", "AC-35", given(&names))
         .reopen(core, 1, &mut rutent_scenarios::assembly::machine::Reference);
-    core.run(&a).expect("A runs again after the restart");
+    core.ran_on_tick(&a)
+        .expect("A runs again after the restart");
     assert_eq!(
         records_kept(&core, &a),
         kept,
         "the re-read record, signed afresh, says what the log holds: it is not kept twice"
     );
     put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
-    core.run(&a).expect("A runs again");
+    core.ran_on_tick(&a).expect("A runs again");
     assert_eq!(
         state(&mut core, &a),
         rutent_contracts::state_machine::OrderState::Complete
@@ -972,7 +977,7 @@ fn closing_books_drop_an_orders_records_once_its_segments_have_settled() {
     assert_eq!(accounted(&ran_b).len(), 2);
     assert_eq!(core.records_held(), 1, "only the waiting order's remains");
     put_on_the_banks_record(&mut core, &transaction(&waiting[1]));
-    core.run(&a).expect("A runs again");
+    core.ran_on_tick(&a).expect("A runs again");
     assert_eq!(
         core.records_held(),
         0,

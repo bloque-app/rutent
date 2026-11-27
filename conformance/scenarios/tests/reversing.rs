@@ -25,9 +25,9 @@ use rutent_core_orch::recalc::{NotRecalculable, Recalculation};
 use rutent_core_orch::reversal::{Confirmation, NotCounted, Word};
 use rutent_core_orch::segments::SegmentOutcome;
 use rutent_core_orch::stuck::{Moved, ResolveError, Resolved};
-use rutent_scenarios::assembly::StepError;
 use rutent_scenarios::assembly::{Core, ORIGIN_ACCOUNT};
 use rutent_scenarios::kit::{self, AMOUNT, id};
+use rutent_scenarios::on_tick::OnTick;
 
 const IN: &str = "sim-join-in";
 const EXCHANGE: &str = "sim-join-exchange";
@@ -94,7 +94,7 @@ fn true_undo_is_shown_back_at_the_origin_by_another_party() {
     );
     // The failed exchange's value is in motion, not evidenced anywhere: no route is recalculated from it.
     assert_eq!(
-        core.recalculate(&order).expect("tried"),
+        core.recalculated_on_tick(&order).expect("tried"),
         Recalculation::NotNow(NotRecalculable::InFlight {
             segment: rutent_contracts::state_machine::Id::new(exchange.as_str()).expect("an id"),
             state: SegmentState::FailedReversalOwed
@@ -156,7 +156,9 @@ fn true_undo_is_shown_back_at_the_origin_by_another_party() {
             .count()
     };
     assert_eq!(acceptances(&core), 1);
-    let Recalculation::Recalculated(recalculated) = core.recalculate(&order).expect("tried") else {
+    let Recalculation::Recalculated(recalculated) =
+        core.recalculated_on_tick(&order).expect("tried")
+    else {
         panic!("a route from where the value is shown back");
     };
     assert_eq!(
@@ -177,7 +179,7 @@ fn true_undo_is_shown_back_at_the_origin_by_another_party() {
     );
     assert_eq!(acceptances(&core), 1, "no yes was asked again");
     let ran = core
-        .run_recalculated(&order, &recalculated)
+        .ran_once_on_tick(&order)
         .expect("the recalculated part runs");
     assert!(
         segments_of(&[ran])
@@ -199,13 +201,16 @@ fn stuck_with_no_route(accepts: &'static str) -> (Core, Id, Id) {
     );
     core.world()
         .script_dry_run(EXCHANGE, "conversion", Behaviour::act(Act::Refuse));
-    let outcome = core.recalculate(&order).expect("tried");
+    let outcome = core.recalculated_on_tick(&order).expect("tried");
     assert!(
         matches!(outcome, Recalculation::NoRoute { .. }),
         "no route is left: {outcome:?}"
     );
-    let recorded = core.record_no_route(&order, &outcome).expect("recorded");
-    assert_eq!(recorded.state, OrderState::Stuck);
+    // Core's run recorded it on the same tick (`REQ-ORD-28`, `T-020-61`).
+    assert_eq!(
+        core.followed(&order).expect("followed").parts[0].state,
+        OrderState::Stuck
+    );
     (core, order, exchange)
 }
 
@@ -305,7 +310,7 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     core.registers().list(&holder);
     core.registers().permit(&holder, Permission::DecideStuck);
     for decider in [kit::core(), kit::customer(), holder.clone()] {
-        let decision = core.decide_stuck(&order, &decider, &resolution, &evidence);
+        let decision = core.decide_stuck_in_core(&order, &decider, &resolution, &evidence);
         assert!(
             !matches!(&decision, Ok(d) if d.permit().is_some()),
             "{decider:?}: {decision:?}"
@@ -313,14 +318,14 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     }
     // A decision names its evidence: none is refused.
     assert!(matches!(
-        core.decide_stuck(&order, &alice, &resolution, &[]),
-        Err(StepError::Resolve(ResolveError::NoEvidence))
+        core.decide_stuck_in_core(&order, &alice, &resolution, &[]),
+        Err(ResolveError::NoEvidence)
     ));
     assert_eq!(effects(&core), 0);
 
     // One actor decides.
     let decision = core
-        .decide_stuck(&order, &alice, &resolution, &evidence)
+        .decide_stuck_in_core(&order, &alice, &resolution, &evidence)
         .expect("decided");
     assert!(decision.permit().is_some(), "{decision:?}");
     let decided = Decided {
@@ -332,14 +337,14 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     // the decider's party. Core isn't the operator's, and policy refuses it the move. Nothing moves.
     assert!(
         matches!(
-            core.move_stuck(&order, &decided, &alice),
-            Err(StepError::Resolve(ResolveError::SameParty))
+            core.move_stuck_in_core(&order, &decided, &alice),
+            Err(ResolveError::SameParty)
         ),
         "the decider's own party"
     );
     assert!(
         matches!(
-            core.move_stuck(&order, &decided, &kit::core()),
+            core.move_stuck_in_core(&order, &decided, &kit::core()),
             Ok(Moved::NotPermitted(_))
         ),
         "Core is its own party"
@@ -348,7 +353,9 @@ fn failed_segment_with_no_route_left_is_resolved_under_policy_by_two_actors() {
     assert_eq!(state(&mut core, &order), OrderState::Stuck);
 
     // Another moves it, once, and the part ends: its value back at the origin.
-    let moved = core.move_stuck(&order, &decided, &bob).expect("moved");
+    let moved = core
+        .move_stuck_in_core(&order, &decided, &bob)
+        .expect("moved");
     assert!(
         matches!(
             moved,

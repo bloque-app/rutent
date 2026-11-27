@@ -2895,4 +2895,8 @@ impl rutent_core_orch::quote::Recorded for ReadsNothing {
     fn entry(&self, _: &Receipt) -> Option<Entry> {
         None
     }
+
+    fn history(&self) -> Vec<(Receipt, Entry)> {
+        Vec::new()
+    }
 }

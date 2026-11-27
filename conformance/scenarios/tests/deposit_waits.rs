@@ -20,6 +20,7 @@ use rutent_scenarios::assembly::component;
 use rutent_scenarios::assembly::machine::Reference;
 use rutent_scenarios::harness::Scenario;
 use rutent_scenarios::kit::{self, AMOUNT, id};
+use rutent_scenarios::on_tick::OnTick;
 
 const SLOW: &str = "sim-reserve-slow";
 
@@ -122,7 +123,7 @@ fn a_waiting_deposit_is_accepted_in_a_later_session_after_core_reopens() {
         given_in,
         Some((AcceptanceBasis::GivenOnDeposit, Some(later)))
     );
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [rutent_core_orch::segments::Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };
@@ -254,7 +255,7 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
     assert_eq!(moved(&core), 0);
     assert!(core.world().journal(SLOW).is_empty(), "nothing moved");
     assert!(
-        core.run(&order).is_err(),
+        matches!(core.ran_on_tick(&order), Ok(ran) if ran.is_empty()),
         "an order not accepted has no route to run"
     );
 
@@ -330,7 +331,7 @@ fn a_deposit_with_no_firm_rate_waits_and_runs_on_its_customers_acceptance() {
     );
 
     // It runs to its end on that acceptance: its withdrawal and its later segment both move, and it completes.
-    let ran = core.run(&order).expect("the order ran");
+    let ran = core.ran_on_tick(&order).expect("the order ran");
     let [rutent_core_orch::segments::Ran::Segments(segments)] = ran.as_slice() else {
         panic!("one part ran its segments: {ran:?}");
     };

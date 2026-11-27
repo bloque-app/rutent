@@ -7,6 +7,7 @@
 //! The verifier stand-in is the role only: it is no part of the catalogue's routes, takes no script and has no book.
 //! The routing asks it by the order's needs (`rounds::Need`), as provider-role 3.0.0's tuples name no verifier.
 
+use rutent_scenarios::on_tick::OnTick;
 use std::time::Duration;
 
 use rutent_conformance::sim::{Role, Spec};
@@ -217,7 +218,7 @@ fn judged_and_run(verifiers: &[&str], verifier: &str, subject: &str) -> (Core, I
         .expect("the verifier's judgement");
     core.rests_on(&order, PAYER_INPUT, judgement)
         .expect("declared before anything is handed over");
-    core.run(&order).expect("runs");
+    core.ran_on_tick(&order).expect("runs");
     (core, order, told)
 }
 

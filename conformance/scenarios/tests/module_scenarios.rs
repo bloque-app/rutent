@@ -19,6 +19,7 @@ use rutent_scenarios::assembly::releases::SegmentVersion;
 use rutent_scenarios::assembly::{Core, Staged};
 use rutent_scenarios::harness::{Given, Scenario, Step};
 use rutent_scenarios::kit::{self, AMOUNT, RESERVE};
+use rutent_scenarios::on_tick::OnTick;
 use rutent_scenarios::sim::Release;
 
 const OTHER: &str = "sim-reserve-b";
@@ -84,7 +85,9 @@ fn books(core: &mut Core, provider: &str) -> serde_json::Value {
 fn upgrade_at_once() {
     // The control: the same order, with no upgrade anywhere.
     let (mut control, orders) = accepted(two_reserves(), 2);
-    control.run(&orders[0]).expect("the control order runs");
+    control
+        .ran_on_tick(&orders[0])
+        .expect("the control order runs");
     assert!(complete(&mut control, &orders[0]));
     let control_books = books(&mut control, RESERVE);
     assert!(
@@ -122,7 +125,7 @@ fn upgrade_at_once() {
 
     // The order at A, accepted before B's upgrade, runs to the end as the control does: the same books, the same
     // end, and every one of its segments on A's version 1.0.0 from its start to its end.
-    core.run(&orders[0]).expect("the order at A runs");
+    core.ran_on_tick(&orders[0]).expect("the order at A runs");
     assert!(complete(&mut core, &orders[0]), "the order at A completed");
     assert_eq!(
         books(&mut core, RESERVE),
@@ -162,7 +165,8 @@ fn upgrade_at_once() {
     );
 
     // The next order at A, after the failed upgrade, runs on the version that stayed.
-    core.run(&orders[1]).expect("the next order at A runs");
+    core.ran_on_tick(&orders[1])
+        .expect("the next order at A runs");
     assert!(complete(&mut core, &orders[1]));
     let ran = at(&core, RESERVE);
     assert!(
@@ -192,7 +196,7 @@ fn upgrade_staged() {
     );
 
     // The order at A runs on, on A's own version, with B's staged release beside B's.
-    core.run(&orders[0]).expect("the order at A runs");
+    core.ran_on_tick(&orders[0]).expect("the order at A runs");
     assert!(complete(&mut core, &orders[0]));
     assert!(
         at(&core, RESERVE)
@@ -384,7 +388,7 @@ fn a_permitted_roll_back_ends_the_staging_and_a_refused_one_moves_nothing() {
 // verifies: AC-21, REQ-MDL-3
 #[test]
 fn widened_release_needs_fresh_acceptance_before_it_serves_an_order() {
-    let (mut core, orders) = accepted(Given::one_reserve(Staged::AtOnce), 3);
+    let (mut core, orders) = accepted(Given::one_reserve(Staged::AtOnce), 2);
     let widened = artefact(core.publish_release(RESERVE, &Release::at("1.1.0").widened()));
     assert_eq!(widened.acceptance.required, AcceptanceMode::Fresh);
     assert!(widened.acceptance.accepted.is_none(), "it waits");
@@ -412,8 +416,8 @@ fn widened_release_needs_fresh_acceptance_before_it_serves_an_order() {
     );
 
     // The orders that run while it waits run on the version in force, and complete.
-    for order in &orders[..2] {
-        core.run(order).expect("the order runs");
+    for order in &orders {
+        core.ran_on_tick(order).expect("the order runs");
         assert!(complete(&mut core, order));
     }
     let ran = at(&core, RESERVE);
@@ -439,9 +443,28 @@ fn widened_release_needs_fresh_acceptance_before_it_serves_an_order() {
         core.fleet().platform.active_version(RESERVE).as_deref(),
         Some("1.1.0")
     );
+    // The next order, accepted now, runs on Core's ticks on the release in force.
     let before = at(&core, RESERVE).len();
-    core.run(&orders[2]).expect("the order runs");
-    assert!(complete(&mut core, &orders[2]));
+    let customer = kit::customer();
+    let session = core.open_session(&customer).expect("a session");
+    let next = Core::order_of(
+        &core
+            .request(rutent_scenarios::harness::base_request(
+                "req-next", AMOUNT, &session,
+            ))
+            .expect("requested"),
+    )
+    .expect("an order");
+    let rutent_core_orch::intake::Told::Exists {
+        status: rutent_core_orch::intake::Status::Quoted { digest, .. },
+        ..
+    } = core.quote(&customer, &next).expect("quoted")
+    else {
+        panic!("quoted")
+    };
+    core.accept(&customer, &next, &digest).expect("accepted");
+    core.ran_on_tick(&next).expect("the order runs");
+    assert!(complete(&mut core, &next));
     let after = at(&core, RESERVE);
     assert!(after.len() > before);
     assert!(
@@ -583,7 +606,7 @@ fn modules_in_rust_and_in_c_run_sandboxed_and_read_no_other_providers_state_or_s
 
     // Core's order at the simulated reserve ran on meanwhile, and no request, book entry or record of Core's holds a
     // canary.
-    core.run(&orders[0]).expect("the order runs");
+    core.ran_on_tick(&orders[0]).expect("the order runs");
     assert!(complete(&mut core, &orders[0]));
     let book = books(&mut core, RESERVE);
     let delivered = format!("{:?}", core.world().delivered());
@@ -679,7 +702,7 @@ fn operator_declares_a_version_exploited_through_policy_and_its_segments_stop_on
 
     // Its segments stop on it: the order at the provider moves nothing there.
     let before = books(&mut core, RESERVE);
-    let _ = core.run(&orders[0]);
+    let _ = core.ran_on_tick(&orders[0]);
     assert!(!complete(&mut core, &orders[0]));
     assert_eq!(
         books(&mut core, RESERVE),

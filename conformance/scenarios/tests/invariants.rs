@@ -12,6 +12,7 @@
 mod execution_support;
 mod invariants_support;
 
+use rutent_scenarios::on_tick::OnTick;
 use std::collections::BTreeMap;
 
 use invariants_support::*;
@@ -1482,7 +1483,8 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
                 nth: 0,
             },
         );
-        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.run(&order)));
+        let crashed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.ran_on_tick(&order)));
         assert!(crashed.is_err(), "seed {seed}: the crash stopped Core");
         let mut core = scenario.restart_holding(core, seed, &mut Reference);
         assert!(
@@ -1546,7 +1548,8 @@ fn platform_restarted_mid_run_holds_its_releases_until_the_operator_confirms() {
             matches!(answered, Handled::Answered(_)),
             "seed {seed}: answered once confirmed: {answered:?}"
         );
-        core.run(&order).expect("the stopped order carries on");
+        core.ran_on_tick(&order)
+            .expect("the stopped order carries on");
         core.flush()
             .expect("the state machine takes what the log did");
         let state = core.status(&kit::customer(), &order).expect("followed");
@@ -1682,4 +1685,37 @@ fn order_in_a_second_session_of_a_long_run_is_quoted() {
         quoted(&mut core, "req-second-session", &second),
         "quoted in the second session"
     );
+}
+
+/// The one point a restarted Core could move value twice (`T-020-61`, item 9): the process crashes after the platform
+/// carried a segment's operation out, its provider having moved, and before Core logged the answer. The restarted Core
+/// carries the segment on (its status asked, the answer the provider's own result), and the order completes; the value moved
+/// once in the provider's books, each transaction stated once and each segment handed over once (the platform's record
+/// refuses a second carrying out, `DuplicateTransaction`). Every pinned run of a restarting kind asserts its crash fell.
+// verifies: INV-8, NFR-6
+#[test]
+fn restart_after_the_provider_moved_and_before_its_answer_was_logged_moves_nothing_twice() {
+    let mut fell = 0;
+    for sim in runs() {
+        let pinned = PINNED.contains(&sim.plan);
+        if pinned && sim.plan.kind.restarts() && sim.plan.kind != Kind::RestartWhileStuck {
+            assert!(!sim.caught.is_empty(), "{}: the crash fell", sim.name());
+        }
+        if !matches!(sim.plan.kind, Kind::RestartAfterEffect(_)) || sim.caught.is_empty() {
+            continue;
+        }
+        fell += 1;
+        let bad = moved_once(sim);
+        assert!(bad.is_empty(), "{}: {bad:?}", sim.name());
+        let states = sim.run.state_names();
+        for order in &sim.caught {
+            assert_eq!(
+                states.get(order).cloned().flatten().as_deref(),
+                Some("complete"),
+                "{}: the caught order completes",
+                sim.name()
+            );
+        }
+    }
+    assert!(fell >= 2, "only {fell} runs crashed after an effect");
 }
