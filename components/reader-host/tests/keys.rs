@@ -1,5 +1,5 @@
 //! Signing outside the reader (`T-015-04` part 3, `REQ-MDL-6` applied to readers). The host resolves each reader's key
-//! as the platform resolves a provider's, through `T-014-01`'s resolver over a vault bucket's keys (`KvResolver`, here
+//! as the platform resolves a provider's, through `T-014-01`'s resolver over a vault bucket's keys (`StatementKeys`, here
 //! over a stand-in store on loopback). Alone in its test binary: it sets the host's environment, where the binary reads
 //! its store's token, before any thread starts.
 
@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
-use rutent_prov::keys::{
-    HttpsTransport, RoleSettings, Server, StoreAddress, StoreScheme, Token, kv_bucket,
-};
+use rutent_prov::keys::{RoleSettings, Server, StatementKeys, StoreAddress, StoreScheme};
 use rutent_reader_host::egress::Network;
 use rutent_reader_host::records::MemoryRecords;
 use rutent_reader_host::{Host, Services};
@@ -102,10 +100,8 @@ fn reader_never_holds_its_statement_key() {
         keys: "rutent/readers/keys".to_owned(),
         namespace: None,
     };
-    let transport = HttpsTransport::for_role(&role).unwrap();
-    let keys = kv_bucket(&role, Token::new(token).unwrap(), transport)
-        .unwrap()
-        .keys;
+    // The facade over the role's statement keys alone (`T-015-05`): the bucket's secrets are never reached.
+    let keys = StatementKeys::for_role(&role, token.to_owned()).unwrap();
 
     let host = Host::start(
         host_config(vec![reader.clone()]),

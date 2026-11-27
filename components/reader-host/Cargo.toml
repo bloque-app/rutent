@@ -9,8 +9,9 @@ publish.workspace = true
 workspace = true
 
 # The reader host (`T-015-04`, `DEC-28`, ADR-0007 as amended): `CMP-EVIDENCE`'s standalone part, one process that
-# serves several readers, each its own child process. A `DEC-20` path. It depends on the contracts and, for its egress
-# layer alone, on the provider system (`tools/boundary-check`'s `READER_HOST`).
+# serves several readers, each its own child process. A `DEC-20` path. It depends on the contracts and on the provider
+# system through its admitted paths alone (`tools/boundary-check`'s `READER_HOST` and `PROV_PATHS`): its egress layer,
+# the provider's jail (`rutent_prov::confine`) and the facade over a role's statement keys (`rutent_prov::keys`).
 [dependencies]
 rutent-contracts = { path = "../../contracts" }
 rutent-prov = { path = "../prov" }

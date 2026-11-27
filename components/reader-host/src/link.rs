@@ -9,11 +9,18 @@
 //! - **The host's certificate** is the one the operator's CA issued under the subject name the listing names. Core
 //!   holds it to that CA and that name, never to a pinned leaf, so the leaf may be rotated under the same CA and name
 //!   with no listing change; the host reads its chain and key at start.
+//! - **A slot kept for Core** ([`RESERVED_FOR_CORE`]). Connections still in their handshake are bounded, overall and
+//!   by source address, so peers that never authenticate can't hold every slot; and beyond those bounds, a slot is
+//!   kept for a source Core has authenticated from, which no other source can take (`T-015-05`). The source address is
+//!   the one signal before a handshake ends: behind a proxy or load balancer that hides the peer's address, every peer
+//!   shares the proxy's, and so its bounds and Core's slot. A deployment behind one keeps the peer's own address to
+//!   the host (a TCP pass-through that preserves it, never TLS terminated in front of the host, since Core's
+//!   certificate must reach the host), or keeps the host's port reachable by Core's network alone.
 //! - **The frames.** Each question is one frame (its length as four little-endian bytes, then its JSON, at most
 //!   [`MAX_QUESTION`] bytes), and each answer one frame back: the reader's signed answer, or an empty frame where the
 //!   host has nothing to sign for, which Core reads as unreadable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -49,6 +56,13 @@ pub const MAX_HANDSHAKING: usize = 16;
 /// from Core.
 pub const MAX_HANDSHAKING_PER_SOURCE: usize = 4;
 
+/// The handshakes kept for a source Core has authenticated from, beyond [`MAX_HANDSHAKING`] and
+/// [`MAX_HANDSHAKING_PER_SOURCE`]: no other source can take them.
+pub const RESERVED_FOR_CORE: usize = 1;
+
+/// How many of the sources Core has authenticated from the host remembers, the latest ones.
+pub const CORE_SOURCES: usize = 8;
+
 /// How long a whole handshake may take, every read and write of it together, before the host closes the connection.
 pub const HANDSHAKE: Duration = Duration::from_secs(10);
 
@@ -64,6 +78,8 @@ pub struct LinkLimits {
     pub handshaking: usize,
     /// [`MAX_HANDSHAKING_PER_SOURCE`] by default.
     pub handshaking_per_source: usize,
+    /// [`RESERVED_FOR_CORE`] by default.
+    pub reserved_for_core: usize,
     /// [`HANDSHAKE`] by default.
     pub handshake: Duration,
     /// [`IDLE`] by default.
@@ -76,6 +92,7 @@ impl Default for LinkLimits {
             connections: MAX_CONNECTIONS,
             handshaking: MAX_HANDSHAKING,
             handshaking_per_source: MAX_HANDSHAKING_PER_SOURCE,
+            reserved_for_core: RESERVED_FOR_CORE,
             handshake: HANDSHAKE,
             idle: IDLE,
         }
@@ -252,6 +269,7 @@ impl Link {
         let open = Arc::new(AtomicUsize::new(0));
         let handshaking = Arc::new(AtomicUsize::new(0));
         let sources: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
+        let core = Arc::new(CoreSlots::new(limits.reserved_for_core));
         let stopping = stop.clone();
         let accepter = std::thread::Builder::new()
             .name("reader host link".to_owned())
@@ -281,18 +299,26 @@ impl Link {
                         *from_it += 1;
                         true
                     });
-                    let Some(source) = source.filter(|_| admitted) else {
+                    // Past the bounds, the slot kept for a source Core authenticated from.
+                    let reserved = !admitted && source.is_some_and(|ip| core.take(ip));
+                    let Some(source) = source.filter(|_| admitted || reserved) else {
                         open.fetch_sub(1, Ordering::SeqCst);
                         continue;
                     };
                     let (tls, host) = (tls.clone(), host.clone());
-                    let (open, handshaking, sources) =
-                        (open.clone(), handshaking.clone(), sources.clone());
+                    let (open, handshaking, sources, core) = (
+                        open.clone(),
+                        handshaking.clone(),
+                        sources.clone(),
+                        core.clone(),
+                    );
                     std::thread::spawn(move || {
                         let shaken = Shaking {
                             handshaking: &handshaking,
                             sources: &sources,
                             source,
+                            core: &core,
+                            reserved,
                         };
                         let _ = serve_connection(stream, &tls, &host, &limits, shaken);
                         open.fetch_sub(1, Ordering::SeqCst);
@@ -332,9 +358,12 @@ fn serve_connection(
     limits: &LinkLimits,
     slot: Shaking<'_>,
 ) -> io::Result<()> {
+    let (source, core) = (slot.source, slot.core);
     let shaken = handshake(tcp, tls, limits.handshake);
     slot.release();
     let mut stream = shaken?;
+    // The handshake held the client to Core's certificate: its source is one Core authenticates from.
+    core.authenticated(source);
     stream.sock.set_read_timeout(Some(limits.idle))?;
     stream.sock.set_write_timeout(Some(limits.idle))?;
     loop {
@@ -347,15 +376,21 @@ fn serve_connection(
 }
 
 /// A connection's handshake slot: counted in the link's total and its source's, both given back when the handshake
-/// ends, done or not.
+/// ends, done or not; or, when `reserved`, the slot kept for Core, given back to it.
 struct Shaking<'a> {
     handshaking: &'a AtomicUsize,
     sources: &'a Mutex<HashMap<IpAddr, usize>>,
     source: IpAddr,
+    core: &'a CoreSlots,
+    reserved: bool,
 }
 
 impl Shaking<'_> {
     fn release(self) {
+        if self.reserved {
+            self.core.give_back();
+            return;
+        }
         self.handshaking.fetch_sub(1, Ordering::SeqCst);
         if let Ok(mut by_source) = self.sources.lock()
             && let Some(from_it) = by_source.get_mut(&self.source)
@@ -364,6 +399,55 @@ impl Shaking<'_> {
             if *from_it == 0 {
                 by_source.remove(&self.source);
             }
+        }
+    }
+}
+
+/// The handshake slots kept for Core (`T-015-05`): the sources Core has authenticated from, the latest
+/// [`CORE_SOURCES`] of them, and how many of the kept slots are taken.
+#[derive(Debug)]
+struct CoreSlots {
+    reserved: usize,
+    held: Mutex<(VecDeque<IpAddr>, usize)>,
+}
+
+impl CoreSlots {
+    fn new(reserved: usize) -> Self {
+        CoreSlots {
+            reserved,
+            held: Mutex::new((VecDeque::new(), 0)),
+        }
+    }
+
+    /// Takes a kept slot for `source`: only a source Core has authenticated from, and only while one is free.
+    fn take(&self, source: IpAddr) -> bool {
+        let Ok(mut held) = self.held.lock() else {
+            return false;
+        };
+        let (known, taken) = &mut *held;
+        if !known.contains(&source) || *taken >= self.reserved {
+            return false;
+        }
+        *taken += 1;
+        true
+    }
+
+    /// Gives a kept slot back.
+    fn give_back(&self) {
+        if let Ok(mut held) = self.held.lock() {
+            held.1 = held.1.saturating_sub(1);
+        }
+    }
+
+    /// Remembers `source` as one Core authenticated from, as the latest.
+    fn authenticated(&self, source: IpAddr) {
+        if let Ok(mut held) = self.held.lock() {
+            let known = &mut held.0;
+            known.retain(|ip| *ip != source);
+            if known.len() == CORE_SOURCES {
+                known.pop_front();
+            }
+            known.push_back(source);
         }
     }
 }
@@ -400,4 +484,35 @@ pub fn read_answer(stream: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
 /// Writes a question as a frame to any stream.
 pub fn write_question(stream: &mut impl Write, question: &[u8]) -> io::Result<()> {
     write_frame(stream, question)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::IpAddr;
+
+    use super::{CORE_SOURCES, CoreSlots};
+
+    // verifies: DEC-28
+    #[test]
+    fn slot_kept_for_core_is_taken_only_from_a_source_core_authenticated_from() {
+        let (core, stranger): (IpAddr, IpAddr) =
+            ("10.0.0.7".parse().unwrap(), "10.0.0.9".parse().unwrap());
+        let slots = CoreSlots::new(1);
+        assert!(!slots.take(core), "not before Core authenticated from it");
+        slots.authenticated(core);
+        assert!(!slots.take(stranger), "never another source");
+        assert!(slots.take(core));
+        assert!(!slots.take(core), "one kept slot, taken");
+        slots.give_back();
+        assert!(slots.take(core), "given back, taken again");
+
+        // The latest sources are remembered, a bounded number of them.
+        let slots = CoreSlots::new(1);
+        slots.authenticated(core);
+        for n in 0..CORE_SOURCES as u8 {
+            slots.authenticated(IpAddr::from([10, 1, 0, n]));
+        }
+        assert!(!slots.take(core), "the oldest is forgotten");
+        assert!(slots.take(IpAddr::from([10, 1, 0, 0])));
+    }
 }

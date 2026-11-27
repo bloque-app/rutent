@@ -29,6 +29,7 @@ use crate::egress::{ReaderEgress, Serving};
 use crate::host::ReaderState;
 use crate::jail;
 use crate::records::START_UP;
+use crate::time::past;
 use crate::wire::{FromReader, RpcResult, ToReader, read_frame, write_frame};
 
 /// The most lines the host keeps of a reader's log.
@@ -42,6 +43,10 @@ const CHAIN_ID: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}"#;
 
 /// What the worker gives back for a question: the answer's body to sign, or why it is unreadable.
 pub(crate) type Reply = Result<ReaderAnswer, &'static str>;
+
+/// Why a question is dropped: its deadline passed, on the host's clock, before the reader was handed it. The host
+/// answers it with nothing (`T-015-05`).
+pub(crate) const PAST_DEADLINE: &str = "question_past_deadline";
 
 /// What reaches a worker.
 pub(crate) enum Event {
@@ -327,14 +332,23 @@ impl Worker {
         self.generation += 1;
         let generation = self.generation;
         self.shared.starts.fetch_add(1, Ordering::SeqCst);
-        let workdir = std::env::temp_dir().join(format!(
-            "rutent-reader-{}-{}-{generation}",
-            self.config.name,
-            std::process::id()
-        ));
-        let started = std::fs::create_dir_all(&workdir)
-            .and_then(|()| jail::command(&self.config, &workdir))
-            .and_then(|mut command| command.spawn());
+        // A directory of its own, new, mode 0700: one already there is refused, and left as it is (`T-015-05`).
+        let workdir =
+            match jail::workdir(&std::env::temp_dir(), self.config.name.as_str(), generation) {
+                Ok(workdir) => workdir,
+                Err(e) => {
+                    self.log(format!(
+                        "host: the reader's working directory wasn't made: {e}"
+                    ));
+                    self.phase = Phase::Down {
+                        restart_at: Instant::now() + self.config.limits.restart_after(),
+                        why: "reader_did_not_start",
+                    };
+                    self.set_state(ReaderState::Down);
+                    return;
+                }
+            };
+        let started = jail::command(&self.config, &workdir).and_then(|mut command| command.spawn());
         let mut child = match started {
             Ok(child) => child,
             Err(e) => {
@@ -468,6 +482,13 @@ impl Worker {
     }
 
     fn ask(&mut self, question: ReaderQuestion, reply: Sender<Reply>) {
+        // A question that waited past its deadline is dropped, never handed over: Core would refuse its answer
+        // (`T-015-05`). The next one is taken.
+        if past(&question.deadline) {
+            self.reply(&reply, Err(PAST_DEADLINE));
+            self.next();
+            return;
+        }
         if let Some(running) = &mut self.running {
             running.calls = 0;
         }

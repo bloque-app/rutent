@@ -4,11 +4,11 @@
 //! The private half is resolved as the platform resolves a provider's (`T-014-01`'s [`Resolver`], through
 //! [`rutent_prov::keys`]): from the keys of a vault bucket, keyed by the reader as a provider is keyed, by the text of
 //! the reader's listed public key, at the moment of signing, so a rotated key is used from the next answer on and the
-//! host keeps no copy. The production store is OpenBao or Vault ([`rutent_prov::keys::KvResolver`], built by
-//! [`rutent_prov::keys::kv_bucket`]). The deployment's operator key is never resolved as a reader's. The private half
-//! is held as the base64url text, unpadded, of its 32-byte Ed25519 seed, and refused unless its public half is the
-//! reader's listed key, so a store holding another key can't sign in the reader's name. It is used for one answer and
-//! dropped.
+//! host keeps no copy. The production store is OpenBao or Vault, reached through [`rutent_prov::keys::StatementKeys`],
+//! which resolves a role's statement keys and nothing else of its bucket. The deployment's operator key is never
+//! resolved as a reader's. The private half is held as the base64url text, unpadded, of its 32-byte Ed25519 seed, and
+//! refused unless its public half is the reader's listed key, so a store holding another key can't sign in the
+//! reader's name. It is used for one answer and dropped.
 
 use std::time::Instant;
 

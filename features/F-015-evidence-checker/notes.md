@@ -473,3 +473,131 @@ The `stream` reader the reviewer described (one send queued ahead of each reply)
 send's wait ends with the phase (M2's fix): after the bound each send returns at once, the worker drains faster than
 the reader refills, and the timeout path stops it too. So the `pipeline` reader, whose stand-in endpoints take 20 ms
 whatever the deadline, is the case that shows the per-turn bound load-bearing; the `stream` reader stays in the test.
+
+## T-015-05: what the check of T-015-04 left
+
+The milestone reviewer's check of `T-015-04` at `ce68f7a2` (review channel, 2026-11-27): one Low-Medium and eight
+Lows, each handled here. `DEC-20` paths edited: `components/reader-host/`, `rutent-prov`'s `keys` path
+(`components/prov/src/keys.rs`, and the facade it re-exports, `components/prov/src/proxy/statement_keys.rs`, with its
+declaration in `components/prov/src/proxy/mod.rs`), `tools/boundary-check/` and `.github/workflows/jail-probes.yml`.
+`rutent-prov`'s `confine` path is not edited: the host's bound is set in its own pre-exec step, beside the launcher's.
+
+### The Low-Medium: the host bounds a reader's memory
+
+- **Set by the host, before the reader runs.** `jail::command` adds a pre-exec step after `isolated`'s own (where
+  `oom_score_adj` was already raised): `setrlimit(RLIMIT_AS)`, soft and hard, at `PROVIDER_ADDRESS_SPACE` (4 GiB),
+  Linux only. It is inherited through `unshare`'s fork and the reader's `exec`, so a reader that skips its own
+  `confine` is bounded all the same. It can't raise it: raising a hard limit takes `CAP_SYS_RESOURCE` in the initial
+  user namespace, and the reader is root only in its own. Its own `confine` sets the same bound again, which a
+  process may always do (an equal hard limit is no raise). The bound is set in reader-host's pre-exec step, not in
+  prov's `restrict`, so the provider's and the compiler's launch is unchanged and `rutent_prov::confine` needs no new
+  item: a reversible choice; moving it into `Limits` is a `module::sandbox` change for a later row if wanted.
+- **Read by the host's check.** `check_confined` now reads, in order: `/proc/<pid>/limits` (the address space, soft
+  and hard, at the bound or under it: else `reader_memory_unbounded`, or `reader_limits_unreadable`); each thread's
+  status as before (`reader_not_confined`); no child; the network namespace as before; and `/proc/<pid>/mountinfo`
+  (one mount, the root of its file system at `/`, read-only, a `tmpfs`: else `reader_root_not_empty`, or
+  `reader_root_unreadable`). The limit is read first, so a reader without it is refused for it whatever else it
+  skipped. Every read that fails is a refusal: fail closed, as the namespace check already was.
+- **Landlock is not read.** The kernel gives no interface to another process's Landlock domain (`/proc` reports
+  none), so the host can't check it. Gap, recorded: the host holds it only through the seccomp filter it does read,
+  which prov's `confine` installs after Landlock; a hostile reader could install a filter of its own and skip
+  Landlock, which the empty root and the namespaces still bound. No owner: there is nothing on the kernel's side to
+  read.
+- **macOS** sets no address-space bound (macOS doesn't enforce `RLIMIT_AS`), as before: it is development only, and
+  `sandbox-exec`'s profile is its jail.
+
+### The Lows
+
+1. **A reader's content is trusted** (`DEC-28`). For `rpc_pool`, the host hands the reader only what at least the
+   quorum of the pool's endpoints agreed on, and signs an answer resting on agreed calls; the quorum binds which
+   endpoints agreed on what the host fetched, not what the reader then says they said. A hostile reader can make one
+   harmless agreed call and answer a fabricated movement: that is within `DEC-28`'s trust in the operator's own
+   reader, whose program is the operator's (part 5 of `lib.rs` says so).
+2. **`rutent_prov::keys` is a facade** over a role's statement keys. It re-exports `Resolver`, `ResolveError`,
+   `StatementKeys`, and the settings that build it (`RoleSettings`, `StoreAddress`, `StoreScheme`, `Server`,
+   `InvalidSettings`), and no longer `Bucket`, `kv_bucket`, `KvResolver`, `KvConfig`, `InvalidConfig`, `Token`,
+   `HttpsTransport` or `TransportError`. `StatementKeys::for_role(role, token)` takes the token's text and builds
+   the role's keys resolver alone, over HTTPS (or plain HTTP to loopback), and holds it behind a private boxed
+   `Resolver`: no resolver for the role's `secrets` path is built, and nothing gives back the token or the transport.
+   `tools/boundary-check` holds `keys` to it: `PROV_KEYS` names those items only, and the facade's own file
+   (`PROV_KEYS_FACADE`) has no public item, field, trait impl, associated type or re-export naming what it keeps
+   inside (`PROV_KEYS_WITHHELD`, read by `public_items_naming_any`, the conformance rule's reader generalised to a
+   list of names). The token's scope is still the role's: a deployment gives the reader host a role of its own whose
+   token reaches the readers' keys alone (gap for `F-030`'s deployment, beside L8 above).
+3. **A handshake slot kept for Core.** `LinkLimits::reserved_for_core` (default `RESERVED_FOR_CORE`, 1): past the
+   overall and per-source bounds, a connection from a source Core has authenticated from (the latest `CORE_SOURCES`,
+   8, remembered once a handshake holds Core's certificate) takes a kept slot no other source can take. Before a
+   handshake ends, the source address is the only signal, so **behind a proxy or load balancer** that hides the
+   peer's address, every peer shares the proxy's and so Core's kept slot, and the bounds don't separate them. A
+   deployment behind one keeps the peer's own address to the host (a TCP pass-through that preserves it; TLS is never
+   terminated in front of the host, since Core's client certificate must reach it), or keeps the host's port
+   reachable by Core's network alone (L8's gap, `F-030`). The edit to `link.rs` is the slot alone: a `CoreSlots`
+   struct, its fallback in the accept loop, its release in `Shaking`, and its `authenticated` call after a handshake.
+4. **A question past its deadline is dropped.** `Host::answer` reads the question's deadline against the host's wall
+   clock and answers one already past it with nothing (an empty frame, which Core reads as unreadable), on arrival;
+   the worker drops one whose deadline passed while it waited (`question_past_deadline`, answered with nothing too)
+   and takes the next. Neither reaches the reader. This is the one use of the host's clock against the deadline:
+   whether an answer is in time is still Core's, on Core's clock. A host clock ahead of Core's drops questions Core
+   would have taken; the operator keeps the host's clock synchronised.
+5. **The host's own server certificate as a client** is refused, and a test shows it, with a server certificate under
+   Core's own name beside it, refused for its purpose alone (`rustls`'s web PKI client verifier holds the client
+   authentication purpose). No rule was added: the behaviour was already there, so the test passed when written.
+6. **A zero `restart_after_ms` is refused** by `HostConfig::check`, as every other bound of zero is.
+7. **The reader's working directory** is made by `jail::workdir`: a new directory, mode 0700, named with the reader,
+   the host's process id, the generation and a random part (std's `RandomState`), so another user can't guess it; one
+   already there (a symbolic link included) is refused, and left as it is, and the reader is down until its next
+   start (`reader_did_not_start`).
+8. **The program path** is the operator's configuration, as the rest of a reader's is: the host canonicalises it and
+   runs it, and checks neither owner nor mode (`jail.rs`'s module documentation says so).
+9. **The manifest's comment** (`components/reader-host/Cargo.toml`) names the three admitted paths, not the egress
+   layer alone.
+
+### Tests
+
+- `reader_that_skips_its_own_memory_limit_is_refused_by_the_hosts_check` [`REQ-MDL-11`] (`tests/jail.rs`, Linux,
+  run in `jail-probes.yml`'s reader-host step, whose `grep -qx` of its `... ok` line fails the job if it is skipped):
+  the `unconfined` stand-in launched by prov's launcher alone has no bound and is refused for it
+  (`reader_memory_unbounded`); launched by the host's, `/proc/<pid>/limits` shows the bound, soft and hard, and the
+  check refuses it only for the rest of its jail (`reader_not_confined`). Every expectation is read before any fails.
+- `host's own server certificate presented as a client is refused` [`DEC-28`] (`tests/link.rs`).
+- `question past its deadline is dropped by the reader host` [`DEC-28`] (`tests/readers.rs`): dead on arrival, and
+  dead by the time its turn comes behind a slow question, each answered with nothing and never in the `inspect`
+  reader's log of the frames it read; the question ahead is answered, and so is the next.
+- Beside them, each for a rule of this row: `host_reads_a_readers_address_space_limit_and_refuses_one_unbounded`
+  [`REQ-MDL-11`] and `host_reads_a_readers_root_as_the_jails_empty_one_only` [`REQ-MDL-7`] (the check's readers of
+  `/proc`, pure, so they run on every platform);
+  `readers_working_directory_is_its_own_with_mode_0700_and_never_one_that_already_exists` [`REQ-MDL-7`];
+  `reader_host_refuses_a_restart_delay_of_zero` [`REQ-MDL-11`];
+  `slot_kept_for_core_is_taken_only_from_a_source_core_authenticated_from` and
+  `link_keeps_a_handshake_slot_for_core_that_peers_from_other_sources_cant_fill` [`DEC-28`];
+  `providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_it_keeps_inside` [`DEC-28`, `DEC-2`,
+  `REQ-MDL-6`]. `reader_never_holds_its_statement_key` now builds its keys through the facade.
+
+### Rule-off
+
+Each rule switched off alone in the source by a scratch script of the author's (not kept), the test that holds it run
+with the stand-in readers built, the file put back. Every one went red on an assertion.
+
+| Rule switched off | Test | Red |
+|---|---|---|
+| The address space read is at the bound, soft and hard | `host_reads_a_readers_address_space_limit_and_refuses_one_unbounded` | `unlimited unlimited` passed as bounded |
+| The root is one mount alone | `host_reads_a_readers_root_as_the_jails_empty_one_only` | the empty root with `/proc` mounted beside it passed |
+| The root is read-only | the same | a writable `tmpfs` root passed |
+| The root is a `tmpfs` | the same | the machine's read-only `ext4` passed |
+| The working directory's mode is 0700 | `readers_working_directory_is_its_own_with_mode_0700_and_never_one_that_already_exists` | `left: 755` |
+| One already there is refused | the same | `unwrap_err()` on `Ok`: an existing directory taken |
+| A zero restart delay is refused | `reader_host_refuses_a_restart_delay_of_zero` | `unwrap_err()` on `Ok`: the configuration passed |
+| A question dead on arrival is dropped there | `question_past_its_deadline_is_dropped_by_the_reader_host` | the question dead on arrival while the reader was busy waited 1.05 s behind the first |
+| A question that waited past its deadline is dropped at its turn | the same | `left: Some(..)`: the late question was handed to the reader and answered |
+| The slot kept for Core | `link_keeps_a_handshake_slot_for_core_that_peers_from_other_sources_cant_fill` | Core was closed at once while a peer held the one slot |
+| The kept slot only for a source Core authenticated from | the same, and `slot_kept_for_core_is_taken_only_from_a_source_core_authenticated_from` | Core's connection took the kept slot before Core had ever authenticated; a source not yet Core's took it |
+| The facade's public items name nothing it keeps inside | `providers_keys_path_is_a_facade_over_statement_keys_that_gives_back_nothing_it_keeps_inside` | `left: []`: a public `KvResolver` field passed |
+| `keys` narrowed (`KvResolver` admitted again) | the same | the real `keys.rs` no longer held `PROV_KEYS`'s re-exports |
+
+The first build of the deadline test showed the drop on arrival not load-bearing: a dead question that arrived while
+the reader was free reached the worker's drop at its turn, and was dropped there. The test now also sends one dead on
+arrival while the reader is busy, which must come back at once rather than wait in the queue, and that is the case the
+rule-off turned red. The host's launcher bound and its check's read of `/proc/<pid>/limits` exist only on Linux, so
+their rule-offs ran on the draft PR's `jail-probes` job (below). The wiring of the root check on Linux has no test of
+its own: no stand-in can pass the status check (seccomp, capabilities) without `confine`, which empties the root
+first. It is held by the pure reader's rule-offs above and by `T-015-04`'s confined reader passing it in the same job.
