@@ -82,6 +82,7 @@
 //! ([`SegmentsError::Ended`]).
 
 mod balances;
+mod carry_on;
 mod charges;
 mod drain;
 pub(crate) mod journal;
@@ -134,6 +135,7 @@ use crate::snapshot::{
 };
 
 pub use balances::{Balance, BalanceRead};
+pub use carry_on::{CarriedOn, CarryOn};
 pub use drain::Uncarried;
 /// What a stuck resolution's mover reuses of the segments' own writing: the drains it hands the log, its signed
 /// operation and the stated entry of a statement kept (`T-020-16`).
@@ -670,6 +672,9 @@ struct InFlight {
     /// Rebuilt from the log by a Core that reopened (`T-020-46`): carried out, its answer, if any, gone with the Core
     /// that stopped, so it is never carried out again, and with no final outcome it stays in flight.
     reopened: bool,
+    /// Rebuilt by a Core that reopened with its provider's answer, or its evidence, in the log, though the answer isn't
+    /// taken up again (its grading cut short): it is not one to carry on (`T-020-61`, item 8), and waits for the stuck check.
+    answer_logged: bool,
     /// The answers its operation was evaluated with: its provider's dry runs, a verifier's judgements.
     heard: Vec<measured::Heard>,
     /// The entry that carries those answers: the order's `decision_record` entry.
@@ -2557,6 +2562,7 @@ impl Segments {
                 heard: measured::hear(live.record, operation),
                 record_entry: live.record_entry.cloned(),
                 reopened: false,
+                answer_logged: false,
             },
         );
         self.advance(parts, live, &at, operation, true)

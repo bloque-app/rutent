@@ -55,6 +55,7 @@
 //! linked orders, live in [`HandOn`] alone (`T-020-46`'s gaps).
 
 mod rule;
+mod withdrawn;
 
 use std::collections::BTreeMap;
 
@@ -81,6 +82,7 @@ pub use rule::{
     Accepted, InForce, Refused, Unproven, acceptance_of, after_failed_final_deposit,
     destination_change, fresh_terms, in_force, new_terms, proves_start, requester_of, waited_from,
 };
+pub use withdrawn::{accepted_in_the_log, linked_segment_id, withdrawn_in_the_log};
 
 /// How many times in all an append the log can't take now is tried.
 const APPEND_TRIES: usize = 3;

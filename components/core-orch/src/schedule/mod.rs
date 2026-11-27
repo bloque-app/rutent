@@ -28,8 +28,12 @@
 //! 6. the filed waits past their lifetime ended ([`Job::EndExpired`], `T-020-51`);
 //! 7. the pairs a restart dropped, raised to the operator and recorded once ([`Job::UnbuiltPairs`], `REQ-ORD-9`);
 //! 8. the notices the log's changes call for, sent ([`Job::Notify`], `REQ-ORD-20`), and the checkpoints due on the
-//!    schedule fixed in advance, issued and published ([`Job::Checkpoints`], `REQ-AUD-14`), last, so they hold what
-//!    the tick wrote.
+//!    schedule fixed in advance, issued and published ([`Job::Checkpoints`], `REQ-AUD-14`), so they hold what the jobs
+//!    before them wrote;
+//! 9. Core's order run ([`Job::Run`], `T-020-61`, the [`run`] module), last: what each started order runs on held, each
+//!    part run on the route it runs on now, a segment begun before a restart carried on, a failed part recalculated and a
+//!    hand-on done. What it does is the next tick's jobs' to land, close, check, time, notify and checkpoint, as a
+//!    deployment's run between two ticks was.
 //!
 //! **The schedule decides when; each job's body is Core's** ([`jobs`]): the schedule adds a cadence for each job, an
 //! operator's setting with a default ([`Cadences`]; `T-020-49` makes it a decided one), and the time each job last ran,
@@ -54,11 +58,13 @@ use crate::segments::UnbuiltPair;
 use crate::stuck::Watch;
 
 pub mod jobs;
+pub mod run;
 
 pub use jobs::{
-    Actors, Jobs, NotConfirmed, Placed, Ports, PublicAccount, PublisherAccount, Started, StuckLent,
-    confirm_reported_failure,
+    Actors, Jobs, MoverLent, NotConfirmed, Placed, Ports, PublicAccount, PublisherAccount,
+    RecalculationsLent, Started, StuckLent, confirm_reported_failure,
 };
+pub use run::{HandedOnRan, PartRan, Runs, resume};
 
 /// How often a segment left unknown is asked its status again until the operator or its provider says otherwise: a
 /// provider is not pressed (an hour).
@@ -72,6 +78,10 @@ pub const HOLDING_RETRY_SECONDS: u64 = 300;
 /// One of Core's scheduled jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Job {
+    /// Core's order run (`T-020-61`): the hand-ons done, what each started order runs on held, each part run on the
+    /// route it runs on now, a segment begun before a restart carried on, and a failed part recalculated
+    /// (`REQ-ORD-40`, `REQ-ORD-22`, `REQ-ORD-43`, `NFR-6`).
+    Run,
     /// The late answers the platform holds, taken (`AC-5`).
     LateAnswers,
     /// What settled at a public node a holding account holds, landed in the account (`REQ-ORD-40`).
@@ -105,7 +115,7 @@ pub enum Job {
 
 impl Job {
     /// Every job, in the order a tick runs them.
-    pub const ALL: [Job; 14] = [
+    pub const ALL: [Job; 15] = [
         Job::LateAnswers,
         Job::LandSettled,
         Job::WriteMeasures,
@@ -120,11 +130,13 @@ impl Job {
         Job::UnbuiltPairs,
         Job::Notify,
         Job::Checkpoints,
+        Job::Run,
     ];
 
     /// The job's name, as the operator's `cadence` setting names it (`core-internal`'s `OperatorSetting::Cadence`).
     pub fn name(self) -> &'static str {
         match self {
+            Job::Run => "run",
             Job::LateAnswers => "late_answers",
             Job::LandSettled => "land_settled",
             Job::WriteMeasures => "write_measures",
@@ -326,6 +338,8 @@ pub struct Reported {
 pub struct Round {
     /// The jobs that ran, in the order they ran.
     pub ran: Vec<Job>,
+    /// What Core's order run did (`T-020-61`).
+    pub runs: run::Runs,
     /// The late answers taken.
     pub late: Vec<LateTaken>,
     /// How many segments' value was landed in a holding account.
@@ -384,6 +398,9 @@ impl Round {
 /// What a tick calls: each job, its body [`jobs::Jobs`]'s over the deployment's [`jobs::Ports`]. The seam is a trait so
 /// that the schedule's own rules (cadences, order, what a round says) are tested apart from the jobs.
 pub trait Duties {
+    /// Core's order run: the hand-ons done, what each started order runs on held, each part run, a segment begun
+    /// before a restart carried on, and a failed part recalculated (`T-020-61`).
+    fn run_orders(&mut self) -> run::Runs;
     /// Carries the own operation of each segment left unknown out again that `due` says is due, where its provider
     /// declares that safe and no status query, as a decided effect, and takes the late answers the platform holds for
     /// Core's segments, each kept once as a statement.
@@ -553,6 +570,16 @@ impl Schedule {
             // read or not checked, a comparison, a notice or a checkpoint the log or the store didn't take) is due again
             // on the next tick, never held off for a whole cadence (`T-020-63`).
             let succeeded = match job {
+                Job::Run => {
+                    round.runs = duties.run_orders();
+                    // A status question the run put after a part counts as its provider asked, for its cadence.
+                    for tried in round.runs.parts.iter().flat_map(|p| p.asked.iter()) {
+                        if tried.asked.is_ok() {
+                            self.note_asked(&tried.unknown, now);
+                        }
+                    }
+                    true
+                }
                 Job::LateAnswers => {
                     let late = duties.late_answers(&|unknown| self.status_due(unknown, now));
                     // A segment's operation carried out again counts as its provider asked, for its cadence.
@@ -713,6 +740,9 @@ mod tests {
     }
 
     impl Duties for Counting {
+        fn run_orders(&mut self) -> run::Runs {
+            run::Runs::default()
+        }
         fn late_answers(&mut self, _: &dyn Fn(&Unknown) -> bool) -> Late {
             Late::default()
         }

@@ -281,6 +281,10 @@ struct Followed {
 #[derive(Debug, Clone, Default)]
 pub struct Recalculations {
     orders: BTreeMap<String, Followed>,
+    /// Each order's history across its routings, which its next recalculation chains to (`REQ-AUD-4`): Core's own,
+    /// held with its recalculations, and started from the log's last decision record of the order where none is held
+    /// yet (a reopened Core's, `T-020-61`).
+    histories: BTreeMap<String, History>,
 }
 
 impl Recalculations {
@@ -327,6 +331,29 @@ impl Recalculations {
         if let Some(followed) = self.orders.get_mut(order.as_str()) {
             followed.recalculated = followed.recalculated.max(recorded);
         }
+    }
+
+    /// [`Recalculations::recalculate`], chaining to the history Core holds for the order: the one its last routing left,
+    /// or, where it holds none, one recorded from `previous`, the receipt of the log's last decision record of the order
+    /// (`T-020-61`). Not followed where neither is there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Recalculations::recalculate`].
+    pub fn recalculate_chained<R: Router>(
+        &mut self,
+        parts: &mut Parts<'_>,
+        ask: Ask<'_>,
+        previous: Option<Receipt>,
+    ) -> Result<Recalculation, RecalcError> {
+        let order = ask.order.order.as_str().to_owned();
+        let mut history = match self.histories.remove(&order) {
+            Some(history) => history,
+            None => History::recorded(previous.ok_or(RecalcError::NotFollowed)?, Vec::new()),
+        };
+        let done = self.recalculate::<R>(parts, ask, &mut history);
+        self.histories.insert(order, history);
+        done
     }
 
     /// How many times `order`'s routes have been recalculated.

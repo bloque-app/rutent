@@ -209,6 +209,7 @@ fn flight(segment: &str, outcome: SegmentOutcome) -> InFlight {
         heard: Vec::new(),
         record_entry: None,
         reopened: false,
+        answer_logged: false,
     }
 }
 

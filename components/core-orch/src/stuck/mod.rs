@@ -94,6 +94,7 @@
 //! a bare id, which the log refuses since `T-020-30` holds it to an entry, so the part stays stuck. The hand-on's mover is
 //! `T-020-17`'s.
 //!
+mod command;
 mod handing;
 mod journal;
 mod mover;
@@ -132,6 +133,7 @@ use crate::segments::{
 };
 use crate::snapshot::{Clock, Exposures, HoldError, OrchestrationLog, Reading};
 
+pub use command::{decide_stuck, move_stuck};
 pub use handing::{
     AcceptedRoute, HandingOn, LinkedRoutes, LogRead, OperatorSigns, Show, Wallets, Withdrawals,
 };

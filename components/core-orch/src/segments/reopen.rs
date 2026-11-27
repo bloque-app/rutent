@@ -51,6 +51,19 @@ pub trait Reopening {
 
     /// The bytes the evidence store keeps behind `commitment`, as the log reads them: `None` where it keeps none.
     fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>>;
+
+    /// The authorisation `authorisation` of `order` with the terms policy's register holds in force for it, read from
+    /// the log (`T-020-61`): what a reopened Core's started order runs on. `None` where policy holds it in force no
+    /// more (the customer replaced its terms) or holds none: the order then runs on nothing, failing closed. A reading
+    /// that answers none rebuilds no order's run.
+    fn in_force(
+        &mut self,
+        order: &Id,
+        authorisation: &Id,
+    ) -> Option<rutent_contracts::core_internal::Authorisation> {
+        let _ = (order, authorisation);
+        None
+    }
 }
 
 /// What a segment rebuilt in flight holds: the route's operation at the amount its signed operation moved, or, where
@@ -510,11 +523,66 @@ impl Segments {
         // statement kept for it): the reopened Core goes on from it as a Core that ran on, judging, grading and settling,
         // each step once; the operation is never carried out again. Its `bound` input and the answer's stated entry are
         // the log's, so neither is appended again.
-        let answered = if outcome.is_none() {
-            resumed_answer(history, reading, handed, &transaction, &mut steps)
-        } else {
-            None
+        let answered = match &outcome {
+            None => resumed_answer(history, reading, handed, &transaction, &mut steps),
+            // Its operation was handed over and came to an outcome the log holds: it was answered, as a Core that ran on
+            // holds it, so a late answer, or one to Core's status question, is taken for it after the restart as before
+            // (`T-020-61`: seed 117, and `T-020-63`'s gap 1). The answer's bytes went with the Core that stopped; a
+            // segment that ended with none (`unanswered`) is held as the platform ended it, with no answer, and one with
+            // a final outcome is never taken on again ([`Segments::run_part`] stands it as it is).
+            Some(SegmentOutcome::NotHandedOver(_)) => None,
+            Some(_) => Some(Answered::Refused(
+                rutent_contracts::module_interface::PlatformRefusal::OutcomeUnknown,
+            )),
         };
+        // Whether the log holds the provider's answer, or evidence, of the segment since its effect: then it is no segment
+        // begun with nothing back (item 8), whatever was taken up of it.
+        let answer_logged = answered.is_none()
+            && outcome.is_none()
+            && history[handed.at..].iter().any(|(_, entry)| match entry {
+                Entry::Stated(stated) => {
+                    stated.what.statement.as_str() == RESULT_SHAPE
+                        && stated.about.as_ref().is_some_and(|a| {
+                            a.order.as_ref() == Some(handed.order)
+                                && a.segment.as_ref() == Some(handed.segment)
+                                && a.transaction.as_ref() == Some(&transaction)
+                        })
+                }
+                Entry::Verified(v) => matches!(&v.what,
+                    What::Evidence { order, segment, .. }
+                        if order == handed.order && segment == handed.segment),
+            });
+        // The inputs the log took of the segment since its effect, each the segment's own step, so a segment taken on
+        // again appends neither a second time (`INV-8`): the provider bound, and its outcome left unknown.
+        for (receipt, entry) in &history[handed.at..] {
+            let Entry::Verified(VerifiedEntry {
+                what: What::Input { input },
+                ..
+            }) = entry
+            else {
+                continue;
+            };
+            if input.subject.order.as_str() != handed.order.as_str()
+                || input
+                    .subject
+                    .segment
+                    .as_ref()
+                    .is_none_or(|s| s.as_str() != handed.segment.as_str())
+            {
+                continue;
+            }
+            let name = match input.observed {
+                Observed::ProviderBound {} => "bound",
+                Observed::SegmentOutcomeUnknown {} => "unknown",
+                _ => continue,
+            };
+            if let Ok(built) = GeneralEntry::try_from(entry.clone()) {
+                steps.entry(name).or_insert(Step {
+                    entry: built,
+                    receipt: Some(receipt.clone()),
+                });
+            }
+        }
         let judged = match &outcome {
             Some(SegmentOutcome::Settled { .. }) => settled_result(
                 catalogue,
@@ -596,6 +664,7 @@ impl Segments {
                 Entry::Stated(_) => None,
             }),
             reopened: true,
+            answer_logged,
         };
         Some((flight, held))
     }

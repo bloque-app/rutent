@@ -58,6 +58,10 @@ pub enum NotTerms {
 pub trait Recorded {
     /// The entry the log recorded at `receipt`, or `None` where it holds none.
     fn entry(&self, receipt: &Receipt) -> Option<Entry>;
+
+    /// The log's entries, each with its receipt, as the log holds them now: what intake reads an order's start from
+    /// once it is accepted (`T-020-61`).
+    fn history(&self) -> Vec<(Receipt, Entry)>;
 }
 
 /// What taking a provider's signed terms reaches.
@@ -337,7 +341,7 @@ pub(crate) struct HandedBack<'a> {
 }
 
 /// The bytes base64url text without padding writes, or `None` where it isn't such text.
-pub(super) fn from_base64url(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn from_base64url(text: &str) -> Option<Vec<u8>> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
     for c in text.bytes() {

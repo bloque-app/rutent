@@ -558,6 +558,101 @@ impl Reversals {
         Self::default()
     }
 
+    /// The reversals as a Core that reopens rebuilds them from `history`, the log's own entries (`T-020-61`, item 6): the
+    /// statements kept about each segment after its answer was taken ([`Reversals::later`]): each provider's result about
+    /// the segment, under its own transaction or naming none, that the log holds after the segment's move had its first
+    /// result, its bytes read back through `kept` from the evidence store, each with the receipt the log gave it. So a
+    /// kept answer is reported after a restart as before it, and one of the same body arriving again is that entry,
+    /// never a second. The rest is followed from the log as the reversals are asked ([`Reversals::follow`]).
+    pub fn reopened(
+        history: &[(Receipt, Entry)],
+        kept: &mut dyn FnMut(&Digest) -> Option<Vec<u8>>,
+    ) -> Self {
+        use std::collections::BTreeMap as Map;
+        let mut reversals = Reversals::new();
+        let mut moves: Vec<(Receipt, (String, String))> = Vec::new();
+        let mut answered: Map<(String, String), usize> = Map::new();
+        let mut transactions: Map<(String, String), Id> = Map::new();
+        for (at, (receipt, entry)) in history.iter().enumerate() {
+            match entry {
+                Entry::Verified(v) => match &v.what {
+                    What::Effect {
+                        action: Action::MoveValue { order, segment, .. },
+                        ..
+                    } => {
+                        moves.push((receipt.clone(), key(order, segment)));
+                    }
+                    What::Result { effect } => {
+                        if let Some((_, at_key)) = moves.iter().find(|(r, _)| r == effect) {
+                            answered.entry(at_key.clone()).or_insert(at);
+                        }
+                    }
+                    _ => {}
+                },
+                Entry::Stated(stated) if stated.what.statement.as_str() == OPERATION_SHAPE => {
+                    if let Some(about) = &stated.about
+                        && let (Some(order), Some(segment), Some(transaction)) =
+                            (&about.order, &about.segment, &about.transaction)
+                    {
+                        transactions
+                            .entry(key(order, segment))
+                            .or_insert_with(|| transaction.clone());
+                    }
+                }
+                Entry::Stated(_) => {}
+            }
+        }
+        for (at, (receipt, entry)) in history.iter().enumerate() {
+            let Entry::Stated(stated) = entry else {
+                continue;
+            };
+            if stated.what.statement.as_str() != RESULT_SHAPE {
+                continue;
+            }
+            let Some(about) = &stated.about else {
+                continue;
+            };
+            let (Some(order), Some(segment)) = (&about.order, &about.segment) else {
+                continue;
+            };
+            let at_key = key(order, segment);
+            if answered.get(&at_key).is_none_or(|first| at < *first) {
+                continue;
+            }
+            // Only a statement of the segment's own transaction, or one naming none: a reversal's answer is about its own.
+            if about
+                .transaction
+                .as_ref()
+                .is_some_and(|t| transactions.get(&at_key) != Some(t))
+            {
+                continue;
+            }
+            let Some(bytes) = kept(&stated.commitment) else {
+                continue;
+            };
+            let mut appended = stated.clone();
+            appended.attribution = rutent_contracts::core_internal::Attribution::Unverified {
+                claimed_by: appended.attribution.maker().clone(),
+            };
+            let Ok(entry) = rutent_contracts::core_internal::calls::GeneralEntry::try_from(
+                Entry::Stated(appended),
+            ) else {
+                continue;
+            };
+            let kept_here = reversals.later.entry(at_key).or_default();
+            if !kept_here.iter().any(|(b, _)| *b == bytes) {
+                kept_here.push((
+                    bytes,
+                    Step {
+                        entry,
+                        receipt: Some(receipt.clone()),
+                    },
+                ));
+            }
+        }
+        reversals
+    }
+
     /// Follows `order` from the log's entries, as the log holds them: the party its acceptance names as requester,
     /// whose acceptance of a fault is the customer's (`reversal-carrier-is-accepted-by-the-party-at-fault`). False
     /// where they hold no acceptance of it.
@@ -2471,6 +2566,22 @@ fn body_of(bytes: &[u8]) -> Option<serde_json::Value> {
 /// (`check_status_answer`): an answer that fails it, says it knows nothing of the transaction or refuses, keeps
 /// nothing (fail closed). A result that is no status answer, as a module that answers with the result alone gives, is
 /// kept as it is.
+/// The provider's own result a status answer carries, where `bytes` are a status answer to the question Core put about
+/// `asked_about` under `asking`, checked against it, that carries one (`T-020-61`'s carry-on). `None` for anything
+/// else: another answer, a status that knows none, or a refusal.
+pub(crate) fn status_result(
+    bytes: &[u8],
+    asked_about: &ProviderOperation,
+    asking: &Id,
+    provider: &Id,
+) -> Option<Vec<u8>> {
+    let answer = serde_json::from_slice::<Statement<ResultBody>>(bytes).ok()?;
+    if !matches!(answer.statement, ResultBody::StatusQuery(_)) {
+        return None;
+    }
+    held_to_its_question(bytes, asked_about, asking, provider)
+}
+
 fn held_to_its_question(
     bytes: &[u8],
     asked_about: &ProviderOperation,

@@ -1277,4 +1277,13 @@ impl rutent_core_orch::quote::Recorded for Unread {
     ) -> Option<rutent_contracts::core_internal::Entry> {
         None
     }
+
+    fn history(
+        &self,
+    ) -> Vec<(
+        rutent_contracts::core_internal::Receipt,
+        rutent_contracts::core_internal::Entry,
+    )> {
+        Vec::new()
+    }
 }

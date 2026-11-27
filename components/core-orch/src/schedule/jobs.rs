@@ -8,10 +8,10 @@
 //! | late answers | the transactions each segment was sent under, the answer kept once as its maker's statement (`Reversals::later`), and acknowledged to the platform once kept or refused for good | the platform's held late answers to those transactions, which it hands over again until acknowledged |
 //! | landing | `Segments::land_settled` | the register of holding accounts, asked through the platform ([`Landings`]) |
 //! | measures, pairs, unbuilt pairs | `Segments::write_measures`, `write_pairs`, `write_unbuilt` | the log's comparisons and measure writer (`CMP-CORE-AUDIT`) |
-//! | closing | which orders, the records of the routes each ran, `closing::report_logged_price` | the decision records Core's key signed, held to the log's digest |
+//! | closing | which orders, the records of the routes each ran (intake's, each held to the log's digest), `closing::report_logged_price` | nothing more |
 //! | holding check | each account of the register read once a check (`L3`) by a decided read ([`Segments::read_holding_balance`]), the reading built (account, provider, word, what Core's segments rest there, time) and checked, a public node's beside the wallet host's own record as a second comparison; an account not read, or the catalogue's holder the register doesn't name, raised once a spell (`holding_not_read`) | the register of holding accounts and the host's record of each; the platform, which carries the question to the module |
 //! | status questions | which segments are unknown, at whose cadence ([`super::Schedule`]), `Reversals::ask_unknown_status_again` | the platform, policy |
-//! | stuck watch | which orders, their current route, `Stuck::watch` | the notices channel |
+//! | stuck watch | which orders, their current route, `Stuck::watch`; a route Core can't name declared stuck (L7) | the notices channel |
 //! | stuck reports | only a stuck part, only the move's own provider's typed answer (`L5`), the mover as reporter, the kept statement named once | policy |
 //! | waits | `Arrivals::end_expired` | intake's desk |
 //! | notices | `Notices::notify` over the log as it stands | the notice key and the transport |
@@ -30,17 +30,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rutent_contracts::core_internal::calls::{
-    AppendFailure, Comparisons, Measures, Operator, StuckOrders,
+    AppendFailure, Authorisations, Comparisons, Measures, Operator, StuckOrders,
 };
 use rutent_contracts::core_internal::{
-    Actor, ActorKind, Difference, Entry, HoldingNotRead, HoldingReading, Receipt, Role, RouteEnd,
-    What, Word,
+    Actor, ActorKind, Authorisation, Difference, Entry, HoldingNotRead, HoldingReading, Receipt,
+    Role, What, Word,
 };
+use rutent_contracts::module_interface::Digest;
 use rutent_contracts::provider_role::{
     Denomination, HoldingBalanceOutcome, ResultBody, Statement, Tracking,
 };
 use rutent_contracts::router_api::{Amount, DecisionRecord, Id, PolicyBounds, PositiveAmount};
-use rutent_contracts::state_machine::PartPlan;
 use rutent_prov::catalogue::{Catalogue, Publisher};
 use rutent_prov::holding::HeldForOrder;
 
@@ -50,113 +50,28 @@ use super::{
 };
 use crate::arrival::Arrivals;
 use crate::closing::{PriceDesk, report_logged_price};
+use crate::hand_on::{HandOn, Parts as HandParts};
 use crate::intake::Desk;
+use crate::intake::Intake;
 use crate::notice::{NoticeKey, Notices, Transport};
+use crate::recalc::{Parts as RecalcParts, Recalculations};
 use crate::reversal::{At, Moving, Parts as ReversalParts, ReversalError, Reversals};
 use crate::segments::{
-    Balance, BalanceRead, Landings, Live, Parts as SegmentParts, RepeatOf, Repeated, Says,
-    Segments, UnbuiltPair,
+    Balance, BalanceRead, Landings, Parts as SegmentParts, RepeatOf, Repeated, Says, Segments,
+    UnbuiltPair,
 };
 use crate::snapshot::Clock;
+use crate::snapshot::Price;
 use crate::stuck::{
     ConfirmingSegment, Moved, Parts as StuckParts, Reporting, ResolveError, Resolved, Stated,
     Stuck, Watch, Watching,
 };
+use crate::stuck::{Delivering, Mover};
 
-/// What Core holds of an order it started, which its route runs on: the record that chose the route, the plan, the
-/// authorisation and origin, what the route delivers, the session, the inputs and the floor (`T-020-46` rebuilds it
-/// from the log on reopening).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Started {
-    /// The router's recorded decision that chose the route.
-    pub record: DecisionRecord,
-    /// The order's plan: its parts and their segments.
-    pub plan: Vec<PartPlan>,
-    /// The authorisation the order's value moves under.
-    pub authorisation: Id,
-    /// The origin reserve.
-    pub origin: Id,
-    /// What the route ends at.
-    pub route: RouteEnd,
-    /// The user's session.
-    pub session: Option<Id>,
-    /// The order's inputs, by name.
-    pub inputs: BTreeMap<String, String>,
-    /// The least the customer takes at the destination, as its authorisation names it.
-    pub floor: Option<PositiveAmount>,
-}
-
-/// Where a segment sits in its order's plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Placed {
-    /// The part's place in the chosen candidate.
-    pub at: usize,
-    /// The part.
-    pub part: Id,
-    /// The part's segments, in the route's order.
-    pub segments: Vec<Id>,
-}
+pub use crate::intake::{Placed, Started};
 
 fn id(text: &str) -> Option<Id> {
     Id::new(text)
-}
-
-impl Started {
-    /// The part `segment` is in, if the plan lists it.
-    pub fn placed(&self, segment: &Id) -> Option<Placed> {
-        self.plan.iter().enumerate().find_map(|(at, part)| {
-            part.segments
-                .iter()
-                .any(|s| s.segment_id.as_str() == segment.as_str())
-                .then(|| placed(at, part))
-                .flatten()
-        })
-    }
-
-    /// The order's first part.
-    pub fn first(&self) -> Option<Placed> {
-        self.plan.first().and_then(|part| placed(0, part))
-    }
-
-    /// The part of this order at `placed`, as the segments run it: `core` writes Core's entries and asks for each
-    /// move, the operator signs, and `record_entry` is the log's entry of the record, where it is named.
-    pub fn live<'a>(
-        &'a self,
-        order: &'a Id,
-        placed: &'a Placed,
-        actors: &'a Actors,
-        record_entry: Option<&'a Receipt>,
-    ) -> Live<'a> {
-        Live {
-            order,
-            part: &placed.part,
-            segments: &placed.segments,
-            record: &self.record,
-            at: placed.at,
-            authorisation: &self.authorisation,
-            origin_reserve: &self.origin,
-            route: &self.route,
-            caller: &actors.core,
-            core: &actors.core,
-            operator: &actors.operator,
-            session: self.session.as_ref(),
-            inputs: &self.inputs,
-            floor: self.floor.as_ref(),
-            record_entry,
-        }
-    }
-}
-
-fn placed(at: usize, part: &PartPlan) -> Option<Placed> {
-    Some(Placed {
-        at,
-        part: id(part.part_id.as_str())?,
-        segments: part
-            .segments
-            .iter()
-            .map(|s| id(s.segment_id.as_str()))
-            .collect::<Option<_>>()?,
-    })
 }
 
 /// Who Core acts as, and the deployment's operator, in whose name Core signs.
@@ -208,6 +123,15 @@ pub struct PublisherAccount {
 pub type StuckLent<'f> =
     dyn FnMut(&mut Stuck, &mut StuckParts<'_>, &mut dyn StuckOrders, &mut dyn Operator) + 'f;
 
+/// What a job does with the recalculations the deployment lends: the recalculations, what they reach, and the prices.
+pub type RecalculationsLent<'f> =
+    dyn FnMut(&mut Recalculations, &mut RecalcParts<'_>, &[Price]) + 'f;
+
+/// What a stuck command does with what the deployment lends to carry a move out: the stuck orders, what they reach,
+/// policy, and the production mover with what a hand-on's withdrawal reaches.
+pub type MoverLent<'f> =
+    dyn FnMut(&mut Stuck, &mut StuckParts<'_>, &mut dyn StuckOrders, &mut Delivering<'_>) + 'f;
+
 /// The deployment's ports, as Core's jobs reach them: what only the deployment can answer, and Core's own parts as the
 /// deployment holds them, lent beside the ports they are reached with. No method decides anything: each reads, asks,
 /// or lends, and every rule is the job's ([`Jobs`]).
@@ -216,12 +140,20 @@ pub trait Ports {
     fn clock(&self) -> &dyn Clock;
     /// Who Core acts as, and the operator.
     fn actors(&self) -> Actors;
-    /// The orders Core started, each as it holds it, by order.
-    fn started(&self) -> &BTreeMap<String, Started>;
     /// The log's entries, each with its receipt, as the log holds them now.
     fn history(&self) -> Vec<(Receipt, Entry)>;
-    /// The decision record `id` of `order` as Core's key signed it, held to the digest the log names it by.
-    fn decision_record(&self, order: &Id, id: &Id) -> Option<DecisionRecord>;
+    /// The bytes the evidence store keeps behind `commitment`, as the log's own read gives them: what Core reads its
+    /// decision records back from, held to the log's digests (`T-020-61`).
+    fn kept(&mut self, commitment: &Digest) -> Option<Vec<u8>>;
+    /// The authorisation `authorisation` of `order` with the terms policy's register holds in force for it, as policy
+    /// reads it from the log: `None` where it holds it in force no more, or holds none (`T-020-61`).
+    fn in_force(&mut self, order: &Id, authorisation: &Id) -> Option<Authorisation>;
+    /// Core's intake, to read: the orders Core started and what each runs on (`T-020-61`).
+    fn intake(&self) -> &Intake;
+    /// Core's arrivals, to read: the filings an order filed on an automatic deposit starts on.
+    fn arrivals(&self) -> &Arrivals;
+    /// Core's stuck mover, to read: the hand-on withdrawals it carried out.
+    fn mover(&self) -> &Mover;
     /// Core's segments, to read.
     fn segments(&self) -> &Segments;
     /// Core's stuck orders, to read.
@@ -257,6 +189,17 @@ pub trait Ports {
     /// What the log took reaches the state machine.
     fn fed(&mut self);
 
+    /// Lends intake, to hold what an order Core started runs on (`T-020-61`).
+    fn with_intake(&mut self, with: &mut dyn FnMut(&mut Intake));
+    /// Lends policy's authorisations, to register a linked order's authorisation as its acceptance names it.
+    fn with_authorisations(&mut self, with: &mut dyn FnMut(&mut dyn Authorisations));
+    /// Lends the recalculations, with what a recalculation reaches and the prices Core holds (`REQ-ORD-22`).
+    fn with_recalculations(&mut self, with: &mut RecalculationsLent<'_>);
+    /// Lends the hand-ons, with what a hand-on reaches (`REQ-ORD-43`).
+    fn with_hand_on(&mut self, with: &mut dyn FnMut(&mut HandOn, &mut HandParts<'_>));
+    /// Lends the stuck orders with the production mover, policy and what a hand-on's withdrawal reaches: what a decided
+    /// move of a stuck order is carried out through (`REQ-AUZ-4`).
+    fn with_mover(&mut self, with: &mut MoverLent<'_>);
     /// Lends the segments, with what they reach.
     fn with_segments(&mut self, with: &mut dyn FnMut(&mut Segments, &mut SegmentParts<'_>));
     /// Lends the reversals, with what they reach and what a question to a provider moves through.
@@ -294,11 +237,21 @@ impl<'p> Jobs<'p> {
     pub fn new(ports: &'p mut dyn Ports) -> Self {
         Jobs { ports }
     }
+
+    /// The ports, to read.
+    pub(super) fn ports(&self) -> &dyn Ports {
+        &*self.ports
+    }
+
+    /// The ports, to ask and lend through.
+    pub(super) fn ports_mut(&mut self) -> &mut dyn Ports {
+        &mut *self.ports
+    }
 }
 
 /// The ids of the orders Core started, in order.
 fn orders(ports: &dyn Ports) -> Vec<Id> {
-    ports.started().keys().filter_map(|k| id(k)).collect()
+    ports.intake().started_orders()
 }
 
 /// The segments of `order` as Core follows them.
@@ -319,11 +272,11 @@ fn segments_of(ports: &dyn Ports, order: &Id) -> Vec<Id> {
 
 /// The route `order`'s part `first` runs on now, as Core's own record holds it, which a reopened Core rebuilds from its
 /// log (`Segments::routes_ran`, the round-2 review of `T-020-48`, its B4): the last recalculated route of the part, its
-/// record held through the decision records Core's key signed, and its segments those of the part's current route as Core
+/// record intake's, held to the log's digest when it was taken (`T-020-61`), and its segments those of the part's current route as Core
 /// follows it after the ones that had settled before the recalculation, one for each operation of the record's route;
 /// the first route where none was recalculated. `None` where a recalculated route's record isn't held, or its segments
 /// aren't the route's (fails closed: the round says so).
-fn current_route(
+pub(super) fn current_route(
     ports: &dyn Ports,
     order: &Id,
     started: &Started,
@@ -336,7 +289,7 @@ fn current_route(
     let Some(last) = last else {
         return Some((started.record.clone(), first.segments.clone()));
     };
-    let record = ports.decision_record(order, &last.record)?;
+    let record = ports.intake().decision_record(&last.record)?.clone();
     // The part's current route is what had settled before the recalculation, then the new route's segments.
     let operations = record.chosen()?.parts.first().operations.len();
     let segments = ports
@@ -354,7 +307,10 @@ fn current_route(
 }
 
 /// The receipt of the log's `decision_record` entry for `record`.
-fn record_entry(history: &[(Receipt, Entry)], record: &DecisionRecord) -> Option<Receipt> {
+pub(super) fn record_entry(
+    history: &[(Receipt, Entry)],
+    record: &DecisionRecord,
+) -> Option<Receipt> {
     history.iter().find_map(|(receipt, e)| match e {
         Entry::Verified(v) => match &v.what {
             What::DecisionRecord {
@@ -755,7 +711,7 @@ impl Jobs<'_> {
     /// saying failed or settled (typed, `L5`), the move's mover as the reporter, and the statement named by the entry
     /// it was kept as, once (no second entry of the same bytes). One already reported is not told again.
     fn report_kept_for(&mut self, one: &Unknown) -> Vec<Reported> {
-        let Some(started) = self.ports.started().get(one.order.as_str()).cloned() else {
+        let Some(started) = self.ports.intake().started(&one.order).cloned() else {
             return Vec::new();
         };
         let Some(placed) = started.placed(&one.segment) else {
@@ -862,8 +818,8 @@ pub fn confirm_reported_failure(
     other: &[u8],
 ) -> Result<Moved, NotConfirmed> {
     let started = ports
-        .started()
-        .get(order.as_str())
+        .intake()
+        .started(order)
         .cloned()
         .ok_or(NotConfirmed::NotStarted)?;
     let placed = started.placed(segment).ok_or(NotConfirmed::NotStarted)?;
@@ -906,11 +862,15 @@ pub fn confirm_reported_failure(
 }
 
 impl Duties for Jobs<'_> {
+    fn run_orders(&mut self) -> super::run::Runs {
+        Jobs::run_orders(self)
+    }
+
     fn late_answers(&mut self, due: &dyn Fn(&Unknown) -> bool) -> Late {
         let mut taken = Vec::new();
         let mut repeated = Vec::new();
         for order in orders(&*self.ports) {
-            let Some(started) = self.ports.started().get(order.as_str()).cloned() else {
+            let Some(started) = self.ports.intake().started(&order).cloned() else {
                 continue;
             };
             let mut sent = BTreeMap::new();
@@ -1020,8 +980,8 @@ impl Duties for Jobs<'_> {
                     .chain(later.iter().map(|r| r.record.clone()))
                     .collect();
                 for record in ids {
-                    if let Some(held) = self.ports.decision_record(&order, &record) {
-                        records.insert(record.as_str().to_owned(), held);
+                    if let Some(held) = self.ports.intake().decision_record(&record) {
+                        records.insert(record.as_str().to_owned(), held.clone());
                     }
                 }
             }
@@ -1144,10 +1104,10 @@ impl Duties for Jobs<'_> {
             rutent_contracts::router_api::PolicyBounds,
             BTreeSet<String>,
         )> = Vec::new();
-        for (order_name, started) in self.ports.started() {
-            let (Some(order), Some(followed)) = (
-                id(order_name),
-                id(order_name).and_then(|o| self.ports.segments().order(&o)),
+        for order in orders(&*self.ports) {
+            let (Some(started), Some(followed)) = (
+                self.ports.intake().started(&order),
+                self.ports.segments().order(&order),
             ) else {
                 continue;
             };
@@ -1276,8 +1236,8 @@ impl Duties for Jobs<'_> {
     fn ask_status_again(&mut self, unknown: &Unknown) -> StatusTried {
         let placed = self
             .ports
-            .started()
-            .get(unknown.order.as_str())
+            .intake()
+            .started(&unknown.order)
             .and_then(|s| s.placed(&unknown.segment));
         let Some(placed) = placed else {
             return StatusTried {
@@ -1318,7 +1278,7 @@ impl Duties for Jobs<'_> {
         let core = self.ports.actors().core;
         let mut watched = Vec::new();
         for order in orders(&*self.ports) {
-            let Some(started) = self.ports.started().get(order.as_str()) else {
+            let Some(started) = self.ports.intake().started(&order) else {
                 continue;
             };
             let Some(first) = started.first() else {
@@ -1326,11 +1286,10 @@ impl Duties for Jobs<'_> {
             };
             let Some((record, segments)) = current_route(&*self.ports, &order, started, &first)
             else {
-                // Fails closed: a route Core can't name now is answered, never timed on another route.
-                watched.push(Watched {
-                    order,
-                    found: Err("the current route's record isn't held".to_owned()),
-                });
+                // Fails closed: a route Core can't name now is never timed on another route. Its part is declared stuck,
+                // for the operator, on the last route the log names for it (#316's round-3 L7, `T-020-61`).
+                let found = self.unnamed_route_stuck(&order, &first.part);
+                watched.push(Watched { order, found });
                 continue;
             };
             let mut found = Err("the stuck orders weren't lent".to_owned());
@@ -1473,7 +1432,9 @@ mod tests {
     /// other (each other job finds them not lent, so nothing moves on it, and no balance is read, `REQ-AUZ-5`).
     struct Bare {
         clock: At,
-        started: BTreeMap<String, Started>,
+        intake: Intake,
+        arrivals: Arrivals,
+        mover: Mover,
         segments: Segments,
         stuck: Stuck,
         reversals: Reversals,
@@ -1500,15 +1461,29 @@ mod tests {
                 operator: actor("operator"),
             }
         }
-        fn started(&self) -> &BTreeMap<String, Started> {
-            &self.started
-        }
         fn history(&self) -> Vec<(Receipt, Entry)> {
             Vec::new()
         }
-        fn decision_record(&self, _: &Id, _: &Id) -> Option<DecisionRecord> {
+        fn kept(&mut self, _: &Digest) -> Option<Vec<u8>> {
             None
         }
+        fn in_force(&mut self, _: &Id, _: &Id) -> Option<Authorisation> {
+            None
+        }
+        fn intake(&self) -> &Intake {
+            &self.intake
+        }
+        fn arrivals(&self) -> &Arrivals {
+            &self.arrivals
+        }
+        fn mover(&self) -> &Mover {
+            &self.mover
+        }
+        fn with_intake(&mut self, _: &mut dyn FnMut(&mut Intake)) {}
+        fn with_authorisations(&mut self, _: &mut dyn FnMut(&mut dyn Authorisations)) {}
+        fn with_recalculations(&mut self, _: &mut RecalculationsLent<'_>) {}
+        fn with_hand_on(&mut self, _: &mut dyn FnMut(&mut HandOn, &mut HandParts<'_>)) {}
+        fn with_mover(&mut self, _: &mut MoverLent<'_>) {}
         fn segments(&self) -> &Segments {
             &self.segments
         }
@@ -1601,7 +1576,9 @@ mod tests {
     fn bare() -> Bare {
         Bare {
             clock: At(1_764_000_000),
-            started: BTreeMap::new(),
+            intake: Intake::new(),
+            arrivals: Arrivals::default(),
+            mover: Mover::default(),
             segments: Segments::new(),
             stuck: Stuck::new(),
             reversals: Reversals::new(),
