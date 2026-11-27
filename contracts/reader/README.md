@@ -54,6 +54,7 @@ nothing down.
 | A pool names each host once, whatever the scheme, port or trailing `/`: a quorum is of nodes, not of spellings. Separate names that resolve to one provider are beyond the contract | none | `TrustRule::check` (`RpcEndpoint::host`) |
 | A pool names at least as many endpoints as its quorum | at least two endpoints (`minItems`) | `TrustRule::check` |
 | An endpoint is an `https` or `wss` URL to a host's DNS name of two labels or more, never an IP literal, with an optional port and at most a trailing `/`: no user, path, query or fragment, so nothing that could be a key is in a listing. A node that needs a key or a path gets it from the reader host, through the egress layer's secret lookup | `rpc_endpoint`'s `pattern` and `not` | `RpcEndpoint`, `is_host_name` |
+| A host name's last label starts with a letter, so no IP literal, decimal or hexadecimal (`0x7f.0x1`), passes as a name. Names a resolver answers locally, such as `.local` ones, are the operator's responsibility | `rpc_endpoint`'s `not`; core-internal's `subject_name`'s `not` | `is_host_name` |
 | A network's identity is paired with its trust rule: a chain id is read from an RPC pool, a genesis hash by a light client | `network_rules`' `allOf` | `NetworkRules::check`, `check_pairing` |
 | An answer answers the kind of question it names, or is unreadable | none | `ReaderAnswer::check` |
 | An answer is held to the question asked: its request, network, kind, movement and transaction | none | `check_reader_answer` |

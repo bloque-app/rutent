@@ -449,8 +449,8 @@ checked_text!(
     /// The subject name a reader host's server certificate carries (its SAN, a `dNSName`), which Core holds the host's
     /// certificate to under the operator's CA (`DEC-28`): a lower-case DNS name of LDH labels, each 1 to 63 characters,
     /// neither starting nor ending with a hyphen, at least two labels, up to 253 characters, with no wildcard, no
-    /// trailing dot and a last label that is not all digits, so it names one host by name and is never matched as an IP
-    /// address (`crate::reader::is_host_name`). Schema: `urn:rutent:core-internal:common#/$defs/subject_name`.
+    /// trailing dot and a last label that starts with a letter, so it names one host by name and is never matched as an
+    /// IP address, decimal or hexadecimal (`crate::reader::is_host_name`). Schema: `urn:rutent:core-internal:common#/$defs/subject_name`.
     SubjectName,
     crate::reader::is_host_name,
     "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal"

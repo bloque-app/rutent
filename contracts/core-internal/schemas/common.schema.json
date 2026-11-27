@@ -498,12 +498,12 @@
       }
     },
     "subject_name": {
-      "description": "The subject name a reader host's server certificate carries (its SAN, a dNSName), which Core holds the host's certificate to under the operator's CA (DEC-28): a lower-case DNS name of at least two labels, with no wildcard, no trailing dot and a last label that is not all digits, so it names one host and is never an IP address's literal.",
+      "description": "The subject name a reader host's server certificate carries (its SAN, a dNSName), which Core holds the host's certificate to under the operator's CA (DEC-28): a lower-case DNS name of at least two labels, with no wildcard, no trailing dot and a last label that starts with a letter, so it names one host and is never an IP address's literal, decimal or hexadecimal.",
       "type": "string",
       "maxLength": 253,
       "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
       "not": {
-        "pattern": "\\.[0-9]+$"
+        "pattern": "\\.[0-9][^.]*$"
       }
     },
     "public_network": {

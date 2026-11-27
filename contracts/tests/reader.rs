@@ -696,6 +696,9 @@ fn rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key() {
         "https://169.254.169.254",
         "https://127.0.0.1:8545",
         "https://1.2",
+        "https://0x7f.0x1",
+        "https://0x8.0x8.0x8.0x8:443",
+        "https://rpc.readers.0xff",
         "https://localhost",
         "https://key@rpc-a.base.example",
         "https://rpc-a.base.example/v3/0123456789abcdef0123456789abcdef",
@@ -707,8 +710,13 @@ fn rpc_endpoint_names_a_host_and_nothing_that_could_be_a_key() {
         assert_eq!(RpcEndpoint::new(text), None, "{text}");
     }
     assert!(is_host_name("readers.rutent.internal") && !is_host_name("10.0.0.1"));
+    // A hexadecimal IP literal is an address to a resolver too: the last label starts with a letter (the review's L8).
+    for host in ["0x8.0x8.0x8.0x8", "0x7f.0x1", "readers.0xff"] {
+        assert!(!is_host_name(host), "{host}");
+    }
     for name in [
         "answer-of-an-rpc-pool-endpoint-at-an-ip-literal",
+        "answer-of-an-rpc-pool-endpoint-at-a-hexadecimal-ip-literal",
         "answer-of-an-rpc-pool-endpoint-at-a-single-label-host",
         "answer-of-an-rpc-pool-endpoint-with-a-path",
         "answer-of-an-rpc-pool-endpoint-naming-a-key-in-its-path",

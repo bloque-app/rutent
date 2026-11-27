@@ -365,7 +365,12 @@ type SchemaRule = (
     &'static str,
 );
 
-const SCHEMA_RULES: [SchemaRule; 144] = [
+const SCHEMA_RULES: [SchemaRule; 145] = [
+    (
+        "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
+        &[("/action/public_network/listing/reader/subject_name", "not")],
+        "a subject name is a lower-case DNS host name of at least two labels, with no wildcard and no IP literal",
+    ),
     (
         "decision-request-to-list-a-public-network-of-a-chain-id-read-by-a-light-client",
         &[("/action/public_network/listing/trust/rule", "const")],
@@ -5561,6 +5566,7 @@ fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
         "decision-request-to-list-a-public-network-pinning-a-leaf-certificate-in-place-of-its-ca",
         "decision-request-to-list-a-public-network-under-a-wildcard-subject-name",
         "decision-request-to-list-a-public-network-under-an-ip-literal-subject-name",
+        "decision-request-to-list-a-public-network-under-a-hexadecimal-ip-subject-name",
     ] {
         assert_rejected(name);
     }
@@ -5591,6 +5597,10 @@ fn listing_that_pins_a_hosts_leaf_certificate_is_refused() {
         "10.0.0.1",
         "127.0.0.1",
         "1.2",
+        "0x8.0x8.0x8.0x8",
+        "0x7f.0x1",
+        "readers.0xff",
+        "readers.9internal",
     ] {
         assert_eq!(SubjectName::new(name), None, "{name}");
     }

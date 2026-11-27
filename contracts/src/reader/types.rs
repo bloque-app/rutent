@@ -123,8 +123,9 @@ checked_text!(
 
 /// True when `host` names one host by a DNS name: lower-case LDH labels, each 1 to 63 characters, neither starting nor
 /// ending with a hyphen, at least two of them, up to 253 characters, with no trailing dot and no wildcard, and a last
-/// label that is not all digits, so it is never an IP address's literal (`T-020-59`'s review, L1). The reader's RPC
-/// endpoints and core-internal's subject names are held to it.
+/// label that starts with a letter, so it is never an IP address's literal, decimal or hexadecimal (`0x7f.0x1`), which a
+/// resolver would read as an address (`T-020-59`'s review, L1 and L8). The reader's RPC endpoints and core-internal's
+/// subject names are held to it. Names a resolver answers locally, such as `.local`, are the operator's to avoid.
 pub fn is_host_name(host: &str) -> bool {
     let labels: Vec<&str> = host.split('.').collect();
     host.len() <= 253
@@ -139,7 +140,7 @@ pub fn is_host_name(host: &str) -> bool {
         })
         && labels
             .last()
-            .is_some_and(|last| !last.bytes().all(|c| c.is_ascii_digit()))
+            .is_some_and(|last| last.bytes().next().is_some_and(|c| c.is_ascii_lowercase()))
 }
 
 /// The host and the port an endpoint names: `None` where it isn't an endpoint.
