@@ -571,6 +571,7 @@ vault not-adopted BUSL-1.1 permitted DEC-9,ADR-0004,vault-busl
 @core rutent-prov
 @core rutent-conformance
 @core rutent-scenarios
+@core rutent-reader-host
 @noncore rutent-boundary-check a tool of the repository's own checks
 @noncore rutent-records a tool of the repository's own checks
 @noncore rutent-licence-check a tool of the repository's own checks
@@ -598,6 +599,7 @@ vault not-adopted BUSL-1.1 permitted DEC-9,ADR-0004,vault-busl
 @artifact Cargo.lock rutent-stm MIT
 @artifact Cargo.lock rutent-core-authz MIT
 @artifact Cargo.lock rutent-core-orch MIT
+@artifact Cargo.lock rutent-reader-host MIT
 @artifact Cargo.lock rutent-boundary-check MIT
 @artifact Cargo.lock rutent-records MIT
 @artifact Cargo.lock rutent-licence-check MIT

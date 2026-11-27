@@ -1571,6 +1571,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rutent-reader-host"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "libc",
+ "rcgen",
+ "rustls",
+ "rutent-conformance",
+ "rutent-contracts",
+ "rutent-prov",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rutent-records"
 version = "0.0.0"
 

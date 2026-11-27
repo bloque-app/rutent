@@ -8,6 +8,12 @@
 /.github/                  @pandres95
 /components/prov/src/proxy/                 @pandres95
 /components/prov/src/egress/                @pandres95
+/components/prov/src/confine.rs             @pandres95
+/components/prov/src/keys.rs                @pandres95
+/components/prov/src/lib.rs                 @pandres95
+/components/prov/src/module/sandbox.rs      @pandres95
+/components/prov/src/module/mod.rs          @pandres95
+/components/prov/Cargo.toml                 @pandres95
 /components/prov/src/module/admission.rs    @pandres95
 /components/prov/src/module/platform.rs     @pandres95
 /components/prov/src/module/engine.rs       @pandres95
@@ -15,5 +21,6 @@
 /components/prov/src/catalogue/signature.rs @pandres95
 /components/core-authz/    @pandres95
 /components/core-audit/    @pandres95
+/components/reader-host/   @pandres95
 /experiments/2026-11-07-module-format/wasm-binding/  @pandres95
 /experiments/2026-11-07-module-format/pvm-binding/   @pandres95
