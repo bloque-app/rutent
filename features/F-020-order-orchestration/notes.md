@@ -10825,10 +10825,12 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   passes unchanged.
 - **H3.** The fleets' platform deadline is 2 s (`harness.rs`), so the judging-time test answers 3 s after its question, past
   the deadline and within the catalogue's 2 s of skew (a 5 s answer is refused by design).
-- **M2.** The log can't say whether the tick or the grading asked (`read_node_record` carries no asker), so the rebuild can't
-  count the grading's reads alone. Mitigation: a key never rebuilds at the cap, so a restart after many tick reads leaves the
-  grading at least one try (`rebuilt_tries`, tested with 40 reads). An exact count takes a field on the effect saying who asked,
-  a contract change in `core-internal` (owner: the lead).
+- **M2: the log says who asked.** `Action::ReadNodeRecord` gains `by` (`grading` or `tick`, `ReadBy`; `contracts/core-internal`,
+  folded into the unreleased 1.0.0, a `DEC-20` path: schema, two fixtures more (valid `…-by-the-tick`, invalid
+  `…-without-who-asked` and `…-naming-another-asker`), the CHANGELOG bullet, the Rust type). The rebuild counts the grading's
+  reads alone (`rebuilt_tries`), so the earlier fallback that never rebuilt a key at the cap is gone; test
+  `restart_after_many_tick_reads_leaves_the_grading_its_tries` (40 tick reads under one key, then the grading's own three).
+  core-authz's scan and policy needed nothing beyond the field (its tests read the fixture).
 - **L4.** The done-on-reopen test is a roll-back of a staging the platform has already ended. A restriction the platform
   actually holds can't be left without its result through the assembly: the result of a revocation or mark taken through
   `change_release` is written by Core, and a second, unresulted effect for it is refused on reopen as a change `relist`
@@ -10847,3 +10849,7 @@ scenario tests) and `tools/licence-check/src/artifact.rs`, a `DEC-20` path. No o
   is not red alone: the job's own cadence (`PublishersRecords`, the same setting) already keeps the tick to it. Checks: the
   whole `rutent-scenarios` package (57 test binaries), core-orch, `invariants` and `assembly` on seeds 11 to 15, core-authz
   `--lib`, licence-check, prov, conformance, plan-check and tag-check `--strict`, fmt and clippy `-D warnings`.
+- **R20** (the tick's reads counted as the grading's in the rebuild) is red on `restart_after_many_tick_reads_leaves_the_grading_its_tries`.
+  Checks of the `by` change: `rutent-contracts`, `rutent-core-audit`, core-orch, core-authz `--lib`, the whole scenarios package,
+  `invariants` and `assembly` on seeds 11 to 15, prov, conformance, `role_suite`, licence-check, the contract guard against
+  `origin/develop` (2202 paths) and `origin/m3` (32): no violations; plan-check and tag-check `--strict`; fmt; clippy.

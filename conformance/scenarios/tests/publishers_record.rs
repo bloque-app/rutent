@@ -1223,9 +1223,9 @@ fn segment_graded_many_times_while_it_waits_asks_a_publisher_answering_not_known
             .expect("the order runs again after the restart");
     }
     let after_restart = reads_by(&core, &order, &segment, RESERVE);
-    assert!(
-        (cap..=cap + 1).contains(&after_restart),
-        "the cap is rebuilt from the log, a restart leaving the grading no more than one try: {after_restart}"
+    assert_eq!(
+        after_restart, cap,
+        "the grading's cap is rebuilt from the log's grading reads"
     );
 }
 

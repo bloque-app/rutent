@@ -41,6 +41,7 @@ use rutent_contracts::router_api::Operation;
 use rutent_contracts::state_machine::SegmentPlan;
 
 use super::*;
+use rutent_contracts::core_internal::ReadBy;
 
 /// What a Core that reopens reads beside its log (`T-020-46`): the decision records it signed, and the statements the
 /// evidence store keeps.
@@ -176,7 +177,7 @@ impl Segments {
             .iter()
             .map(|h| (h.order.clone(), h.node.clone(), h.maker.clone()))
             .collect();
-        let reads: Vec<(String, String, String, String)> = history
+        let reads: Vec<(ReadKey, ReadBy)> = history
             .iter()
             .filter_map(|(_, entry)| match entry {
                 Entry::Verified(VerifiedEntry {
@@ -188,16 +189,20 @@ impl Segments {
                                     segment,
                                     node,
                                     provider,
+                                    by,
                                     ..
                                 },
                             ..
                         },
                     ..
                 }) => Some((
-                    order.as_str().to_owned(),
-                    segment.as_str().to_owned(),
-                    node.as_str().to_owned(),
-                    provider.as_str().to_owned(),
+                    (
+                        order.as_str().to_owned(),
+                        segment.as_str().to_owned(),
+                        node.as_str().to_owned(),
+                        provider.as_str().to_owned(),
+                    ),
+                    *by,
                 )),
                 _ => None,
             })
@@ -1377,15 +1382,20 @@ fn charged_of(
     })
 }
 
+/// A read's key: order, segment, node and provider.
+type ReadKey = (String, String, String, String);
+
 /// How many tries each read key (order, segment, node, provider) has in the log: its `read_node_record` effects, less one
 /// for the key's last where `held` (order, node, maker) holds the record that read produced. Keyed by segment, so a second
 /// segment's reads at the same node and provider count in full (`T-020-67`).
 fn rebuilt_tries(
-    reads: &[(String, String, String, String)],
+    reads: &[(ReadKey, ReadBy)],
     held: &[(String, String, String)],
 ) -> BTreeMap<(String, String, String, String), u32> {
     let mut tries: BTreeMap<(String, String, String, String), u32> = BTreeMap::new();
-    for key in reads {
+    // Only the grading's reads count toward its tries: the effect says who asked, so the tick's, which ask under the first
+    // segment of an order at a node (which the grading may be waiting on too), spend none of them (`T-020-67`).
+    for (key, _) in reads.iter().filter(|(_, by)| *by == ReadBy::Grading) {
         *tries.entry(key.clone()).or_default() += 1;
     }
     for (key, count) in &mut tries {
@@ -1396,20 +1406,13 @@ fn rebuilt_tries(
             *count = count.saturating_sub(1);
         }
     }
-    // The log doesn't say which of a key's reads were the tick's (the effect names no asker), and the tick asks under the
-    // first segment of an order at a node, which the grading may be waiting on too: so a key never rebuilds at the cap or
-    // past it, and a restart leaves the grading at least one try, never none for good. Exactly counting the grading's reads
-    // takes a field on `read_node_record` saying who asked (a contract change; owner: the lead).
-    for count in tries.values_mut() {
-        *count = (*count).min(super::MAX_RECORD_TRIES.saturating_sub(1));
-    }
     tries.retain(|_, count| *count > 0);
     tries
 }
 
 #[cfg(test)]
 mod rebuilt_tries_tests {
-    use super::rebuilt_tries;
+    use super::{ReadBy, rebuilt_tries};
 
     fn key(segment: &str) -> (String, String, String, String) {
         ("o".into(), segment.into(), "n".into(), "p".into())
@@ -1421,7 +1424,13 @@ mod rebuilt_tries_tests {
     #[test]
     fn restart_exemption_of_a_held_record_is_one_read_of_each_segment_and_not_all_of_a_second() {
         let held = [("o".to_owned(), "n".to_owned(), "p".to_owned())];
-        let few: Vec<_> = (0..10).map(|_| key("s2")).chain([key("s1")]).collect();
+        let grading = |segment: &str, n: usize| -> Vec<_> {
+            (0..n).map(|_| (key(segment), ReadBy::Grading)).collect()
+        };
+        let few: Vec<_> = grading("s2", 10)
+            .into_iter()
+            .chain(grading("s1", 1))
+            .collect();
         let tries = rebuilt_tries(&few, &held);
         assert_eq!(
             tries.get(&key("s2")),
@@ -1434,11 +1443,17 @@ mod rebuilt_tries_tests {
             "the first's one read produced the record"
         );
         assert_eq!(rebuilt_tries(&few, &[]).get(&key("s2")), Some(&10));
-        // Many reads, the tick's among them: a restart never rebuilds the grading at its cap.
-        let many: Vec<_> = (0..40).map(|_| key("s2")).collect();
-        assert_eq!(
-            rebuilt_tries(&many, &[]).get(&key("s2")),
-            Some(&(super::super::MAX_RECORD_TRIES - 1))
-        );
+    }
+
+    /// The tick's reads, however many, under the waiting segment's own key, leave the grading its full remaining tries
+    /// after a restart: only the grading's own reads are counted (`REQ-ORD-41`, `NFR-5`, `T-020-67`).
+    // verifies: REQ-ORD-41, NFR-5
+    #[test]
+    fn restart_after_many_tick_reads_leaves_the_grading_its_tries() {
+        let mut reads: Vec<_> = (0..40).map(|_| (key("s1"), ReadBy::Tick)).collect();
+        reads.extend((0..3).map(|_| (key("s1"), ReadBy::Grading)));
+        assert_eq!(rebuilt_tries(&reads, &[]).get(&key("s1")), Some(&3));
+        let only_tick: Vec<_> = (0..40).map(|_| (key("s1"), ReadBy::Tick)).collect();
+        assert_eq!(rebuilt_tries(&only_tick, &[]).get(&key("s1")), None);
     }
 }

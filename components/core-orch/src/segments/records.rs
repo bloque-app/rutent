@@ -266,6 +266,11 @@ impl Segments {
             provider: provider.clone(),
             transaction: transaction.clone(),
             about: read.about.to_vec(),
+            by: if counted {
+                rutent_contracts::core_internal::ReadBy::Grading
+            } else {
+                rutent_contracts::core_internal::ReadBy::Tick
+            },
         };
         let Ok(at) = now(parts.clock) else {
             return Read::Failed;

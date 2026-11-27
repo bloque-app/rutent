@@ -13,7 +13,8 @@
     "node": "acme-ledger",
     "provider": "acme-internal-rail",
     "transaction": "tx-record-1",
-    "about": []
+    "about": [],
+    "by": "grading"
   },
   "at": "2026-11-10T09:00:00Z"
 }
